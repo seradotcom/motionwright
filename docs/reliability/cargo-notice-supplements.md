@@ -102,3 +102,44 @@ full_package_inventory=NOT_VERIFIED. License grammar checking does not select
 an alternative. Native-content review, including libsqlite3-sys, remains
 independent and required. This work grants no R74, G2, G3, Graph6, Native Save,
 installer, audio or human acceptance credit.
+
+
+## Additional Unix source-bound records
+
+The original Linux capture 43376136446 at
+`3b7e95b53d4cc9efa7f734f0696ce739696b699b` completed compilation, then refused
+notice coverage for the two exact dlopen archives below. Their published crates
+omit the original MIT notice, which is retained from their common upstream root.
+
+| Component | Version | Crate SHA-256 | Exact upstream commit | Package path |
+| --- | --- | --- | --- | --- |
+| dlopen2 | 0.8.2 | 5e2c5bd4158e66d1e215c49b837e11d62f3267b30c92f1d171c4d3105e3dc4d4 | cc80e4a0a90d499b677fdf7743699b4b3a43a989 | dlopen2 |
+| dlopen2_derive | 0.4.3 | 0fbbb781877580993a8707ec48672673ec7b81eeba04cfd2310bd28c08e47c8f | cc80e4a0a90d499b677fdf7743699b4b3a43a989 | dlopen2-derive |
+
+The repository is https://github.com/OpenByteDev/dlopen2. Its original
+`LICENSE` is 1184 bytes with SHA-256
+`39fa265207450e77c62e90c5594a06c085b655d8374c7ced4bf7894b6bd95dd2`.
+Both records preserve all 53 archive members: 42 exact source files, two declared
+parent README copies, two Cargo-normalized manifests, two packaged lockfiles,
+two VCS metadata files, two explicitly transformed original manifests and one
+explicitly transformed source file.
+
+The only new line-ending transformations are `Cargo.toml.orig` in each package
+and `src/common.rs` in `dlopen2_derive 0.4.3`. Each is an exact LF-to-CRLF
+expansion with a pinned component, crate checksum, upstream revision, package
+path, member, Git blob identifier, original/packaged size and original/packaged
+SHA-256. The original manifest is classified
+`git_package_manifest_lf_to_crlf` and carries `git_byte_match=false`.
+No transformed manifest is labeled as raw Git bytes.
+
+Each package declares `readme = "../README.md"`; Cargo places the byte-exact root
+README at `README.md` in that archive. The new `git_declared_parent_readme`
+classification requires this exact declaration and normalized destination,
+plus the pinned root blob and exact bytes. It does not authorize arbitrary
+path relocation, a symlink traversal or a new license notice.
+
+These two profiles extend the existing closed source verifier only for the
+observed packaging identities. The original ten Windows records and their
+byte proofs remain unchanged. Missing or altered material still prevents
+capture completion. Historical builds remain failed originals; package
+installation, native-content review and redistribution clearance remain separate.

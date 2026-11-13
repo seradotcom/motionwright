@@ -1,0 +1,382 @@
+{
+  "commit": "cc80e4a0a90d499b677fdf7743699b4b3a43a989",
+  "component": {
+    "crate_sha256": "5e2c5bd4158e66d1e215c49b837e11d62f3267b30c92f1d171c4d3105e3dc4d4",
+    "id": "registry+https://github.com/rust-lang/crates.io-index#dlopen2@0.8.2",
+    "license": "MIT",
+    "name": "dlopen2",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "version": "0.8.2"
+  },
+  "members": [
+    {
+      "bytes": 101,
+      "kind": "cargo_vcs_metadata",
+      "path": ".cargo_vcs_info.json",
+      "sha256": "ed795da0aa7789a000ca4c8708d047c26148b3938d44897c45c9acce4d3ae015"
+    },
+    {
+      "bytes": 4972,
+      "kind": "cargo_packaged_lock",
+      "path": "Cargo.lock",
+      "sha256": "13562a786cf72388a7bfd3039e807b8c132ccb67003f479a24197167a5400e92"
+    },
+    {
+      "bytes": 2652,
+      "kind": "cargo_normalized_manifest",
+      "path": "Cargo.toml",
+      "sha256": "f6d596541d0293eb91794a2fb9fe75ca3d0d12886027d5fa8de9c8d117453130"
+    },
+    {
+      "bytes": 1611,
+      "kind": "git_package_manifest_lf_to_crlf",
+      "path": "Cargo.toml.orig",
+      "sha256": "4db2cb7eef7db93aac79ebab07af14ef27e00cc322ebb9f3744fcc971a1a6b6a"
+    },
+    {
+      "bytes": 5053,
+      "kind": "git_declared_parent_readme",
+      "path": "README.md",
+      "sha256": "66968e46ce37b520d1afee64f3fa7acb038bf24b6c9f86dcc39e46d3700b9dd0"
+    },
+    {
+      "bytes": 553,
+      "kind": "git_exact",
+      "path": "examples/README.md",
+      "sha256": "8280f947c7d144d041423c938220ca4f4c935be6f5d31d781a797020801d9759"
+    },
+    {
+      "bytes": 1588,
+      "kind": "git_exact",
+      "path": "examples/commons/mod.rs",
+      "sha256": "9f8b19d5c29d5ca0ec23fbbed5e6bdb654846141aa546c3f575939cf95a1015b"
+    },
+    {
+      "bytes": 2192,
+      "kind": "git_exact",
+      "path": "examples/raw.rs",
+      "sha256": "335654253c101e5d73c460df02b2814d49f481ebcd0a0b622cc9e9274f92a766"
+    },
+    {
+      "bytes": 705,
+      "kind": "git_exact",
+      "path": "examples/raw_addr_info.rs",
+      "sha256": "60a138a6db5182ed93d5da0499fad5685bc54efcd5f5aec5de504e170538c397"
+    },
+    {
+      "bytes": 2231,
+      "kind": "git_exact",
+      "path": "examples/symbor.rs",
+      "sha256": "468f232b00070eed643461c56b037f91bd3d28238b5cfd134d6c1e30b9ec94a0"
+    },
+    {
+      "bytes": 1895,
+      "kind": "git_exact",
+      "path": "examples/symbor_api.rs",
+      "sha256": "f891902cf215d81257caa4c62c435aba8f946a75cdbbeb338ea098e96e886291"
+    },
+    {
+      "bytes": 1877,
+      "kind": "git_exact",
+      "path": "examples/wrapper_api.rs",
+      "sha256": "bdfe8efabd7d1e56437961a427d49cde8f04bc19da96021e81746218ca109153"
+    },
+    {
+      "bytes": 2070,
+      "kind": "git_exact",
+      "path": "examples/wrapper_multi_api.rs",
+      "sha256": "432f876fd029411ab2b293286d64725bdaca379161522badf5463e0a86bf6755"
+    },
+    {
+      "bytes": 1786,
+      "kind": "git_exact",
+      "path": "src/err.rs",
+      "sha256": "615a164ce2e6168f61ca44e040e7eb6b732c4d1c8def51e8dd6f12e662933020"
+    },
+    {
+      "bytes": 6245,
+      "kind": "git_exact",
+      "path": "src/lib.rs",
+      "sha256": "e99da1fe29c4c9391b6e0f2de4220da7b5dafa62649a9889a9ab4a9f3722cbb5"
+    },
+    {
+      "bytes": 8733,
+      "kind": "git_exact",
+      "path": "src/raw/common.rs",
+      "sha256": "efd977a826325a1e9c8c0d90edefffa8957c7e7813fe580e63e492b8a73c48c5"
+    },
+    {
+      "bytes": 1037,
+      "kind": "git_exact",
+      "path": "src/raw/mod.rs",
+      "sha256": "0778689be10e11d7a7bb1f980d7a3bd8b8609a55998f9910143b58b606497ba0"
+    },
+    {
+      "bytes": 1869,
+      "kind": "git_exact",
+      "path": "src/raw/tests.rs",
+      "sha256": "617241077da82f00d8f3afb259a019326c6484db756082926d6dc8cc43ae4b48"
+    },
+    {
+      "bytes": 4584,
+      "kind": "git_exact",
+      "path": "src/raw/unix.rs",
+      "sha256": "48845a8f71eb608246d2a89e4f1b50d3eed3aba64809de7b12e84ba199adb291"
+    },
+    {
+      "bytes": 9204,
+      "kind": "git_exact",
+      "path": "src/raw/windows.rs",
+      "sha256": "d44700a74b8d85cbd7ceeaf92b7695059867c87518ae45213d66e242541bfb6e"
+    },
+    {
+      "bytes": 2911,
+      "kind": "git_exact",
+      "path": "src/symbor/api.rs",
+      "sha256": "f75170c815d2f29ffd4d6d06433b2c1e7322357713c5c4d72c8c9a698c072934"
+    },
+    {
+      "bytes": 3038,
+      "kind": "git_exact",
+      "path": "src/symbor/container.rs",
+      "sha256": "dc59404d51489eef30e3b87dfbd01eb43a3d7ce43a9e0b1aa6c0d3eec7649a30"
+    },
+    {
+      "bytes": 837,
+      "kind": "git_exact",
+      "path": "src/symbor/from_raw.rs",
+      "sha256": "61c0681a26b8cafa2dd480ffb1227e3f917beb596ea1e075993bf5c10fa19543"
+    },
+    {
+      "bytes": 6025,
+      "kind": "git_exact",
+      "path": "src/symbor/library.rs",
+      "sha256": "f6eba94586baa4e11364674031561d3d3d34cf3c69eb6d0838a331e66f221499"
+    },
+    {
+      "bytes": 3615,
+      "kind": "git_exact",
+      "path": "src/symbor/mod.rs",
+      "sha256": "1e14df95e0d9c4b7834931e51c1b83fdbb543e6d91f2192de2c15d331eca0c9e"
+    },
+    {
+      "bytes": 407,
+      "kind": "git_exact",
+      "path": "src/symbor/option.rs",
+      "sha256": "1f3b0de356c1b698d83f38571c5ea770c77492760d1fe4fd8cd63b599d14820e"
+    },
+    {
+      "bytes": 1152,
+      "kind": "git_exact",
+      "path": "src/symbor/ptr_or_null.rs",
+      "sha256": "46fbfa4705dfd5d9bdcc66baeb58cf5941e8bf9104b5e3748d10de6370ab0317"
+    },
+    {
+      "bytes": 1171,
+      "kind": "git_exact",
+      "path": "src/symbor/ptr_or_null_mut.rs",
+      "sha256": "8a5e8480a0dd4f0ad66ebe9b61c393c960368aaaf400e649a939aef8a7e16444"
+    },
+    {
+      "bytes": 1279,
+      "kind": "git_exact",
+      "path": "src/symbor/reference.rs",
+      "sha256": "e4130ce5a5a982fd7b5ca9079191a788aee9b1f62194c3fd5850e88c9b0f1b95"
+    },
+    {
+      "bytes": 1458,
+      "kind": "git_exact",
+      "path": "src/symbor/reference_mut.rs",
+      "sha256": "af10481e3dbea7260bf5719c045186c80bcbde929a846b755193b055a6c8c162"
+    },
+    {
+      "bytes": 1768,
+      "kind": "git_exact",
+      "path": "src/symbor/symbol.rs",
+      "sha256": "5316a3b532de9d5bfd3ea6b8a2a0374715a93ad63baa487eb9070c428ca9900f"
+    },
+    {
+      "bytes": 2154,
+      "kind": "git_exact",
+      "path": "src/utils.rs",
+      "sha256": "8e8c2f46e44f515be7b55be7a522ebd116094c1f912f1147bb159a0420a59008"
+    },
+    {
+      "bytes": 3291,
+      "kind": "git_exact",
+      "path": "src/wrapper/api.rs",
+      "sha256": "bb8ecf5b90eb3382b996ad8ff67b278930b6834509731d75911a1db7ec1dcd15"
+    },
+    {
+      "bytes": 3118,
+      "kind": "git_exact",
+      "path": "src/wrapper/container.rs",
+      "sha256": "87380ee33880d0be780e34ef8e997150fd99c250833d6fc573a14b5ccbb02a73"
+    },
+    {
+      "bytes": 2647,
+      "kind": "git_exact",
+      "path": "src/wrapper/mod.rs",
+      "sha256": "be99684278fa390a2dbd9dad65966c507234fe2fdc78e4d9154a855874c0da6c"
+    },
+    {
+      "bytes": 2049,
+      "kind": "git_exact",
+      "path": "src/wrapper/multi_api.rs",
+      "sha256": "17118c6781b6ffeadfcdd56db736fcbf2d9a70415276aefc37fb3a520257b6e6"
+    },
+    {
+      "bytes": 365,
+      "kind": "git_exact",
+      "path": "src/wrapper/option.rs",
+      "sha256": "a3bd77d10e2324730312082500d68da901b2ca41dba40293ac37e9a2cc4da183"
+    },
+    {
+      "bytes": 4155,
+      "kind": "git_exact",
+      "path": "src/wrapper/optional.rs",
+      "sha256": "85735d98a26efd5ba5139f9e402513cfb2dd2e5802961e81390c70c37d2bf87e"
+    },
+    {
+      "bytes": 3045,
+      "kind": "git_exact",
+      "path": "tests/commons/mod.rs",
+      "sha256": "ca7ce079ea1c809ab868852a089628097cde295c0251532b14fad9a8e702c14d"
+    },
+    {
+      "bytes": 3299,
+      "kind": "git_exact",
+      "path": "tests/raw.rs",
+      "sha256": "838f38119ec0a1451e04881212a0306e71c2e5287aa8354f5f2a9987c3269ee6"
+    },
+    {
+      "bytes": 2190,
+      "kind": "git_exact",
+      "path": "tests/symbor.rs",
+      "sha256": "9394ae4a481386930f06feb1f2d8c562a96e17778d44c2de87ce5927728b413a"
+    },
+    {
+      "bytes": 1797,
+      "kind": "git_exact",
+      "path": "tests/symbor_api.rs",
+      "sha256": "968c8495865e4f6996039b712c7cb62d17b079aec8405140cc4e05022d72a204"
+    },
+    {
+      "bytes": 2505,
+      "kind": "git_exact",
+      "path": "tests/wrapper_api.rs",
+      "sha256": "0bcd6414b50bfbb2e8963f59430bf954dde0234cf842ca1ad29509b2da0275aa"
+    }
+  ],
+  "notices": [
+    {
+      "declared_by": "dlopen2/Cargo.toml",
+      "kind": "upstream_git",
+      "upstream_path": "LICENSE"
+    }
+  ],
+  "objects": [
+    {
+      "bytes": 135,
+      "oid": "061df5915bbeecb29f1d63cde6887de8e95bd7e2",
+      "path": "objects/061df5915bbeecb29f1d63cde6887de8e95bd7e2.tree",
+      "sha256": "2d8c733de85741ce216d0c45bca6f2a5819d512488165a094331ef274acb1ed4",
+      "type": "tree"
+    },
+    {
+      "bytes": 297,
+      "oid": "0dacec2b6624533a6f59ee411fc7d03840c28261",
+      "path": "objects/0dacec2b6624533a6f59ee411fc7d03840c28261.tree",
+      "sha256": "eb956068bef17304a0c96c7bce0ce42c507b49563b584df42d4dd8336b3effc0",
+      "type": "tree"
+    },
+    {
+      "bytes": 431,
+      "oid": "1499fec8a27520c3baea45a33520377d0a05ff77",
+      "path": "objects/1499fec8a27520c3baea45a33520377d0a05ff77.tree",
+      "sha256": "44dde2029c5e95565639218f32cec80aa3734feab00bdfa0295243c36c1abf8b",
+      "type": "tree"
+    },
+    {
+      "bytes": 34,
+      "oid": "1dfc656766041ac5198c8e4751685973d7ad5423",
+      "path": "objects/1dfc656766041ac5198c8e4751685973d7ad5423.tree",
+      "sha256": "97796bfe1e06f8a68367689a7a1e27410b86689ec60f74d566c9713ec88bed0c",
+      "type": "tree"
+    },
+    {
+      "bytes": 180,
+      "oid": "231ede7d78fa8b3471a98e5ac934fa2323835332",
+      "path": "objects/231ede7d78fa8b3471a98e5ac934fa2323835332.tree",
+      "sha256": "401ec13311a9c80489e15de8fb4b744788b897eada92a00ebc948495ce4ccbbf",
+      "type": "tree"
+    },
+    {
+      "bytes": 5053,
+      "oid": "3f0ca2bc0f68bdff21f7b0e1ba4d62cd87d0b2b7",
+      "path": "objects/3f0ca2bc0f68bdff21f7b0e1ba4d62cd87d0b2b7.blob",
+      "sha256": "66968e46ce37b520d1afee64f3fa7acb038bf24b6c9f86dcc39e46d3700b9dd0",
+      "type": "blob"
+    },
+    {
+      "bytes": 317,
+      "oid": "41d98b11bcb57cc1eb4c91b827c9617759ddef71",
+      "path": "objects/41d98b11bcb57cc1eb4c91b827c9617759ddef71.tree",
+      "sha256": "583a675c4ac7c78add1a9a675eaa67fe7a4da82e63f46b7c6ab882e1fcb1c30e",
+      "type": "tree"
+    },
+    {
+      "bytes": 1542,
+      "oid": "51ad853aeaf65e937e26acfc9a918f4936de9e83",
+      "path": "objects/51ad853aeaf65e937e26acfc9a918f4936de9e83.blob",
+      "sha256": "0153c3c729490e105d65aa883c3891323ae801aedbf24eac4edbe21de6d2efa7",
+      "type": "blob"
+    },
+    {
+      "bytes": 188,
+      "oid": "621d6782748a75a42a7b5b8a48662ce5203fc018",
+      "path": "objects/621d6782748a75a42a7b5b8a48662ce5203fc018.tree",
+      "sha256": "81685b0760f043574b89d4e1cdf03dc168ad146e7af25a342489a55e359065de",
+      "type": "tree"
+    },
+    {
+      "bytes": 201,
+      "oid": "8bf2edc3ea2df8c99bd9371770451a1ecd877ddf",
+      "path": "objects/8bf2edc3ea2df8c99bd9371770451a1ecd877ddf.tree",
+      "sha256": "97b2baa0d68e60d7a7cc108f5740853821d7f96abfde6d33279608a684e6af3f",
+      "type": "tree"
+    },
+    {
+      "bytes": 34,
+      "oid": "9332a0ec7e41c5ac46c824a80a378adc936ad352",
+      "path": "objects/9332a0ec7e41c5ac46c824a80a378adc936ad352.tree",
+      "sha256": "5d1dbe009c0838cdda1091aa251c8fa624582ecde380ade57c2ebc98ff3acd35",
+      "type": "tree"
+    },
+    {
+      "bytes": 248,
+      "oid": "cc80e4a0a90d499b677fdf7743699b4b3a43a989",
+      "path": "objects/cc80e4a0a90d499b677fdf7743699b4b3a43a989.commit",
+      "sha256": "c40756b35c3fe0e5a3e139f911491235fed8623faa432cd82fcdfc80c9196cbc",
+      "type": "commit"
+    },
+    {
+      "bytes": 1184,
+      "oid": "d38093a7a564c64ad15e459f2e0a1f86a443c8b3",
+      "path": "objects/d38093a7a564c64ad15e459f2e0a1f86a443c8b3.txt",
+      "sha256": "39fa265207450e77c62e90c5594a06c085b655d8374c7ced4bf7894b6bd95dd2",
+      "type": "blob"
+    },
+    {
+      "bytes": 224,
+      "oid": "d9251c226583366d1cfe3509c472b612e31654f8",
+      "path": "objects/d9251c226583366d1cfe3509c472b612e31654f8.tree",
+      "sha256": "63f837e3ddf08ee9530de0dcb5d22e612814ccdc8a40a43a207d7fecb1cd3820",
+      "type": "tree"
+    }
+  ],
+  "package_path": "dlopen2",
+  "repository": "https://github.com/OpenByteDev/dlopen2",
+  "schema": "motionwright.cargo-notice-supplement/1",
+  "workspace_manifest": null
+}

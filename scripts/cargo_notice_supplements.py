@@ -36,7 +36,7 @@ RESERVED = {"CON", "PRN", "AUX", "NUL"} | {
     prefix + str(number) for prefix in ("COM", "LPT") for number in range(1, 10)}
 REPOSITORIES = frozenset("https://github.com/" + name for name in (
     "dropbox/rust-alloc-no-stdlib", "Stranger6667/jsonschema", "servo/stylo",
-    "tauri-apps/tauri", "Nugine/simd", "wravery/webview2-rs"))
+    "tauri-apps/tauri", "Nugine/simd", "wravery/webview2-rs", "OpenByteDev/dlopen2"))
 REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
 MPL_URL = "https://mozilla.org/MPL/2.0/"
 MPL_TEXT_URL = "https://www.mozilla.org/media/MPL/2.0/index.txt"
@@ -64,6 +64,52 @@ LF_CRLF_MEMBERS = {
         "bytes": 8428, "sha256": "3e0fb6feaaea5811a304205b8eaba424a5763947143fc27357f0106db3681ed3"},
 }
 
+
+# These two published archives have reviewed packaging transformations only.
+# Exact crate, revision, member and input/output bytes remain mandatory.
+DLOPEN_PACKAGING_PROFILES = {'registry+https://github.com/rust-lang/crates.io-index#dlopen2@0.8.2': {'declared_readme': {'bytes': 5053,
+                                                                                             'declared_path': '../README.md',
+                                                                                             'git_oid': '3f0ca2bc0f68bdff21f7b0e1ba4d62cd87d0b2b7',
+                                                                                             'sha256': '66968e46ce37b520d1afee64f3fa7acb038bf24b6c9f86dcc39e46d3700b9dd0',
+                                                                                             'upstream_path': 'README.md'},
+                                                                         'identity': {'commit': 'cc80e4a0a90d499b677fdf7743699b4b3a43a989',
+                                                                                      'crate_sha256': '5e2c5bd4158e66d1e215c49b837e11d62f3267b30c92f1d171c4d3105e3dc4d4',
+                                                                                      'id': 'registry+https://github.com/rust-lang/crates.io-index#dlopen2@0.8.2',
+                                                                                      'license': 'MIT',
+                                                                                      'name': 'dlopen2',
+                                                                                      'package_path': 'dlopen2',
+                                                                                      'repository': 'https://github.com/OpenByteDev/dlopen2',
+                                                                                      'source': 'registry+https://github.com/rust-lang/crates.io-index',
+                                                                                      'version': '0.8.2'},
+                                                                         'members': {'Cargo.toml.orig': {'bytes': 1611,
+                                                                                                         'git_bytes': 1542,
+                                                                                                         'git_oid': '51ad853aeaf65e937e26acfc9a918f4936de9e83',
+                                                                                                         'git_sha256': '0153c3c729490e105d65aa883c3891323ae801aedbf24eac4edbe21de6d2efa7',
+                                                                                                         'sha256': '4db2cb7eef7db93aac79ebab07af14ef27e00cc322ebb9f3744fcc971a1a6b6a'}}},
+ 'registry+https://github.com/rust-lang/crates.io-index#dlopen2_derive@0.4.3': {'declared_readme': {'bytes': 5053,
+                                                                                                    'declared_path': '../README.md',
+                                                                                                    'git_oid': '3f0ca2bc0f68bdff21f7b0e1ba4d62cd87d0b2b7',
+                                                                                                    'sha256': '66968e46ce37b520d1afee64f3fa7acb038bf24b6c9f86dcc39e46d3700b9dd0',
+                                                                                                    'upstream_path': 'README.md'},
+                                                                                'identity': {'commit': 'cc80e4a0a90d499b677fdf7743699b4b3a43a989',
+                                                                                             'crate_sha256': '0fbbb781877580993a8707ec48672673ec7b81eeba04cfd2310bd28c08e47c8f',
+                                                                                             'id': 'registry+https://github.com/rust-lang/crates.io-index#dlopen2_derive@0.4.3',
+                                                                                             'license': 'MIT',
+                                                                                             'name': 'dlopen2_derive',
+                                                                                             'package_path': 'dlopen2-derive',
+                                                                                             'repository': 'https://github.com/OpenByteDev/dlopen2',
+                                                                                             'source': 'registry+https://github.com/rust-lang/crates.io-index',
+                                                                                             'version': '0.4.3'},
+                                                                                'members': {'Cargo.toml.orig': {'bytes': 499,
+                                                                                                                'git_bytes': 480,
+                                                                                                                'git_oid': '22219c8c7e68216021094d111925caf485331573',
+                                                                                                                'git_sha256': '8a2558abfe3b44960eaca355b1f3262b86d27760978f8a34d317d1b3daa92965',
+                                                                                                                'sha256': '5e3d2d7fe64c4b47b01d4c2e88dbf669bf0950d937b43757b48f965bea4e254a'},
+                                                                                            'src/common.rs': {'bytes': 2486,
+                                                                                                              'git_bytes': 2407,
+                                                                                                              'git_oid': '514ebb00973c852152451e90e1dc0ff1b3a98030',
+                                                                                                              'git_sha256': '78d04c4bbea78447c7906b19c29738f33e410e7240f6182baeda603fd5f82467',
+                                                                                                              'sha256': '2c986f6129c8e98785b4769bd35cd791438ee9ff8a78a015376f796ec275e16f'}}}}
 
 class SupplementError(ValueError):
     """A static refusal code, without untrusted source text."""
@@ -273,11 +319,25 @@ def _lf_to_crlf(original, packaged):
     _need(original.replace(b"\n", b"\r\n") == packaged, "transform_not_exact")
 
 
-def _transform(record, member, oid, original, packaged):
+def _packaging_identity(record):
     identity = {key: record["component"][key] for key in ("id", "name", "version", "source", "license", "crate_sha256")}
     identity.update({key: record[key] for key in ("repository", "commit", "package_path")})
-    _need(identity == LF_CRLF_IDENTITY, "transform_scope_unapproved")
-    expected = LF_CRLF_MEMBERS.get(member["path"])
+    return identity
+
+
+def _dlopen_profile(record):
+    identity = _packaging_identity(record)
+    profile = DLOPEN_PACKAGING_PROFILES.get(identity["id"])
+    _need(profile is not None and identity == profile["identity"], "transform_scope_unapproved")
+    return profile
+
+
+def _transform(record, member, oid, original, packaged):
+    identity = _packaging_identity(record)
+    if identity == LF_CRLF_IDENTITY:
+        expected = LF_CRLF_MEMBERS.get(member["path"])
+    else:
+        expected = _dlopen_profile(record)["members"].get(member["path"])
     _need(expected is not None and oid == expected["git_oid"]
           and len(original) == expected["git_bytes"] and _sha(original) == expected["git_sha256"]
           and len(packaged) == expected["bytes"] and _sha(packaged) == expected["sha256"],
@@ -285,6 +345,24 @@ def _transform(record, member, oid, original, packaged):
     _lf_to_crlf(original, packaged)
     return {"transform": "LF_TO_CRLF", "git_bytes": len(original),
             "git_sha256": _sha(original), "git_blob_oid": oid}
+
+
+def _declared_parent_readme(record, member, raw, original, normalized, git):
+    expected = _dlopen_profile(record)["declared_readme"]
+    _need(member["path"] == "README.md"
+          and original.get("readme") == expected["declared_path"]
+          and normalized.get("readme") == "README.md"
+          and expected["upstream_path"] == "README.md"
+          and expected["declared_path"] == "../README.md",
+          "declared_readme_scope_invalid")
+    oid = git.blob_id(expected["upstream_path"])
+    _need(oid == expected["git_oid"] and _oid("blob", raw) == oid
+          and len(raw) == expected["bytes"] and _sha(raw) == expected["sha256"],
+          "declared_readme_identity_mismatch")
+    return {"upstream_path": expected["upstream_path"], "git_blob_oid": oid,
+            "git_byte_match": True, "source_copy": "CARGO_DECLARED_PARENT_README",
+            "declared_by": record["package_path"] + "/Cargo.toml",
+            "declared_path": expected["declared_path"]}
 
 
 def _packaged_lock(raw, component):
@@ -429,8 +507,14 @@ def _verify(root, expected_record_sha256, component, crate_members, expected_cra
           and vcs["git"].get("dirty", False) is False and vcs["git"]["sha1"] == record["commit"]
           and vcs["path_in_vcs"] == package_path, "vcs_mismatch_or_dirty")
     git = _Git(reader, record["objects"], record["commit"])
-    _need(_oid("blob", member("Cargo.toml.orig")) == git.blob_id(package_path + "/Cargo.toml"),
-          "original_manifest_git_mismatch")
+    manifest_oid = git.blob_id(package_path + "/Cargo.toml")
+    manifest_transform = None
+    if _oid("blob", member("Cargo.toml.orig")) != manifest_oid:
+        _need(roster["Cargo.toml.orig"]["kind"] == "git_package_manifest_lf_to_crlf",
+              "original_manifest_git_mismatch")
+        manifest_transform = _transform(
+            record, roster["Cargo.toml.orig"], manifest_oid, git.get(manifest_oid, "blob"),
+            member("Cargo.toml.orig"))
     inherited = None
     for field, expected in (("name", component["name"]), ("version", component["version"]),
                             ("license", component["license"]), ("repository", record["repository"])):
@@ -443,7 +527,9 @@ def _verify(root, expected_record_sha256, component, crate_members, expected_cra
         _need(value == expected and normalized.get(field) == expected, "manifest_identity_mismatch")
     _need((inherited is not None) == (record["workspace_manifest"] is not None), "workspace_unused_or_missing")
     proof_members = []
-    special = {"Cargo.toml": "cargo_normalized_manifest", "Cargo.toml.orig": "git_package_manifest",
+    special = {"Cargo.toml": "cargo_normalized_manifest",
+               "Cargo.toml.orig": ("git_package_manifest_lf_to_crlf" if manifest_transform is not None
+                                   else "git_package_manifest"),
                ".cargo_vcs_info.json": "cargo_vcs_metadata"}
     for name, descriptor in roster.items():
         raw = member(name)
@@ -452,7 +538,11 @@ def _verify(root, expected_record_sha256, component, crate_members, expected_cra
         if name in special:
             _need(kind == special[name], "member_classification_invalid")
             if name == "Cargo.toml.orig":
-                item.update(upstream_path=package_path + "/Cargo.toml", git_blob_oid=_oid("blob", raw))
+                item.update(upstream_path=package_path + "/Cargo.toml", git_blob_oid=manifest_oid)
+                if manifest_transform is not None:
+                    item.update(manifest_transform, git_byte_match=False)
+        elif kind == "git_declared_parent_readme":
+            item.update(_declared_parent_readme(record, descriptor, raw, original, normalized, git))
         elif kind == "cargo_packaged_lock":
             _need(name == "Cargo.lock", "packaged_lock_path_invalid")
             _packaged_lock(raw, component)

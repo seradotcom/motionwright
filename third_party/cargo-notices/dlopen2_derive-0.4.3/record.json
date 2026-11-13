@@ -1,0 +1,142 @@
+{
+  "commit": "cc80e4a0a90d499b677fdf7743699b4b3a43a989",
+  "component": {
+    "crate_sha256": "0fbbb781877580993a8707ec48672673ec7b81eeba04cfd2310bd28c08e47c8f",
+    "id": "registry+https://github.com/rust-lang/crates.io-index#dlopen2_derive@0.4.3",
+    "license": "MIT",
+    "name": "dlopen2_derive",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "version": "0.4.3"
+  },
+  "members": [
+    {
+      "bytes": 108,
+      "kind": "cargo_vcs_metadata",
+      "path": ".cargo_vcs_info.json",
+      "sha256": "90a5b706d2f492723b4c81afa07cea75eda9a4e4c7fc98c368931f539bf5b439"
+    },
+    {
+      "bytes": 1119,
+      "kind": "cargo_packaged_lock",
+      "path": "Cargo.lock",
+      "sha256": "1e9c7407472bddb3d32c4cf09455027f630056146c84c6f8f2be04b06f0e7d04"
+    },
+    {
+      "bytes": 1135,
+      "kind": "cargo_normalized_manifest",
+      "path": "Cargo.toml",
+      "sha256": "ee0c5e9ad3c8992fa6f1a0b5f73005aa9689af7fbdc804a3868b2597d53e1a09"
+    },
+    {
+      "bytes": 499,
+      "kind": "git_package_manifest_lf_to_crlf",
+      "path": "Cargo.toml.orig",
+      "sha256": "5e3d2d7fe64c4b47b01d4c2e88dbf669bf0950d937b43757b48f965bea4e254a"
+    },
+    {
+      "bytes": 5053,
+      "kind": "git_declared_parent_readme",
+      "path": "README.md",
+      "sha256": "66968e46ce37b520d1afee64f3fa7acb038bf24b6c9f86dcc39e46d3700b9dd0"
+    },
+    {
+      "bytes": 1084,
+      "kind": "git_exact",
+      "path": "src/api.rs",
+      "sha256": "4f1ac5c1d76081399f67de01be8e57fb55d947e70acb5f53034e640215733d2e"
+    },
+    {
+      "bytes": 2486,
+      "kind": "git_lf_to_crlf",
+      "path": "src/common.rs",
+      "sha256": "2c986f6129c8e98785b4769bd35cd791438ee9ff8a78a015376f796ec275e16f"
+    },
+    {
+      "bytes": 1351,
+      "kind": "git_exact",
+      "path": "src/lib.rs",
+      "sha256": "f172e1b7acca5edabefc867c1f7dd8f6deaf3eeb0f53097740961fe47b770a72"
+    },
+    {
+      "bytes": 975,
+      "kind": "git_exact",
+      "path": "src/multi_api.rs",
+      "sha256": "075775904efd9ea4f9011c5e0e4154c7d1a056e475eec84965c10492523127f0"
+    },
+    {
+      "bytes": 11567,
+      "kind": "git_exact",
+      "path": "src/wrapper.rs",
+      "sha256": "18f3abf0ed0dfaa129cbcdac7f98e953e348d2bb7119857e6d37fe6a30d635a9"
+    }
+  ],
+  "notices": [
+    {
+      "declared_by": "dlopen2-derive/Cargo.toml",
+      "kind": "upstream_git",
+      "upstream_path": "LICENSE"
+    }
+  ],
+  "objects": [
+    {
+      "bytes": 297,
+      "oid": "0dacec2b6624533a6f59ee411fc7d03840c28261",
+      "path": "objects/0dacec2b6624533a6f59ee411fc7d03840c28261.tree",
+      "sha256": "eb956068bef17304a0c96c7bce0ce42c507b49563b584df42d4dd8336b3effc0",
+      "type": "tree"
+    },
+    {
+      "bytes": 68,
+      "oid": "1cb4efddd94dee951b7648d0632be8335356a918",
+      "path": "objects/1cb4efddd94dee951b7648d0632be8335356a918.tree",
+      "sha256": "b4998aaeb21822b64668b2bbc77ca477f13d102e9adf31ac3d783d32903b1695",
+      "type": "tree"
+    },
+    {
+      "bytes": 480,
+      "oid": "22219c8c7e68216021094d111925caf485331573",
+      "path": "objects/22219c8c7e68216021094d111925caf485331573.blob",
+      "sha256": "8a2558abfe3b44960eaca355b1f3262b86d27760978f8a34d317d1b3daa92965",
+      "type": "blob"
+    },
+    {
+      "bytes": 5053,
+      "oid": "3f0ca2bc0f68bdff21f7b0e1ba4d62cd87d0b2b7",
+      "path": "objects/3f0ca2bc0f68bdff21f7b0e1ba4d62cd87d0b2b7.blob",
+      "sha256": "66968e46ce37b520d1afee64f3fa7acb038bf24b6c9f86dcc39e46d3700b9dd0",
+      "type": "blob"
+    },
+    {
+      "bytes": 2407,
+      "oid": "514ebb00973c852152451e90e1dc0ff1b3a98030",
+      "path": "objects/514ebb00973c852152451e90e1dc0ff1b3a98030.blob",
+      "sha256": "78d04c4bbea78447c7906b19c29738f33e410e7240f6182baeda603fd5f82467",
+      "type": "blob"
+    },
+    {
+      "bytes": 183,
+      "oid": "7b6e981c4a1a77264c6227efc6c59f5207a52a04",
+      "path": "objects/7b6e981c4a1a77264c6227efc6c59f5207a52a04.tree",
+      "sha256": "2c2a7715abafda783f16d1ca7530451ec19296c072364060768ddb8a3c2c48d4",
+      "type": "tree"
+    },
+    {
+      "bytes": 248,
+      "oid": "cc80e4a0a90d499b677fdf7743699b4b3a43a989",
+      "path": "objects/cc80e4a0a90d499b677fdf7743699b4b3a43a989.commit",
+      "sha256": "c40756b35c3fe0e5a3e139f911491235fed8623faa432cd82fcdfc80c9196cbc",
+      "type": "commit"
+    },
+    {
+      "bytes": 1184,
+      "oid": "d38093a7a564c64ad15e459f2e0a1f86a443c8b3",
+      "path": "objects/d38093a7a564c64ad15e459f2e0a1f86a443c8b3.txt",
+      "sha256": "39fa265207450e77c62e90c5594a06c085b655d8374c7ced4bf7894b6bd95dd2",
+      "type": "blob"
+    }
+  ],
+  "package_path": "dlopen2-derive",
+  "repository": "https://github.com/OpenByteDev/dlopen2",
+  "schema": "motionwright.cargo-notice-supplement/1",
+  "workspace_manifest": null
+}

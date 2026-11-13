@@ -12,6 +12,28 @@
       "version": "0.3.0"
     },
     {
+      "crate_sha256": "5e2c5bd4158e66d1e215c49b837e11d62f3267b30c92f1d171c4d3105e3dc4d4",
+      "name": "dlopen2",
+      "record": {
+        "bytes": 12305,
+        "path": "third_party/cargo-notices/dlopen2-0.8.2/record.json",
+        "sha256": "76c019dd94c4ea3c6280ad4c40bfd5cff226bdb634f4fb4874752e6accf69daa"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.8.2"
+    },
+    {
+      "crate_sha256": "0fbbb781877580993a8707ec48672673ec7b81eeba04cfd2310bd28c08e47c8f",
+      "name": "dlopen2_derive",
+      "record": {
+        "bytes": 4721,
+        "path": "third_party/cargo-notices/dlopen2_derive-0.4.3/record.json",
+        "sha256": "dbaa7dab187ce235e300599a8bcad933a0c735902c010711d4625d5b2e6d78dc"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.4.3"
+    },
+    {
       "crate_sha256": "a968fffd387b2ab005bf00c1851f5d26e90df05b6f7ad609ed0d620033cca5e7",
       "name": "jsonschema-regex",
       "record": {

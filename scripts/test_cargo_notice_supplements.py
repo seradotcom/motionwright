@@ -403,5 +403,77 @@ class CargoNoticeSupplementTests(unittest.TestCase):
         self.blocked("official_header_mismatch")
 
 
+class DlopenPackagingProfileTests(unittest.TestCase):
+    """Real retained Git objects; packaging bytes are separately checked with original crates."""
+
+    def records(self):
+        root = Path(__file__).resolve().parents[1] / "third_party/cargo-notices"
+        for name, version in (("dlopen2", "0.8.2"), ("dlopen2_derive", "0.4.3")):
+            material = root / (name + "-" + version)
+            record = json.loads((material / "record.json").read_bytes())
+            git = supplement._Git(supplement._Reader(material), record["objects"], record["commit"])
+            yield record, git
+
+    def test_exact_manifest_expansions_retain_original_git_and_packaged_identities(self):
+        for record, git in self.records():
+            member = next(row for row in record["members"] if row["path"] == "Cargo.toml.orig")
+            self.assertEqual(member["kind"], "git_package_manifest_lf_to_crlf")
+            path = record["package_path"] + "/Cargo.toml"
+            original = git.blob(path)
+            result = supplement._transform(record, member, git.blob_id(path), original,
+                                           original.replace(b"\n", b"\r\n"))
+            self.assertEqual(result["transform"], "LF_TO_CRLF")
+            self.assertEqual(result["git_sha256"], digest(original))
+            self.assertNotEqual(result["git_sha256"], member["sha256"])
+
+    def test_transform_rejects_other_component_revision_and_unlisted_member(self):
+        for record, git in self.records():
+            member = next(row for row in record["members"] if row["path"] == "Cargo.toml.orig")
+            path = record["package_path"] + "/Cargo.toml"
+            original = git.blob(path)
+            variants = []
+            changed = copy.deepcopy(record); changed["component"]["version"] = "0.0.0"
+            variants.append((changed, member))
+            changed = copy.deepcopy(record); changed["commit"] = "0" * 40
+            variants.append((changed, member))
+            variants.append((record, {**member, "path": "unlisted.rs"}))
+            for changed, row in variants:
+                with self.subTest(component=record["component"]["name"]), self.assertRaises(
+                        supplement.SupplementError):
+                    supplement._transform(changed, row, git.blob_id(path), original,
+                                          original.replace(b"\n", b"\r\n"))
+
+    def test_parent_readme_requires_declared_copy_and_exact_root_blob(self):
+        for record, git in self.records():
+            member = next(row for row in record["members"] if row["path"] == "README.md")
+            self.assertEqual(member["kind"], "git_declared_parent_readme")
+            original = supplement._toml(git.blob(record["package_path"] + "/Cargo.toml"))["package"]
+            normalized = {**original, "readme": "README.md"}
+            raw = git.blob("README.md")
+            result = supplement._declared_parent_readme(record, member, raw, original, normalized, git)
+            self.assertEqual(result["upstream_path"], "README.md")
+            self.assertEqual(result["declared_path"], "../README.md")
+            self.assertTrue(result["git_byte_match"])
+            for declared, normalized_copy, data in (
+                    ({**original, "readme": "../../README.md"}, normalized, raw),
+                    (original, {**normalized, "readme": "foreign.md"}, raw),
+                    (original, normalized, raw + b"changed")):
+                with self.subTest(component=record["component"]["name"]), self.assertRaises(
+                        supplement.SupplementError):
+                    supplement._declared_parent_readme(
+                        record, member, data, declared, normalized_copy, git)
+
+    def test_pinned_manifest_expansion_refuses_content_and_mixed_endings(self):
+        for record, git in self.records():
+            member = next(row for row in record["members"] if row["path"] == "Cargo.toml.orig")
+            path = record["package_path"] + "/Cargo.toml"
+            raw = git.blob(path)
+            expected = raw.replace(b"\n", b"\r\n")
+            for altered in (expected + b"# altered", expected.replace(b"\r\n", b"\n", 1), raw):
+                with self.subTest(component=record["component"]["name"]), self.assertRaises(
+                        supplement.SupplementError):
+                    supplement._transform(record, member, git.blob_id(path), raw, altered)
+
+
 if __name__ == "__main__":
     unittest.main()
