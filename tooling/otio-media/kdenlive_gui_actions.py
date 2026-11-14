@@ -570,7 +570,31 @@ class AtspiSession:
                 require(time.monotonic() < deadline, "native_gui_modal_readback_deadline")
                 rows = self._complete_modal_tree()
                 require(time.monotonic() < deadline, "native_gui_modal_readback_deadline")
-                dialog = None if rows is None else self._modal_readback(rows, kind, source_name)
+                try:
+                    dialog = None if rows is None else self._modal_readback(rows, kind, source_name)
+                except GuiRejected as rejected:
+                    # Retain the complete owned observation that explains a
+                    # rejection. It cannot reconcile the opener or unlock input.
+                    try:
+                        self.journal.guard()
+                        require(time.monotonic() < deadline, "native_gui_modal_readback_deadline")
+                        self.journal.emit({
+                            "step": step + ".modal-readback",
+                            "state": "MODAL_READBACK_REJECTED",
+                            "request_response": "NO_REPLY" if original else "REQUEST_RETURNED",
+                            "expected_pid": self.pid, "profile": kind,
+                            "snapshot": modal_snapshot(rows, self.pid),
+                            "complete": True, "classification_error": str(rejected),
+                            "semantic_effect_verified_here": False,
+                            "native_save_or_import_verified": False,
+                            "native_operation_retried": False,
+                            "reconciliation_granted": False})
+                        self.journal.guard()
+                        require(time.monotonic() < deadline, "native_gui_modal_readback_deadline")
+                    except BaseException as custody_error:
+                        rejected.add_note("native_gui_rejected_readback_custody_failed:" +
+                                          type(custody_error).__name__)
+                    raise
                 if dialog is not None:
                     self.journal.guard()
                     require(time.monotonic() < deadline, "native_gui_modal_readback_deadline")

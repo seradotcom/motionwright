@@ -682,6 +682,121 @@ class ModalReadbackTests(unittest.TestCase):
                 scenario.effect.assert_not_called()
                 self.assert_blocked(scenario)
 
+    def test_rejected_modal_retains_one_complete_snapshot_without_reconciliation(self):
+        scenario = Scenario()
+        scenario.after[-1]["name"] = "Synthetic unexpected warning"
+        scenario.after.extend(
+            row("app/after/panel" + str(index), "Synthetic panel " + str(index), "panel")
+            for index in range(2834)
+        )
+        original_after = copy.deepcopy(scenario.after)
+        with self.assertRaises(actions.GuiUncertain) as caught:
+            scenario.run()
+        self.assert_original_unknown(scenario, caught)
+        rejected = [e for e in scenario.events if e["state"] == "MODAL_READBACK_REJECTED"]
+        self.assertEqual(len(rejected), 1)
+        event = rejected[0]
+        self.assertEqual(event["step"], "open.once.modal-readback")
+        self.assertEqual(event["request_response"], "NO_REPLY")
+        self.assertEqual(event["profile"], "otio_import")
+        self.assertEqual(event["expected_pid"], 41)
+        self.assertIs(event["complete"], True)
+        self.assertEqual(event["classification_error"], "native_gui_modal_unexpected_dialog")
+        self.assertEqual(event["snapshot"]["schema"], "motionwright.native.atspi-modal-snapshot/2")
+        self.assertEqual(event["snapshot"]["row_count"], 2837)
+        self.assertEqual(self.decode_snapshot(event["snapshot"]), original_after)
+        self.assertEqual(event["snapshot"]["source_rows_sha256"],
+                         hashlib.sha256(canonical_bytes(original_after)).hexdigest())
+        self.assertTrue(all(r["pid"] == 41 for r in self.decode_snapshot(event["snapshot"])))
+        self.assertLessEqual(len(canonical_bytes(event["snapshot"])), 128 * 1024)
+        self.assertLessEqual(len(canonical_bytes(event)), 512 * 1024)
+        for field in ("semantic_effect_verified_here", "native_save_or_import_verified",
+                      "native_operation_retried", "reconciliation_granted"):
+            self.assertIs(event[field], False)
+        self.assertTrue(all(blocked for state, blocked in scenario.emission_states
+                            if state == "MODAL_READBACK_REJECTED"))
+        self.assertFalse(any(e["state"] in ("MODAL_OPEN_RECONCILED", "MODAL_OPEN_OBSERVED")
+                             for e in scenario.events))
+        failures = [e for e in scenario.events if e["state"] == "OBSERVATION_ERROR_OR_UNKNOWN"]
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0]["error"], "native_gui_modal_unexpected_dialog")
+        self.assertTrue(any("native_gui_modal_readback_unresolved:GuiRejected:"
+                            "native_gui_modal_unexpected_dialog" in note
+                            for note in caught.exception.__notes__))
+        self.assertEqual(scenario.query_count, 2)
+        scenario.effect.assert_called_once_with(0)
+        self.assert_blocked(scenario)
+
+    def test_rejected_snapshot_custody_guard_or_deadline_preserves_primary_error(self):
+        for response in ("NO_REPLY", "REQUEST_RETURNED"):
+            for failure in ("custody", "guard-before", "guard-after",
+                            "deadline-before", "deadline-after"):
+                with self.subTest(response=response, failure=failure):
+                    scenario = Scenario()
+                    if response == "REQUEST_RETURNED":
+                        scenario.response = True
+                    scenario.after[-1]["name"] = "Synthetic unexpected warning"
+                    retained = {}
+                    classify = scenario.session._modal_readback
+                    def observe_classification(rows, kind, source_name, *, before=False):
+                        try:
+                            return classify(rows, kind, source_name, before=before)
+                        except actions.GuiRejected as error:
+                            if not before:
+                                retained["classification"] = error
+                                if failure == "deadline-before":
+                                    scenario.now += 31.0
+                            raise
+                    scenario.session._modal_readback = observe_classification
+                    def emit(event, current):
+                        if event["state"] == "MODAL_READBACK_REJECTED":
+                            self.assertTrue(current.journal.blocked)
+                            retained["attempt"] = copy.deepcopy(event)
+                            retained["emitted"] = True
+                            if failure == "custody":
+                                raise OSError("synthetic rejected snapshot custody failed")
+                            if failure == "deadline-after":
+                                current.now += 31.0
+                    def guard(current):
+                        if "classification" in retained:
+                            self.assertTrue(current.journal.blocked)
+                            if failure == "guard-before" and not retained.get("emitted"):
+                                raise RuntimeError("synthetic owner changed before custody")
+                            if failure == "guard-after" and retained.get("emitted"):
+                                raise RuntimeError("synthetic owner changed after custody")
+                    scenario.emit_hook = emit
+                    scenario.guard_hook = guard
+                    expected = actions.GuiUncertain if response == "NO_REPLY" else actions.GuiRejected
+                    with self.assertRaises(expected) as caught:
+                        scenario.run()
+                    classification = retained["classification"]
+                    self.assertEqual(str(classification), "native_gui_modal_unexpected_dialog")
+                    if response == "NO_REPLY":
+                        self.assert_original_unknown(scenario, caught)
+                    else:
+                        self.assertIs(caught.exception, classification)
+                        self.assertFalse(any(e["state"] == "ERROR_OR_UNKNOWN" for e in scenario.events))
+                    error_type = ("OSError" if failure == "custody" else
+                                  "RuntimeError" if failure.startswith("guard") else "GuiRejected")
+                    self.assertIn("native_gui_rejected_readback_custody_failed:" + error_type,
+                                  classification.__notes__)
+                    expected_attempts = 0 if failure in ("guard-before", "deadline-before") else 1
+                    expected_retained = 1 if failure in ("guard-after", "deadline-after") else 0
+                    self.assertEqual(sum(state == "MODAL_READBACK_REJECTED"
+                                         for state, _ in scenario.emission_states), expected_attempts)
+                    rejected = [e for e in scenario.events if e["state"] == "MODAL_READBACK_REJECTED"]
+                    self.assertEqual(len(rejected), expected_retained)
+                    if expected_attempts:
+                        attempt = retained["attempt"]
+                        self.assertEqual(attempt["request_response"], response)
+                        self.assertIs(attempt["reconciliation_granted"], False)
+                        self.assertEqual(self.decode_snapshot(attempt["snapshot"]), scenario.after)
+                    self.assertFalse(any(e["state"] in ("MODAL_OPEN_RECONCILED", "MODAL_OPEN_OBSERVED")
+                                         for e in scenario.events))
+                    self.assertEqual(scenario.query_count, 2)
+                    scenario.effect.assert_called_once_with(0)
+                    self.assert_blocked(scenario)
+
     def test_wrong_or_ambiguous_postcondition_never_unlocks(self):
         for failure in ("two-expected", "unexpected-dialog", "disabled", "not-modal", "hidden"):
             with self.subTest(failure=failure):
