@@ -9,6 +9,19 @@ from unittest.mock import Mock, patch
 import kdenlive_gui_actions as actions
 
 
+RETIRED_MESSAGE = "No such object path '/org/a11y/atspi/accessible/2147483701'"
+
+
+class SyntheticGlibError(Exception):
+    """Explicit offline stand-in for the injected GI exception class."""
+
+    def __init__(self, message=RETIRED_MESSAGE, *, domain="atspi_error", code=1):
+        super().__init__(message)
+        self.domain = domain
+        self.code = code
+        self.message = message
+
+
 def fake_desktop(children):
     return SimpleNamespace(
         get_child_count=Mock(return_value=len(children)),
@@ -53,6 +66,7 @@ def make_session(api, journal):
     gi.require_version = Mock()
     repository = ModuleType("gi.repository")
     repository.Atspi = api
+    repository.GLib = SimpleNamespace(Error=SyntheticGlibError)
     gi.repository = repository
     with patch.dict(sys.modules, {"gi": gi, "gi.repository": repository}):
         instance = actions.AtspiSession(41, journal)
@@ -327,6 +341,229 @@ class AccessibilityDiscoveryDiagnosticsTests(unittest.TestCase):
         self.assertEqual(self.events, [])
         self.assertFalse(self.journal.blocked)
         api.get_desktop.assert_called_once_with(0)
+
+    def test_retired_owned_object_discards_tree_before_complete_reobservation(self):
+        old, retired, fresh = fake_owned(), fake_owned(), fake_owned()
+        for node in (old, fresh):
+            node.get_role_name.return_value = "menu"
+            node.get_name.return_value = "File"
+            node.get_state_set.return_value = SimpleNamespace(
+                contains=lambda state: state in (1, 2, 3))
+        old.get_child_count.return_value = 1
+        old.get_child_at_index = Mock(return_value=retired)
+        original = SyntheticGlibError()
+        retired.get_role_name.side_effect = original
+        api = fake_api(desktops=[fake_desktop([old]), fake_desktop([fresh])])
+        instance = make_session(api, self.journal)
+        instance.nodes = {"stale": old}
+        observations = []
+        clock = ManualQueryClock()
+
+        def query():
+            result = instance.find(("File",), ("menu",))
+            observations.append({
+                "result": result, "nodes": dict(instance.nodes),
+                "complete": instance.last_snapshot["complete"],
+                "reason": instance.last_snapshot["reason"],
+                "rows": len(instance.last_snapshot["rows"]),
+            })
+            return result
+
+        with patch.object(actions.time, "monotonic", side_effect=clock.monotonic), \
+             patch.object(actions.time, "sleep", side_effect=clock.sleep) as slept:
+            row = instance._wait_snapshot("import.main-ready", query)
+        self.assertEqual(row["name"], "File")
+        self.assertEqual(row["key"], "app")
+        self.assertIsNone(observations[0]["result"])
+        self.assertEqual(observations[0]["nodes"], {})
+        self.assertFalse(observations[0]["complete"])
+        self.assertEqual(observations[0]["reason"], "retired_owned_descendant")
+        # The first File row existed, but its incomplete tree was not selectable.
+        self.assertEqual(observations[0]["rows"], 1)
+        self.assertTrue(observations[1]["complete"])
+        self.assertEqual(observations[1]["nodes"], {"app": fresh})
+        self.assertEqual(api.get_desktop.call_count, 2)
+        retired.get_process_id.assert_called_once_with()
+        retired.clear_cache_single.assert_called_once_with()
+        retired.get_role_name.assert_called_once_with()
+        retired.get_name.assert_not_called()
+        slept.assert_called_once_with(0.1)
+        self.assertEqual(len(self.events), 1)
+        event = self.events[0]
+        self.assertEqual(event["state"], "INCOMPLETE_OBJECT_RETIRED")
+        self.assertEqual(event["step"], "atspi.snapshot")
+        self.assertEqual(event["expected_pid"], 41)
+        self.assertEqual(event["retired_key"], "app/0")
+        self.assertEqual(event["error_domain"], original.domain)
+        self.assertEqual(event["error_code"], original.code)
+        self.assertEqual(event["error_message"], original.message)
+        self.assertEqual(event["rows_exposed"], 0)
+        self.assertFalse(event["native_operation_retried"])
+        self.assertFalse(self.journal.blocked)
+        self.assertEqual(self.journal.used, set())
+
+    def test_retired_owned_object_does_not_extend_wait_or_authorize_effect(self):
+        retired = fake_owned()
+        retired.get_role_name.side_effect = SyntheticGlibError()
+        api = fake_api(desktops=[fake_desktop([retired]), fake_desktop([fake_owned()])])
+        instance = make_session(api, self.journal)
+        clock = ManualQueryClock()
+        with patch.object(actions.time, "monotonic", side_effect=clock.monotonic), \
+             patch.object(actions.time, "sleep", side_effect=clock.sleep) as slept, \
+             patch.object(instance, "tree",
+                          side_effect=clock.after_queries(instance.tree, (31.0,))) as query:
+            with self.assertRaisesRegex(actions.GuiUncertain, "import.accessibility-ready"):
+                instance.wait_ready("import")
+        self.assertEqual(query.call_count, 1)
+        api.get_desktop.assert_called_once_with(0)
+        slept.assert_not_called()
+        self.assertEqual(instance.nodes, {})
+        self.assertFalse(instance.last_snapshot["complete"])
+        self.assertEqual(instance.last_snapshot["reason"], "retired_owned_descendant")
+        self.assertTrue(self.journal.blocked)
+        self.assertEqual(self.events[0]["state"], "INCOMPLETE_OBJECT_RETIRED")
+        self.assertEqual(self.events[1]["state"], "TIMED_OUT_UNKNOWN")
+        effect = Mock()
+        with self.assertRaises(actions.GuiRejected):
+            self.journal.perform("must-not-run", {}, effect)
+        effect.assert_not_called()
+
+    def test_other_glib_errors_and_matching_non_glib_errors_remain_fatal(self):
+        lookalike = RuntimeError(RETIRED_MESSAGE)
+        lookalike.domain = "atspi_error"
+        lookalike.code = 1
+        lookalike.message = RETIRED_MESSAGE
+        errors = [
+            lookalike,
+            SyntheticGlibError(domain="g-dbus-error-quark"),
+            SyntheticGlibError(domain=None),
+            *[SyntheticGlibError(code=value) for value in (True, 0, 2, "1")],
+            *[SyntheticGlibError(message=value) for value in (
+                None,
+                "The process appears to be hung.",
+                "The application no longer exists",
+                "No such method 'GetRoleName'",
+                "No such object path '/org/a11y/atspi/null'",
+                "No such object path '/org/a11y/atspi/accessible/root'",
+                "No such object path '/another/application/2147483701'",
+                "No such object path '/org/a11y/atspi/accessible/02147483701'",
+                "No such object path '/org/a11y/atspi/accessible/214748370100'",
+                RETIRED_MESSAGE + "\n",
+                "prefix " + RETIRED_MESSAGE,
+            )],
+        ]
+        for original in errors:
+            with self.subTest(error_type=type(original).__name__,
+                              domain=getattr(original, "domain", None),
+                              code=getattr(original, "code", None),
+                              message=getattr(original, "message", None)):
+                owned = fake_owned()
+                owned.get_role_name.side_effect = original
+                api = fake_api(desktops=[fake_desktop([owned])])
+                events = []
+                journal = actions.ActionJournal(events.append, Mock())
+                instance = make_session(api, journal)
+                with patch.object(actions.time, "sleep") as slept:
+                    with self.assertRaises(type(original)) as caught:
+                        instance.wait_ready("import")
+                self.assertIs(caught.exception, original)
+                self.assertTrue(journal.blocked)
+                self.assertEqual(instance.nodes, {})
+                api.get_desktop.assert_called_once_with(0)
+                slept.assert_not_called()
+                self.assertFalse(any(e["state"] == "INCOMPLETE_OBJECT_RETIRED"
+                                     for e in events))
+                effect = Mock()
+                with self.assertRaises(actions.GuiRejected):
+                    journal.perform("must-not-run", {}, effect)
+                effect.assert_not_called()
+
+    def test_retired_message_before_owned_pid_or_during_action_remains_fatal(self):
+        for stage in ("desktop", "application_pid", "owned_pid", "child_pid"):
+            with self.subTest(stage=stage):
+                original = SyntheticGlibError()
+                owned, child = fake_owned(), fake_owned()
+                desktop = fake_desktop([owned])
+                if stage == "desktop":
+                    desktop.get_child_count.side_effect = original
+                elif stage == "application_pid":
+                    owned.get_process_id.side_effect = original
+                elif stage == "owned_pid":
+                    owned.get_process_id.side_effect = [41, original]
+                else:
+                    owned.get_child_count.return_value = 1
+                    owned.get_child_at_index = Mock(return_value=child)
+                    child.get_process_id.side_effect = original
+                api = fake_api(desktops=[desktop])
+                events = []
+                journal = actions.ActionJournal(events.append, Mock())
+                instance = make_session(api, journal)
+                with patch.object(actions.time, "sleep") as slept:
+                    with self.assertRaises(SyntheticGlibError) as caught:
+                        instance.wait_ready("import")
+                self.assertIs(caught.exception, original)
+                self.assertTrue(journal.blocked)
+                self.assertEqual(instance.nodes, {})
+                api.get_desktop.assert_called_once_with(0)
+                slept.assert_not_called()
+                self.assertFalse(any(e["state"] == "INCOMPLETE_OBJECT_RETIRED"
+                                     for e in events))
+                if stage == "child_pid":
+                    child.clear_cache_single.assert_not_called()
+                else:
+                    owned.clear_cache_single.assert_not_called()
+
+        # The same typed exception during an effect still seals that attempt.
+        original = SyntheticGlibError()
+        effect = Mock(side_effect=original)
+        events = []
+        journal = actions.ActionJournal(events.append, Mock())
+        with self.assertRaises(actions.GuiUncertain) as caught:
+            journal.perform("already-attempted", {}, effect)
+        self.assertIs(caught.exception.__cause__, original)
+        with self.assertRaises(actions.GuiRejected):
+            journal.perform("already-attempted", {}, effect)
+        effect.assert_called_once_with()
+        self.assertEqual(journal.used, {"already-attempted"})
+        self.assertTrue(journal.blocked)
+        self.assertFalse(any(e["state"] == "INCOMPLETE_OBJECT_RETIRED" for e in events))
+
+    def test_retired_snapshot_identity_or_custody_failure_preserves_original(self):
+        for stage in ("identity", "custody"):
+            with self.subTest(stage=stage):
+                original = SyntheticGlibError()
+                secondary = OSError("owner identity or recorder unavailable")
+                owned = fake_owned()
+                owned.get_role_name.side_effect = original
+                api = fake_api(desktops=[fake_desktop([owned])])
+                events = []
+                guard = Mock(side_effect=[None, None, secondary] if stage == "identity"
+                             else None)
+                def emit(event):
+                    if stage == "custody" and event["state"] == "INCOMPLETE_OBJECT_RETIRED":
+                        raise secondary
+                    events.append(event)
+                journal = actions.ActionJournal(emit, guard)
+                instance = make_session(api, journal)
+                with patch.object(actions.time, "sleep") as slept:
+                    with self.assertRaises(SyntheticGlibError) as caught:
+                        instance.wait_ready("import")
+                self.assertIs(caught.exception, original)
+                self.assertIs(original.__cause__, secondary)
+                self.assertIn("retired_snapshot_recording_or_identity_failed:OSError",
+                              original.__notes__)
+                self.assertEqual(guard.call_count, 3)
+                self.assertTrue(journal.blocked)
+                self.assertEqual(instance.nodes, {})
+                self.assertFalse(instance.last_snapshot["complete"])
+                api.get_desktop.assert_called_once_with(0)
+                slept.assert_not_called()
+                self.assertFalse(any(e["state"] == "INCOMPLETE_OBJECT_RETIRED"
+                                     for e in events))
+                effect = Mock()
+                with self.assertRaises(actions.GuiRejected):
+                    journal.perform("must-not-run", {}, effect)
+                effect.assert_not_called()
 
     def test_duplicate_owned_pid_remains_rejected(self):
         api = fake_api(desktops=[fake_desktop([fake_foreign(41), fake_foreign(41)])])

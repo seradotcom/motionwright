@@ -253,7 +253,7 @@ jobs:
           discovered = list(test_ids(suite))
           contract_counts = {
               "test_kdenlive_gui_e2e": 162, "test_kdenlive_complete_g2_fixture": 10,
-              "test_kdenlive_live_process": 24, "test_kdenlive_accessibility_diagnostics": 11,
+              "test_kdenlive_live_process": 24, "test_kdenlive_accessibility_diagnostics": 16,
               "test_kdenlive_owner_cut": 31, "test_kdenlive_accessibility_preflight": 9,
           }
           contract_groups = {name: [case for case in discovered if case.startswith(name + ".")]
@@ -294,7 +294,7 @@ jobs:
           print(json.dumps({
               "otio_python_discovery": len(discovered),
               "required_contract_modules": contract_groups,
-              "existing_route_and_owner_cases": 191, "private_preview_audio_controls": 19,
+              "existing_route_and_owner_cases": 196, "private_preview_audio_controls": 19,
               "editor_render_source_controls": 28,
               "accessibility_preflight_cases": 9,
               "tests_run": result.testsRun,
@@ -671,7 +671,7 @@ jobs:
           import test_kdenlive_accessibility_preflight as preflight_tests
           modules = [
               (tests, 162), (original_tests, 10), (process_tests, 24),
-              (diagnostic_tests, 11), (owner_tests, 31), (preflight_tests, 9),
+              (diagnostic_tests, 16), (owner_tests, 31), (preflight_tests, 9),
           ]
           def ids(node):
               if isinstance(node, unittest.TestSuite):
@@ -688,16 +688,16 @@ jobs:
               suites.append(suite)
               roster.extend(names)
               groups[module.__name__] = names
-          if len(roster) != 247 or len(set(roster)) != 247:
-              raise SystemExit("Require all 247 GUI, route, owner, editor-render custody and observer-only cases")
+          if len(roster) != 252 or len(set(roster)) != 252:
+              raise SystemExit("Require all 252 GUI, route, owner, editor-render custody and observer-only cases")
           result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(suites))
           print(json.dumps({"tests_run": result.testsRun, "roster": roster, "modules": groups,
-                            "existing_route_and_owner_cases": 191, "private_preview_audio_controls": 19,
+                            "existing_route_and_owner_cases": 196, "private_preview_audio_controls": 19,
                             "editor_render_source_controls": 28,
                             "accessibility_preflight_cases": 9,
                             "skips": len(result.skipped), "failures": len(result.failures),
                             "errors": len(result.errors), "native_execution": False}, sort_keys=True))
-          if (not result.wasSuccessful() or result.testsRun != 247 or result.skipped
+          if (not result.wasSuccessful() or result.testsRun != 252 or result.skipped
                   or result.expectedFailures or result.unexpectedSuccesses):
               raise SystemExit(1)
           PY

@@ -167,8 +167,9 @@ class AtspiSession:
         # Keep GI optional at import time for offline contract tests.
         import gi
         gi.require_version("Atspi", "2.0")
-        from gi.repository import Atspi
+        from gi.repository import Atspi, GLib
         self.api = Atspi
+        self.glib_error_type = GLib.Error
         self.pid = pid
         self.journal = journal
         self.nodes: dict[str, object] = {}
@@ -219,6 +220,15 @@ class AtspiSession:
     def wait_ready(self, phase: str) -> list[dict]:
         return self._wait_snapshot(phase + ".accessibility-ready", self.tree)
 
+    def _is_retired_owned_accessible(self, original: BaseException) -> bool:
+        error_type = getattr(self, "glib_error_type", None)
+        return (error_type is not None and isinstance(original, error_type)
+                and getattr(original, "domain", None) == "atspi_error"
+                and type(getattr(original, "code", None)) is int and original.code == 1
+                and type(getattr(original, "message", None)) is str
+                and re.fullmatch(r"No such object path '/org/a11y/atspi/accessible/(?:0|[1-9][0-9]{0,9})'",
+                                 original.message) is not None)
+
     def tree(self) -> list[dict]:
         self.journal.guard()
         self.nodes = {}
@@ -265,40 +275,66 @@ class AtspiSession:
                 return []
             require(node.get_process_id() == self.pid,
                     "native_gui_cross_process_accessible_refused")
-            # This synchronous observer has no GLib event loop to keep the
-            # AT-SPI property cache current across native window transitions.
-            # Clear only this owned node, inside our depth/count budgets.
-            node.clear_cache_single()
-            state = node.get_state_set()
-            role = node.get_role_name()
-            visible = state.contains(self.api.StateType.SHOWING)
-            enabled = state.contains(self.api.StateType.ENABLED) and state.contains(
-                self.api.StateType.SENSITIVE)
-            editable = node.get_editable_text_iface() is not None
-            text = ""
-            interface = node.get_text_iface()
-            if interface is not None:
-                size = interface.get_character_count()
-                require(0 <= size <= 65536, "native_gui_text_budget")
-                # GI may return the same Accessible object for this interface;
-                # its get_text() accessor shadows the ranged Text method.
-                text = self.api.Text.get_text(interface, 0, min(size, 1024))
-            rect = [0, 0, 0, 0]
-            component = node.get_component_iface()
-            if component is not None and visible:
-                bounds = component.get_extents(self.api.CoordType.SCREEN)
-                rect = [int(bounds.x), int(bounds.y), int(bounds.width), int(bounds.height)]
-            row = {"key": key, "name": node.get_name()[:512], "role": role,
-                   "text": text, "visible": visible, "enabled": enabled,
-                   "editable": editable, "rect": rect,
-                   "focused": state.contains(self.api.StateType.FOCUSED),
-                   "pid": self.pid}
-            rows.append(row)
-            nodes[key] = node
-            count = node.get_child_count()
-            require(0 <= count <= MAX_CHILDREN, "native_gui_child_budget")
-            queue.extend((key + "/" + str(i), node.get_child_at_index(i), depth + 1)
-                         for i in range(count))
+            try:
+                # This synchronous observer has no GLib event loop to keep the
+                # AT-SPI property cache current across native window transitions.
+                # Clear only this owned node, inside our depth/count budgets.
+                node.clear_cache_single()
+                state = node.get_state_set()
+                role = node.get_role_name()
+                visible = state.contains(self.api.StateType.SHOWING)
+                enabled = state.contains(self.api.StateType.ENABLED) and state.contains(
+                    self.api.StateType.SENSITIVE)
+                editable = node.get_editable_text_iface() is not None
+                text = ""
+                interface = node.get_text_iface()
+                if interface is not None:
+                    size = interface.get_character_count()
+                    require(0 <= size <= 65536, "native_gui_text_budget")
+                    # GI may return the same Accessible object for this interface;
+                    # its get_text() accessor shadows the ranged Text method.
+                    text = self.api.Text.get_text(interface, 0, min(size, 1024))
+                rect = [0, 0, 0, 0]
+                component = node.get_component_iface()
+                if component is not None and visible:
+                    bounds = component.get_extents(self.api.CoordType.SCREEN)
+                    rect = [int(bounds.x), int(bounds.y), int(bounds.width), int(bounds.height)]
+                row = {"key": key, "name": node.get_name()[:512], "role": role,
+                       "text": text, "visible": visible, "enabled": enabled,
+                       "editable": editable, "rect": rect,
+                       "focused": state.contains(self.api.StateType.FOCUSED),
+                       "pid": self.pid}
+                rows.append(row)
+                nodes[key] = node
+                count = node.get_child_count()
+                require(0 <= count <= MAX_CHILDREN, "native_gui_child_budget")
+                queue.extend((key + "/" + str(i), node.get_child_at_index(i), depth + 1)
+                             for i in range(count))
+            except BaseException as original:
+                if not self._is_retired_owned_accessible(original):
+                    raise
+                # The PID was already verified for this node. Qt removed its
+                # object during these read-only calls; discard the whole tree.
+                # The existing bounded wait may observe a fresh complete tree.
+                self.nodes = {}
+                discovery["incomplete_reason"] = "retired_owned_descendant"
+                self.last_snapshot.update(
+                    reason="retired_owned_descendant", retired_key=key,
+                    original_error={"domain": original.domain, "code": original.code,
+                                    "message": original.message})
+                try:
+                    self.journal.guard()
+                    self.journal.emit({
+                        "step": "atspi.snapshot", "state": "INCOMPLETE_OBJECT_RETIRED",
+                        "expected_pid": self.pid, "retired_key": key,
+                        "error_domain": original.domain, "error_code": original.code,
+                        "error_message": original.message, "rows_exposed": 0,
+                        "native_operation_retried": False})
+                except BaseException as recording_error:
+                    original.add_note("retired_snapshot_recording_or_identity_failed:"
+                                      + type(recording_error).__name__)
+                    raise original from recording_error
+                return []
         self.journal.guard()
         self.last_snapshot.update(complete=True, reason="complete")
         self.nodes = nodes
