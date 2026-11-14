@@ -137,30 +137,19 @@ class SelectionAndAttemptTests(unittest.TestCase):
         report = self.attempt.report("ACTION_RETURNED_TRUE")
         self.assertEqual(report["status"], "ACTION_ACCEPTED")
         self.assertEqual(report["project_commit"], "NOT_VERIFIED_BY_ACTION")
-        # The real bridge uses a scoped AT-SPI Collection roster. A backend
-        # implementing it must not fall back to a generic entire-tree walk,
-        # but still needs the exact same edit/action latches.
+        # Production always uses the cached bounded structural tree, not a
+        # server-side global Collection query. This still retains the same
+        # journaled one-edit/one-action state machine on unique controls.
         journal = Journal()
         bridge = Bridge(journal)
-        selected = []
-        def role_matches(root, roles):
-            selected.append((root, roles))
-            if root is bridge.app:
-                self.assertEqual(roles, ("dialog",))
-                return [bridge.view(bridge.dialog)]
-            if root is bridge.dialog:
-                self.assertEqual(roles, ("entry", "text", "button"))
-                return [bridge.view(bridge.entry), bridge.view(bridge.button)]
-            raise AssertionError("source collection escape")
-        def forbidden_children(_):
-            raise AssertionError("collection path must not walk the full tree")
-        bridge.matching_roles = role_matches
-        bridge.children = forbidden_children
+        bridge.matching_roles = lambda *_: (_ for _ in ()).throw(
+            AssertionError("Collection must not be queried in production"))
         fast = probe.Attempt(bridge, lambda: dict(BINDING), journal, dict(BINDING))
         self.assertFalse(fast.step())
         self.assertTrue(fast.step())
         self.assertEqual((bridge.edits, bridge.clicks), (1, 1))
-        self.assertEqual(len(selected), 4)
+        self.assertEqual(journal.order, ["worker-start", "edit-intent",
+                                         "edit-return", "create-intent", "create-return"])
 
     def test_same_title_other_application_has_no_authority(self):
         self.bridge.app.pid = 100
@@ -658,7 +647,8 @@ class WorkerBudgetTests(unittest.TestCase):
     """Controlled GI timing exercises the real worker, without a native action."""
 
     def run_worker(self, *, setup_seconds=0.0, register_seconds=0.0,
-                   missing_controls=False, setter_error=False, parent_deadline=None):
+                   missing_controls=False, setter_error=False, parent_deadline=None,
+                   recover_controls_after_timer=False):
         from contextlib import ExitStack
         from types import ModuleType
         clock = [100.0]
@@ -683,6 +673,10 @@ class WorkerBudgetTests(unittest.TestCase):
                     if idle:
                         idle.pop(0)()
                     elif timers:
+                        # GLib dispatches sources by due time, not the order
+                        # the timeout sources were registered. An inherited
+                        # deadline can precede the periodic read-only poll.
+                        timers.sort(key=lambda item: item[0])
                         when, callback = timers.pop(0)
                         clock[0] = max(clock[0], when)
                         callback()
@@ -700,7 +694,11 @@ class WorkerBudgetTests(unittest.TestCase):
             init=lambda: 0, set_timeout=lambda *args: None,
             EventListener=SimpleNamespace(new=lambda *args: listener))
         def timeout_add(milliseconds, callback):
-            timers.append((clock[0] + milliseconds / 1000.0, callback))
+            def call():
+                if recover_controls_after_timer and milliseconds == 1200:
+                    bridge.apps = [bridge.app]
+                return callback()
+            timers.append((clock[0] + milliseconds / 1000.0, call))
             return len(timers)
         def idle_add(callback, *, priority):
             # A missing explicit priority silently selects DEFAULT_IDLE and
@@ -753,6 +751,15 @@ class WorkerBudgetTests(unittest.TestCase):
         self.assertEqual(result["status"], "NOT_SENT")
         self.assertEqual(result["reason"], "DEADLINE")
         self.assertEqual((bridge.edits, bridge.clicks), (0, 0))
+        # A delayed project-library mount may be observed again by a timer,
+        # but never starts another process or renews the original clock.
+        recovered, bridge, at, _, journal = self.run_worker(
+            missing_controls=True, recover_controls_after_timer=True)
+        self.assertEqual(recovered["status"], "ACTION_ACCEPTED")
+        self.assertLessEqual(at, 104.0)
+        self.assertEqual((bridge.edits, bridge.clicks), (1, 1))
+        self.assertEqual(journal.order.count("edit-intent"), 1)
+        self.assertEqual(journal.order.count("create-intent"), 1)
 
     def test_registration_stops_at_original_deadline(self):
         result, bridge, finished, registrations, _ = self.run_worker(register_seconds=1.0)

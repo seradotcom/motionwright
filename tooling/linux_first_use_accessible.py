@@ -80,14 +80,14 @@ def walk(bridge, root):
 
 
 def scoped_roles(bridge, root, roles):
-    # WebKitGTK exposes a server-side Collection.GetMatches operation. It
-    # returns an exhaustive *role* candidate roster in a single AT-SPI query;
-    # exact names, states, freshness, ambiguity and owner are still checked
-    # independently on the selected objects before any external effect.
-    # Non-native fixture bridges retain the original exhaustive traversal.
-    collection = getattr(bridge, "matching_roles", None)
-    return (collection(root, roles) if callable(collection)
-            else [v for v in walk(bridge, root) if v.role in roles])
+    # A source-bound installed WebKitGTK run proved that uncached recursive
+    # reads and even Collection.GetMatches can hang. The ordinary AT-SPI
+    # structural cache has been independently verified on the same original
+    # binary: exhaustive bounded traversal found one real dialog, title and
+    # Create control after the asynchronous project bootstrap completed.
+    # Never choose a first match. Missing/ambiguous controls still fail
+    # closed, and all original PID/readback/durable effect latches stay live.
+    return [view for view in walk(bridge, root) if view.role in roles]
 
 
 def select_controls(bridge, pid):
@@ -325,7 +325,10 @@ class AtspiBridge:
         self.desktop = self.call(api.get_desktop, 0)
         if self.desktop is None:
             raise ProbeError("ATSPI_DESKTOP_UNAVAILABLE")
-        self.call(self.desktop.set_cache_mask, api.Cache.NONE)
+        # This worker is a fresh process bound to a freshly launched X11
+        # application. Retain AT-SPI's structural cache for read-only tree
+        # traversal instead of forcing blocking WebKit child D-Bus methods.
+        self.call(self.desktop.set_cache_mask, api.Cache.ALL)
         self.roles = {
             api.Role.DIALOG: "dialog", api.Role.ENTRY: "entry",
             api.Role.TEXT: "text", api.Role.PUSH_BUTTON: "button",
@@ -353,7 +356,9 @@ class AtspiBridge:
         return result
 
     def applications(self):
-        self.call(self.desktop.clear_cache)
+        # Do not clear the freshly populated AT-SPI app tree. Live
+        # application PID and X11 start-time are still checked before every
+        # subsequent mutation, including after any asynchronous bootstrap.
         return self.children(self.desktop)
 
     def collection_rule(self, roles):
@@ -554,6 +559,19 @@ def worker(scratch, seconds, *, parent_deadline=None):
                 raise ProbeError("ATSPI_EVENT_REGISTRATION_FAILED")
             journal.put("listener-ready-" + event.replace(":", "-"), {"event": event})
         journal.put("listeners-ready", {"events": events})
+        # Real Studio opens Project library only after async bootstrap(null).
+        # AT-SPI may not emit a second signal for the newly mounted dialog,
+        # so retry only the read-only WAITING / EDIT_ACKNOWLEDGED phases.
+        # This is the SAME worker, deadline and original effect journal; it
+        # cannot replay an UNKNOWN edit or an already-attempted Create.
+        def reobserve():
+            if result is not None:
+                return False
+            if attempt.phase in ("WAITING", "EDIT_ACKNOWLEDGED"):
+                schedule()
+            return True
+
+        GLib.timeout_add(1200, reobserve)
         GLib.timeout_add(max(1, int(remaining() * 1000)),
                          lambda: (finish("DEADLINE"), False)[1])
         schedule()
