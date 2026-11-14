@@ -113,9 +113,11 @@ class AccessibilityOnlyContracts(unittest.TestCase):
 
     def test_environment_allowlist_excludes_secrets_and_refuses_duplicate_fields(self):
         raw = (b"DISPLAY=:99\0DBUS_SESSION_BUS_ADDRESS=unix:path=/runner/bus\0"
-               b"QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1\0PRIVATE_TOKEN=do-not-retain\0")
+               b"QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1\0LIBGL_ALWAYS_SOFTWARE=1\0"
+               b"PRIVATE_TOKEN=do-not-retain\0")
         result = runner.project_accessibility_environment(raw)
         self.assertEqual(result["selected_fields"]["DISPLAY"], ":99")
+        self.assertEqual(result["selected_fields"]["LIBGL_ALWAYS_SOFTWARE"], "1")
         self.assertEqual(result["excluded_field_count"], 1)
         self.assertEqual(result["original_sha256"], hashlib.sha256(raw).hexdigest())
         self.assertFalse(result["raw_environment_retained"])

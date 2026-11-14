@@ -957,7 +957,8 @@ ACCESSIBILITY_ENVIRONMENT_KEYS = frozenset((
     "DBUS_STARTER_ADDRESS", "DBUS_STARTER_BUS_TYPE", "XDG_RUNTIME_DIR",
     "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
     "XDG_DATA_DIRS", "QT_QPA_PLATFORM", "QT_LINUX_ACCESSIBILITY_ALWAYS_ON",
-    "QT_ACCESSIBILITY", "NO_AT_BRIDGE", "LANG", "LC_ALL", "LANGUAGE",
+    "QT_ACCESSIBILITY", "NO_AT_BRIDGE", "LIBGL_ALWAYS_SOFTWARE",
+    "LANG", "LC_ALL", "LANGUAGE",
 ))
 LAUNCHER_DIAGNOSTIC_MEMBERS = (
     "apprun-hooks/craft-runenv-hook.sh",
@@ -1267,7 +1268,11 @@ class NativeProcess(OwnedProcess):
             directory = profile / sub
             directory.mkdir(exist_ok=True)
             environment[name] = str(directory)
+        # This disposable Xvfb owner has no hardware GPU. Keep the exact Qt/XCB
+        # application and original native workflow, but require Mesa's software
+        # OpenGL renderer for Kdenlive's preview-context creation.
         environment.update({"QT_QPA_PLATFORM": "xcb",
+                            "LIBGL_ALWAYS_SOFTWARE": "1",
                             "QT_LINUX_ACCESSIBILITY_ALWAYS_ON": "1",
                             "LC_ALL": "C.UTF-8", "LANGUAGE": "en_US:en"})
         argv = [str(appdir / "AppRun"), "--config", "motionwright-ci.rc"]
