@@ -1069,6 +1069,51 @@ def failed_output_fixture():
     return current, request, originals, route.canonical(plan), cycle_raw
 
 
+
+def status_timeout_fixture():
+    """Synthetic read-only CLI failure; no terminal, saved project or Native effect."""
+    current, request, originals, plan, cycle = failed_output_fixture()
+    prefix = request["fixture"] + "/"
+    terminal = json.loads(originals.pop(prefix + "native-result.fixed-text/render-terminal.original-value.json"))
+    originals.pop(prefix + "saved-production-project.json")
+    owner = {"schema": "motionwright.native.mlt-g2-owner-workspace/1",
+        "path": "/unfollowed/owner", "motionwright_sha": current["source_sha"],
+        "semwright_sha": current["semwright_sha"], "run_id": current["run_id"],
+        "run_attempt": current["run_attempt"], "device": 1, "inode": 2, "uid": 3, "gid": 4}
+    originals[prefix + "owner-workspace.json"] = route.canonical(owner)
+    def original(raw):
+        return {"encoding": "hex", "bytes": len(raw), "sha256": route.sha(raw), "value": raw.hex()}
+    def argument(raw):
+        return {"platform_encoding": "unix_bytes", "original": original(raw)}
+    args = route.canonical({"job_ref": terminal["result"]["data"]["job_ref"]}).rstrip(b"\n")
+    argv = [b"--socket", b"/unfollowed/owner/runtime/broker.sock",
+        b"--session-file", b"/unfollowed/owner/runtime/motionwright.session", b"--json",
+        b"execute", b"driver.motion-canvas.render.status", b"--args-json", args]
+    inner = {"code": "Timeout", "message": "Synthetic read-only CLI deadline", "outcome_known": True}
+    entry = {"sequence": 0, "command": "driver.motion-canvas.render.status", "mutation": False,
+        "connection_identity": "8" * 64, "executable_sha256": "9" * 64,
+        "executable": argument(b"/unfollowed/semwright"),
+        "argv": [argument(value) for value in argv], "args_json": original(args), "stdin_mode": "null",
+        "process_started": True, "pid": 123, "process_exit": None, "automatic_retry": False,
+        "stdout": {"original": original(b""), "eof_observed": False,
+                   "read_error_observed": False, "capture_limit_exceeded": False},
+        "stderr": {"original": original(b""), "eof_observed": True,
+                   "read_error_observed": False, "capture_limit_exceeded": False},
+        "transport_terminal": {"kind": "error", "original_error": inner}}
+    snapshot = {"schema": "motionwright.private-native-return-snapshot/2",
+        "native_result": "returned_error", "error": {**inner, "outcome_known": False},
+        "wire_bytes": True, "automatic_retry": False,
+        "capture_representation": "complete_observed_cli_bytes",
+        "failed_cli_call": {"request_id": terminal["receipt"]["request_id"],
+            "command": "driver.motion-canvas.render.status", "mutation": False, "elapsed_ms": 45001,
+            "transport": {"schema": "motionwright.production.private-transport-custody/1",
+                "durable": False, "authority": False, "mutex_poisoned": False,
+                "slot_limit": 64, "per_stream_capture_limit_bytes": 1048577,
+                "argument_capture_limit_bytes": 1048576, "entries": [entry]}}}
+    originals[prefix + "native-result.host-stdin/native-return.snapshot.json"] = route.canonical(snapshot)
+    return current, request, originals, plan, cycle
+
+
 class FailedOutputCustodyTests(unittest.TestCase):
     def setUp(self):
         self.current, self.request, self.originals, self.plan, self.cycle = failed_output_fixture()
@@ -1152,8 +1197,8 @@ class FailedOutputCustodyTests(unittest.TestCase):
         tree = ast.parse(Path(__file__).read_text())
         count = sum(item.name.startswith("test_") for cls in tree.body if isinstance(cls, ast.ClassDef)
                     for item in cls.body if isinstance(item, ast.FunctionDef))
-        self.assertEqual(count, 34)
-        self.assertIn("'dotted:tooling.tests.test_native_fixedtxt_workflow':34", workflow)
+        self.assertEqual(count, 39)
+        self.assertIn("'dotted:tooling.tests.test_native_fixedtxt_workflow':39", workflow)
         self.assertIn("--pattern test_native_fixedtxt_workflow.py", workflow)
         self.assertIn("      - 'tooling/native_fixedtxt_workflow.py'", workflow)
         self.assertIn("      - 'tooling/tests/test_native_fixedtxt_workflow.py'", workflow)
@@ -1331,6 +1376,251 @@ class FailedOutputCustodyTests(unittest.TestCase):
                 self.assertEqual((empty,errors),({},[]))
             finally:
                 handles.close()
+
+
+class FailedStatusTimeoutCustodyTests(unittest.TestCase):
+    """Pure selectors over synthetic bytes; no Linux custody or Native substitute."""
+
+    def setUp(self):
+        self.current, self.request, self.originals, self.plan, self.cycle = status_timeout_fixture()
+        self.fixture = self.request["fixture"]
+        self.snapshot_name = self.fixture + "/native-result.host-stdin/native-return.snapshot.json"
+        self.terminal_name = self.fixture + "/native-result.fixed-text/render-terminal.original-value.json"
+
+    def join(self, originals=None):
+        return route._failed_render_join(self.current, self.request,
+            self.originals if originals is None else originals, self.plan, self.cycle,
+            status_timeout=True)
+
+    def known(self, originals=None):
+        values = self.originals if originals is None else originals
+        selected = {("owner_diagnostics", self.snapshot_name): values[self.snapshot_name],
+            ("control", fixed.PLAN_MEMBER): self.plan, ("inputs", fixed.CYCLE_MEMBER): self.cycle}
+        if self.terminal_name in values:
+            selected[("owner_diagnostics", self.terminal_name)] = values[self.terminal_name]
+        return selected
+
+    @staticmethod
+    def original(raw):
+        return {"encoding": "hex", "bytes": len(raw), "sha256": route.sha(raw), "value": raw.hex()}
+
+    def test_readonly_timeout_join_preserves_unknown_without_terminal_or_saved_project(self):
+        self.assertNotIn(self.terminal_name, self.originals)
+        self.assertNotIn(self.fixture + "/saved-production-project.json", self.originals)
+        joined = self.join()
+        receipt = json.loads(self.originals[self.fixture +
+            "/native-result.host-stdin/broker-receipt.snapshot.json"])["receipt"]
+        self.assertEqual(joined["studio_project"], {"id": receipt["project_id"],
+            "generation": receipt["generation"], "revision": receipt["revision"]})
+        self.assertEqual(joined["studio_identity_source"], "completed_render_start_receipt_only")
+        self.assertEqual(joined["native_state"], "unconfirmed")
+        self.assertIs(joined["native_terminal_observed"], False)
+        self.assertIs(joined["host_outcome_known"], False)
+        self.assertIsNone(joined["terminal"])
+        self.assertEqual(joined["status_query_return"], route.original_descriptor(self.originals[self.snapshot_name]))
+        self.assertEqual(joined["directory"], "render-" + "f" * 32)
+        self.assertNotEqual(joined["studio_project"]["id"], joined["motion_canvas_project"]["id"])
+        self.assertNotEqual(joined["host"]["job_id"], joined["motion_canvas_job_ref"])
+        self.assertIs(joined["Host_job_id_equals_MC_job_ref_claimed"], False)
+        self.assertEqual(route._owner_diagnostic_limits(self.fixture)[self.snapshot_name], 8 * 1024 * 1024)
+        self.assertNotIn(self.fixture + "/saved-production-project.json",
+            route._failed_render_input_limits(self.fixture, status_timeout=True))
+        self.assertIn(self.fixture + "/saved-production-project.json",
+            route._failed_render_input_limits(self.fixture))
+        for number, elapsed in ((0, 1), (330, 3900000)):
+            with self.subTest(number=number, elapsed=elapsed):
+                values = dict(self.originals); snapshot = json.loads(values[self.snapshot_name])
+                call = snapshot["failed_cli_call"]
+                call["request_id"] = "fixed-text-v4-red-" + self.fixture + ":motion:0:render-status-" + str(number)
+                call["elapsed_ms"] = elapsed
+                values[self.snapshot_name] = route.canonical(snapshot)
+                self.assertEqual(self.join(values)["motion_canvas_job_ref"], joined["motion_canvas_job_ref"])
+        with self.assertRaises((KeyError, ValueError)):
+            fixed.resolve_native_directory({"fixture": self.fixture},
+                {"observation/" + name: raw for name, raw in self.originals.items()}, cycle_raw=self.cycle)
+
+    def test_readonly_timeout_join_rejects_typed_transport_identity_and_argument_changes(self):
+        call = ("failed_cli_call",)
+        transport = call + ("transport",)
+        entry = transport + ("entries", 0)
+        cases = [
+            (("schema",), "motionwright.private-native-return-snapshot/1"),
+            (("native_result",), "returned_success"),
+            (("automatic_retry",), True),
+            (("wire_bytes",), False),
+            (("capture_representation",), "metadata_only_due_to_member_limit"),
+            (("error", "code"), "Backend"),
+            (("error", "outcome_known"), True),
+            (("error", "outcome_known"), 0),
+            (call + ("command",), "driver.motion-canvas.render.start"),
+            (call + ("mutation",), True),
+            (call + ("mutation",), 0),
+            (call + ("elapsed_ms",), True),
+            (call + ("elapsed_ms",), 0),
+            (call + ("elapsed_ms",), -1),
+            (call + ("elapsed_ms",), 3900001),
+            (call + ("request_id",), "fixed-text-v4-red-" + self.fixture + ":motion:0:render-status-331"),
+            (call + ("request_id",), "foreign-case:motion:0:render-status-6"),
+            (transport + ("schema",), "motionwright.production.private-transport-observation/1"),
+            (transport + ("authority",), True),
+            (transport + ("durable",), True),
+            (transport + ("mutex_poisoned",), True),
+            (transport + ("entries",), []),
+            (entry + ("command",), "driver.motion-canvas.render.start"),
+            (entry + ("mutation",), True),
+            (entry + ("automatic_retry",), True),
+            (entry + ("process_started",), False),
+            (entry + ("pid",), True),
+            (entry + ("pid",), 0),
+            (entry + ("process_exit",), {"success": True, "code": 0}),
+            (entry + ("transport_terminal", "kind"), "success"),
+            (entry + ("transport_terminal", "original_error", "code"), "Backend"),
+            (entry + ("transport_terminal", "original_error", "outcome_known"), False),
+            (entry + ("args_json", "encoding"), "utf8"),
+            (entry + ("args_json", "bytes"), True),
+            (entry + ("args_json", "sha256"), "0" * 64),
+            (entry + ("args_json", "value"), "not-hex"),
+            (entry + ("argv", 0, "platform_encoding"), "windows_utf16le"),
+        ]
+        for path, changed in cases:
+            with self.subTest(path=path, changed=changed):
+                values = dict(self.originals); snapshot = json.loads(values[self.snapshot_name])
+                target = snapshot
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = changed
+                values[self.snapshot_name] = route.canonical(snapshot)
+                with self.assertRaises(route.WorkflowRejected):
+                    self.join(values)
+        mutations = [
+            ("duplicate-entry", lambda e: e.append(copy.deepcopy(e[0]))),
+            ("extra-argv", lambda e: e[0]["argv"].append(copy.deepcopy(e[0]["argv"][0]))),
+            ("socket", lambda e: e[0]["argv"][1].update(original=self.original(b"/foreign/runtime/broker.sock"))),
+            ("session", lambda e: e[0]["argv"][3].update(original=self.original(b"/foreign/runtime/motionwright.session"))),
+            ("command-argv", lambda e: e[0]["argv"][6].update(original=self.original(b"driver.motion-canvas.render.start"))),
+            ("args-argv", lambda e: e[0]["argv"][8].update(original=self.original(b'{"job_ref":"foreign"}'))),
+        ]
+        for label, change in mutations:
+            with self.subTest(transport=label):
+                values = dict(self.originals); snapshot = json.loads(values[self.snapshot_name])
+                change(snapshot["failed_cli_call"]["transport"]["entries"])
+                values[self.snapshot_name] = route.canonical(snapshot)
+                with self.assertRaises(route.WorkflowRejected):
+                    self.join(values)
+        for args in ({"job_ref": "foreign"}, {"job_ref": self.join()["motion_canvas_job_ref"], "extra": True}):
+            with self.subTest(args=args):
+                values = dict(self.originals); snapshot = json.loads(values[self.snapshot_name])
+                e = snapshot["failed_cli_call"]["transport"]["entries"][0]
+                raw = route.canonical(args).rstrip(b"\n")
+                e["args_json"] = self.original(raw); e["argv"][8]["original"] = self.original(raw)
+                values[self.snapshot_name] = route.canonical(snapshot)
+                with self.assertRaises(route.WorkflowRejected):
+                    self.join(values)
+        original_mutations = [
+            ("owner-workspace.json", ("path",), "/foreign/owner"),
+            ("owner-workspace.json", ("path",), "/unfollowed/../owner"),
+            ("owner-workspace.json", ("path",), "relative/owner"),
+            ("native-result.host-stdin/broker-receipt.snapshot.json", ("receipt", "project_id"), "invalid-uuid"),
+            ("native-result.host-stdin/broker-receipt.snapshot.json", ("receipt", "generation"), "invalid-uuid"),
+            ("native-result.host-stdin/broker-receipt.snapshot.json", ("receipt", "revision"), True),
+            ("native-result.host-stdin/broker-receipt.snapshot.json", ("receipt", "revision"), -1),
+            ("native-result.host-stdin/broker-receipt.snapshot.json", ("receipt", "revision"), 2**64),
+            ("native-result.host-stdin/broker-receipt.snapshot.json", ("receipt", "payload", "result", "execution", "dry_run"), True),
+            ("native-result.host-stdin/capture-0001.json", ("session_id",), "foreign-session"),
+        ]
+        for name, path, changed in original_mutations:
+            with self.subTest(original=name, field=path, changed=changed):
+                values = dict(self.originals); key = self.fixture + "/" + name
+                value = json.loads(values[key]); target = value
+                for field in path[:-1]:
+                    target = target[field]
+                target[path[-1]] = changed; values[key] = route.canonical(value)
+                with self.assertRaises(route.WorkflowRejected):
+                    self.join(values)
+
+    def test_collector_never_falls_back_from_an_invalid_present_terminal(self):
+        import native_evidence_projection as core
+        legacy = failed_output_fixture()[2]
+        for terminal in (b"{}", route.canonical({"replayed": False,
+                "result": {"provenance_checked": True, "data": {"state": "succeeded"}}})):
+            with self.subTest(terminal=terminal):
+                values = dict(self.originals)
+                values[self.terminal_name] = terminal
+                saved = self.fixture + "/saved-production-project.json"; values[saved] = legacy[saved]
+                with mock.patch.object(route, "_read_owner_diagnostic",
+                        side_effect=lambda _h, name, _m, **_kw: values.get(name)), \
+                        mock.patch.object(route, "_failed_render_join", wraps=route._failed_render_join) as joined, \
+                        mock.patch.object(core, "RootHandles") as root_handles, \
+                        mock.patch.object(route, "_observe_failed_output") as observe, \
+                        mock.patch.object(subprocess, "run", side_effect=AssertionError("No CLI in source selector")):
+                    extra, failures = route._collect_failed_output(object(), self.known(values),
+                        self.current, self.request, 8 * 1024 * 1024, 32)
+                report = json.loads(extra[("failed_output", self.fixture + "/failed-output.observation.json")])
+                self.assertEqual(joined.call_count, 1)
+                self.assertIsNot(joined.call_args.kwargs.get("status_timeout"), True)
+                self.assertEqual(report["join_status"], "not_observed")
+                self.assertEqual(report["failure"], "failed-output-original-unknown-terminal")
+                self.assertTrue(failures)
+                self.assertNotIn("joined", report)
+                root_handles.assert_not_called(); observe.assert_not_called()
+
+    def test_collector_selects_readonly_timeout_then_preserves_owner_authority_rejection(self):
+        import native_evidence_projection as core
+        reads = []
+        def original(_handles, name, maximum, *, fixture):
+            self.assertEqual(fixture, self.fixture)
+            self.assertIn(name, route._failed_render_input_limits(self.fixture, status_timeout=True))
+            self.assertLessEqual(maximum, route._failed_render_input_limits(self.fixture, status_timeout=True)[name])
+            reads.append(name)
+            return self.originals.get(name)
+        with mock.patch.object(route, "_read_owner_diagnostic", side_effect=original), \
+                mock.patch.object(route, "_failed_render_join", wraps=route._failed_render_join) as joined, \
+                mock.patch.object(core, "RootHandles") as root_handles, \
+                mock.patch.object(route, "_observe_failed_output") as observe, \
+                mock.patch.object(subprocess, "run", side_effect=AssertionError("No CLI in source selector")), \
+                mock.patch.dict(os.environ, {"RUNNER_TEMP": "/unfollowed/not-the-owner-parent"}):
+            extra, failures = route._collect_failed_output(object(), self.known(),
+                self.current, self.request, 8 * 1024 * 1024, 32)
+        report = json.loads(extra[("failed_output", self.fixture + "/failed-output.observation.json")])
+        self.assertEqual(joined.call_count, 1)
+        self.assertIs(joined.call_args.kwargs.get("status_timeout"), True)
+        self.assertEqual(set(reads), set(route._failed_render_input_limits(self.fixture, status_timeout=True)))
+        self.assertNotIn(self.fixture + "/saved-production-project.json", reads)
+        self.assertEqual(report["join_status"], "originals_joined")
+        self.assertEqual(report["joined"]["native_state"], "unconfirmed")
+        self.assertIs(report["joined"]["native_terminal_observed"], False)
+        self.assertIsNone(report["joined"]["terminal"])
+        self.assertEqual(report["failure"], "failed-output-owner-binding")
+        self.assertTrue(failures)
+        self.assertIsNone(report["output_observation"])
+        self.assertEqual(report["native_calls"], 0)
+        for field in ("automatic_retry", "native_outcome_reinterpreted", "formal_acceptance",
+                      "PNG_bytes_read", "decoder_invoked"):
+            self.assertIs(report[field], False)
+        self.assertLessEqual(sum(map(len, extra.values())), 8 * 1024 * 1024)
+        root_handles.assert_not_called(); observe.assert_not_called()
+
+    def test_collector_ignores_missing_or_non_timeout_return_without_any_owner_read(self):
+        cases = [None,
+            {"schema": "motionwright.private-native-return-snapshot/2", "native_result": "returned_error",
+             "error": {"code": "Backend", "outcome_known": False}},
+            {"schema": "motionwright.private-native-return-snapshot/2", "native_result": "returned_success",
+             "error": {"code": "Timeout", "outcome_known": False}},
+            {"schema": "motionwright.private-native-return-snapshot/2", "native_result": "returned_error",
+             "error": {}}]
+        for snapshot in cases:
+            with self.subTest(snapshot=snapshot), mock.patch.object(route, "_read_owner_diagnostic") as read, \
+                    mock.patch.object(route, "_failed_render_join") as join, \
+                    mock.patch.object(route, "_observe_failed_output") as observe:
+                known = self.known()
+                if snapshot is None:
+                    known.pop(("owner_diagnostics", self.snapshot_name))
+                else:
+                    known[("owner_diagnostics", self.snapshot_name)] = route.canonical(snapshot)
+                extra, failures = route._collect_failed_output(object(), known,
+                    self.current, self.request, 8 * 1024 * 1024, 32)
+                self.assertEqual((extra, failures), ({}, []))
+                read.assert_not_called(); join.assert_not_called(); observe.assert_not_called()
 
 
 if __name__ == '__main__':

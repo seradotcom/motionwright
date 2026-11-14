@@ -1386,6 +1386,7 @@ def _owner_diagnostic_limits(fixture):
     names = {
         "original-attempt-error.json": 1024 * 1024,
         fixture + "/native-result.fixed-text/render-terminal.original-value.json": 8 * 1024 * 1024,
+        fixture + "/native-result.host-stdin/native-return.snapshot.json": 8 * 1024 * 1024,
     }
     for name, maximum in (
         ("semwrightd.original.private.log", 1024 * 1024),
@@ -1455,10 +1456,10 @@ FAILED_OUTPUT_METADATA_MAX = 65536
 FAILED_OUTPUT_RECEIPT_MAX = 65536
 
 
-def _failed_render_input_limits(fixture):
+def _failed_render_input_limits(fixture, *, status_timeout=False):
     from native_film180_evidence_selection import fixedtxt_frames
     fixedtxt_frames(fixture)
-    return {fixture + "/" + name: maximum for name, maximum in (
+    limits = {fixture + "/" + name: maximum for name, maximum in (
         ("owner-workspace.json", 65536),
         ("saved-production-project.json", 4 * 1024 * 1024),
         ("fixed-text-case.json", 65536),
@@ -1470,9 +1471,80 @@ def _failed_render_input_limits(fixture):
         ("native-result.host-stdin/capture-0001.stdin", 65536),
         ("native-result.host-stdin/readback.observation.json", 8 * 1024 * 1024),
     )}
+    if status_timeout:
+        del limits[fixture + "/saved-production-project.json"]
+    return limits
 
 
-def _failed_render_join(current, request, originals, plan_raw, cycle_raw):
+def _failed_status_timeout_job(original, request, owner):
+    """Bind a lost read-only status reply; do not manufacture a Native terminal."""
+    def decoded(value, maximum=4096):
+        need(type(value) is dict and value.get("encoding") == "hex"
+             and type(value.get("bytes")) is int and 0 <= value["bytes"] <= maximum
+             and type(value.get("value")) is str
+             and len(value["value"]) == value["bytes"] * 2
+             and re.fullmatch(r"[0-9a-f]*", value["value"]) is not None,
+             "failed-output-status-original-bytes")
+        raw = bytes.fromhex(value["value"])
+        need(value.get("sha256") == sha(raw), "failed-output-status-original-digest")
+        return raw
+    need(type(original) is dict and type(owner) is dict, "failed-output-status-query-shape")
+    error, call = original.get("error", {}), original.get("failed_cli_call", {})
+    need(type(error) is dict and type(call) is dict, "failed-output-status-query-shape")
+    need(original.get("schema") == "motionwright.private-native-return-snapshot/2"
+         and original.get("capture_representation") == "complete_observed_cli_bytes"
+         and original.get("wire_bytes") is True and original.get("automatic_retry") is False
+         and original.get("native_result") == "returned_error"
+         and error.get("code") == "Timeout" and error.get("outcome_known") is False
+         and call.get("command") == "driver.motion-canvas.render.status"
+         and call.get("mutation") is False
+         and type(call.get("elapsed_ms")) is int and 0 < call["elapsed_ms"] <= 3_900_000,
+         "failed-output-status-query-unknown")
+    prefix = "fixed-text-v4-" + request["arm"].lower() + "-" + request["fixture"] + ":motion:0:render-status-"
+    number = re.fullmatch(re.escape(prefix) + r"(0|[1-9][0-9]{0,2})",
+                          call.get("request_id") if type(call.get("request_id")) is str else "")
+    transport = call.get("transport", {})
+    need(type(transport) is dict, "failed-output-status-query-transport")
+    entries = transport.get("entries")
+    need(number is not None and int(number[1]) <= 330
+         and transport.get("schema") == "motionwright.production.private-transport-custody/1"
+         and transport.get("authority") is False and transport.get("durable") is False
+         and transport.get("mutex_poisoned") is False
+         and type(entries) is list and len(entries) == 1,
+         "failed-output-status-query-transport")
+    entry = entries[0]
+    need(type(entry) is dict and type(entry.get("transport_terminal")) is dict
+         and type(entry["transport_terminal"].get("original_error")) is dict,
+         "failed-output-status-query-original")
+    need(type(entry) is dict and entry.get("command") == call["command"]
+         and entry.get("mutation") is False and entry.get("automatic_retry") is False
+         and entry.get("process_started") is True and entry.get("process_exit") is None
+         and type(entry.get("pid")) is int and entry["pid"] > 0
+         and type(entry.get("connection_identity")) is str and SHA.fullmatch(entry["connection_identity"])
+         and type(entry.get("executable_sha256")) is str and SHA.fullmatch(entry["executable_sha256"])
+         and entry.get("transport_terminal", {}).get("kind") == "error"
+         and entry["transport_terminal"].get("original_error", {}).get("code") == "Timeout"
+         and entry["transport_terminal"]["original_error"].get("outcome_known") is True,
+         "failed-output-status-query-original")
+    args_raw = decoded(entry.get("args_json"))
+    args = strict(args_raw, 4096)
+    need(type(args) is dict and set(args) == {"job_ref"}, "failed-output-status-query-arguments")
+    argv = entry.get("argv")
+    need(type(argv) is list and len(argv) == 9
+         and all(type(v) is dict and v.get("platform_encoding") == "unix_bytes" for v in argv),
+         "failed-output-status-query-argv")
+    values = [decoded(v.get("original")) for v in argv]
+    owner_path = owner.get("path")
+    need(type(owner_path) is str and owner_path.startswith("/") and "\\" not in owner_path
+         and all(p not in ("", ".", "..") for p in owner_path.split("/")[1:])
+         and values == [b"--socket", (owner_path + "/runtime/broker.sock").encode(),
+             b"--session-file", (owner_path + "/runtime/motionwright.session").encode(),
+             b"--json", b"execute", b"driver.motion-canvas.render.status", b"--args-json", args_raw],
+         "failed-output-status-query-owner")
+    return args["job_ref"]
+
+
+def _failed_render_join(current, request, originals, plan_raw, cycle_raw, *, status_timeout=False):
     """Join existing negative originals; neither issue nor weaken admission."""
     import native_fixedtxt_g2_admission as fixed
     from native_film180_evidence_selection import fixedtxt_frames
@@ -1501,15 +1573,23 @@ def _failed_render_join(current, request, originals, plan_raw, cycle_raw):
          and plan["arm_sources"][arm].get("native_source_sha256")
              == runtime.get("native_source_sha256", {}).get(arm),
          "failed-output-case-runtime-binding")
-    terminal = value("native-result.fixed-text/render-terminal.original-value.json")
-    result = terminal.get("result", {})
-    data = result.get("data", {})
-    need(terminal.get("replayed") is False and result.get("provenance_checked") is True
-         and type(data) is dict and data.get("state") == "failed"
-         and type(data.get("host_failure")) is dict
-         and data["host_failure"].get("outcome_known") is False,
-         "failed-output-original-unknown-terminal")
-    job = data.get("job_ref")
+    need(type(status_timeout) is bool, "failed-output-negative-mode")
+    if status_timeout:
+        negative_name = "native-result.host-stdin/native-return.snapshot.json"
+        terminal, result = None, None
+        job = _failed_status_timeout_job(value(negative_name), request,
+                                        value("owner-workspace.json", 65536))
+    else:
+        negative_name = "native-result.fixed-text/render-terminal.original-value.json"
+        terminal = value(negative_name)
+        result = terminal.get("result", {})
+        data = result.get("data", {})
+        need(terminal.get("replayed") is False and result.get("provenance_checked") is True
+             and type(data) is dict and data.get("state") == "failed"
+             and type(data.get("host_failure")) is dict
+             and data["host_failure"].get("outcome_known") is False,
+             "failed-output-original-unknown-terminal")
+        job = data.get("job_ref")
     need(type(job) is str and len(job) <= 320 and job.isascii(), "failed-output-job-reference")
     fields = job.split(":")
     need(len(fields) == 7 and fields[0] == "mc1" and fields[5] == "render_job"
@@ -1526,11 +1606,16 @@ def _failed_render_join(current, request, originals, plan_raw, cycle_raw):
          and (compiled.get("id"), compiled.get("generation"), compiled.get("revision"))
              == (fields[1], fields[2], int(fields[3])),
          "failed-output-motion-project-binding")
-    studio = value("saved-production-project.json", 4 * 1024 * 1024)
     snapshot = value("native-result.host-stdin/broker-receipt.snapshot.json")
     receipt = snapshot.get("receipt", {})
     payload = receipt.get("payload", {})
     started = payload.get("result", {})
+    # A lost status query has no completed Native result or saved-project
+    # export. Retain the exact Studio identity observed in the original start
+    # receipt and label that single source; do not invent an independent read.
+    studio = ({"id": receipt.get("project_id"), "generation": receipt.get("generation"),
+               "revision": receipt.get("revision")} if status_timeout else
+              value("saved-production-project.json", 4 * 1024 * 1024))
     expected_request = "fixed-text-v4-" + arm.lower() + "-" + fixture + ":motion:0:render-start"
     need(snapshot.get("schema") == "motionwright.private-production-receipt-snapshot/1"
          and snapshot.get("source") == "existing StudioService receipt"
@@ -1548,19 +1633,20 @@ def _failed_render_join(current, request, originals, plan_raw, cycle_raw):
          and started.get("data", {}).get("job_ref") == job
          and started["data"].get("state") == "starting",
          "failed-output-original-render-start")
-    status_receipt = terminal.get("receipt", {})
-    status_payload = status_receipt.get("payload", {})
-    status_request = status_receipt.get("request_id")
-    status_prefix = "fixed-text-v4-" + arm.lower() + "-" + fixture + ":motion:0:render-status-"
-    status_number = re.fullmatch(re.escape(status_prefix) + r"(0|[1-9][0-9]{0,2})",
-                                status_request if type(status_request) is str else "")
-    need(status_receipt.get("command") == "driver.motion-canvas.render.status"
-         and status_receipt.get("stage") == "completed"
-         and (status_receipt.get("project_id"), status_receipt.get("generation"), status_receipt.get("revision"))
-             == (studio["id"], studio["generation"], studio["revision"])
-         and status_number is not None and int(status_number[1]) <= 330
-         and status_payload.get("job_ref") == job and status_payload.get("result") == result,
-         "failed-output-original-status-receipt")
+    if not status_timeout:
+        status_receipt = terminal.get("receipt", {})
+        status_payload = status_receipt.get("payload", {})
+        status_request = status_receipt.get("request_id")
+        status_prefix = "fixed-text-v4-" + arm.lower() + "-" + fixture + ":motion:0:render-status-"
+        status_number = re.fullmatch(re.escape(status_prefix) + r"(0|[1-9][0-9]{0,2})",
+                                    status_request if type(status_request) is str else "")
+        need(status_receipt.get("command") == "driver.motion-canvas.render.status"
+             and status_receipt.get("stage") == "completed"
+             and (status_receipt.get("project_id"), status_receipt.get("generation"), status_receipt.get("revision"))
+                 == (studio["id"], studio["generation"], studio["revision"])
+             and status_number is not None and int(status_number[1]) <= 330
+             and status_payload.get("job_ref") == job and status_payload.get("result") == result,
+             "failed-output-original-status-receipt")
     session = value("native-result.host-stdin/session.original.json", 8192)
     capture = value("native-result.host-stdin/capture-0001.json", 8192)
     pipe = value("native-result.host-stdin/capture-0001.terminal.json", 2048)
@@ -1579,7 +1665,7 @@ def _failed_render_join(current, request, originals, plan_raw, cycle_raw):
          and capture.get("parent_request_id") == payload.get("broker_request_id")
          and capture.get("terminal_file_required") is True,
          "failed-output-host-provider-binding")
-    for response in (started, result):
+    for response in ((started,) if status_timeout else (started, result)):
         execution = response.get("execution", {})
         provenance = execution.get("provenance", {})
         need(execution.get("dry_run") is False and execution.get("backend") == "driver:motion-canvas"
@@ -1636,9 +1722,13 @@ def _failed_render_join(current, request, originals, plan_raw, cycle_raw):
         "studio_project": {key: studio[key] for key in ("id", "generation", "revision")},
         "host": {key: capture[key] for key in ("job_id", "request_id", "parent_request_id", "session_id")},
         "render_input_digest": config["renderInputDigest"], "host_stdin": original_descriptor(stdin),
-        "render_helper": original_descriptor(helper), "terminal": original_descriptor(
-            originals[prefix + "native-result.fixed-text/render-terminal.original-value.json"]),
-        "native_state": "failed", "host_outcome_known": False,
+        "render_helper": original_descriptor(helper),
+        "terminal": None if status_timeout else original_descriptor(originals[prefix + negative_name]),
+        "status_query_return": original_descriptor(originals[prefix + negative_name]) if status_timeout else None,
+        "native_terminal_observed": not status_timeout,
+        "studio_identity_source": ("completed_render_start_receipt_only" if status_timeout
+                                  else "saved_project_and_completed_receipts"),
+        "native_state": "unconfirmed" if status_timeout else "failed", "host_outcome_known": False,
         "Host_job_id_equals_MC_job_ref_claimed": False}
 
 
@@ -1751,7 +1841,18 @@ def _collect_failed_output(handles, known, current, request, byte_budget, file_b
     import native_fixedtxt_g2_admission as fixed
     fixture = request["fixture"]
     terminal_name = fixture + "/native-result.fixed-text/render-terminal.original-value.json"
-    if ("owner_diagnostics", terminal_name) not in known:
+    status_name = fixture + "/native-result.host-stdin/native-return.snapshot.json"
+    status_timeout = False
+    if ("owner_diagnostics", terminal_name) in known:
+        negative_name = terminal_name
+    elif ("owner_diagnostics", status_name) in known:
+        observed = strict(known[("owner_diagnostics", status_name)], 8 * 1024 * 1024)
+        if (type(observed) is not dict or observed.get("native_result") != "returned_error"
+                or type(observed.get("error")) is not dict
+                or observed["error"].get("code") != "Timeout"):
+            return {}, []
+        negative_name, status_timeout = status_name, True
+    else:
         return {}, []
     metadata_name = fixture + "/failed-output.observation.json"
     report = {"schema": "motionwright.private-fixedtxt-failed-output/1", "context": current,
@@ -1770,8 +1871,8 @@ def _collect_failed_output(handles, known, current, request, byte_budget, file_b
         total += len(raw)
     try:
         need(file_budget >= 1 and byte_budget >= FAILED_OUTPUT_METADATA_MAX, "ORIGINAL_RESOURCE_BOUND")
-        originals = {terminal_name: known[("owner_diagnostics", terminal_name)]}
-        for name, maximum in _failed_render_input_limits(fixture).items():
+        originals = {negative_name: known[("owner_diagnostics", negative_name)]}
+        for name, maximum in _failed_render_input_limits(fixture, status_timeout=status_timeout).items():
             need(len(extra) + 1 < file_budget, "ORIGINAL_RESOURCE_BOUND")
             raw = _read_owner_diagnostic(handles, name,
                 min(maximum, max(0, byte_budget - total - FAILED_OUTPUT_METADATA_MAX)), fixture=fixture)
@@ -1779,7 +1880,8 @@ def _collect_failed_output(handles, known, current, request, byte_budget, file_b
             retain("owner_diagnostics", name, raw)
             originals[name] = raw
         joined = _failed_render_join(current, request, originals,
-            known[("control", fixed.PLAN_MEMBER)], known[("inputs", fixed.CYCLE_MEMBER)])
+            known[("control", fixed.PLAN_MEMBER)], known[("inputs", fixed.CYCLE_MEMBER)],
+            status_timeout=status_timeout)
         report["join_status"], report["joined"] = "originals_joined", joined
         report["originals"] = {name: original_descriptor(raw) for name, raw in originals.items()}
         owner = strict(originals[fixture + "/owner-workspace.json"], 65536)
