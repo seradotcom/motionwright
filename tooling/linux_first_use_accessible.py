@@ -358,11 +358,18 @@ class AtspiBridge:
         return self.pid(app)
 
     def view(self, node):
+        # Every node still receives a fresh role and state read: a defunct
+        # subtree must never be traversed. Most WebKit descendants cannot be
+        # the one named dialog/title/action; querying names and interfaces for
+        # all of them creates thousands of needless synchronous AT-SPI calls.
+        role = self.roles.get(self.call(node.get_role), "other")
         state = self.call(node.get_state_set)
-        return View(node, self.roles.get(self.call(node.get_role), "other"),
-                    self.call(node.get_name),
-                    frozenset(k for k, v in self.states.items() if state.contains(v)),
-                    frozenset(self.call(node.get_interfaces)))
+        states = frozenset(k for k, v in self.states.items() if state.contains(v))
+        name = self.call(node.get_name) if role in ("dialog", "entry", "text", "button") else ""
+        relevant = ((role in ("entry", "text") and name == "Project title")
+                    or (role == "button" and name == "Create project"))
+        interfaces = frozenset(self.call(node.get_interfaces)) if relevant else frozenset()
+        return View(node, role, name, states, interfaces)
 
     def read_text(self, node):
         count = self.call(self.api.Text.get_character_count, node)

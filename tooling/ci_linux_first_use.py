@@ -617,7 +617,7 @@ def installed(repo, source, namespace, app_run, binary, artifact, candidate_rece
     command = ["/usr/bin/python3", "-B", "-E", "-s", str(repo / "tooling/linux_first_use_accessible.py"),
                "--app-run", str(app_run), "--scratch", str(scratch), "--source-sha", source,
                "--semwright-sha", semwright, "--storage-source-repo", str(repo),
-               "--output", str(output), "--seconds", "24"]
+               "--output", str(output), "--seconds", "40"]
     # This create-only record is the effect boundary. Even absent child output
     # does not permit another invocation using the same or a different namespace.
     publish(namespace / "launch-intent.json", {

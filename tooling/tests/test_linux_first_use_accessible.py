@@ -793,6 +793,29 @@ class BridgeBudgetTests(unittest.TestCase):
             with self.assertRaisesRegex(probe.ProbeError, "DEADLINE"):
                 bridge.children(node)
         self.assertEqual(observed, [0, 1, 2])
+        # Non-target WebKit descendants still expose role/defunct state but
+        # must not force remote names/interfaces queries. Named controls are
+        # queried in full, preserving the exact admission gate.
+        bridge = self.bridge(SimpleNamespace(), None)
+        bridge.roles = {"unrelated": "other", "title": "entry"}
+        bridge.states = {"defunct": object()}
+        calls = []
+        node = SimpleNamespace(
+            get_role=lambda: "unrelated",
+            get_state_set=lambda: SimpleNamespace(contains=lambda _: False),
+            get_name=lambda: calls.append("name"),
+            get_interfaces=lambda: calls.append("interfaces"),
+        )
+        view = bridge.view(node)
+        self.assertEqual((view.role, view.name, view.interfaces), ("other", "", frozenset()))
+        self.assertEqual(calls, [])
+        node.get_role = lambda: "title"
+        node.get_name = lambda: (calls.append("name"), "Project title")[1]
+        node.get_interfaces = lambda: (calls.append("interfaces"), ["EditableText", "Text"])[1]
+        selected = bridge.view(node)
+        self.assertEqual(selected.role, "entry")
+        self.assertEqual(selected.interfaces, frozenset(("EditableText", "Text")))
+        self.assertEqual(calls, ["name", "interfaces"])
 
     def test_expired_budget_prevents_native_setter(self):
         effects = []
