@@ -8,11 +8,13 @@ This module neither creates project XML nor decides editorial acceptance.
 from __future__ import annotations
 
 from pathlib import Path
+import base64
 import hashlib
 import json
 import re
 import subprocess
 import time
+import zlib
 from typing import Callable
 
 MAX_NODES = 4096
@@ -28,6 +30,9 @@ MODAL_NO_REPLY = ("Did not receive a reply. Possible causes include: the remote 
                   "blocked the reply, the reply timeout expired, or the network "
                   "connection was broken.")
 MODAL_SNAPSHOT_BYTES = 128 * 1024
+# Only evidence encoding changes; the observed node/tree and journal limits stay.
+# A compressed envelope also declares a hard bound for independent inflation.
+MODAL_SNAPSHOT_DECODED_BYTES = 1024 * 1024
 MODAL_SNAPSHOT_FIELDS = ("key", "name", "role", "text", "visible", "enabled",
                          "editable", "rect", "focused", "modal", "pid")
 MODAL_OPENERS = {
@@ -95,10 +100,28 @@ def modal_snapshot(rows: list[dict], expected_pid: int) -> dict:
     }
     raw = json.dumps(snapshot, sort_keys=True, ensure_ascii=True,
                      allow_nan=False).encode()
-    if len(raw) > MODAL_SNAPSHOT_BYTES:
+    decoded_bytes = len(raw)
+    if MODAL_SNAPSHOT_BYTES < decoded_bytes <= MODAL_SNAPSHOT_DECODED_BYTES:
+        # Losslessly retain the entire canonical /1 envelope. Decisions still
+        # use the same live, complete rows; decoding grants no Native authority.
+        snapshot = {
+            "schema": "motionwright.native.atspi-modal-snapshot/2",
+            "encoding": "zlib+base64",
+            "decoded_schema": "motionwright.native.atspi-modal-snapshot/1",
+            "decoded_bytes": decoded_bytes,
+            "decoded_sha256": hashlib.sha256(raw).hexdigest(),
+            "source_rows_sha256": snapshot["source_rows_sha256"],
+            "row_count": len(rows), "expected_pid": expected_pid,
+            "payload": base64.b64encode(zlib.compress(raw, level=6)).decode("ascii"),
+        }
+        raw = json.dumps(snapshot, sort_keys=True, ensure_ascii=True,
+                         allow_nan=False).encode()
+    if len(raw) > MODAL_SNAPSHOT_BYTES or decoded_bytes > MODAL_SNAPSHOT_DECODED_BYTES:
         error = GuiRejected("native_gui_modal_snapshot_budget")
         error.add_note("rows=" + str(len(rows)) + "; encoded_bytes=" + str(len(raw))
-                       + "; limit_bytes=" + str(MODAL_SNAPSHOT_BYTES))
+                       + "; limit_bytes=" + str(MODAL_SNAPSHOT_BYTES)
+                       + "; decoded_bytes=" + str(decoded_bytes)
+                       + "; decoded_limit_bytes=" + str(MODAL_SNAPSHOT_DECODED_BYTES))
         raise error
     return snapshot
 
