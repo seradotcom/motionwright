@@ -985,5 +985,341 @@ class FixedTxtSourceKitPinTests(unittest.TestCase):
                 kit.selected_pins()
 
 
+
+def failed_output_fixture():
+    """Bound synthetic originals only; no renderer, grant or Native result."""
+    from native_film180_evidence_selection import fixedtxt_frames
+    current = {"source_sha": "a" * 40, "semwright_sha": "b" * 40,
+               "run_id": "34567", "run_attempt": "1"}
+    fixture = "fixed-multirun-control"
+    request = {"fixture": fixture, "arm": "RED"}
+    helper = b"// Synthetic source control: never executed.\n"
+    runtime = {"semwright_revision": current["semwright_sha"], "driver_sha256": "3" * 64,
+        "node_sha256": "4" * 64, "native_source_sha256": {"RED": "5" * 64},
+        "render_helper": {"path": "/unfollowed/helper", **route.original_descriptor(helper)},
+        "dependency_lock": {"path": "/unfollowed/lock", "bytes": 100, "sha256": "6" * 64}}
+    cycle = {"schema": "motionwright.fixed-text-native-cycle-inputs/4", "arm": "RED", "runtime": runtime}
+    cycle_raw = route.canonical(cycle)
+    plan = {"schema": fixed.PLAN_SCHEMA, "context": current, "arm": "RED", "fixture": fixture,
+        "cycle_input_sha256": route.sha(cycle_raw),
+        "source_bindings": [{"path": path, "sha256": "c" * 64} for path in fixed.source_paths()],
+        "arm_sources": {"RED": {"source_sha": current["semwright_sha"], "native_source_sha256": "5" * 64}}}
+    compiled = {"id": "separate-motion-project", "generation": "d" * 32, "revision": 3}
+    compiled_raw = route.canonical(compiled)
+    studio = {"id": "11111111-1111-4111-8111-111111111111",
+              "generation": "22222222-2222-4222-8222-222222222222", "revision": 29}
+    job = "mc1:" + compiled["id"] + ":" + compiled["generation"] + ":3:" + "e" * 64 + ":render_job:render-" + "f" * 32
+    config = {"authoring": True, "name": "frames", "width": 1920, "height": 1080,
+        "fpsNum": 30, "fpsDen": 1, "firstFrame": 0, "endFrameExclusive": 180,
+        "textPixelObservationFrames": list(fixedtxt_frames(fixture)),
+        "renderInputDigest": "1" * 64, "fontResourcesDigest": "2" * 64, "dependencyLockDigest": "6" * 64}
+    stdin = b"globalThis.__SEMWRIGHT_RENDER_INPUT__ = " + route.canonical(config).rstrip(b"\n") + b";\n" + helper
+    provider = {"id": "driver:motion-canvas", "kind": "driver", "version": "synthetic"}
+    provenance = {"provider": provider["id"], "source": provider["kind"], "provider_version": provider["version"]}
+    start = {"provenance_checked": True, "execution": {"provenance": provenance,
+             "dry_run": False, "backend": "driver:motion-canvas"},
+             "data": {"job_ref": job, "state": "starting"}}
+    terminal = {"replayed": False, "result": {"provenance_checked": True,
+        "execution": {"provenance": provenance, "dry_run": False, "backend": "driver:motion-canvas"},
+        "data": {"job_ref": job, "state": "failed", "host_failure": {"kind": "timeout", "outcome_known": False}}}}
+    capture = {"provider": provider, "provider_process_id": 123, "tool": "motion-node",
+        "job_id": "distinct-host-job", "request_id": "host-request", "parent_request_id": "broker-parent",
+        "session_id": "owner-session", "stdin_bytes": len(stdin), "stdin_sha256": route.sha(stdin),
+        "terminal_file_required": True}
+    pipe = {"write_state": "write_all_completed", "partial_delivery_possible": False,
+        "io_error_kind": None, "raw_os_error": None, "child_consumption": "not_observed",
+        "native_render_success": "not_inferred"}
+    receipt = {"project_id": studio["id"], "generation": studio["generation"], "revision": studio["revision"],
+        "request_id": "fixed-text-v4-red-" + fixture + ":motion:0:render-start", "stage": "completed",
+        "command": "driver.motion-canvas.render.start",
+        "payload": {"broker_request_id": capture["parent_request_id"], "result": start}}
+    terminal["receipt"] = {"project_id": studio["id"], "generation": studio["generation"],
+        "revision": studio["revision"], "request_id": "fixed-text-v4-red-" + fixture + ":motion:0:render-status-6",
+        "stage": "completed", "command": "driver.motion-canvas.render.status",
+        "payload": {"job_ref": job, "result": terminal["result"]}}
+    rows = {
+        "owner-workspace.json": {"schema": "synthetic-placeholder-not-an-owner"},
+        "saved-production-project.json": studio,
+        "fixed-text-case.json": {"schema": "motionwright.private-fixed-text-render-case/4",
+            "arm": "RED", "key": fixture, "runtime": runtime,
+            "compiled_project": {"path": "/unfollowed/compiled", **route.original_descriptor(compiled_raw)}},
+        "canonical-component/evidence/project.derived.json": compiled,
+        "native-result.fixed-text/render-terminal.original-value.json": terminal,
+        "native-result.host-stdin/broker-receipt.snapshot.json": {
+            "schema": "motionwright.private-production-receipt-snapshot/1",
+            "source": "existing StudioService receipt", "wire_bytes": False, "lookup_error": None,
+            "snapshot_grants_authority": False, "receipt": receipt},
+        "native-result.host-stdin/session.original.json": {"schema": "semwright.host-stdin-custody/1",
+            "provider": provider, "tool": "motion-node", "driver_sha256": runtime["driver_sha256"],
+            "tool_sha256": runtime["node_sha256"]},
+        "native-result.host-stdin/capture-0001.json": capture,
+        "native-result.host-stdin/capture-0001.terminal.json": pipe,
+        "native-result.host-stdin/readback.observation.json": {
+            "schema": "motionwright.private-host-stdin-readback/1", "native_success_returned": False,
+            "native_return_snapshot_retained": True, "original_identity_unchanged": True,
+            "new_capture_ordinals_retained": [1], "capture_read_errors": [], "automatic_retry": False,
+            "selected_capture_join": {"matched": True, "ordinal": 1, "capture": capture, "terminal": pipe,
+                "pipe_write_all_completed": True, "child_consumption": "not_observed",
+                "native_render_success": "not_inferred",
+                "joined_to": "original completed render-start Broker parent and persisted session",
+                "Host_job_id_equals_MC_job_ref_claimed": False}},
+    }
+    originals = {fixture + "/" + name: route.canonical(value) for name, value in rows.items()}
+    originals[fixture + "/native-result.host-stdin/capture-0001.stdin"] = stdin
+    return current, request, originals, route.canonical(plan), cycle_raw
+
+
+class FailedOutputCustodyTests(unittest.TestCase):
+    def setUp(self):
+        self.current, self.request, self.originals, self.plan, self.cycle = failed_output_fixture()
+        self.fixture = self.request["fixture"]
+
+    def join(self, originals=None, plan=None, cycle=None):
+        return route._failed_render_join(self.current, self.request,
+            self.originals if originals is None else originals,
+            self.plan if plan is None else plan, self.cycle if cycle is None else cycle)
+
+    def test_negative_join_preserves_distinct_projects_host_job_and_unknown(self):
+        joined = self.join()
+        self.assertNotEqual(joined["studio_project"]["id"], joined["motion_canvas_project"]["id"])
+        self.assertNotEqual(joined["studio_project"]["generation"], joined["motion_canvas_project"]["generation"])
+        self.assertNotEqual(joined["host"]["job_id"], joined["motion_canvas_job_ref"])
+        self.assertEqual(joined["directory"], "render-" + "f" * 32)
+        self.assertEqual(joined["native_state"], "failed")
+        self.assertIs(joined["host_outcome_known"], False)
+        self.assertIs(joined["Host_job_id_equals_MC_job_ref_claimed"], False)
+        # No success result, output artifact, or fabricated host-binding exists.
+        with self.assertRaises((KeyError, ValueError)):
+            fixed.resolve_native_directory({"fixture": self.fixture},
+                {"observation/" + name: raw for name, raw in self.originals.items()}, cycle_raw=self.cycle)
+
+    def test_negative_join_rejects_foreign_source_project_parent_session_and_input(self):
+        changes = [
+            ("saved-production-project.json", lambda v: v.update(id="33333333-3333-4333-8333-333333333333")),
+            ("canonical-component/evidence/project.derived.json", lambda v: v.update(id="foreign-motion-project")),
+            ("native-result.host-stdin/broker-receipt.snapshot.json",
+                lambda v: v["receipt"]["payload"].update(broker_request_id="foreign-parent")),
+            ("native-result.host-stdin/broker-receipt.snapshot.json",
+                lambda v: v["receipt"]["payload"]["result"]["data"].update(job_ref="foreign-job")),
+            ("native-result.host-stdin/session.original.json", lambda v: v.update(driver_sha256="0"*64)),
+            ("native-result.host-stdin/capture-0001.json", lambda v: v.update(session_id="foreign-session")),
+            ("native-result.host-stdin/readback.observation.json", lambda v: v.update(original_identity_unchanged=False)),
+            ("native-result.host-stdin/readback.observation.json", lambda v: v.update(native_success_returned=True)),
+            ("native-result.host-stdin/capture-0001.terminal.json", lambda v: v.update(write_state="interrupted")),
+            ("native-result.fixed-text/render-terminal.original-value.json",
+                lambda v: v["result"]["data"]["host_failure"].update(outcome_known=True)),
+            ("native-result.fixed-text/render-terminal.original-value.json",
+                lambda v: v["result"]["data"].update(job_ref="mc1:x:y:1:z:render_job:../elsewhere")),
+            ("native-result.fixed-text/render-terminal.original-value.json",
+                lambda v: v["result"]["execution"]["provenance"].update(provider_version="foreign-provider")),
+            ("native-result.fixed-text/render-terminal.original-value.json",
+                lambda v: v["receipt"].update(command="driver.motion-canvas.render.start")),
+            ("native-result.fixed-text/render-terminal.original-value.json",
+                lambda v: v["receipt"].update(project_id="foreign-studio")),
+            ("native-result.fixed-text/render-terminal.original-value.json",
+                lambda v: v["receipt"].update(request_id="fixed-text-v4-red-fixed-multirun-control:motion:0:render-status-331")),
+            ("native-result.fixed-text/render-terminal.original-value.json",
+                lambda v: v["receipt"]["payload"].update(job_ref="foreign-job")),
+            ("native-result.fixed-text/render-terminal.original-value.json",
+                lambda v: v["receipt"]["payload"].update(result={})),
+            ("native-result.host-stdin/broker-receipt.snapshot.json",
+                lambda v: v["receipt"]["payload"]["result"]["execution"].update(dry_run=True)),
+        ]
+        for name, change in changes:
+            with self.subTest(original=name):
+                values = dict(self.originals); key = self.fixture + "/" + name
+                value = json.loads(values[key]); change(value); values[key] = route.canonical(value)
+                with self.assertRaises(route.WorkflowRejected):
+                    self.join(values)
+        plan = json.loads(self.plan); plan["context"]["source_sha"] = "9" * 40
+        with self.assertRaisesRegex(route.WorkflowRejected, "source-binding"):
+            self.join(plan=route.canonical(plan))
+        bad = dict(self.originals); key=self.fixture + "/native-result.host-stdin/capture-0001.stdin"
+        bad[key] = bad[key].replace(b'"width":1920', b'"width":1080')
+        with self.assertRaisesRegex(route.WorkflowRejected, "stdin"):
+            self.join(bad)
+        with self.assertRaisesRegex(route.WorkflowRejected, "source-binding"):
+            self.join(cycle=self.cycle + b" ")
+
+    def test_negative_diagnostics_keep_existing_source_roster_and_exact_gate(self):
+        import ast
+        source = (TOOLING / "native_fixedtxt_workflow.py").read_text()
+        self.assertIn("tooling/native_fixedtxt_workflow.py", fixed.source_paths())
+        self.assertNotIn("tooling/native_fixedtxt_failed_output.py", fixed.source_paths())
+        self.assertEqual(route.FAILED_OUTPUT_RECEIPT_MAX, 65536)
+        self.assertEqual(route.FAILED_OUTPUT_METADATA_MAX, 65536)
+        workflow = (TOOLING.parent / ".github/workflows/native-mlt-sequence-e2e.yml").read_text()
+        tree = ast.parse(Path(__file__).read_text())
+        count = sum(item.name.startswith("test_") for cls in tree.body if isinstance(cls, ast.ClassDef)
+                    for item in cls.body if isinstance(item, ast.FunctionDef))
+        self.assertEqual(count, 34)
+        self.assertIn("'dotted:tooling.tests.test_native_fixedtxt_workflow':34", workflow)
+        self.assertIn("--pattern test_native_fixedtxt_workflow.py", workflow)
+        self.assertIn("      - 'tooling/native_fixedtxt_workflow.py'", workflow)
+        self.assertIn("      - 'tooling/tests/test_native_fixedtxt_workflow.py'", workflow)
+        collector = next(node for node in ast.parse(source).body
+                         if isinstance(node, ast.FunctionDef) and node.name == "collect_workflow_originals")
+        self.assertIn("_collect_failed_output", ast.unparse(collector))
+        self.assertNotIn("native-png", route._failed_render_input_limits(self.fixture))
+
+    @unittest.skipUnless(os.name == "posix", "Linux openat custody; no Windows substitute")
+    def test_physical_inventory_preserves_receipt_and_never_opens_png_bytes(self):
+        import native_evidence_projection as core
+        joined = self.join()
+        with tempfile.TemporaryDirectory() as temporary:
+            owner = Path(temporary); owner.chmod(0o700)
+            output = owner / "output" / joined["directory"]; output.mkdir(parents=True, mode=0o700)
+            frames = output / "frames"; frames.mkdir(mode=0o700)
+            for frame in range(180):
+                (frames / f"{frame:06d}.png").write_bytes(b"synthetic metadata-only leaf")
+            receipt = route.canonical({"version": 2, "ok": False,
+                "render_input_digest": joined["render_input_digest"], "error_class": "render_wait_timeout",
+                "local_stack_only": "synthetic local diagnostic"})
+            (output / "native-failure-receipt.json").write_bytes(receipt)
+            other = owner / "output" / ("render-" + "0" * 32); other.mkdir(mode=0o700)
+            (other / "private-unselected").write_bytes(b"outside selected render")
+            audit = {"active": False, "opens": []}
+            def observe(event, args):
+                if audit["active"] and event == "open" and isinstance(args[0], str):
+                    audit["opens"].append(args[0])
+            sys.addaudithook(observe)
+            handles = core.RootHandles({"owner": str(owner)})
+            try:
+                audit["active"] = True
+                inventory, raw = route._observe_failed_output(handles, joined, 65536)
+            finally:
+                audit["active"] = False
+                handles.close()
+            self.assertEqual(raw, receipt)
+            self.assertEqual(len(inventory["frames"]), 180)
+            self.assertEqual(inventory["receipt_status"], "original_observed")
+            self.assertFalse(any(name.endswith(".png") or name == "private-unselected" for name in audit["opens"]))
+            self.assertLess(len(route.canonical(inventory)), route.FAILED_OUTPUT_METADATA_MAX)
+            self.assertNotIn("local_stack_only", inventory)
+
+    @unittest.skipUnless(os.name == "posix", "Linux openat custody; no Windows substitute")
+    def test_physical_receipt_rejects_link_fifo_wrong_binding_and_oversize(self):
+        import native_evidence_projection as core
+        joined = self.join()
+        with tempfile.TemporaryDirectory() as temporary:
+            owner = Path(temporary); owner.chmod(0o700)
+            output = owner / "output" / joined["directory"]; output.mkdir(parents=True, mode=0o700)
+            receipt = output / "native-failure-receipt.json"
+            outside = owner / "outside"; outside.write_bytes(b"unselected")
+            def refused():
+                handles=core.RootHandles({"owner":str(owner)})
+                try:
+                    with self.assertRaises((route.WorkflowRejected, OSError)):
+                        route._observe_failed_output(handles, joined, 65536)
+                finally:
+                    handles.close()
+            receipt.symlink_to(outside); refused(); receipt.unlink()
+            os.link(outside,receipt); refused(); receipt.unlink()
+            os.mkfifo(receipt); refused(); receipt.unlink()
+            receipt.write_bytes(b"x" * 65537); refused(); receipt.unlink()
+            receipt.write_bytes(route.canonical({"version":2,"ok":False,"render_input_digest":"0"*64}))
+            refused(); receipt.unlink()
+            frames=output/"frames"; frames.mkdir(mode=0o700)
+            (frames/"000180.png").write_bytes(b"outside frame roster"); refused()
+
+    @unittest.skipUnless(os.name == "posix", "Linux openat custody; no Windows substitute")
+    def test_physical_parent_exchange_never_opens_foreign_receipt(self):
+        import native_evidence_projection as core
+        joined = self.join()
+        with tempfile.TemporaryDirectory() as temporary:
+            owner=Path(temporary); owner.chmod(0o700)
+            output=owner/"output"/joined["directory"]; output.mkdir(parents=True,mode=0o700)
+            raw=route.canonical({"version":2,"ok":False,"render_input_digest":joined["render_input_digest"]})
+            leaf=output/"native-failure-receipt.json"; leaf.write_bytes(raw)
+            original_identity=(leaf.stat().st_dev,leaf.stat().st_ino)
+            foreign=owner/"foreign"; foreign.mkdir(mode=0o700)
+            foreign_leaf=foreign/leaf.name; foreign_leaf.write_bytes(b"x"*len(raw))
+            foreign_identity=(foreign_leaf.stat().st_dev,foreign_leaf.stat().st_ino)
+            moved=output.with_name(output.name+"-held")
+            state={"swapped":False,"opened":[]}
+            watched=route._failed_output_receipt.__code__
+            def exchange(frame,event,arg):
+                if frame.f_code is not watched:
+                    return None
+                if event == "line":
+                    local=frame.f_locals
+                    if not state["swapped"] and "named" in local and local.get("fd")==-1:
+                        output.rename(moved); output.symlink_to(foreign,target_is_directory=True)
+                        state["swapped"]=True
+                    elif state["swapped"] and not state["opened"] and local.get("fd",-1)>=0:
+                        info=os.fstat(local["fd"]); state["opened"].append((info.st_dev,info.st_ino))
+                return exchange
+            handles=core.RootHandles({"owner":str(owner)})
+            previous=sys.gettrace()
+            try:
+                sys.settrace(exchange)
+                with self.assertRaisesRegex(route.WorkflowRejected,"mutated"):
+                    route._observe_failed_output(handles,joined,65536)
+            finally:
+                sys.settrace(previous); handles.close()
+                if state["swapped"]:
+                    output.unlink(); moved.rename(output)
+            self.assertTrue(state["swapped"])
+            self.assertEqual(state["opened"],[original_identity])
+            self.assertNotIn(foreign_identity,state["opened"])
+            self.assertEqual(leaf.read_bytes(),raw)
+
+    @unittest.skipUnless(os.name == "posix", "Linux openat custody; no Windows substitute")
+    def test_collector_retains_absence_and_enforces_shared_budget_without_owner_search(self):
+        import native_evidence_projection as core
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(os.environ,{"RUNNER_TEMP":temporary}):
+            root=Path(temporary)
+            owner=root/"motionwright-native-av-g2-synthetic"; owner.mkdir(mode=0o700)
+            observation=root/"observation"; observation.mkdir(mode=0o700)
+            info=owner.stat()
+            originals=dict(self.originals)
+            originals[self.fixture+"/owner-workspace.json"]=route.canonical({
+                "schema":"motionwright.native.mlt-g2-owner-workspace/1","path":str(owner),
+                "motionwright_sha":self.current["source_sha"],"semwright_sha":self.current["semwright_sha"],
+                "run_id":self.current["run_id"],"run_attempt":"1",
+                "device":info.st_dev,"inode":info.st_ino,"uid":info.st_uid,"gid":info.st_gid})
+            for name,raw in originals.items():
+                path=observation/name; path.parent.mkdir(parents=True,mode=0o700,exist_ok=True); path.write_bytes(raw)
+            terminal=self.fixture+"/native-result.fixed-text/render-terminal.original-value.json"
+            known={("owner_diagnostics",terminal):originals[terminal],
+                ("control",fixed.PLAN_MEMBER):self.plan,("inputs",fixed.CYCLE_MEMBER):self.cycle}
+            handles=core.RootHandles({"observation":str(observation)})
+            try:
+                extra, failures=route._collect_failed_output(handles,known,self.current,self.request,8*1024*1024,20)
+                report=json.loads(extra[("failed_output",self.fixture+"/failed-output.observation.json")])
+                self.assertEqual(failures,[])
+                self.assertEqual(report["join_status"],"originals_joined")
+                self.assertEqual(report["output_observation"]["directory_status"],"absent")
+                self.assertEqual(report["output_observation"]["receipt_status"],"absent")
+                self.assertIs(report["native_outcome_reinterpreted"],False)
+                self.assertEqual(sum(map(len,extra.values()))<=8*1024*1024,True)
+                joined=self.join()
+                output=owner/"output"/joined["directory"]; output.mkdir(parents=True,mode=0o700)
+                no_receipt, missing=route._collect_failed_output(handles,known,self.current,self.request,8*1024*1024,20)
+                observed=json.loads(no_receipt[("failed_output",self.fixture+"/failed-output.observation.json")])
+                self.assertEqual(missing,[])
+                self.assertEqual(observed["output_observation"]["directory_status"],"present")
+                self.assertEqual(observed["output_observation"]["receipt_status"],"absent")
+                receipt=route.canonical({"version":2,"ok":False,"render_input_digest":joined["render_input_digest"]})
+                (output/"native-failure-receipt.json").write_bytes(receipt)
+                limited, resource_errors=route._collect_failed_output(handles,known,self.current,self.request,8*1024*1024,11)
+                limited_report=json.loads(limited[("failed_output",self.fixture+"/failed-output.observation.json")])
+                self.assertEqual(limited_report["output_observation"]["receipt_status"],"not_retained")
+                self.assertNotIn(("failed_output",self.fixture+"/native-failure-receipt.original.json"),limited)
+                self.assertTrue(any(row["reason"]=="ORIGINAL_RESOURCE_BOUND" for row in resource_errors))
+                complete, errors=route._collect_failed_output(handles,known,self.current,self.request,8*1024*1024,20)
+                self.assertEqual(errors,[])
+                self.assertEqual(complete[("failed_output",self.fixture+"/native-failure-receipt.original.json")],receipt)
+                complete_report=json.loads(complete[("failed_output",self.fixture+"/failed-output.observation.json")])
+                self.assertEqual(complete_report["output_observation"]["receipt_status"],"original_retained")
+                tiny, omitted=route._collect_failed_output(handles,known,self.current,self.request,0,0)
+                self.assertEqual(tiny,{})
+                self.assertTrue(all(row["reason"]=="ORIGINAL_RESOURCE_BOUND" for row in omitted))
+                empty, errors=route._collect_failed_output(handles,{},self.current,self.request,8*1024*1024,20)
+                self.assertEqual((empty,errors),({},[]))
+            finally:
+                handles.close()
+
+
 if __name__ == '__main__':
     unittest.main()
