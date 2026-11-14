@@ -955,11 +955,44 @@ class ModalReadbackTests(unittest.TestCase):
                 session = actions.AtspiSession.__new__(actions.AtspiSession)
                 session.control = Mock()
                 session.modal_action = Mock()
+                if path == ("Sequence", "Current Item", "Edit Duration"):
+                    # The literal duration path performs a read-only owned
+                    # preflight before actions. Test its closed-menu branch
+                    # with a complete typed tree, rather than bypassing its
+                    # journal on an uninitialized synthetic session.
+                    observed_events = []
+                    session.pid = 41
+                    session.journal = actions.ActionJournal(
+                        observed_events.append, lambda: None)
+                    observed_rows = [
+                        row("app", "Kdenlive", "application"),
+                        row("app/main", "Untitled — Kdenlive", "frame"),
+                        row("app/main/menubar", "", "menu bar"),
+                        row("app/main/menubar/sequence", "Sequence", "menu item"),
+                        row("app/main/menubar/sequence/menu", "", "menu",
+                            visible=False),
+                        row("app/main/menubar/sequence/menu/current",
+                            "Current Item", "menu item", visible=False),
+                    ]
+                    def observe_owned_menu():
+                        session.last_snapshot = {
+                            "complete": True, "rows": observed_rows}
+                        return observed_rows
+                    session.tree = observe_owned_menu
                 session.menu("route", *path)
                 session.modal_action.assert_called_once_with(
                     "route." + str(len(path) - 1), kind,
                 )
                 self.assertEqual(session.control.call_count, len(path) - 1)
+                if path == ("Sequence", "Current Item", "Edit Duration"):
+                    self.assertEqual(
+                        [event["state"] for event in observed_events],
+                        ["COMPLETE_READ_ONLY_SELECTION"])
+                    self.assertFalse(observed_events[0]["skip_top_level_toggle"])
+                    self.assertFalse(observed_events[0]["native_action_performed_here"])
+                    self.assertFalse(observed_events[0]["native_operation_retried"])
+                    self.assertFalse(observed_events[0]["formal_acceptance"])
+                    self.assertFalse(session.journal.blocked)
         for path in (("File", "Render..."), ("File", "Quit"),
                      ("Other", "Save As..."), ("File", "OpenTimelineIO Import")):
             with self.subTest(path=path):
