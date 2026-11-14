@@ -245,6 +245,13 @@ class AtspiSession:
             key, node, depth = queue.pop(0)
             require(depth <= MAX_DEPTH and len(rows) < MAX_NODES,
                     "native_gui_accessibility_tree_budget")
+            if node is None:
+                # Qt can remove a child after its count was observed during
+                # a window transition. Expose no controls from a partial tree;
+                # the existing read-only wait may take a new complete snapshot.
+                self.nodes = {}
+                discovery["incomplete_reason"] = "null_descendant"
+                return []
             require(node.get_process_id() == self.pid,
                     "native_gui_cross_process_accessible_refused")
             state = node.get_state_set()

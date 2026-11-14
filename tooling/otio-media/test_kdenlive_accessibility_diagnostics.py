@@ -199,7 +199,7 @@ class AccessibilityDiscoveryDiagnosticsTests(unittest.TestCase):
                 owned.get_text_iface.return_value = owned
                 owned.get_character_count = Mock(return_value=size)
                 owned.get_text = Mock(side_effect=lambda: owned)
-                original = "ñ" * min(size, 1024)
+                original = "Ã±" * min(size, 1024)
                 api = fake_api(desktops=[fake_desktop([owned])])
                 api.Text = SimpleNamespace(get_text=Mock(return_value=original))
                 journal = actions.ActionJournal(lambda _: None, Mock())
@@ -217,7 +217,53 @@ class AccessibilityDiscoveryDiagnosticsTests(unittest.TestCase):
                     self.assertFalse(journal.blocked)
                 owned.get_text.assert_not_called()
 
+    def _assert_transition_snapshot_is_not_actionable(self):
+        owned = fake_owned()
+        owned.get_child_count.return_value = 2
+        owned.get_child_at_index = Mock(side_effect=[fake_owned(), None])
+        api = fake_api(desktops=[fake_desktop([owned]), fake_desktop([fake_owned()])])
+        journal = actions.ActionJournal(lambda _: None, Mock())
+        instance = make_session(api, journal)
+        instance.nodes = {"stale": fake_owned()}
+        self.assertEqual(instance.tree(), [])
+        self.assertEqual(instance.nodes, {})
+        self.assertEqual(instance.last_discovery["incomplete_reason"], "null_descendant")
+        self.assertFalse(journal.blocked)
+        rows = instance.wait_ready("import")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(set(instance.nodes), {"app"})
+        self.assertFalse(journal.blocked)
+
+        # An incomplete read does not extend the original wait or authorize
+        # another effect. A foreign non-null child still fails the PID guard.
+        for child, elapsed, error in (
+                (None, 31.0, actions.GuiUncertain),
+                (fake_foreign(), 0.0, actions.GuiRejected)):
+            owned = fake_owned()
+            owned.get_child_count.return_value = 1
+            owned.get_child_at_index = Mock(return_value=child)
+            api = fake_api(desktops=[fake_desktop([owned])])
+            events = []
+            journal = actions.ActionJournal(events.append, Mock())
+            instance = make_session(api, journal)
+            clock = ManualQueryClock()
+            with patch.object(actions.time, "monotonic", side_effect=clock.monotonic), \
+                 patch.object(actions.time, "sleep", side_effect=clock.sleep) as slept, \
+                 patch.object(instance, "tree",
+                              side_effect=clock.after_queries(instance.tree, (elapsed,))):
+                with self.assertRaises(error):
+                    instance.wait_ready("import")
+            self.assertTrue(journal.blocked)
+            slept.assert_not_called()
+            effect = Mock()
+            with self.assertRaises(actions.GuiRejected):
+                journal.perform("blocked-effect", {}, effect)
+            effect.assert_not_called()
+            if child is not None:
+                child.get_state_set.assert_not_called()
+
     def test_exact_pid_discovery_succeeds(self):
+        self._assert_transition_snapshot_is_not_actionable()
         self._assert_ranged_text_uses_text_interface()
         api = fake_api(desktops=[fake_desktop([fake_owned()])])
         instance = make_session(api, self.journal)
