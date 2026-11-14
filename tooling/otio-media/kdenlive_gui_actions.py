@@ -257,15 +257,62 @@ def observed_menu_failure_tree(snapshot: dict | None, expected_pid: int) -> dict
             return {**base, "reason": "last_menu_row_not_typed"}
         menus.append({k: row[k] for k in
                       ("key", "name", "role", "visible", "enabled", "focused")})
-    envelope = {**base, "complete": True, "source_rows": len(rows),
-                "menu_rows": menus, "menu_row_count": len(menus),
-                "no_new_accessibility_query": True}
-    encoded = json.dumps(envelope, ensure_ascii=True, sort_keys=True,
-                         allow_nan=False).encode("utf-8")
-    if len(menus) > 512 or len(encoded) > 65536:
-        return {**base, "reason": "menu_projection_budget_exceeded",
+    # Qt can expose hundreds of *hidden* menu items on its complete tree.
+    # Retain the visible menu and closed route names with all their observed
+    # menu ancestors, while accounting for every omitted row explicitly.
+    # Nothing here is an action selection or proof that a submenu opened.
+    targets = {"Sequence", "Current Item", "Edit Duration"}
+    source_sha = hashlib.sha256(json.dumps(
+        menus, ensure_ascii=True, sort_keys=True,
+        allow_nan=False).encode("utf-8")).hexdigest()
+    by_key = {row["key"]: row for row in menus}
+    if len(by_key) != len(menus):
+        return {**base, "reason": "last_menu_keys_duplicated",
                 "source_rows": len(rows), "observed_menu_row_count": len(menus)}
-    return envelope
+    named = [row for row in menus if normalized(row["name"]) in targets]
+    def with_ancestors(selected):
+        keys = {row["key"] for row in selected}
+        for row in selected:
+            parent = row["key"].rpartition("/")[0]
+            while parent:
+                if parent in by_key:
+                    keys.add(parent)
+                parent = parent.rpartition("/")[0]
+        return [row for row in menus if row["key"] in keys]
+    primary = with_ancestors([
+        row for row in menus if row["visible"] or row["focused"]
+        or normalized(row["name"]) in targets])
+    strategy = "visible_focused_named_and_menu_ancestors"
+    def envelope_for(selected):
+        return {**base, "complete": True, "source_rows": len(rows),
+                "menu_rows": selected, "menu_row_count": len(selected),
+                "observed_menu_row_count": len(menus),
+                "omitted_menu_row_count": len(menus) - len(selected),
+                "visible_menu_row_count": sum(row["visible"] for row in menus),
+                "named_target_row_count": len(named),
+                "all_menu_metadata_sha256": source_sha,
+                "selection_strategy": strategy,
+                "menu_selection_does_not_grant_authority": True,
+                "no_new_accessibility_query": True}
+    candidate = envelope_for(primary)
+    encoded = json.dumps(candidate, ensure_ascii=True, sort_keys=True,
+                         allow_nan=False).encode("utf-8")
+    if len(primary) > 256 or len(encoded) > 65536:
+        # Still retain the exact requested names if the visible roster is
+        # unusually large. Never silently truncate or claim a full menu.
+        strategy = "named_focused_menubar_and_menu_ancestors"
+        selected = with_ancestors([
+            row for row in menus if normalized(row["name"]) in targets
+            or row["focused"] or (row["visible"] and row["role"] == "menu bar")])
+        candidate = envelope_for(selected)
+        encoded = json.dumps(candidate, ensure_ascii=True, sort_keys=True,
+                             allow_nan=False).encode("utf-8")
+        if len(selected) > 256 or len(encoded) > 65536:
+            return {**base, "reason": "menu_projection_budget_exceeded",
+                    "source_rows": len(rows), "observed_menu_row_count": len(menus),
+                    "named_target_row_count": len(named),
+                    "all_menu_metadata_sha256": source_sha}
+    return candidate
 
 
 def labeled_field(rows: list[dict], labels: tuple[str, ...]) -> dict:

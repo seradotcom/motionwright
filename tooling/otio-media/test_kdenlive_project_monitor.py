@@ -332,6 +332,48 @@ class ProjectMonitorSelectorTests(unittest.TestCase):
         self.assertEqual(events[-1]["observed"], retained)
         self.assertEqual(events[-1]["requested_names"], ["Current Item"])
 
+        # The physical 43640813571 failure exposed 971 menu objects.
+        # Retain exact named/visible evidence without expanding the journal
+        # budget, silently truncating, or treating a failed menu as opened.
+        hidden = rows + [
+            row(f"app/main/sequence/hidden-{i}", name=f"Hidden {i}",
+                role="menu item", visible=False, focused=False)
+            for i in range(969)
+        ]
+        observed = actions.observed_menu_failure_tree(
+            {"complete": True, "rows": hidden}, PID)
+        self.assertTrue(observed["complete"])
+        self.assertEqual(observed["observed_menu_row_count"], 971)
+        self.assertEqual(observed["menu_row_count"], 2)
+        self.assertEqual(observed["omitted_menu_row_count"], 969)
+        self.assertEqual(observed["named_target_row_count"], 2)
+        self.assertEqual(observed["selection_strategy"],
+                         "visible_focused_named_and_menu_ancestors")
+        self.assertTrue(observed["menu_selection_does_not_grant_authority"])
+        self.assertFalse(observed["reconciliation_granted"])
+        self.assertEqual(len(observed["all_menu_metadata_sha256"]), 64)
+        self.assertEqual(
+            observed, actions.observed_menu_failure_tree(
+                {"complete": True, "rows": hidden}, PID))
+        forced_visible = copy.deepcopy(hidden)
+        for entry in forced_visible[len(rows):]:
+            entry["visible"] = True
+        reduced = actions.observed_menu_failure_tree(
+            {"complete": True, "rows": forced_visible}, PID)
+        self.assertTrue(reduced["complete"])
+        self.assertEqual(reduced["menu_row_count"], 2)
+        self.assertEqual(reduced["observed_menu_row_count"], 971)
+        self.assertEqual(reduced["selection_strategy"],
+                         "named_focused_menubar_and_menu_ancestors")
+        self.assertEqual(reduced["omitted_menu_row_count"], 969)
+        self.assertFalse(reduced["native_action_dispatched_here"])
+        duplicated = copy.deepcopy(hidden)
+        duplicated.append(copy.deepcopy(duplicated[-1]))
+        self.assertEqual(
+            actions.observed_menu_failure_tree(
+                {"complete": True, "rows": duplicated}, PID)["reason"],
+            "last_menu_keys_duplicated")
+
     def test_refresh_keeps_real_control_flow_with_synthetic_tabbed_dock(self):
         from test_kdenlive_playlist_refresh import SyntheticEditor
         case = SyntheticEditor()
