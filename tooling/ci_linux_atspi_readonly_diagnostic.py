@@ -65,6 +65,28 @@ def admit_source(repo: Path, source: str, binary_source: str):
             raise ProbeError("READ_ONLY_PROBE_SOURCE_DIFFERS_FROM_BINARY")
 
 
+def cached_application_roster(bridge, atspi, records: Path):
+    """Test the standard libatspi bulk cache, without product mutations.
+
+    Previous attempts explicitly disabled caching and cleared every known
+    application entry. That forces synchronous D-Bus reads from WebKit's
+    accessibility tree, where original trials blocked. This is only an
+    exploratory read-only fresh-runner diagnostic: cached identities are
+    never sufficient to authorize an editor action or grant G2.
+    """
+    stage(records, "accessible-cache-enable-start")
+    bridge.call(bridge.desktop.set_cache_mask, atspi.Cache.ALL)
+    stage(records, "accessible-cache-enable-return")
+    stage(records, "applications-start")
+    # Intentionally do not call bridge.applications(): its clear_cache()
+    # would discard all local cached children and force remote traversal.
+    apps = bridge.children(bridge.desktop)
+    stage(records, "applications-return", {"application_count": len(apps)})
+    if len(apps) > 128:
+        raise ProbeError("READ_ONLY_APPLICATION_LIMIT")
+    return apps
+
+
 def read_shallow_roles(bridge, app, records: Path):
     """Bounded structural AT-SPI reads, never a whole-WebKit tree query.
 
@@ -199,11 +221,7 @@ def trace_controls(scratch: Path, records: Path):
     stage(records, "bridge-init-start")
     bridge = AtspiBridge(Atspi, deadline=deadline)
     stage(records, "bridge-init-return")
-    stage(records, "applications-start")
-    apps = bridge.applications()
-    stage(records, "applications-return", {"application_count": len(apps)})
-    if len(apps) > 128:
-        raise ProbeError("READ_ONLY_APPLICATION_LIMIT")
+    apps = cached_application_roster(bridge, Atspi, records)
     stage(records, "application-pid-filter-start")
     app = unique([node for node in apps if bridge.pid(node) == binding["pid"]], "APPLICATION")
     stage(records, "application-pid-filter-return")

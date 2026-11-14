@@ -45,7 +45,8 @@ class ReadOnlyOriginalContracts(unittest.TestCase):
                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
         self.assertFalse(invoked & forbidden)
         funcs = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
-        self.assertEqual(funcs, ["stage", "admit_source", "read_shallow_roles", "enable_session_accessibility",
+        self.assertEqual(funcs, ["stage", "admit_source", "cached_application_roster",
+                                 "read_shallow_roles", "enable_session_accessibility",
                                  "trace_controls", "main"])
 
     def test_source_is_pinned_to_original_built_client(self):
@@ -84,6 +85,59 @@ class ReadOnlyOriginalContracts(unittest.TestCase):
         with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}):
             with self.assertRaisesRegex(diagnostic.ProbeError, "DISPOSABLE"):
                 diagnostic.enable_session_accessibility(Path("unused"))
+
+    def test_cached_application_roster_does_not_force_remote_clear(self):
+        from types import SimpleNamespace
+        calls = []
+        root = object()
+        nodes = [object()]
+        class Bridge:
+            desktop = root
+            def call(self, function, *args):
+                return function(*args)
+            def children(self, node):
+                self.assert_same(node)
+                calls.append("cached-children")
+                return nodes
+            def assert_same(self, node):
+                if node is not root:
+                    raise AssertionError("wrong AT-SPI desktop")
+            def applications(self):
+                raise AssertionError("must not clear live accessible cache")
+        class Desktop:
+            def set_cache_mask(self, value):
+                calls.append(("set-cache-mask", value))
+        bridge = Bridge()
+        bridge.desktop = Desktop()
+        def children(node):
+            if node is not bridge.desktop:
+                raise AssertionError("wrong desktop in cached children")
+            calls.append("cached-children")
+            return nodes
+        bridge.children = children
+        api = SimpleNamespace(Cache=SimpleNamespace(ALL=777))
+        with tempfile.TemporaryDirectory() as directory:
+            observed = diagnostic.cached_application_roster(
+                bridge, api, Path(directory))
+            self.assertEqual(observed, nodes)
+            self.assertEqual(calls, [("set-cache-mask", 777), "cached-children"])
+            for name in ("accessible-cache-enable-start", "accessible-cache-enable-return",
+                         "applications-start", "applications-return"):
+                self.assertTrue((Path(directory)/(name+".json")).exists())
+
+    def test_cache_excessive_roster_fails_without_selector(self):
+        from types import SimpleNamespace
+        class Bridge:
+            desktop = SimpleNamespace(set_cache_mask=lambda value: None)
+            def call(self, method, *args): return method(*args)
+            def children(self, node): return [object() for _ in range(129)]
+            def applications(self): raise AssertionError("clear_cache forbidden")
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(diagnostic.ProbeError,
+                                        "READ_ONLY_APPLICATION_LIMIT"):
+                diagnostic.cached_application_roster(
+                    Bridge(), SimpleNamespace(Cache=SimpleNamespace(ALL=1)),
+                    Path(directory))
 
     def test_shallow_app_roles_are_bounded_and_names_unread(self):
         class Node:
