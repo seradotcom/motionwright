@@ -1,0 +1,121 @@
+name: Linux AT-SPI read-only diagnosis from an original candidate
+# Path-scoped push allows a new workflow on a non-default integration branch
+# to run once without opening any product editor or repeating Native effects.
+on:
+  push:
+    branches:
+      - integrate/phase1-final-composition-20261027
+    paths:
+      - '.github/workflows/linux-atspi-readonly-original.yml'
+      - 'tooling/ci_linux_atspi_readonly_diagnostic.py'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  read-only-candidate:
+    if: github.repository == 'seradotcom/motionwright' && github.ref == 'refs/heads/integrate/phase1-final-composition-20261027' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      ORIGINAL_RUN_ID: '43570033851'
+      ORIGINAL_SOURCE: '21a1a41510f44b480bc4264272479d48048a8be8'
+      ORIGINAL_ARTIFACT_ID: '14103859547'
+      ORIGINAL_ARTIFACT_SHA256: '5796abb450e67b294d8c6b0ff1d4cbbc8ae1944af7fa51cb297f3f71774eebdb'
+      ORIGINAL_IMAGE_SHA256: '43e0e59a4822f819c8cb75ef7e8f4ac80ce9d09945b81e24ea6b4ab8bdfef08c'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Verify immutable historical artifact metadata and matching accessibility code
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY_BINDING'
+          import json, os, subprocess
+          call=lambda *args: subprocess.check_output(args, text=True, timeout=30).strip()
+          assert os.environ['GITHUB_REPOSITORY']=='seradotcom/motionwright'
+          assert os.environ['GITHUB_RUN_ATTEMPT']=='1'
+          source=os.environ['ORIGINAL_SOURCE']
+          current=call('git','rev-parse','HEAD')
+          assert current==os.environ['GITHUB_SHA'] and current!=source
+          for path in ('tooling/linux_first_use_accessible.py','tooling/linux_gui_probe.py'):
+              assert call('git','rev-parse','HEAD:'+path)==call('git','rev-parse',source+':'+path)
+          run=json.loads(call('gh','api','repos/seradotcom/motionwright/actions/runs/'+os.environ['ORIGINAL_RUN_ID']))
+          assert run['head_sha']==source and run['run_attempt']==1 and run['status']=='completed'
+          meta=json.loads(call('gh','api','repos/seradotcom/motionwright/actions/artifacts/'+os.environ['ORIGINAL_ARTIFACT_ID']))
+          assert meta['name']=='linux-first-use-candidate-'+os.environ['ORIGINAL_RUN_ID']+'-1-'+source
+          assert meta['digest']=='sha256:'+os.environ['ORIGINAL_ARTIFACT_SHA256']
+          assert meta['size_in_bytes']==111459354 and not meta['expired']
+          assert meta['workflow_run']['id']==int(os.environ['ORIGINAL_RUN_ID'])
+          print('read-only-original-artifact-binding=PASS')
+          PY_BINDING
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-first-use-candidate-43570033851-1-21a1a41510f44b480bc4264272479d48048a8be8
+          run-id: 43570033851
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/mw-ats-prebuilt-original
+      - name: Verify original AppImage bytes and provision GI read-only prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY_IMAGE'
+          import hashlib, os
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])/'mw-ats-prebuilt-original'
+          items=list(root.rglob('Motionwright_0.1.0_amd64.AppImage'))
+          assert len(items)==1
+          item=items[0]
+          assert item.is_file() and not item.is_symlink()
+          h=hashlib.sha256()
+          with item.open('rb') as stream:
+              for part in iter(lambda: stream.read(1<<20), b''):
+                  h.update(part)
+          assert item.stat().st_size==94456312
+          assert h.hexdigest()==os.environ['ORIGINAL_IMAGE_SHA256']
+          item.chmod(0o755)
+          print('original-appimage-sha256=PASS')
+          PY_IMAGE
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libfuse2 xvfb x11-utils dbus-x11 python3-gi gir1.2-atspi-2.0
+      - name: Extract original verified AppImage with no build
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$(find "$RUNNER_TEMP/mw-ats-prebuilt-original" -type f -name 'Motionwright_0.1.0_amd64.AppImage' -print -quit)"
+          test -n "$image"
+          root="$RUNNER_TEMP/mw-ats-extract-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$root"
+          mkdir -m 700 "$root"
+          (cd "$root" && "$image" --appimage-extract >/dev/null)
+          test -f "$root/squashfs-root/AppRun"
+          chmod 0755 "$root/squashfs-root/AppRun"
+          echo 'read-only-original-extraction=PASS'
+      - name: One isolated AppImage accessibility observation; never send Edit or Create
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          diagnostic="$RUNNER_TEMP/mw-ats-readonly-original-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$diagnostic"
+          mkdir -m 700 "$diagnostic"
+          timeout -k 5s 65s xvfb-run -a dbus-run-session -- /usr/bin/python3 -B -E -s \
+            "$GITHUB_WORKSPACE/tooling/ci_linux_atspi_readonly_diagnostic.py" \
+            --app-run "$RUNNER_TEMP/mw-ats-extract-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/squashfs-root/AppRun" \
+            --scratch "$diagnostic/isolated-gui" \
+            --output "$diagnostic/readonly-original.json" \
+            --source "$GITHUB_SHA" \
+            --original-binary-source "$ORIGINAL_SOURCE"
+      - name: Retain bounded original read-only stage markers
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-ats-readonly-original-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/mw-ats-readonly-original-${{ github.run_id }}-${{ github.run_attempt }}/readonly-original.json
+            ${{ runner.temp }}/mw-ats-readonly-original-${{ github.run_id }}-${{ github.run_attempt }}/isolated-gui/read-only-atspi/*.json
+          if-no-files-found: warn
+          retention-days: 30
