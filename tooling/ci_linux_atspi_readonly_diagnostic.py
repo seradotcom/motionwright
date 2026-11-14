@@ -64,6 +64,38 @@ def admit_source(repo: Path, source: str, binary_source: str):
             raise ProbeError("READ_ONLY_PROBE_SOURCE_DIFFERS_FROM_BINARY")
 
 
+def observe_delayed_dialog(bridge, app, binding: dict, records: Path, *,
+                           pause=time.sleep):
+    """Read only, six bounded polls for a dialog shown after Studio bootstrap.
+
+    Window creation is earlier than the desktop's async local-store admission.
+    This probe never edits the UI, and every subsequent candidate is subject
+    to the original unique title, visible-state, and owner-PID checks.
+    """
+    def qualified(views):
+        return [view for view in views
+                if view.name == "Project library" and VISIBLE <= view.states
+                and "defunct" not in view.states]
+
+    stage(records, "dialog-collection-start")
+    views = bridge.matching_roles(app, ("dialog",))
+    stage(records, "dialog-collection-return",
+          {"dialog_role_count": len(views), "matching_title_count": len(qualified(views))})
+    if qualified(views):
+        return unique(qualified(views), "DIALOG")
+    for identity in ("one", "two", "three", "four", "five", "six"):
+        pause(1.5)
+        stage(records, "dialog-recheck-" + identity + "-start")
+        if bridge.pid(app) != binding["pid"]:
+            raise ProbeError("READ_ONLY_PROCESS_CHANGED_BEFORE_DIALOG")
+        views = bridge.matching_roles(app, ("dialog",))
+        stage(records, "dialog-recheck-" + identity + "-return",
+              {"dialog_role_count": len(views), "matching_title_count": len(qualified(views))})
+        if qualified(views):
+            return unique(qualified(views), "DIALOG")
+    return unique(qualified(views), "DIALOG")
+
+
 def trace_controls(scratch: Path, records: Path):
     stage(records, "callback-start")
     deadline = time.monotonic() + 26
@@ -104,13 +136,7 @@ def trace_controls(scratch: Path, records: Path):
     stage(records, "application-pid-filter-start")
     app = unique([node for node in apps if bridge.pid(node) == binding["pid"]], "APPLICATION")
     stage(records, "application-pid-filter-return")
-    stage(records, "dialog-collection-start")
-    dialogs = bridge.matching_roles(app, ("dialog",))
-    stage(records, "dialog-collection-return", {"dialog_role_count": len(dialogs)})
-    dialog = unique([
-        row for row in dialogs if row.name == "Project library"
-        and VISIBLE <= row.states and "defunct" not in row.states
-    ], "DIALOG")
+    dialog = observe_delayed_dialog(bridge, app, binding, records)
     if bridge.owner_pid(dialog.node) != binding["pid"]:
         raise ProbeError("READ_ONLY_DIALOG_PROCESS_MISMATCH")
     stage(records, "control-collection-start")
@@ -127,7 +153,7 @@ def trace_controls(scratch: Path, records: Path):
     stage(records, "controls-verified")
     return {"status": "SELECTION_CONFIRMED_READ_ONLY",
             "bound_pid": binding["pid"],
-            "dialog_count": len(dialogs),
+            "dialog_count": 1,
             "control_role_count": len(children)}
 
 

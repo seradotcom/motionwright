@@ -45,7 +45,8 @@ class ReadOnlyOriginalContracts(unittest.TestCase):
                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
         self.assertFalse(invoked & forbidden)
         funcs = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
-        self.assertEqual(funcs, ["stage", "admit_source", "trace_controls", "main"])
+        self.assertEqual(funcs, ["stage", "admit_source", "observe_delayed_dialog",
+                                 "trace_controls", "main"])
 
     def test_source_is_pinned_to_original_built_client(self):
         original = "21a1a41510f44b480bc4264272479d48048a8be8"
@@ -58,6 +59,42 @@ class ReadOnlyOriginalContracts(unittest.TestCase):
                     ["git", "-C", str(ROOT), "rev-parse", "HEAD:" + name],
                     text=True).strip()
                 self.assertEqual(old, new)
+
+    def test_delayed_dialog_observation_is_read_only_and_bounded(self):
+        from types import SimpleNamespace
+        from linux_first_use_accessible import View
+        state = frozenset(("visible", "showing"))
+        dialog = View(object(), "dialog", "Project library", state, frozenset())
+        calls, delays = [], []
+        class Bridge:
+            def pid(self, node):
+                calls.append("pid")
+                return 107
+            def matching_roles(self, node, roles):
+                calls.append(tuple(roles))
+                return [] if calls.count(("dialog",)) <= 2 else [dialog]
+        with tempfile.TemporaryDirectory() as directory:
+            result = diagnostic.observe_delayed_dialog(
+                Bridge(), object(), {"pid": 107}, Path(directory),
+                pause=lambda delay: delays.append(delay))
+            self.assertIs(result, dialog)
+            self.assertEqual(delays, [1.5, 1.5])
+            self.assertEqual([p.name for p in Path(directory).glob("*.json")],
+                             sorted(p.name for p in Path(directory).glob("*.json")))
+            self.assertTrue((Path(directory)/"dialog-recheck-two-return.json").exists())
+
+    def test_missing_dialog_stops_after_six_observations_without_mutation(self):
+        from types import SimpleNamespace
+        class Bridge:
+            def pid(self, node): return 107
+            def matching_roles(self, node, roles): return []
+        pauses = []
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(diagnostic.ProbeError, "MISSING_DIALOG"):
+                diagnostic.observe_delayed_dialog(Bridge(), object(), {"pid": 107},
+                                                   Path(directory), pause=pauses.append)
+            self.assertEqual(pauses, [1.5]*6)
+            assert len(list(Path(directory).glob("*.json")))==14
 
     def test_shallow_checkout_admission_uses_pinned_blobs_not_historical_commit(self):
         source = "b" * 40
