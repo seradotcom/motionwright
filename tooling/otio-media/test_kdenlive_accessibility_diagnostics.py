@@ -190,7 +190,35 @@ class AccessibilityDiscoveryDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostic["init_returncode"], 0)
         self.assertTrue(self.journal.blocked)
 
+    def _assert_ranged_text_uses_text_interface(self):
+        # GI returns the Accessible object for Text too. Its get_text()
+        # accessor takes no range, unlike the Text interface method.
+        for size in (0, 3, 2048, 65536, 65537):
+            with self.subTest(character_count=size):
+                owned = fake_owned()
+                owned.get_text_iface.return_value = owned
+                owned.get_character_count = Mock(return_value=size)
+                owned.get_text = Mock(side_effect=lambda: owned)
+                original = "ñ" * min(size, 1024)
+                api = fake_api(desktops=[fake_desktop([owned])])
+                api.Text = SimpleNamespace(get_text=Mock(return_value=original))
+                journal = actions.ActionJournal(lambda _: None, Mock())
+                instance = make_session(api, journal)
+                if size > 65536:
+                    with self.assertRaisesRegex(actions.GuiRejected, "native_gui_text_budget"):
+                        instance.wait_ready("import")
+                    api.Text.get_text.assert_not_called()
+                    self.assertTrue(journal.blocked)
+                else:
+                    rows = instance.wait_ready("import")
+                    self.assertEqual(rows[0]["text"], original)
+                    self.assertEqual(rows[0]["pid"], 41)
+                    api.Text.get_text.assert_called_once_with(owned, 0, min(size, 1024))
+                    self.assertFalse(journal.blocked)
+                owned.get_text.assert_not_called()
+
     def test_exact_pid_discovery_succeeds(self):
+        self._assert_ranged_text_uses_text_interface()
         api = fake_api(desktops=[fake_desktop([fake_owned()])])
         instance = make_session(api, self.journal)
         rows = instance.wait_ready("import")

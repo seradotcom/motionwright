@@ -258,7 +258,9 @@ class AtspiSession:
             if interface is not None:
                 size = interface.get_character_count()
                 require(0 <= size <= 65536, "native_gui_text_budget")
-                text = interface.get_text(0, min(size, 1024))
+                # GI may return the same Accessible object for this interface;
+                # its get_text() accessor shadows the ranged Text method.
+                text = self.api.Text.get_text(interface, 0, min(size, 1024))
             rect = [0, 0, 0, 0]
             component = node.get_component_iface()
             if component is not None and visible:
