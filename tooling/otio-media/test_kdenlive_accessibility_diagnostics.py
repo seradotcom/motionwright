@@ -36,6 +36,7 @@ def fake_foreign(pid=42):
 def fake_owned():
     return SimpleNamespace(
         get_process_id=Mock(return_value=41),
+        clear_cache_single=Mock(),
         get_state_set=Mock(return_value=SimpleNamespace(contains=lambda state: False)),
         get_role_name=Mock(return_value="application"),
         get_editable_text_iface=Mock(return_value=None),
@@ -228,6 +229,9 @@ class AccessibilityDiscoveryDiagnosticsTests(unittest.TestCase):
         self.assertEqual(instance.tree(), [])
         self.assertEqual(instance.nodes, {})
         self.assertEqual(instance.last_discovery["incomplete_reason"], "null_descendant")
+        self.assertFalse(instance.last_snapshot["complete"])
+        self.assertEqual(instance.last_snapshot["null_key"], "app/1")
+        self.assertEqual(len(instance.last_snapshot["rows"]), 2)
         self.assertFalse(journal.blocked)
         rows = instance.wait_ready("import")
         self.assertEqual(len(rows), 1)
@@ -262,7 +266,56 @@ class AccessibilityDiscoveryDiagnosticsTests(unittest.TestCase):
             if child is not None:
                 child.get_state_set.assert_not_called()
 
+    def _assert_owned_cache_refresh_and_failure_custody(self):
+        owned, child, foreign = fake_owned(), fake_owned(), fake_foreign()
+        current = {"fresh": False}
+        owned.clear_cache_single.side_effect = lambda: current.update(fresh=True)
+        owned.get_child_count.side_effect = lambda: 1 if current["fresh"] else 2
+        owned.get_child_at_index = Mock(
+            side_effect=lambda index: child if current["fresh"] and index == 0 else None)
+        api = fake_api(desktops=[fake_desktop([foreign, owned])])
+        instance = make_session(api, self.journal)
+        rows = instance.wait_ready("import")
+        self.assertEqual(len(rows), 2)
+        owned.clear_cache_single.assert_called_once_with()
+        child.clear_cache_single.assert_called_once_with()
+        foreign.get_state_set.assert_not_called()
+        self.assertTrue(instance.last_snapshot["complete"])
+        self.assertEqual(instance.last_snapshot["rows"], rows)
+
+        # A main-window failure retains its last already captured snapshot,
+        # without querying or clicking after the original deadline.
+        owned = fake_owned()
+        owned.get_child_count.return_value = 1
+        owned.get_child_at_index = Mock(return_value=None)
+        api = fake_api(desktops=[fake_desktop([owned])])
+        events = []
+        journal = actions.ActionJournal(events.append, Mock())
+        instance = make_session(api, journal)
+        clock = ManualQueryClock()
+        with patch.object(actions.time, "monotonic", side_effect=clock.monotonic), \
+             patch.object(actions.time, "sleep", side_effect=clock.sleep) as slept:
+            query = clock.after_queries(lambda: instance.find(
+                ("File",), ("menu", "menu item")), (31.0,))
+            with self.assertRaisesRegex(actions.GuiUncertain, "import.main-ready"):
+                instance._wait_snapshot("import.main-ready", query)
+        api.get_desktop.assert_called_once_with(0)
+        owned.clear_cache_single.assert_called_once_with()
+        slept.assert_not_called()
+        diagnostic = events[-1]
+        self.assertEqual(diagnostic["step"], "import.main-ready.discovery-diagnostic")
+        self.assertEqual(diagnostic["last_snapshot"]["reason"], "null_descendant")
+        self.assertEqual(diagnostic["last_snapshot"]["null_key"], "app/0")
+        self.assertEqual(len(diagnostic["last_snapshot"]["rows"]), 1)
+        self.assertFalse(diagnostic["last_snapshot"]["complete"])
+        self.assertEqual(instance.nodes, {})
+        effect = Mock()
+        with self.assertRaises(actions.GuiRejected):
+            journal.perform("must-not-repeat", {}, effect)
+        effect.assert_not_called()
+
     def test_exact_pid_discovery_succeeds(self):
+        self._assert_owned_cache_refresh_and_failure_custody()
         self._assert_transition_snapshot_is_not_actionable()
         self._assert_ranged_text_uses_text_interface()
         api = fake_api(desktops=[fake_desktop([fake_owned()])])
