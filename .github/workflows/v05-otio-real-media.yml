@@ -296,7 +296,7 @@ jobs:
               "otio_python_discovery": len(discovered),
               "required_contract_modules": contract_groups,
               "existing_route_and_owner_cases": 196, "private_preview_audio_controls": 19,
-              "editor_render_source_controls": 28, "modal_open_readback_controls": 20,
+              "editor_render_source_controls": 28, "modal_open_readback_controls": 25,
               "accessibility_preflight_cases": 9,
               "tests_run": result.testsRun,
               "required_native_tests": sorted(required_native),
@@ -673,7 +673,7 @@ jobs:
           import test_kdenlive_accessibility_preflight as preflight_tests
           modules = [
               (tests, 162), (original_tests, 10), (process_tests, 24),
-              (diagnostic_tests, 16), (modal_tests, 20), (owner_tests, 31), (preflight_tests, 9),
+              (diagnostic_tests, 16), (modal_tests, 25), (owner_tests, 31), (preflight_tests, 9),
           ]
           def ids(node):
               if isinstance(node, unittest.TestSuite):
@@ -695,7 +695,7 @@ jobs:
           result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(suites))
           print(json.dumps({"tests_run": result.testsRun, "roster": roster, "modules": groups,
                             "existing_route_and_owner_cases": 196, "private_preview_audio_controls": 19,
-                            "editor_render_source_controls": 28, "modal_open_readback_controls": 20,
+                            "editor_render_source_controls": 28, "modal_open_readback_controls": 25,
                             "accessibility_preflight_cases": 9,
                             "skips": len(result.skipped), "failures": len(result.failures),
                             "errors": len(result.errors), "native_execution": False}, sort_keys=True))
