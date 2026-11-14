@@ -533,12 +533,18 @@ class AtspiSession:
 
     def ready(self, phase: str) -> None:
         """Observe native startup; acknowledge its sole first-run page once."""
+        quick_setup = "<h3>Welcome to Kdenlive Quick Setup</h3>"
+
         def startup():
             rows = self.tree()
-            dialogs = [r for r in rows if r["visible"] and
-                       r["role"] in ("dialog", "frame") and
-                       normalized(r["name"]) == "Welcome to Kdenlive"]
-            if dialogs:
+            titles = [r for r in rows if r["visible"] and r["role"] == "label"
+                      and normalized(r["name"]) == quick_setup]
+            if titles:
+                title = unique(titles, code="native_gui_startup_title_not_unique")
+                dialogs = [r for r in rows if r["visible"] and
+                           r["role"] in ("dialog", "frame") and
+                           normalized(r["name"]) == "Kdenlive" and
+                           title["key"].startswith(r["key"] + "/")]
                 dialog = unique(dialogs, code="native_gui_startup_dialog_not_unique")
                 require(phase == "import", "native_gui_first_run_reappeared_on_reopen")
                 return {"kind": "wizard", "dialog": dialog, "rows": rows}
@@ -557,17 +563,19 @@ class AtspiSession:
             dialog = observed["dialog"]
             rows = [r for r in observed["rows"] if
                     r["key"].startswith(dialog["key"] + "/")]
-            require(any(r["visible"] and normalized(r["name"]) ==
-                        "Welcome to Kdenlive 26.08.3" for r in rows),
+            # The pinned 26.08.3 native Quick Setup keeps its exact version
+            # label on the hidden welcome page inside this same owned frame.
+            require(len([r for r in rows if r["role"] == "label" and
+                         normalized(r["name"]) == "Kdenlive 26.08.3"]) == 1,
                     "native_gui_startup_version_title_not_exact")
-            okay = unique([r for r in rows if r["visible"] and r["enabled"]
-                           and r["role"] == "push button" and
-                           normalized(r["name"]) == "OK"],
-                          code="native_gui_startup_cannot_finish")
-            self.action(phase + ".startup-acknowledge", okay)
+            start = unique([r for r in rows if r["visible"] and r["enabled"]
+                            and r["role"] == "push button" and
+                            normalized(r["name"]) == "Start Editing"],
+                           code="native_gui_startup_cannot_finish")
+            self.action(phase + ".startup-acknowledge", start)
             self.journal.wait(phase + ".main-ready", lambda: self.find(
                 ("File",), ("menu", "menu item")))
-            require(not self.find(("Welcome to Kdenlive",), ("dialog", "frame")),
+            require(not self.find((quick_setup,), ("label",)),
                     "native_gui_startup_dialog_did_not_close")
 
     def edit_third_clip(self) -> None:

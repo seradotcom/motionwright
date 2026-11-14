@@ -383,40 +383,64 @@ class NativeControlTests(unittest.TestCase):
         instance.ready("import")
         instance.action.assert_not_called()
 
+    @staticmethod
+    def quick_setup_rows():
+        # Shape observed from the real 26.08.3 process, including its hidden
+        # version label. This is a control fixture, never native evidence.
+        return [
+            row("app/wizard", name="Kdenlive", role="frame", editable=False),
+            row("app/wizard/quick", name="<h3>Welcome to Kdenlive Quick Setup</h3>",
+                role="label", editable=False),
+            row("app/wizard/version", name="Kdenlive 26.08.3",
+                role="label", editable=False, visible=False),
+            row("app/wizard/start", name="Start Editing",
+                role="push button", editable=False),
+        ]
+
     def test_single_startup_ack_requires_exact_version_and_enabled_ok(self):
         instance = self.session()
-        dialog = row("app/wizard", name="Welcome to Kdenlive", role="dialog")
-        rows = [dialog,
-                row("app/wizard/title", name="Welcome to Kdenlive 26.08.3",
-                    role="label", editable=False),
-                row("app/wizard/ok", name="OK", role="push button", editable=False)]
+        rows = self.quick_setup_rows()
         instance.tree = Mock(return_value=rows)
         instance.find = Mock(side_effect=[row(name="File"), None])
         instance.action = Mock()
         instance.ready("import")
-        instance.action.assert_called_once()
-        self.assertEqual(instance.action.call_args.args[0], "import.startup-acknowledge")
+        instance.action.assert_called_once_with("import.startup-acknowledge", rows[3])
+        self.assertEqual(instance.find.call_args.args,
+                         (("<h3>Welcome to Kdenlive Quick Setup</h3>",), ("label",)))
 
     def test_reopen_must_not_repeat_first_run_bootstrap(self):
         instance = self.session()
-        instance.tree = Mock(return_value=[
-            row("app/wizard", name="Welcome to Kdenlive", role="dialog")])
+        instance.tree = Mock(return_value=self.quick_setup_rows())
         instance.action = Mock()
         with self.assertRaises(actions.GuiRejected):
             instance.ready("reopen")
         instance.action.assert_not_called()
 
     def test_wrong_startup_version_and_disabled_finish_are_rejected(self):
-        for title, enabled in (("Welcome to Kdenlive 26.08", True),
-                               ("Welcome to Kdenlive 26.08.3", False)):
+        for defect in ("wrong-version", "disabled", "hidden", "wrong-action",
+                       "duplicate-action", "foreign-action", "duplicate-version",
+                       "foreign-title"):
+            rows = self.quick_setup_rows()
+            if defect == "wrong-version":
+                rows[2]["name"] = "Kdenlive 26.08.4"
+            elif defect == "disabled":
+                rows[3]["enabled"] = False
+            elif defect == "hidden":
+                rows[3]["visible"] = False
+            elif defect == "wrong-action":
+                rows[3]["name"] = "OK"
+            elif defect == "duplicate-action":
+                rows.append({**rows[3], "key": "app/wizard/start2"})
+            elif defect == "foreign-action":
+                rows[3]["key"] = "app/another/start"
+            elif defect == "duplicate-version":
+                rows.append({**rows[2], "key": "app/wizard/version2"})
+            else:
+                rows[1]["key"] = "app/another/quick"
             instance = self.session()
-            instance.tree = Mock(return_value=[
-                row("app/wizard", name="Welcome to Kdenlive", role="dialog"),
-                row("app/wizard/title", name=title, role="label", editable=False),
-                row("app/wizard/ok", name="OK", role="push button",
-                    enabled=enabled, editable=False)])
+            instance.tree = Mock(return_value=rows)
             instance.action = Mock()
-            with self.subTest(title=title, enabled=enabled), self.assertRaises(actions.GuiRejected):
+            with self.subTest(defect=defect), self.assertRaises(actions.GuiRejected):
                 instance.ready("import")
             instance.action.assert_not_called()
 
