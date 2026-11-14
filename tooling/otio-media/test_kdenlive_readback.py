@@ -269,6 +269,101 @@ class KdenliveNativeReadbackTests(unittest.TestCase):
                     self.assertEqual(receipt["observed_bound_clip_count"], 1)
                     self.assertFalse(receipt["human_rights_or_visual_approval"])
 
+        # The authenticated physical 43653831975 project has one master
+        # wrapper, one pinned 26.08.3 "black" color producer (out=05:03),
+        # and a separate two-playlist editorial tractor. This *synthetic*
+        # fixture covers only that exact shape, never claims native Save.
+        with tempfile.TemporaryDirectory() as scratch:
+            bundle, seal = capsule(Path(scratch))
+            source = (
+                b'<producer id="native_black" in="0" out="9090">'
+                b'<property name="length">2147483647</property>'
+                b'<property name="eof">continue</property>'
+                b'<property name="resource">black</property>'
+                b'<property name="aspect_ratio">1</property>'
+                b'<property name="mlt_service">color</property>'
+                b'<property name="kdenlive:playlistid">black_track</property>'
+                b'<property name="mlt_image_format">rgba</property>'
+                b'<property name="set.test_audio">0</property>'
+                b'</producer>'
+            )
+            wrapper = (
+                b'<playlist id="empty_editorial_video"/>'
+                b'<tractor id="editorial" in="0" out="29">'
+                b'<track producer="timeline0" hide="audio"/>'
+                b'<track producer="empty_editorial_video" hide="audio"/>'
+                b'</tractor>'
+                b'<tractor id="pinned_wrapper" in="0" out="29">'
+                b'<track producer="native_black"/>'
+                b'<track producer="editorial" in="0" out="29"/>'
+                b'</tractor>'
+            )
+            authentic_shape = (
+                mlt_xml(media_name=f"media/{MEDIA_SHA}.mp4")
+                .replace(b'<track producer="timeline0"/>',
+                         b'<track producer="pinned_wrapper" in="0" out="29"/>', 1)
+                .replace(b'</mlt>', source + wrapper + b'</mlt>', 1)
+            )
+            project, sha = native_file(bundle, authentic_shape, "native-wrapper.kdenlive")
+            receipt = inspect_saved_kdenlive(project, sha, bundle, seal)
+            self.assertEqual(receipt["native_video_graph_profile"],
+                             "single-contiguous-editorial-track/1")
+            self.assertEqual(receipt["authorized_black_background_track_count"], 1)
+            self.assertEqual(receipt["observed_bound_clip_count"], 1)
+            self.assertEqual(receipt["observed_bound_editorial_clip_semantics"][0]
+                             ["original_inpoint_frame"], 0)
+            self.assertEqual(receipt["observed_bound_editorial_clip_semantics"][0]
+                             ["duration_frames"], 30)
+            self.assertEqual({r["original_media_sha256"]
+                              for r in receipt["observed_source_media"]}, {MEDIA_SHA})
+            self.assertFalse(receipt["human_rights_or_visual_approval"])
+            self.assertFalse(receipt["reopened_in_distinct_editor_process"])
+            self.assertFalse(receipt["external_Kdenlive_PID_or_application_process_attested"])
+            self.assertEqual(project.read_bytes(), authentic_shape)
+            for label, first, second, reason in (
+                ("other_color",
+                 b'<property name="resource">black</property>',
+                 b'<property name="resource">blue</property>',
+                 "unbound_visible_track"),
+                ("another_service",
+                 b'<property name="mlt_service">color</property>',
+                 b'<property name="mlt_service">avformat</property>',
+                 "unbound_visible_track"),
+                ("foreign_generator_property",
+                 b'<property name="set.test_audio">0</property>',
+                 b'<property name="set.test_audio">1</property>',
+                 "unbound_visible_track"),
+                ("black_source_shorter_than_timeline",
+                 b'<producer id="native_black" in="0" out="9090">',
+                 b'<producer id="native_black" in="0" out="14">',
+                 "black_generator_cannot_cover_original_timeline"),
+                ("black_source_shifted",
+                 b'<producer id="native_black" in="0" out="9090">',
+                 b'<producer id="native_black" in="1" out="9090">',
+                 "unbound_visible_track"),
+                ("parallel_duplicate",
+                 b'<track producer="empty_editorial_video" hide="audio"/>',
+                 b'<track producer="timeline0" hide="audio"/>',
+                 "duplicate_visible_playback_container"),
+                ("third_wrapper_track",
+                 b'<track producer="editorial" in="0" out="29"/>',
+                 b'<track producer="editorial" in="0" out="29"/>'
+                 b'<track producer="timeline0" in="0" out="29"/>',
+                 "unbound_visible_track"),
+                ("unbounded_wrapper",
+                 b'<tractor id="pinned_wrapper" in="0" out="29">',
+                 b'<tractor id="pinned_wrapper" in="0" out="100">',
+                 "container_interval_not_full_editorial_span"),
+            ):
+                with self.subTest(pinned_native_rejection=label):
+                    self.assertEqual(authentic_shape.count(first), 1)
+                    rejected, rejected_sha = native_file(
+                        bundle, authentic_shape.replace(first, second, 1),
+                        label + ".kdenlive")
+                    with self.assertRaisesRegex(KdenliveReadbackRejected, reason):
+                        inspect_saved_kdenlive(rejected, rejected_sha, bundle, seal)
+                    self.assertEqual(project.read_bytes(), authentic_shape)
+
     def test_playback_out_property_cannot_hide_a_container_or_entry_trim(self):
         for control in (
             b'<property name="out">14</property>',

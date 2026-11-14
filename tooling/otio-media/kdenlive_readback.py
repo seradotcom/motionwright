@@ -254,6 +254,7 @@ def inspect_saved_kdenlive(
     hidden_video_track_refs = []
     interval_guards = []
     background_guards = []
+    native_black_generators = []
     master_id = master_tractors[0].attrib["id"]
 
     def require_plain_playback_controls(node: ET.Element) -> None:
@@ -306,6 +307,42 @@ def inspect_saved_kdenlive(
             return None
         return container, source, boundary
 
+    def pinned_nested_black_generator(identifier: str):
+        """The pinned 26.08.3 black-track generator, never an editorial clip.
+
+        The authentic first Save uses a color=black generator outside the
+        editorial MLT playlist. It is only admissible inside the first slot
+        of one direct child wrapper tractor, bounded by that wrapper's exact
+        editorial interval; it never supplies source/media authority.
+        """
+        source = objects[identifier]
+        if (source.tag != "producer"
+                or set(source.attrib) != {"id", "in", "out"}
+                or any(child.tag != "property" for child in source)):
+            return None
+        props = source.findall("property")
+        if any(set(prop.attrib) != {"name"} or len(prop) for prop in props):
+            return None
+        pairs = [(prop.attrib["name"], (prop.text or "").strip())
+                 for prop in props]
+        if len(pairs) != 8 or len({name for name, _ in pairs}) != 8:
+            return None
+        if dict(pairs) != {
+            "length": "2147483647", "eof": "continue",
+            "resource": "black", "aspect_ratio": "1",
+            "mlt_service": "color", "kdenlive:playlistid": "black_track",
+            "mlt_image_format": "rgba", "set.test_audio": "0",
+        }:
+            return None
+        # The original generator's 05:03 out is deliberately longer than
+        # the saved 3-second project. The wrapper, not the generator, owns
+        # the visible timeline duration; both clocks must be finite.
+        if original_mlt_frame(source.attrib["in"], rate_num // rate_den) != 0:
+            return None
+        if original_mlt_frame(source.attrib["out"], rate_num // rate_den) > 30 * 600:
+            return None
+        return source
+
     def walk(identifier: str, ancestors: frozenset[str]) -> list[ET.Element]:
         require(identifier in objects,
                 "native_Kdenlive_playback_graph_has_dangling_producer")
@@ -356,6 +393,27 @@ def inspect_saved_kdenlive(
                     visible_containers.add(referenced)
                     reachable.update((referenced, source.attrib["id"]))
                     background_guards.extend((child, container, boundary))
+                    continue
+                # Kdenlive 26.08.3 may wrap the real editorial tractor in a
+                # two-track compositor with one pinned, resource-free black
+                # base. Admit exactly that nested first slot, never a second
+                # visible video source or arbitrary MLT producer.
+                nested_black = (
+                    pinned_nested_black_generator(referenced)
+                    if identifier != master_id
+                    and ancestors == frozenset((master_id,))
+                    and len(current.findall("track")) == 2
+                    and visible_track_index == 1
+                    and hide is None
+                    else None
+                )
+                if nested_black is not None:
+                    require(not background_guards and not native_black_generators
+                            and referenced not in reachable,
+                            "native_Kdenlive_multiple_or_reused_black_background")
+                    reachable.add(referenced)
+                    native_black_generators.append(nested_black)
+                    background_guards.append(child)
                     continue
                 require(objects[referenced].tag in ("playlist", "tractor"),
                         "native_Kdenlive_unbound_visible_track_not_supported")
@@ -484,6 +542,16 @@ def inspect_saved_kdenlive(
     editorial_duration = sum(durations.values())
     for node in background_guards:
         require_full_span(node, editorial_duration)
+    # A finite nested wrapper clips its fixed black generator to the exact
+    # editorial duration. The source may be longer, but not shorter or
+    # shifted; the generator never becomes a fourth imported scene.
+    require(len(native_black_generators) <= 1,
+            "native_Kdenlive_multiple_nested_black_generators")
+    for source in native_black_generators:
+        require(original_mlt_frame(source.attrib["in"], rate_num // rate_den) == 0
+                and original_mlt_frame(source.attrib["out"], rate_num // rate_den)
+                >= editorial_duration - 1,
+                "native_Kdenlive_black_generator_cannot_cover_original_timeline")
     return {
         "schema": "motionwright.native.kdenlive-saved-project-readback/1",
         "native_file_sha256": native_sha,
