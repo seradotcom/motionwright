@@ -374,6 +374,78 @@ class ProjectMonitorSelectorTests(unittest.TestCase):
                 {"complete": True, "rows": duplicated}, PID)["reason"],
             "last_menu_keys_duplicated")
 
+        # The native Sequence "show menu" can toggle an already-open popup
+        # shut. The original 43642147876 observed Current Item under Sequence,
+        # enabled but hidden *after* that action. Only a complete owned tree
+        # may authorize skipping an unnecessary top-level menu toggle.
+        def duration_menu_case(opened, enabled=True, *, missing_parent=False):
+            rows = tabbed_rows() + [
+                row("app/1/2", role="menu bar"),
+                row("app/1/2/4", name="Sequence", role="menu item", focused=True),
+                row("app/1/2/4/0", role="menu", visible=opened),
+                row("app/1/2/4/0/4", name="Current Item", role="menu item",
+                    visible=opened, enabled=enabled),
+                row("app/1/2/4/0/4/0/0", name="Edit Duration",
+                    role="menu item", visible=opened),
+            ]
+            if missing_parent:
+                next(r for r in rows if r["key"] == "app/1/2/4/0")["visible"] = False
+            events, calls = [], []
+            ui = actions.AtspiSession.__new__(actions.AtspiSession)
+            ui.pid = PID
+            ui.journal = actions.ActionJournal(events.append, lambda: None)
+            def tree():
+                ui.last_snapshot = {"complete": True, "rows": rows}
+                return rows
+            ui.tree = tree
+            ui.control = lambda step, names, roles: calls.append(
+                ("control", step, tuple(names), tuple(roles)))
+            ui.modal_action = lambda step, kind: calls.append(
+                ("modal", step, kind))
+            return ui, rows, events, calls
+
+        ready, _, events, calls = duration_menu_case(True)
+        ready.menu("synthetic.duration", "Sequence", "Current Item", "Edit Duration")
+        self.assertEqual([c[1] for c in calls],
+                         ["synthetic.duration.1", "synthetic.duration.2"])
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["state"], "COMPLETE_READ_ONLY_SELECTION")
+        self.assertTrue(events[0]["skip_top_level_toggle"])
+        self.assertTrue(events[0]["current_item_visible"])
+        self.assertFalse(events[0]["native_action_performed_here"])
+        self.assertFalse(events[0]["native_operation_retried"])
+        self.assertFalse(events[0]["formal_acceptance"])
+
+        closed, _, closed_events, closed_calls = duration_menu_case(False)
+        closed.menu("synthetic.duration", "Sequence", "Current Item", "Edit Duration")
+        self.assertEqual([c[1] for c in closed_calls],
+                         ["synthetic.duration.0", "synthetic.duration.1",
+                          "synthetic.duration.2"])
+        self.assertFalse(closed_events[0]["skip_top_level_toggle"])
+        self.assertFalse(closed_events[0]["current_item_visible"])
+
+        for opened, enabled, missing_parent in (
+                (True, False, False), (True, True, True)):
+            denied, _, denied_events, denied_calls = duration_menu_case(
+                opened, enabled, missing_parent=missing_parent)
+            with self.assertRaises(actions.GuiRejected):
+                denied.menu("synthetic.duration", "Sequence",
+                            "Current Item", "Edit Duration")
+            self.assertEqual(denied_calls, [])
+            self.assertTrue(denied.journal.blocked)
+            self.assertEqual(denied_events[-1]["state"],
+                             "OBSERVATION_ERROR_OR_UNKNOWN")
+
+        blocked, _, blocked_events, blocked_calls = duration_menu_case(True)
+        blocked.journal.blocked = True
+        with self.assertRaisesRegex(actions.GuiRejected,
+                                    "native_gui_previous_action_uncertain"):
+            blocked.menu("synthetic.duration", "Sequence",
+                         "Current Item", "Edit Duration")
+        self.assertEqual(blocked_events, [])
+        self.assertEqual(blocked_calls, [])
+        self.assertTrue(blocked.journal.blocked)
+
     def test_refresh_keeps_real_control_flow_with_synthetic_tabbed_dock(self):
         from test_kdenlive_playlist_refresh import SyntheticEditor
         case = SyntheticEditor()

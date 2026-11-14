@@ -885,7 +885,67 @@ class AtspiSession:
 
     def menu(self, step: str, *names: str) -> None:
         kind = MODAL_MENU_PATHS.get(names)
+        skip_top_level = False
+        if names == ("Sequence", "Current Item", "Edit Duration"):
+            require(not self.journal.blocked, "native_gui_previous_action_uncertain")
+            # Select Clip leaves the Sequence top-level item focused on the
+            # observed Qt route. Reissuing show-menu can toggle that open menu
+            # closed. A complete *current* owned tree decides whether to skip
+            # the top-level toggle. No inferred popup, keyboard shortcut, or
+            # retry of an action whose outcome was UNKNOWN is permitted.
+            try:
+                self.journal.guard()
+                rows = self._complete_modal_tree()
+                require(rows is not None, "native_gui_sequence_preflight_incomplete")
+                require(not any(r["visible"] and
+                                (r["role"] in ("dialog", "alert") or r["modal"])
+                                for r in rows),
+                        "native_gui_sequence_preflight_dialog")
+                sequence = unique([
+                    r for r in rows if r["visible"] and r["enabled"]
+                    and normalized(r["name"]) == "Sequence"
+                    and r["role"] == "menu item"],
+                    code="native_gui_sequence_preflight_not_unique")
+                selected = unique([
+                    r for r in rows if r["enabled"] and
+                    normalized(r["name"]) == "Current Item" and
+                    r["role"] == "menu item" and
+                    r["key"].startswith(sequence["key"] + "/")],
+                    code="native_gui_current_item_preflight_not_unique")
+                skip_top_level = selected["visible"]
+                if skip_top_level:
+                    by_key = {r["key"]: r for r in rows}
+                    current = selected["key"]
+                    while current != sequence["key"]:
+                        parent = by_key.get(current.rpartition("/")[0])
+                        require(parent is not None and parent["visible"]
+                                and parent["enabled"],
+                                "native_gui_current_item_visible_ancestor_missing")
+                        current = parent["key"]
+                self.journal.blocked = True
+                self.journal.emit({
+                    "schema": "motionwright.native.kdenlive-current-item-preflight/1",
+                    "step": step + ".sequence-preflight",
+                    "state": "COMPLETE_READ_ONLY_SELECTION",
+                    "expected_pid": self.pid, "sequence_key": sequence["key"],
+                    "sequence_focused": sequence["focused"],
+                    "current_item_key": selected["key"],
+                    "current_item_visible": selected["visible"],
+                    "current_item_enabled": selected["enabled"],
+                    "skip_top_level_toggle": skip_top_level,
+                    "native_action_performed_here": False,
+                    "native_operation_retried": False,
+                    "dialog_open_inferred": False,
+                    "formal_acceptance": False,
+                })
+                self.journal.blocked = False
+            except BaseException as original:
+                self.journal._record_failure(step + ".sequence-preflight",
+                                             "OBSERVATION_ERROR_OR_UNKNOWN", original)
+                raise
         for index, name in enumerate(names):
+            if skip_top_level and index == 0:
+                continue
             if kind is not None and index == len(names) - 1:
                 self.modal_action(step + "." + str(index), kind)
             else:
