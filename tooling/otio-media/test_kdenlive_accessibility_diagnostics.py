@@ -34,7 +34,7 @@ def fake_api(code=0, desktops=()):
         init=Mock(return_value=code),
         set_timeout=Mock(),
         get_desktop=Mock(side_effect=list(desktops)),
-        StateType=SimpleNamespace(SHOWING=1, ENABLED=2, SENSITIVE=3, FOCUSED=4),
+        StateType=SimpleNamespace(SHOWING=1, ENABLED=2, SENSITIVE=3, FOCUSED=4, MODAL=5),
         CoordType=SimpleNamespace(SCREEN=0),
     )
 

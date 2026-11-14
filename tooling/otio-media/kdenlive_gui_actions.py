@@ -1,12 +1,14 @@
 """PID-scoped AT-SPI actions for the bounded native Kdenlive CI roundtrip.
 
 Every effect has a durable intent and is attempted once. Read-only discovery
-may wait for a control; an uncertain action prevents all subsequent actions.
+may wait for a control. An uncertain action blocks all subsequent actions unless
+an exact supported modal opener is reconciled by a fresh, complete owned tree.
 This module neither creates project XML nor decides editorial acceptance.
 """
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import re
 import subprocess
 import time
@@ -17,6 +19,31 @@ MAX_DEPTH = 40
 MAX_CHILDREN = 512
 WAIT_SECONDS = 30.0
 TIMECODE = re.compile(r"[0-9]{2}:[0-9]{2}:[0-9]{2}:[0-9]{2}\Z")
+
+# These are only native modal openers in the pinned 26.08.3 route.
+# Their readback proves an opened dialog, never an import, Save or process exit.
+MODAL_NO_REPLY = ("Did not receive a reply. Possible causes include: the remote "
+                  "application did not send a reply, the message bus security policy "
+                  "blocked the reply, the reply timeout expired, or the network "
+                  "connection was broken.")
+MODAL_SNAPSHOT_BYTES = 128 * 1024
+MODAL_OPENERS = {
+    "otio_import": (("OpenTimelineIO Import...",), ("menu item",),
+                    ("OpenTimelineIO Import",), ()),
+    "save_as": (("Save As...",), ("menu item",), ("Save As",), ()),
+    "otio_export": (("OpenTimelineIO Export...",), ("menu item",),
+                    ("OpenTimelineIO Export",), ()),
+    "duration": (("Edit Duration",), ("menu item",), ("Duration",), ()),
+    "delayed_render": (("Generate Script",), ("push button",),
+                       ("Delayed Rendering",), ("Rendering",)),
+    "discard_preferences": (("Quit",), ("menu item",), (), ()),
+}
+MODAL_MENU_PATHS = {
+    ("File", "OpenTimelineIO Import..."): "otio_import",
+    ("File", "Save As..."): "save_as",
+    ("File", "OpenTimelineIO Export..."): "otio_export",
+    ("Sequence", "Current Item", "Edit Duration"): "duration",
+}
 
 
 class GuiRejected(ValueError):
@@ -87,17 +114,21 @@ class ActionJournal:
         self.guard = guard
         self.used: set[str] = set()
         self.blocked = False
+        self.last_failure = None
 
     def _record_failure(self, step: str, state: str,
                         original: BaseException) -> None:
         # Custody failure cannot replace the observation or effect failure.
         self.blocked = True
+        self.last_failure = {"step": step, "state": state, "original": original,
+                             "retained": False}
         try:
             event = {"step": step, "state": state, "replayed": False,
                      "monotonic_ns": time.monotonic_ns()}
             if state != "TIMED_OUT_UNKNOWN":
                 event.update(error_type=type(original).__name__, error=str(original))
             self.emit(event)
+            self.last_failure["retained"] = True
         except BaseException as recording_error:
             original.add_note("native_gui_journal_recording_failed:" +
                               type(recording_error).__name__)
@@ -303,6 +334,7 @@ class AtspiSession:
                        "text": text, "visible": visible, "enabled": enabled,
                        "editable": editable, "rect": rect,
                        "focused": state.contains(self.api.StateType.FOCUSED),
+                       "modal": state.contains(self.api.StateType.MODAL),
                        "pid": self.pid}
                 rows.append(row)
                 nodes[key] = node
@@ -366,15 +398,151 @@ class AtspiSession:
         self.journal.perform(step, {**row, "action": name},
                              lambda: interface.do_action(index), guard_after=not exits)
 
+    def _complete_modal_tree(self):
+        rows = self.tree()
+        if not self.last_snapshot or self.last_snapshot.get("complete") is not True:
+            return None
+        require(self.last_snapshot.get("rows") is rows and 0 < len(rows) <= MAX_NODES
+                and all(r.get("pid") == self.pid for r in rows),
+                "native_gui_modal_snapshot_identity")
+        raw = json.dumps(rows, sort_keys=True, ensure_ascii=True, allow_nan=False).encode()
+        require(len(raw) <= MODAL_SNAPSHOT_BYTES, "native_gui_modal_snapshot_budget")
+        return rows
+
+    def _modal_readback(self, rows, kind, source_name, *, before=False):
+        _, _, titles, parents = MODAL_OPENERS[kind]
+        windows = [r for r in rows if r["visible"] and
+                   (r["role"] in ("dialog", "alert") or r.get("modal") is True)]
+        parent_rows = [r for r in rows if r["visible"]
+                       and r["role"] in ("dialog", "frame")
+                       and normalized(r["name"]) in parents]
+        require(len(parent_rows) == len(parents), "native_gui_modal_parent_not_unique")
+        expected = [r for r in rows if r["visible"]
+                    and r["role"] in ("dialog", "frame", "alert")
+                    and normalized(r["name"]) in titles]
+        if kind == "discard_preferences":
+            labels = [r for r in rows if r["visible"] and r["role"] == "label"
+                      and source_name in r["name"] and "has been changed." in r["name"]
+                      and "Do you want to save your changes?" in r["name"]]
+            if labels:
+                label = unique(labels, code="native_gui_modal_unsaved_label_not_unique")
+                expected = [r for r in windows if label["key"].startswith(r["key"] + "/")]
+                dialog = unique(expected, code="native_gui_modal_unsaved_dialog_not_unique")
+                buttons = [r for r in rows if r["visible"] and r["enabled"]
+                           and r["role"] == "push button"
+                           and r["key"].startswith(dialog["key"] + "/")]
+                names = {normalized(r["name"]) for r in buttons}
+                require(len(buttons) == 3 and names in (
+                    {"Save", "Don't Save", "Cancel"}, {"Save", "Discard", "Cancel"}),
+                    "native_gui_modal_unsaved_actions_changed")
+        require(len(expected) <= 1, "native_gui_modal_dialog_not_unique")
+        allowed = {r["key"] for r in parent_rows}
+        if before:
+            require(not expected, "native_gui_modal_precondition_already_open")
+        else:
+            allowed.update(r["key"] for r in expected)
+        require(all(r["key"] in allowed for r in windows),
+                "native_gui_modal_unexpected_dialog")
+        if not expected:
+            return None
+        dialog = expected[0]
+        require(dialog["enabled"] and dialog.get("modal") is True,
+                "native_gui_modal_postcondition_not_enabled_modal")
+        return dialog
+
+    def modal_action(self, step: str, kind: str, *, source_name=None) -> dict:
+        """One opener, then owned live readback; a NoReply is never replayed."""
+        require(not self.journal.blocked, "native_gui_previous_action_uncertain")
+        require(kind in MODAL_OPENERS and
+                (source_name in ("initial.kdenlive", "edited.kdenlive")
+                 if kind == "discard_preferences" else source_name is None),
+                "native_gui_modal_profile_not_closed")
+        names, roles, _, parents = MODAL_OPENERS[kind]
+        before = self.journal.wait(step + ".modal-before", self._complete_modal_tree)
+        self.journal.blocked = True
+        self.journal.guard()
+        self.journal.emit({"step": step + ".modal-before", "state": "OBSERVED",
+                           "expected_pid": self.pid, "profile": kind, "rows": before,
+                           "complete": True, "semantic_effect_verified_here": False})
+        self._modal_readback(before, kind, source_name, before=True)
+        scopes = [r["key"] for r in before if r["visible"]
+                  and r["role"] in ("dialog", "frame")
+                  and normalized(r["name"]) in parents]
+        target = unique([r for r in before if r["visible"] and r["enabled"]
+                         and r["role"] in roles and normalized(r["name"]) in names
+                         and (not scopes or any(r["key"].startswith(s + "/") for s in scopes))],
+                        code="native_gui_modal_opener_not_unique")
+        self.journal.guard()
+        self.journal.blocked = False
+        original = None
+        try:
+            self.action(step, target, exits=kind == "discard_preferences")
+        except GuiUncertain as failure:
+            cause = failure.__cause__
+            error_type = getattr(self, "glib_error_type", None)
+            retained = self.journal.last_failure
+            if not (type(retained) is dict and retained["step"] == step
+                    and retained["state"] == "ERROR_OR_UNKNOWN"
+                    and retained["original"] is cause and retained["retained"] is True
+                    and error_type is not None and isinstance(cause, error_type)
+                    and getattr(cause, "domain", None) == "atspi_error" and type(getattr(cause, "code", None)) is int
+                    and getattr(cause, "code", None) == 1 and getattr(cause, "message", None) == MODAL_NO_REPLY):
+                raise
+            original = failure
+        except BaseException as dispatch_error:
+            self.journal._record_failure(step + ".modal-dispatch",
+                                         "OBSERVATION_ERROR_OR_UNKNOWN", dispatch_error)
+            raise
+        # No subsequent action is admitted until this distinct readback and its
+        # custody complete. The earlier ERROR_OR_UNKNOWN event remains intact.
+        self.journal.blocked = True
+        deadline = time.monotonic() + WAIT_SECONDS
+        try:
+            while True:
+                self.journal.guard()
+                require(time.monotonic() < deadline, "native_gui_modal_readback_deadline")
+                rows = self._complete_modal_tree()
+                require(time.monotonic() < deadline, "native_gui_modal_readback_deadline")
+                dialog = None if rows is None else self._modal_readback(rows, kind, source_name)
+                if dialog is not None:
+                    self.journal.guard()
+                    require(time.monotonic() < deadline, "native_gui_modal_readback_deadline")
+                    self.journal.emit({
+                        "step": step + ".modal-readback",
+                        "state": "MODAL_OPEN_RECONCILED" if original else "MODAL_OPEN_OBSERVED",
+                        "request_response": "NO_REPLY" if original else "REQUEST_RETURNED",
+                        "expected_pid": self.pid, "profile": kind, "rows": rows,
+                        "complete": True, "dialog": dialog,
+                        "verified_effect": "owned_dialog_open_only",
+                        "native_save_or_import_verified": False,
+                        "native_operation_retried": False})
+                    self.journal.guard()
+                    require(time.monotonic() < deadline, "native_gui_modal_readback_deadline")
+                    self.journal.blocked = False
+                    return dialog
+                time.sleep(0.1)
+        except BaseException as readback_error:
+            self.journal._record_failure(step + ".modal-readback",
+                                         "OBSERVATION_ERROR_OR_UNKNOWN", readback_error)
+            if original is not None:
+                original.add_note("native_gui_modal_readback_unresolved:" +
+                                  type(readback_error).__name__ + ":" + str(readback_error))
+                raise original
+            raise
+
     def control(self, step: str, names: tuple[str, ...],
                 roles: tuple[str, ...]) -> None:
         row = self.journal.wait(step + ".discover", lambda: self.find(names, roles))
         self.action(step, row)
 
     def menu(self, step: str, *names: str) -> None:
+        kind = MODAL_MENU_PATHS.get(names)
         for index, name in enumerate(names):
-            self.control(step + "." + str(index), (name,),
-                         ("menu", "menu item", "check menu item"))
+            if kind is not None and index == len(names) - 1:
+                self.modal_action(step + "." + str(index), kind)
+            else:
+                self.control(step + "." + str(index), (name,),
+                             ("menu", "menu item", "check menu item"))
 
     def dialog(self, step: str, names: tuple[str, ...]) -> dict:
         return self.journal.wait(step, lambda: self.find(names, ("dialog", "frame")))
@@ -545,7 +713,7 @@ class AtspiSession:
         self.journal.emit({"step": step + ".settings", "state": "OBSERVED", "render_settings": observed})
         generate = self.journal.wait(step + ".generate-once-discover", lambda: self.find(
             ("Generate Script",), ("push button",), scope=dialog["key"]))
-        self.action(step + ".generate-once", generate)
+        self.modal_action(step + ".generate-once", "delayed_render")
         delayed = self.dialog(step + ".delayed-name", ("Delayed Rendering",))
         fields = [r for r in self.descendants(delayed) if r["visible"] and r["enabled"] and r["editable"]]
         leaves = [r for r in fields if not any(s["key"].startswith(r["key"] + "/") for s in fields if s is not r)]
@@ -568,7 +736,8 @@ class AtspiSession:
     def quit_after_render_script(self, step: str, source: Path) -> None:
         """Discard only the render preferences made after the saved-source hash."""
         require(source.name in ("initial.kdenlive", "edited.kdenlive"), "native_render_quit_source_not_closed")
-        self.quit(step)
+        self.menu(step + ".menu", "File")
+        self.modal_action(step + ".submit", "discard_preferences", source_name=source.name)
         def confirmation():
             rows = self.tree()
             labels = [r for r in rows if r["visible"] and r["role"] == "label"

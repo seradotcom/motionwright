@@ -2928,29 +2928,40 @@ class EditorRenderGuiControls(unittest.TestCase):
 
     def test_native_discard_is_bound_to_saved_filename_and_only_unsaved_preferences(self):
         ui = actions.AtspiSession.__new__(actions.AtspiSession)
-        ui.quit = Mock(); ui.action = Mock(); ui.journal = Mock()
+        ui.menu = Mock(); ui.modal_action = Mock(); ui.action = Mock(); ui.journal = Mock()
         ui.journal.wait.side_effect = lambda _, query: query()
-        dialog = row("app/prompt", role="dialog", editable=False)
+        dialog = row("app/prompt", role="dialog", editable=False, modal=True)
+        # Only the opener boundary is stubbed; confirmation reads its own tree.
+        # Eligibility and NoReply custody are covered by modal_readback controls.
+        ui.modal_action.return_value = dialog
         label = row("app/prompt/label", role="label", editable=False,
                     name='The project "edited.kdenlive" has been changed.\nDo you want to save your changes?')
         buttons = [row("app/prompt/" + name, role="push button", editable=False, name=name)
                    for name in ("Save", "Discard", "Cancel")]
         ui.tree = Mock(return_value=[dialog, label, *buttons])
         ui.quit_after_render_script("reopen-edited.quit", Path("/owner/edited.kdenlive"))
-        ui.quit.assert_called_once_with("reopen-edited.quit")
+        ui.menu.assert_called_once_with("reopen-edited.quit.menu", "File")
+        ui.modal_action.assert_called_once_with(
+            "reopen-edited.quit.submit", "discard_preferences", source_name="edited.kdenlive")
+        ui.action.assert_called_once()
         self.assertEqual(ui.action.call_args.args[1]["name"], "Discard")
         self.assertTrue(ui.action.call_args.kwargs["exits"])
 
     def test_unsaved_dialog_with_extra_action_cannot_discard_or_render(self):
         ui = actions.AtspiSession.__new__(actions.AtspiSession)
-        ui.quit = Mock(); ui.action = Mock(); ui.journal = Mock()
+        ui.menu = Mock(); ui.modal_action = Mock(); ui.action = Mock(); ui.journal = Mock()
         ui.journal.wait.side_effect = lambda _, query: query()
-        ui.tree = Mock(return_value=[row("app/prompt", role="dialog"),
+        dialog = row("app/prompt", role="dialog", modal=True)
+        ui.modal_action.return_value = dialog
+        ui.tree = Mock(return_value=[dialog,
             row("app/prompt/message", role="label", name='edited.kdenlive has been changed. Do you want to save your changes?'),
             *[row("app/prompt/" + str(i), role="push button", name=name)
               for i, name in enumerate(("Save", "Discard", "Cancel", "Start them now"))]])
         with self.assertRaises(actions.GuiRejected):
             ui.quit_after_render_script("quit", Path("/owner/edited.kdenlive"))
+        ui.menu.assert_called_once_with("quit.menu", "File")
+        ui.modal_action.assert_called_once_with(
+            "quit.submit", "discard_preferences", source_name="edited.kdenlive")
         ui.action.assert_not_called()
 
 

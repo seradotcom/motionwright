@@ -54,6 +54,7 @@ SOURCE_PATHS = (
     "tooling/otio-media/kdenlive_gui_e2e.py",
     "tooling/otio-media/test_kdenlive_gui_e2e.py",
     "tooling/otio-media/test_kdenlive_accessibility_diagnostics.py",
+    "tooling/otio-media/test_kdenlive_modal_readback.py",
     "tooling/otio-media/test_kdenlive_accessibility_preflight.py",
     "tooling/otio-media/kdenlive_complete_g2_fixture.py",
     "tooling/otio-media/kdenlive_live_process.py",
