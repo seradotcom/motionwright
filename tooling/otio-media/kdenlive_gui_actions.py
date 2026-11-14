@@ -176,6 +176,7 @@ class AtspiSession:
         self.discovery_count = 0
         self.first_discovery = None
         self.last_discovery = None
+        self.last_snapshot = None
         code = self.api.init()
         self.init_returncode = code if type(code) is int else None
         if type(code) is not int or code not in (0, 1):
@@ -200,22 +201,32 @@ class AtspiSession:
             "discovery_count": self.discovery_count,
             "first_discovery": self.first_discovery,
             "last_discovery": self.last_discovery,
+            "last_snapshot": self.last_snapshot,
             "native_operation_retried": False,
         })
 
-    def wait_ready(self, phase: str) -> list[dict]:
+    def _wait_snapshot(self, step: str, query):
         try:
-            return self.journal.wait(phase + ".accessibility-ready", self.tree)
+            return self.journal.wait(step, query)
         except BaseException as original:
             try:
-                self._record_discovery_failure(phase + ".accessibility-ready")
+                self._record_discovery_failure(step)
             except Exception as recording_error:
                 original.add_note("discovery_diagnostic_recording_failed:" +
                                   type(recording_error).__name__)
             raise
 
+    def wait_ready(self, phase: str) -> list[dict]:
+        return self._wait_snapshot(phase + ".accessibility-ready", self.tree)
+
     def tree(self) -> list[dict]:
         self.journal.guard()
+        self.nodes = {}
+        rows, nodes = [], {}
+        # Keep only this bounded observation; recording a failure never makes
+        # another query or exposes an incomplete snapshot to an action.
+        self.last_snapshot = {"complete": False, "reason": "query_in_progress",
+                              "rows": rows}
         desktop = self.api.get_desktop(0)
         require(desktop is not None, "native_gui_accessibility_desktop_absent")
         count = desktop.get_child_count()
@@ -236,11 +247,10 @@ class AtspiSession:
             self.first_discovery = discovery
         self.last_discovery = discovery
         if not owned:
-            self.nodes = {}
+            self.last_snapshot["reason"] = "owned_application_absent"
             return []
         require(len(owned) == 1, "native_gui_owned_application_not_unique")
         queue = [("app", owned[0], 0)]
-        rows, nodes = [], {}
         while queue:
             key, node, depth = queue.pop(0)
             require(depth <= MAX_DEPTH and len(rows) < MAX_NODES,
@@ -251,9 +261,14 @@ class AtspiSession:
                 # the existing read-only wait may take a new complete snapshot.
                 self.nodes = {}
                 discovery["incomplete_reason"] = "null_descendant"
+                self.last_snapshot.update(reason="null_descendant", null_key=key)
                 return []
             require(node.get_process_id() == self.pid,
                     "native_gui_cross_process_accessible_refused")
+            # This synchronous observer has no GLib event loop to keep the
+            # AT-SPI property cache current across native window transitions.
+            # Clear only this owned node, inside our depth/count budgets.
+            node.clear_cache_single()
             state = node.get_state_set()
             role = node.get_role_name()
             visible = state.contains(self.api.StateType.SHOWING)
@@ -285,6 +300,7 @@ class AtspiSession:
             queue.extend((key + "/" + str(i), node.get_child_at_index(i), depth + 1)
                          for i in range(count))
         self.journal.guard()
+        self.last_snapshot.update(complete=True, reason="complete")
         self.nodes = nodes
         return rows
 
@@ -562,7 +578,7 @@ class AtspiSession:
                 unique(files, code="native_gui_file_menu_not_unique")
                 return {"kind": "main", "rows": rows}
             return None
-        observed = self.journal.wait(phase + ".startup", startup)
+        observed = self._wait_snapshot(phase + ".startup", startup)
         self.journal.emit({"step": phase + ".startup", "state": "OBSERVED",
                            "native_first_run": observed["kind"],
                            "rows": observed["rows"]})
@@ -580,7 +596,7 @@ class AtspiSession:
                             normalized(r["name"]) == "Start Editing"],
                            code="native_gui_startup_cannot_finish")
             self.action(phase + ".startup-acknowledge", start)
-            self.journal.wait(phase + ".main-ready", lambda: self.find(
+            self._wait_snapshot(phase + ".main-ready", lambda: self.find(
                 ("File",), ("menu", "menu item")))
             require(not self.find((quick_setup,), ("label",)),
                     "native_gui_startup_dialog_did_not_close")
