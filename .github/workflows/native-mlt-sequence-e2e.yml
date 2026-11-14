@@ -272,7 +272,7 @@ jobs:
         from pathlib import Path
         report=json.loads(Path(sys.argv[1]).read_bytes())
         expected={'dotted:tooling.tests.test_native_fixedtxt_external_g2':22,
-                  'dotted:tooling.tests.test_native_fixedtxt_workflow':27,
+                  'dotted:tooling.tests.test_native_fixedtxt_workflow':34,
                   'dotted:tooling.tests.test_native_fixedtxt_pre_owner':6,
                   'dotted:tooling.tests.test_native_owner_release':4}
         assert report['status']=='PASS' and report['exit_code']==0

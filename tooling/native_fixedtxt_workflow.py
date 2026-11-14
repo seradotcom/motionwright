@@ -1399,14 +1399,14 @@ def _owner_diagnostic_limits(fixture):
 
 
 def _read_owner_diagnostic(handles, name, maximum, *, fixture):
-    """Read only seven literal diagnostics through held no-follow parent handles.
+    """Read only the closed diagnostic names through held no-follow parent handles.
 
     Absence before selection is conditional. Disappearance or mutation after
     the first leaf stat is a failed original, never a successful omission.
     Core's ordinary raw-stream exclusion remains unchanged.
     """
     import native_evidence_projection as core
-    admitted = _owner_diagnostic_limits(fixture).get(name)
+    admitted = (_owner_diagnostic_limits(fixture) | _failed_render_input_limits(fixture)).get(name)
     need(admitted is not None and type(maximum) is int and 0 <= maximum <= admitted,
          "fixedtxt-owner-diagnostic-closed-roster")
     parts = core.member_path(name)
@@ -1446,6 +1446,376 @@ def _read_owner_diagnostic(handles, name, maximum, *, fixture):
         if fd >= 0:
             os.close(fd)
         handles.close_parents(parents)
+
+
+
+# Negative diagnostics are deliberately outside P's required Native roster.
+# No success resolver, decoder, Native call, retry or timeout is added here.
+FAILED_OUTPUT_METADATA_MAX = 65536
+FAILED_OUTPUT_RECEIPT_MAX = 65536
+
+
+def _failed_render_input_limits(fixture):
+    from native_film180_evidence_selection import fixedtxt_frames
+    fixedtxt_frames(fixture)
+    return {fixture + "/" + name: maximum for name, maximum in (
+        ("owner-workspace.json", 65536),
+        ("saved-production-project.json", 4 * 1024 * 1024),
+        ("fixed-text-case.json", 65536),
+        ("canonical-component/evidence/project.derived.json", 4 * 1024 * 1024),
+        ("native-result.host-stdin/broker-receipt.snapshot.json", 8 * 1024 * 1024),
+        ("native-result.host-stdin/session.original.json", 8192),
+        ("native-result.host-stdin/capture-0001.json", 8192),
+        ("native-result.host-stdin/capture-0001.terminal.json", 2048),
+        ("native-result.host-stdin/capture-0001.stdin", 65536),
+        ("native-result.host-stdin/readback.observation.json", 8 * 1024 * 1024),
+    )}
+
+
+def _failed_render_join(current, request, originals, plan_raw, cycle_raw):
+    """Join existing negative originals; neither issue nor weaken admission."""
+    import native_fixedtxt_g2_admission as fixed
+    from native_film180_evidence_selection import fixedtxt_frames
+    fixture, arm = request["fixture"], request["arm"]
+    prefix, host = fixture + "/", fixture + "/native-result.host-stdin/"
+    def value(name, maximum=8 * 1024 * 1024):
+        return strict(originals[prefix + name], maximum)
+    plan, cycle = strict(plan_raw, 512 * 1024), strict(cycle_raw, 1024 * 1024)
+    bindings = plan.get("source_bindings")
+    need(plan.get("schema") == fixed.PLAN_SCHEMA and plan.get("context") == current
+         and plan.get("arm") == arm and plan.get("fixture") == fixture
+         and plan.get("cycle_input_sha256") == sha(cycle_raw)
+         and type(bindings) is list and all(type(row) is dict for row in bindings)
+         and [row.get("path") for row in bindings] == list(fixed.source_paths())
+         and all(set(row) == {"path", "sha256"} and type(row["sha256"]) is str
+                 and SHA.fullmatch(row["sha256"]) for row in bindings),
+         "failed-output-source-binding")
+    runtime = cycle.get("runtime", {})
+    case = value("fixed-text-case.json", 65536)
+    need(cycle.get("schema") == "motionwright.fixed-text-native-cycle-inputs/4"
+         and cycle.get("arm") == arm and runtime.get("semwright_revision") == current["semwright_sha"]
+         and case.get("schema") == "motionwright.private-fixed-text-render-case/4"
+         and case.get("arm") == arm and case.get("key") == fixture
+         and case.get("runtime") == runtime
+         and plan.get("arm_sources", {}).get(arm, {}).get("source_sha") == current["semwright_sha"]
+         and plan["arm_sources"][arm].get("native_source_sha256")
+             == runtime.get("native_source_sha256", {}).get(arm),
+         "failed-output-case-runtime-binding")
+    terminal = value("native-result.fixed-text/render-terminal.original-value.json")
+    result = terminal.get("result", {})
+    data = result.get("data", {})
+    need(terminal.get("replayed") is False and result.get("provenance_checked") is True
+         and type(data) is dict and data.get("state") == "failed"
+         and type(data.get("host_failure")) is dict
+         and data["host_failure"].get("outcome_known") is False,
+         "failed-output-original-unknown-terminal")
+    job = data.get("job_ref")
+    need(type(job) is str and len(job) <= 320 and job.isascii(), "failed-output-job-reference")
+    fields = job.split(":")
+    need(len(fields) == 7 and fields[0] == "mc1" and fields[5] == "render_job"
+         and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", fields[1])
+         and re.fullmatch(r"[0-9a-f]{32}", fields[2])
+         and re.fullmatch(r"[1-9][0-9]{0,19}", fields[3]) and int(fields[3]) <= 2**64 - 1
+         and SHA.fullmatch(fields[4]) and re.fullmatch(r"render-[0-9a-f]{32}", fields[6]),
+         "failed-output-job-reference")
+    compiled_raw = originals[prefix + "canonical-component/evidence/project.derived.json"]
+    compiled = strict(compiled_raw, 4 * 1024 * 1024)
+    declared = case.get("compiled_project", {})
+    need(type(declared.get("bytes")) is int and declared["bytes"] == len(compiled_raw)
+         and declared.get("sha256") == sha(compiled_raw) and type(compiled.get("revision")) is int
+         and (compiled.get("id"), compiled.get("generation"), compiled.get("revision"))
+             == (fields[1], fields[2], int(fields[3])),
+         "failed-output-motion-project-binding")
+    studio = value("saved-production-project.json", 4 * 1024 * 1024)
+    snapshot = value("native-result.host-stdin/broker-receipt.snapshot.json")
+    receipt = snapshot.get("receipt", {})
+    payload = receipt.get("payload", {})
+    started = payload.get("result", {})
+    expected_request = "fixed-text-v4-" + arm.lower() + "-" + fixture + ":motion:0:render-start"
+    need(snapshot.get("schema") == "motionwright.private-production-receipt-snapshot/1"
+         and snapshot.get("source") == "existing StudioService receipt"
+         and snapshot.get("wire_bytes") is False and snapshot.get("lookup_error") is None
+         and snapshot.get("snapshot_grants_authority") is False
+         and all(type(studio.get(key)) is str and re.fullmatch(
+             r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", studio[key])
+             for key in ("id", "generation"))
+         and type(studio.get("revision")) is int and 0 <= studio["revision"] <= 2**64 - 1
+         and (receipt.get("project_id"), receipt.get("generation"), receipt.get("revision"))
+             == (studio["id"], studio["generation"], studio["revision"])
+         and receipt.get("request_id") == expected_request and receipt.get("stage") == "completed"
+         and receipt.get("command") == "driver.motion-canvas.render.start"
+         and started.get("provenance_checked") is True
+         and started.get("data", {}).get("job_ref") == job
+         and started["data"].get("state") == "starting",
+         "failed-output-original-render-start")
+    status_receipt = terminal.get("receipt", {})
+    status_payload = status_receipt.get("payload", {})
+    status_request = status_receipt.get("request_id")
+    status_prefix = "fixed-text-v4-" + arm.lower() + "-" + fixture + ":motion:0:render-status-"
+    status_number = re.fullmatch(re.escape(status_prefix) + r"(0|[1-9][0-9]{0,2})",
+                                status_request if type(status_request) is str else "")
+    need(status_receipt.get("command") == "driver.motion-canvas.render.status"
+         and status_receipt.get("stage") == "completed"
+         and (status_receipt.get("project_id"), status_receipt.get("generation"), status_receipt.get("revision"))
+             == (studio["id"], studio["generation"], studio["revision"])
+         and status_number is not None and int(status_number[1]) <= 330
+         and status_payload.get("job_ref") == job and status_payload.get("result") == result,
+         "failed-output-original-status-receipt")
+    session = value("native-result.host-stdin/session.original.json", 8192)
+    capture = value("native-result.host-stdin/capture-0001.json", 8192)
+    pipe = value("native-result.host-stdin/capture-0001.terminal.json", 2048)
+    readback = value("native-result.host-stdin/readback.observation.json")
+    provider = session.get("provider", {})
+    need(session.get("schema") == "semwright.host-stdin-custody/1"
+         and provider.get("id") == "driver:motion-canvas" and provider.get("kind") == "driver"
+         and type(provider.get("version")) is str and 0 < len(provider["version"]) <= 128
+         and session.get("tool") == "motion-node"
+         and session.get("driver_sha256") == runtime.get("driver_sha256")
+         and session.get("tool_sha256") == runtime.get("node_sha256")
+         and all(type(runtime.get(key)) is str and SHA.fullmatch(runtime[key])
+                 for key in ("driver_sha256", "node_sha256"))
+         and capture.get("provider") == provider and capture.get("tool") == session["tool"]
+         and type(capture.get("provider_process_id")) is int and capture["provider_process_id"] > 0
+         and capture.get("parent_request_id") == payload.get("broker_request_id")
+         and capture.get("terminal_file_required") is True,
+         "failed-output-host-provider-binding")
+    for response in (started, result):
+        execution = response.get("execution", {})
+        provenance = execution.get("provenance", {})
+        need(execution.get("dry_run") is False and execution.get("backend") == "driver:motion-canvas"
+             and provenance.get("provider") == provider["id"] and provenance.get("source") == provider["kind"]
+             and provenance.get("provider_version") == provider["version"],
+             "failed-output-provider-provenance")
+    for key in ("job_id", "request_id", "parent_request_id", "session_id"):
+        need(type(capture.get(key)) is str and 0 < len(capture[key]) <= 512
+             and all(ord(ch) >= 32 and ord(ch) != 127 for ch in capture[key]),
+             "failed-output-host-identity")
+    need(pipe == {"write_state": "write_all_completed", "partial_delivery_possible": False,
+         "io_error_kind": None, "raw_os_error": None, "child_consumption": "not_observed",
+         "native_render_success": "not_inferred"}, "failed-output-original-pipe-terminal")
+    join = readback.get("selected_capture_join", {})
+    need(readback.get("schema") == "motionwright.private-host-stdin-readback/1"
+         and readback.get("native_success_returned") is False
+         and readback.get("native_return_snapshot_retained") is True
+         and readback.get("original_identity_unchanged") is True
+         and readback.get("new_capture_ordinals_retained") == [1]
+         and readback.get("capture_read_errors") == [] and readback.get("automatic_retry") is False
+         and all(readback.get(key) is None for key in ("identity_error", "native_return_snapshot_error",
+                 "receipt_lookup_error", "receipt_retention_error"))
+         and join.get("matched") is True and type(join.get("ordinal")) is int and join["ordinal"] == 1
+         and join.get("capture") == capture and join.get("terminal") == pipe
+         and join.get("pipe_write_all_completed") is True
+         and join.get("joined_to") == "original completed render-start Broker parent and persisted session"
+         and join.get("child_consumption") == "not_observed"
+         and join.get("native_render_success") == "not_inferred"
+         and join.get("Host_job_id_equals_MC_job_ref_claimed") is False,
+         "failed-output-original-session-join")
+    stdin = originals[host + "capture-0001.stdin"]
+    need(0 < len(stdin) <= 65536 and capture.get("stdin_bytes") == len(stdin)
+         and capture.get("stdin_sha256") == sha(stdin), "failed-output-original-stdin")
+    line, separator, helper = stdin.partition(b"\n")
+    program_prefix = b"globalThis.__SEMWRIGHT_RENDER_INPUT__ = "
+    need(separator == b"\n" and line.startswith(program_prefix) and line.endswith(b";"),
+         "failed-output-original-program-prefix")
+    config = strict(line[len(program_prefix):-1], 65536)
+    need(original_descriptor(helper) == {key: runtime.get("render_helper", {}).get(key)
+                                        for key in ("bytes", "sha256")},
+         "failed-output-original-helper")
+    expected = {"authoring": True, "name": "frames", "width": 1920, "height": 1080,
+                "fpsNum": 30, "fpsDen": 1, "firstFrame": 0, "endFrameExclusive": 180}
+    need(all(type(config.get(key)) is type(wanted) and config[key] == wanted
+             for key, wanted in expected.items())
+         and config.get("textPixelObservationFrames") == list(fixedtxt_frames(fixture))
+         and all(type(config.get(key)) is str and SHA.fullmatch(config[key])
+                 for key in ("renderInputDigest", "fontResourcesDigest", "dependencyLockDigest"))
+         and config["dependencyLockDigest"] == runtime.get("dependency_lock", {}).get("sha256"),
+         "failed-output-original-render-config")
+    return {"motion_canvas_job_ref": job, "directory": fields[6],
+        "motion_canvas_project": {"id": fields[1], "generation": fields[2],
+                                 "revision": int(fields[3]), "fingerprint": fields[4]},
+        "studio_project": {key: studio[key] for key in ("id", "generation", "revision")},
+        "host": {key: capture[key] for key in ("job_id", "request_id", "parent_request_id", "session_id")},
+        "render_input_digest": config["renderInputDigest"], "host_stdin": original_descriptor(stdin),
+        "render_helper": original_descriptor(helper), "terminal": original_descriptor(
+            originals[prefix + "native-result.fixed-text/render-terminal.original-value.json"]),
+        "native_state": "failed", "host_outcome_known": False,
+        "Host_job_id_equals_MC_job_ref_claimed": False}
+
+
+def _failed_output_receipt(directory_fd, maximum):
+    """One literal read. A missing leaf is distinct from a changed original."""
+    import native_evidence_projection as core
+    name, fd = "native-failure-receipt.json", -1
+    try:
+        try:
+            named = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return None, None
+        need(stat.S_ISREG(named.st_mode) and named.st_nlink == 1, "failed-output-receipt-type")
+        need(0 < named.st_size <= min(maximum, FAILED_OUTPUT_RECEIPT_MAX), "ORIGINAL_RESOURCE_BOUND")
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+        opened = os.fstat(fd)
+        need(core.identity(named) == core.identity(opened), "failed-output-receipt-open-race")
+        raw = bytearray()
+        while True:
+            block = os.read(fd, min(65536, maximum + 1 - len(raw)))
+            if not block:
+                break
+            raw.extend(block)
+            need(len(raw) <= maximum, "ORIGINAL_RESOURCE_BOUND")
+        need(core.identity(opened) == core.identity(os.fstat(fd))
+             == core.identity(os.stat(name, dir_fd=directory_fd, follow_symlinks=False))
+             and len(raw) == opened.st_size, "failed-output-receipt-mutated")
+        return bytes(raw), list(core.identity(opened))
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _observe_failed_output(owner_handles, joined, receipt_maximum):
+    """Stat only this output and at most 180 frame leaves; never read a PNG."""
+    import native_evidence_projection as core
+    parents, frames_fd = [], -1
+    result = {"directory_status": "absent", "entries": [], "frames": [], "receipt_status": "absent"}
+    try:
+        try:
+            parents = owner_handles.parent("owner", ("output", joined["directory"], "selected-leaf"))
+        except FileNotFoundError:
+            return result, None
+        fd = parents[-1][0]
+        result["directory_status"] = "present"
+        result["directory_identity"] = list(core.identity(os.fstat(fd)))
+        def inventory(handle, maximum, frame_names=False):
+            rows = []
+            with os.scandir(handle) as entries:
+                for entry in entries:
+                    need(len(rows) < maximum, "failed-output-inventory-count-bound")
+                    name = entry.name
+                    need(type(name) is str and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}", name),
+                         "failed-output-inventory-name")
+                    if frame_names:
+                        need(re.fullmatch(r"[0-9]{6}\.png", name) and int(name[:6]) < 180,
+                             "failed-output-frame-name")
+                    info = os.stat(name, dir_fd=handle, follow_symlinks=False)
+                    ordinary = stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                    need(ordinary or not frame_names and stat.S_ISDIR(info.st_mode),
+                         "failed-output-inventory-type")
+                    rows.append({"name": name, "kind": "file" if ordinary else "directory",
+                                 "bytes": info.st_size, "identity": list(core.identity(info))})
+            rows.sort(key=lambda row: row["name"])
+            return rows
+        def unchanged(handle, rows):
+            need(all(list(core.identity(os.stat(row["name"], dir_fd=handle, follow_symlinks=False)))
+                     == row["identity"] for row in rows), "failed-output-inventory-mutated")
+        result["entries"] = inventory(fd, 24)
+        frame_entry = next((row for row in result["entries"] if row["name"] == "frames"), None)
+        if frame_entry is not None:
+            need(frame_entry["kind"] == "directory", "failed-output-frames-type")
+            frames_fd = os.open("frames", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            need(list(core.identity(os.fstat(frames_fd))) == frame_entry["identity"],
+                 "failed-output-frames-open-race")
+            result["frames"] = inventory(frames_fd, 180, True)
+            unchanged(frames_fd, result["frames"])
+            need(list(core.identity(os.fstat(frames_fd))) == frame_entry["identity"],
+                 "failed-output-frames-mutated")
+        raw, receipt_identity = _failed_output_receipt(fd, receipt_maximum)
+        receipt_entry = next((row for row in result["entries"]
+                              if row["name"] == "native-failure-receipt.json"), None)
+        need((receipt_entry is None) == (raw is None), "failed-output-receipt-inventory-race")
+        if raw is not None:
+            value = strict(raw, FAILED_OUTPUT_RECEIPT_MAX)
+            need(receipt_entry["identity"] == receipt_identity and value.get("version") == 2
+                 and value.get("ok") is False and value.get("render_input_digest") == joined["render_input_digest"],
+                 "failed-output-receipt-input-binding")
+            result["receipt_status"] = "original_observed"
+            result["receipt"] = original_descriptor(raw)
+        unchanged(fd, result["entries"])
+        need(all(core.identity(os.fstat(parent)) == mark for parent, mark in parents),
+             "failed-output-parent-mutated")
+        return result, raw
+    finally:
+        if frames_fd >= 0:
+            os.close(frames_fd)
+        owner_handles.close_parents(parents)
+
+
+def _collect_failed_output(handles, known, current, request, byte_budget, file_budget):
+    """Conditional encrypted custody within the workflow's existing budget."""
+    import native_evidence_projection as core
+    import native_fixedtxt_g2_admission as fixed
+    fixture = request["fixture"]
+    terminal_name = fixture + "/native-result.fixed-text/render-terminal.original-value.json"
+    if ("owner_diagnostics", terminal_name) not in known:
+        return {}, []
+    metadata_name = fixture + "/failed-output.observation.json"
+    report = {"schema": "motionwright.private-fixedtxt-failed-output/1", "context": current,
+        "fixture": fixture, "arm": request["arm"], "join_status": "not_observed",
+        "output_observation": None, "automatic_retry": False, "native_calls": 0,
+        "native_outcome_reinterpreted": False, "formal_acceptance": False,
+        "PNG_bytes_read": False, "decoder_invoked": False}
+    extra, failures, total = {}, [], 0
+    owner_handles = None
+    def retain(root, name, raw, *, reserve=True):
+        nonlocal total
+        need(len(extra) + int(reserve) < file_budget
+             and len(raw) + total + (FAILED_OUTPUT_METADATA_MAX if reserve else 0) <= byte_budget,
+             "ORIGINAL_RESOURCE_BOUND")
+        extra[(root, name)] = raw
+        total += len(raw)
+    try:
+        need(file_budget >= 1 and byte_budget >= FAILED_OUTPUT_METADATA_MAX, "ORIGINAL_RESOURCE_BOUND")
+        originals = {terminal_name: known[("owner_diagnostics", terminal_name)]}
+        for name, maximum in _failed_render_input_limits(fixture).items():
+            need(len(extra) + 1 < file_budget, "ORIGINAL_RESOURCE_BOUND")
+            raw = _read_owner_diagnostic(handles, name,
+                min(maximum, max(0, byte_budget - total - FAILED_OUTPUT_METADATA_MAX)), fixture=fixture)
+            need(raw is not None, "failed-output-join-original-absent")
+            retain("owner_diagnostics", name, raw)
+            originals[name] = raw
+        joined = _failed_render_join(current, request, originals,
+            known[("control", fixed.PLAN_MEMBER)], known[("inputs", fixed.CYCLE_MEMBER)])
+        report["join_status"], report["joined"] = "originals_joined", joined
+        report["originals"] = {name: original_descriptor(raw) for name, raw in originals.items()}
+        owner = strict(originals[fixture + "/owner-workspace.json"], 65536)
+        path, runner = Path(owner["path"]), Path(os.environ["RUNNER_TEMP"])
+        need(owner.get("schema") == "motionwright.native.mlt-g2-owner-workspace/1"
+             and owner.get("motionwright_sha") == current["source_sha"]
+             and owner.get("semwright_sha") == current["semwright_sha"]
+             and owner.get("run_id") == current["run_id"] and owner.get("run_attempt") == current["run_attempt"] == "1"
+             and path.is_absolute() and path.parent == runner
+             and path.name.startswith("motionwright-native-av-g2-"), "failed-output-owner-binding")
+        owner_handles = core.RootHandles({"owner": str(path)})
+        info = os.fstat(owner_handles.fds["owner"])
+        need(stat.S_IMODE(info.st_mode) == 0o700 and info.st_uid == os.getuid()
+             and (info.st_dev, info.st_ino, info.st_uid, info.st_gid)
+                 == (owner.get("device"), owner.get("inode"), owner.get("uid"), owner.get("gid")),
+             "failed-output-owner-physical-identity")
+        observation, receipt = _observe_failed_output(owner_handles, joined,
+            min(FAILED_OUTPUT_RECEIPT_MAX, max(0, byte_budget - total - FAILED_OUTPUT_METADATA_MAX)))
+        need(core.identity(os.fstat(owner_handles.fds["owner"]))
+             == core.identity(owner_handles.initial["owner"]), "failed-output-owner-mutated")
+        report["output_observation"] = observation
+        if receipt is not None:
+            retain("failed_output", fixture + "/native-failure-receipt.original.json", receipt)
+            observation["receipt_status"] = "original_retained"
+    except Exception as error:
+        reason = str(error) if isinstance(error, WorkflowRejected) else type(error).__name__
+        report["failure"] = reason
+        if (report["output_observation"] is not None
+                and report["output_observation"]["receipt_status"] == "original_observed"):
+            report["output_observation"]["receipt_status"] = "not_retained"
+        failures.append({"root": "failed_output", "relative_path": metadata_name, "reason": reason})
+    finally:
+        if owner_handles is not None:
+            owner_handles.close()
+    try:
+        raw = canonical(report)
+        need(len(raw) <= FAILED_OUTPUT_METADATA_MAX, "ORIGINAL_RESOURCE_BOUND")
+        retain("failed_output", metadata_name, raw, reserve=False)
+    except WorkflowRejected:
+        failures.append({"root": "failed_output", "relative_path": metadata_name,
+                         "reason": "ORIGINAL_RESOURCE_BOUND"})
+    return extra, failures
 
 
 def collect_workflow_originals(current, request, *, partial=False):
@@ -1516,6 +1886,12 @@ def collect_workflow_originals(current, request, *, partial=False):
                     failures.append({"root": "owner_diagnostics", "relative_path": name, "reason": reason})
                     if not partial:
                         raise
+            extra, negative_failures = _collect_failed_output(handles, known, current, request,
+                max(0, bound - total), max(0, request["limits"]["files"] - len(known)))
+            need(set(extra).isdisjoint(known), "failed-output-original-collision")
+            known.update(extra)
+            total += sum(map(len, extra.values()))
+            failures.extend(negative_failures)
     except Exception as error:
         if not any(row["root"] == "owner_diagnostics" for row in failures):
             failures.append({"root": "owner_diagnostics", "reason": type(error).__name__})
