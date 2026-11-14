@@ -803,6 +803,22 @@ class WorkflowDeliveryJobTests(unittest.TestCase):
         actual = inspect.getsource(route.wait_for_owner)
         self.assertEqual(actual.count('time.sleep(delivery_poll_delay(wait_until))'), 2)
         self.assertNotIn('time.sleep(min(1,', actual)
+        # The public failure label is a fixed source-bound code. A missing
+        # external R28 must not become a Native-renderer error or leak tokens.
+        known = "fixedtxt-external-delivery-not-observed-before-deadline"
+        self.assertIn(known, route.SAFE_WORKFLOW_FAILURE_CODES)
+        self.assertEqual(route.safe_workflow_failure_code(route.WorkflowRejected(known)), known)
+        deadline = "fixedtxt-GET-original-deadline-no-retry"
+        self.assertEqual(route.safe_workflow_failure_code(route.WorkflowRejected(deadline)), deadline)
+        self.assertEqual(route.safe_workflow_failure_code(ValueError(known)), "unclassified")
+        self.assertEqual(route.safe_workflow_failure_code(
+            route.WorkflowRejected(known, "private-token")), "unclassified")
+        self.assertEqual(route.safe_workflow_failure_code(
+            route.WorkflowRejected(known + "-private-token")), "unclassified")
+        self.assertEqual(route.safe_workflow_failure_code(
+            route.WorkflowRejected(b"private-token")), "unclassified")
+        self.assertEqual(route.safe_workflow_failure_code(
+            route.WorkflowRejected("GH_TOKEN=private-token")), "unclassified")
 
     def test_wait_consumes_one_artifact_and_second_invocation_cannot_restart_transport(self):
         current,p,r,q,dispatch=external_fixture()

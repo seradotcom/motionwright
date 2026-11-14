@@ -64,6 +64,32 @@ def need(value, reason):
         raise WorkflowRejected(reason)
 
 
+# Fixed, source-reviewed transport rejection codes only. Never put the
+# exception message, GH URL, token, original API payload or private stderr
+# on an untrusted output channel. This cannot grant R28 or Native admission.
+SAFE_WORKFLOW_FAILURE_CODES = frozenset({
+    "fixedtxt-preparation-exhausted-native-reserve",
+    "fixedtxt-external-delivery-not-observed-before-deadline",
+    "fixedtxt-original-deadline-before-GET",
+    "fixedtxt-API-journal-reservation-before-GET",
+    "fixedtxt-API-original-journal-bound",
+    "fixedtxt-GET-original-deadline-no-retry",
+    "fixedtxt-GET-overflow-no-retry",
+    "fixedtxt-GET-failed-no-retry",
+    "fixedtxt-delivery-run-state",
+    "fixedtxt-delivery-consumed-native-reserve",
+})
+
+
+def safe_workflow_failure_code(error):
+    """Static failure classification, no original stderr or error detail."""
+    if type(error) is WorkflowRejected and len(error.args) == 1:
+        code = error.args[0]
+        if type(code) is str and code in SAFE_WORKFLOW_FAILURE_CODES:
+            return code
+    return "unclassified"
+
+
 def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
@@ -1717,7 +1743,8 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        print("FixedTxt workflow stopped; original evidence retained; no automatic retry: " + type(error).__name__,
+        print("FixedTxt workflow stopped; original evidence retained; no automatic retry: "
+              + type(error).__name__ + " code=" + safe_workflow_failure_code(error),
               file=sys.stderr)
         raise SystemExit(2) from None
     finally:
