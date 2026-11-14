@@ -1347,6 +1347,7 @@ class EditedProjectReopenContracts(unittest.TestCase):
     def run_mocked_route(self, *, mutate_third=None, final_preview=None,
                          third_close_error=None, changed_edited_bytes=False,
                          changed_readback=False, source_database=None):
+        from test_kdenlive_initial_save import original_preview
         before, after, comparison, preview = admitted_edit()
         final = copy.deepcopy(after)
         if changed_readback:
@@ -1407,7 +1408,7 @@ class EditedProjectReopenContracts(unittest.TestCase):
              patch.object(runner.readback, "compare_two_native_custody_snapshots",
                           return_value=comparison) as compare, \
              patch.object(runner, "preview_kdenlive_cut", side_effect=[
-                 preview, preview if final_preview is None else final_preview]) as cut:
+                 original_preview(), preview, preview if final_preview is None else final_preview]) as cut:
             self.launch, self.inspect, self.compare, self.cut = launch, inspect, compare, cut
             self.prepare, self.deliver = prepare, deliver
             return runner.run_route(appdir, binary, "8" * 64, capsule,
@@ -1431,7 +1432,10 @@ class EditedProjectReopenContracts(unittest.TestCase):
             process.close.assert_called_once_with()
         self.assertEqual(self.inspect.call_count, 3)
         self.assertEqual(self.compare.call_count, 2)
-        self.assertEqual(self.cut.call_count, 2)
+        self.assertEqual(self.cut.call_count, 3)
+        self.assertEqual(self.cut.call_args_list[0].args[2]["received_otio"], "received.otio")
+        self.assertEqual(self.cut.call_args_list[0].args[2]["edited_otio"], "received.otio")
+        self.processes[0].ui.refresh_third_clip_playlist.assert_called_once_with()
         self.assertEqual(self.cut.call_args.args[2]["edited_otio"], "reopened-edited.otio")
         retained = dict(call.args for call in self.records.document.call_args_list)
         self.assertFalse(retained["reopened-edited-cut-preview.json"]["edit_imported"])

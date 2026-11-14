@@ -983,6 +983,158 @@ class AtspiSession:
             require(not self.find((quick_setup,), ("label",)),
                     "native_gui_startup_dialog_did_not_close")
 
+    def refresh_third_clip_playlist(self) -> dict:
+        """Apply two observed end trims before a separately verified Export/Save.
+
+        Kdenlive's slip changes a cut; its playlist can retain older in/out
+        points until a real playlist edit. No request return or dialog closure
+        proves that edit. The second opening must observe the applied 29-frame
+        duration before a distinct restoration request is permitted.
+        """
+        prefix = "import.playlist-refresh"
+        require(not self.journal.blocked, "native_gui_previous_action_uncertain")
+        if getattr(self, "_playlist_refresh_started", False):
+            original = GuiRejected("native_gui_playlist_refresh_replay_refused")
+            self.journal._record_failure(prefix + ".replay", "OBSERVATION_ERROR_OR_UNKNOWN", original)
+            raise original
+        self._playlist_refresh_started = True
+        state = {"phase": "STARTED", "accept_attempts": 0,
+                 "shortened_duration_reobserved": False}
+        self._playlist_refresh_state = state
+
+        def complete(step):
+            return self.journal.wait(step, self._complete_modal_tree)
+
+        def retain(step, event):
+            require(not self.journal.blocked, "native_gui_previous_action_uncertain")
+            self.journal.guard()
+            self.journal.blocked = True
+            self.journal.emit({"step": step, "expected_pid": self.pid,
+                               "native_operation_retried": False, **event})
+            self.journal.guard()
+            self.journal.blocked = False
+
+        def duration_fields(step, expected, *, applied=False):
+            rows = complete(step + ".snapshot")
+            dialogs = [r for r in rows if r["visible"] and r["enabled"]
+                       and r["role"] in ("dialog", "frame")
+                       and window_title_matches(r["name"], ("Duration",))]
+            dialog = unique(dialogs, code="native_gui_playlist_refresh_duration_not_unique")
+            require(not any(r["visible"] and
+                            (r["role"] in ("dialog", "alert") or r["modal"])
+                            and r["key"] != dialog["key"] for r in rows),
+                    "native_gui_playlist_refresh_unexpected_dialog")
+            children = [r for r in rows if r["key"].startswith(dialog["key"] + "/")]
+            require(not any(r["visible"] and normalized(r["name"]) ==
+                            "Apply duration to all items" for r in children),
+                    "native_gui_multiple_clip_duration_refused")
+            require(not any(r["visible"] and
+                            ("Resizing in Ripple mode." in r["name"]
+                             or "Resizing in Ripple mode." in r["text"]) for r in children),
+                    "native_gui_playlist_refresh_ripple_refused")
+            fields = [labeled_field(children, (label,)) for label in
+                      ("Position:", "Crop start:", "Duration:")]
+            observed = tuple(timecode_frames(r["text"]) for r in fields)
+            require(observed == (60, 60, expected),
+                    "native_gui_playlist_refresh_duration_changed")
+            okay = unique([r for r in children if r["visible"] and r["enabled"]
+                           and r["role"] == "push button"
+                           and normalized(r["name"]) == "OK"],
+                          code="native_gui_playlist_refresh_accept_not_unique")
+            retain(step, {"state": "DURATION_FIELDS_OBSERVED",
+                          "snapshot": modal_snapshot(rows, self.pid), "complete": True,
+                          "position_frames": 60, "crop_start_frames": 60,
+                          "duration_frames": expected,
+                          "after_new_open_following_accept": applied,
+                          "native_xml_playlist_verified": False,
+                          "native_save_verified": False})
+            return fields, okay
+
+        def closed(step):
+            def observed():
+                rows = self._complete_modal_tree()
+                if rows is None:
+                    return False
+                if any(r["visible"] and r["role"] in ("dialog", "frame", "alert")
+                       and window_title_matches(r["name"], ("Duration",)) for r in rows):
+                    return False
+                require(not any(r["visible"] and
+                                (r["role"] in ("dialog", "alert") or r["modal"])
+                                for r in rows),
+                        "native_gui_playlist_refresh_unexpected_dialog")
+                return True
+            self.journal.wait(step, observed)
+
+        try:
+            rows = complete(prefix + ".selection-snapshot")
+            require(not any(r["visible"] and
+                            (r["role"] in ("dialog", "alert") or r["modal"]) for r in rows),
+                    "native_gui_playlist_refresh_selection_has_dialog")
+            monitors = [r for r in rows if r["visible"]
+                        and normalized(r["name"]) == "Project Monitor"
+                        and r["role"] not in ("menu item", "check menu item", "label")]
+            fields = {r["key"]: r for r in rows if r["visible"] and r["enabled"]
+                      and r["editable"] and TIMECODE.fullmatch(r["text"]) and any(
+                          r["key"].startswith(p["key"] + "/") for p in monitors)}
+            leaves = [r for r in fields.values() if not any(
+                s["key"].startswith(r["key"] + "/") for s in fields.values() if s is not r)]
+            position = unique(leaves, code="native_gui_project_monitor_timecode_not_unique")
+            self.text(prefix + ".seek75", position, "00:00:02:15")
+            self.key(prefix + ".commit-seek", 0xFF0D)
+            self.key(prefix + ".select-video-track1", 0x0031)
+            self.menu(prefix + ".select-clip", "Sequence", "Selection", "Select Clip")
+
+            state["phase"] = "SHORTEN"
+            self.menu(prefix + ".shorten.open", "Sequence", "Current Item", "Edit Duration")
+            fields, _ = duration_fields(prefix + ".shorten.before", 30)
+            self.text(prefix + ".shorten.duration29", fields[2], "00:00:00:29")
+            self.key(prefix + ".shorten.commit-field", 0xFF0D)
+            _, okay = duration_fields(prefix + ".shorten.request-fields", 29)
+            state["accept_attempts"] = 1
+            self.action(prefix + ".shorten.accept-once", okay)
+            closed(prefix + ".shorten.dialog-closed")
+
+            # A new modal action and fresh complete tree observe the model after
+            # acceptance, including the case where Kdenlive closed after undoing
+            # a rejected resize. Never restore based on the pending text field.
+            state["phase"] = "OBSERVE_SHORTENED"
+            self.menu(prefix + ".restore.open", "Sequence", "Current Item", "Edit Duration")
+            fields, _ = duration_fields(prefix + ".shorten.applied-readback", 29, applied=True)
+            state["shortened_duration_reobserved"] = True
+            state["phase"] = "RESTORE"
+            self.text(prefix + ".restore.duration30", fields[2], "00:00:01:00")
+            self.key(prefix + ".restore.commit-field", 0xFF0D)
+            _, okay = duration_fields(prefix + ".restore.request-fields", 30)
+            state["accept_attempts"] = 2
+            self.action(prefix + ".restore.accept-once", okay)
+            closed(prefix + ".restore.dialog-closed")
+            state["phase"] = "RESTORE_REQUEST_RETURNED_MODEL_READBACK_REQUIRED"
+            result = {
+                "schema": "motionwright.native.kdenlive-playlist-refresh/1",
+                "state": state["phase"], "expected_pid": self.pid,
+                "position_frames": 60, "crop_start_frames": 60,
+                "original_duration_frames": 30, "intermediate_duration_frames": 29,
+                "restore_duration_requested_frames": 30, "accept_attempts": 2,
+                "shortened_duration_reobserved": True,
+                "restored_duration_verified": False, "export_readback_required": True,
+                "native_xml_playlist_verified": False, "native_save_verified": False,
+                "native_operation_retried": False,
+            }
+            retain(prefix + ".result", result)
+            return result
+        except BaseException as original:
+            state["failed_phase"] = state["phase"]
+            state["phase"] = "FAILED"
+            self.journal.blocked = True
+            prior = self.journal.last_failure
+            if not (type(prior) is dict and
+                    (prior.get("original") is original
+                     or (original.__cause__ is not None
+                         and prior.get("original") is original.__cause__))):
+                self.journal._record_failure(prefix + ".failed",
+                                             "OBSERVATION_ERROR_OR_UNKNOWN", original)
+            raise
+
     def edit_third_clip(self) -> None:
         rows = self.tree()
         monitor_roots = [r for r in rows if r["visible"] and

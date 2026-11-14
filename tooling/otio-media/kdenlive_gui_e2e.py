@@ -57,6 +57,8 @@ SOURCE_PATHS = (
     "tooling/otio-media/test_kdenlive_accessibility_diagnostics.py",
     "tooling/otio-media/test_kdenlive_modal_readback.py",
     "tooling/otio-media/test_kdenlive_x11_modal.py",
+    "tooling/otio-media/test_kdenlive_playlist_refresh.py",
+    "tooling/otio-media/test_kdenlive_initial_save.py",
     "tooling/otio-media/test_kdenlive_accessibility_preflight.py",
     "tooling/otio-media/kdenlive_complete_g2_fixture.py",
     "tooling/otio-media/kdenlive_live_process.py",
@@ -1705,6 +1707,71 @@ class NativeProcess(OwnedProcess):
             raise original
 
 
+def require_original_firstparty_model(preview: dict) -> None:
+    """A native model readback barrier; it does not attest a saved project."""
+    order = preview.get("original_scene_order")
+    require(type(order) is list and len(order) == 3
+            and all(type(value) is str and value for value in order)
+            and len(set(order)) == 3
+            and preview.get("proposed_scene_order") == order
+            and preview.get("status") == "BOUNDED_PROPOSAL_RECEIVER_NOT_VERIFIED"
+            and preview.get("received_clip_count") == 3
+            and preview.get("edited_clip_count") == 3
+            and preview.get("media_refs_verified") == 3
+            and preview.get("native_change_proposals") == []
+            and preview.get("original_missing_scene_ids") == [],
+            "native_gui_imported_model_not_original_before_save")
+    rows = preview.get("source_identity_mapping")
+    require(type(rows) is list and len(rows) == 3
+            and all(type(row) is dict and row.get("scene_id") == scene
+                    and row.get("source_fps") == 30
+                    and row.get("original_inpoint") == offset
+                    and row.get("duration_frames") == 30
+                    for row, scene, offset in zip(rows, order, (0, 30, 60))),
+            "native_gui_imported_model_interval_changed_before_save")
+    require(preview.get("nle_receiver_acceptance") == "NOT_VERIFIED"
+            and preview.get("native_project_reopened") == "NOT_VERIFIED"
+            and preview.get("semantic_native_roundtrip") == "NOT_SUPPORTED"
+            and all(preview.get(field) is False for field in (
+                "native_final_frames_verified", "edit_imported",
+                "raw_files_rewritten", "publication_approved")),
+            "native_gui_model_readback_cannot_claim_saved_or_reopened_project")
+
+
+def save_initial_firstparty_project(first, capsule: Path, records,
+                                    initial: Path, received: Path,
+                                    manifest_sha: str) -> tuple[str, str]:
+    # A real resize and restoration refresh the last imported cut's playlist
+    # interval. Each effect has its own intent and observation; no replay or
+    # compensating action follows an uncertain effect.
+    first.ui.refresh_third_clip_playlist()
+    first.ui.export_otio("import.export", received)
+    received_sha = digest(received, MAX_OTIO)
+    first.guard()
+    request = {"schema": KDENLIVE_REQUEST_SCHEMA,
+               "capsule_manifest_sha256": manifest_sha,
+               "received_otio": received.name, "received_sha256": received_sha,
+               "edited_otio": received.name, "edited_sha256": received_sha}
+    # Both comparison roles deliberately refer to the SAME native export.
+    # The existing reader binds it to the immutable source capsule. This is
+    # not a second export, an independent reopen, or a persistence receipt.
+    preview = preview_kdenlive_cut(
+        capsule, records.root, request, capsule / "source-project.json",
+        authorized_media_roots=(capsule,))
+    require_original_firstparty_model(preview)
+    first.guard()
+    records.document("initial-model-before-save.json", {
+        "schema": "motionwright.native.kdenlive-model-before-save/1",
+        "source_capsule_manifest_sha256": manifest_sha,
+        "native_export_sha256": received_sha,
+        "one_original_export_used_for_both_comparison_roles": True,
+        "source_model_restoration_observed": True,
+        "saved_project_verified": False, "native_reopen_verified": False,
+        "human_acceptance": False, "preview": preview})
+    first.ui.save_as("import.save", initial)
+    return digest(initial, MAX_PROJECT), received_sha
+
+
 def run_route(appdir: Path, binary: Path, binary_sha: str,
               capsule: Path, records: Recorder, profile: Path,
               source_database: Path | None = None, *, retained_alab=None,
@@ -1726,10 +1793,14 @@ def run_route(appdir: Path, binary: Path, binary_sha: str,
     first = NativeProcess(appdir, binary, binary_sha, profile, records, "import")
     first.ui.menu("import.otio-menu", "File", "OpenTimelineIO Import...")
     first.ui.file_dialog("import.otio", ("OpenTimelineIO Import",), original, "Open")
-    first.ui.save_as("import.save", initial)
-    first.ui.export_otio("import.export", received)
-    initial_sha = digest(initial, MAX_PROJECT)
-    received_sha = digest(received, MAX_OTIO)
+    if retained_alab is None:
+        initial_sha, received_sha = save_initial_firstparty_project(
+            first, capsule, records, initial, received, manifest_sha)
+    else:
+        first.ui.save_as("import.save", initial)
+        first.ui.export_otio("import.export", received)
+        initial_sha = digest(initial, MAX_PROJECT)
+        received_sha = digest(received, MAX_OTIO)
     initial_readback = readback.inspect_saved_kdenlive(
         initial, initial_sha, capsule, manifest_sha, **retained_kwargs)
     records.document("initial-readback.json", initial_readback)
