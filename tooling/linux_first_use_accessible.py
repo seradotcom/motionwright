@@ -366,12 +366,16 @@ class AtspiBridge:
         if not roles or len(roles) > len(roles_allowed) or any(
                 role not in roles_allowed for role in roles):
             raise ProbeError("ACCESSIBLE_COLLECTION_ROLES_INVALID")
+        # Ubuntu's GI typelib rejects NULL for the StateSet argument even
+        # though libatspi's C API documents NULL as allowable. Use an explicit
+        # empty StateSet and empty attribute/interface collections instead.
+        # A headless CI probe exercises this *same* constructor before Native.
         return self.api.MatchRule.new(
-            None, self.api.CollectionMatchType.NONE,
-            None, self.api.CollectionMatchType.NONE,
+            self.api.StateSet.new([]), self.api.CollectionMatchType.NONE,
+            {}, self.api.CollectionMatchType.NONE,
             [roles_allowed[role] for role in roles],
             self.api.CollectionMatchType.ANY,
-            None, self.api.CollectionMatchType.NONE, False)
+            [], self.api.CollectionMatchType.NONE, False)
 
     def matching_roles(self, root, roles):
         # Server-side Collection is a bounded read-only query. This avoids

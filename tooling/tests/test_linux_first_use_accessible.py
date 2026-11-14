@@ -831,6 +831,8 @@ class BridgeBudgetTests(unittest.TestCase):
             Role=SimpleNamespace(DIALOG=16, ENTRY=17, TEXT=18, PUSH_BUTTON=19),
             CollectionMatchType=types,
             CollectionSortOrder=SimpleNamespace(CANONICAL=1),
+            StateSet=SimpleNamespace(new=lambda values: (
+                calls.append(("empty-state-set", tuple(values))), "state-set")[1]),
             MatchRule=SimpleNamespace(new=lambda *args: (calls.append(args), "rule")[1]),
         )
         collection = self.bridge(api, None)
@@ -843,8 +845,10 @@ class BridgeBudgetTests(unittest.TestCase):
                 (calls.append((rule, order, count, traverse)), [target])[1])
         selected = collection.matching_roles(root, ("dialog",))
         self.assertEqual([v.node for v in selected], [target])
-        self.assertEqual(calls[0][4:6], ([16], 2))
-        self.assertEqual(calls[1], ("rule", 1, probe.MAX_NODES + 1, True))
+        self.assertEqual(calls[0], ("empty-state-set", ()))
+        self.assertEqual(calls[1][0:4], ("state-set", 3, {}, 3))
+        self.assertEqual(calls[1][4:9], ([16], 2, [], 3, False))
+        self.assertEqual(calls[2], ("rule", 1, probe.MAX_NODES + 1, True))
         root.get_matches = lambda *_: [Node("button", "Create project")]
         with self.assertRaisesRegex(probe.ProbeError, "ACCESSIBLE_COLLECTION_ROLE_MISMATCH"):
             collection.matching_roles(root, ("dialog",))
