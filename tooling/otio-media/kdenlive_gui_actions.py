@@ -8,6 +8,7 @@ This module neither creates project XML nor decides editorial acceptance.
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 import json
 import re
 import subprocess
@@ -27,6 +28,8 @@ MODAL_NO_REPLY = ("Did not receive a reply. Possible causes include: the remote 
                   "blocked the reply, the reply timeout expired, or the network "
                   "connection was broken.")
 MODAL_SNAPSHOT_BYTES = 128 * 1024
+MODAL_SNAPSHOT_FIELDS = ("key", "name", "role", "text", "visible", "enabled",
+                         "editable", "rect", "focused", "modal", "pid")
 MODAL_OPENERS = {
     "otio_import": (("OpenTimelineIO Import...",), ("menu item",),
                     ("OpenTimelineIO Import",), ()),
@@ -57,6 +60,47 @@ class GuiUncertain(RuntimeError):
 def require(ok: object, code: str) -> None:
     if not ok:
         raise GuiRejected(code)
+
+
+def modal_snapshot(rows: list[dict], expected_pid: int) -> dict:
+    """Retain every observed field once per column, without dropping any row."""
+    require(type(expected_pid) is int and 0 < expected_pid <= 0xffffffff
+            and type(rows) is list and 0 < len(rows) <= MAX_NODES,
+            "native_gui_modal_snapshot_identity")
+    names = set(MODAL_SNAPSHOT_FIELDS)
+    booleans = ("visible", "enabled", "editable", "focused", "modal")
+    keys = set()
+    packed = []
+    for row in rows:
+        require(type(row) is dict and set(row) == names
+                and type(row["pid"]) is int and row["pid"] == expected_pid,
+                "native_gui_modal_snapshot_schema")
+        require(all(type(row[k]) is str for k in ("key", "name", "role", "text"))
+                and all(type(row[k]) is bool for k in booleans)
+                and type(row["rect"]) is list and len(row["rect"]) == 4
+                and all(type(v) is int for v in row["rect"])
+                and row["key"] not in keys,
+                "native_gui_modal_snapshot_schema")
+        keys.add(row["key"])
+        # Copy the only mutable leaf; later observations cannot change custody.
+        packed.append([list(row[k]) if k == "rect" else row[k]
+                       for k in MODAL_SNAPSHOT_FIELDS])
+    original = json.dumps(rows, sort_keys=True, ensure_ascii=True,
+                          allow_nan=False).encode()
+    snapshot = {
+        "schema": "motionwright.native.atspi-modal-snapshot/1",
+        "columns": list(MODAL_SNAPSHOT_FIELDS), "rows": packed,
+        "row_count": len(rows), "expected_pid": expected_pid,
+        "source_rows_sha256": hashlib.sha256(original).hexdigest(),
+    }
+    raw = json.dumps(snapshot, sort_keys=True, ensure_ascii=True,
+                     allow_nan=False).encode()
+    if len(raw) > MODAL_SNAPSHOT_BYTES:
+        error = GuiRejected("native_gui_modal_snapshot_budget")
+        error.add_note("rows=" + str(len(rows)) + "; encoded_bytes=" + str(len(raw))
+                       + "; limit_bytes=" + str(MODAL_SNAPSHOT_BYTES))
+        raise error
+    return snapshot
 
 
 def normalized(value: str) -> str:
@@ -405,8 +449,7 @@ class AtspiSession:
         require(self.last_snapshot.get("rows") is rows and 0 < len(rows) <= MAX_NODES
                 and all(r.get("pid") == self.pid for r in rows),
                 "native_gui_modal_snapshot_identity")
-        raw = json.dumps(rows, sort_keys=True, ensure_ascii=True, allow_nan=False).encode()
-        require(len(raw) <= MODAL_SNAPSHOT_BYTES, "native_gui_modal_snapshot_budget")
+        modal_snapshot(rows, self.pid)
         return rows
 
     def _modal_readback(self, rows, kind, source_name, *, before=False):
@@ -462,7 +505,8 @@ class AtspiSession:
         self.journal.blocked = True
         self.journal.guard()
         self.journal.emit({"step": step + ".modal-before", "state": "OBSERVED",
-                           "expected_pid": self.pid, "profile": kind, "rows": before,
+                           "expected_pid": self.pid, "profile": kind,
+                           "snapshot": modal_snapshot(before, self.pid),
                            "complete": True, "semantic_effect_verified_here": False})
         self._modal_readback(before, kind, source_name, before=True)
         scopes = [r["key"] for r in before if r["visible"]
@@ -511,7 +555,8 @@ class AtspiSession:
                         "step": step + ".modal-readback",
                         "state": "MODAL_OPEN_RECONCILED" if original else "MODAL_OPEN_OBSERVED",
                         "request_response": "NO_REPLY" if original else "REQUEST_RETURNED",
-                        "expected_pid": self.pid, "profile": kind, "rows": rows,
+                        "expected_pid": self.pid, "profile": kind,
+                        "snapshot": modal_snapshot(rows, self.pid),
                         "complete": True, "dialog": dialog,
                         "verified_effect": "owned_dialog_open_only",
                         "native_save_or_import_verified": False,
