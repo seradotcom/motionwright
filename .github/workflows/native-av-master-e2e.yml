@@ -2,6 +2,15 @@ name: Native Motionwright AV master
 
 on:
   workflow_dispatch:
+    inputs:
+      fixture:
+        description: "Select one physical AV source; existing baseline is not repeated for SavedMix"
+        type: choice
+        required: true
+        default: baseline
+        options:
+          - baseline
+          - saved-mix
   pull_request:
     paths:
       - 'SOURCE_LOCK.json'
@@ -13,6 +22,8 @@ on:
       - 'crates/native/**'
       - 'apps/studio/**'
       - 'tooling/native_av_master_e2e.py'
+      - 'tooling/native_saved_mix_av.py'
+      - 'tooling/tests/test_native_saved_mix_av.py'
       - 'tooling/native_av_public_artifact.py'
       - 'tooling/cross_app_public_artifact.py'
       - 'tooling/tests/test_native_av_public_artifact.py'
@@ -35,8 +46,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: native-av-master-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  group: native-av-master-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}-${{ inputs.fixture || 'baseline' }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 defaults:
   run:
@@ -48,6 +59,7 @@ env:
   CARGO_PROFILE_TEST_DEBUG: 0
   PLAYWRIGHT_BROWSERS_PATH: '0'
   SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/_semwright
+  MOTIONWRIGHT_E2E_FIXTURE: ${{ inputs.fixture || 'baseline' }}
 
 jobs:
   native-av-master:
@@ -86,7 +98,7 @@ jobs:
           python3 -m unittest discover -s tooling/tests -p 'test_native_cli_failure_redaction.py' -v
 
       - name: Refuse release of private AV receipts or false public media PASS
-        run: python3 -m unittest discover -s tooling/tests -p 'test_native_av_public_artifact.py' -v
+        run: python3 -m unittest -v tooling.tests.test_native_av_public_artifact tooling.tests.test_native_saved_mix_av
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
@@ -203,6 +215,14 @@ jobs:
           python3 -m unittest discover -s tooling/tests -p 'test_native_provider_broker_events.py' -v
           python3 -m unittest discover -s tooling/tests -p 'test_native_provider_live_watch.py' -v
 
+      - name: Verify the saved source factory and read-only Store handoff
+        if: inputs.fixture == 'saved-mix'
+        run: |
+          set -euo pipefail
+          cargo test --locked -p motionwright-native --example native-render-e2e native_saved_mix_e2e::tests::saved_fixture_uses_real_cas_factory_and_independent_read_only_store -- --exact \
+            | tee verification/native-av-master-e2e/saved-mix-source-test.log
+          test "$(grep -Fxc 'test native_saved_mix_e2e::tests::saved_fixture_uses_real_cas_factory_and_independent_read_only_store ... ok' verification/native-av-master-e2e/saved-mix-source-test.log)" -eq 1
+
       - name: Produce a real application-owned AV master through Broker and Driver Host
         env:
           MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: '1'
@@ -236,6 +256,7 @@ jobs:
           assert result["native_av_master_e2e"] == "PASS"
           assert result["motionwright_sha"] == os.environ["GITHUB_SHA"]
           assert result["frame_count"] == 60
+          assert result["fixture"] == os.environ["MOTIONWRIGHT_E2E_FIXTURE"]
           assert len(result["artifact_manifest_sha256"]) == 64
           assert len(result["audio_sha256"]) == 64
           assert len(result["master_sha256"]) == 64
@@ -289,12 +310,20 @@ jobs:
           assert correlation["installed_owner_acceptance"] == "NOT_RUN"
           assert correlation["v01_release_ready"] is False
           probe = json.loads((root / "decoded-media-proof.json").read_text())
-          assert probe["evidence_scope"] == "actual_decoded_h264_aac_two_second_fixture_only"
+          if result["fixture"] == "saved-mix":
+              assert probe["evidence_scope"] == "actual_decoded_h264_aac_two_second_saved_mix_fixture_only"
+              assert probe["stereo_channel_identity"] == "confirmed_saved_mix_three_bus_stereo"
+              assert probe["three_buses_decoded"] is True
+              assert probe["aac_sample_exact_sync_claimed"] is False
+              assert probe["saved_mix_source_proof_sha256"] == result["saved_mix_source_proof_sha256"]
+              assert (root / "saved-mix-source-proof.json").is_file()
+          else:
+              assert probe["evidence_scope"] == "actual_decoded_h264_aac_two_second_fixture_only"
+              assert probe["stereo_channel_identity"] == "confirmed_distinct_source_tones"
           assert probe["master_sha256"] == result["master_sha256"]
           assert probe["source_wav_sha256"] == result["audio_sha256"]
           assert probe["video_frames_decoded"] == 60
           assert probe["video_movement_decoded"] is True
-          assert probe["stereo_channel_identity"] == "confirmed_distinct_source_tones"
           assert probe["changed_channel_bytes"] >= 85
           assert result["decoded_moving_frame_channels"] == probe["changed_channel_bytes"]
           assert result["decoded_content_check"] == probe["evidence_scope"]
@@ -309,7 +338,8 @@ jobs:
             --source-sha "$GITHUB_SHA" \
             --evidence-root "verification/native-av-master-e2e/$GITHUB_SHA" \
             --output-root "verification/native-av-master-public" \
-            --job-status "$NATIVE_CI_JOB_STATUS"
+            --job-status "$NATIVE_CI_JOB_STATUS" \
+            --fixture "$MOTIONWRIGHT_E2E_FIXTURE"
           python3 -m json.tool verification/native-av-master-public/public-evidence.json >/dev/null
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

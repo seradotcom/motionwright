@@ -16,6 +16,10 @@ import sys
 from cross_app_public_artifact import (
     PRIVATE_TEXT, PublicationError, read_bounded, require, strict_object,
 )
+from native_saved_mix_av import (
+    PUBLIC_MEDIA as SAVED_MIX_MEDIA, SCOPE as SAVED_MIX_SCOPE,
+    STEREO as SAVED_MIX_STEREO, MediaProbeError, inspect_pcm_files,
+)
 
 SCHEMA = "motionwright.v01-native-av-public-evidence/1"
 SHA = re.compile(r"[a-f0-9]{40}\Z")
@@ -30,7 +34,8 @@ ALLOWED_MEDIA = {
 
 
 def publish_av(root: Path, out: Path, source_sha: str,
-               semwright_sha: str, job_status: str) -> dict:
+               semwright_sha: str, job_status: str, *, fixture: str = "baseline") -> dict:
+    require(fixture in {"baseline", "saved-mix"}, "native_av_fixture_invalid")
     require(bool(SHA.fullmatch(source_sha)) and bool(SHA.fullmatch(semwright_sha)),
             "source_identity_invalid")
     require(job_status in {"success", "failure", "cancelled", "skipped"},
@@ -48,6 +53,7 @@ def publish_av(root: Path, out: Path, source_sha: str,
         require(result.get("native_av_master_e2e") == "PASS"
                 and result.get("motionwright_sha") == source_sha
                 and result.get("semwright_sha") == semwright_sha
+                and result.get("fixture", "baseline") == fixture
                 and type(result.get("frame_count")) is int
                 and result["frame_count"] == 60,
                 "native_av_not_verified")
@@ -69,14 +75,53 @@ def publish_av(root: Path, out: Path, source_sha: str,
             ) is None,
             "private_metadata_in_public_source",
         )
-        require(proof.get("evidence_scope")
-                == "actual_decoded_h264_aac_two_second_fixture_only"
+        expected_scope = (SAVED_MIX_SCOPE if fixture == "saved-mix"
+                          else "actual_decoded_h264_aac_two_second_fixture_only")
+        require(proof.get("evidence_scope") == expected_scope
                 and proof.get("master_sha256") == master_sha
                 and proof.get("source_wav_sha256") == result.get("audio_sha256")
                 and type(proof.get("video_frames_decoded")) is int
                 and proof["video_frames_decoded"] == 60
                 and proof.get("video_movement_decoded") is True,
                 "native_av_decoded_media_mismatch")
+        if fixture == "saved-mix":
+            for name, limit in SAVED_MIX_MEDIA.items():
+                artifacts[name] = read_bounded(root, name, limit)
+            raw_source = artifacts["saved-mix-source-proof.json"]
+            require(PRIVATE_TEXT.search(raw_source.decode("utf-8")) is None,
+                    "private_metadata_in_public_source")
+            source = strict_object(raw_source)
+            try:
+                pcm = inspect_pcm_files(artifacts)
+            except (MediaProbeError, KeyError, TypeError, ValueError):
+                raise PublicationError("saved_mix_original_pcm_not_verified") from None
+            expected_keys = {
+                "schema", "fixture", "pcm", "source_plan_sha256", "audio_inputs_sha256",
+                "source_witness_sha256", "same_physical_store_readback",
+                "project_and_history_unchanged", "producer_returned_before_readback",
+                "tauri_owner_invocation", "source_classification",
+                "human_approval", "release_authorized", "automatic_retry",
+            }
+            require(set(source) == expected_keys
+                    and source["schema"] == "motionwright.saved-mix-public-source/1"
+                    and source["fixture"] == fixture and source["pcm"] == pcm
+                    and source["same_physical_store_readback"] is True
+                    and source["project_and_history_unchanged"] is True
+                    and source["producer_returned_before_readback"] is True
+                    and source["tauri_owner_invocation"] == "NOT_EXERCISED"
+                    and source["source_classification"] == "SYNTHETIC_TONES_NOT_SPEECH"
+                    and all(source[key] is False for key in
+                            ("human_approval", "release_authorized", "automatic_retry"))
+                    and all(type(source[key]) is str and re.fullmatch(r"[a-f0-9]{64}", source[key]) for key in
+                            ("source_plan_sha256", "audio_inputs_sha256", "source_witness_sha256"))
+                    and pcm["mixed_wav_sha256"] == result["audio_sha256"]
+                    and proof.get("three_buses_decoded") is True
+                    and proof.get("stereo_channel_identity") == SAVED_MIX_STEREO
+                    and proof.get("aac_sample_exact_sync_claimed") is False
+                    and hashlib.sha256(raw_source).hexdigest()
+                        == proof.get("saved_mix_source_proof_sha256")
+                        == result.get("saved_mix_source_proof_sha256"),
+                    "saved_mix_source_readback_not_verified")
 
     files = [
         {"name": name, "bytes": len(content),
@@ -84,7 +129,9 @@ def publish_av(root: Path, out: Path, source_sha: str,
         for name, content in sorted(artifacts.items())
     ]
     receipt = {
-        "schema": SCHEMA,
+        "schema": ("motionwright.saved-mix-native-av-public-evidence/1"
+                   if fixture == "saved-mix" else SCHEMA),
+        "fixture": fixture,
         "motionwright_source_sha": source_sha,
         "semwright_source_pin": semwright_sha,
         "ci_native_av_evidence": "PASS" if job_status == "success" else "NOT_VERIFIED",
@@ -113,13 +160,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--evidence-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--job-status", required=True)
+    parser.add_argument("--fixture", choices=("baseline", "saved-mix"), default="baseline")
     args = parser.parse_args(argv)
     try:
         lock = strict_object((Path(__file__).resolve().parents[1]
                               / "SOURCE_LOCK.json").read_bytes())
         pin = lock["dependencies"]["semwright"]["revision"]
         result = publish_av(args.evidence_root, args.output_root,
-                            args.source_sha, pin, args.job_status)
+                            args.source_sha, pin, args.job_status, fixture=args.fixture)
     except (PublicationError, OSError, KeyError, TypeError) as exc:
         code = exc.code if isinstance(exc, PublicationError) else "public_artifact_refused"
         print("native-av-public-artifact=refused reason=" + code, file=sys.stderr)

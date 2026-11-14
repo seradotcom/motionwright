@@ -21,9 +21,22 @@ use std::{
 };
 use uuid::Uuid;
 
+mod native_saved_mix_e2e;
+
+enum CombinedMaster<'a> {
+    FixtureAudio {
+        relative: &'a str,
+        sha256: &'a str,
+        evidence: &'a Path,
+    },
+    SavedMix {
+        evidence: &'a Path,
+    },
+}
+
 fn usage() -> ! {
     eprintln!(
-        "usage: native-render-e2e <seed DATABASE | film DATABASE FILM_JSON | render DATABASE CONNECTION EVIDENCE_JSON | cycle-snapshot DATABASE DIRECTORY | cycle-edit DATABASE BEFORE_PROJECT DIRECTORY | cycle-render-edited DATABASE CONNECTION EVIDENCE_JSON | cycle-verify-binding FILM_JSON INSPECTION_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
+        "usage: native-render-e2e <seed DATABASE | film DATABASE FILM_JSON | render DATABASE CONNECTION EVIDENCE_JSON | seed-saved-mix DATABASE SOURCES EVIDENCE | render-master-saved-mix DATABASE CONNECTION RENDER_EVIDENCE MASTER_EVIDENCE | saved-mix-readback DATABASE EVIDENCE | cycle-snapshot DATABASE DIRECTORY | cycle-edit DATABASE BEFORE_PROJECT DIRECTORY | cycle-render-edited DATABASE CONNECTION EVIDENCE_JSON | cycle-verify-binding FILM_JSON INSPECTION_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
     );
     std::process::exit(2);
 }
@@ -231,7 +244,9 @@ fn real_out_cubic_opacity_tile() -> CanvasNode {
     node
 }
 
-fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn seed_project(
+    database: &Path,
+) -> Result<(StudioService, motionwright_domain::Project), Box<dyn std::error::Error>> {
     let service = StudioService::open(database)?;
     if !service.projects(2)?.is_empty() {
         return Err("native-render-e2e seed database must start empty".into());
@@ -319,23 +334,27 @@ fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
             },
         )?
         .project;
+    Ok((service, project))
+}
+
+fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let (_service, project) = seed_project(database)?;
     let deliverable = project
         .deliverables
         .first()
         .ok_or("seeded project has no deliverable")?;
-
     println!(
         "{}",
-        serde_json::to_string(&json!({
+        json!({
             "project_id": project.id,
             "resource": project.resource_key(),
             "generation": project.generation,
             "revision": project.revision,
-            "scene_id": scene_id,
+            "scene_id": project.scenes[0].id,
             "deliverable_id": deliverable.id,
             "width": deliverable.width,
-            "height": deliverable.height
-        }))?
+            "height": deliverable.height,
+        })
     );
     Ok(())
 }
@@ -1071,7 +1090,7 @@ async fn render_requested(
     connection_path: &Path,
     evidence_path: &Path,
     editable_cycle: bool,
-    combined_master: Option<(&str, &str, &Path)>,
+    combined_master: Option<CombinedMaster<'_>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let service = StudioService::open(database)?;
     let projects = service.projects(2)?;
@@ -1120,7 +1139,21 @@ async fn render_requested(
             }
         }
     }
-    let coordinator = ProductionCoordinator::new(service, connection)?;
+    let output_root = connection.output_root.clone();
+    let coordinator = ProductionCoordinator::new(service.clone(), connection)?;
+    let saved_audio = if let Some(CombinedMaster::SavedMix { evidence }) = &combined_master {
+        let root = evidence
+            .parent()
+            .ok_or("SavedMix evidence parent is absent")?;
+        Some(native_saved_mix_e2e::prepare(
+            &service,
+            &project,
+            &output_root,
+            root,
+        )?)
+    } else {
+        None
+    };
     let options = if expected_frames == 540 {
         FilmBuildOptions {
             frame_rate: Rate::new(30, 1)?,
@@ -1241,10 +1274,27 @@ async fn render_requested(
         "artifact": segment.artifact,
         "evidence": evidence_path
     });
-    if let Some((audio_relative, audio_sha256, master_evidence_path)) = combined_master {
+    if let Some(combined) = combined_master {
         if editable_cycle {
             return Err("Editable cycle does not admit a combined AV master".into());
         }
+        let (audio_relative, audio_sha256, master_evidence_path) = match combined {
+            CombinedMaster::FixtureAudio {
+                relative,
+                sha256,
+                evidence,
+            } => (relative, sha256, evidence),
+            CombinedMaster::SavedMix { evidence } => {
+                let audio = saved_audio
+                    .as_ref()
+                    .ok_or("SavedMix native preparation is absent")?;
+                (
+                    audio.relative_path.as_str(),
+                    audio.sha256.as_str(),
+                    evidence,
+                )
+            }
+        };
         // The original Film/root, cumulative debits and producer permissions
         // remain attached to this exact authenticated native coordinator.
         let master_response = master_with_coordinator(
@@ -1256,6 +1306,17 @@ async fn render_requested(
             master_evidence_path,
         )
         .await?;
+        if saved_audio.is_some() {
+            native_saved_mix_e2e::verify_source(
+                &service,
+                &service.project(project.id)?,
+                master_evidence_path
+                    .parent()
+                    .ok_or("SavedMix evidence parent is absent")?,
+            )?;
+            drop(coordinator);
+            service.prepare_read_only_handoff()?;
+        }
         println!(
             "{}",
             serde_json::to_string(&json!({
@@ -1542,6 +1603,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             render(&database, &connection, &evidence).await
         }
+        "seed-saved-mix" => {
+            let database = path_arg(&mut args);
+            let sources = path_arg(&mut args);
+            let evidence = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            native_saved_mix_e2e::seed(&database, &sources, &evidence)
+        }
+        "saved-mix-readback" => {
+            let database = path_arg(&mut args);
+            let evidence = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            native_saved_mix_e2e::readback(&database, &evidence)
+        }
+        "render-master-saved-mix" => {
+            let database = path_arg(&mut args);
+            let connection = path_arg(&mut args);
+            let render_evidence = path_arg(&mut args);
+            let master_evidence = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            render_requested(
+                &database,
+                &connection,
+                &render_evidence,
+                false,
+                Some(CombinedMaster::SavedMix {
+                    evidence: &master_evidence,
+                }),
+            )
+            .await
+        }
         "render-master" => {
             let database = path_arg(&mut args);
             let connection = path_arg(&mut args);
@@ -1557,7 +1654,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &connection,
                 &render_evidence,
                 false,
-                Some((&audio_relative, &audio_sha256, &master_evidence)),
+                Some(CombinedMaster::FixtureAudio {
+                    relative: &audio_relative,
+                    sha256: &audio_sha256,
+                    evidence: &master_evidence,
+                }),
             )
             .await
         }

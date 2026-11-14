@@ -265,11 +265,11 @@ class BoundedLiveProviderTests(unittest.TestCase):
             root / ".github/workflows/native-av-master-e2e.yml"
         ).read_text())
 
-    def test_ci_wiring_is_baseline_only_no_native_retry(self):
+    def test_ci_wiring_is_closed_audio_fixtures_only_no_native_retry(self):
         root = Path(__file__).resolve().parents[2]
         runner = (root / "tooling/native_av_master_e2e.py").read_text()
         workflow = (root / ".github/workflows/native-av-master-e2e.yml").read_text()
-        self.assertIn('if FIXTURE == "baseline"', runner)
+        self.assertIn('if FIXTURE in {"baseline", "saved-mix"}', runner)
         self.assertIn("PassiveLiveBrokerWatch", runner)
         self.assertIn("public_lifecycle_kind_counts(live_events)", runner)
         self.assertIn('live_broker_watch.start()', runner)

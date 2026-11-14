@@ -56,9 +56,10 @@ IS_STAGE = FIXTURE in STAGE_MODES
 IS_CAMERA = FIXTURE == "camera-reframe"
 IS_MEASURED = FIXTURE == "measured-data"
 IS_COMPOSITION = FIXTURE == "composition-stack"
+IS_SAVED_MIX = FIXTURE == "saved-mix"
 IS_PROCEDURAL = FIXTURE in PROCEDURAL_MODES
 IS_HERO = FIXTURE in HERO_ASPECTS
-if FIXTURE not in {"baseline", "measured-data", "camera-reframe", "composition-stack", *HERO_ASPECTS, *STAGE_MODES, *PROCEDURAL_MODES}:
+if FIXTURE not in {"baseline", "saved-mix", "measured-data", "camera-reframe", "composition-stack", *HERO_ASPECTS, *STAGE_MODES, *PROCEDURAL_MODES}:
     raise SystemExit("unknown bounded E2E fixture")
 EXPECTED_FRAMES = 540 if IS_COMPOSITION else 180 if IS_HERO or IS_STAGE or IS_MEASURED or IS_PROCEDURAL or IS_CAMERA else 60
 EXPECTED_SIZE = HERO_ASPECTS[FIXTURE] if IS_HERO else (1920, 1080)
@@ -176,7 +177,11 @@ def main() -> None:
 
         database = paths["motionwright-data"] / "motionwright.sqlite3"
         seed_command = [str(MW_BIN), "seed", str(database)]
-        if IS_HERO:
+        if IS_SAVED_MIX:
+            from native_saved_mix_av import write_stems
+            write_stems(EVIDENCE)
+            seed_command = [str(MW_BIN), "seed-saved-mix", str(database), str(EVIDENCE), str(EVIDENCE)]
+        elif IS_HERO:
             seed_command = [str(MW_BIN), "seed-hero", str(database), FIXTURE, str(EVIDENCE / "editable-project.json")]
         elif IS_STAGE:
             seed_command = [str(MW_BIN), "seed-stage", str(database), FIXTURE.removeprefix("stage-"), str(EVIDENCE / "editable-project.json")]
@@ -190,6 +195,8 @@ def main() -> None:
         elif IS_COMPOSITION:
             seed_command = [str(MW_BIN), "seed-composition", str(database), str(EVIDENCE / "editable-project.json")]
         seeded = run_json(seed_command, env=env)
+        if IS_SAVED_MIX and seeded.get("fixture") != "saved-mix":
+            raise AssertionError("SavedMix seed did not persist the selected source fixture")
         if (seeded["width"], seeded["height"]) != EXPECTED_SIZE:
             raise AssertionError(f"unexpected master profile: {seeded}")
         expected_family = ("contrast-comparison/1" if FIXTURE.startswith("contrast-") else
@@ -441,7 +448,7 @@ def main() -> None:
             PassiveLiveBrokerWatch(
                 SW_BINS / "semwright", socket, session, env=env,
             )
-            if FIXTURE == "baseline"
+            if FIXTURE in {"baseline", "saved-mix"}
             and os.environ.get("MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY") == "1"
             else None
         )
@@ -519,28 +526,31 @@ def main() -> None:
                 },
             )
 
-            audio_relative = "acceptance-audio.wav"
-            audio_path = paths["output"] / audio_relative
-            # Distinct non-silent L440Hz/R660Hz synthetic tones, not sound
-            # design. Use exact 2s baseline, 6s scene or 18s three-scene duration;
-            # independently decode and check actual samples for each closed profile.
-            write_two_channel_tone_wav(audio_path, seconds=EXPECTED_FRAMES / 30)
-            audio_path.chmod(0o600)
-            audio_sha256 = digest(audio_path)
-
+            if IS_SAVED_MIX:
+                # The Rust public saved-recipe factory stages the actual mix.
+                # No Python-generated soundtrack or second Native owner is used.
+                audio_path = EVIDENCE / "saved-mix.wav"
+                combined_command = [
+                    str(MW_BIN), "render-master-saved-mix", str(database), str(connection_path),
+                    str(EVIDENCE / "motionwright-render-evidence.json"),
+                    str(EVIDENCE / "motionwright-av-master-evidence.json"),
+                ]
+            else:
+                audio_relative = "acceptance-audio.wav"
+                audio_path = paths["output"] / audio_relative
+                write_two_channel_tone_wav(audio_path, seconds=EXPECTED_FRAMES / 30)
+                audio_path.chmod(0o600)
+                audio_sha256 = digest(audio_path)
+                combined_command = [
+                    str(MW_BIN), "render-master", str(database), str(connection_path),
+                    str(EVIDENCE / "motionwright-render-evidence.json"),
+                    audio_relative, audio_sha256,
+                    str(EVIDENCE / "motionwright-av-master-evidence.json"),
+                ]
 
             try:
                 combined = run_json(
-                    [
-                        str(MW_BIN),
-                        "render-master",
-                        str(database),
-                        str(connection_path),
-                        str(EVIDENCE / "motionwright-render-evidence.json"),
-                        audio_relative,
-                        audio_sha256,
-                        str(EVIDENCE / "motionwright-av-master-evidence.json"),
-                    ],
+                    combined_command,
                     env=env,
                     # One native process now owns both formerly separate stages.
                     # Preserve their combined original subprocess time budget.
@@ -577,6 +587,17 @@ def main() -> None:
                 raise AssertionError("Combined native owner did not return both original results")
             if result.get("native_render_e2e") != "PASS" or result.get("frame_count") != EXPECTED_FRAMES:
                 raise AssertionError(f"Motionwright render did not pass: {result}")
+            if IS_SAVED_MIX:
+                if master_result.get("native_av_master_e2e") != "PASS":
+                    raise AssertionError("SavedMix master is unconfirmed; no further operation is allowed")
+                # run_json observed the producer's successful process exit above.
+                # A new process now opens only StudioServiceReader, never a writer.
+                readback = run_json(
+                    [str(MW_BIN), "saved-mix-readback", str(database), str(EVIDENCE)], env=env,
+                )
+                if readback.get("reader_authority") != "StudioServiceReader":
+                    raise AssertionError("SavedMix independent Store reader is absent")
+                audio_sha256 = digest(audio_path)
 
             artifact = result["artifact"]
             directory = artifact.get("directory")
@@ -642,11 +663,17 @@ def main() -> None:
             # decodes the exact 60-, 180- or 540-frame bounded profiles.
             # All require measured non-silent, distinct stereo channel tones
             # and native pixel movement. No decoder runs in the shipped app.
-            decoded = probe_native_mp4(
-                master_path, audio_path, ffmpeg, ffprobe,
-                expected_frames=EXPECTED_FRAMES, expected_size=EXPECTED_SIZE,
-                expect_movement=FIXTURE != "procedural-static",
-            )
+            if IS_SAVED_MIX:
+                from native_saved_mix_av import probe_saved_mix
+                decoded = probe_saved_mix(
+                    EVIDENCE, master_path, ffmpeg, ffprobe, source_sha=GITHUB_SHA, sdk=PIN,
+                )
+            else:
+                decoded = probe_native_mp4(
+                    master_path, audio_path, ffmpeg, ffprobe,
+                    expected_frames=EXPECTED_FRAMES, expected_size=EXPECTED_SIZE,
+                    expect_movement=FIXTURE != "procedural-static",
+                )
             if decoded["master_sha256"] != master_sha256:
                 raise AssertionError("Decoded-media sample came from a different MP4 digest")
             if decoded["source_wav_sha256"] != audio_sha256:
@@ -704,7 +731,11 @@ def main() -> None:
                     "joint_native_pixel_evidence_sha256": (
                         digest(EVIDENCE / "composition-native-inspection.json") if IS_COMPOSITION else None
                     ),
-                    "audio_kind": "synthetic_distinct_stereo_tones_for_transport_acceptance_not_sound_design",
+                    "audio_kind": (
+                        "persisted_synthetic_three_bus_mix_not_speech_or_human_approval" if IS_SAVED_MIX
+                        else "synthetic_distinct_stereo_tones_for_transport_acceptance_not_sound_design"
+                    ),
+                    "saved_mix_source_proof_sha256": decoded.get("saved_mix_source_proof_sha256"),
                     "audio_sha256": audio_sha256,
                     "master_path": master_relative,
                     "master_sha256": master_sha256,
@@ -766,7 +797,7 @@ def main() -> None:
                 # Never reissue render.start or any native mutation after
                 # a Timeout/UNKNOWN; the watcher reads historical events only.
                 if (
-                    FIXTURE == "baseline"
+                    FIXTURE in {"baseline", "saved-mix"}
                     and os.environ.get("MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY") == "1"
                 ):
                     try:
