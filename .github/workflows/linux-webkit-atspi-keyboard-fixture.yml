@@ -25,7 +25,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends python3-gi gir1.2-gtk-3.0 gir1.2-webkit2-4.1 gir1.2-atspi-2.0 at-spi2-core libatk-adaptor libglib2.0-bin xvfb dbus-x11 x11-utils
+          sudo apt-get install -y --no-install-recommends python3-gi gir1.2-gtk-3.0 gir1.2-webkit2-4.1 gir1.2-atspi-2.0 at-spi2-core libatk-adaptor libglib2.0-bin xvfb dbus-x11 x11-utils openbox
           /usr/bin/python3 -B -E -s - <<'PY_SOURCE'
           import ast
           from pathlib import Path
@@ -47,9 +47,17 @@ jobs:
           scope="$RUNNER_TEMP/mw-atspi-keyboard-fixture-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           test ! -e "$scope"
           mkdir -m 700 "$scope"
-          timeout -k 5s 70s xvfb-run -a -s "-screen 0 1440x940x24" dbus-run-session -- /usr/bin/python3 -B -E -s \
-            tooling/ci_linux_webkit_atspi_keyboard_fixture.py \
-            --ready "$scope/fixture-ready.json" --output "$scope/result.original.json"
+          # Xvfb without a window manager may never grant top-level focus.
+          # Openbox performs ordinary X11 focus admission. The fixture must
+          # STILL independently prove FOCUSED on the one PID-bound entry.
+          timeout -k 5s 70s xvfb-run -a -s "-screen 0 1440x940x24" dbus-run-session -- bash -c '
+            set -euo pipefail
+            openbox --sm-disable >"$1/window-manager.original.log" 2>&1 &
+            wm=$!
+            trap "kill $wm 2>/dev/null || true" EXIT
+            sleep 1
+            /usr/bin/python3 -B -E -s "$2" --ready "$1/fixture-ready.json" --output "$1/result.original.json"
+          ' bash "$scope" "$GITHUB_WORKSPACE/tooling/ci_linux_webkit_atspi_keyboard_fixture.py"
       - name: Retain one original source-and-PID-bound fixture input custody
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -61,5 +69,6 @@ jobs:
             ${{ runner.temp }}/mw-atspi-keyboard-fixture-${{ github.run_id }}-${{ github.run_attempt }}/fixture-ready.json
             ${{ runner.temp }}/mw-atspi-keyboard-fixture-${{ github.run_id }}-${{ github.run_attempt }}/stages/*.json
             ${{ runner.temp }}/mw-atspi-keyboard-fixture-${{ github.run_id }}-${{ github.run_attempt }}/fixture-server.stdout
+            ${{ runner.temp }}/mw-atspi-keyboard-fixture-${{ github.run_id }}-${{ github.run_attempt }}/window-manager.original.log
           if-no-files-found: warn
           retention-days: 30

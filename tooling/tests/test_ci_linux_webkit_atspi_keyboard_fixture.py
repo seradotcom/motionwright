@@ -128,6 +128,19 @@ class OneFixtureKeyboardEvent(unittest.TestCase):
             self.assertTrue((root/"focus-intent.json").is_file())
             self.assertFalse((root/"type-intent.json").exists())
 
+    def test_xvfb_window_manager_admission_retains_focus_check(self):
+        w=(ROOT/".github/workflows/linux-webkit-atspi-keyboard-fixture.yml").read_text()
+        self.assertIn('x11-utils openbox',w)
+        self.assertIn('openbox --sm-disable',w)
+        self.assertIn('trap "kill $wm 2>/dev/null || true" EXIT',w)
+        self.assertIn('window-manager.original.log',w)
+        self.assertIn('dbus-run-session -- bash -c',w)
+        fixture_src=(ROOT/"tooling/ci_linux_webkit_editable_matrix.py").read_text()
+        self.assertIn('window.present()',fixture_src)
+        source=(ROOT/"tooling/ci_linux_webkit_atspi_keyboard_fixture.py").read_text()
+        self.assertIn('if not focus_state or bridge.pid(app) != pid',source)
+        self.assertLess(source.index('mark("focus-state"'),source.index('mark("type-intent"'))
+
     def test_workflow_single_attempt_fixture_not_product(self):
         raw=(ROOT/".github/workflows/linux-webkit-atspi-keyboard-fixture.yml").read_text()
         self.assertIn('on:\n  push:',raw)

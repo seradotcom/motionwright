@@ -67,6 +67,10 @@ def serve(ready: Path):
                            "pid": os.getpid(), "fixture": "HTML_INPUT_MATRIX_NO_PRODUCT"})
     web.connect("load-changed", loaded)
     window.show_all()
+    # Only this disposable fixture requests ordinary top-level WM focus.
+    # The AT-SPI input worker separately proves the HTML child's own
+    # FOCUSED state before sending any keyboard input.
+    window.present()
     web.load_html(HTML, "about:blank")
     Gtk.main()
 
