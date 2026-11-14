@@ -1571,6 +1571,7 @@ fn readback_original(database: &Path, observation: &Path) -> FixtureResult<()> {
 
 mod fixed_text_v4 {
     use super::*;
+    use motionwright_native::production::ProductionTransportCustody;
     use semwright_motion_authoring::{Film, FontFallback, realize};
     use semwright_native_sdk::{Error as NativeError, ErrorCode};
     use semwright_semantic_composition::strict_decode;
@@ -2194,32 +2195,160 @@ mod fixed_text_v4 {
             )
         }
     }
+    // The selected original request reserves one MiB for this existing member.
+    // A diagnostic must not silently enlarge that custody budget.
+    const RETURN_SNAPSHOT_LIMIT: usize = 1024 * 1024;
+
+    struct CallObservation<'a> {
+        request_id: &'a str,
+        first_failure: std::cell::RefCell<Option<(NativeError, Value)>>,
+    }
+
+    impl<'a> CallObservation<'a> {
+        fn new(request_id: &'a str) -> Self {
+            Self {
+                request_id,
+                first_failure: std::cell::RefCell::new(None),
+            }
+        }
+
+        fn require_no_previous_failure(&self) -> NativeResult<()> {
+            match self.first_failure.borrow().as_ref() {
+                Some((error, _)) => Err(error.clone()),
+                None => Ok(()),
+            }
+        }
+
+        fn retain_first_failure(&self, error: &NativeError, observation: Value) {
+            let mut first = self.first_failure.borrow_mut();
+            if first.is_none() {
+                *first = Some((error.clone(), observation));
+            }
+        }
+    }
+
+    fn omit_original_byte_values(value: &mut Value) {
+        match value {
+            Value::Object(fields) => {
+                if fields.get("encoding").and_then(Value::as_str) == Some("hex")
+                    && fields.contains_key("bytes")
+                    && fields.contains_key("sha256")
+                    && fields.contains_key("value")
+                {
+                    fields.remove("encoding");
+                    fields.remove("value");
+                    fields.insert(
+                        "representation".into(),
+                        json!("observed_byte_count_and_sha256_only"),
+                    );
+                } else {
+                    for child in fields.values_mut() {
+                        omit_original_byte_values(child);
+                    }
+                }
+            }
+            Value::Array(values) => {
+                for child in values {
+                    omit_original_byte_values(child);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn return_snapshot(
+        outcome: &NativeResult<Value>,
+        request: &CallObservation<'_>,
+    ) -> FixtureResult<Value> {
+        let mut snapshot = match outcome {
+            Ok(value) => json!({"schema":"motionwright.private-native-return-snapshot/1",
+                "native_result":"returned_success","value":value,"wire_bytes":false,"automatic_retry":false}),
+            Err(error) => {
+                let failure = request.first_failure.borrow();
+                match failure.as_ref() {
+                    None => json!({"schema":"motionwright.private-native-return-snapshot/1",
+                        "native_result":"returned_error","error":error,"wire_bytes":false,"automatic_retry":false}),
+                    Some((_, observed)) => json!({
+                        "schema":"motionwright.private-native-return-snapshot/2",
+                        "native_result":"returned_error","error":error,
+                        "wire_bytes":observed["transport"]["entries"].as_array()
+                            .is_some_and(|entries| !entries.is_empty()),
+                        "automatic_retry":false,
+                        "capture_representation":"complete_observed_cli_bytes",
+                        "failed_cli_call":observed,
+                    }),
+                }
+            }
+        };
+        if outcome.is_err() {
+            let complete = serde_json::to_vec_pretty(&snapshot)?;
+            if complete.len() + 1 > RETURN_SNAPSHOT_LIMIT
+                && snapshot.get("failed_cli_call").is_some()
+            {
+                omit_original_byte_values(&mut snapshot["failed_cli_call"]["transport"]);
+                snapshot["failed_cli_call"]["transport"]["schema"] =
+                    json!("motionwright.production.private-transport-observation/1");
+                snapshot["wire_bytes"] = json!(false);
+                snapshot["capture_representation"] = json!("metadata_only_due_to_member_limit");
+                snapshot["omitted_complete_snapshot"] = json!({
+                    "bytes":complete.len(),"sha256":sha(&complete),
+                    "serialization":"serde_json_pretty_without_final_newline",
+                    "original_bytes_retained":false,
+                    "hashes_describe_observed_bytes_only":true,
+                });
+            }
+            require(
+                serde_json::to_vec_pretty(&snapshot)?.len() < RETURN_SNAPSHOT_LIMIT,
+                "Private native failure observation exceeds its selected member limit",
+            )?;
+        }
+        Ok(snapshot)
+    }
+
     async fn call(
         coordinator: &ProductionCoordinator,
         project: &Project,
-        request: &str,
+        request: &CallObservation<'_>,
         suffix: &str,
         command: &str,
         args: Value,
         mutation: bool,
     ) -> NativeResult<Value> {
-        coordinator
+        request.require_no_previous_failure()?;
+        // Each invocation has its own existing bounded transport capture. A
+        // status poll cannot exhaust a capture shared across the render loop.
+        let custody = ProductionTransportCustody::default();
+        let observed = coordinator.clone().with_transport_custody(&custody);
+        let request_id = format!("{}:motion:0:{suffix}", request.request_id);
+        let started = std::time::Instant::now();
+        let outcome = observed
             .execute(
                 project.id,
                 &RevisionStamp::from(project),
-                &format!("{request}:motion:0:{suffix}"),
+                &request_id,
                 command,
                 args,
                 mutation,
             )
-            .await
+            .await;
+        if let Err(error) = &outcome {
+            request.retain_first_failure(
+                error,
+                json!({
+                    "request_id":request_id,"command":command,"mutation":mutation,
+                    "elapsed_ms":started.elapsed().as_millis(),
+                    "transport":custody.private_snapshot(),
+                }),
+            );
+        }
+        outcome
     }
     impl Loaded {
         async fn dispatch(
             &self,
             coordinator: &ProductionCoordinator,
             project: &Project,
-            request: &str,
+            request: &CallObservation<'_>,
             retained: &Path,
         ) -> NativeResult<Value> {
             let before = call(
@@ -2744,18 +2873,13 @@ mod fixed_text_v4 {
             &loaded.case.runtime.node_sha256,
         )?;
         let coordinator = ProductionCoordinator::new(service.clone(), connection)?;
+        let request = CallObservation::new(&request);
         let outcome = loaded
             .dispatch(&coordinator, &original, &request, &retained)
             .await;
         let succeeded = outcome.is_ok();
-        let snapshot = match &outcome {
-            Ok(value) => json!({"schema":"motionwright.private-native-return-snapshot/1",
-                "native_result":"returned_success","value":value,"wire_bytes":false,"automatic_retry":false}),
-            Err(error) => json!({"schema":"motionwright.private-native-return-snapshot/1",
-                "native_result":"returned_error","error":error,"wire_bytes":false,"automatic_retry":false}),
-        };
-        let snapshot_error = reader
-            .retain_native_return(&snapshot)
+        let snapshot_error = return_snapshot(&outcome, &request)
+            .and_then(|snapshot| reader.retain_native_return(&snapshot))
             .err()
             .map(|e| e.to_string());
         let result_retention = match &outcome {
@@ -2765,7 +2889,7 @@ mod fixed_text_v4 {
         let custody = reader.finish(
             &service,
             &original,
-            &request,
+            request.request_id,
             succeeded,
             snapshot_error.is_none(),
             snapshot_error.as_deref(),
@@ -3076,8 +3200,103 @@ mod fixed_text_v4 {
                 assert!(!sha_shape(&value));
             }
         }
+        fn failed_cli_observation_is_bounded_and_preserves_unknown() {
+            let mut original = NativeError::new(ErrorCode::Timeout, "synthetic CLI timeout");
+            original.outcome_known = false;
+            let original_value = serde_json::to_value(&original).unwrap();
+            for size in [7, RETURN_SNAPSHOT_LIMIT] {
+                let bytes = vec![b'x'; size];
+                let request = CallObservation::new("synthetic-only");
+                request.require_no_previous_failure().unwrap();
+                let observed = json!({
+                    "request_id":"synthetic-only:motion:0:status-1",
+                    "command":"driver.motion-canvas.render.status","mutation":false,
+                    "elapsed_ms":45001,
+                    "transport":{
+                        "schema":"motionwright.production.private-transport-custody/1",
+                        "durable":false,"authority":false,
+                        "entries":[{
+                            "process_started":true,"pid":123,"process_exit":null,
+                            "transport_terminal":{"kind":"error","original_error":original_value},
+                            "stdout":{
+                                "original":{"encoding":"hex","bytes":size,
+                                    "sha256":sha(&bytes),"value":hex::encode(&bytes)},
+                                "eof_observed":false,"read_error_observed":false,
+                                "capture_limit_exceeded":false,
+                            },
+                            "stderr":{
+                                "original":{"encoding":"hex","bytes":0,
+                                    "sha256":sha(b""),"value":""},
+                                "eof_observed":true,"read_error_observed":false,
+                                "capture_limit_exceeded":false,
+                            },
+                        }],
+                    },
+                });
+                request.retain_first_failure(&original, observed);
+                request.retain_first_failure(
+                    &native_error("later failure must not replace the original"),
+                    json!({"replacement":true}),
+                );
+                let held = request.require_no_previous_failure().unwrap_err();
+                assert_eq!(serde_json::to_value(held).unwrap(), original_value);
+                let snapshot = return_snapshot(&Err(original.clone()), &request).unwrap();
+                assert_eq!(
+                    snapshot["schema"],
+                    "motionwright.private-native-return-snapshot/2"
+                );
+                assert_eq!(snapshot["native_result"], "returned_error");
+                assert_eq!(snapshot["error"], original_value);
+                assert_eq!(snapshot["automatic_retry"], false);
+                assert!(
+                    serde_json::to_vec_pretty(&snapshot).unwrap().len() < RETURN_SNAPSHOT_LIMIT
+                );
+                let entry = &snapshot["failed_cli_call"]["transport"]["entries"][0];
+                assert_eq!(entry["pid"], 123);
+                assert!(entry["process_exit"].is_null());
+                assert_eq!(
+                    entry["transport_terminal"]["original_error"],
+                    original_value
+                );
+                assert_eq!(entry["stdout"]["eof_observed"], false);
+                assert_eq!(entry["stderr"]["eof_observed"], true);
+                assert_eq!(entry["stdout"]["original"]["bytes"], size);
+                assert_eq!(entry["stdout"]["original"]["sha256"], sha(&bytes));
+                if size == 7 {
+                    assert_eq!(snapshot["wire_bytes"], true);
+                    assert_eq!(entry["stdout"]["original"]["value"], hex::encode(&bytes));
+                    assert!(snapshot.get("omitted_complete_snapshot").is_none());
+                } else {
+                    assert_eq!(snapshot["wire_bytes"], false);
+                    assert_eq!(
+                        snapshot["capture_representation"],
+                        "metadata_only_due_to_member_limit"
+                    );
+                    assert!(entry["stdout"]["original"].get("value").is_none());
+                    assert!(entry["stderr"]["original"].get("value").is_none());
+                    assert_eq!(
+                        snapshot["omitted_complete_snapshot"]["original_bytes_retained"],
+                        false
+                    );
+                    assert_eq!(
+                        snapshot["omitted_complete_snapshot"]["hashes_describe_observed_bytes_only"],
+                        true,
+                    );
+                }
+            }
+            let request = CallObservation::new("synthetic-success-only");
+            let value = json!({"synthetic":true});
+            assert_eq!(
+                return_snapshot(&Ok(value.clone()), &request).unwrap(),
+                json!({"schema":"motionwright.private-native-return-snapshot/1",
+                    "native_result":"returned_success","value":value,
+                    "wire_bytes":false,"automatic_retry":false}),
+            );
+        }
+
         #[test]
         fn native_return_requires_fresh_checked_provenance() {
+            failed_cli_observation_is_bounded_and_preserves_unknown();
             typed_failure_transport_keeps_primary_error_and_private_details();
             host_terminal_preserves_only_explicit_original_certainty();
             absent_or_malformed_host_certainty_cannot_be_promoted();
