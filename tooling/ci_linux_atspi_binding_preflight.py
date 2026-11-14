@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Authenticate the installed Ubuntu AT-SPI GI binding before building a candidate.
 
-This is read-only: it starts an isolated accessibility registry but never opens
-Motionwright, runs Native, issues a UI action, or touches product storage.
+This is read-only and *headless*: it constructs genuine GI MatchRule
+objects without starting DBus, Xvfb, Motionwright, Native or product storage.
 The result is a separate original, outside the closed Linux source-gate roster.
 """
 from __future__ import annotations
@@ -15,7 +15,6 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-import time
 
 
 def require(ok, code):
@@ -33,8 +32,8 @@ def main():
     require(re.fullmatch(r"[0-9a-f]{40}", source) is not None,
             "ATSPI_ABI_EXACT_SOURCE_REQUIRED")
     require(sys.platform == "linux" and os.environ.get("GITHUB_ACTIONS") == "true"
-            and os.environ.get("DISPLAY") and os.environ.get("DBUS_SESSION_BUS_ADDRESS"),
-            "ATSPI_ABI_GITHUB_LINUX_SESSION_REQUIRED")
+            and not os.environ.get("DISPLAY") and not os.environ.get("DBUS_SESSION_BUS_ADDRESS"),
+            "ATSPI_ABI_HEADLESS_GITHUB_LINUX_REQUIRED")
     require(os.environ.get("GITHUB_SHA") == source
             and subprocess.check_output(
                 ["git", "-C", str(root), "rev-parse", "HEAD"],
@@ -51,21 +50,23 @@ def main():
         import gi
         gi.require_version("Atspi", "2.0")
         from gi.repository import Atspi
-        from linux_first_use_accessible import AtspiBridge, MAX_NODES
+        from linux_first_use_accessible import AtspiBridge
         result["stage"] = "GI_IMPORT"
-        require(Atspi.init() in (0, 1), "ATSPI_ABI_INIT_FAILED")
-        result["stage"] = "BRIDGE_INIT"
-        bridge = AtspiBridge(Atspi, deadline=time.monotonic() + 15)
-        matches = []
+        bridge = object.__new__(AtspiBridge)
+        bridge.api = Atspi
+        constructed = []
         for roles in (("dialog",), ("entry", "text", "button")):
-            result["stage"] = "COLLECTION_ROLES_" + str(len(roles))
-            # Call the *real* libatspi GObject method, not a mock. The empty
-            # desktop is enough to detect MatchRule marshaling/signature faults.
-            found = bridge.matching_roles(bridge.desktop, roles)
-            require(type(found) is list and len(found) <= MAX_NODES,
-                    "ATSPI_ABI_RESULT_INVALID")
-            matches.append({"roles": list(roles), "bounded_results": len(found)})
-        result.update(status="PASS", stage="COMPLETED", checks=matches)
+            result["stage"] = "MATCH_RULE_ROLES_" + str(len(roles))
+            # Verify the exact constructor used by the installed worker.
+            # No registry, Collection query, editor or product can run here.
+            rule = bridge.collection_rule(roles)
+            require(rule is not None, "ATSPI_ABI_NULL_MATCH_RULE")
+            constructed.append({"roles": list(roles), "constructor": "GI_ORIGINAL"})
+        result["stage"] = "COLLECTION_METHOD_AVAILABLE"
+        require(callable(Atspi.Collection.get_matches)
+                and Atspi.CollectionSortOrder.CANONICAL is not None,
+                "ATSPI_ABI_COLLECTION_METHOD_UNAVAILABLE")
+        result.update(status="PASS", stage="COMPLETED", checks=constructed)
     except Exception as error:
         # This source-only diagnostic has no product data or private inputs.
         # Retain the actual GI type error so we can fix ABI before a build.

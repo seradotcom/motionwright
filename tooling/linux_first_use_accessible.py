@@ -356,11 +356,9 @@ class AtspiBridge:
         self.call(self.desktop.clear_cache)
         return self.children(self.desktop)
 
-    def matching_roles(self, root, roles):
-        # Server-side Collection is a bounded read-only query. This avoids
-        # thousands of individual D-Bus role/child calls to a WebKit tree.
-        # A missing/failed Collection is a closed failure, not authorization
-        # to try a different application or send a synthetic edit.
+    def collection_rule(self, roles):
+        # This exact constructor can be verified headlessly on Ubuntu before
+        # executing any Motionwright product or opening a desktop session.
         roles_allowed = {
             "dialog": self.api.Role.DIALOG, "entry": self.api.Role.ENTRY,
             "text": self.api.Role.TEXT, "button": self.api.Role.PUSH_BUTTON,
@@ -368,12 +366,19 @@ class AtspiBridge:
         if not roles or len(roles) > len(roles_allowed) or any(
                 role not in roles_allowed for role in roles):
             raise ProbeError("ACCESSIBLE_COLLECTION_ROLES_INVALID")
-        rule = self.api.MatchRule.new(
+        return self.api.MatchRule.new(
             None, self.api.CollectionMatchType.NONE,
             None, self.api.CollectionMatchType.NONE,
             [roles_allowed[role] for role in roles],
             self.api.CollectionMatchType.ANY,
             None, self.api.CollectionMatchType.NONE, False)
+
+    def matching_roles(self, root, roles):
+        # Server-side Collection is a bounded read-only query. This avoids
+        # thousands of individual D-Bus role/child calls to a WebKit tree.
+        # A missing/failed Collection is a closed failure, not authorization
+        # to try a different application or send a synthetic edit.
+        rule = self.collection_rule(roles)
         matches = self.call(root.get_matches, rule,
                             self.api.CollectionSortOrder.CANONICAL,
                             MAX_NODES + 1, True)

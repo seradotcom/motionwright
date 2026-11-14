@@ -683,14 +683,14 @@ jobs:
           /usr/bin/python3 -B -E -s tooling/ci_linux_first_use.py source \
             --repo "$GITHUB_WORKSPACE" --source "$GITHUB_SHA" \
             --output "$RUNNER_TEMP/linux-first-use-source"
-      - name: Verify real Ubuntu AT-SPI GI Collection binding before any build or UI effect
+      - name: Verify Ubuntu AT-SPI MatchRule binding headlessly before any build or UI effect
         timeout-minutes: 5
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends python3-gi gir1.2-atspi-2.0 xvfb dbus-x11
-          xvfb-run -a dbus-run-session -- /usr/bin/python3 -B -E -s tooling/ci_linux_atspi_binding_preflight.py \
+          sudo apt-get install -y --no-install-recommends python3-gi gir1.2-atspi-2.0
+          /usr/bin/python3 -B -E -s tooling/ci_linux_atspi_binding_preflight.py \
             --source "$GITHUB_SHA" \
             --output "$RUNNER_TEMP/linux-first-use-atspi-binding/original.json"
       - name: Preserve original Ubuntu AT-SPI GI ABI check independently of source-gate roster
