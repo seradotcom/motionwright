@@ -17,6 +17,8 @@ import time
 import zlib
 from typing import Callable
 
+import kdenlive_x11_modal as x11_modal
+
 MAX_NODES = 4096
 MAX_DEPTH = 40
 MAX_CHILDREN = 512
@@ -46,6 +48,10 @@ MODAL_OPENERS = {
                        ("Delayed Rendering",), ("Rendering",)),
     "discard_preferences": (("Quit",), ("menu item",), (), ()),
 }
+WINDOW_TITLES = frozenset({
+    "OpenTimelineIO Import", "Save As", "Save Project", "OpenTimelineIO Export",
+    "Duration", "Delayed Rendering", "Rendering",
+})
 MODAL_MENU_PATHS = {
     ("File", "OpenTimelineIO Import..."): "otio_import",
     ("File", "Save As..."): "save_as",
@@ -128,6 +134,13 @@ def modal_snapshot(rows: list[dict], expected_pid: int) -> dict:
 
 def normalized(value: str) -> str:
     return value.replace("&", "").replace("\u2026", "...").strip()
+
+
+def window_title_matches(value: str, names: tuple[str, ...]) -> bool:
+    """Qt's exact application suffix is accepted only for this closed route."""
+    title = normalized(value)
+    return any(title == name or (name in WINDOW_TITLES
+               and title == name + " — Kdenlive") for name in names)
 
 
 def unique(rows: list[dict], *, code: str) -> dict:
@@ -443,7 +456,9 @@ class AtspiSession:
              *, scope: str | None = None) -> dict | None:
         rows = self.tree()
         matches = [r for r in rows if r["visible"] and r["enabled"]
-                   and normalized(r["name"]) in names and r["role"] in roles
+                   and (window_title_matches(r["name"], names)
+                        if r["role"] in ("dialog", "frame", "alert")
+                        else normalized(r["name"]) in names) and r["role"] in roles
                    and (scope is None or r["key"].startswith(scope + "/")
                         or r["key"] == scope)]
         if not matches:
@@ -475,17 +490,59 @@ class AtspiSession:
         modal_snapshot(rows, self.pid)
         return rows
 
-    def _modal_readback(self, rows, kind, source_name, *, before=False):
+    def _observe_modal_parent(self, rows, kind):
+        # This live X11 observation precedes the one opener. Duration's
+        # qApp->activeWindow() and Qt's parentless input dialog are thus bound
+        # to an actually observed parent/group, never an assumed window ID.
+        if kind == "delayed_render":
+            candidates = [r for r in rows if r["visible"] and r["enabled"]
+                          and r["role"] in ("dialog", "frame")
+                          and window_title_matches(r["name"], ("Rendering",))]
+            parent_type = ("_NET_WM_WINDOW_TYPE_NORMAL", "_NET_WM_WINDOW_TYPE_DIALOG")
+        else:
+            frames = [r for r in rows if r["visible"] and r["enabled"]
+                      and r["role"] == "frame"]
+            candidates = [r for r in frames if not any(
+                r["key"].startswith(other["key"] + "/")
+                for other in frames if other is not r)]
+            parent_type = ("_NET_WM_WINDOW_TYPE_NORMAL",)
+        parent = unique(candidates, code="native_gui_X11_parent_not_unique")
+        self.last_x11_parent = {}
+        try:
+            return x11_modal.observe_parent(
+                expected_pid=self.pid, parent_name=parent["name"],
+                parent_type=parent_type, guard=self.journal.guard,
+                deadline=time.monotonic() + WAIT_SECONDS,
+                evidence=self.last_x11_parent)
+        except x11_modal.X11Rejected as rejected:
+            raise GuiRejected(str(rejected)) from rejected
+
+    def _observe_x11_modal(self, dialog, kind, deadline):
+        parent = getattr(self, "_modal_x11_parent", None)
+        require(type(parent) is dict and parent.get("complete") is True
+                and deadline is not None, "native_gui_X11_parent_not_observed")
+        self.last_x11_modal = {}
+        try:
+            return x11_modal.observe_modal(
+                expected_pid=self.pid, dialog_name=dialog["name"],
+                parent_observation=parent, group=kind == "delayed_render",
+                guard=self.journal.guard, deadline=deadline,
+                evidence=self.last_x11_modal)
+        except x11_modal.X11Rejected as rejected:
+            raise GuiRejected(str(rejected)) from rejected
+
+    def _modal_readback(self, rows, kind, source_name, *, before=False, deadline=None):
+        self.last_x11_modal = None
         _, _, titles, parents = MODAL_OPENERS[kind]
         windows = [r for r in rows if r["visible"] and
                    (r["role"] in ("dialog", "alert") or r.get("modal") is True)]
         parent_rows = [r for r in rows if r["visible"]
                        and r["role"] in ("dialog", "frame")
-                       and normalized(r["name"]) in parents]
+                       and window_title_matches(r["name"], parents)]
         require(len(parent_rows) == len(parents), "native_gui_modal_parent_not_unique")
         expected = [r for r in rows if r["visible"]
                     and r["role"] in ("dialog", "frame", "alert")
-                    and normalized(r["name"]) in titles]
+                    and window_title_matches(r["name"], titles)]
         if kind == "discard_preferences":
             labels = [r for r in rows if r["visible"] and r["role"] == "label"
                       and source_name in r["name"] and "has been changed." in r["name"]
@@ -512,8 +569,11 @@ class AtspiSession:
         if not expected:
             return None
         dialog = expected[0]
-        require(dialog["enabled"] and dialog.get("modal") is True,
-                "native_gui_modal_postcondition_not_enabled_modal")
+        require(dialog["enabled"], "native_gui_modal_postcondition_not_enabled_modal")
+        if dialog.get("modal") is not True:
+            # Keep the original AT-SPI bit false. Only a distinct, live X11
+            # observation may prove the missing modality/parent relationship.
+            self._observe_x11_modal(dialog, kind, deadline)
         return dialog
 
     def modal_action(self, step: str, kind: str, *, source_name=None) -> dict:
@@ -534,11 +594,28 @@ class AtspiSession:
         self._modal_readback(before, kind, source_name, before=True)
         scopes = [r["key"] for r in before if r["visible"]
                   and r["role"] in ("dialog", "frame")
-                  and normalized(r["name"]) in parents]
+                  and window_title_matches(r["name"], parents)]
         target = unique([r for r in before if r["visible"] and r["enabled"]
                          and r["role"] in roles and normalized(r["name"]) in names
                          and (not scopes or any(r["key"].startswith(s + "/") for s in scopes))],
                         code="native_gui_modal_opener_not_unique")
+        try:
+            self._modal_x11_parent = self._observe_modal_parent(before, kind)
+        except BaseException as parent_error:
+            try:
+                self.journal.emit({
+                    "step": step + ".modal-parent", "state": "X11_PARENT_REJECTED",
+                    "expected_pid": self.pid, "profile": kind,
+                    "observation": getattr(self, "last_x11_parent", None),
+                    "native_operation_retried": False, "opener_attempts": 0})
+            except BaseException as custody_error:
+                parent_error.add_note("native_gui_X11_parent_custody_failed:"
+                                      + type(custody_error).__name__)
+            self.journal._record_failure(step + ".modal-parent",
+                                         "OBSERVATION_ERROR_OR_UNKNOWN", parent_error)
+            raise
+        if self._modal_x11_parent is not None:
+            target = {**target, "x11_modal_parent": self._modal_x11_parent}
         self.journal.guard()
         self.journal.blocked = False
         original = None
@@ -571,7 +648,8 @@ class AtspiSession:
                 rows = self._complete_modal_tree()
                 require(time.monotonic() < deadline, "native_gui_modal_readback_deadline")
                 try:
-                    dialog = None if rows is None else self._modal_readback(rows, kind, source_name)
+                    dialog = None if rows is None else self._modal_readback(
+                        rows, kind, source_name, deadline=deadline)
                 except GuiRejected as rejected:
                     # Retain the complete owned observation that explains a
                     # rejection. It cannot reconcile the opener or unlock input.
@@ -585,6 +663,7 @@ class AtspiSession:
                             "expected_pid": self.pid, "profile": kind,
                             "snapshot": modal_snapshot(rows, self.pid),
                             "complete": True, "classification_error": str(rejected),
+                            "x11_modal": getattr(self, "last_x11_modal", None),
                             "semantic_effect_verified_here": False,
                             "native_save_or_import_verified": False,
                             "native_operation_retried": False,
@@ -605,6 +684,7 @@ class AtspiSession:
                         "expected_pid": self.pid, "profile": kind,
                         "snapshot": modal_snapshot(rows, self.pid),
                         "complete": True, "dialog": dialog,
+                        "x11_modal": getattr(self, "last_x11_modal", None),
                         "verified_effect": "owned_dialog_open_only",
                         "native_save_or_import_verified": False,
                         "native_operation_retried": False})
@@ -698,7 +778,7 @@ class AtspiSession:
         self.action(step + ".submit", row)
         self.journal.wait(step + ".closed", lambda: not any(
             r["visible"] and r["role"] in ("dialog", "frame")
-            and normalized(r["name"]) in titles for r in self.tree()))
+            and window_title_matches(r["name"], titles) for r in self.tree()))
 
     def save_as(self, step: str, path: Path) -> None:
         require(not path.exists() and not path.is_symlink(), "native_gui_save_target_exists")

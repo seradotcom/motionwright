@@ -127,6 +127,9 @@ class Scenario:
         self.session.journal = self.journal
         self.session.last_snapshot = None
         self.session.nodes = {}
+        # These legacy scenarios exercise synthetic AT-SPI modality only.
+        # Independent X11 behavior is covered by test_kdenlive_x11_modal.
+        self.session._observe_modal_parent = Mock(return_value=None)
         self.interface = SimpleNamespace(
             get_n_actions=Mock(return_value=1),
             get_action_name=Mock(return_value="press"),
@@ -738,9 +741,9 @@ class ModalReadbackTests(unittest.TestCase):
                     scenario.after[-1]["name"] = "Synthetic unexpected warning"
                     retained = {}
                     classify = scenario.session._modal_readback
-                    def observe_classification(rows, kind, source_name, *, before=False):
+                    def observe_classification(rows, kind, source_name, *, before=False, deadline=None):
                         try:
-                            return classify(rows, kind, source_name, before=before)
+                            return classify(rows, kind, source_name, before=before, deadline=deadline)
                         except actions.GuiRejected as error:
                             if not before:
                                 retained["classification"] = error
