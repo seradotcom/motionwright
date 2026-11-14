@@ -122,7 +122,7 @@ def derive_request(template_raw, index):
     if value["fixture"] == "fixed-counter-captions":
         # Transport only: no PNG rewrite, omitted frame or reduced decode.
         for role in ("native-png", "selected-png"):
-            value["role_limits"][role] = min(value["role_limits"][role], 750 * 1024)
+            value["role_limits"][role] = min(value["role_limits"][role], 746 * 1024)
     raw = canonical(value)
     need(len(raw) <= 49152, "fixedtxt-session-derived-request-bound")
     return raw

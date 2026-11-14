@@ -1197,8 +1197,8 @@ class FailedOutputCustodyTests(unittest.TestCase):
         tree = ast.parse(Path(__file__).read_text())
         count = sum(item.name.startswith("test_") for cls in tree.body if isinstance(cls, ast.ClassDef)
                     for item in cls.body if isinstance(item, ast.FunctionDef))
-        self.assertEqual(count, 39)
-        self.assertIn("'dotted:tooling.tests.test_native_fixedtxt_workflow':39", workflow)
+        self.assertEqual(count, 41)
+        self.assertIn("'dotted:tooling.tests.test_native_fixedtxt_workflow':41", workflow)
         self.assertIn("--pattern test_native_fixedtxt_workflow.py", workflow)
         self.assertIn("      - 'tooling/native_fixedtxt_workflow.py'", workflow)
         self.assertIn("      - 'tooling/tests/test_native_fixedtxt_workflow.py'", workflow)
@@ -1622,6 +1622,30 @@ class FailedStatusTimeoutCustodyTests(unittest.TestCase):
                 self.assertEqual((extra, failures), ({}, []))
                 read.assert_not_called(); join.assert_not_called(); observe.assert_not_called()
 
+
+
+class BundledFontPlanTests(unittest.TestCase):
+    """The real source-locked runtime wrote nine font originals; P selected zero."""
+
+    def test_each_fixture_predeclares_all_nine_bundled_font_originals(self):
+        import native_film180_evidence_selection as selection
+        for fixture in selection.FIXEDTXT_KEYS:
+            with self.subTest(fixture=fixture):
+                selected = selection.fixedtxt_required_members(fixture, fixed.NATIVE_SLOT)
+                fonts = {path for (root, path), role in selected.items()
+                         if root == "observation" and role == "font-original"}
+                expected = {fixture + "/fixed-text-original-readback/font-"
+                            + str(i).zfill(4) + ".original.bin" for i in range(9)}
+                self.assertEqual(fonts, expected)
+
+    def test_missing_predeclared_font_is_refused_before_native_admission(self):
+        current, plan_raw, _, _, _ = external_fixture()
+        plan = fixed.strict(plan_raw, 512 * 1024)
+        fonts = [row for row in plan["members"] if row["role"] == "font-original"]
+        self.assertEqual(len(fonts), 9)
+        plan["members"].remove(fonts[0])
+        with self.assertRaisesRegex(Exception, "fixedtxt-required-original-missing"):
+            fixed.validate_plan(plan, current=current)
 
 if __name__ == '__main__':
     unittest.main()

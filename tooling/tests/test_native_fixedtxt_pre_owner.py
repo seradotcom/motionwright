@@ -55,7 +55,7 @@ def exact_clock_script(workflow_text, job_name):
 
 
 # Capacity-only data; this is not an admitted request, R28 or Native result.
-CAPACITY_REQUEST = {'fixture': 'fixed-multirun-control', 'limits': {'attempt_seconds': 3900, 'capsule_bytes': 268435456, 'custody_seconds': 300, 'files': 1024}, 'role_limits': {'authored-film': 1048576, 'canvas-observations': 4194304, 'case-final-custody': 1048576, 'case-inputs': 1048576, 'compile-component': 1048576, 'compiled-project': 1048576, 'cycle-inputs': 1048576, 'cycle-observation': 1048576, 'decoder-stderr': 65536, 'decoder-terminal': 65536, 'final-custody': 1048576, 'fixture-expectations': 1048576, 'fixture-set': 1048576, 'font-inventory': 1048576, 'font-readiness': 1048576, 'generated-inventory': 1048576, 'host-capture': 2097152, 'host-readback': 2097152, 'host-readback-intent': 1048576, 'host-return-snapshot': 1048576, 'host-session': 1048576, 'host-source-binding': 1048576, 'host-stdin': 2097152, 'host-terminal': 1048576, 'native-frame-manifest': 1048576, 'native-observations': 8388608, 'native-observations-receipt': 1048576, 'native-png': 786432, 'native-result': 1048576, 'owner-close': 1048576, 'owner-closed-original': 1048576, 'owner-shutdown-intent': 1048576, 'owner-shutdown-terminal': 1048576, 'owner-workspace': 1048576, 'owner-workspace-terminal': 1048576, 'project-snapshot-original': 1048576, 'selected-originals': 1048576, 'selected-png': 786432, 'selected-rgba': 8294400, 'selection-plan': 524288}, 'sources': {'caption_source': {'bytes': 35}, 'managed_project': {'bytes': 6675}, 'measurement_protocol': {'bytes': 35228}, 'project_files': [], 'red_native': {'bytes': 33809}, 'template_film': {'bytes': 9584}}, 'review_capsule_bytes': 268435456, 'preparation_stream_bytes': 1048576}
+CAPACITY_REQUEST = {'fixture': 'fixed-multirun-control', 'limits': {'attempt_seconds': 3900, 'capsule_bytes': 268435456, 'custody_seconds': 300, 'files': 1024}, 'role_limits': {'authored-film': 1048576, 'canvas-observations': 4194304, 'case-final-custody': 1048576, 'case-inputs': 1048576, 'compile-component': 1048576, 'compiled-project': 1048576, 'cycle-inputs': 1048576, 'cycle-observation': 1048576, 'decoder-stderr': 65536, 'decoder-terminal': 65536, 'final-custody': 1048576, 'fixture-expectations': 1048576, 'fixture-set': 1048576, 'font-inventory': 1048576, 'font-original': 65536, 'font-readiness': 1048576, 'generated-inventory': 1048576, 'host-capture': 2097152, 'host-readback': 2097152, 'host-readback-intent': 1048576, 'host-return-snapshot': 1048576, 'host-session': 1048576, 'host-source-binding': 1048576, 'host-stdin': 2097152, 'host-terminal': 1048576, 'native-frame-manifest': 1048576, 'native-observations': 8388608, 'native-observations-receipt': 1048576, 'native-png': 786432, 'native-result': 1048576, 'owner-close': 1048576, 'owner-closed-original': 1048576, 'owner-shutdown-intent': 1048576, 'owner-shutdown-terminal': 1048576, 'owner-workspace': 1048576, 'owner-workspace-terminal': 1048576, 'project-snapshot-original': 1048576, 'selected-originals': 1048576, 'selected-png': 786432, 'selected-rgba': 8294400, 'selection-plan': 524288}, 'sources': {'caption_source': {'bytes': 35}, 'managed_project': {'bytes': 6675}, 'measurement_protocol': {'bytes': 35228}, 'project_files': [], 'red_native': {'bytes': 33809}, 'template_film': {'bytes': 9584}}, 'review_capsule_bytes': 268435456, 'preparation_stream_bytes': 1048576}
 
 class PreOwnerCapture(unittest.TestCase):
     def roots(self, root):
@@ -153,13 +153,13 @@ class PreOwnerCapture(unittest.TestCase):
         for fixture in fixture_names:
             request["fixture"] = fixture
             request["role_limits"]["native-png"] = request["role_limits"]["selected-png"] = (
-                750 if fixture == "fixed-counter-captions" else 768) * 1024
+                746 if fixture == "fixed-counter-captions" else 768) * 1024
             capacity = route.preflight_request_capacity(request, session=True, source_zip_bytes=86035)
             self.assertEqual(capacity["mandatory_role_counts"]["native-png"], 180)
             self.assertEqual(capacity["mandatory_role_counts"]["selected-rgba"], len(selection.fixedtxt_frames(fixture)))
             self.assertLess(capacity["declared_capsule_bound"], 256 * 1024**2)
             if fixture == "fixed-counter-captions":
-                self.assertEqual(capacity["declared_capsule_bound"], 268421184)
+                self.assertEqual(capacity["declared_capsule_bound"], 268257344)
         workflow = (TOOLING.parent / ".github/workflows/native-mlt-sequence-e2e.yml").read_text(encoding="utf-8")
         for job in ("fixedtxt-original-owner", "fixedtxt-session-owner"):
             clock = exact_clock_script(workflow, job)
@@ -185,7 +185,7 @@ class PreOwnerCapture(unittest.TestCase):
         self.assertIn("'dotted:tooling.tests.test_native_fixedtxt_pre_owner':6", workflow)
         self.assertIn("'dotted:tooling.tests.test_native_owner_release':4", workflow)
         complete = {"test_native_fixedtxt_external_g2.py": 22,
-                    "test_native_fixedtxt_workflow.py": 39,
+                    "test_native_fixedtxt_workflow.py": 41,
                     "test_native_fixedtxt_pre_owner.py": 6,
                     "test_native_owner_release.py": 4}
         for filename, count in complete.items():
@@ -197,7 +197,7 @@ class PreOwnerCapture(unittest.TestCase):
                                for item in cls.body if isinstance(item, ast.FunctionDef)
                                and item.name.startswith("test_"))
                 self.assertEqual(selected, count)
-        self.assertEqual(sum(complete.values()), 71)
+        self.assertEqual(sum(complete.values()), 73)
         for job in ("fixedtxt-original-owner", "fixedtxt-session-owner"):
             self.assertEqual(len([n for n in ast.parse(exact_clock_script(workflow, job)).body
                                   if isinstance(n, ast.FunctionDef)
