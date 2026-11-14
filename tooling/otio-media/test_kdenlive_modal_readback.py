@@ -1,11 +1,13 @@
 """Offline modal readback controls; synthetic GI is never physical evidence."""
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import json
 from types import SimpleNamespace
 import unittest
+import zlib
 from unittest.mock import Mock, patch
 
 import kdenlive_gui_actions as actions
@@ -178,7 +180,49 @@ class Scenario:
 
 class ModalReadbackTests(unittest.TestCase):
     def decode_snapshot(self, value):
-        """Independent decoder: no product decoding/encoding helper is reused."""
+        """Independent bounded decoder; no product codec helper is reused."""
+        self.assertIs(type(value), dict)
+        self.assertLessEqual(len(canonical_bytes(value)), 128 * 1024)
+        if value.get("schema") == "motionwright.native.atspi-modal-snapshot/2":
+            envelope = value
+            self.assertEqual(set(envelope), {
+                "schema", "encoding", "decoded_schema", "decoded_bytes",
+                "decoded_sha256", "source_rows_sha256", "row_count",
+                "expected_pid", "payload",
+            })
+            self.assertEqual(envelope["encoding"], "zlib+base64")
+            self.assertEqual(envelope["decoded_schema"], SNAPSHOT_SCHEMA)
+            self.assertIs(type(envelope["decoded_bytes"]), int)
+            self.assertGreater(envelope["decoded_bytes"], 0)
+            self.assertLessEqual(envelope["decoded_bytes"], 1024 * 1024)
+            self.assertIs(type(envelope["row_count"]), int)
+            self.assertGreater(envelope["row_count"], 0)
+            self.assertLessEqual(envelope["row_count"], 4096)
+            self.assertIs(type(envelope["expected_pid"]), int)
+            self.assertGreater(envelope["expected_pid"], 0)
+            self.assertLessEqual(envelope["expected_pid"], 0xffffffff)
+            self.assertIs(type(envelope["payload"]), str)
+            compressed = base64.b64decode(envelope["payload"], validate=True)
+            inflater = zlib.decompressobj()
+            raw = inflater.decompress(compressed, envelope["decoded_bytes"] + 1)
+            self.assertLessEqual(len(raw), envelope["decoded_bytes"])
+            self.assertEqual(len(raw), envelope["decoded_bytes"])
+            self.assertTrue(inflater.eof)
+            self.assertEqual(inflater.unconsumed_tail, b"")
+            self.assertEqual(inflater.unused_data, b"")
+            self.assertEqual(envelope["decoded_sha256"], hashlib.sha256(raw).hexdigest())
+            def closed_object(pairs):
+                result = {}
+                for key, item in pairs:
+                    self.assertNotIn(key, result)
+                    result[key] = item
+                return result
+            value = json.loads(raw.decode("ascii"), object_pairs_hook=closed_object,
+                parse_constant=lambda _: self.fail("Non-finite JSON is not an original snapshot"))
+            self.assertEqual(raw, canonical_bytes(value))
+            for field in ("source_rows_sha256", "row_count", "expected_pid"):
+                self.assertEqual(value[field], envelope[field])
+        self.assertIs(type(value), dict)
         self.assertEqual(set(value), {
             "schema", "columns", "rows", "row_count", "expected_pid",
             "source_rows_sha256",
@@ -186,15 +230,30 @@ class ModalReadbackTests(unittest.TestCase):
         self.assertEqual(value["schema"], SNAPSHOT_SCHEMA)
         self.assertEqual(value["columns"], SNAPSHOT_COLUMNS)
         self.assertIs(type(value["row_count"]), int)
+        self.assertGreater(value["row_count"], 0)
+        self.assertLessEqual(value["row_count"], 4096)
         self.assertIs(type(value["expected_pid"]), int)
+        self.assertGreater(value["expected_pid"], 0)
+        self.assertLessEqual(value["expected_pid"], 0xffffffff)
+        self.assertIs(type(value["rows"]), list)
         self.assertEqual(value["row_count"], len(value["rows"]))
-        self.assertLessEqual(len(canonical_bytes(value)), 128 * 1024)
-        decoded = []
+        decoded, keys = [], set()
         for values in value["rows"]:
             self.assertIs(type(values), list)
             self.assertEqual(len(values), len(SNAPSHOT_COLUMNS))
             item = dict(zip(SNAPSHOT_COLUMNS, values, strict=True))
+            for field in ("key", "name", "role", "text"):
+                self.assertIs(type(item[field]), str)
+            for field in ("visible", "enabled", "editable", "focused", "modal"):
+                self.assertIs(type(item[field]), bool)
+            self.assertIs(type(item["pid"]), int)
             self.assertEqual(item["pid"], value["expected_pid"])
+            self.assertIs(type(item["rect"]), list)
+            self.assertEqual(len(item["rect"]), 4)
+            for number in item["rect"]:
+                self.assertIs(type(number), int)
+            self.assertNotIn(item["key"], keys)
+            keys.add(item["key"])
             decoded.append(item)
         self.assertEqual(value["source_rows_sha256"],
                          hashlib.sha256(canonical_bytes(decoded)).hexdigest())
@@ -295,14 +354,142 @@ class ModalReadbackTests(unittest.TestCase):
 
     def test_compact_overflow_still_blocks_before_any_effect(self):
         scenario = Scenario()
-        for index in range(160):
+        for index in range(256):
             item = row("app/main/text" + str(index), "Text " + str(index), "text")
-            item["text"] = "x" * 1024  # Within the existing per-node observer bound.
+            item["text"] = hashlib.shake_128(
+                ("synthetic-text-" + str(index)).encode()).hexdigest(512)
+            self.assertEqual(len(item["text"]), 1024)
             scenario.before.append(item)
-        self.assertGreater(
-            len(canonical_bytes(independent_snapshot(scenario.before))), 128 * 1024)
+        reference = independent_snapshot(scenario.before)
+        raw = canonical_bytes(reference)
+        self.assertGreater(len(raw), 128 * 1024)
+        self.assertLessEqual(len(raw), 1024 * 1024)
+        compressed = {
+            "schema": "motionwright.native.atspi-modal-snapshot/2",
+            "encoding": "zlib+base64", "decoded_schema": SNAPSHOT_SCHEMA,
+            "decoded_bytes": len(raw), "decoded_sha256": hashlib.sha256(raw).hexdigest(),
+            "source_rows_sha256": reference["source_rows_sha256"],
+            "row_count": len(scenario.before), "expected_pid": 41,
+            "payload": base64.b64encode(zlib.compress(raw, level=6)).decode("ascii"),
+        }
+        self.assertGreater(len(canonical_bytes(compressed)), 128 * 1024)
         with self.assertRaisesRegex(actions.GuiRejected, "native_gui_modal_snapshot_budget"):
             scenario.run()
+        scenario.effect.assert_not_called()
+        self.assert_blocked(scenario)
+
+    def test_lossless_compressed_tree_retains_all_2837_rows_before_one_effect(self):
+        scenario = Scenario()
+        scenario.before.extend(
+            row("app/main/node" + str(index), "Synthetic panel " + str(index), "panel")
+            for index in range(2835)
+        )
+        scenario.after = copy.deepcopy(scenario.before) + [
+            row("app/modal", "OpenTimelineIO Import", "dialog", modal=True),
+        ]
+        scenario.snapshots = [snapshot(scenario.before), snapshot(scenario.after)]
+        self.assertEqual(len(scenario.before), 2837)
+        before_raw = canonical_bytes(independent_snapshot(scenario.before))
+        self.assertGreater(len(before_raw), 128 * 1024)
+        self.assertLessEqual(len(before_raw), 1024 * 1024)
+        self.assertEqual(scenario.run()["key"], "app/modal")
+        scenario.effect.assert_called_once_with(0)
+        retained = [e for e in scenario.events
+                    if e["step"].endswith((".modal-before", ".modal-readback"))]
+        self.assertEqual(len(retained), 2)
+        for event, original in zip(retained, (scenario.before, scenario.after), strict=True):
+            self.assertEqual(event["snapshot"]["schema"],
+                             "motionwright.native.atspi-modal-snapshot/2")
+            self.assertEqual(self.decode_snapshot(event["snapshot"]), original)
+            self.assertEqual(event["snapshot"]["row_count"], len(original))
+            self.assertLessEqual(len(canonical_bytes(event["snapshot"])), 128 * 1024)
+            self.assertLessEqual(len(canonical_bytes(event)), 512 * 1024)
+        unknown = [e for e in scenario.events if e["state"] == "ERROR_OR_UNKNOWN"]
+        self.assertEqual(len(unknown), 1)
+        self.assertFalse(unknown[0]["replayed"])
+        self.assertEqual(retained[-1]["state"], "MODAL_OPEN_RECONCILED")
+        self.assertFalse(retained[-1]["native_save_or_import_verified"])
+        self.assertFalse(retained[-1]["native_operation_retried"])
+        self.assertFalse(scenario.journal.blocked)
+        self.assertEqual(scenario.query_count, 2)
+
+    def test_compressed_snapshot_preserves_unicode_types_hashes_and_immutability(self):
+        rows = [row("app/" + str(i), "Synthetic panel " + str(i), "panel")
+                for i in range(2837)]
+        rows[0].update(name="Caf\u00e9 \u65e5\u672c\u8a9e \U0001f680",
+                       text='a\nb\t"quoted"\\path\u2028\u00a0\u00f1',
+                       rect=[-17, 21, 0, 44], focused=True, editable=True)
+        rows[1].update(visible=False, enabled=False, modal=True, rect=[0, -2, 640, 360])
+        original = copy.deepcopy(rows)
+        value = actions.modal_snapshot(rows, 41)
+        self.assertEqual(value["schema"], "motionwright.native.atspi-modal-snapshot/2")
+        self.assertEqual(rows, original)
+        self.assertEqual(self.decode_snapshot(value), original)
+        self.assertEqual(value["source_rows_sha256"],
+                         hashlib.sha256(canonical_bytes(original)).hexdigest())
+        self.assertEqual(value["decoded_sha256"],
+                         hashlib.sha256(canonical_bytes(independent_snapshot(original))).hexdigest())
+        for restored, observed in zip(self.decode_snapshot(value), original, strict=True):
+            for field in SNAPSHOT_COLUMNS:
+                self.assertIs(type(restored[field]), type(observed[field]))
+        retained = canonical_bytes(value)
+        rows[0]["rect"][0] = 999
+        rows[0]["name"] = "Changed caller buffer"
+        rows[1]["visible"] = True
+        self.assertEqual(canonical_bytes(value), retained)
+        self.assertEqual(self.decode_snapshot(value), original)
+        changed = actions.modal_snapshot(rows, 41)
+        self.assertNotEqual(value["source_rows_sha256"], changed["source_rows_sha256"])
+        self.assertNotEqual(value["decoded_sha256"], changed["decoded_sha256"])
+        self.assertEqual(self.decode_snapshot(changed), rows)
+        # The independent reader rejects mismatched metadata, unfinished streams,
+        # concatenated members and inflation beyond the declared hard ceiling.
+        variants = []
+        for field, altered in (
+            ("encoding", "raw"), ("decoded_schema", "foreign-schema"),
+            ("decoded_bytes", True), ("decoded_bytes", 0), ("decoded_bytes", 1024 * 1024 + 1),
+            ("decoded_bytes", value["decoded_bytes"] - 1),
+            ("decoded_sha256", "0" * 64), ("source_rows_sha256", "0" * 64),
+            ("row_count", value["row_count"] + 1), ("expected_pid", 42),
+            ("payload", "invalid-base64"),
+        ):
+            item = copy.deepcopy(value); item[field] = altered; variants.append(item)
+        extra = copy.deepcopy(value); extra["undeclared"] = True; variants.append(extra)
+        compressed = base64.b64decode(value["payload"], validate=True)
+        for packed in (compressed[:-1], compressed + b"unselected-tail",
+                       compressed + zlib.compress(b"second-member", level=6)):
+            item = copy.deepcopy(value)
+            item["payload"] = base64.b64encode(packed).decode("ascii")
+            variants.append(item)
+        inflated = b"x" * (1024 * 1024 + 1)
+        item = copy.deepcopy(value)
+        item.update(decoded_bytes=1024 * 1024,
+                    decoded_sha256=hashlib.sha256(inflated).hexdigest(),
+                    payload=base64.b64encode(zlib.compress(inflated, level=6)).decode("ascii"))
+        variants.append(item)
+        for index, item in enumerate(variants):
+            with self.subTest(invalid_envelope=index), self.assertRaises(
+                    (AssertionError, ValueError, zlib.error)):
+                self.decode_snapshot(item)
+        self.assertEqual(actions.MODAL_SNAPSHOT_DECODED_BYTES, 1024 * 1024)
+        self.assertEqual(actions.MODAL_SNAPSHOT_BYTES, 128 * 1024)
+        self.assertEqual(actions.MAX_NODES, 4096)
+
+    def test_decoded_ceiling_rejects_compressible_tree_before_any_effect(self):
+        scenario = Scenario()
+        for index in range(1040):
+            item = row("app/main/text" + str(index), "Text " + str(index), "text")
+            item["text"] = "x" * 1024  # Valid per-node size, deliberately compressible.
+            scenario.before.append(item)
+        raw = canonical_bytes(independent_snapshot(scenario.before))
+        self.assertGreater(len(raw), 1024 * 1024)
+        self.assertLess(len(base64.b64encode(zlib.compress(raw, level=6))), 128 * 1024)
+        with patch.object(actions.zlib, "compress") as compress, \
+                self.assertRaisesRegex(actions.GuiRejected, "native_gui_modal_snapshot_budget") as caught:
+            scenario.run()
+        compress.assert_not_called()
+        self.assertTrue(any("decoded_limit_bytes=1048576" in note
+                            for note in getattr(caught.exception, "__notes__", [])))
         scenario.effect.assert_not_called()
         self.assert_blocked(scenario)
 
@@ -438,7 +625,11 @@ class ModalReadbackTests(unittest.TestCase):
                 elif failure == "foreign-pid":
                     after[-1]["pid"] = 42
                 elif failure == "oversize":
-                    after[0]["text"] = "x" * (128 * 1024)
+                    for index in range(256):
+                        item = row("app/overflow/" + str(index), "Text " + str(index), "text")
+                        item["text"] = hashlib.shake_128(
+                            ("synthetic-text-" + str(index)).encode()).hexdigest(512)
+                        after.append(item)
                 else:
                     after[0]["rect"][0] = float("nan")
                 scenario.snapshots[-1] = current
@@ -458,7 +649,11 @@ class ModalReadbackTests(unittest.TestCase):
                 elif failure == "foreign-pid":
                     scenario.before[0]["pid"] = 42
                 elif failure == "oversize":
-                    scenario.before[0]["text"] = "x" * (128 * 1024)
+                    for index in range(256):
+                        item = row("app/overflow/" + str(index), "Text " + str(index), "text")
+                        item["text"] = hashlib.shake_128(
+                            ("synthetic-text-" + str(index)).encode()).hexdigest(512)
+                        scenario.before.append(item)
                 else:
                     current["complete"] = False
                     current["advance"] = 31.0
