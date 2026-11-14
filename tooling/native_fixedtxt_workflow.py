@@ -36,6 +36,9 @@ SCOPE = "fixedtxt-v4-one-fixture"
 DELIVERY_MAX = 65536
 DELIVERY_MEMBERS_MAX = 60 * 1024
 API_JOURNAL_MAX = 1024 * 1024
+# Retain every original GET under the existing 1 MiB journal, including
+# legitimate reviewer latency. Do not poll external R28 state every second.
+DELIVERY_POLL_SECONDS = 20.0
 NATIVE_PATH = "integrations/composition/motion/native.ts"
 HISTORICAL_PAIR = {
     "RED": "dfe6c0fc226d7e9017eb718c7e745d942c4067a54f968d4483b80bbdd51b4fa8",
@@ -339,6 +342,15 @@ def original_clock(raw, request, *, current):
     return value
 
 
+def delivery_poll_delay(deadline):
+    """One source-bound read every 20s at most, never beyond the original clock.
+
+    Every GET remains a separately retained original. No extra API quota,
+    clock extension, result replay, or Native admission is introduced.
+    """
+    return min(DELIVERY_POLL_SECONDS, max(0.0, deadline - time.monotonic()))
+
+
 def wait_for_owner(*, current, request, clock, directory, originals, review, session=None):
     import native_fixedtxt_g2_admission as fixed
     from ci_private_evidence import new_bytes, new_json
@@ -358,7 +370,7 @@ def wait_for_owner(*, current, request, clock, directory, originals, review, ses
             item = select_delivery_artifact(strict(api.get(route)), current["run_id"], request_sha256)
             if item is not None:
                 break
-            time.sleep(min(1, max(0, wait_until - time.monotonic())))
+            time.sleep(delivery_poll_delay(wait_until))
         # Selection is now consumed, before content/provenance checks. No fallback.
         new_json(Path(directory) / "transport.consume.intent.json",
                  {"artifact_id": item["id"], "context": current, "automatic_retry": False})
@@ -371,7 +383,7 @@ def wait_for_owner(*, current, request, clock, directory, originals, review, ses
             if delivery.get("status") == "completed":
                 break
             need(delivery.get("status") in {"queued", "in_progress"}, "fixedtxt-delivery-run-state")
-            time.sleep(min(1, max(0, wait_until - time.monotonic())))
+            time.sleep(delivery_poll_delay(wait_until))
         checked_artifact(item, run=delivery, expected_name=artifact_name(current["run_id"], request_sha256), maximum=DELIVERY_MAX)
         fresh = select_delivery_artifact(strict(api.get(route)), current["run_id"], request_sha256)
         need(artifact_identity(fresh) == artifact_identity(item), "fixedtxt-delivery-selection-changed")

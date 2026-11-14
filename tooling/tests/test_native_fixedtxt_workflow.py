@@ -787,6 +787,23 @@ class WorkflowDeliveryJobTests(unittest.TestCase):
                     review_artifact=review,held_plan=p,held_runtime=r,held_cycle=q)
             self.assertEqual(held.dispatch_raw,dispatch)
 
+    def test_external_review_polling_is_paced_under_original_clock_and_journal_limit(self):
+        # This checks the real transport pacing rule, without issuing a GET,
+        # manufacturing an R28 receipt or running any Native workload.
+        self.assertEqual(route.API_JOURNAL_MAX, 1024 * 1024)
+        self.assertEqual(route.DELIVERY_MAX, 65536)
+        self.assertEqual(route.DELIVERY_POLL_SECONDS, 20.0)
+        now = time.monotonic()
+        self.assertEqual(route.delivery_poll_delay(now + 200), 20.0)
+        near = route.delivery_poll_delay(time.monotonic() + 0.25)
+        self.assertGreater(near, 0)
+        self.assertLessEqual(near, 0.25)
+        self.assertEqual(route.delivery_poll_delay(time.monotonic() - 1), 0.0)
+        import inspect
+        actual = inspect.getsource(route.wait_for_owner)
+        self.assertEqual(actual.count('time.sleep(delivery_poll_delay(wait_until))'), 2)
+        self.assertNotIn('time.sleep(min(1,', actual)
+
     def test_wait_consumes_one_artifact_and_second_invocation_cannot_restart_transport(self):
         current,p,r,q,dispatch=external_fixture()
         template=OriginalTransportTests()
