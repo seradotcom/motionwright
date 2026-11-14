@@ -708,12 +708,12 @@ jobs:
             --proto '=https' --proto-redir '=https' --connect-timeout 30 \
             --max-time 180 --max-filesize 1073741824 \
             --dump-header "$RUNNER_TEMP/kdenlive-distribution-original/download.headers" \
-            --output "$RUNNER_TEMP/kdenlive-25.08.3-x86_64.AppImage" \
-            'https://download.kde.org/Attic/kdenlive/25.08/linux/kdenlive-25.08.3-x86_64.AppImage'
+            --output "$RUNNER_TEMP/kdenlive-26.08.3-x86_64.AppImage" \
+            'https://download.kde.org/stable/kdenlive/26.08/linux/kdenlive-26.08.3-x86_64.AppImage'
           printf '%s  %s\n' \
-            '38ec1bdec007ccd9171f951ba00ded8cc2dd43570c14a438e88fabb4f0a81f4f' \
-            "$RUNNER_TEMP/kdenlive-25.08.3-x86_64.AppImage" | sha256sum --check --status
-          chmod 0700 "$RUNNER_TEMP/kdenlive-25.08.3-x86_64.AppImage"
+            '2c8322edfc86605e4c98a78a019310d9b4fc46bb8e94e6fe313dc7dd987e7671' \
+            "$RUNNER_TEMP/kdenlive-26.08.3-x86_64.AppImage" | sha256sum --check --status
+          chmod 0700 "$RUNNER_TEMP/kdenlive-26.08.3-x86_64.AppImage"
       - name: Install only metadata and existing custody dependencies for ALab
         if: inputs.verification_scope == 'external-alab-readonly'
         run: |
@@ -784,7 +784,7 @@ jobs:
               tooling/otio-media/kdenlive_gui_e2e.py \
               --source-sha "$GITHUB_SHA" \
               --verification-scope "$MOTIONWRIGHT_KDENLIVE_GUI_SCOPE" \
-              --appimage "$RUNNER_TEMP/kdenlive-25.08.3-x86_64.AppImage" \
+              --appimage "$RUNNER_TEMP/kdenlive-26.08.3-x86_64.AppImage" \
               --appdir "$RUNNER_TEMP/kdenlive-appimage-extract/squashfs-root" \
               --evidence-root "$RUNNER_TEMP/kdenlive-native-original" \
               --capsule "$RUNNER_TEMP/kdenlive-original-capsule" \

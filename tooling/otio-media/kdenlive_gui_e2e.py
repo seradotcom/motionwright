@@ -36,8 +36,8 @@ import kdenlive_readback as readback
 from bridge import KDENLIVE_REQUEST_SCHEMA, preview_kdenlive_cut
 from kdenlive_gui_actions import ActionJournal, AtspiSession, GuiRejected, require
 
-APPIMAGE_SHA256 = "38ec1bdec007ccd9171f951ba00ded8cc2dd43570c14a438e88fabb4f0a81f4f"
-APPIMAGE_VERSION = "25.08.3"
+APPIMAGE_SHA256 = "2c8322edfc86605e4c98a78a019310d9b4fc46bb8e94e6fe313dc7dd987e7671"
+APPIMAGE_VERSION = "26.08.3"
 RUNTIME_VARIABLES = (
     "LD_LIBRARY_PATH", "QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH",
     "QML2_IMPORT_PATH", "QML_IMPORT_PATH", "MLT_REPOSITORY",

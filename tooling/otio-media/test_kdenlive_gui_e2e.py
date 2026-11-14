@@ -387,7 +387,7 @@ class NativeControlTests(unittest.TestCase):
         instance = self.session()
         dialog = row("app/wizard", name="Welcome to Kdenlive", role="dialog")
         rows = [dialog,
-                row("app/wizard/title", name="Welcome to Kdenlive 25.08.3",
+                row("app/wizard/title", name="Welcome to Kdenlive 26.08.3",
                     role="label", editable=False),
                 row("app/wizard/ok", name="OK", role="push button", editable=False)]
         instance.tree = Mock(return_value=rows)
@@ -408,7 +408,7 @@ class NativeControlTests(unittest.TestCase):
 
     def test_wrong_startup_version_and_disabled_finish_are_rejected(self):
         for title, enabled in (("Welcome to Kdenlive 26.08", True),
-                               ("Welcome to Kdenlive 25.08.3", False)):
+                               ("Welcome to Kdenlive 26.08.3", False)):
             instance = self.session()
             instance.tree = Mock(return_value=[
                 row("app/wizard", name="Welcome to Kdenlive", role="dialog"),
@@ -1552,22 +1552,23 @@ class NativeVersionCompositionContracts(unittest.TestCase):
     def test_pinned_distribution_version_crosses_real_parser_and_witness(self):
         result, error = None, None
         try:
-            result = self.witness_for_version_output(b"kdenlive 25.08.3\n")
+            result = self.witness_for_version_output(b"kdenlive 26.08.3\n")
         except Exception as original:
             error = original
         self.assertIsNone(error, "The pinned distribution was rejected: " + repr(error))
-        self.assertEqual(result["original_Kdenlive_application_version"], "25.8.3")
+        self.assertEqual(result["original_Kdenlive_application_version"], "26.8.3")
         self.assertFalse(result["human_media_rights_or_perceptual_review"])
         self.assertFalse(result["native_save_or_export_UI_action_authenticated"])
 
     def test_different_distribution_version_still_rejects_after_real_parser(self):
-        for raw in (b"kdenlive 25.04.3\n", b"kdenlive 25.08.4\n", b"kdenlive 26.04.0\n"):
+        for raw in (b"kdenlive 25.04.3\n", b"kdenlive 25.08.3\n",
+                    b"kdenlive 26.08.4\n", b"kdenlive 26.04.0\n"):
             with self.subTest(raw=raw), self.assertRaisesRegex(
                     actions.GuiRejected, "version_not_exact_distribution"):
                 self.witness_for_version_output(raw)
 
     def test_malformed_or_unadmitted_version_still_rejects_before_witness(self):
-        for raw in (b"", b"Qt 6.8.3", b"unknown-program 25.08.3",
+        for raw in (b"", b"Qt 6.8.3", b"unknown-program 26.08.3",
                     b"kdenlive testing unstable", b"\xff\xfe", b"kdenlive 24.12.9\n"):
             with self.subTest(raw=raw), self.assertRaises(
                     runner.live.NativeKdenliveProcessRejected):
