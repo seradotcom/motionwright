@@ -79,17 +79,28 @@ def walk(bridge, root):
     return result
 
 
+def scoped_roles(bridge, root, roles):
+    # WebKitGTK exposes a server-side Collection.GetMatches operation. It
+    # returns an exhaustive *role* candidate roster in a single AT-SPI query;
+    # exact names, states, freshness, ambiguity and owner are still checked
+    # independently on the selected objects before any external effect.
+    # Non-native fixture bridges retain the original exhaustive traversal.
+    collection = getattr(bridge, "matching_roles", None)
+    return (collection(root, roles) if callable(collection)
+            else [v for v in walk(bridge, root) if v.role in roles])
+
+
 def select_controls(bridge, pid):
     apps = bridge.applications()
     if len(apps) > 128:
         raise ProbeError("APPLICATION_LIMIT")
     app = unique([a for a in apps if bridge.pid(a) == pid], "APPLICATION")
     dialog = unique([
-        v for v in walk(bridge, app)
-        if v.role == "dialog" and v.name == "Project library"
+        v for v in scoped_roles(bridge, app, ("dialog",))
+        if v.name == "Project library"
         and VISIBLE <= v.states and "defunct" not in v.states
     ], "DIALOG")
-    children = walk(bridge, dialog.node)
+    children = scoped_roles(bridge, dialog.node, ("entry", "text", "button"))
     entry = unique([
         v for v in children
         if v.role in ("entry", "text") and v.name == "Project title"
@@ -344,6 +355,37 @@ class AtspiBridge:
     def applications(self):
         self.call(self.desktop.clear_cache)
         return self.children(self.desktop)
+
+    def matching_roles(self, root, roles):
+        # Server-side Collection is a bounded read-only query. This avoids
+        # thousands of individual D-Bus role/child calls to a WebKit tree.
+        # A missing/failed Collection is a closed failure, not authorization
+        # to try a different application or send a synthetic edit.
+        roles_allowed = {
+            "dialog": self.api.Role.DIALOG, "entry": self.api.Role.ENTRY,
+            "text": self.api.Role.TEXT, "button": self.api.Role.PUSH_BUTTON,
+        }
+        if not roles or len(roles) > len(roles_allowed) or any(
+                role not in roles_allowed for role in roles):
+            raise ProbeError("ACCESSIBLE_COLLECTION_ROLES_INVALID")
+        rule = self.api.MatchRule.new(
+            None, self.api.CollectionMatchType.NONE,
+            None, self.api.CollectionMatchType.NONE,
+            [roles_allowed[role] for role in roles],
+            self.api.CollectionMatchType.ANY,
+            None, self.api.CollectionMatchType.NONE, False)
+        matches = self.call(root.get_matches, rule,
+                            self.api.CollectionSortOrder.CANONICAL,
+                            MAX_NODES + 1, True)
+        if matches is None or len(matches) > MAX_NODES:
+            raise ProbeError("ACCESSIBLE_COLLECTION_LIMIT")
+        result = []
+        for node in matches:
+            view = self.view(node)
+            if view.role not in roles:
+                raise ProbeError("ACCESSIBLE_COLLECTION_ROLE_MISMATCH")
+            result.append(view)
+        return result
 
     def pid(self, node):
         pid = self.call(node.get_process_id)

@@ -137,6 +137,30 @@ class SelectionAndAttemptTests(unittest.TestCase):
         report = self.attempt.report("ACTION_RETURNED_TRUE")
         self.assertEqual(report["status"], "ACTION_ACCEPTED")
         self.assertEqual(report["project_commit"], "NOT_VERIFIED_BY_ACTION")
+        # The real bridge uses a scoped AT-SPI Collection roster. A backend
+        # implementing it must not fall back to a generic entire-tree walk,
+        # but still needs the exact same edit/action latches.
+        journal = Journal()
+        bridge = Bridge(journal)
+        selected = []
+        def role_matches(root, roles):
+            selected.append((root, roles))
+            if root is bridge.app:
+                self.assertEqual(roles, ("dialog",))
+                return [bridge.view(bridge.dialog)]
+            if root is bridge.dialog:
+                self.assertEqual(roles, ("entry", "text", "button"))
+                return [bridge.view(bridge.entry), bridge.view(bridge.button)]
+            raise AssertionError("source collection escape")
+        def forbidden_children(_):
+            raise AssertionError("collection path must not walk the full tree")
+        bridge.matching_roles = role_matches
+        bridge.children = forbidden_children
+        fast = probe.Attempt(bridge, lambda: dict(BINDING), journal, dict(BINDING))
+        self.assertFalse(fast.step())
+        self.assertTrue(fast.step())
+        self.assertEqual((bridge.edits, bridge.clicks), (1, 1))
+        self.assertEqual(len(selected), 4)
 
     def test_same_title_other_application_has_no_authority(self):
         self.bridge.app.pid = 100
@@ -798,6 +822,38 @@ class BridgeBudgetTests(unittest.TestCase):
             with self.assertRaisesRegex(probe.ProbeError, "DEADLINE"):
                 bridge.children(node)
         self.assertEqual(observed, [0, 1, 2])
+        # The role-filtered Collection query uses a single native request,
+        # finite roster, and rechecks every matching role instead of trusting
+        # the server's match assertion.
+        calls = []
+        types = SimpleNamespace(NONE=3, ANY=2)
+        api = SimpleNamespace(
+            Role=SimpleNamespace(DIALOG=16, ENTRY=17, TEXT=18, PUSH_BUTTON=19),
+            CollectionMatchType=types,
+            CollectionSortOrder=SimpleNamespace(CANONICAL=1),
+            MatchRule=SimpleNamespace(new=lambda *args: (calls.append(args), "rule")[1]),
+        )
+        collection = self.bridge(api, None)
+        collection.view = lambda node: probe.View(
+            node, node.role, node.name, frozenset(node.states),
+            frozenset(node.interfaces))
+        target = Node("dialog", "Project library")
+        root = SimpleNamespace(
+            get_matches=lambda rule, order, count, traverse:
+                (calls.append((rule, order, count, traverse)), [target])[1])
+        selected = collection.matching_roles(root, ("dialog",))
+        self.assertEqual([v.node for v in selected], [target])
+        self.assertEqual(calls[0][4:6], ([16], 2))
+        self.assertEqual(calls[1], ("rule", 1, probe.MAX_NODES + 1, True))
+        root.get_matches = lambda *_: [Node("button", "Create project")]
+        with self.assertRaisesRegex(probe.ProbeError, "ACCESSIBLE_COLLECTION_ROLE_MISMATCH"):
+            collection.matching_roles(root, ("dialog",))
+        root.get_matches = lambda *_: [target] * (probe.MAX_NODES + 1)
+        with self.assertRaisesRegex(probe.ProbeError, "ACCESSIBLE_COLLECTION_LIMIT"):
+            collection.matching_roles(root, ("dialog",))
+        root.get_matches = lambda *_: (_ for _ in ()).throw(RuntimeError("native read failed"))
+        with self.assertRaisesRegex(RuntimeError, "native read failed"):
+            collection.matching_roles(root, ("dialog",))
         # Non-target WebKit descendants still expose role/defunct state but
         # must not force remote names/interfaces queries. Named controls are
         # queried in full, preserving the exact admission gate.
