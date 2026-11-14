@@ -156,6 +156,80 @@ def timecode_frames(value: str, fps: int = 30) -> int:
     return ((h * 60 + m) * 60 + s) * fps + f
 
 
+def project_monitor_timecode(rows: list[dict], expected_pid: int) -> dict:
+    """Bind the clock to one complete owned monitor, never a global timecode.
+
+    In the pinned Qt dock tree, the named tab list and stacked content are
+    siblings. The selected Project Monitor tab, its sole visible page and the
+    clock's actual toolbar ancestry must agree. A directly named panel retains
+    the existing ancestry contract; a failed tabbed match has no fallback.
+    """
+    modal_snapshot(rows, expected_pid)
+    by_key = {r["key"]: r for r in rows}
+
+    def children(parent):
+        return [r for r in rows if r["key"].rpartition("/")[0] == parent["key"]]
+
+    def active(row):
+        return row["visible"] and row["enabled"]
+
+    roots = [r for r in rows if r["visible"]
+             and normalized(r["name"]) == "Project Monitor"
+             and r["role"] in ("panel", "page tab list")]
+    monitor = unique(roots, code="native_gui_project_monitor_not_unique")
+    require(active(monitor), "native_gui_project_monitor_unavailable")
+    tabbed = monitor["role"] == "page tab list"
+    if tabbed:
+        tabs = [r for r in children(monitor) if r["visible"] and r["role"] == "page tab"]
+        tab = unique([r for r in tabs if normalized(r["name"]) == "Project Monitor"],
+                     code="native_gui_project_monitor_tab_not_unique")
+        named_tabs = [r for r in rows if r["visible"] and r["role"] == "page tab"
+                      and normalized(r["name"]) == "Project Monitor"]
+        require(active(tab) and tab["focused"]
+                and [r for r in tabs if r["focused"]] == [tab]
+                and named_tabs == [tab],
+                "native_gui_project_monitor_tab_not_active")
+        dock = by_key.get(monitor["key"].rpartition("/")[0])
+        require(dock is not None and active(dock) and dock["role"] == "filler",
+                "native_gui_project_monitor_dock_not_bound")
+        siblings = [r for r in children(dock) if r["visible"]]
+        stack = unique([r for r in siblings if r["role"] == "layered pane"],
+                       code="native_gui_project_monitor_stack_not_unique")
+        require(active(stack) and {r["key"] for r in siblings}
+                == {monitor["key"], stack["key"]},
+                "native_gui_project_monitor_stack_not_bound")
+        scope = unique([r for r in children(stack) if r["visible"]],
+                       code="native_gui_project_monitor_page_not_unique")
+        require(active(scope) and scope["role"] == "filler",
+                "native_gui_project_monitor_page_unavailable")
+    else:
+        scope = monitor
+
+    fields = [r for r in rows if active(r) and r["editable"]
+              and TIMECODE.fullmatch(r["text"])
+              and r["key"].startswith(scope["key"] + "/")]
+    leaves = [r for r in fields if not any(
+        s["key"].startswith(r["key"] + "/") for s in fields if s is not r)]
+    position = unique(leaves, code="native_gui_project_monitor_timecode_not_unique")
+    require(position["role"] in ("spin button", "text", "entry"),
+            "native_gui_project_monitor_timecode_role")
+    # Every ancestor in the chosen page is present and active. A field below a
+    # hidden page or a missing intermediate object cannot supply selection.
+    current = position
+    while current["key"] != scope["key"]:
+        parent = by_key.get(current["key"].rpartition("/")[0])
+        require(parent is not None and active(parent),
+                "native_gui_project_monitor_timecode_ancestry")
+        current = parent
+    if tabbed:
+        toolbar = by_key.get(position["key"].rpartition("/")[0])
+        require(position["role"] == "spin button" and toolbar is not None
+                and toolbar["role"] == "tool bar",
+                "native_gui_project_monitor_timecode_toolbar")
+    timecode_frames(position["text"])
+    return position
+
+
 def labeled_field(rows: list[dict], labels: tuple[str, ...]) -> dict:
     """Select the sole editable leaf on the observed label's row.
 
@@ -983,6 +1057,19 @@ class AtspiSession:
             require(not self.find((quick_setup,), ("label",)),
                     "native_gui_startup_dialog_did_not_close")
 
+    def _project_monitor_timecode(self, step: str) -> dict:
+        def observed():
+            rows = self._complete_modal_tree()
+            if rows is None:
+                return None
+            require(not any(r["visible"] and
+                            (r["role"] in ("dialog", "alert") or r["modal"]) for r in rows),
+                    "native_gui_project_monitor_selection_has_dialog")
+            return project_monitor_timecode(rows, self.pid)
+        # Observation errors and an exhausted read-only wait block the journal,
+        # including edit_third_clip; neither caller may act on a partial tree.
+        return self.journal.wait(step, observed)
+
     def refresh_third_clip_playlist(self) -> dict:
         """Apply two observed end trims before a separately verified Export/Save.
 
@@ -1066,19 +1153,7 @@ class AtspiSession:
             self.journal.wait(step, observed)
 
         try:
-            rows = complete(prefix + ".selection-snapshot")
-            require(not any(r["visible"] and
-                            (r["role"] in ("dialog", "alert") or r["modal"]) for r in rows),
-                    "native_gui_playlist_refresh_selection_has_dialog")
-            monitors = [r for r in rows if r["visible"]
-                        and normalized(r["name"]) == "Project Monitor"
-                        and r["role"] not in ("menu item", "check menu item", "label")]
-            fields = {r["key"]: r for r in rows if r["visible"] and r["enabled"]
-                      and r["editable"] and TIMECODE.fullmatch(r["text"]) and any(
-                          r["key"].startswith(p["key"] + "/") for p in monitors)}
-            leaves = [r for r in fields.values() if not any(
-                s["key"].startswith(r["key"] + "/") for s in fields.values() if s is not r)]
-            position = unique(leaves, code="native_gui_project_monitor_timecode_not_unique")
+            position = self._project_monitor_timecode(prefix + ".selection-snapshot")
             self.text(prefix + ".seek75", position, "00:00:02:15")
             self.key(prefix + ".commit-seek", 0xFF0D)
             self.key(prefix + ".select-video-track1", 0x0031)
@@ -1136,16 +1211,7 @@ class AtspiSession:
             raise
 
     def edit_third_clip(self) -> None:
-        rows = self.tree()
-        monitor_roots = [r for r in rows if r["visible"] and
-                         normalized(r["name"]) == "Project Monitor"
-                         and r["role"] not in ("menu item", "check menu item", "label")]
-        fields = {r["key"]: r for r in rows if r["visible"] and r["enabled"]
-                  and r["editable"] and TIMECODE.fullmatch(r["text"]) and any(
-                      r["key"].startswith(p["key"] + "/") for p in monitor_roots)}
-        leaves = [r for r in fields.values() if not any(
-            s["key"].startswith(r["key"] + "/") for s in fields.values() if s is not r)]
-        position = unique(leaves, code="native_gui_project_monitor_timecode_not_unique")
+        position = self._project_monitor_timecode("edit.selection-snapshot")
         self.text("edit.seek75", position, "00:00:02:15")
         self.key("edit.commit-seek", 0xFF0D)
         # The version-pinned native action maps the '1' key to Video Track 1.

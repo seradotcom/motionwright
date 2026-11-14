@@ -58,6 +58,7 @@ SOURCE_PATHS = (
     "tooling/otio-media/test_kdenlive_modal_readback.py",
     "tooling/otio-media/test_kdenlive_x11_modal.py",
     "tooling/otio-media/test_kdenlive_playlist_refresh.py",
+    "tooling/otio-media/test_kdenlive_project_monitor.py",
     "tooling/otio-media/test_kdenlive_initial_save.py",
     "tooling/otio-media/test_kdenlive_accessibility_preflight.py",
     "tooling/otio-media/kdenlive_complete_g2_fixture.py",
