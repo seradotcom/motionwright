@@ -22,8 +22,8 @@ sys.path.insert(0, str(ROOT / "tooling"))
 import ci_storage_apply_recovery as commands
 from mlt_official_runtime_intake import capture_regular
 
-APPIMAGE_SHA256 = "38ec1bdec007ccd9171f951ba00ded8cc2dd43570c14a438e88fabb4f0a81f4f"
-APPIMAGE_URL = "https://download.kde.org/Attic/kdenlive/25.08/linux/kdenlive-25.08.3-x86_64.AppImage"
+APPIMAGE_SHA256 = "2c8322edfc86605e4c98a78a019310d9b4fc46bb8e94e6fe313dc7dd987e7671"
+APPIMAGE_URL = "https://download.kde.org/stable/kdenlive/26.08/linux/kdenlive-26.08.3-x86_64.AppImage"
 WORKFLOW = ".github/workflows/v05-otio-real-media.yml"
 SELF = "tooling/otio-media/kdenlive_distribution_observation.py"
 TEST = "tooling/otio-media/test_kdenlive_distribution_observation.py"
@@ -274,11 +274,11 @@ def observe():
         return commands.read_original(originals / "commands", row, "stdout")
 
     try:
-        image = owner / "kdenlive-25.08.3-x86_64.AppImage"
+        image = owner / "kdenlive-26.08.3-x86_64.AppImage"
         command("download-once", download_argv(image, originals / "download.headers.original"), 250)
         image_original = check_image(image, owner)
         new_json(originals / "appimage.original.json", {"url": APPIMAGE_URL, "original": image_original,
-            "expected_distribution_version": "25.08.3", "editor_version_executed": False,
+            "expected_distribution_version": "26.08.3", "editor_version_executed": False,
             "input_archive_not_copied_into_selected_evidence": True})
         image.chmod(0o700)
         extraction = owner / "extracted"
