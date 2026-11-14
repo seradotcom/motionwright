@@ -227,14 +227,14 @@ class BrokerProviderEventTests(unittest.TestCase):
         self.assertEqual(result["observation"], "BROKER_WATCH_UNAVAILABLE")
         self.assertEqual(result["events"], [])
 
-    def test_baseline_ci_only_opt_in_and_no_mutating_retry_contract(self):
+    def test_bounded_audio_ci_only_opt_in_and_no_mutating_retry_contract(self):
         worktree = Path(__file__).resolve().parents[2]
         yml = (worktree / ".github/workflows/native-av-master-e2e.yml").read_text()
         runner = (worktree / "tooling/native_av_master_e2e.py").read_text()
         self.assertIn("MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: '1'", yml)
         self.assertIn("test_native_provider_broker_events.py", yml)
         self.assertIn("native-provider-broker-events.json", runner)
-        self.assertIn('FIXTURE == "baseline"', runner)
+        self.assertIn('FIXTURE in {"baseline", "saved-mix"}', runner)
         self.assertNotIn("driver.motion-canvas.render.start", (worktree
             / "tooling/native_provider_broker_events.py").read_text())
 

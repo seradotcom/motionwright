@@ -161,6 +161,70 @@ class NativeAVPublicArtifactTests(unittest.TestCase):
         self.assertNotIn("path: verification/native-av-master-e2e\n", workflow)
         self.assertIn("test_native_av_public_artifact.py", workflow)
 
+    def prepare_saved_mix(self):
+        from tooling.tests.test_native_saved_mix_av import fixture_files, mix_fixture
+        import native_saved_mix_av as saved
+        # Synthetic publication fixtures only; no Broker or AAC render is mocked as real.
+        files = fixture_files()
+        files["saved-mix.wav"] = mix_fixture(files)
+        for name, content in files.items():
+            (self.private / name).write_bytes(content)
+        pcm = saved.inspect_pcm_files(files)
+        source = {
+            "schema": "motionwright.saved-mix-public-source/1", "fixture": "saved-mix",
+            "pcm": pcm, "source_plan_sha256": "d" * 64, "audio_inputs_sha256": "e" * 64,
+            "source_witness_sha256": "f" * 64, "same_physical_store_readback": True,
+            "project_and_history_unchanged": True, "producer_returned_before_readback": True,
+            "tauri_owner_invocation": "NOT_EXERCISED", "source_classification": "SYNTHETIC_TONES_NOT_SPEECH",
+            "human_approval": False, "release_authorized": False, "automatic_retry": False,
+        }
+        source_raw = json.dumps(source, sort_keys=True).encode()
+        (self.private / "saved-mix-source-proof.json").write_bytes(source_raw)
+        source_sha = hashlib.sha256(source_raw).hexdigest()
+        proof_path = self.private / "decoded-media-proof.json"
+        proof = json.loads(proof_path.read_text())
+        proof.update({
+            "evidence_scope": saved.SCOPE, "source_wav_sha256": pcm["mixed_wav_sha256"],
+            "saved_mix_source_proof_sha256": source_sha, "three_buses_decoded": True,
+            "stereo_channel_identity": saved.STEREO, "aac_sample_exact_sync_claimed": False,
+        })
+        proof_path.write_text(json.dumps(proof), encoding="utf-8")
+        self.result.update(fixture="saved-mix", audio_sha256=pcm["mixed_wav_sha256"],
+                           saved_mix_source_proof_sha256=source_sha)
+        self.store_result()
+
+    def test_saved_mix_publishes_only_closed_synthetic_sources_and_keeps_acceptance_false(self):
+        self.prepare_saved_mix()
+        proof = pub.publish_av(self.private, self.public, SOURCE, PIN, "success", fixture="saved-mix")
+        self.assertEqual(proof["schema"], "motionwright.saved-mix-native-av-public-evidence/1")
+        self.assertEqual(proof["fixture"], "saved-mix")
+        self.assertFalse(proof["v01_release_authorized"])
+        self.assertEqual(proof["installed_owner_acceptance"], "NOT_RUN")
+        self.assertEqual({path.name for path in self.public.iterdir()},
+                         set(pub.ALLOWED_MEDIA) | set(pub.SAVED_MIX_MEDIA) | {"public-evidence.json"})
+        self.assertFalse((self.public / "saved-mix-source.private.json").exists())
+
+    def test_saved_mix_cannot_publish_a_changed_or_relabelled_original_bus(self):
+        self.prepare_saved_mix()
+        target = self.private / "saved-mix-sfx.wav"
+        target.write_bytes((self.private / "saved-mix-music.wav").read_bytes())
+        with self.assertRaises(pub.PublicationError) as error:
+            pub.publish_av(self.private, self.public, SOURCE, PIN, "success", fixture="saved-mix")
+        self.assertEqual(error.exception.code, "saved_mix_original_pcm_not_verified")
+        self.assertFalse(self.public.exists())
+
+    def test_saved_mix_cannot_be_substituted_for_baseline_or_claim_human_approval(self):
+        self.prepare_saved_mix()
+        self.refused("native_av_not_verified")
+        path = self.private / "saved-mix-source-proof.json"
+        source = json.loads(path.read_text())
+        source["human_approval"] = True
+        path.write_text(json.dumps(source), encoding="utf-8")
+        with self.assertRaises(pub.PublicationError) as error:
+            pub.publish_av(self.private, self.public, SOURCE, PIN, "success", fixture="saved-mix")
+        self.assertEqual(error.exception.code, "saved_mix_source_readback_not_verified")
+        self.assertFalse(self.public.exists())
+
     def test_reuse_of_publication_root_fails_closed(self):
         pub.publish_av(self.private, self.public, SOURCE, PIN, "failure")
         with self.assertRaises(pub.PublicationError):
