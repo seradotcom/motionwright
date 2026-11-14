@@ -53,10 +53,14 @@ def admit_source(repo: Path, source: str, binary_source: str):
                                        text=True, timeout=7).strip()
     if git("rev-parse", "HEAD") != source:
         raise ProbeError("READ_ONLY_CHECKOUT_SOURCE_CHANGED")
-    # The probe runs the *same AT-SPI client code* that was in the original
-    # physical candidate, even if unrelated Native code has since advanced.
-    for path in ("tooling/linux_first_use_accessible.py", "tooling/linux_gui_probe.py"):
-        if git("rev-parse", source + ":" + path) != git("rev-parse", binary_source + ":" + path):
+    # The checkout on GitHub is intentionally shallow. Independently pinned
+    # Git blob identities from the original built source are checked without
+    # fetching a historical commit or weakening source/bytes equivalence.
+    for path, environment_key in (
+            ("tooling/linux_first_use_accessible.py", "ORIGINAL_ATSPI_CLIENT_BLOB"),
+            ("tooling/linux_gui_probe.py", "ORIGINAL_GUI_PROBE_BLOB")):
+        original_blob = os.environ.get(environment_key, "")
+        if not SHA.fullmatch(original_blob) or git("rev-parse", "HEAD:" + path) != original_blob:
             raise ProbeError("READ_ONLY_PROBE_SOURCE_DIFFERS_FROM_BINARY")
 
 

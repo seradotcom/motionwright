@@ -21,6 +21,8 @@ jobs:
       ORIGINAL_RUN_ID: '43570033851'
       ORIGINAL_SOURCE: '21a1a41510f44b480bc4264272479d48048a8be8'
       ORIGINAL_ARTIFACT_ID: '14103859547'
+      ORIGINAL_ATSPI_CLIENT_BLOB: 'e9b534554eb918df8d831d41fc10d45a4a6f4a9c'
+      ORIGINAL_GUI_PROBE_BLOB: 'd9afd40d628132290e044118cd87b0064631250d'
       ORIGINAL_ARTIFACT_SHA256: '5796abb450e67b294d8c6b0ff1d4cbbc8ae1944af7fa51cb297f3f71774eebdb'
       ORIGINAL_IMAGE_SHA256: '43e0e59a4822f819c8cb75ef7e8f4ac80ce9d09945b81e24ea6b4ab8bdfef08c'
     steps:
@@ -41,8 +43,9 @@ jobs:
           source=os.environ['ORIGINAL_SOURCE']
           current=call('git','rev-parse','HEAD')
           assert current==os.environ['GITHUB_SHA'] and current!=source
-          for path in ('tooling/linux_first_use_accessible.py','tooling/linux_gui_probe.py'):
-              assert call('git','rev-parse','HEAD:'+path)==call('git','rev-parse',source+':'+path)
+          for path,env_key in (('tooling/linux_first_use_accessible.py','ORIGINAL_ATSPI_CLIENT_BLOB'),
+                               ('tooling/linux_gui_probe.py','ORIGINAL_GUI_PROBE_BLOB')):
+              assert call('git','rev-parse','HEAD:'+path)==os.environ[env_key]
           run=json.loads(call('gh','api','repos/seradotcom/motionwright/actions/runs/'+os.environ['ORIGINAL_RUN_ID']))
           assert run['head_sha']==source and run['run_attempt']==1 and run['status']=='completed'
           meta=json.loads(call('gh','api','repos/seradotcom/motionwright/actions/artifacts/'+os.environ['ORIGINAL_ARTIFACT_ID']))
