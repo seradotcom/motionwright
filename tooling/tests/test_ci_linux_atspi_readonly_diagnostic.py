@@ -45,7 +45,7 @@ class ReadOnlyOriginalContracts(unittest.TestCase):
                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
         self.assertFalse(invoked & forbidden)
         funcs = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
-        self.assertEqual(funcs, ["stage", "admit_source", "read_shallow_roles",
+        self.assertEqual(funcs, ["stage", "admit_source", "read_shallow_roles", "enable_session_accessibility",
                                  "trace_controls", "main"])
 
     def test_source_is_pinned_to_original_built_client(self):
@@ -59,6 +59,31 @@ class ReadOnlyOriginalContracts(unittest.TestCase):
                     ["git", "-C", str(ROOT), "rev-parse", "HEAD:" + name],
                     text=True).strip()
                 self.assertEqual(old, new)
+
+    def test_ephemeral_session_accessibility_enabled_before_app_launch(self):
+        commands = []
+        def reply(argv, **kwargs):
+            commands.append(argv)
+            value = "(<true>,)" if argv[-2:] == [
+                "org.a11y.Status", "IsEnabled"] else "()"
+            if "org.a11y.Bus.GetAddress" in argv:
+                value = "('unix:path=/tmp/fixture',)"
+            return type("Result", (), {"returncode": 0, "stdout": value})()
+        env = {"GITHUB_ACTIONS": "true", "DISPLAY": ":99",
+               "DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/fixture"}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.dict(os.environ, env), \
+             patch.object(diagnostic.subprocess, "run", side_effect=reply):
+            self.assertTrue(diagnostic.enable_session_accessibility(Path(directory)))
+            self.assertEqual(len(commands), 3)
+            self.assertIn("org.freedesktop.DBus.Properties.Set", commands[1])
+            self.assertEqual(commands[1][-1], "<true>")
+            for tag in ("session-bus-activation", "session-accessibility-enable",
+                        "session-accessibility-verify"):
+                self.assertTrue((Path(directory)/(tag+"-return.json")).exists())
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}):
+            with self.assertRaisesRegex(diagnostic.ProbeError, "DISPOSABLE"):
+                diagnostic.enable_session_accessibility(Path("unused"))
 
     def test_shallow_app_roles_are_bounded_and_names_unread(self):
         class Node:

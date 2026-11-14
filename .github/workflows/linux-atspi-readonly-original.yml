@@ -120,5 +120,6 @@ jobs:
           path: |
             ${{ runner.temp }}/mw-ats-readonly-original-${{ github.run_id }}-${{ github.run_attempt }}/readonly-original.json
             ${{ runner.temp }}/mw-ats-readonly-original-${{ github.run_id }}-${{ github.run_attempt }}/isolated-gui/read-only-atspi/*.json
+            ${{ runner.temp }}/mw-ats-readonly-original-${{ github.run_id }}-${{ github.run_attempt }}/read-only-session-a11y/*.json
           if-no-files-found: warn
           retention-days: 30

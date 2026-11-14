@@ -4,6 +4,7 @@
 The original installed attempt is never resumed or retried. This diagnostic
 opens a fresh, isolated application only to inspect its accessibility tree.
 No editor commands, click, Create, Host request or user effect are sent.
+The disposable session accessibility switch is enabled before launching WebKit.
 """
 from __future__ import annotations
 
@@ -121,6 +122,44 @@ def read_shallow_roles(bridge, app, records: Path):
     }
 
 
+def enable_session_accessibility(records: Path):
+    """Enable ordinary AT-SPI visibility only inside a disposable CI session.
+
+    This is a desktop-session setting, not Motionwright project/Native
+    authority. It MUST be set before launching WebKitGTK; all actions remain
+    read-only afterwards and the session is destroyed at the end of the job.
+    """
+    if os.environ.get("GITHUB_ACTIONS") != "true" or not (
+            os.environ.get("DISPLAY") and os.environ.get("DBUS_SESSION_BUS_ADDRESS")):
+        raise ProbeError("READ_ONLY_DISPOSABLE_ACCESSIBILITY_SESSION_REQUIRED")
+    commands = [
+        ["gdbus", "call", "--session", "--dest", "org.a11y.Bus",
+         "--object-path", "/org/a11y/bus", "--method", "org.a11y.Bus.GetAddress"],
+        ["gdbus", "call", "--session", "--dest", "org.a11y.Bus",
+         "--object-path", "/org/a11y/bus", "--method", "org.freedesktop.DBus.Properties.Set",
+         "org.a11y.Status", "IsEnabled", "<true>"],
+        ["gdbus", "call", "--session", "--dest", "org.a11y.Bus",
+         "--object-path", "/org/a11y/bus", "--method", "org.freedesktop.DBus.Properties.Get",
+         "org.a11y.Status", "IsEnabled"],
+    ]
+    names = ("session-bus-activation", "session-accessibility-enable",
+             "session-accessibility-verify")
+    for name, command in zip(names, commands):
+        stage(records, name + "-start")
+        try:
+            reply = subprocess.run(command, text=True, capture_output=True,
+                                   timeout=6, check=False)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise ProbeError("READ_ONLY_ACCESSIBILITY_SESSION_COMMAND_FAILURE") from e
+        if reply.returncode != 0 or len(reply.stdout) > 8192:
+            raise ProbeError("READ_ONLY_ACCESSIBILITY_SESSION_REJECTED")
+        if name == "session-accessibility-verify" and "true" not in reply.stdout.lower():
+            raise ProbeError("READ_ONLY_ACCESSIBILITY_SESSION_NOT_ENABLED")
+        # Preserve only a categorical success; do not retain bus addresses.
+        stage(records, name + "-return", {"verified": True})
+    return True
+
+
 def trace_controls(scratch: Path, records: Path):
     stage(records, "callback-start")
     deadline = time.monotonic() + 26
@@ -201,6 +240,12 @@ def main():
             stage(records, "terminal-blocked", {"failure_class": type(err).__name__})
         return True
     try:
+        # The source job launches under its own dbus-run-session. Enable the
+        # ephemeral accessibility switch *before* run_probe spawns the
+        # prebuilt AppImage; no source or product files are changed.
+        session_records = args.output.parent / "read-only-session-a11y"
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        result["session_accessibility_enabled"] = enable_session_accessibility(session_records)
         result["window"] = run_probe(args.app_run, args.scratch,
                                      seconds=35, window_interaction=inspect)
     except Exception as err:
