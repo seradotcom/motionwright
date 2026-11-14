@@ -1,0 +1,287 @@
+{
+  "applicability": {
+    "changed_paths": [
+      "docs/acceptance/acceptance-status.json",
+      "docs/acceptance/requirements-status.json",
+      "docs/acceptance/technical-evidence.json",
+      "docs/creative-production/requirements-status.json"
+    ],
+    "current_candidate_pass_granted": false,
+    "evaluated_candidate_sha": "966541b9523af35e7044fddca85dcf398a2f28e5",
+    "executed_source_sha": "bc91fb62587f7c5386aec697156872c369da3e1a",
+    "new_product_execution": false,
+    "product_oracle_workflow_dependency_changes": false,
+    "relationship": "historical_same_inputs"
+  },
+  "artifact_scope": "Sanitized derived technical review; this file is not an original execution receipt or the private evidence archive.",
+  "cases": [
+    {
+      "case": "g1",
+      "name": "graph-flow",
+      "observation": "Save persists exact rational times; a later rename survives rejection of a stale grant/revision. Independent reopen observes revision 10. The intermediate mutation uses the same Service object, so this is sequential stale-base rejection.",
+      "original_members": {
+        "e/graph-cases/g1/independent-reopen/observed-oracle.original.json": "6b17c617282af79cb0f9e2aecdfeef6386b02a529a8e360e8f2dd1b266c8b5e1",
+        "e/graph-cases/g1/independent-reopen/terminal.original.json": "d51c43a7ed7d4de928d05d8a9e91acfe8a5f6dcc54984a9d3afff7d709d5fcd1",
+        "e/graph-cases/g1/owner/owner-final.original.json": "a4d375739ed818b5dee3ab4d1d074f9d24c1a7508bdff9baf95ad6fce920ded9"
+      }
+    },
+    {
+      "case": "g2",
+      "name": "graph-label-causal-diagram",
+      "observation": "Moving one vertex preserves Graph/vertex/edge IDs and waypoints; automatic label geometry moves and manual placement survives Save and independent reopen.",
+      "original_members": {
+        "e/graph-cases/g2/independent-reopen/observed-oracle.original.json": "06320227ed1951b0fc0f9d55ce3a8cc67adfa5f26660e8464bb5d24c788041dd",
+        "e/graph-cases/g2/independent-reopen/terminal.original.json": "0a6f55d80aaab50f87c8252a68a2db685be5ab1ec5be963a9088160699775699",
+        "e/graph-cases/g2/owner/owner-final.original.json": "19fe09ac155dbae0cf0c99032ebe80cb8cf014f369d6efd7591b7a8f40c3f036"
+      }
+    },
+    {
+      "case": "g3",
+      "name": "graph-label-system-flow",
+      "observation": "The same geometry/persistence checks pass. At 30 fps, the editorial event interval begins at 1/15 and ends exclusively after another 1/30; frame 2 shows the event and frame 3 does not, without Store mutation.",
+      "original_members": {
+        "e/graph-cases/g3/independent-reopen/observed-oracle.original.json": "9181da6a45fbc8b80bbc0634415f251dc2f2b07952bbc0480611222d5d5aa9d4",
+        "e/graph-cases/g3/independent-reopen/terminal.original.json": "3a7d8309eeb67ff440a043b619b919cf0029aeadf587e2fe8a1401e543ca9efa",
+        "e/graph-cases/g3/owner/owner-final.original.json": "200eb1f3fee7103885a8e9315748dfcdda2f18cb32f9fd155615336cf64da9b4"
+      }
+    },
+    {
+      "case": "g4",
+      "name": "graph-lost-reply",
+      "observation": "The test deliberately drops the reply after a real SQLite commit. Reload preserves the pending intent and blocks automatic resend. Read-only recovery uses the original request; a new explicit intent yields exactly the second upsert.",
+      "original_members": {
+        "e/graph-cases/g4/independent-reopen/observed-oracle.original.json": "76e85628b5e2e60d409947b515cdba757210e3191c200ec68cb435ff7cbe7e6a",
+        "e/graph-cases/g4/independent-reopen/terminal.original.json": "dbe4b8c749b206b076bcaff1f5be12f25f89ee74fce48b1017c827ef9cdce8f8",
+        "e/graph-cases/g4/owner/owner-final.original.json": "1a6c0ff54a98828f6e353756cf2b80587b62e1c84487b42a00320977bce1459b"
+      }
+    },
+    {
+      "case": "g5",
+      "name": "graph-removal",
+      "observation": "Old-session and stale-base grants are rejected. One successful removal preserves the intervening rename and journal. Independent reopen confirms Graph absence; four requests contain one successful removal.",
+      "original_members": {
+        "e/graph-cases/g5/independent-reopen/observed-oracle.original.json": "a6bc3ac8667888d922e95e3c71d81cf415642e98d07103631684f49e0b60b7d0",
+        "e/graph-cases/g5/independent-reopen/terminal.original.json": "50cddb1b3626ece63dd4bb4c0d6a04788533f4abbd6cf2558d57986a387f7525",
+        "e/graph-cases/g5/owner/owner-final.original.json": "9813bbbb422b5bc3af01ec3adc63fac2bb2cd529a25cc73fc9728c7f5cabd167"
+      }
+    },
+    {
+      "case": "g6",
+      "name": "graph-source-review",
+      "observation": "An incomplete numeric draft does not Save. A saved, anchored and resolved review becomes needs_recheck after another Graph edit preserving IDs. Reopen preserves upsert, add_review, resolve_review, upsert history from revisions 8 through 12.",
+      "original_members": {
+        "e/graph-cases/g6/independent-reopen/observed-oracle.original.json": "78ce865fbc40fd52a5da8aa0bd92ce25cfe373821934a397233d8e69c0889150",
+        "e/graph-cases/g6/independent-reopen/terminal.original.json": "4b6eaf5a0b44139c867ff2705030321c3cc4a3d30fd76cd3841421bc70739fed",
+        "e/graph-cases/g6/owner/owner-final.original.json": "1358fa6da1577a19392da9177796dbd6b2c4856927e00f8c4940563552b39b69"
+      }
+    }
+  ],
+  "criterion_decisions": [
+    {
+      "criterion_id": "CR-PROJECT-01#/acceptance_criterion",
+      "decision": "historically_sufficient_on_executed_source",
+      "kind": "integration",
+      "not_claimed": "CAS original blob bytes were not decoded in this review.",
+      "obligations": [
+        "identity_revision_and_scenes_after_reopen",
+        "original_blob_references_after_reopen"
+      ],
+      "oracle_profile_sha256": "4b6af0c0b21e8499a50e7ed438beb89bcfa471d5ed3123da67371a1427501d8e",
+      "profile": "sqlite-project-reopen",
+      "source_clause_sha256": "5d927b28a646e122415e26c8472872d75b7a7838cce5346b29d1a5fdb0e5e524"
+    },
+    {
+      "criterion_id": "CR-CANVAS-03#/acceptance_criterion",
+      "decision": "observations_only",
+      "reason": "No admitted verification profile for this field; editorial geometry is observed without completing Canvas.",
+      "source_clause_sha256": "5aee568f1b6620a84280a8c925539f108b39356ad30e7d8c47bc9bfe20d8c105"
+    },
+    {
+      "criterion_id": "CR-CHANGE-05#/acceptance_criterion",
+      "decision": "observations_only",
+      "oracle_profile_sha256": "febf01c9e1aee0d75ca092f9083aa0325d721c8573d070f4717b83445da53a05",
+      "reason": "Current profile admits domain-in-memory-history unit evidence; this real integration observation is not relabeled as unit evidence.",
+      "source_clause_sha256": "6671d867927ac1f07b519a1099f9b85c2cad3ffd124280282ed2c88447057368"
+    },
+    {
+      "criterion_id": "MW05-E10-01#/negative_case",
+      "decision": "partial",
+      "missing": [
+        "historical_replay_cannot_overwrite_current_head",
+        "independent_writers_refuse_obsolete_revision"
+      ],
+      "source_clause_sha256": "80b701071687561f111d72aa7675f7163ef7edca093806f8b3c1834911f53f7f"
+    }
+  ],
+  "custody": {
+    "archive_bytes": 122406337,
+    "archive_sha256": "5a3730a2a066a1f8fc47decf69f741c278cf4f7087f636f3936fad4f9eccc680",
+    "artifact_id": 14080986662,
+    "inspection": "Selected original JSON members were read in memory with identity/digest checks; original project and journal objects were compared with expected objects in all six cases. No archive redownload, extraction, new Native mutation or repeated full-tree hash.",
+    "originals_published_here": false,
+    "prior_integrity_review": {
+      "members": 2436,
+      "original_file_bytes": 158580043,
+      "whole_archive_hash_reused": true
+    },
+    "retained_private_custody_id": "graph-r74-20261113-authorized/a1-posteffect-43512638433-bc91",
+    "tar_bytes": 160778240,
+    "tar_member": "closed-evidence.tar",
+    "tar_sha256": "acb65564567acd3cfcc18d713306dcaf8526a07d2a5215a6ecd93ec84fa51a39"
+  },
+  "definition": {
+    "path": "apps/studio/tests/semantic-graph-service.spec.ts",
+    "sha256": "7b329b6e197b2511b4c0eb6bd58110c9e8f0a2b2c57e376ea757762739cbd384"
+  },
+  "execution": {
+    "job": "real-service",
+    "new_product_execution": false,
+    "passed": 6,
+    "retries": 0,
+    "run_attempt": 1,
+    "run_id": 43512638433,
+    "skipped": 0,
+    "url": "https://github.com/seradotcom/motionwright/actions/runs/43512638433"
+  },
+  "explicit_limits": {
+    "archived_snapshot_restore_executed": false,
+    "escaped_descendant_cohort_proved": false,
+    "formal_G2": "NOT_GRANTED",
+    "formal_G3": "STOP",
+    "formal_acceptance": false,
+    "gate_credit": false,
+    "human_acceptance": false,
+    "installed_tauri": "NOT_RUN",
+    "native_authoring_approved": false,
+    "native_recovery_oracle_executed": false,
+    "owner_final_attests_preseal_witness_hash": false,
+    "release_authorized": false,
+    "service_opened_descriptor_identity_proved": false,
+    "source_bound_service_pager_query_identity_proved": false
+  },
+  "independent_geometry_check": {
+    "automatic_after": {
+      "box": [
+        504,
+        468,
+        240,
+        72
+      ],
+      "midpoint": [
+        600,
+        520
+      ],
+      "svg_text": [
+        624,
+        511
+      ],
+      "vertex_x": [
+        1000,
+        1200
+      ]
+    },
+    "automatic_before": {
+      "box": [
+        504,
+        368,
+        240,
+        72
+      ],
+      "midpoint": [
+        600,
+        420
+      ],
+      "svg_text": [
+        624,
+        411
+      ]
+    },
+    "manual": {
+      "automatic_placement_field_absent": true,
+      "box": [
+        700,
+        700,
+        240,
+        72
+      ],
+      "svg_text": [
+        820,
+        743
+      ]
+    },
+    "method": "Polyline length midpoint recalculated from original coordinates independently of the product resolver; inspected g2 and g3 JSON deltas.",
+    "original_scene_asset_deliverable_objects_unchanged": true
+  },
+  "limitations": [
+    "The public artifact hash authenticates this derived review, not independent public availability or CI verification of the private TAR.",
+    "No mapping by name to CR-GRAPH-01..08 cache/freshness/rebuild/GC obligations.",
+    "No complete ACC/A05 scenario, simultaneous independent-writer race, native pixel golden, arbitrary-time parity, original CAS byte recovery or human approval is inferred.",
+    "The deliberate lost reply is not a real provider crash. The Native recovery oracle remains not executed.",
+    "Historical source identities remain unchanged; equality of relevant inputs does not grant current-source conformance."
+  ],
+  "nonempty_original_blob_reference_check": {
+    "cases": [
+      {
+        "all_references_valid_nonzero_sha256": true,
+        "assets_exactly_equal": true,
+        "case": "g1",
+        "expected_asset_count": 1,
+        "expected_nonempty_content_sha256_count": 1,
+        "observed_asset_count": 1,
+        "observed_nonempty_content_sha256_count": 1,
+        "project_exactly_equal": true
+      },
+      {
+        "all_references_valid_nonzero_sha256": true,
+        "assets_exactly_equal": true,
+        "case": "g6",
+        "expected_asset_count": 1,
+        "expected_nonempty_content_sha256_count": 1,
+        "observed_asset_count": 1,
+        "observed_nonempty_content_sha256_count": 1,
+        "project_exactly_equal": true
+      }
+    ],
+    "original_blob_bytes_read_or_decoded_by_this_check": false,
+    "reference_encoding": "64 lowercase hexadecimal SHA256 characters",
+    "reference_field": "project.assets[].content_sha256",
+    "scope": "g1 and g6 expected and independent observed Project oracles"
+  },
+  "observed_in_all_six": {
+    "actual_child_opened_descriptor_observed": true,
+    "exact_journal_equal": true,
+    "exact_project_equal": true,
+    "held_store_digest_matches_initializer_physical_identity": true,
+    "independent_live_reader": true,
+    "original_seal_preserved": true,
+    "owner_cohort_absent": true,
+    "owner_streams_eof": true,
+    "read_only_child_bootstrap_proved": true,
+    "reader_exit_code": 0,
+    "same_physical_database": true,
+    "same_spawn_process_incarnation_observed": true,
+    "service_closure_validated": true,
+    "synthetic_adapter_only": false,
+    "writer_closed": true
+  },
+  "original_members": {
+    "e/graph-cases/g1/artifacts/closed-flow-store/oracle.json": "724b0e73a5d249183c57ef8e7724c450ad599035b365cbeea36ad3181d9904d8",
+    "e/graph-cases/g6/artifacts/closed-graph-store/oracle.json": "d02c99ebd549d42177eb8c3ca3e1f6e4650ed53849a0dd23e0341751219fed68",
+    "e/graph-execution.json": "ca56d35f0ba97e954364df7577b0c246155e057f0e059c1d67e56b792bb05b2c",
+    "e/receipt.json": "f4a6f1f13cd3495791f56ba0feb76510064ea3e9b616c142ba8dcd364ad63589"
+  },
+  "reviewed_at_utc": "2026-11-14T00:52:40Z",
+  "reviewer": {
+    "identity_authentication": "not_asserted",
+    "kind": "automated_technical",
+    "read_only": true,
+    "separate_from_implementation": true
+  },
+  "schema": "motionwright.graph6-independent-original-review/1",
+  "source": {
+    "digest_kind": "git-text-lf",
+    "motionwright_sha": "bc91fb62587f7c5386aec697156872c369da3e1a",
+    "semwright_sha": "d2d76aabfb2432990a82ddbb630fc5b4a8c5fe9f",
+    "source_lock_sha256": "5e580e96c640eeeb59bd656f3d08892a8c03cb8ac6b43023ba256a36f27f9db8"
+  }
+}

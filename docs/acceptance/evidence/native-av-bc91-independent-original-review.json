@@ -1,0 +1,110 @@
+{
+  "all_public_member_digests_verified": true,
+  "archive_bytes": 123600,
+  "archive_redownloaded": false,
+  "archive_sha256": "dac962bfb48b0418206dbb2963cf12e51be8bd316dc1cbc2ff43321b560d44e4",
+  "artifact_id": 14087220312,
+  "artifact_scope": "Sanitized derived decoder review; this file is not an original execution receipt or the original media.",
+  "audio_channels": 2,
+  "audio_sample_rate": 48000,
+  "changed_rgb_channels": 1888,
+  "decoded_pcm_frames": 96256,
+  "decoded_pcm_sha256": "1ef0531c94da1f65b733d5d4b9ddf5d3bd79db1f6c827e1165c013e607c30b51",
+  "decoder_libraries": {
+    "libavcodec": [
+      62,
+      11,
+      100
+    ],
+    "libavdevice": [
+      62,
+      1,
+      100
+    ],
+    "libavfilter": [
+      11,
+      4,
+      100
+    ],
+    "libavformat": [
+      62,
+      3,
+      100
+    ],
+    "libavutil": [
+      60,
+      8,
+      100
+    ],
+    "libswresample": [
+      6,
+      1,
+      100
+    ],
+    "libswscale": [
+      9,
+      1,
+      100
+    ]
+  },
+  "decoder_version": "16.1.0",
+  "decoder_wheel_sha256": "565093ebc93b2f4b76782589564869dadfa83af5b852edebedd8fee746457d06",
+  "evaluated_candidate_sha": "966541b9523af35e7044fddca85dcf398a2f28e5",
+  "executed_source_sha": "bc91fb62587f7c5386aec697156872c369da3e1a",
+  "first_frame_rgb_sha256": "a5adefc05a2e34a45632c40309726f9ff70078dd969f6e85f3783004ceb02589",
+  "formal_G2": "NOT_GRANTED",
+  "formal_G3": "STOP",
+  "human_editorial_acceptance": false,
+  "installed_owner_acceptance": "NOT_RUN",
+  "limitations": [
+    "A two-second synthetic fixture does not prove arbitrary compositions, voice integrity, HDR/ProRes/alpha, captions, frame/sample offsets or all profile fields.",
+    "This authenticates independent readback of actual output, without granting a complete CR-MLT or MW05 criterion.",
+    "The original run and source remain bc91; later candidates do not receive a new execution or current-source PASS from this review.",
+    "Broker receipts and an installed owner were not reviewed by this decoder check."
+  ],
+  "master_bytes": 69844,
+  "master_sha256": "4930ba15623e6af210479887562878d01a5c627df735a94043bf0369464f7c86",
+  "middle_frame_rgb_sha256": "f8b9b3b0af1116f001a04c1defa91f64f6447115af33df68de1b24d67898562e",
+  "native_mutation_replayed": false,
+  "new_product_execution": false,
+  "original_broker_receipts_reviewed": false,
+  "public_member_count": 7,
+  "release_authorized": false,
+  "retained_custody_id": "A4/canonical-av-bc91fb625-20261113/canonical-native-av-public.original.zip",
+  "reuse_basis": {
+    "changed_paths": [
+      "docs/acceptance/acceptance-status.json",
+      "docs/acceptance/requirements-status.json",
+      "docs/acceptance/technical-evidence.json",
+      "docs/creative-production/requirements-status.json"
+    ],
+    "classification": "HISTORICAL_SAME_INPUT",
+    "product_oracle_workflow_and_dependency_inputs_changed": false
+  },
+  "review_script_sha256": "8faf4961b9ab3d98e3629569ac56391dd4d25219c2607da527166a85be3cc528",
+  "reviewed_at_utc": "2026-11-14T00:35:17.684130+00:00",
+  "rgb_compared_frames": [
+    0,
+    30
+  ],
+  "run_attempt": 1,
+  "run_id": 43528419766,
+  "run_url": "https://github.com/seradotcom/motionwright/actions/runs/43528419766",
+  "schema": "motionwright.native-av-independent-original-review/1",
+  "scope": "Canonical original two-second synthetic tone fixture; independent decoder content review.",
+  "semwright_sha": "d2d76aabfb2432990a82ddbb630fc5b4a8c5fe9f",
+  "status": "PASS",
+  "stereo_channel_identity": "confirmed_distinct_source_tones",
+  "tone_amplitudes": {
+    "left_440": 0.2688017650159479,
+    "left_660": 2.3667071450580295e-06,
+    "right_440": 2.3603648422253485e-06,
+    "right_660": 0.19536075107417314
+  },
+  "video_fps": "30/1",
+  "video_frames_decoded": 60,
+  "video_size": [
+    1920,
+    1080
+  ]
+}
