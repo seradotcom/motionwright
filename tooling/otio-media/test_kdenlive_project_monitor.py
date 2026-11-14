@@ -290,6 +290,48 @@ class ProjectMonitorSelectorTests(unittest.TestCase):
                 self.assertTrue(guarded.ui.journal.blocked)
                 self.assertEqual(guarded.targets, [])
 
+        rows = tabbed_rows()
+        rows.append(row("app/main/sequence", name="Sequence", role="menu"))
+        rows.append(row("app/main/sequence/current", name="Current Item",
+                        role="menu item", visible=False))
+        snapshot = {"complete": True, "rows": rows}
+        retained = actions.observed_menu_failure_tree(snapshot, PID)
+        self.assertTrue(retained["complete"])
+        self.assertEqual(retained["menu_row_count"], 2)
+        self.assertEqual({r["name"] for r in retained["menu_rows"]},
+                         {"Sequence", "Current Item"})
+        self.assertFalse(retained["semantic_effect_verified"]
+                         if "semantic_effect_verified" in retained
+                         else retained["reconciliation_granted"])
+        self.assertFalse(actions.observed_menu_failure_tree(
+            {"complete": False, "rows": rows}, PID)["complete"])
+        foreign = copy.deepcopy(rows)
+        selected(foreign, CLOCK)["pid"] = 99
+        self.assertFalse(actions.observed_menu_failure_tree(
+            {"complete": True, "rows": foreign}, PID)["complete"])
+
+        events = []
+        ui = actions.AtspiSession.__new__(actions.AtspiSession)
+        ui.pid = PID
+        ui.last_snapshot = snapshot
+        ui.journal = actions.ActionJournal(events.append, lambda: None)
+        ui.find = lambda *_args, **_kwargs: None
+        ui.action = lambda *_args: self.fail("no menu action after unknown")
+        with patch.object(actions.time, "monotonic",
+                          side_effect=itertools.count(0.0, 30.0)):
+            with self.assertRaises(actions.GuiUncertain) as caught:
+                ui.control("synthetic.menu.current", ("Current Item",),
+                           ("menu", "menu item"))
+        self.assertEqual(str(caught.exception),
+                         "synthetic.menu.current.discover")
+        self.assertTrue(ui.journal.blocked)
+        self.assertEqual([e["state"] for e in events],
+                         ["TIMED_OUT_UNKNOWN", "READ_ONLY_FAILURE_CUSTODY"])
+        self.assertFalse(events[-1]["native_operation_retried"])
+        self.assertFalse(events[-1]["semantic_effect_verified"])
+        self.assertEqual(events[-1]["observed"], retained)
+        self.assertEqual(events[-1]["requested_names"], ["Current Item"])
+
     def test_refresh_keeps_real_control_flow_with_synthetic_tabbed_dock(self):
         from test_kdenlive_playlist_refresh import SyntheticEditor
         case = SyntheticEditor()

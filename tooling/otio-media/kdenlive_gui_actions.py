@@ -230,6 +230,44 @@ def project_monitor_timecode(rows: list[dict], expected_pid: int) -> dict:
     return position
 
 
+def observed_menu_failure_tree(snapshot: dict | None, expected_pid: int) -> dict:
+    """Project only the last already-observed AT-SPI menu rows; never re-query.
+
+    A timeout is UNKNOWN regardless of what this read-only evidence contains.
+    An incomplete tree cannot authorize or supply any row.
+    """
+    base = {"schema": "motionwright.native.kdenlive-menu-failure-tree/1",
+            "expected_pid": expected_pid, "complete": False,
+            "native_action_dispatched_here": False, "reconciliation_granted": False,
+            "automatic_retry": False}
+    if not isinstance(snapshot, dict) or snapshot.get("complete") is not True:
+        return {**base, "reason": "last_tree_incomplete_or_absent"}
+    rows = snapshot.get("rows")
+    if (not isinstance(rows, list) or not 0 < len(rows) <= MAX_NODES
+            or any(not isinstance(row, dict) or type(row.get("pid")) is not int
+                   or row["pid"] != expected_pid for row in rows)):
+        return {**base, "reason": "last_tree_not_fully_owned"}
+    menus = []
+    for row in rows:
+        if row.get("role") not in ("menu", "menu item", "check menu item", "menu bar"):
+            continue
+        if (not all(type(row.get(k)) is str for k in ("key", "name", "role"))
+                or not all(type(row.get(k)) is bool
+                           for k in ("visible", "enabled", "focused"))):
+            return {**base, "reason": "last_menu_row_not_typed"}
+        menus.append({k: row[k] for k in
+                      ("key", "name", "role", "visible", "enabled", "focused")})
+    envelope = {**base, "complete": True, "source_rows": len(rows),
+                "menu_rows": menus, "menu_row_count": len(menus),
+                "no_new_accessibility_query": True}
+    encoded = json.dumps(envelope, ensure_ascii=True, sort_keys=True,
+                         allow_nan=False).encode("utf-8")
+    if len(menus) > 512 or len(encoded) > 65536:
+        return {**base, "reason": "menu_projection_budget_exceeded",
+                "source_rows": len(rows), "observed_menu_row_count": len(menus)}
+    return envelope
+
+
 def labeled_field(rows: list[dict], labels: tuple[str, ...]) -> dict:
     """Select the sole editable leaf on the observed label's row.
 
@@ -778,7 +816,24 @@ class AtspiSession:
 
     def control(self, step: str, names: tuple[str, ...],
                 roles: tuple[str, ...]) -> None:
-        row = self.journal.wait(step + ".discover", lambda: self.find(names, roles))
+        try:
+            row = self.journal.wait(step + ".discover", lambda: self.find(names, roles))
+        except GuiUncertain as original:
+            # One prior completed query may describe which menu was visible.
+            # No new AT-SPI call, action, retry, or promotion of uncertainty.
+            try:
+                retained = observed_menu_failure_tree(self.last_snapshot, self.pid)
+                self.journal.emit({
+                    "step": step + ".last-observed-menu",
+                    "state": "READ_ONLY_FAILURE_CUSTODY",
+                    "requested_names": list(names), "requested_roles": list(roles),
+                    "observed": retained, "native_operation_retried": False,
+                    "semantic_effect_verified": False,
+                })
+            except BaseException as recording_error:
+                original.add_note("native_gui_menu_custody_failed:"
+                                  + type(recording_error).__name__)
+            raise
         self.action(step, row)
 
     def menu(self, step: str, *names: str) -> None:
