@@ -456,6 +456,9 @@ def preflight_request_capacity(value, *, source_zip_bytes=0, session=False):
     )
     counts = {role: 1 for role in once}
     counts["native-png"] = 180
+    # The nine bundled originals are selected before R28, including their
+    # declared per-file bounds in the unchanged whole-capsule accounting.
+    counts["font-original"] = 9
     counts.update({role: counts_by_fixture[fixture] for role in
                    ("selected-png", "selected-rgba", "decoder-stderr", "decoder-terminal")})
     roles, limits = value["role_limits"], value["limits"]

@@ -920,6 +920,13 @@ def fixedtxt_member_path(value):
     return value
 
 
+# This source-locked runtime has two bundled CSS originals and seven WOFF2
+# originals, ordered by the SDK's BTreeMap fontResourcePins. Every case must
+# retain them. The existing reader still binds the full live inventory,
+# original hashes, optional extra font rows and decoder terminals afterward.
+FIXEDTXT_BUNDLED_FONT_ORIGINALS = 9
+
+
 def fixedtxt_required_members(fixture, native_directory):
     """Exact known V4 originals, including all 180 source PNGs and one owner."""
     frames = fixedtxt_frames(fixture)
@@ -969,6 +976,8 @@ def fixedtxt_required_members(fixture, native_directory):
         ("selected-originals.json", "selected-originals"),
     ):
         rows[("observation", readback + name)] = role
+    for ordinal in range(FIXEDTXT_BUNDLED_FONT_ORIGINALS):
+        rows[("observation", readback + f"font-{ordinal:04d}.original.bin")] = "font-original"
     for frame in range(180):
         rows[("owner", native_directory + f"/frames/{frame:06d}.png")] = "native-png"
     for frame in frames:

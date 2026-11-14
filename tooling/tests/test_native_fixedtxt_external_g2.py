@@ -417,9 +417,9 @@ def complete_snapshot_fixture():
         if row["role"] == "cycle-inputs" or (row["root"], row["relative_path"]) == ("inputs", fixed.CYCLE_MEMBER):
             row["expected_sha256"] = fixed.sha(q)
     readback = "observation/flow-control-base/fixed-text-original-readback/"
-    font_name = readback + "font-0000.original.bin"
-    plan["members"].append({"root": "observation", "relative_path": font_name.split("/", 1)[1],
-        "role": "font-original", "maximum": 16384, "expected_sha256": None})
+    font_names = [row["root"] + "/" + row["relative_path"] for row in plan["members"]
+                  if row["role"] == "font-original"]
+    assert len(font_names) == 9
     plan["members"].sort(key=lambda row: (row["root"], row["relative_path"]))
     p = fixed.canonical(plan)
     runtime["fixedtxt_plan"].update(fixed.descriptor(p))
@@ -436,11 +436,15 @@ def complete_snapshot_fixture():
     png = b"png"  # Manifest fixture declares these bytes; no PNG/render claim.
     for index in range(180):
         originals["owner/" + fixed.NATIVE_SLOT + f"/frames/{index:06d}.png"] = png
-    font = b"synthetic font original; no glyph acceptance"
-    originals[font_name] = font
+    font_inventory = []
+    for index, font_name in enumerate(font_names):
+        font = b"synthetic font original; no glyph acceptance " + str(index).encode()
+        originals[font_name] = font
+        font_inventory.append({"role": "bundled", "path": f"fonts/synthetic-{index}.woff2",
+                               "retained": f"font-{index:04d}.original.bin",
+                               "bytes": len(font), "sha256": fixed.sha(font)})
     originals[readback + "font-source-inventory.json"] = fixed.canonical({
-        "originals": [{"role": "bundled", "path": "fonts/synthetic.woff2", "retained": "font-0000.original.bin",
-                       "bytes": len(font), "sha256": fixed.sha(font)}],
+        "originals": font_inventory,
         "glyph_fidelity_accepted": False, "browser_readiness_is_glyph_fidelity": False})
     rgba = b"\x00\x11\x22\xff" * (1920 * 1080)
     selected = []

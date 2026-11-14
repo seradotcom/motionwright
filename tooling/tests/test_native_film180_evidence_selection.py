@@ -1020,12 +1020,16 @@ def fixedtxt_fixture(*, fixture="flow-control-base", arm="RED", decoded=False):
     originals[readback + "artifact-manifest.json"] = crypto.json_bytes(manifest)
     for i in range(180):
         originals["owner/" + directory + f"/frames/{i:06d}.png"] = png
-    font = b"SYNTHETIC-FONT-ORIGINAL-NOT-A-FONT"
-    font_path = readback + "font-0000.original.bin"
-    originals[font_path] = font
+    font_inventory = []
+    for index in range(9):
+        font = b"SYNTHETIC-FONT-ORIGINAL-NOT-A-FONT " + str(index).encode()
+        font_path = readback + f"font-{index:04d}.original.bin"
+        originals[font_path] = font
+        font_inventory.append({"role": "bundled", "path": f"fonts/source-{index}.woff2",
+                               "retained": f"font-{index:04d}.original.bin",
+                               "bytes": len(font), "sha256": crypto.sha(font)})
     originals[readback + "font-source-inventory.json"] = crypto.json_bytes({
-        "originals": [{"role": "bundled", "path": "fonts/source.woff2", "retained": "font-0000.original.bin",
-                       "bytes": len(font), "sha256": crypto.sha(font)}],
+        "originals": font_inventory,
         "glyph_fidelity_accepted": False, "browser_readiness_is_glyph_fidelity": False})
     originals["inputs/source-input.original.json"] = b'{"explicit_synthetic_input":true}\n'
     rows = []
