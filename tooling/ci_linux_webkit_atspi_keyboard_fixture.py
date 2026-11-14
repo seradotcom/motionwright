@@ -111,14 +111,25 @@ def single_input(bridge, atspi, glib, app, title, pid: int, records: Path):
     if focused is not True:
         raise ProbeError("AT_SPI_FIXTURE_FOCUS_NOT_ACKNOWLEDGED")
     focus_state = False
-    for _ in range(6):
+    refreshed = False
+    for index in range(6):
         state = bridge.call(title.node.get_state_set)
         if state.contains(atspi.StateType.FOCUSED):
             focus_state = True
             break
+        # AT-SPI may cache FOCUSED from before grab_focus. Refresh only this
+        # already PID-verified node once; never discard the application tree,
+        # enumerate other windows, invoke another focus, or send input before
+        # the subsequent fresh state returns positively.
+        if index == 1:
+            mark("focus-cache-refresh-intent",
+                 {"scope": "single-target-only", "input_sent": False})
+            bridge.call(title.node.clear_cache_single)
+            refreshed = True
+            mark("focus-cache-refresh-return", {"finished": True})
         drain(glib)
         time.sleep(0.2)
-    mark("focus-state", {"focused": focus_state})
+    mark("focus-state", {"focused": focus_state, "single_target_cache_refreshed": refreshed})
     if not focus_state or bridge.pid(app) != pid or bridge.owner_pid(title.node) != pid:
         raise ProbeError("AT_SPI_FIXTURE_FOCUS_STATE_UNVERIFIED")
     if bridge.read_text(title.node) != "":

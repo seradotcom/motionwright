@@ -113,6 +113,71 @@ class OneFixtureKeyboardEvent(unittest.TestCase):
             self.assertTrue((root/"type-return.json").exists())
             self.assertTrue((root/"readback.json").exists())
 
+    def test_single_target_refresh_can_verify_focused_without_repeat(self):
+        from types import SimpleNamespace
+        class Input:
+            focused=False
+            text=""
+            refreshes=0
+            def get_state_set(self):
+                owner=self
+                class State:
+                    def contains(self,which):return owner.focused and which==3
+                return State()
+            def clear_cache_single(self):
+                self.refreshes+=1
+                self.focused=True
+        node=Input()
+        def type_once(k,value,method):
+            self.assertEqual(node.refreshes,1)
+            self.assertTrue((scope/"focus-cache-refresh-return.json").exists())
+            self.assertTrue((scope/"type-intent.json").exists())
+            node.text=value
+            sends.append(value)
+            return True
+        class Bridge:
+            def call(self,fn,*args):return fn(*args)
+            def pid(self,app):return 37
+            def owner_pid(self,item):return 37
+            def read_text(self,obj):return obj.text
+        api=SimpleNamespace(Component=SimpleNamespace(grab_focus=lambda n:True),
+          StateType=SimpleNamespace(FOCUSED=3),
+          KeySynthType=SimpleNamespace(STRING=4),generate_keyboard_event=type_once)
+        sends=[]
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(fixture, "drain"), patch.object(fixture.time, "sleep"):
+            scope=Path(tmp)
+            result=fixture.single_input(Bridge(),api,SimpleNamespace(MainContext=None),
+                                        object(),SimpleNamespace(node=node),37,scope)
+            self.assertEqual(result["status"],"TEXT_VERIFIED_NO_CREATE")
+            self.assertEqual(sends,[fixture.VALUE])
+            self.assertEqual(node.refreshes,1)
+            self.assertTrue((scope/"focus-state.json").is_file())
+            self.assertTrue((scope/"readback.json").is_file())
+
+    def test_stale_focus_after_one_refresh_never_sends_text(self):
+        from types import SimpleNamespace
+        node=SimpleNamespace(text="",refresh_count=0)
+        node.get_state_set=lambda:SimpleNamespace(contains=lambda _:False)
+        def refresh():
+            node.refresh_count+=1
+        node.clear_cache_single=refresh
+        class Bridge:
+            def call(self,fn,*args):return fn(*args)
+            def pid(self,app):return 37
+            def owner_pid(self,item):return 37
+        api=SimpleNamespace(Component=SimpleNamespace(grab_focus=lambda n:True),
+            StateType=SimpleNamespace(FOCUSED=3))
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(fixture, "drain"), patch.object(fixture.time, "sleep"):
+            scope=Path(tmp)
+            with self.assertRaisesRegex(ProbeError,"FOCUS_STATE_UNVERIFIED"):
+                fixture.single_input(Bridge(),api,SimpleNamespace(MainContext=None),
+                                     object(),SimpleNamespace(node=node),37,scope)
+            self.assertEqual(node.refresh_count,1)
+            self.assertTrue((scope/"focus-cache-refresh-intent.json").is_file())
+            self.assertFalse((scope/"type-intent.json").exists())
+
     def test_false_focus_never_sends_keyboard_event(self):
         node=SimpleNamespace(text="")
         class Bridge:
