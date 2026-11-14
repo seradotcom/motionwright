@@ -252,7 +252,7 @@ jobs:
 
           discovered = list(test_ids(suite))
           contract_counts = {
-              "test_kdenlive_gui_e2e": 142, "test_kdenlive_complete_g2_fixture": 10,
+              "test_kdenlive_gui_e2e": 162, "test_kdenlive_complete_g2_fixture": 10,
               "test_kdenlive_live_process": 24, "test_kdenlive_accessibility_diagnostics": 11,
               "test_kdenlive_owner_cut": 31, "test_kdenlive_accessibility_preflight": 9,
           }
@@ -294,7 +294,8 @@ jobs:
           print(json.dumps({
               "otio_python_discovery": len(discovered),
               "required_contract_modules": contract_groups,
-              "existing_route_and_owner_cases": 190, "editor_render_source_controls": 28,
+              "existing_route_and_owner_cases": 191, "private_preview_audio_controls": 19,
+              "editor_render_source_controls": 28,
               "accessibility_preflight_cases": 9,
               "tests_run": result.testsRun,
               "required_native_tests": sorted(required_native),
@@ -625,7 +626,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            ffmpeg dbus-x11 xvfb xauth openbox xdotool \
+            ffmpeg dbus-x11 xvfb xauth openbox xdotool pulseaudio pulseaudio-utils \
             python3.12-venv python3-gi gir1.2-atspi-2.0 at-spi2-core libxcb-cursor0 libopengl0 libegl1
           /usr/bin/python3.12 -c 'import ctypes; ctypes.CDLL("libOpenGL.so.0"); ctypes.CDLL("libEGL.so.1")'
           /usr/bin/python3.12 -m venv --system-site-packages "$RUNNER_TEMP/kdenlive-gui-python"
@@ -642,7 +643,7 @@ jobs:
           gi.require_version("Atspi", "2.0")
           from gi.repository import Atspi
           required = [(Atspi, "init"), (Atspi, "get_desktop"), (Atspi, "set_timeout"),
-                      (Atspi.Accessible, "get_process_id"),
+                      (Atspi.Accessible, "get_process_id"), (Atspi.Accessible, "clear_cache_single"),
                       (Atspi.Accessible, "get_parent"), (Atspi.Accessible, "get_index_in_parent"),
                       (Atspi.Accessible, "get_selection_iface"), (Atspi.Selection, "select_child"),
                       (Atspi.Accessible, "get_editable_text_iface"),
@@ -669,7 +670,7 @@ jobs:
           import test_kdenlive_owner_cut as owner_tests
           import test_kdenlive_accessibility_preflight as preflight_tests
           modules = [
-              (tests, 142), (original_tests, 10), (process_tests, 24),
+              (tests, 162), (original_tests, 10), (process_tests, 24),
               (diagnostic_tests, 11), (owner_tests, 31), (preflight_tests, 9),
           ]
           def ids(node):
@@ -687,15 +688,16 @@ jobs:
               suites.append(suite)
               roster.extend(names)
               groups[module.__name__] = names
-          if len(roster) != 227 or len(set(roster)) != 227:
-              raise SystemExit("Require all 227 GUI, route, owner, editor-render custody and observer-only cases")
+          if len(roster) != 247 or len(set(roster)) != 247:
+              raise SystemExit("Require all 247 GUI, route, owner, editor-render custody and observer-only cases")
           result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(suites))
           print(json.dumps({"tests_run": result.testsRun, "roster": roster, "modules": groups,
-                            "existing_route_and_owner_cases": 190, "editor_render_source_controls": 28,
+                            "existing_route_and_owner_cases": 191, "private_preview_audio_controls": 19,
+                            "editor_render_source_controls": 28,
                             "accessibility_preflight_cases": 9,
                             "skips": len(result.skipped), "failures": len(result.failures),
                             "errors": len(result.errors), "native_execution": False}, sort_keys=True))
-          if (not result.wasSuccessful() or result.testsRun != 227 or result.skipped
+          if (not result.wasSuccessful() or result.testsRun != 247 or result.skipped
                   or result.expectedFailures or result.unexpectedSuccesses):
               raise SystemExit(1)
           PY

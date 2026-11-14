@@ -441,7 +441,7 @@ class AtspiSession:
                 and output.suffix == ".mov" and playlist.suffix == ".mlt"
                 and not any(p.exists() or p.is_symlink() for p in (output, playlist)),
                 "native_render_script_targets_not_fresh")
-        self.menu(step + ".menu", "Project", "Render...")
+        self.menu(step + ".menu", "File", "Render...")
         dialog = self.dialog(step + ".dialog", ("Rendering",))
 
         def controls(name, roles=(), *, visible=False):
@@ -558,6 +558,16 @@ class AtspiSession:
         """Observe native startup; acknowledge its sole first-run page once."""
         quick_setup = "<h3>Welcome to Kdenlive Quick Setup</h3>"
 
+        def main_file(rows):
+            files = [r for r in rows if r["visible"] and r["enabled"] and
+                     normalized(r["name"]) == "File" and
+                     r["role"] in ("menu", "menu item")]
+            if not files:
+                return None
+            require(not any(r["visible"] and r["role"] in ("dialog", "alert")
+                            for r in rows), "native_gui_unexpected_startup_dialog")
+            return unique(files, code="native_gui_file_menu_not_unique")
+
         def startup():
             rows = self.tree()
             titles = [r for r in rows if r["visible"] and r["role"] == "label"
@@ -571,11 +581,7 @@ class AtspiSession:
                 dialog = unique(dialogs, code="native_gui_startup_dialog_not_unique")
                 require(phase == "import", "native_gui_first_run_reappeared_on_reopen")
                 return {"kind": "wizard", "dialog": dialog, "rows": rows}
-            files = [r for r in rows if r["visible"] and r["enabled"] and
-                     normalized(r["name"]) == "File" and
-                     r["role"] in ("menu", "menu item")]
-            if files:
-                unique(files, code="native_gui_file_menu_not_unique")
+            if main_file(rows):
                 return {"kind": "main", "rows": rows}
             return None
         observed = self._wait_snapshot(phase + ".startup", startup)
@@ -596,8 +602,7 @@ class AtspiSession:
                             normalized(r["name"]) == "Start Editing"],
                            code="native_gui_startup_cannot_finish")
             self.action(phase + ".startup-acknowledge", start)
-            self._wait_snapshot(phase + ".main-ready", lambda: self.find(
-                ("File",), ("menu", "menu item")))
+            self._wait_snapshot(phase + ".main-ready", lambda: main_file(self.tree()))
             require(not self.find((quick_setup,), ("label",)),
                     "native_gui_startup_dialog_did_not_close")
 
@@ -616,8 +621,8 @@ class AtspiSession:
         self.key("edit.commit-seek", 0xFF0D)
         # The version-pinned native action maps the '1' key to Video Track 1.
         self.key("edit.select-video-track1", 0x0031)
-        self.menu("edit.select-clip", "Timeline", "Selection", "Select Clip")
-        self.menu("edit.duration", "Timeline", "Current clip", "Edit Duration")
+        self.menu("edit.select-clip", "Sequence", "Selection", "Select Clip")
+        self.menu("edit.duration", "Sequence", "Current Item", "Edit Duration")
         dialog = self.dialog("edit.duration-dialog", ("Duration",))
         rows = self.descendants(dialog)
         fields = [labeled_field(rows, (label,)) for label in
