@@ -488,7 +488,11 @@ def worker(scratch, seconds, *, parent_deadline=None):
             nonlocal queued
             if result is None and not queued:
                 queued = True
-                GLib.idle_add(advance)
+                # AT-SPI/WebKit can emit continuous high-priority signals.
+                # A default-idle callback may never get CPU before the one
+                # original timeout. Use GLib's normal event priority, retaining
+                # queued/busy latches and every pre-mutation identity check.
+                GLib.idle_add(advance, priority=GLib.PRIORITY_DEFAULT)
 
         remaining()
         journal.put("listeners-start", {"events": events})

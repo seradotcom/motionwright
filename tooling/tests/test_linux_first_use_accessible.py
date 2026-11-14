@@ -678,9 +678,14 @@ class WorkerBudgetTests(unittest.TestCase):
         def timeout_add(milliseconds, callback):
             timers.append((clock[0] + milliseconds / 1000.0, callback))
             return len(timers)
-        glib = SimpleNamespace(MainLoop=lambda: loop,
-                               idle_add=lambda callback: idle.append(callback),
-                               timeout_add=timeout_add)
+        def idle_add(callback, *, priority):
+            # A missing explicit priority silently selects DEFAULT_IDLE and
+            # starves under continuous accessibility signals on a real host.
+            if priority != 0:
+                raise AssertionError("first-use callback must use GLib DEFAULT priority")
+            idle.append(callback)
+        glib = SimpleNamespace(MainLoop=lambda: loop, PRIORITY_DEFAULT=0,
+                               idle_add=idle_add, timeout_add=timeout_add)
         gi = ModuleType("gi")
         def require_version(*_):
             clock[0] += setup_seconds
