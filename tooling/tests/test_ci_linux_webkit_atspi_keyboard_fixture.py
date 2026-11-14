@@ -46,6 +46,33 @@ class OneFixtureKeyboardEvent(unittest.TestCase):
                 record(path,{"phase":"TYPE_UNKNOWN"})
             self.assertIn("TYPE_UNKNOWN",path.read_text())
 
+    def test_exact_fixture_field_reads_real_interfaces_not_product_view_cache(self):
+        from linux_first_use_accessible import View
+        vis=frozenset(("visible","showing","enabled","sensitive","editable"))
+        class Node:
+            def __init__(self, role, name, children=(), interfaces=()):
+                self.role,self.name,self.children,self.interfaces=role,name,list(children),list(interfaces)
+            def get_interfaces(self):return self.interfaces
+        field=Node("entry","Plain input",interfaces=["Accessible","Component","Text"])
+        app=Node("other","",children=[field])
+        class Bridge:
+            def applications(self):return [app]
+            def pid(self,node):return 37
+            def owner_pid(self,node):return 37
+            def view(self,node):
+                # Matches the real AtspiBridge.view behavior on fixture labels:
+                # View.interfaces stays empty because name != Project title.
+                return View(node,node.role,node.name,vis,frozenset())
+            def children(self,node):return node.children
+            def call(self,fn,*args):return fn(*args)
+            def read_text(self,node):return ""
+        chosen=fixture.locate_title(Bridge(),None,37)
+        self.assertIs(chosen[0],app)
+        self.assertIs(chosen[1].node,field)
+        field.interfaces=["Accessible","Text"]
+        with self.assertRaisesRegex(ProbeError,"READABLE_FOCUSABLE_REQUIRED"):
+            fixture.locate_title(Bridge(),None,37)
+
     def test_one_registered_event_after_focus_and_same_owner(self):
         current=SimpleNamespace(focused=False,text="")
         def focus(node):

@@ -79,9 +79,17 @@ def locate_title(bridge, glib, pid: int):
     app, field = selected
     if bridge.pid(app) != pid or bridge.owner_pid(field.node) != pid:
         raise ProbeError("AT_SPI_FIXTURE_OWNER_CHANGED")
-    if not {"Component", "Text"} <= field.interfaces:
+    # The reusable production bridge only populates View.interfaces for
+    # product-labelled fields ("Project title" / "Create project"). This
+    # throwaway fixture has its own exact "Plain input" label, so consult the
+    # native interface list *on the already uniquely PID-bound node*.
+    raw_interfaces = bridge.call(field.node.get_interfaces)
+    if raw_interfaces is None or len(raw_interfaces) > 64:
+        raise ProbeError("AT_SPI_FIXTURE_INTERFACES_INVALID")
+    interface_names = frozenset(raw_interfaces)
+    if not {"Component", "Text"} <= interface_names:
         raise ProbeError("AT_SPI_FIXTURE_READABLE_FOCUSABLE_REQUIRED")
-    if "EditableText" in field.interfaces:
+    if "EditableText" in interface_names:
         raise ProbeError("AT_SPI_FIXTURE_UNEXPECTED_NATIVE_EDITABLE_INTERFACE")
     if bridge.read_text(field.node) != "":
         raise ProbeError("AT_SPI_FIXTURE_INITIAL_NOT_EMPTY")
