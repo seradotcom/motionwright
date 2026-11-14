@@ -260,6 +260,43 @@ class CaptureContracts(unittest.TestCase):
         (self.root/"tracked.txt").write_bytes(b"other\nsecond\n")
         with self.assertRaisesRegex(capture.CaptureError, "tracked_bytes_differ"):
             capture.source_snapshot(self.root, head)
+    def test_bounded_parallel_source_scan_keeps_exact_order_and_rejects_changed_bytes(self):
+        head = self.repo()
+        for number in range(8):
+            (self.root / f"slot-{number:02d}.txt").write_bytes(f"slot {number:02d}\n".encode())
+        self.git("add", *(f"slot-{number:02d}.txt" for number in range(8)))
+        self.git("-c", "user.name=Inventory fixture", "-c",
+                 "user.email=fixture@invalid.local", "commit", "-qm", "Bounded source roster")
+        head = self.git("rev-parse", "HEAD").decode().strip()
+        original = capture.stable_read
+        lock = threading.Lock()
+        active, maximum = [0], [0]
+
+        def observe(*args, **kwargs):
+            with lock:
+                active[0] += 1
+                maximum[0] = max(maximum[0], active[0])
+            try:
+                time.sleep(0.035)
+                return original(*args, **kwargs)
+            finally:
+                with lock:
+                    active[0] -= 1
+
+        with mock.patch.object(capture, "SOURCE_SCAN_WORKERS", 3), mock.patch.object(
+                capture, "stable_read", side_effect=observe):
+            source = capture.source_snapshot(self.root, head)
+        self.assertGreaterEqual(maximum[0], 2)
+        self.assertEqual(source["source"], head)
+        self.assertEqual([row["path"] for row in source["files"]],
+                         sorted(row["path"] for row in source["files"]))
+        self.assertEqual(len(source["files"]), 9)
+        self.assertTrue(all(row["checkout_transform"] == "EXACT" for row in source["files"]))
+        (self.root / "slot-02.txt").write_bytes(b"slot 99\n")
+        with mock.patch.object(capture, "SOURCE_SCAN_WORKERS", 3), self.assertRaisesRegex(
+                capture.CaptureError, "tracked_bytes_differ"):
+            capture.source_snapshot(self.root, head)
+
     def test_staged_source_change_and_wrong_head_are_rejected(self):
         head = self.repo()
         with self.assertRaisesRegex(capture.CaptureError, "source_sha_or_root"):

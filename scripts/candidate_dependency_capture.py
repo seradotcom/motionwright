@@ -5,10 +5,16 @@ This does not authorize redistribution or establish final package/native closure
 """
 from __future__ import annotations
 import argparse, hashlib, json, os, re, shutil, stat, subprocess, sys, threading, time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 MAX_STREAM = 128 * 1024 * 1024
 MAX_SOURCE = 512 * 1024 * 1024
+# Windows AV/NTFS per-path reads can dominate repeated installed-artifact
+# source scans. Four bounded I/O readers preserve *each* original byte/TOCTOU
+# check and deterministic Git order; no trust in mtimes or Git status alone.
+SOURCE_SCAN_WORKERS = 4 if os.name == "nt" else 1
+SOURCE_SCAN_BATCH = 12
 # One bounded Cargo index envelope for capture, packaging and installed readers.
 MAX_CARGO_INDEX_BYTES = 32 * 1024 * 1024
 REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -180,15 +186,16 @@ def source_snapshot(repo, expected):
         indexed[name.decode("utf-8")] = (mode, oid)
     if indexed != tracked:
         raise CaptureError("index_differs_from_source")
-    files, total = [], 0
-    for name, (_, oid) in sorted(tracked.items()):
+    # Preflight has already matched HEAD, tree and index. Never replace a
+    # post-install byte scan with stat-only, Git diff or a cached receipt:
+    # same-size mutations, reparse points and changed tracked bytes must fail.
+    sources = _load_sibling("cargo_license_sources")
+
+    def verified_file(item):
+        name, (_, oid) = item
         raw = stable_read(repo, name)
-        total += len(raw)
-        if total > MAX_SOURCE:
-            raise CaptureError("source_budget_exceeded")
         transformation = "EXACT"
         if blob(raw) != oid:
-            sources = _load_sibling("cargo_license_sources")
             _GitRepo, _Root, _Problem = sources._GitRepo, sources._Root, sources._Problem
             try:
                 git_repo = _GitRepo(_Root.admit(repo, "workspace"), ())
@@ -200,8 +207,31 @@ def source_snapshot(repo, expected):
             if proof["git_line_endings"] != "lf_blob_to_crlf_worktree":
                 raise CaptureError("unexpected_source_transformation")
             transformation = "EXACT_LF_TO_CRLF"
-        files.append({"path": name, "git_blob": oid, "bytes": len(raw),
-                      "sha256": sha(raw), "checkout_transform": transformation})
+        return ({"path": name, "git_blob": oid, "bytes": len(raw),
+                 "sha256": sha(raw), "checkout_transform": transformation}, len(raw))
+
+    files, total = [], 0
+
+    def keep(row):
+        nonlocal total
+        record, size = row
+        total += size
+        if total > MAX_SOURCE:
+            raise CaptureError("source_budget_exceeded")
+        files.append(record)
+
+    ordered = sorted(tracked.items())
+    if SOURCE_SCAN_WORKERS == 1:
+        for item in ordered:
+            keep(verified_file(item))
+    else:
+        # A fixed-size batch prevents an oversized source from queuing the
+        # entire checkout, and no file contents escape the worker. map()
+        # yields the original sorted roster, not completion order.
+        with ThreadPoolExecutor(max_workers=SOURCE_SCAN_WORKERS) as pool:
+            for start in range(0, len(ordered), SOURCE_SCAN_BATCH):
+                for row in pool.map(verified_file, ordered[start:start + SOURCE_SCAN_BATCH]):
+                    keep(row)
     return {"source": expected, "tree": git(repo, "rev-parse", "HEAD^{tree}").decode().strip(), "files": files}
 
 def run_captured(command, cwd, directory, label, env=None, stream_limit=MAX_STREAM, timeout=1800):
