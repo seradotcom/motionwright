@@ -86,8 +86,15 @@ def read_shallow_roles(bridge, app, records: Path):
         child = bridge.call(app.get_child_at_index, index)
         if child is None:
             raise ProbeError("READ_ONLY_SHALLOW_MISSING_CHILD")
+        stage(records, "shallow-child-" + label + "-reference-return")
+        stage(records, "shallow-child-" + label + "-role-start")
         role = bridge.call(child.get_role)
+        stage(records, "shallow-child-" + label + "-role-return",
+              {"role_enum": int(role)})
+        stage(records, "shallow-child-" + label + "-count-start")
         children = bridge.call(child.get_child_count)
+        stage(records, "shallow-child-" + label + "-count-return",
+              {"children": children})
         if type(children) is not int or children < 0:
             raise ProbeError("READ_ONLY_SHALLOW_CHILD_COUNT_INVALID")
         # AT-SPI role is a finite public enum; do not capture accessible names.

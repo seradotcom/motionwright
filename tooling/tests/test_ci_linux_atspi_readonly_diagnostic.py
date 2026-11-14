@@ -106,6 +106,9 @@ class ReadOnlyOriginalContracts(unittest.TestCase):
             self.assertFalse(result["full_dialog_or_controls_verified"])
             self.assertEqual(result["editor_actions"], 0)
             self.assertTrue((Path(directory)/"shallow-grandchildren-return.json").exists())
+            for suffix in ("reference-return", "role-start", "role-return",
+                           "count-start", "count-return"):
+                self.assertTrue((Path(directory)/("shallow-child-one-"+suffix+".json")).exists())
 
     def test_wide_accessibility_subtree_is_not_exhaustively_traversed(self):
         class Node:
