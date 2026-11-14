@@ -103,7 +103,7 @@ class SourceControlCustodyTests(unittest.TestCase):
         self.seed("alab"); ready, report = self.publish()
         self.assertTrue(ready["verified"])
         self.assertEqual(len(self.archive(ready)), 8)
-        self.assertEqual([r["tests_run"] for r in report["reports"]], [45 + gate.CUSTODY_TEST_COUNT, 94])
+        self.assertEqual([r["tests_run"] for r in report["reports"]], [45 + gate.CUSTODY_TEST_COUNT, 144])
         self.assertEqual(report["native_execution"], "NOT_RUN")
 
     def test_failure_report_is_retained_without_promotion(self):
