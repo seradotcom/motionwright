@@ -19,7 +19,7 @@ import sys
 import time
 
 from linux_first_use_accessible import (
-    AtspiBridge, ProbeError, VISIBLE, unique, walk, x11_identity,
+    AtspiBridge, NotReady, ProbeError, VISIBLE, unique, walk, x11_identity,
 )
 from linux_gui_probe import run_probe
 
@@ -87,7 +87,8 @@ def cached_application_roster(bridge, atspi, records: Path):
     return apps
 
 
-def cached_control_scope(bridge, app, binding: dict, records: Path):
+def cached_control_scope(bridge, app, binding: dict, records: Path, *,
+                         stage_prefix="cached"):
     """Read-only current UI scope through the source-bound AT-SPI cache.
 
     The original installed first-use must still independently verify the
@@ -95,32 +96,32 @@ def cached_control_scope(bridge, app, binding: dict, records: Path):
     effect. This diagnostic deliberately does not send a text or action
     mutation and cannot grant any installed G2 evidence.
     """
-    stage(records, "cached-app-walk-start")
+    stage(records, stage_prefix + "-app-walk-start")
     nodes = walk(bridge, app)
-    stage(records, "cached-app-walk-return", {"node_count": len(nodes)})
+    stage(records, stage_prefix + "-app-walk-return", {"node_count": len(nodes)})
     dialogs = [v for v in nodes if v.role == "dialog" and v.name == "Project library"
                and VISIBLE <= v.states and "defunct" not in v.states]
-    stage(records, "cached-dialog-count", {"matching_dialogs": len(dialogs)})
+    stage(records, stage_prefix + "-dialog-count", {"matching_dialogs": len(dialogs)})
     dialog = unique(dialogs, "DIALOG")
     if bridge.owner_pid(dialog.node) != binding["pid"]:
         raise ProbeError("READ_ONLY_DIALOG_OWNER_MISMATCH")
-    stage(records, "cached-dialog-walk-start")
+    stage(records, stage_prefix + "-dialog-walk-start")
     children = walk(bridge, dialog.node)
-    stage(records, "cached-dialog-walk-return", {"node_count": len(children)})
+    stage(records, stage_prefix + "-dialog-walk-return", {"node_count": len(children)})
     fields = [v for v in children if v.role in ("entry", "text")
               and v.name == "Project title" and VISIBLE <= v.states
               and "defunct" not in v.states]
     controls = [v for v in children if v.role == "button"
                 and v.name == "Create project" and VISIBLE <= v.states
                 and "defunct" not in v.states]
-    stage(records, "cached-target-count",
+    stage(records, stage_prefix + "-target-count",
           {"matching_titles": len(fields), "matching_actions": len(controls)})
     entry = unique(fields, "TITLE")
     button = unique(controls, "CREATE")
     if (bridge.owner_pid(entry.node) != binding["pid"]
             or bridge.owner_pid(button.node) != binding["pid"]):
         raise ProbeError("READ_ONLY_TARGET_OWNER_MISMATCH")
-    stage(records, "cached-controls-verified")
+    stage(records, stage_prefix + "-controls-verified")
     return {"status": "CACHED_CONTROLS_VERIFIED_READ_ONLY",
             "app_nodes_checked": len(nodes),
             "dialog_nodes_checked": len(children),
@@ -128,6 +129,33 @@ def cached_control_scope(bridge, app, binding: dict, records: Path):
             "create_count": len(controls),
             "full_dialog_or_controls_verified": True,
             "editor_actions": 0}
+
+
+def observe_delayed_cached_controls(bridge, app, binding: dict,
+                                    records: Path, *, pause=time.sleep, pump=lambda: None):
+    """Bounded post-bootstrap observations: no additional editor attempt.
+
+    A desktop window can become visible before bootstrap(null) returns and
+    React opens the real project-library dialog. Only missing, not ambiguous
+    or authority-invalid, controls may be observed again. Every read uses
+    the single original 35 s window and a distinct create-only stage prefix.
+    """
+    try:
+        return cached_control_scope(bridge, app, binding, records)
+    except NotReady as error:
+        last = error
+    for label in ("one", "two", "three", "four", "five", "six"):
+        pause(1.5)
+        pump()
+        stage(records, "cached-recheck-" + label + "-start")
+        if bridge.pid(app) != binding["pid"]:
+            raise ProbeError("READ_ONLY_APPLICATION_PID_CHANGED")
+        try:
+            return cached_control_scope(
+                bridge, app, binding, records, stage_prefix="retry-" + label)
+        except NotReady as error:
+            last = error
+    raise last
 
 
 def read_shallow_roles(bridge, app, records: Path):
@@ -241,7 +269,7 @@ def trace_controls(scratch: Path, records: Path):
     stage(records, "gi-import-start")
     import gi
     gi.require_version("Atspi", "2.0")
-    from gi.repository import Atspi
+    from gi.repository import Atspi, GLib
     stage(records, "gi-import-return")
     # Unlike the full installed harness, this early read-only probe has not
     # started the AT-SPI registry by exercising application admission. Ask
@@ -273,8 +301,19 @@ def trace_controls(scratch: Path, records: Path):
     # same bounded tree using the provider's cached structural records.
     # Full role/name uniqueness and ownership are checked read-only; no UI
     # effect is authorized by this exploratory source diagnostic.
+    def drain_events():
+        # The AT-SPI cache is fed by asynchronous signals; pump no more than
+        # sixteen pending callbacks between reads. No event authorizes a
+        # mutation and this stays inside the original observed window.
+        context = GLib.MainContext.default()
+        for _ in range(16):
+            if not context.pending():
+                break
+            context.iteration(False)
+
     return {"bound_pid": binding["pid"],
-            **cached_control_scope(bridge, app, binding, records)}
+            **observe_delayed_cached_controls(
+                bridge, app, binding, records, pump=drain_events)}
 
 
 def main():

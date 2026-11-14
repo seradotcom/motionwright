@@ -46,8 +46,9 @@ class ReadOnlyOriginalContracts(unittest.TestCase):
         self.assertFalse(invoked & forbidden)
         funcs = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
         self.assertEqual(funcs, ["stage", "admit_source", "cached_application_roster",
-                                 "cached_control_scope", "read_shallow_roles",
-                                 "enable_session_accessibility", "trace_controls", "main"])
+                                 "cached_control_scope", "observe_delayed_cached_controls",
+                                 "read_shallow_roles", "enable_session_accessibility",
+                                 "trace_controls", "main"])
 
     def test_source_is_pinned_to_original_built_client(self):
         original = "21a1a41510f44b480bc4264272479d48048a8be8"
@@ -179,6 +180,55 @@ class ReadOnlyOriginalContracts(unittest.TestCase):
             with self.assertRaisesRegex(diagnostic.ProbeError, "MISSING_DIALOG"):
                 diagnostic.cached_control_scope(
                     Bridge(), missing, {"pid": 51}, Path(directory))
+
+    def test_caches_async_dialog_after_two_read_only_checks(self):
+        from linux_first_use_accessible import View
+        visible = frozenset(("visible", "showing"))
+        class Node:
+            def __init__(self, role, name, children=()):
+                self.role, self.name, self.children = role, name, list(children)
+        title = Node("entry", "Project title")
+        action = Node("button", "Create project")
+        dialog = Node("dialog", "Project library", (title, action))
+        app = Node("other", "")
+        loops, sleeps, visited = [], [], []
+        class Bridge:
+            def view(self, n): return View(n, n.role, n.name, visible, frozenset())
+            def children(self, n):
+                if n is app:
+                    visited.append("root")
+                    return [] if len(visited) < 3 else [dialog]
+                return n.children
+            def owner_pid(self, n): return 91
+            def pid(self, n): return 91
+        with tempfile.TemporaryDirectory() as tmp:
+            result = diagnostic.observe_delayed_cached_controls(
+                Bridge(), app, {"pid": 91}, Path(tmp),
+                pause=sleeps.append, pump=lambda: loops.append("pump"))
+            self.assertEqual(result["status"], "CACHED_CONTROLS_VERIFIED_READ_ONLY")
+            self.assertEqual(sleeps, [1.5, 1.5])
+            self.assertEqual(loops, ["pump", "pump"])
+            self.assertTrue((Path(tmp)/"retry-two-controls-verified.json").is_file())
+            self.assertFalse((Path(tmp)/"retry-three-app-walk-start.json").exists())
+
+    def test_no_dialog_six_reads_exhausts_without_authority(self):
+        from linux_first_use_accessible import View
+        visible = frozenset(("visible", "showing"))
+        class Node:
+            pass
+        app = Node()
+        pauses=[]
+        class Bridge:
+            def view(self, n): return View(n, "other", "", visible, frozenset())
+            def children(self, n): return []
+            def pid(self, n): return 91
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(diagnostic.NotReady, "MISSING_DIALOG"):
+                diagnostic.observe_delayed_cached_controls(
+                    Bridge(), app, {"pid": 91}, Path(tmp), pause=pauses.append)
+            self.assertEqual(pauses, [1.5]*6)
+            self.assertTrue((Path(tmp)/"retry-six-dialog-count.json").is_file())
+            self.assertFalse((Path(tmp)/"cached-controls-verified.json").exists())
 
     def test_shallow_app_roles_are_bounded_and_names_unread(self):
         class Node:
