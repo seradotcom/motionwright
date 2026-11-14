@@ -410,7 +410,7 @@ class AtspiSession:
         self.journal.perform(step, {**row, "action": name}, lambda: interface.do_action(index))
 
     def generate_editor_render_job(self, step: str, output: Path, playlist: Path) -> dict:
-        """25.08.3 native Generate Script; never Render to File or Start Script."""
+        """Version-pinned native Generate Script; never Render to File or Start Script."""
         require(step in ("editor-before", "editor-after") and output.is_absolute()
                 and playlist.is_absolute() and output.parent == playlist.parent
                 and output.suffix == ".mov" and playlist.suffix == ".mlt"
@@ -424,7 +424,7 @@ class AtspiSession:
                     if normalized(r["name"]) == name and (not roles or r["role"] in roles)
                     and (not visible or r["visible"])]
 
-        # Preset and category come from the original 25.08.3 data/profiles.xml.
+        # Preset and category must match the admitted native data/profiles.xml.
         # The similarly named FFV1 alpha preset has f=mov; do not invent a
         # Matroska profile or rewrite the native job to repair it.
         category = unique(controls("Video with Alpha", ("table cell", "tree item", "table row"), visible=True),
@@ -556,7 +556,7 @@ class AtspiSession:
             rows = [r for r in observed["rows"] if
                     r["key"].startswith(dialog["key"] + "/")]
             require(any(r["visible"] and normalized(r["name"]) ==
-                        "Welcome to Kdenlive 25.08.3" for r in rows),
+                        "Welcome to Kdenlive 26.08.3" for r in rows),
                     "native_gui_startup_version_title_not_exact")
             okay = unique([r for r in rows if r["visible"] and r["enabled"]
                            and r["role"] == "push button" and
