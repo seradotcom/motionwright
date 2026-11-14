@@ -83,7 +83,13 @@ jobs:
           print('original-appimage-sha256=PASS')
           PY_IMAGE
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libfuse2 xvfb x11-utils dbus-x11 python3-gi gir1.2-atspi-2.0 at-spi2-core libglib2.0-bin
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libfuse2 xvfb x11-utils dbus-x11 python3-gi gir1.2-atspi-2.0 at-spi2-core libglib2.0-bin libatk-adaptor
+      - name: Verify GTK3 accessibility bridge is installed before opening AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          dpkg-query -W libatk-adaptor libatk-bridge2.0-0t64 >/dev/null
+          echo 'gtk3-atspi-bridge-package-admitted=PASS'
       - name: Extract original verified AppImage with no build
         shell: bash
         run: |
