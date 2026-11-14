@@ -19,7 +19,8 @@ import sys
 import time
 
 from linux_first_use_accessible import (
-    AtspiBridge, NotReady, ProbeError, VISIBLE, unique, walk, x11_identity,
+    AtspiBridge, NotReady, ProbeError, VISIBLE, unique, walk,
+    select_controls, x11_identity,
 )
 from linux_gui_probe import run_probe
 
@@ -156,6 +157,55 @@ def observe_delayed_cached_controls(bridge, app, binding: dict,
         except NotReady as error:
             last = error
     raise last
+
+
+def inspect_title_interface_snapshot(bridge, binding: dict, records: Path):
+    """Check the *real* matched title's AT-SPI capabilities without editing.
+
+    This has the same PID+role+visible+unique selection as the installed
+    worker. All returned interface strings are filtered through a fixed
+    public AT-SPI vocabulary. Neither UI text nor arbitrary attributes nor
+    D-Bus addresses are retained, and no mutating method is invoked.
+    """
+    stage(records, "title-capability-selection-start")
+    app, _, title, button = select_controls(bridge, binding["pid"])
+    if bridge.pid(app) != binding["pid"]:
+        raise ProbeError("READ_ONLY_TITLE_APPLICATION_CHANGED")
+    stage(records, "title-capability-selection-return")
+    allowed = frozenset(("Accessible", "Component", "Collection", "Text",
+                         "EditableText", "Action", "Value", "Selection"))
+    before = sorted(allowed.intersection(title.interfaces))
+    action_before = sorted(allowed.intersection(button.interfaces))
+    stage(records, "title-interface-refresh-start")
+    raw = bridge.call(title.node.get_interfaces)
+    if raw is None:
+        raise ProbeError("READ_ONLY_TITLE_INTERFACES_MISSING")
+    observed = tuple(raw)
+    if len(observed) > 64 or not all(isinstance(value, str) for value in observed):
+        raise ProbeError("READ_ONLY_TITLE_INTERFACES_INVALID")
+    after = sorted(allowed.intersection(observed))
+    stage(records, "title-interface-refresh-return",
+          {"text": "Text" in after, "editable_text": "EditableText" in after})
+    stage(records, "title-text-proxy-start")
+    text_proxy = bridge.call(title.node.get_text_iface)
+    stage(records, "title-text-proxy-return", {"available": text_proxy is not None})
+    stage(records, "title-editable-proxy-start")
+    editable_proxy = bridge.call(title.node.get_editable_text_iface)
+    stage(records, "title-editable-proxy-return",
+          {"available": editable_proxy is not None})
+    return {
+        "status": "TITLE_INTERFACE_SNAPSHOT_READ_ONLY",
+        "title_role": title.role,
+        "title_editable_state": "editable" in title.states,
+        "title_interface_names_cached": before,
+        "title_interface_names_refreshed": after,
+        "title_interface_count_refreshed": len(observed),
+        "title_text_proxy_available": text_proxy is not None,
+        "title_editable_proxy_available": editable_proxy is not None,
+        "create_action_interface_present": "Action" in action_before,
+        "editor_actions": 0,
+        "original_attempt_replayed": False,
+    }
 
 
 def read_shallow_roles(bridge, app, records: Path):
@@ -311,9 +361,10 @@ def trace_controls(scratch: Path, records: Path):
                 break
             context.iteration(False)
 
-    return {"bound_pid": binding["pid"],
-            **observe_delayed_cached_controls(
-                bridge, app, binding, records, pump=drain_events)}
+    controls = observe_delayed_cached_controls(
+        bridge, app, binding, records, pump=drain_events)
+    return {"bound_pid": binding["pid"], "control_scope": controls,
+            **inspect_title_interface_snapshot(bridge, binding, records)}
 
 
 def main():
@@ -366,7 +417,7 @@ def main():
         out.write("\n")
     print("read-only-ats=" + result["status"]
           + " source=" + args.original_binary_source, flush=True)
-    return 0 if result["status"] == "CACHED_CONTROLS_VERIFIED_READ_ONLY" else 2
+    return 0 if result["status"] == "TITLE_INTERFACE_SNAPSHOT_READ_ONLY" else 2
 
 
 if __name__ == "__main__":

@@ -47,11 +47,11 @@ class ReadOnlyOriginalContracts(unittest.TestCase):
         funcs = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
         self.assertEqual(funcs, ["stage", "admit_source", "cached_application_roster",
                                  "cached_control_scope", "observe_delayed_cached_controls",
-                                 "read_shallow_roles", "enable_session_accessibility",
-                                 "trace_controls", "main"])
+                                 "inspect_title_interface_snapshot", "read_shallow_roles",
+                                 "enable_session_accessibility", "trace_controls", "main"])
 
     def test_source_is_pinned_to_original_built_client(self):
-        original = "21a1a41510f44b480bc4264272479d48048a8be8"
+        original = "d72fb522089434bc6cf705a1d3410dd9759e3f04"
         for name in ("tooling/linux_first_use_accessible.py", "tooling/linux_gui_probe.py"):
             with self.subTest(path=name):
                 old = subprocess.check_output(
@@ -230,6 +230,48 @@ class ReadOnlyOriginalContracts(unittest.TestCase):
             self.assertTrue((Path(tmp)/"retry-six-dialog-count.json").is_file())
             self.assertFalse((Path(tmp)/"cached-controls-verified.json").exists())
 
+    def test_title_interfaces_snapshot_is_read_only_and_source_bound(self):
+        from types import SimpleNamespace
+        from linux_first_use_accessible import View
+        class Title:
+            def get_interfaces(self): return ["Accessible", "Component", "Text"]
+            def get_text_iface(self): return object()
+            def get_editable_text_iface(self): return None
+        title = Title()
+        app = object()
+        field = View(title, "entry", "Project title",
+                     frozenset(("visible", "showing", "enabled", "editable")),
+                     frozenset(("Accessible", "Text")))
+        button = View(object(), "button", "Create project",
+                      frozenset(("visible", "showing", "enabled")),
+                      frozenset(("Action",)))
+        class Bridge:
+            def pid(self, node): return 107
+            def call(self, fn, *args): return fn(*args)
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(diagnostic, "select_controls",
+                          return_value=(app, object(), field, button)) as selection:
+            result = diagnostic.inspect_title_interface_snapshot(
+                Bridge(), {"pid": 107}, Path(directory))
+            selection.assert_called_once()
+            self.assertEqual(result["status"], "TITLE_INTERFACE_SNAPSHOT_READ_ONLY")
+            self.assertEqual(result["title_interface_names_refreshed"],
+                             ["Accessible", "Component", "Text"])
+            self.assertEqual(result["title_interface_names_cached"],
+                             ["Accessible", "Text"])
+            self.assertTrue(result["title_text_proxy_available"])
+            self.assertFalse(result["title_editable_proxy_available"])
+            self.assertTrue(result["create_action_interface_present"])
+            self.assertEqual(result["editor_actions"], 0)
+            self.assertTrue((Path(directory)/"title-editable-proxy-return.json").exists())
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(diagnostic, "select_controls",
+                          return_value=(app, object(), field, button)):
+            with self.assertRaisesRegex(diagnostic.ProbeError,
+                                        "READ_ONLY_TITLE_APPLICATION_CHANGED"):
+                diagnostic.inspect_title_interface_snapshot(
+                    Bridge(), {"pid": 999}, Path(directory))
+
     def test_shallow_app_roles_are_bounded_and_names_unread(self):
         class Node:
             def __init__(self, role, children=()):
@@ -309,10 +351,10 @@ class ReadOnlyOriginalContracts(unittest.TestCase):
 
     def test_isolated_workflow_has_no_build_or_effect_and_one_artifact_pin(self):
         raw = (ROOT / ".github/workflows/linux-atspi-readonly-original.yml").read_text(encoding="utf8")
-        self.assertIn("14103859547", raw)
-        self.assertIn("5796abb450e67b294d8c6b0ff1d4cbbc8ae1944af7fa51cb297f3f71774eebdb", raw)
-        self.assertIn("43e0e59a4822f819c8cb75ef7e8f4ac80ce9d09945b81e24ea6b4ab8bdfef08c", raw)
-        self.assertIn("run-id: 43570033851", raw)
+        self.assertIn("14134725424", raw)
+        self.assertIn("7a8cb5445a4f408eeaf5d2643adae904d2d9f66fb119bfc8a0bf02fa34bba192", raw)
+        self.assertIn("487323a3b7021c6635f61adab2a3cad2811bf294dcbffc4fb8f92af9eae84e92", raw)
+        self.assertIn("run-id: 43645341171", raw)
         self.assertIn("ORIGINAL_ATSPI_CLIENT_BLOB", raw)
         self.assertIn("ORIGINAL_GUI_PROBE_BLOB", raw)
         self.assertNotIn("fetch-depth: 0", raw)

@@ -18,13 +18,13 @@ jobs:
     timeout-minutes: 15
     env:
       PYTHONDONTWRITEBYTECODE: '1'
-      ORIGINAL_RUN_ID: '43570033851'
-      ORIGINAL_SOURCE: '21a1a41510f44b480bc4264272479d48048a8be8'
-      ORIGINAL_ARTIFACT_ID: '14103859547'
-      ORIGINAL_ATSPI_CLIENT_BLOB: 'e9b534554eb918df8d831d41fc10d45a4a6f4a9c'
+      ORIGINAL_RUN_ID: '43645341171'
+      ORIGINAL_SOURCE: 'd72fb522089434bc6cf705a1d3410dd9759e3f04'
+      ORIGINAL_ARTIFACT_ID: '14134725424'
+      ORIGINAL_ATSPI_CLIENT_BLOB: '545d9b0bcbf285971dfcdc4cae6cf1a08b56e46d'
       ORIGINAL_GUI_PROBE_BLOB: 'd9afd40d628132290e044118cd87b0064631250d'
-      ORIGINAL_ARTIFACT_SHA256: '5796abb450e67b294d8c6b0ff1d4cbbc8ae1944af7fa51cb297f3f71774eebdb'
-      ORIGINAL_IMAGE_SHA256: '43e0e59a4822f819c8cb75ef7e8f4ac80ce9d09945b81e24ea6b4ab8bdfef08c'
+      ORIGINAL_ARTIFACT_SHA256: '7a8cb5445a4f408eeaf5d2643adae904d2d9f66fb119bfc8a0bf02fa34bba192'
+      ORIGINAL_IMAGE_SHA256: '487323a3b7021c6635f61adab2a3cad2811bf294dcbffc4fb8f92af9eae84e92'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -51,14 +51,14 @@ jobs:
           meta=json.loads(call('gh','api','repos/seradotcom/motionwright/actions/artifacts/'+os.environ['ORIGINAL_ARTIFACT_ID']))
           assert meta['name']=='linux-first-use-candidate-'+os.environ['ORIGINAL_RUN_ID']+'-1-'+source
           assert meta['digest']=='sha256:'+os.environ['ORIGINAL_ARTIFACT_SHA256']
-          assert meta['size_in_bytes']==111459354 and not meta['expired']
+          assert meta['size_in_bytes']==111450806 and not meta['expired']
           assert meta['workflow_run']['id']==int(os.environ['ORIGINAL_RUN_ID'])
           print('read-only-original-artifact-binding=PASS')
           PY_BINDING
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: linux-first-use-candidate-43570033851-1-21a1a41510f44b480bc4264272479d48048a8be8
-          run-id: 43570033851
+          name: linux-first-use-candidate-43645341171-1-d72fb522089434bc6cf705a1d3410dd9759e3f04
+          run-id: 43645341171
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/mw-ats-prebuilt-original
       - name: Verify original AppImage bytes and provision GI read-only prerequisites
@@ -77,7 +77,7 @@ jobs:
           with item.open('rb') as stream:
               for part in iter(lambda: stream.read(1<<20), b''):
                   h.update(part)
-          assert item.stat().st_size==94456312
+          assert item.stat().st_size==94460408
           assert h.hexdigest()==os.environ['ORIGINAL_IMAGE_SHA256']
           item.chmod(0o755)
           print('original-appimage-sha256=PASS')
