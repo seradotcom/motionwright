@@ -993,6 +993,87 @@ class ModalReadbackTests(unittest.TestCase):
                     self.assertFalse(observed_events[0]["native_operation_retried"])
                     self.assertFalse(observed_events[0]["formal_acceptance"])
                     self.assertFalse(session.journal.blocked)
+
+        # Import may populate >512 descendants in one timeline node after
+        # Submit. Original dialog closure must check every *direct* owned
+        # application window, not increase that 512-node traversal budget.
+        class RootNode:
+            def __init__(self, role, name="", *, pid=41, visible=False,
+                         modal=False, children=()):
+                self.role, self.name, self.pid = role, name, pid
+                self.visible, self.modal, self.children = visible, modal, list(children)
+                self.child_count_calls = 0
+
+            def get_process_id(self): return self.pid
+            def get_role_name(self): return self.role
+            def get_name(self): return self.name
+            def clear_cache_single(self): return None
+            def get_child_count(self):
+                self.child_count_calls += 1
+                return len(self.children)
+            def get_child_at_index(self, index): return self.children[index]
+            def get_state_set(self):
+                return SimpleNamespace(contains=lambda state:
+                    self.visible if state == "SHOWING"
+                    else self.modal if state == "MODAL" else False)
+
+        timeline = RootNode("frame", "Untitled / HD 1080p 25 fps - Kdenlive",
+                            visible=True,
+                            children=[RootNode("filler")] * (actions.MAX_CHILDREN + 1))
+        dialog = RootNode("dialog", "OpenTimelineIO Import — Kdenlive",
+                          visible=True)
+        app = RootNode("application", children=[
+            RootNode("filler"), timeline, RootNode("frame"),
+            RootNode("filler"), dialog,
+        ])
+        desktop = RootNode("desktop", children=[
+            RootNode("application", pid=99), app,
+        ])
+        observed = actions.AtspiSession.__new__(actions.AtspiSession)
+        observed.pid = 41
+        observed.journal = actions.ActionJournal(lambda _event: None, lambda: None)
+        observed.api = SimpleNamespace(
+            get_desktop=lambda index: desktop if index == 0 else None,
+            StateType=SimpleNamespace(SHOWING="SHOWING", MODAL="MODAL"))
+        original = row("app/4", "OpenTimelineIO Import — Kdenlive", "dialog")
+        before = observed._owned_top_level_windows()
+        self.assertEqual(len(before), 5)
+        self.assertEqual(before[4]["visible"], True)
+        self.assertIsNone(actions.closed_original_file_dialog(
+            original, ("OpenTimelineIO Import",), before, 41))
+        self.assertEqual(timeline.child_count_calls, 0)
+        dialog.visible = False
+        closed = observed._observed_file_dialog_closed(
+            original, ("OpenTimelineIO Import",))
+        self.assertTrue(closed["original_dialog_not_showing"])
+        self.assertEqual(closed["consistent_direct_root_observations"], 2)
+        self.assertEqual(closed["top_level_count"], 5)
+        self.assertFalse(closed["whole_accessibility_tree_scanned"])
+        self.assertFalse(closed["native_import_verified"])
+        self.assertFalse(closed["native_save_verified"])
+        self.assertFalse(closed["automatic_retry"])
+        self.assertFalse(closed["formal_acceptance"])
+        self.assertEqual(timeline.child_count_calls, 0)
+        self.assertEqual(app.child_count_calls, 3)
+
+        dialog.visible = True
+        dialog.name = "Unexpected Warning — Kdenlive"
+        with self.assertRaisesRegex(actions.GuiRejected,
+                                    "native_gui_root_close_unexpected_dialog"):
+            actions.closed_original_file_dialog(
+                original, ("OpenTimelineIO Import",),
+                observed._owned_top_level_windows(), 41)
+        dialog.pid = 99
+        with self.assertRaisesRegex(actions.GuiRejected,
+                                    "native_gui_root_child_foreign_pid"):
+            observed._owned_top_level_windows()
+        dialog.pid = 41
+        app.children.extend([RootNode("filler")] * 28)
+        with self.assertRaisesRegex(actions.GuiRejected,
+                                    "native_gui_root_window_budget"):
+            observed._owned_top_level_windows()
+        self.assertEqual(timeline.child_count_calls, 0)
+
         for path in (("File", "Render..."), ("File", "Quit"),
                      ("Other", "Save As..."), ("File", "OpenTimelineIO Import")):
             with self.subTest(path=path):

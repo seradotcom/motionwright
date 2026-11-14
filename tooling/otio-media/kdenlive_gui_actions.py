@@ -346,6 +346,65 @@ def check_duration_fields(position: str, crop: str, duration: str) -> None:
             == (60, 60, 30), "native_gui_selected_clip_is_not_original_third_clip")
 
 
+def closed_original_file_dialog(original: dict, titles: tuple[str, ...],
+                                windows: list[dict], pid: int) -> dict | None:
+    """Prove one original top-level file dialog absent without scanning timeline.
+
+    Qt retains a root window roster even when a loaded project's child tree
+    exceeds its fixed per-node budget. The original menu/dialog observation
+    already established the root-dialog key; this check cannot prove Import,
+    save, editorial correctness, or open another effect.
+    """
+    allowed = (("OpenTimelineIO Import",), ("Save As", "Save Project"),
+               ("OpenTimelineIO Export",))
+    require(titles in allowed and type(pid) is int and 0 < pid <= 0xffffffff,
+            "native_gui_root_close_profile")
+    require(type(original) is dict and original.get("pid") == pid
+            and original.get("role") == "dialog"
+            and type(original.get("key")) is str
+            and re.fullmatch(r"app/(?:0|[1-9][0-9]{0,2})", original["key"])
+            and type(original.get("name")) is str
+            and window_title_matches(original["name"], titles),
+            "native_gui_root_close_original_dialog")
+    require(type(windows) is list and 0 < len(windows) <= 32,
+            "native_gui_root_close_window_budget")
+    keys = set()
+    for index, window in enumerate(windows):
+        require(type(window) is dict
+                and set(window) == {"key", "name", "role", "pid",
+                                    "visible", "modal"}
+                and window["key"] == f"app/{index}"
+                and window["key"] not in keys
+                and window["pid"] == pid and type(window["pid"]) is int
+                and all(type(window[k]) is str for k in ("key", "name", "role"))
+                and all(type(window[k]) is bool for k in ("visible", "modal")),
+                "native_gui_root_close_window_identity")
+        keys.add(window["key"])
+    mains = [r for r in windows if r["visible"] and r["role"] == "frame"
+             and r["name"].endswith((" - Kdenlive", " — Kdenlive"))]
+    # A window transition remains a wait, never proof of closed UI.
+    if not mains:
+        return None
+    require(len(mains) == 1, "native_gui_root_close_main_not_unique")
+    open_dialogs = [r for r in windows if r["visible"]
+                    and (r["role"] in ("dialog", "alert") or r["modal"])]
+    for dialog in open_dialogs:
+        require(dialog["role"] == "dialog"
+                and window_title_matches(dialog["name"], titles),
+                "native_gui_root_close_unexpected_dialog")
+    if open_dialogs:
+        return None
+    return {"schema": "motionwright.native.kdenlive-root-dialog-close/1",
+            "original_dialog_key": original["key"],
+            "original_dialog_name": original["name"],
+            "expected_pid": pid, "main_window": mains[0],
+            "top_level_windows": windows, "top_level_count": len(windows),
+            "original_dialog_not_showing": True,
+            "whole_accessibility_tree_scanned": False,
+            "native_import_verified": False, "native_save_verified": False,
+            "automatic_retry": False, "formal_acceptance": False}
+
+
 class ActionJournal:
     def __init__(self, emit: Callable[[dict], None],
                  guard: Callable[[], None]):
@@ -610,6 +669,72 @@ class AtspiSession:
         self.last_snapshot.update(complete=True, reason="complete")
         self.nodes = nodes
         return rows
+
+    def _owned_top_level_windows(self) -> list[dict]:
+        """Read only direct owned application windows, not timeline descendants.
+
+        The native AppImage may expose more than 512 children under a loaded
+        timeline object. This direct-root check retains smaller limits than the
+        normal complete tree and cannot return an input/action target.
+        """
+        self.journal.guard()
+        desktop = self.api.get_desktop(0)
+        require(desktop is not None, "native_gui_root_desktop_absent")
+        count = desktop.get_child_count()
+        require(type(count) is int and 0 <= count <= MAX_CHILDREN,
+                "native_gui_root_desktop_budget")
+        apps = []
+        for index in range(count):
+            node = desktop.get_child_at_index(index)
+            if node is not None:
+                pid = node.get_process_id()
+                require(type(pid) is int and 0 <= pid <= 0xffffffff,
+                        "native_gui_root_desktop_pid")
+                if pid == self.pid:
+                    apps.append(node)
+        require(len(apps) == 1, "native_gui_root_application_not_unique")
+        app = apps[0]
+        app.clear_cache_single()
+        require(app.get_process_id() == self.pid
+                and app.get_role_name() == "application",
+                "native_gui_root_application_identity")
+        total = app.get_child_count()
+        # Never raise the 512 per-node limit, 4096 total tree limit, or the
+        # existing 30-second read-only wait. Just avoid descendant traversal.
+        require(type(total) is int and 0 < total <= 32,
+                "native_gui_root_window_budget")
+        windows = []
+        for index in range(total):
+            node = app.get_child_at_index(index)
+            require(node is not None, "native_gui_root_child_missing")
+            node.clear_cache_single()
+            require(node.get_process_id() == self.pid,
+                    "native_gui_root_child_foreign_pid")
+            name = node.get_name()
+            role = node.get_role_name()
+            require(type(name) is str and len(name.encode("utf-8")) <= 512
+                    and type(role) is str and 0 < len(role) <= 64,
+                    "native_gui_root_window_metadata")
+            state = node.get_state_set()
+            windows.append({
+                "key": f"app/{index}", "name": name, "role": role,
+                "pid": self.pid,
+                "visible": bool(state.contains(self.api.StateType.SHOWING)),
+                "modal": bool(state.contains(self.api.StateType.MODAL)),
+            })
+        self.journal.guard()
+        return windows
+
+    def _observed_file_dialog_closed(self, original: dict,
+                                     titles: tuple[str, ...]) -> dict | None:
+        first = self._owned_top_level_windows()
+        proof = closed_original_file_dialog(original, titles, first, self.pid)
+        if proof is None:
+            return None
+        second = self._owned_top_level_windows()
+        if first != second:
+            return None
+        return {**proof, "consistent_direct_root_observations": 2}
 
     def find(self, names: tuple[str, ...], roles: tuple[str, ...],
              *, scope: str | None = None) -> dict | None:
@@ -1012,9 +1137,22 @@ class AtspiSession:
         row = self.journal.wait(step + ".button", lambda: self.find(
             (button,), ("push button",), scope=dialog["key"]))
         self.action(step + ".submit", row)
-        self.journal.wait(step + ".closed", lambda: not any(
-            r["visible"] and r["role"] in ("dialog", "frame")
-            and window_title_matches(r["name"], titles) for r in self.tree()))
+        # A loaded Kdenlive timeline may exceed the full-tree child budget.
+        # Verify closure from *every* direct owned top-level window instead;
+        # the original dialog, PID and two complete snapshots remain bound.
+        # This is no proof of the requested file's semantic import or save.
+        closed = self.journal.wait(
+            step + ".closed",
+            lambda: self._observed_file_dialog_closed(dialog, titles))
+        self.journal.blocked = True
+        self.journal.emit({
+            "step": step + ".closed-root-readback",
+            "state": "ORIGINAL_DIALOG_CLOSED_OBSERVED",
+            "observed": closed, "native_operation_retried": False,
+            "native_import_verified": False, "native_save_verified": False,
+            "formal_acceptance": False,
+        })
+        self.journal.blocked = False
 
     def save_as(self, step: str, path: Path) -> None:
         require(not path.exists() and not path.is_symlink(), "native_gui_save_target_exists")
