@@ -27,6 +27,18 @@ class GuiUncertain(RuntimeError):
     pass
 
 
+def vanished_owned_accessible(error: Exception) -> bool:
+    """Only an actual vanished Qt AT-SPI object permits another read-only snapshot.
+
+    A bus timeout, missing permission, application failure or synthetic
+    missing object must not turn into a successful or actionable snapshot.
+    """
+    return (type(error).__name__ == "GError"
+            and re.fullmatch(
+                r"atspi_error: No such object path '/org/a11y/atspi/accessible/[0-9]+' \(1\)",
+                str(error)) is not None)
+
+
 def require(ok: object, code: str) -> None:
     if not ok:
         raise GuiRejected(code)
@@ -263,42 +275,55 @@ class AtspiSession:
                 discovery["incomplete_reason"] = "null_descendant"
                 self.last_snapshot.update(reason="null_descendant", null_key=key)
                 return []
-            require(node.get_process_id() == self.pid,
-                    "native_gui_cross_process_accessible_refused")
-            # This synchronous observer has no GLib event loop to keep the
-            # AT-SPI property cache current across native window transitions.
-            # Clear only this owned node, inside our depth/count budgets.
-            node.clear_cache_single()
-            state = node.get_state_set()
-            role = node.get_role_name()
-            visible = state.contains(self.api.StateType.SHOWING)
-            enabled = state.contains(self.api.StateType.ENABLED) and state.contains(
-                self.api.StateType.SENSITIVE)
-            editable = node.get_editable_text_iface() is not None
-            text = ""
-            interface = node.get_text_iface()
-            if interface is not None:
-                size = interface.get_character_count()
-                require(0 <= size <= 65536, "native_gui_text_budget")
-                # GI may return the same Accessible object for this interface;
-                # its get_text() accessor shadows the ranged Text method.
-                text = self.api.Text.get_text(interface, 0, min(size, 1024))
-            rect = [0, 0, 0, 0]
-            component = node.get_component_iface()
-            if component is not None and visible:
-                bounds = component.get_extents(self.api.CoordType.SCREEN)
-                rect = [int(bounds.x), int(bounds.y), int(bounds.width), int(bounds.height)]
-            row = {"key": key, "name": node.get_name()[:512], "role": role,
-                   "text": text, "visible": visible, "enabled": enabled,
-                   "editable": editable, "rect": rect,
-                   "focused": state.contains(self.api.StateType.FOCUSED),
-                   "pid": self.pid}
-            rows.append(row)
-            nodes[key] = node
-            count = node.get_child_count()
-            require(0 <= count <= MAX_CHILDREN, "native_gui_child_budget")
-            queue.extend((key + "/" + str(i), node.get_child_at_index(i), depth + 1)
-                         for i in range(count))
+            try:
+                require(node.get_process_id() == self.pid,
+                        "native_gui_cross_process_accessible_refused")
+                # This synchronous observer has no GLib event loop to keep the
+                # AT-SPI property cache current across native window transitions.
+                # Clear only this owned node, inside our depth/count budgets.
+                node.clear_cache_single()
+                state = node.get_state_set()
+                role = node.get_role_name()
+                visible = state.contains(self.api.StateType.SHOWING)
+                enabled = state.contains(self.api.StateType.ENABLED) and state.contains(
+                    self.api.StateType.SENSITIVE)
+                editable = node.get_editable_text_iface() is not None
+                text = ""
+                interface = node.get_text_iface()
+                if interface is not None:
+                    size = interface.get_character_count()
+                    require(0 <= size <= 65536, "native_gui_text_budget")
+                    # GI may return the same Accessible object for this interface;
+                    # its get_text() accessor shadows the ranged Text method.
+                    text = self.api.Text.get_text(interface, 0, min(size, 1024))
+                rect = [0, 0, 0, 0]
+                component = node.get_component_iface()
+                if component is not None and visible:
+                    bounds = component.get_extents(self.api.CoordType.SCREEN)
+                    rect = [int(bounds.x), int(bounds.y), int(bounds.width), int(bounds.height)]
+                row = {"key": key, "name": node.get_name()[:512], "role": role,
+                       "text": text, "visible": visible, "enabled": enabled,
+                       "editable": editable, "rect": rect,
+                       "focused": state.contains(self.api.StateType.FOCUSED),
+                       "pid": self.pid}
+                rows.append(row)
+                nodes[key] = node
+                count = node.get_child_count()
+                require(0 <= count <= MAX_CHILDREN, "native_gui_child_budget")
+                queue.extend((key + "/" + str(i), node.get_child_at_index(i), depth + 1)
+                             for i in range(count))
+            except Exception as original:
+                if not vanished_owned_accessible(original):
+                    raise
+                # A Qt-owned object disappeared during this bounded read.
+                # The next attempt is read-only and uses the existing clock.
+                # Never authorize a control from any partially collected tree.
+                self.nodes = {}
+                discovery["incomplete_reason"] = "vanished_descendant"
+                self.last_snapshot.update(
+                    reason="vanished_descendant", vanished_key=key,
+                    error_type=type(original).__name__)
+                return []
         self.journal.guard()
         self.last_snapshot.update(complete=True, reason="complete")
         self.nodes = nodes

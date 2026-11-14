@@ -238,6 +238,49 @@ class AccessibilityDiscoveryDiagnosticsTests(unittest.TestCase):
         self.assertEqual(set(instance.nodes), {"app"})
         self.assertFalse(journal.blocked)
 
+        # An observed Qt object can vanish between its PID and role read.
+        # Discard only that incomplete read, without treating it as Ready.
+        class GError(Exception):
+            pass
+        disappeared = fake_owned()
+        disappeared.get_role_name.side_effect = GError(
+            "atspi_error: No such object path '/org/a11y/atspi/accessible/2147483701' (1)")
+        api = fake_api(desktops=[fake_desktop([disappeared]),
+                                 fake_desktop([fake_owned()])])
+        journal = actions.ActionJournal(lambda _: None, Mock())
+        instance = make_session(api, journal)
+        instance.nodes = {"old": fake_owned()}
+        self.assertEqual(instance.tree(), [])
+        self.assertEqual(instance.nodes, {})
+        self.assertEqual(instance.last_snapshot["reason"], "vanished_descendant")
+        self.assertEqual(instance.last_snapshot["vanished_key"], "app")
+        self.assertFalse(instance.last_snapshot["complete"])
+        self.assertFalse(journal.blocked)
+        rows = instance.wait_ready("import")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(set(instance.nodes), {"app"})
+        self.assertTrue(instance.last_snapshot["complete"])
+        self.assertFalse(journal.blocked)
+        disappeared.get_role_name.assert_called_once_with()
+
+        # A different AT-SPI failure or an ordinary Exception must not be
+        # recast as a transient Qt object, and can never permit an effect.
+        for error in (GError("atspi_error: Operation timed out"),
+                      RuntimeError("atspi_error: No such object path "
+                                   "'/org/a11y/atspi/accessible/2147483701' (1)")):
+            bad = fake_owned()
+            bad.get_role_name.side_effect = error
+            api = fake_api(desktops=[fake_desktop([bad])])
+            journal = actions.ActionJournal(lambda _: None, Mock())
+            instance = make_session(api, journal)
+            with self.assertRaises(type(error)):
+                instance.wait_ready("import")
+            self.assertTrue(journal.blocked)
+            effect = Mock()
+            with self.assertRaises(actions.GuiRejected):
+                journal.perform("forbidden-effect", {}, effect)
+            effect.assert_not_called()
+
         # An incomplete read does not extend the original wait or authorize
         # another effect. A foreign non-null child still fails the PID guard.
         for child, elapsed, error in (

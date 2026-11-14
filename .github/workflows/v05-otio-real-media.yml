@@ -783,7 +783,10 @@ jobs:
             # service for its real preview monitor. No dummy SDL audio or
             # synthetic Kdenlive success is permitted.
             if test "$MOTIONWRIGHT_KDENLIVE_GUI_SCOPE" = kdenlive-gui; then
-              runtime="$RUNNER_TEMP/kdenlive-distribution-original/audio-runtime"
+              # Runtime sockets are not regular evidence files; keep them
+              # outside the exact original distribution/capsule roots.
+              runtime="$RUNNER_TEMP/kdenlive-audio-runtime-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+              test ! -e "$runtime"
               mkdir -m 700 "$runtime"
               export XDG_RUNTIME_DIR="$runtime"
               export PIPEWIRE_RUNTIME_DIR="$runtime"
