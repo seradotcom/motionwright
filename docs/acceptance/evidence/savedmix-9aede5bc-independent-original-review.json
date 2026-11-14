@@ -1,0 +1,86 @@
+{
+  "schema": "motionwright.a4.saved-mix-independent-physical-review/1",
+  "context": {
+    "source": "9aede5bced5b3624384c28f6c6020f010a4206db",
+    "sdk": "d2d76aabfb2432990a82ddbb630fc5b4a8c5fe9f",
+    "run_id": 43572129060,
+    "artifact_id": 14105141560
+  },
+  "artifact_zip_sha256": "27cbbc96a30371e116090144318899323f710f5b6833ca1b2b8cddfa06155396",
+  "all_public_member_hashes_verified": true,
+  "members": 12,
+  "master_sha256": "765f348430f16ee67c9db4a639468caee0ecfcf7ba813bfb6668f96b9ef76e89",
+  "video_frames": 60,
+  "video": "1920x1080 H264 30 fps",
+  "audio": "AAC stereo 48000 Hz",
+  "pcm_channel_samples_compared": 192000,
+  "maximum_equation_error_lsb": 0,
+  "decoded_pcm_frames": 96256,
+  "independent_spectral_ratios": {
+    "voice_0": 0.998494,
+    "voice_1": 1.002926,
+    "music_0": 1.010461,
+    "music_1": 1.00455,
+    "sfx_0": 1.002936,
+    "sfx_1": 0.99837
+  },
+  "music_duck_release": [
+    {
+      "during": 0.197788,
+      "released": 0.999975
+    },
+    {
+      "during": 0.19887,
+      "released": 0.997441
+    }
+  ],
+  "changed_rgb_channel_bytes": 2366,
+  "decoder": {
+    "version": "16.1.0",
+    "wheel_sha256": "565093ebc93b2f4b76782589564869dadfa83af5b852edebedd8fee746457d06",
+    "all_installed_wheel_members_verified": true,
+    "library_versions": {
+      "libavutil": [
+        60,
+        8,
+        100
+      ],
+      "libavcodec": [
+        62,
+        11,
+        100
+      ],
+      "libavformat": [
+        62,
+        3,
+        100
+      ],
+      "libavdevice": [
+        62,
+        1,
+        100
+      ],
+      "libavfilter": [
+        11,
+        4,
+        100
+      ],
+      "libswscale": [
+        9,
+        1,
+        100
+      ],
+      "libswresample": [
+        6,
+        1,
+        100
+      ]
+    }
+  },
+  "reader_claim_source": "source-bound Native run; StudioServiceReader in a separate process; private SQLite not present in this public artifact",
+  "native_effects_repeated": false,
+  "formal_G2": false,
+  "formal_G3": false,
+  "human_acceptance": false,
+  "Tauri_UI": "NOT_EXERCISED"
+}
