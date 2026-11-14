@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -22,6 +24,28 @@ PROFILES = {
     "delayed_render": ("Generate Script", "Delayed Rendering"),
     "discard_preferences": ("Quit", "Warning"),
 }
+
+
+SNAPSHOT_SCHEMA = "motionwright.native.atspi-modal-snapshot/1"
+SNAPSHOT_COLUMNS = [
+    "key", "name", "role", "text", "visible", "enabled", "editable", "rect",
+    "focused", "modal", "pid",
+]
+
+
+def canonical_bytes(value):
+    return json.dumps(value, sort_keys=True, ensure_ascii=True,
+                      allow_nan=False).encode()
+
+
+def independent_snapshot(rows, expected_pid=41):
+    """Reference envelope for size checks, never an observed Native snapshot."""
+    return {
+        "schema": SNAPSHOT_SCHEMA, "columns": list(SNAPSHOT_COLUMNS),
+        "rows": [[item[column] for column in SNAPSHOT_COLUMNS] for item in rows],
+        "row_count": len(rows), "expected_pid": expected_pid,
+        "source_rows_sha256": hashlib.sha256(canonical_bytes(rows)).hexdigest(),
+    }
 
 
 class SyntheticGlibError(Exception):
@@ -153,6 +177,29 @@ class Scenario:
 
 
 class ModalReadbackTests(unittest.TestCase):
+    def decode_snapshot(self, value):
+        """Independent decoder: no product decoding/encoding helper is reused."""
+        self.assertEqual(set(value), {
+            "schema", "columns", "rows", "row_count", "expected_pid",
+            "source_rows_sha256",
+        })
+        self.assertEqual(value["schema"], SNAPSHOT_SCHEMA)
+        self.assertEqual(value["columns"], SNAPSHOT_COLUMNS)
+        self.assertIs(type(value["row_count"]), int)
+        self.assertIs(type(value["expected_pid"]), int)
+        self.assertEqual(value["row_count"], len(value["rows"]))
+        self.assertLessEqual(len(canonical_bytes(value)), 128 * 1024)
+        decoded = []
+        for values in value["rows"]:
+            self.assertIs(type(values), list)
+            self.assertEqual(len(values), len(SNAPSHOT_COLUMNS))
+            item = dict(zip(SNAPSHOT_COLUMNS, values, strict=True))
+            self.assertEqual(item["pid"], value["expected_pid"])
+            decoded.append(item)
+        self.assertEqual(value["source_rows_sha256"],
+                         hashlib.sha256(canonical_bytes(decoded)).hexdigest())
+        return decoded
+
     def assert_blocked(self, scenario):
         self.assertTrue(scenario.journal.blocked)
         next_effect = Mock()
@@ -183,14 +230,116 @@ class ModalReadbackTests(unittest.TestCase):
                 after = [e for e in scenario.events if e["state"] == "MODAL_OPEN_RECONCILED"]
                 self.assertEqual(len(before), 1)
                 self.assertEqual(len(after), 1)
-                self.assertEqual(before[0]["rows"], scenario.before)
-                self.assertEqual(after[0]["rows"], scenario.after)
+                self.assertNotIn("rows", before[0])
+                self.assertNotIn("rows", after[0])
+                self.assertEqual(self.decode_snapshot(before[0]["snapshot"]), scenario.before)
+                self.assertEqual(self.decode_snapshot(after[0]["snapshot"]), scenario.after)
+                self.assertLessEqual(len(canonical_bytes(before[0])), 512 * 1024)
+                self.assertLessEqual(len(canonical_bytes(after[0])), 512 * 1024)
                 self.assertEqual(after[0]["request_response"], "NO_REPLY")
                 self.assertEqual(after[0]["verified_effect"], "owned_dialog_open_only")
                 self.assertFalse(after[0]["native_save_or_import_verified"])
                 self.assertFalse(after[0]["native_operation_retried"])
                 self.assertTrue(all(blocked for state, blocked in scenario.emission_states
                                     if state in ("OBSERVED", "MODAL_OPEN_RECONCILED")))
+
+    def test_compact_snapshot_roundtrip_preserves_all_fields_and_source_hash(self):
+        rows = [
+            row("app", "Kdenlive", "application"),
+            row("app/0", "Caf\u00e9 \u65e5\u672c\u8a9e \U0001f680",
+                "frame", enabled=False, visible=False),
+            row("app/0/0", "Duration", "dialog", modal=True),
+        ]
+        rows[0].update(text='a\nb\t"quoted"\\path', focused=True,
+                       editable=True, rect=[-17, 21, 0, 44])
+        rows[1].update(text="\u2028\u00a0\u00f1", rect=[0, -2, 640, 360])
+        original = copy.deepcopy(rows)
+        value = actions.modal_snapshot(rows, 41)
+        self.assertEqual(self.decode_snapshot(value), original)
+        self.assertEqual(rows, original)
+        self.assertEqual(value["row_count"], 3)
+        self.assertEqual(len(value["columns"]), 11)
+        self.assertEqual(actions.MODAL_SNAPSHOT_BYTES, 128 * 1024)
+        self.assertEqual(actions.MAX_NODES, 4096)
+        for original_row, restored in zip(original, self.decode_snapshot(value), strict=True):
+            for field in SNAPSHOT_COLUMNS:
+                self.assertIs(type(restored[field]), type(original_row[field]))
+        changed = copy.deepcopy(rows)
+        changed[1]["visible"] = True
+        changed_value = actions.modal_snapshot(changed, 41)
+        self.assertNotEqual(value["source_rows_sha256"], changed_value["source_rows_sha256"])
+        self.assertEqual(self.decode_snapshot(changed_value), changed)
+
+    def test_large_complete_tree_fits_lossless_compact_form_without_new_budget(self):
+        scenario = Scenario()
+        scenario.before.extend(
+            row("app/main/node" + str(index), "Synthetic panel " + str(index),
+                "panel") for index in range(768)
+        )
+        scenario.after = copy.deepcopy(scenario.before) + [
+            row("app/modal", "OpenTimelineIO Import", "dialog", modal=True),
+        ]
+        scenario.snapshots = [snapshot(scenario.before), snapshot(scenario.after)]
+        self.assertGreater(len(canonical_bytes(scenario.before)), 128 * 1024)
+        self.assertLessEqual(
+            len(canonical_bytes(independent_snapshot(scenario.before))), 128 * 1024)
+        self.assertEqual(scenario.run()["key"], "app/modal")
+        scenario.effect.assert_called_once_with(0)
+        retained = [event for event in scenario.events
+                    if event["step"].endswith((".modal-before", ".modal-readback"))]
+        self.assertEqual(len(retained), 2)
+        self.assertEqual(self.decode_snapshot(retained[0]["snapshot"]), scenario.before)
+        self.assertEqual(self.decode_snapshot(retained[1]["snapshot"]), scenario.after)
+        self.assertTrue(all(len(canonical_bytes(event)) <= 512 * 1024 for event in retained))
+        self.assertFalse(scenario.journal.blocked)
+
+    def test_compact_overflow_still_blocks_before_any_effect(self):
+        scenario = Scenario()
+        for index in range(160):
+            item = row("app/main/text" + str(index), "Text " + str(index), "text")
+            item["text"] = "x" * 1024  # Within the existing per-node observer bound.
+            scenario.before.append(item)
+        self.assertGreater(
+            len(canonical_bytes(independent_snapshot(scenario.before))), 128 * 1024)
+        with self.assertRaisesRegex(actions.GuiRejected, "native_gui_modal_snapshot_budget"):
+            scenario.run()
+        scenario.effect.assert_not_called()
+        self.assert_blocked(scenario)
+
+    def test_snapshot_schema_pid_keys_and_node_count_are_unambiguous(self):
+        base = [row("app", "Kdenlive", "application")]
+        variants = []
+        extra = copy.deepcopy(base); extra[0]["parents"] = []; variants.append(extra)
+        missing = copy.deepcopy(base); del missing[0]["modal"]; variants.append(missing)
+        duplicate = copy.deepcopy(base); duplicate.append(copy.deepcopy(base[0]))
+        variants.append(duplicate)
+        for wrong_pid in (42, 41.0, "41", True):
+            rows = copy.deepcopy(base); rows[0]["pid"] = wrong_pid; variants.append(rows)
+        variants.extend((
+            [],
+            [row("app/" + str(index), "", "panel") for index in range(4097)],
+            tuple(base),
+        ))
+        for index, rows in enumerate(variants):
+            with self.subTest(variant=index), self.assertRaises(actions.GuiRejected):
+                actions.modal_snapshot(rows, 41)
+        for expected_pid in (41.0, "41", True, None):
+            with self.subTest(expected_pid=expected_pid), self.assertRaises(actions.GuiRejected):
+                actions.modal_snapshot(base, expected_pid)
+
+    def test_snapshot_field_types_cannot_change_during_encoding(self):
+        base = row("app", "Kdenlive", "application")
+        variants = []
+        for field in ("key", "name", "role", "text"):
+            item = copy.deepcopy(base); item[field] = b"not a string"; variants.append(item)
+        for field in ("visible", "enabled", "editable", "focused", "modal"):
+            item = copy.deepcopy(base); item[field] = 1; variants.append(item)
+        for rectangle in (None, (0, 0, 1, 2), [0, 0, 1], [0, 0, 1, 2, 3],
+                          [0, 0, True, 2], [0, 0, 1.0, 2], [0, 0, "1", 2]):
+            item = copy.deepcopy(base); item["rect"] = rectangle; variants.append(item)
+        for index, item in enumerate(variants):
+            with self.subTest(variant=index), self.assertRaises(actions.GuiRejected):
+                actions.modal_snapshot([item], 41)
 
     def test_returned_request_still_requires_fresh_readback_and_custody(self):
         scenario = Scenario()

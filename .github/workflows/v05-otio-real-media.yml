@@ -254,7 +254,7 @@ jobs:
           contract_counts = {
               "test_kdenlive_gui_e2e": 162, "test_kdenlive_complete_g2_fixture": 10,
               "test_kdenlive_live_process": 24, "test_kdenlive_accessibility_diagnostics": 16,
-              "test_kdenlive_modal_readback": 20,
+              "test_kdenlive_modal_readback": 25,
               "test_kdenlive_owner_cut": 31, "test_kdenlive_accessibility_preflight": 9,
           }
           contract_groups = {name: [case for case in discovered if case.startswith(name + ".")]
@@ -690,8 +690,8 @@ jobs:
               suites.append(suite)
               roster.extend(names)
               groups[module.__name__] = names
-          if len(roster) != 272 or len(set(roster)) != 272:
-              raise SystemExit("Require all 272 GUI, route, owner, editor-render custody and observer-only cases")
+          if len(roster) != 277 or len(set(roster)) != 277:
+              raise SystemExit("Require all 277 GUI, route, owner, editor-render custody and observer-only cases")
           result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(suites))
           print(json.dumps({"tests_run": result.testsRun, "roster": roster, "modules": groups,
                             "existing_route_and_owner_cases": 196, "private_preview_audio_controls": 19,
@@ -699,7 +699,7 @@ jobs:
                             "accessibility_preflight_cases": 9,
                             "skips": len(result.skipped), "failures": len(result.failures),
                             "errors": len(result.errors), "native_execution": False}, sort_keys=True))
-          if (not result.wasSuccessful() or result.testsRun != 272 or result.skipped
+          if (not result.wasSuccessful() or result.testsRun != 277 or result.skipped
                   or result.expectedFailures or result.unexpectedSuccesses):
               raise SystemExit(1)
           PY
