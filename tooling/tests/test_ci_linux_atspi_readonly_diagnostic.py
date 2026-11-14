@@ -45,7 +45,7 @@ class ReadOnlyOriginalContracts(unittest.TestCase):
                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
         self.assertFalse(invoked & forbidden)
         funcs = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
-        self.assertEqual(funcs, ["stage", "admit_source", "observe_delayed_dialog",
+        self.assertEqual(funcs, ["stage", "admit_source", "read_shallow_roles",
                                  "trace_controls", "main"])
 
     def test_source_is_pinned_to_original_built_client(self):
@@ -60,41 +60,50 @@ class ReadOnlyOriginalContracts(unittest.TestCase):
                     text=True).strip()
                 self.assertEqual(old, new)
 
-    def test_delayed_dialog_observation_is_read_only_and_bounded(self):
-        from types import SimpleNamespace
-        from linux_first_use_accessible import View
-        state = frozenset(("visible", "showing"))
-        dialog = View(object(), "dialog", "Project library", state, frozenset())
-        calls, delays = [], []
+    def test_shallow_app_roles_are_bounded_and_names_unread(self):
+        class Node:
+            def __init__(self, role, children=()):
+                self.role, self.children = role, list(children)
+            def get_child_count(self): return len(self.children)
+            def get_child_at_index(self, index): return self.children[index]
+            def get_role(self): return self.role
+            def get_name(self): raise AssertionError("unapproved accessible text read")
         class Bridge:
-            def pid(self, node):
-                calls.append("pid")
-                return 107
-            def matching_roles(self, node, roles):
-                calls.append(tuple(roles))
-                return [] if calls.count(("dialog",)) <= 2 else [dialog]
+            def call(self, function, *args): return function(*args)
+        app = Node(1, [Node(2, [Node(6), Node(8)]), Node(3, [Node(9)])])
         with tempfile.TemporaryDirectory() as directory:
-            result = diagnostic.observe_delayed_dialog(
-                Bridge(), object(), {"pid": 107}, Path(directory),
-                pause=lambda delay: delays.append(delay))
-            self.assertIs(result, dialog)
-            self.assertEqual(delays, [1.5, 1.5])
-            self.assertEqual([p.name for p in Path(directory).glob("*.json")],
-                             sorted(p.name for p in Path(directory).glob("*.json")))
-            self.assertTrue((Path(directory)/"dialog-recheck-two-return.json").exists())
+            result = diagnostic.read_shallow_roles(Bridge(), app, Path(directory))
+            self.assertEqual(result["status"], "SHALLOW_ROLE_SNAPSHOT_ONLY")
+            self.assertEqual(result["root_child_count"], 2)
+            self.assertEqual(result["first_roles"], [2, 3])
+            self.assertEqual(result["second_role_counts"], {"6": 1, "8": 1, "9": 1})
+            self.assertFalse(result["truncated"])
+            self.assertFalse(result["full_dialog_or_controls_verified"])
+            self.assertEqual(result["editor_actions"], 0)
+            self.assertTrue((Path(directory)/"shallow-grandchildren-return.json").exists())
 
-    def test_missing_dialog_stops_after_six_observations_without_mutation(self):
-        from types import SimpleNamespace
+    def test_wide_accessibility_subtree_is_not_exhaustively_traversed(self):
+        class Node:
+            def get_child_count(self): return 10000
+            def get_child_at_index(self, index):
+                if index > 7: raise AssertionError("unbounded top-level read")
+                return Child()
+        class Child:
+            def get_role(self): return 10
+            def get_child_count(self): return 10000
+            def get_child_at_index(self, index):
+                if index > 15: raise AssertionError("unbounded nested read")
+                return Grandchild()
+        class Grandchild:
+            def get_role(self): return 77
         class Bridge:
-            def pid(self, node): return 107
-            def matching_roles(self, node, roles): return []
-        pauses = []
+            def call(self, fn, *args): return fn(*args)
         with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(diagnostic.ProbeError, "MISSING_DIALOG"):
-                diagnostic.observe_delayed_dialog(Bridge(), object(), {"pid": 107},
-                                                   Path(directory), pause=pauses.append)
-            self.assertEqual(pauses, [1.5]*6)
-            assert len(list(Path(directory).glob("*.json")))==14
+            result = diagnostic.read_shallow_roles(Bridge(), Node(), Path(directory))
+            self.assertEqual(result["first_roles"], [10]*8)
+            self.assertEqual(result["second_role_counts"], {"77": 16})
+            self.assertTrue(result["truncated"])
+            self.assertEqual(result["second_examined"], 16)
 
     def test_shallow_checkout_admission_uses_pinned_blobs_not_historical_commit(self):
         source = "b" * 40

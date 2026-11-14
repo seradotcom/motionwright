@@ -64,36 +64,61 @@ def admit_source(repo: Path, source: str, binary_source: str):
             raise ProbeError("READ_ONLY_PROBE_SOURCE_DIFFERS_FROM_BINARY")
 
 
-def observe_delayed_dialog(bridge, app, binding: dict, records: Path, *,
-                           pause=time.sleep):
-    """Read only, six bounded polls for a dialog shown after Studio bootstrap.
+def read_shallow_roles(bridge, app, records: Path):
+    """Bounded structural AT-SPI reads, never a whole-WebKit tree query.
 
-    Window creation is earlier than the desktop's async local-store admission.
-    This probe never edits the UI, and every subsequent candidate is subject
-    to the original unique title, visible-state, and owner-PID checks.
+    Inspect only the app's first eight children and at most 16 descendants
+    across those children. Return role *types* and counts only, never names,
+    document text, user data, or effect-capable objects.
     """
-    def qualified(views):
-        return [view for view in views
-                if view.name == "Project library" and VISIBLE <= view.states
-                and "defunct" not in view.states]
-
-    stage(records, "dialog-collection-start")
-    views = bridge.matching_roles(app, ("dialog",))
-    stage(records, "dialog-collection-return",
-          {"dialog_role_count": len(views), "matching_title_count": len(qualified(views))})
-    if qualified(views):
-        return unique(qualified(views), "DIALOG")
-    for identity in ("one", "two", "three", "four", "five", "six"):
-        pause(1.5)
-        stage(records, "dialog-recheck-" + identity + "-start")
-        if bridge.pid(app) != binding["pid"]:
-            raise ProbeError("READ_ONLY_PROCESS_CHANGED_BEFORE_DIALOG")
-        views = bridge.matching_roles(app, ("dialog",))
-        stage(records, "dialog-recheck-" + identity + "-return",
-              {"dialog_role_count": len(views), "matching_title_count": len(qualified(views))})
-        if qualified(views):
-            return unique(qualified(views), "DIALOG")
-    return unique(qualified(views), "DIALOG")
+    stage(records, "shallow-root-count-start")
+    count = bridge.call(app.get_child_count)
+    if type(count) is not int or count < 0:
+        raise ProbeError("READ_ONLY_SHALLOW_ROOT_COUNT_INVALID")
+    stage(records, "shallow-root-count-return", {"children": count})
+    selected = []
+    first_roles = []
+    labels = ("one", "two", "three", "four", "five", "six", "seven", "eight")
+    for index in range(min(count, len(labels))):
+        label = labels[index]
+        stage(records, "shallow-child-" + label + "-start")
+        child = bridge.call(app.get_child_at_index, index)
+        if child is None:
+            raise ProbeError("READ_ONLY_SHALLOW_MISSING_CHILD")
+        role = bridge.call(child.get_role)
+        children = bridge.call(child.get_child_count)
+        if type(children) is not int or children < 0:
+            raise ProbeError("READ_ONLY_SHALLOW_CHILD_COUNT_INVALID")
+        # AT-SPI role is a finite public enum; do not capture accessible names.
+        role_number = int(role)
+        first_roles.append(role_number)
+        selected.append((child, children))
+        stage(records, "shallow-child-" + label + "-return",
+              {"role_enum": role_number, "children": children})
+    stage(records, "shallow-grandchildren-start")
+    second_roles = []
+    examined = 0
+    for parent, children in selected:
+        for index in range(min(children, 16 - examined)):
+            node = bridge.call(parent.get_child_at_index, index)
+            if node is None:
+                raise ProbeError("READ_ONLY_SHALLOW_MISSING_GRANDCHILD")
+            second_roles.append(int(bridge.call(node.get_role)))
+            examined += 1
+        if examined == 16:
+            break
+    stage(records, "shallow-grandchildren-return",
+          {"examined": examined, "total_possible": sum(x[1] for x in selected)})
+    return {
+        "status": "SHALLOW_ROLE_SNAPSHOT_ONLY",
+        "root_child_count": count,
+        "first_roles": first_roles,
+        "second_role_counts": {str(role): second_roles.count(role) for role in sorted(set(second_roles))},
+        "second_examined": examined,
+        "truncated": count > len(labels) or sum(x[1] for x in selected) > examined,
+        "full_dialog_or_controls_verified": False,
+        "editor_actions": 0,
+    }
 
 
 def trace_controls(scratch: Path, records: Path):
@@ -136,25 +161,12 @@ def trace_controls(scratch: Path, records: Path):
     stage(records, "application-pid-filter-start")
     app = unique([node for node in apps if bridge.pid(node) == binding["pid"]], "APPLICATION")
     stage(records, "application-pid-filter-return")
-    dialog = observe_delayed_dialog(bridge, app, binding, records)
-    if bridge.owner_pid(dialog.node) != binding["pid"]:
-        raise ProbeError("READ_ONLY_DIALOG_PROCESS_MISMATCH")
-    stage(records, "control-collection-start")
-    children = bridge.matching_roles(dialog.node, ("entry", "text", "button"))
-    stage(records, "control-collection-return", {"role_count": len(children)})
-    entry = unique([r for r in children
-                    if r.role in ("entry", "text") and r.name == "Project title"
-                    and VISIBLE <= r.states and "defunct" not in r.states], "TITLE")
-    button = unique([r for r in children
-                     if r.role == "button" and r.name == "Create project"
-                     and VISIBLE <= r.states and "defunct" not in r.states], "CREATE")
-    if bridge.owner_pid(entry.node) != binding["pid"] or bridge.owner_pid(button.node) != binding["pid"]:
-        raise ProbeError("READ_ONLY_CONTROL_PROCESS_MISMATCH")
-    stage(records, "controls-verified")
-    return {"status": "SELECTION_CONFIRMED_READ_ONLY",
-            "bound_pid": binding["pid"],
-            "dialog_count": 1,
-            "control_role_count": len(children)}
+    # Global Collection.GetMatches on the full WebKit app subtree has been
+    # observed blocking past the original 65 s external watchdog. Never call
+    # it again in this diagnostic. Read only two shallow, explicitly bounded
+    # levels; these types identify the next safe inspection boundary.
+    return {"bound_pid": binding["pid"],
+            **read_shallow_roles(bridge, app, records)}
 
 
 def main():
@@ -201,7 +213,7 @@ def main():
         out.write("\n")
     print("read-only-ats=" + result["status"]
           + " source=" + args.original_binary_source, flush=True)
-    return 0 if result["status"] == "SELECTION_CONFIRMED_READ_ONLY" else 2
+    return 0 if result["status"] == "SHALLOW_ROLE_SNAPSHOT_ONLY" else 2
 
 
 if __name__ == "__main__":
