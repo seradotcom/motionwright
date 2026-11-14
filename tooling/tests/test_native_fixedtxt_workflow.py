@@ -1170,6 +1170,9 @@ class FailedOutputCustodyTests(unittest.TestCase):
             owner = Path(temporary); owner.chmod(0o700)
             output = owner / "output" / joined["directory"]; output.mkdir(parents=True, mode=0o700)
             frames = output / "frames"; frames.mkdir(mode=0o700)
+            for name in (".cache", ".config", ".data"):
+                directory = output / name; directory.mkdir(mode=0o700)
+                (directory / "private-not-selected").write_bytes(b"not part of diagnostic")
             for frame in range(180):
                 (frames / f"{frame:06d}.png").write_bytes(b"synthetic metadata-only leaf")
             receipt = route.canonical({"version": 2, "ok": False,
@@ -1193,7 +1196,11 @@ class FailedOutputCustodyTests(unittest.TestCase):
             self.assertEqual(raw, receipt)
             self.assertEqual(len(inventory["frames"]), 180)
             self.assertEqual(inventory["receipt_status"], "original_observed")
-            self.assertFalse(any(name.endswith(".png") or name == "private-unselected" for name in audit["opens"]))
+            self.assertEqual({row["name"] for row in inventory["entries"]},
+                             {".cache", ".config", ".data", "frames", "native-failure-receipt.json"})
+            self.assertFalse(any(name.endswith(".png") or name in
+                {".cache", ".config", ".data", "private-not-selected", "private-unselected"}
+                for name in audit["opens"]))
             self.assertLess(len(route.canonical(inventory)), route.FAILED_OUTPUT_METADATA_MAX)
             self.assertNotIn("local_stack_only", inventory)
 
@@ -1219,6 +1226,11 @@ class FailedOutputCustodyTests(unittest.TestCase):
             receipt.write_bytes(b"x" * 65537); refused(); receipt.unlink()
             receipt.write_bytes(route.canonical({"version":2,"ok":False,"render_input_digest":"0"*64}))
             refused(); receipt.unlink()
+            invalid_directory = output / ".cache"
+            invalid_directory.write_bytes(b"directory required"); refused(); invalid_directory.unlink()
+            invalid_directory.symlink_to(outside); refused(); invalid_directory.unlink()
+            unknown_dot = output / ".unselected"; unknown_dot.mkdir(mode=0o700)
+            refused(); unknown_dot.rmdir()
             frames=output/"frames"; frames.mkdir(mode=0o700)
             (frames/"000180.png").write_bytes(b"outside frame roster"); refused()
 

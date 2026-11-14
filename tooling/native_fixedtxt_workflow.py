@@ -1691,13 +1691,19 @@ def _observe_failed_output(owner_handles, joined, receipt_maximum):
                 for entry in entries:
                     need(len(rows) < maximum, "failed-output-inventory-count-bound")
                     name = entry.name
-                    need(type(name) is str and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}", name),
+                    # The pinned renderer gives Firefox these three XDG
+                    # directories inside this output. Observe their metadata only.
+                    runtime_directory = not frame_names and name in {".cache", ".config", ".data"}
+                    need(type(name) is str and (runtime_directory or
+                         re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}", name)),
                          "failed-output-inventory-name")
                     if frame_names:
                         need(re.fullmatch(r"[0-9]{6}\.png", name) and int(name[:6]) < 180,
                              "failed-output-frame-name")
                     info = os.stat(name, dir_fd=handle, follow_symlinks=False)
                     ordinary = stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                    need(not runtime_directory or stat.S_ISDIR(info.st_mode),
+                         "failed-output-runtime-directory-type")
                     need(ordinary or not frame_names and stat.S_ISDIR(info.st_mode),
                          "failed-output-inventory-type")
                     rows.append({"name": name, "kind": "file" if ordinary else "directory",
