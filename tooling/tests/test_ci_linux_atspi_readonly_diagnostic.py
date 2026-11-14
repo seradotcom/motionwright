@@ -46,8 +46,8 @@ class ReadOnlyOriginalContracts(unittest.TestCase):
         self.assertFalse(invoked & forbidden)
         funcs = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
         self.assertEqual(funcs, ["stage", "admit_source", "cached_application_roster",
-                                 "read_shallow_roles", "enable_session_accessibility",
-                                 "trace_controls", "main"])
+                                 "cached_control_scope", "read_shallow_roles",
+                                 "enable_session_accessibility", "trace_controls", "main"])
 
     def test_source_is_pinned_to_original_built_client(self):
         original = "21a1a41510f44b480bc4264272479d48048a8be8"
@@ -138,6 +138,47 @@ class ReadOnlyOriginalContracts(unittest.TestCase):
                 diagnostic.cached_application_roster(
                     Bridge(), SimpleNamespace(Cache=SimpleNamespace(ALL=1)),
                     Path(directory))
+
+    def test_cached_control_scope_is_unique_owned_and_read_only(self):
+        from types import SimpleNamespace
+        from linux_first_use_accessible import View
+        visible = frozenset(("visible", "showing", "enabled", "sensitive"))
+        class Node:
+            def __init__(self, role, name, children=(), owner=51):
+                self.role, self.name = role, name
+                self.children, self.owner = list(children), owner
+        field = Node("entry", "Project title")
+        button = Node("button", "Create project")
+        dialog = Node("dialog", "Project library", [field, button])
+        app = Node("other", "", [dialog])
+        class Bridge:
+            def view(self, node):
+                return View(node, node.role, node.name, visible, frozenset())
+            def children(self, node): return node.children
+            def owner_pid(self, node): return node.owner
+        with tempfile.TemporaryDirectory() as directory:
+            result = diagnostic.cached_control_scope(
+                Bridge(), app, {"pid": 51}, Path(directory))
+            self.assertEqual(result["status"], "CACHED_CONTROLS_VERIFIED_READ_ONLY")
+            self.assertEqual((result["dialog_count"], result["title_count"],
+                              result["create_count"]), (1, 1, 1))
+            self.assertEqual(result["editor_actions"], 0)
+            self.assertTrue((Path(directory)/"cached-controls-verified.json").exists())
+        with tempfile.TemporaryDirectory() as directory:
+            two = Node("other", "", [dialog, dialog])
+            with self.assertRaisesRegex(diagnostic.ProbeError, "AMBIGUOUS_DIALOG"):
+                diagnostic.cached_control_scope(
+                    Bridge(), two, {"pid": 51}, Path(directory))
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(diagnostic.ProbeError,
+                                        "READ_ONLY_DIALOG_OWNER_MISMATCH"):
+                diagnostic.cached_control_scope(
+                    Bridge(), app, {"pid": 52}, Path(directory))
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Node("other", "", [])
+            with self.assertRaisesRegex(diagnostic.ProbeError, "MISSING_DIALOG"):
+                diagnostic.cached_control_scope(
+                    Bridge(), missing, {"pid": 51}, Path(directory))
 
     def test_shallow_app_roles_are_bounded_and_names_unread(self):
         class Node:

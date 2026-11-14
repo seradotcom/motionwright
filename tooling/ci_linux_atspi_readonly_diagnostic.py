@@ -19,7 +19,7 @@ import sys
 import time
 
 from linux_first_use_accessible import (
-    AtspiBridge, ProbeError, VISIBLE, unique, x11_identity,
+    AtspiBridge, ProbeError, VISIBLE, unique, walk, x11_identity,
 )
 from linux_gui_probe import run_probe
 
@@ -85,6 +85,49 @@ def cached_application_roster(bridge, atspi, records: Path):
     if len(apps) > 128:
         raise ProbeError("READ_ONLY_APPLICATION_LIMIT")
     return apps
+
+
+def cached_control_scope(bridge, app, binding: dict, records: Path):
+    """Read-only current UI scope through the source-bound AT-SPI cache.
+
+    The original installed first-use must still independently verify the
+    exact single dialog, title, button, owner and state, then journal each
+    effect. This diagnostic deliberately does not send a text or action
+    mutation and cannot grant any installed G2 evidence.
+    """
+    stage(records, "cached-app-walk-start")
+    nodes = walk(bridge, app)
+    stage(records, "cached-app-walk-return", {"node_count": len(nodes)})
+    dialogs = [v for v in nodes if v.role == "dialog" and v.name == "Project library"
+               and VISIBLE <= v.states and "defunct" not in v.states]
+    stage(records, "cached-dialog-count", {"matching_dialogs": len(dialogs)})
+    dialog = unique(dialogs, "DIALOG")
+    if bridge.owner_pid(dialog.node) != binding["pid"]:
+        raise ProbeError("READ_ONLY_DIALOG_OWNER_MISMATCH")
+    stage(records, "cached-dialog-walk-start")
+    children = walk(bridge, dialog.node)
+    stage(records, "cached-dialog-walk-return", {"node_count": len(children)})
+    fields = [v for v in children if v.role in ("entry", "text")
+              and v.name == "Project title" and VISIBLE <= v.states
+              and "defunct" not in v.states]
+    controls = [v for v in children if v.role == "button"
+                and v.name == "Create project" and VISIBLE <= v.states
+                and "defunct" not in v.states]
+    stage(records, "cached-target-count",
+          {"matching_titles": len(fields), "matching_actions": len(controls)})
+    entry = unique(fields, "TITLE")
+    button = unique(controls, "CREATE")
+    if (bridge.owner_pid(entry.node) != binding["pid"]
+            or bridge.owner_pid(button.node) != binding["pid"]):
+        raise ProbeError("READ_ONLY_TARGET_OWNER_MISMATCH")
+    stage(records, "cached-controls-verified")
+    return {"status": "CACHED_CONTROLS_VERIFIED_READ_ONLY",
+            "app_nodes_checked": len(nodes),
+            "dialog_nodes_checked": len(children),
+            "dialog_count": len(dialogs), "title_count": len(fields),
+            "create_count": len(controls),
+            "full_dialog_or_controls_verified": True,
+            "editor_actions": 0}
 
 
 def read_shallow_roles(bridge, app, records: Path):
@@ -225,12 +268,13 @@ def trace_controls(scratch: Path, records: Path):
     stage(records, "application-pid-filter-start")
     app = unique([node for node in apps if bridge.pid(node) == binding["pid"]], "APPLICATION")
     stage(records, "application-pid-filter-return")
-    # Global Collection.GetMatches on the full WebKit app subtree has been
-    # observed blocking past the original 65 s external watchdog. Never call
-    # it again in this diagnostic. Read only two shallow, explicitly bounded
-    # levels; these types identify the next safe inspection boundary.
+    # Global Collection.GetMatches previously blocked, and a deliberately
+    # disabled local cache blocked even at the root child. Instead, walk the
+    # same bounded tree using the provider's cached structural records.
+    # Full role/name uniqueness and ownership are checked read-only; no UI
+    # effect is authorized by this exploratory source diagnostic.
     return {"bound_pid": binding["pid"],
-            **read_shallow_roles(bridge, app, records)}
+            **cached_control_scope(bridge, app, binding, records)}
 
 
 def main():
@@ -283,7 +327,7 @@ def main():
         out.write("\n")
     print("read-only-ats=" + result["status"]
           + " source=" + args.original_binary_source, flush=True)
-    return 0 if result["status"] == "SHALLOW_ROLE_SNAPSHOT_ONLY" else 2
+    return 0 if result["status"] == "CACHED_CONTROLS_VERIFIED_READ_ONLY" else 2
 
 
 if __name__ == "__main__":
