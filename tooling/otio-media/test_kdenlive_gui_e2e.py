@@ -11,7 +11,7 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import stat
 import sys
 from types import SimpleNamespace
@@ -400,13 +400,38 @@ class NativeControlTests(unittest.TestCase):
     def test_single_startup_ack_requires_exact_version_and_enabled_ok(self):
         instance = self.session()
         rows = self.quick_setup_rows()
-        instance.tree = Mock(return_value=rows)
-        instance.find = Mock(side_effect=[row(name="File"), None])
+        instance.tree = Mock(side_effect=[rows, [row("app/main/file", name="File",
+            role="menu item", editable=False)]])
+        instance.find = Mock(return_value=None)
         instance.action = Mock()
         instance.ready("import")
         instance.action.assert_called_once_with("import.startup-acknowledge", rows[3])
         self.assertEqual(instance.find.call_args.args,
                          (("<h3>Welcome to Kdenlive Quick Setup</h3>",), ("label",)))
+
+    def test_visible_modal_blocks_file_before_or_after_quick_setup(self):
+        for role in ("dialog", "alert"):
+            for after_setup in (False, True):
+                with self.subTest(role=role, after_setup=after_setup):
+                    instance = self.session()
+                    main = [row("app/main/file", name="File", role="menu item",
+                                editable=False),
+                            row("app/error", name="Error - Kdenlive", role=role,
+                                editable=False)]
+                    snapshots = [main]
+                    if after_setup:
+                        snapshots.insert(0, self.quick_setup_rows())
+                    instance.tree = Mock(side_effect=snapshots)
+                    instance.action = Mock()
+                    instance.find = Mock(return_value=None)
+                    with self.assertRaisesRegex(actions.GuiRejected,
+                                                "native_gui_unexpected_startup_dialog"):
+                        instance.ready("import")
+                    self.assertEqual(instance.action.call_count, int(after_setup))
+                    if after_setup:
+                        self.assertEqual(instance.action.call_args.args[0],
+                                         "import.startup-acknowledge")
+                    instance.find.assert_not_called()
 
     def test_reopen_must_not_repeat_first_run_bootstrap(self):
         instance = self.session()
@@ -2928,6 +2953,386 @@ class EditorRenderGuiControls(unittest.TestCase):
             ui.quit_after_render_script("quit", Path("/owner/edited.kdenlive"))
         ui.action.assert_not_called()
 
+
+
+class PrivatePreviewAudioControls(unittest.TestCase):
+    """Offline controls only: no PulseAudio server, pactl or Native is executed."""
+
+    def session(self):
+        owned = runner.NativeAudioSession.__new__(runner.NativeAudioSession)
+        owned.directory = PurePosixPath("/attempt/mw-pa-123-1")
+        owned.socket_path = owned.directory / "native"
+        owned.client = PurePosixPath("/usr/bin/pactl")
+        owned.client_sha = "b" * 64
+        owned.binary = PurePosixPath("/usr/bin/pulseaudio")
+        owned.binary_sha = "a" * 64
+        owned.base_environment = {"DISPLAY": ":97", "PULSE_SERVER": "unix:/host/native"}
+        owned.records = SimpleNamespace(root=PurePosixPath("/attempt/owner"),
+            emit=Mock(), document=Mock(), owned_processes=[], audio_session=None)
+        owned.phase, owned.pid, owned.start = "preview-audio", 411, 1234
+        owned.process = Mock(pid=owned.pid)
+        owned.process.poll.return_value = None
+        owned.process.wait.return_value = 0
+        owned.guard = Mock()
+        owned.streams = [io.BytesIO(), io.BytesIO()]
+        owned.ready, owned.close_attempted = True, False
+        owned.termination_requested_here = False
+        return owned
+
+    def readiness(self):
+        socket = PurePosixPath("/attempt/mw-pa-123-1/native")
+        info = {"server_string": "unix:" + str(socket), "server_name": "pulseaudio",
+                "server_version": "synthetic-control", "default_sink_name": runner.AUDIO_SINK,
+                "default_source_name": runner.AUDIO_SINK + ".monitor"}
+        sinks = [{"name": runner.AUDIO_SINK, "owner_module": 7,
+                  "sample_specification": "s16le 2ch 48000Hz"}]
+        modules = [
+            {"index": 7, "name": "module-null-sink",
+             "argument": "sink_name=motionwright_preview rate=48000 channels=2 format=s16le"},
+            {"index": 8, "name": "module-native-protocol-unix",
+             "argument": "socket=" + str(socket) + " auth-cookie=" + str(socket.parent / "cookie")
+                         + " auth-cookie-enabled=1 auth-anonymous=0 auth-group-enable=0"},
+        ]
+        return info, sinks, modules, socket
+
+    def test_inherited_audio_destinations_are_removed_without_changing_session_bus(self):
+        inherited = {"DISPLAY": ":97", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/owned/bus",
+                     "QT_QPA_PLATFORM": "xcb", "SDL_AUDIODRIVER": "dummy"}
+        inherited.update({key: "foreign-control" for key in (
+            "PULSE_SERVER", "PULSE_COOKIE", "PULSE_CLIENTCONFIG", "PULSE_SINK", "PULSE_SOURCE",
+            "PULSE_CONFIG", "PULSE_CONFIG_PATH", "PULSE_RUNTIME_PATH", "PULSE_STATE_PATH",
+            "PULSE_SCRIPT", "PULSE_DLPATH", "PULSE_BINARY", "PULSE_PROP", "PULSE_FUTURE_OPTION")})
+        original = copy.deepcopy(inherited)
+        directory = PurePosixPath("/attempt/mw-pa-123-1")
+        selected = runner.private_audio_client_environment(inherited, directory)
+        self.assertEqual(inherited, original)
+        self.assertEqual({key: value for key, value in selected.items()
+                          if key.startswith("PULSE_") or key == "SDL_AUDIODRIVER"}, {
+            "PULSE_SERVER": "unix:/attempt/mw-pa-123-1/native",
+            "PULSE_COOKIE": "/attempt/mw-pa-123-1/cookie",
+            "PULSE_CLIENTCONFIG": "/attempt/mw-pa-123-1/client.conf",
+            "PULSE_SINK": "motionwright_preview", "PULSE_SOURCE": "motionwright_preview.monitor",
+            "SDL_AUDIODRIVER": "pulseaudio"})
+        for key in ("DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "QT_QPA_PLATFORM"):
+            self.assertEqual(selected[key], inherited[key])
+
+    def test_exact_private_readiness_does_not_claim_hardware_or_audio_acceptance(self):
+        for prefix in ("", "unix:"):
+            info, sinks, modules, socket = self.readiness()
+            info["server_string"] = prefix + str(socket)
+            observed = runner.verify_private_audio_readiness(info, sinks, modules, socket)
+            self.assertIs(observed["authenticated_queries_completed"], True)
+            for key in ("hardware_output", "audio_fidelity_accepted", "native_operation_retried"):
+                self.assertIs(observed[key], False)
+
+    def test_foreign_server_or_default_destination_cannot_be_ready(self):
+        for key, value in (
+            ("server_string", "unix:/host/native"), ("server_string", "tcp:127.0.0.1"),
+            ("server_string", "unix:/attempt/mw-pa-123-1/native unix:/host/native"),
+            ("server_name", "PulseAudio (on PipeWire)"), ("default_sink_name", "host-speakers"),
+            ("default_source_name", "host-microphone"), ("server_string", None),
+        ):
+            values = self.readiness()
+            values[0][key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(actions.GuiRejected):
+                runner.verify_private_audio_readiness(*values)
+
+    def test_missing_extra_or_foreign_sink_cannot_be_ready(self):
+        for change in ("missing", "extra", "name", "owner_module", "sample_specification"):
+            info, sinks, modules, socket = self.readiness()
+            if change == "missing":
+                sinks.clear()
+            elif change == "extra":
+                sinks.append({**sinks[0], "name": "host-speakers"})
+            else:
+                sinks[0][change] = 8 if change == "owner_module" else "foreign-control"
+            with self.subTest(change=change), self.assertRaises(actions.GuiRejected):
+                runner.verify_private_audio_readiness(info, sinks, modules, socket)
+
+    def test_module_roster_and_private_authentication_are_closed(self):
+        for change in ("missing", "extra", "tcp", "duplicate", "same-index", "bool-index",
+                       "foreign-cookie", "anonymous", "group", "wrong-format"):
+            info, sinks, modules, socket = self.readiness()
+            if change == "missing":
+                modules.pop()
+            elif change == "extra":
+                modules.append({"index": 9, "name": "module-udev-detect"})
+            elif change == "tcp":
+                modules[1]["name"] = "module-native-protocol-tcp"
+            elif change == "duplicate":
+                modules[1] = copy.deepcopy(modules[0])
+            elif change == "same-index":
+                modules[1]["index"] = modules[0]["index"]
+            elif change == "bool-index":
+                modules[0]["index"] = True
+            elif change == "foreign-cookie":
+                modules[1]["argument"] = modules[1]["argument"].replace(
+                    str(socket.parent / "cookie"), "/host/cookie")
+            elif change == "anonymous":
+                modules[1]["argument"] = modules[1]["argument"].replace(
+                    "auth-anonymous=0", "auth-anonymous=1")
+            elif change == "group":
+                modules[1]["argument"] += " auth-group=host-users"
+            else:
+                modules[0]["argument"] = modules[0]["argument"].replace("48000", "44100")
+            with self.subTest(change=change), self.assertRaises(actions.GuiRejected):
+                runner.verify_private_audio_readiness(info, sinks, modules, socket)
+
+    def test_private_runtime_cannot_overlap_any_snapshot_root(self):
+        root = PurePosixPath("/attempt")
+        records = SimpleNamespace(root=root / "owner")
+        private = root / "mw-pa-123-1"
+        for overlapping in (root, private, private / "nested"):
+            with self.subTest(root=overlapping), patch.object(runner.os, "name", "posix"), \
+                    patch.object(runner, "fresh_directory") as create, \
+                    patch.object(runner, "digest") as digest, \
+                    patch.object(runner.subprocess, "Popen") as launch:
+                with self.assertRaisesRegex(actions.GuiRejected, "native_audio_private_path_invalid"):
+                    runner.NativeAudioSession(records, root, {"run_id": "123", "run_attempt": "1"},
+                                              (records.root, overlapping))
+                create.assert_not_called()
+                digest.assert_not_called()
+                launch.assert_not_called()
+
+    def module_text_fixture(self):
+        info, sinks, modules, socket = self.readiness()
+        modules[0]["index"], modules[1]["index"] = 73, 11
+        sinks[0]["owner_module"] = 73
+        modules.reverse()
+        raw = "".join(f"{module['index']}\t{module['name']}\t{module['argument']}\t\n"
+                      for module in modules).encode("ascii")
+        return raw, info, sinks, modules, socket
+
+    def test_short_module_text_retains_nonsequential_indices_and_sink_join(self):
+        raw, info, sinks, modules, socket = self.module_text_fixture()
+        observed = runner.parse_private_audio_modules(raw)
+        self.assertEqual(observed, modules)
+        self.assertEqual([module["index"] for module in observed], [11, 73])
+        for module in observed:
+            self.assertIs(type(module["index"]), int)
+        verified = runner.verify_private_audio_readiness(info, sinks, observed, socket)
+        self.assertIs(verified["authenticated_queries_completed"], True)
+        sinks[0]["owner_module"] = 0
+        with self.assertRaisesRegex(actions.GuiRejected, "native_audio_private_sink_changed"):
+            runner.verify_private_audio_readiness(info, sinks, observed, socket)
+
+    def test_short_module_text_rejects_missing_duplicate_and_malformed_records(self):
+        raw, _, _, modules, _ = self.module_text_fixture()
+        first = raw.splitlines(keepends=True)[0]
+        malformed = {
+            "empty": b"",
+            "not-bytes": raw.decode("ascii"),
+            "non-ascii": raw.replace(b"socket=", b"\xffsocket=", 1),
+            "oversized": b"x" * 65537,
+            "missing-row": first,
+            "extra-row": raw + first,
+            "duplicate-index": raw.replace(b"11\t", b"73\t", 1),
+            "missing-index": raw.replace(b"11\t", b"\t", 1),
+            "signed-index": raw.replace(b"11\t", b"+11\t", 1),
+            "negative-index": raw.replace(b"11\t", b"-1\t", 1),
+            "leading-zero-index": raw.replace(b"11\t", b"011\t", 1),
+            "invalid-index-sentinel": raw.replace(b"11\t", b"4294967295\t", 1),
+            "overflow-index": raw.replace(b"11\t", b"4294967296\t", 1),
+            "missing-final-field": raw.replace(b"\t\n", b"\n", 1),
+            "extra-field": raw.replace(b"\t\n", b"\textra\t\n", 1),
+            "missing-final-newline": raw[:-1],
+            "control-in-argument": raw.replace(b"socket=", b"\x00socket=", 1),
+            "invalid-name": raw.replace(b"module-null-sink", b"module/null-sink", 1),
+            "json-instead-of-short-text": json.dumps(modules).encode("ascii"),
+        }
+        for defect, changed in malformed.items():
+            with self.subTest(defect=defect), self.assertRaises(actions.GuiRejected):
+                runner.parse_private_audio_modules(changed)
+
+    def test_module_query_uses_exact_text_command_and_retains_original_without_json_rewrite(self):
+        raw, _, _, modules, _ = self.module_text_fixture()
+        owned = self.session()
+        retained = Mock()
+        strict = Mock(side_effect=AssertionError("module text must not enter the JSON parser"))
+        original = SimpleNamespace(returncode=0, stdout=raw, stderr=b"")
+        with patch.object(runner, "digest", return_value=owned.client_sha), \
+                patch.object(runner, "custody", SimpleNamespace(strict=strict, new_bytes=retained)), \
+                patch.object(runner.subprocess, "run", return_value=original) as query:
+            observed = owned._query("modules", ["list", "short", "modules"],
+                                    module_inventory=True)
+        self.assertEqual(observed, modules)
+        query.assert_called_once()
+        self.assertEqual(query.call_args.args[0], [str(owned.client),
+            "--server=unix:" + str(owned.socket_path), "--format=text", "list", "short", "modules"])
+        self.assertEqual(query.call_args.kwargs["timeout"], 5)
+        self.assertEqual(retained.call_args_list[0].args,
+                         (owned.records.root / "preview-audio.modules.stdout.original", raw))
+        self.assertEqual(owned.guard.call_count, 2)
+        strict.assert_not_called()
+        for arguments, flag in ((["info"], True), (["list", "modules"], True),
+                                (["list", "short", "modules"], 1)):
+            refused = self.session()
+            with self.subTest(arguments=arguments, flag=flag), \
+                    patch.object(runner.subprocess, "run") as unexpected:
+                with self.assertRaisesRegex(actions.GuiRejected, "native_audio_query_contract"):
+                    refused._query("modules", arguments, module_inventory=flag)
+                unexpected.assert_not_called()
+                refused.guard.assert_not_called()
+
+    def test_query_accepts_object_and_list_but_retains_unmodified_original(self):
+        import ci_private_evidence as custody
+        for raw in (b'{"server_name":"pulseaudio"}\n', b'[{"index":7}]\n'):
+            owned = self.session()
+            retained = Mock()
+            original = SimpleNamespace(returncode=0, stdout=raw, stderr=b"")
+            with self.subTest(raw=raw), patch.object(runner, "digest", return_value=owned.client_sha), \
+                    patch.object(runner, "custody", SimpleNamespace(strict=custody.strict,
+                                                                    new_bytes=retained)), \
+                    patch.object(runner.subprocess, "run", return_value=original) as query:
+                value = owned._query("control", ["info"])
+            self.assertEqual(value, json.loads(raw))
+            self.assertEqual(query.call_count, 1)
+            self.assertIn("--server=unix:" + str(owned.socket_path), query.call_args.args[0])
+            self.assertEqual(query.call_args.kwargs["env"]["PULSE_SERVER"],
+                             "unix:" + str(owned.socket_path))
+            self.assertEqual(retained.call_args_list[0].args,
+                             (owned.records.root / "preview-audio.control.stdout.original", raw))
+            self.assertEqual(owned.guard.call_count, 2)
+
+    def test_query_rejects_duplicate_keys_and_nonfinite_constants_without_replay(self):
+        import ci_private_evidence as custody
+        for raw in (b'{"server_name":"pulseaudio","server_name":"foreign"}', b'[NaN]'):
+            owned = self.session()
+            retained = Mock()
+            with self.subTest(raw=raw), patch.object(runner, "digest", return_value=owned.client_sha), \
+                    patch.object(runner, "custody", SimpleNamespace(strict=custody.strict,
+                                                                    new_bytes=retained)), \
+                    patch.object(runner.subprocess, "run", return_value=SimpleNamespace(
+                        returncode=0, stdout=raw, stderr=b"")) as query:
+                with self.assertRaises(custody.CustodyRejected):
+                    owned._query("control", ["info"])
+            query.assert_called_once()
+            self.assertEqual(retained.call_args_list[0].args[1], raw)
+
+    def test_client_environment_requires_readiness_and_live_identity(self):
+        owned = self.session()
+        owned.ready = False
+        with self.assertRaisesRegex(actions.GuiRejected, "native_audio_not_ready"):
+            owned.client_environment({"PULSE_SERVER": "unix:/host/native"})
+        owned.guard.assert_not_called()
+        owned.ready = True
+        original = actions.GuiRejected("changed_owned_identity")
+        owned.guard.side_effect = original
+        with self.assertRaises(actions.GuiRejected) as raised:
+            owned.client_environment({})
+        self.assertIs(raised.exception, original)
+
+    def test_close_signals_only_the_guarded_child_once_and_records_its_terminal(self):
+        owned = self.session()
+        order = []
+        owned.guard.side_effect = lambda: order.append("guard")
+        owned.process.terminate.side_effect = lambda: order.append("terminate")
+        with patch.object(runner, "digest", return_value=owned.binary_sha):
+            owned.close_once()
+        self.assertEqual(order, ["guard", "terminate"])
+        owned.process.terminate.assert_called_once_with()
+        owned.process.wait.assert_called_once_with(timeout=5)
+        owned.process.kill.assert_not_called()
+        terminal = owned.records.document.call_args.args[1]
+        self.assertEqual((terminal["pid"], terminal["starttime"]), (411, 1234))
+        self.assertIs(terminal["termination_requested_here"], True)
+        self.assertIs(terminal["native_operation_retried"], False)
+        self.assertTrue(all(stream.closed for stream in owned.streams))
+        with self.assertRaisesRegex(actions.GuiRejected, "native_audio_close_must_be_once"):
+            owned.close_once()
+        self.assertEqual(owned.process.terminate.call_count, 1)
+
+    def test_changed_identity_prevents_signal_and_second_close(self):
+        owned = self.session()
+        original = actions.GuiRejected("changed_owned_identity")
+        owned.guard.side_effect = original
+        with self.assertRaises(actions.GuiRejected) as raised:
+            owned.close_once()
+        self.assertIs(raised.exception, original)
+        with self.assertRaisesRegex(actions.GuiRejected, "native_audio_close_must_be_once"):
+            owned.close_once()
+        owned.process.terminate.assert_not_called()
+        owned.process.kill.assert_not_called()
+        owned.process.wait.assert_not_called()
+        owned.records.document.assert_not_called()
+        self.assertFalse(owned.ready)
+
+    def test_unknown_close_keeps_first_timeout_and_prevents_termination_or_start_retry(self):
+        owned = self.session()
+        original = subprocess.TimeoutExpired(["synthetic-audio-control"], 5)
+        owned.process.wait.side_effect = original
+        with self.assertRaises(subprocess.TimeoutExpired) as raised:
+            owned.close_once()
+        self.assertIs(raised.exception, original)
+        unknown = owned.records.emit.call_args.args[0]
+        self.assertEqual(unknown["state"], "UNKNOWN_STILL_RUNNING")
+        self.assertIs(unknown["native_operation_retried"], False)
+        with self.assertRaisesRegex(actions.GuiRejected, "native_audio_close_must_be_once"):
+            owned.close_once()
+        with patch.object(runner.subprocess, "Popen") as launch:
+            with self.assertRaisesRegex(actions.GuiRejected, "native_audio_start_must_be_once"):
+                owned.start_once()
+            launch.assert_not_called()
+        owned.process.terminate.assert_called_once()
+        owned.process.wait.assert_called_once()
+        owned.process.kill.assert_not_called()
+        owned.records.document.assert_not_called()
+        self.assertFalse(owned.ready)
+
+    def test_already_terminal_child_is_observed_without_signal(self):
+        owned = self.session()
+        owned.process.poll.return_value = 0
+        with patch.object(runner, "digest", return_value=owned.binary_sha):
+            owned.close_once()
+        owned.guard.assert_not_called()
+        owned.process.terminate.assert_not_called()
+        owned.process.kill.assert_not_called()
+        self.assertIs(owned.records.document.call_args.args[1]["termination_requested_here"], False)
+
+    def test_route_error_survives_unknown_audio_cleanup(self):
+        owned = self.session()
+        owned.start_once = Mock()
+        original = actions.GuiRejected("original_route_failure")
+        owned.process.wait.side_effect = subprocess.TimeoutExpired(["synthetic-audio-control"], 5)
+        with self.assertRaises(actions.GuiRejected) as raised:
+            with owned:
+                self.assertIs(owned.records.audio_session, owned)
+                raise original
+        self.assertIs(raised.exception, original)
+        self.assertIn("private_audio_cleanup_failed:TimeoutExpired", original.__notes__)
+        self.assertIsNone(owned.records.audio_session)
+        owned.start_once.assert_called_once()
+        owned.process.terminate.assert_called_once()
+        owned.process.wait.assert_called_once()
+
+    def test_readiness_error_survives_unknown_cleanup_without_binding_a_client(self):
+        owned = self.session()
+        original = actions.GuiRejected("original_readiness_failure")
+        owned.start_once = Mock(side_effect=original)
+        owned.process.wait.side_effect = subprocess.TimeoutExpired(["synthetic-audio-control"], 5)
+        with self.assertRaises(actions.GuiRejected) as raised:
+            owned.__enter__()
+        self.assertIs(raised.exception, original)
+        self.assertIn("private_audio_cleanup_failed:TimeoutExpired", original.__notes__)
+        self.assertIsNone(owned.records.audio_session)
+        self.assertFalse(owned.ready)
+        owned.start_once.assert_called_once()
+        owned.process.wait.assert_called_once()
+
+    def test_success_cannot_escape_context_when_audio_terminal_is_unknown(self):
+        owned = self.session()
+        owned.start_once = Mock()
+        original = subprocess.TimeoutExpired(["synthetic-audio-control"], 5)
+        owned.process.wait.side_effect = original
+        committed_result = None
+        with self.assertRaises(subprocess.TimeoutExpired) as raised:
+            with owned:
+                selected_result = "synthetic-route-result"
+            committed_result = selected_result
+        self.assertIs(raised.exception, original)
+        self.assertIsNone(committed_result)
+        self.assertIsNone(owned.records.audio_session)
+        owned.process.wait.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -859,7 +859,7 @@ class Recorder:
         for owned in self.owned_processes:
             observation = {"phase": owned.phase, "pid": owned.pid,
                            "starttime": owned.start, "automatic_retry": False,
-                           "termination_requested_here": False}
+                           "termination_requested_here": bool(getattr(owned, "termination_requested_here", False))}
             try:
                 code = owned.process.poll()
                 observation["returncode"] = code
@@ -893,6 +893,289 @@ class OwnedProcess:
                 and live.process_starttime((proc / "stat").read_bytes(), self.pid) == self.start
                 and os.readlink(proc / "exe") == str(self.binary),
                 "native_gui_process_identity_changed")
+
+
+
+AUDIO_CLIENT_KEYS = (
+    "PULSE_SERVER", "PULSE_COOKIE", "PULSE_CLIENTCONFIG", "PULSE_SINK",
+    "PULSE_SOURCE", "SDL_AUDIODRIVER",
+)
+AUDIO_SINK = "motionwright_preview"
+
+
+def private_audio_client_environment(environment: dict, directory: Path) -> dict:
+    """Select only the owned Unix server; never autospawn or discover a host."""
+    selected = {key: value for key, value in environment.items()
+                if not key.startswith("PULSE_") and key != "SDL_AUDIODRIVER"}
+    selected.update({
+        "PULSE_SERVER": "unix:" + str(directory / "native"),
+        "PULSE_COOKIE": str(directory / "cookie"),
+        "PULSE_CLIENTCONFIG": str(directory / "client.conf"),
+        "PULSE_SINK": AUDIO_SINK,
+        "PULSE_SOURCE": AUDIO_SINK + ".monitor",
+        "SDL_AUDIODRIVER": "pulseaudio",
+    })
+    return selected
+
+
+def parse_private_audio_modules(raw: bytes) -> list[dict]:
+    """Read actual module indices from pactl 16.1's bounded short text format."""
+    require(type(raw) is bytes and 0 < len(raw) <= 65536 and raw.isascii(),
+            "native_audio_module_inventory_encoding")
+    lines = raw.decode("ascii").split("\n")
+    require(len(lines) == 3 and lines[-1] == "",
+            "native_audio_module_inventory_rows")
+    modules = []
+    for line in lines[:-1]:
+        fields = line.split("\t")
+        require(len(fields) == 4 and fields[-1] == ""
+                and re.fullmatch(r"0|[1-9][0-9]{0,9}", fields[0])
+                and int(fields[0]) < 2**32 - 1
+                and re.fullmatch(r"[a-z0-9_-]+", fields[1])
+                and fields[2] and not any(ord(c) < 32 for c in fields[2]),
+                "native_audio_module_inventory_fields")
+        modules.append({"index": int(fields[0]), "name": fields[1], "argument": fields[2]})
+    require(len({row["index"] for row in modules}) == len(modules),
+            "native_audio_module_inventory_duplicate_index")
+    return modules
+
+
+def verify_private_audio_readiness(info: dict, sinks: list, modules: list,
+                                   socket_path: Path) -> dict:
+    """Verify the real authenticated server response, without hardware claims."""
+    require(type(info) is dict and type(sinks) is list and type(modules) is list,
+            "native_audio_readiness_shape")
+    require(info.get("server_string") in (str(socket_path), "unix:" + str(socket_path))
+            and info.get("server_name") == "pulseaudio"
+            and info.get("default_sink_name") == AUDIO_SINK
+            and info.get("default_source_name") == AUDIO_SINK + ".monitor",
+            "native_audio_server_not_private")
+    require(len(modules) == 2 and all(type(row) is dict for row in modules)
+            and {row.get("name") for row in modules} ==
+                {"module-null-sink", "module-native-protocol-unix"},
+            "native_audio_module_inventory_changed")
+    null = next(row for row in modules if row["name"] == "module-null-sink")
+    protocol = next(row for row in modules if row["name"] == "module-native-protocol-unix")
+    require(type(null.get("index")) is int and type(protocol.get("index")) is int
+            and null["index"] != protocol["index"]
+            and null.get("argument") ==
+                "sink_name=motionwright_preview rate=48000 channels=2 format=s16le"
+            and protocol.get("argument") ==
+                "socket=" + str(socket_path) + " auth-cookie=" + str(socket_path.parent / "cookie")
+                + " auth-cookie-enabled=1 auth-anonymous=0 auth-group-enable=0",
+            "native_audio_private_module_configuration_changed")
+    require(len(sinks) == 1 and type(sinks[0]) is dict
+            and sinks[0].get("name") == AUDIO_SINK
+            and sinks[0].get("owner_module") == null["index"]
+            and sinks[0].get("sample_specification") == "s16le 2ch 48000Hz",
+            "native_audio_private_sink_changed")
+    return {"schema": "motionwright.native.kdenlive-private-preview-audio/1",
+            "server": info["server_string"], "server_version": info.get("server_version"),
+            "sink": AUDIO_SINK, "sink_format": sinks[0]["sample_specification"],
+            "module_names": sorted(row["name"] for row in modules),
+            "authenticated_queries_completed": True, "hardware_output": False,
+            "audio_fidelity_accepted": False, "native_operation_retried": False}
+
+
+class NativeAudioSession(OwnedProcess):
+    """One foreground PulseAudio child, outside every evidence snapshot root."""
+
+    def __init__(self, records: Recorder, runner_temp: Path, context: dict,
+                 snapshot_roots: tuple[Path, ...]):
+        self.records, self.phase = records, "preview-audio"
+        self.process, self.start, self.pid = None, None, None
+        self.streams, self.ready = [], False
+        self.termination_requested_here = False
+        self.close_attempted = False
+        self.socket_identity = None
+        self.directory = runner_temp / (
+            "mw-pa-" + context["run_id"] + "-" + context["run_attempt"])
+        require(os.name == "posix" and re.fullmatch(r"/[A-Za-z0-9_./-]+", str(self.directory))
+                and self.directory.parent == runner_temp
+                and records.root in snapshot_roots
+                and all(not self.directory.is_relative_to(root)
+                        and not root.is_relative_to(self.directory) for root in snapshot_roots)
+                and len(os.fsencode(self.directory / "native")) < 108,
+                "native_audio_private_path_invalid")
+        self.binary = Path("/usr/bin/pulseaudio").resolve(strict=True)
+        self.client = Path("/usr/bin/pactl").resolve(strict=True)
+        self.binary_sha = digest(self.binary, live.MAX_EXE_BYTES)
+        self.client_sha = digest(self.client, live.MAX_EXE_BYTES)
+        fresh_directory(self.directory)
+        for name in ("run", "state", "config"):
+            (self.directory / name).mkdir(mode=0o700)
+        self.socket_path = self.directory / "native"
+        self.cookie = self.directory / "cookie"
+        fd = os.open(self.cookie, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(os.urandom(256))
+            stream.flush()
+            os.fsync(stream.fileno())
+        mark = self.cookie.stat()
+        require(stat.S_IMODE(mark.st_mode) == 0o600 and mark.st_size == 256,
+                "native_audio_cookie_permissions")
+        self.cookie_identity = (mark.st_dev, mark.st_ino, mark.st_mode, mark.st_size, mark.st_mtime_ns)
+        (self.directory / "daemon.conf").write_text("", encoding="utf-8")
+        (self.directory / "client.conf").write_text(
+            "autospawn = no\nauto-connect-localhost = no\n"
+            "auto-connect-display = no\nenable-shm = no\n", encoding="utf-8")
+        script = (
+            "load-module module-null-sink sink_name=motionwright_preview rate=48000 channels=2 format=s16le\n"
+            "set-default-sink motionwright_preview\n"
+            "load-module module-native-protocol-unix socket=" + str(self.socket_path)
+            + " auth-cookie=" + str(self.cookie)
+            + " auth-cookie-enabled=1 auth-anonymous=0 auth-group-enable=0\n")
+        (self.directory / "server.pa").write_text(script, encoding="utf-8")
+        self.base_environment = {key: value for key, value in os.environ.items()
+            if not key.startswith("PULSE_") and key not in (*RUNTIME_VARIABLES, "LD_PRELOAD", "SDL_AUDIODRIVER")}
+        self.server_environment = {**self.base_environment,
+            "PULSE_RUNTIME_PATH": str(self.directory / "run"),
+            "PULSE_STATE_PATH": str(self.directory / "state"),
+            "PULSE_CONFIG_PATH": str(self.directory / "config"),
+            "PULSE_CONFIG": str(self.directory / "daemon.conf"),
+            "PULSE_CLIENTCONFIG": str(self.directory / "client.conf")}
+        self.argv = [str(self.binary), "--daemonize=no", "--system=no", "--use-pid-file=no",
+            "--fail=yes", "--exit-idle-time=-1", "--high-priority=no", "--realtime=no",
+            "--disable-shm=yes", "--disallow-module-loading=yes",
+            "--log-target=stderr", "--log-level=error", "--log-time=yes",
+            "-n", "--file=" + str(self.directory / "server.pa")]
+        records.document("preview-audio.configuration.json", {
+            "argv": self.argv, "server_script": script, "private_directory": str(self.directory),
+            "binary_sha256": self.binary_sha, "client_sha256": self.client_sha,
+            "cookie_bytes_retained": False, "private_directory_in_snapshot": False,
+            "hardware_output": False, "audio_fidelity_accepted": False})
+
+    def guard(self):
+        super().guard()
+        mark = self.cookie.lstat()
+        require((mark.st_dev, mark.st_ino, mark.st_mode, mark.st_size, mark.st_mtime_ns)
+                == self.cookie_identity, "native_audio_cookie_identity_changed")
+        if self.socket_identity is not None:
+            current = self.socket_path.lstat()
+            require(stat.S_ISSOCK(current.st_mode)
+                    and (current.st_dev, current.st_ino, current.st_mode) == self.socket_identity,
+                    "native_audio_socket_identity_changed")
+
+    def _query(self, label: str, args: list[str], *, module_inventory: bool = False):
+        require(type(module_inventory) is bool and (not module_inventory
+                or args == ["list", "short", "modules"]), "native_audio_query_contract")
+        self.guard()
+        require(digest(self.client, live.MAX_EXE_BYTES) == self.client_sha,
+                "native_audio_client_binary_changed")
+        argv = [str(self.client), "--server=unix:" + str(self.socket_path),
+                "--format=" + ("text" if module_inventory else "json"), *args]
+        self.records.emit({"step": "preview-audio." + label, "state": "QUERY_INTENT",
+                           "argv": argv, "native_operation_retried": False})
+        result = subprocess.run(argv, cwd=self.directory,
+            env=private_audio_client_environment(self.base_environment, self.directory),
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=5)
+        require(len(result.stdout) <= 65536 and len(result.stderr) <= 65536,
+                "native_audio_query_output_budget")
+        for name, raw in (("stdout", result.stdout), ("stderr", result.stderr)):
+            custody.new_bytes(self.records.root / ("preview-audio." + label + "." + name + ".original"), raw)
+        self.records.document("preview-audio." + label + ".terminal.json",
+            {"returncode": result.returncode, "native_operation_retried": False})
+        self.guard()
+        require(result.returncode == 0, "native_audio_private_query_failed")
+        # pactl 16.1 omits module indices from JSON. Its short text output
+        # retains the real index required to join each sink to its module.
+        if module_inventory:
+            return parse_private_audio_modules(result.stdout)
+        # The custody parser requires an object and rejects duplicate keys and
+        # non-finite constants. Wrap only for parsing the list responses; the
+        # unmodified stdout above remains the retained original.
+        return custody.strict(b'{"value":' + result.stdout + b'}')["value"]
+
+    def start_once(self):
+        require(self.process is None and not self.ready, "native_audio_start_must_be_once")
+        self.streams = [(self.records.root / ("preview-audio." + name + ".log")).open("xb")
+                        for name in ("stdout", "stderr")]
+        self.records.emit({"step": self.phase + ".launch", "state": "INTENT", "argv": self.argv})
+        self.process = subprocess.Popen(self.argv, cwd=self.directory, env=self.server_environment,
+            stdin=subprocess.DEVNULL, stdout=self.streams[0], stderr=self.streams[1])
+        self.pid = self.process.pid
+        self.records.owned_processes.append(self)
+        self.records.emit({"step": self.phase + ".launch", "state": "RETURNED", "pid": self.pid})
+        self.start = live.process_starttime(
+            (Path("/proc") / str(self.pid) / "stat").read_bytes(), self.pid)
+        deadline = time.monotonic() + 10
+        while True:
+            self.guard()
+            if self.socket_path.exists():
+                mark = self.socket_path.lstat()
+                require(stat.S_ISSOCK(mark.st_mode) and mark.st_uid == os.getuid(),
+                        "native_audio_private_socket_invalid")
+                self.socket_identity = (mark.st_dev, mark.st_ino, mark.st_mode)
+                break
+            require(time.monotonic() < deadline, "native_audio_socket_not_observed")
+            time.sleep(0.05)
+        info = self._query("info", ["info"])
+        sinks = self._query("sinks", ["list", "sinks"])
+        modules = self._query("modules", ["list", "short", "modules"], module_inventory=True)
+        readiness = verify_private_audio_readiness(info, sinks, modules, self.socket_path)
+        readiness.update(pid=self.pid, starttime=self.start, binary_sha256=self.binary_sha)
+        self.records.document("preview-audio.readiness.json", readiness)
+        self.ready = True
+
+    def client_environment(self, inherited: dict) -> dict:
+        require(self.ready, "native_audio_not_ready")
+        self.guard()
+        return private_audio_client_environment(inherited, self.directory)
+
+    def close_once(self):
+        require(not self.close_attempted, "native_audio_close_must_be_once")
+        self.close_attempted = True
+        self.ready = False
+        if self.process is None:
+            for stream in self.streams:
+                stream.close()
+            return
+        code = self.process.poll()
+        if code is None:
+            self.guard()
+            self.records.emit({"step": self.phase + ".close", "state": "INTENT",
+                               "pid": self.pid, "starttime": self.start, "signal": "SIGTERM"})
+            self.termination_requested_here = True
+            self.process.terminate()
+        try:
+            code = self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.records.emit({"step": self.phase + ".close", "state": "UNKNOWN_STILL_RUNNING",
+                               "pid": self.pid, "starttime": self.start, "native_operation_retried": False})
+            raise
+        self.records.document("preview-audio.terminal.json", {
+            "pid": self.pid, "starttime": self.start, "returncode": code,
+            "termination_requested_here": self.termination_requested_here,
+            "native_operation_retried": False, "hardware_output": False})
+        for stream in self.streams:
+            stream.close()
+        require(code in (0, -signal.SIGTERM), "native_audio_terminal_not_clean")
+        require(digest(self.binary, live.MAX_EXE_BYTES) == self.binary_sha,
+                "native_audio_server_binary_changed")
+
+    def __enter__(self):
+        require(getattr(self.records, "audio_session", None) is None,
+                "native_audio_nested_session_refused")
+        try:
+            self.start_once()
+        except BaseException as original:
+            try:
+                self.close_once()
+            except BaseException as cleanup:
+                original.add_note("private_audio_cleanup_failed:" + type(cleanup).__name__)
+            raise
+        self.records.audio_session = self
+        return self
+
+    def __exit__(self, kind, original, traceback_value):
+        self.records.audio_session = None
+        try:
+            self.close_once()
+        except BaseException as cleanup:
+            if original is None:
+                raise
+            original.add_note("private_audio_cleanup_failed:" + type(cleanup).__name__)
+        return False
 
 
 
@@ -952,7 +1235,7 @@ def extract_distribution(appimage: Path, appdir: Path, records: Recorder) -> Non
 
 
 ACCESSIBILITY_ENVIRONMENT_KEYS = frozenset((
-    *RUNTIME_VARIABLES, "LD_PRELOAD", "DISPLAY", "WAYLAND_DISPLAY",
+    *RUNTIME_VARIABLES, *AUDIO_CLIENT_KEYS, "LD_PRELOAD", "DISPLAY", "WAYLAND_DISPLAY",
     "DBUS_SESSION_BUS_ADDRESS", "DBUS_SYSTEM_BUS_ADDRESS", "AT_SPI_BUS_ADDRESS",
     "DBUS_STARTER_ADDRESS", "DBUS_STARTER_BUS_TYPE", "XDG_RUNTIME_DIR",
     "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
@@ -1255,6 +1538,9 @@ class NativeProcess(OwnedProcess):
         self.binary, self.binary_sha = binary, binary_sha
         self.phase, self.records, self.appdir = phase, records, appdir
         self.profile = profile
+        self.audio = None if accessibility_only else getattr(records, "audio_session", None)
+        require(accessibility_only or isinstance(self.audio, NativeAudioSession),
+                "native_gui_private_audio_session_required")
         self.render_preferences_source = None
         self.logs = [records.root / (phase + ".stdout.log"),
                      records.root / (phase + ".stderr.log")]
@@ -1270,6 +1556,8 @@ class NativeProcess(OwnedProcess):
         environment.update({"QT_QPA_PLATFORM": "xcb",
                             "QT_LINUX_ACCESSIBILITY_ALWAYS_ON": "1",
                             "LC_ALL": "C.UTF-8", "LANGUAGE": "en_US:en"})
+        if self.audio is not None:
+            environment = self.audio.client_environment(environment)
         argv = [str(appdir / "AppRun"), "--config", "motionwright-ci.rc"]
         if reopen_input is not None:
             argv.append(str(reopen_input))
@@ -1302,10 +1590,27 @@ class NativeProcess(OwnedProcess):
             raise GuiRejected("native_gui_launcher_did_not_exec_pinned_binary")
         if accessibility_only:
             retain_accessibility_process_context(self)
-        self.journal = ActionJournal(records.emit, self.guard)
+        else:
+            observed = project_accessibility_environment(_bounded_proc_read(
+                Path("/proc") / str(self.pid) / "environ", 128 * 1024))
+            expected_audio = {key: environment[key] for key in AUDIO_CLIENT_KEYS}
+            actual_audio = {key: observed["selected_fields"].get(key) for key in AUDIO_CLIENT_KEYS}
+            require(actual_audio == expected_audio, "native_gui_audio_environment_changed")
+            records.document(phase + ".audio-binding.json", {
+                "pid": self.pid, "starttime": self.start,
+                "audio_pid": self.audio.pid, "audio_starttime": self.audio.start,
+                "selected_fields": actual_audio, "environment_sha256": observed["original_sha256"],
+                "cookie_bytes_retained": False, "hardware_output": False,
+                "audio_fidelity_accepted": False})
+        self.journal = ActionJournal(records.emit, self.guard_ui)
         self.ui = AtspiSession(self.pid, self.journal)
         self.accessibility_rows = initialize_accessibility(
             self.ui, phase, records, accessibility_only=accessibility_only)
+
+    def guard_ui(self):
+        self.guard()
+        if self.audio is not None:
+            self.audio.guard()
 
     @contextmanager
     def native_environment(self):
@@ -1954,8 +2259,8 @@ def edit_alab_second_clip(ui: AtspiSession) -> None:
     ui.text("alab.seek100", position, "00:00:04:04")
     ui.key("alab.commit-seek", 0xFF0D)
     ui.key("alab.select-video-track1", 0x0031)
-    ui.menu("alab.select-clip", "Timeline", "Selection", "Select Clip")
-    ui.menu("alab.duration", "Timeline", "Current clip", "Edit Duration")
+    ui.menu("alab.select-clip", "Sequence", "Selection", "Select Clip")
+    ui.menu("alab.duration", "Sequence", "Current Item", "Edit Duration")
     dialog = ui.dialog("alab.duration-dialog", ("Duration",))
     rows = ui.descendants(dialog)
     fields = [labeled_field(rows, (label,)) for label in ("Position:", "Crop start:", "Duration:")]
@@ -2371,9 +2676,18 @@ def main(argv=None) -> int:
             "AppRun_sha256": custody.sha(launcher_bytes),
             "source_checkout": context})
         selected_kwargs = {} if alab_inputs is None else {"alab_inputs": alab_inputs}
-        status, result = run_selected_native(
-            args.verification_scope, args.appdir, binary, binary_sha,
-            args.capsule, records, profile, **selected_kwargs)
+        def selected_native():
+            return run_selected_native(
+                args.verification_scope, args.appdir, binary, binary_sha,
+                args.capsule, records, profile, **selected_kwargs)
+        if args.verification_scope == "kdenlive-gui":
+            with NativeAudioSession(records, runner_temp, context,
+                    (args.evidence_root, args.capsule, args.public_dir, args.distribution_evidence)):
+                selected_result = selected_native()
+            # The successful route status is assigned only after audio teardown.
+            status, result = selected_result
+        else:
+            status, result = selected_native()
     except BaseException as error:
         try:
             records.document("original-error.json", {
