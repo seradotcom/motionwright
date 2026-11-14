@@ -83,7 +83,7 @@ jobs:
           print('original-appimage-sha256=PASS')
           PY_IMAGE
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libfuse2 xvfb x11-utils dbus-x11 python3-gi gir1.2-atspi-2.0
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libfuse2 xvfb x11-utils dbus-x11 python3-gi gir1.2-atspi-2.0 at-spi2-core libglib2.0-bin
       - name: Extract original verified AppImage with no build
         shell: bash
         run: |
@@ -105,7 +105,7 @@ jobs:
           diagnostic="$RUNNER_TEMP/mw-ats-readonly-original-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           test ! -e "$diagnostic"
           mkdir -m 700 "$diagnostic"
-          timeout -k 5s 65s xvfb-run -a dbus-run-session -- /usr/bin/python3 -B -E -s \
+          timeout -k 5s 65s xvfb-run -a -s "-screen 0 1440x940x24" dbus-run-session -- /usr/bin/python3 -B -E -s \
             "$GITHUB_WORKSPACE/tooling/ci_linux_atspi_readonly_diagnostic.py" \
             --app-run "$RUNNER_TEMP/mw-ats-extract-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/squashfs-root/AppRun" \
             --scratch "$diagnostic/isolated-gui" \

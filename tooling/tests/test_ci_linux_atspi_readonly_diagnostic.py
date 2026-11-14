@@ -98,6 +98,8 @@ class ReadOnlyOriginalContracts(unittest.TestCase):
         self.assertIn("ORIGINAL_GUI_PROBE_BLOB", raw)
         self.assertNotIn("fetch-depth: 0", raw)
         self.assertIn("timeout -k 5s 65s", raw)
+        self.assertIn('at-spi2-core libglib2.0-bin', raw)
+        self.assertIn('dbus-run-session', raw)
         self.assertIn("on:\n  push:\n", raw)
         self.assertIn("if: always()", raw)
         for forbidden in ("tauri build", "cargo build", "gh release", "gh workflow run"):

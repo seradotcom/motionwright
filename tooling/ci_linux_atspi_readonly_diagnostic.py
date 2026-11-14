@@ -75,6 +75,21 @@ def trace_controls(scratch: Path, records: Path):
     gi.require_version("Atspi", "2.0")
     from gi.repository import Atspi
     stage(records, "gi-import-return")
+    # Unlike the full installed harness, this early read-only probe has not
+    # started the AT-SPI registry by exercising application admission. Ask
+    # the ordinary session bus to activate its published org.a11y.Bus service
+    # before calling Atspi.init(), with one bounded read-only request.
+    stage(records, "accessibility-bus-start")
+    try:
+        bus = subprocess.run(
+            ["gdbus", "call", "--session", "--dest", "org.a11y.Bus",
+             "--object-path", "/org/a11y/bus", "--method", "org.a11y.Bus.GetAddress"],
+            text=True, capture_output=True, timeout=6, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ProbeError("READ_ONLY_ACCESSIBILITY_BUS_UNAVAILABLE") from error
+    if bus.returncode != 0 or len(bus.stdout) > 8192:
+        raise ProbeError("READ_ONLY_ACCESSIBILITY_BUS_UNAVAILABLE")
+    stage(records, "accessibility-bus-return")
     if Atspi.init() not in (0, 1):
         raise ProbeError("READ_ONLY_ATSPI_INIT_FAILED")
     Atspi.set_timeout(800, 2500)
