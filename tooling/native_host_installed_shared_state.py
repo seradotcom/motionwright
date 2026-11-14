@@ -934,6 +934,8 @@ CI_PRIVATE_BYTES = 240 * 1024 * 1024
 CI_PRIVATE_FILES = 4094
 CI_FUTURE_PRIVATE_BYTES = 64 * 1024 * 1024
 CI_FUTURE_PRIVATE_FILES = 1024
+# One original job clock, declared before dispatch; no phase may renew it.
+CI_JOB_SECONDS = 60 * 60
 CI_JOIN_SECONDS = 1800
 CI_TAIL_SECONDS = 360  # sealing, cipher upload and the existing package upload
 CI_EXPECTED_CONTROLS = 37
@@ -1287,11 +1289,11 @@ def ci_capture_job_deadline(evidence):
     job = matches[0]
     started = datetime.fromisoformat(job["started_at"].replace("Z", "+00:00")).timestamp()
     # Date has one-second resolution; subtract two seconds conservatively.
-    deadline_mono_ns = server_anchor_mono_ns + int((started + 2700 - server_now - 2) * 1e9)
+    deadline_mono_ns = server_anchor_mono_ns + int((started + CI_JOB_SECONDS - server_now - 2) * 1e9)
     remaining = (deadline_mono_ns - time.monotonic_ns()) / 1e9
-    need(CI_JOIN_SECONDS <= remaining <= 2700, "CI_JOIN_DOES_NOT_FIT_ORIGINAL_45_MINUTE_JOB")
+    need(CI_JOIN_SECONDS <= remaining <= CI_JOB_SECONDS, "CI_JOIN_DOES_NOT_FIT_ORIGINAL_JOB_BUDGET")
     record = {"source_sha": sha, "run_id": run_id, "run_attempt": "1", "job_id": job["id"],
-        "job_seconds": 2700, "job_started_at": job["started_at"], "observed_server_epoch": server_now,
+        "job_seconds": CI_JOB_SECONDS, "job_started_at": job["started_at"], "observed_server_epoch": server_now,
         "deadline_mono_ns": deadline_mono_ns, "server_anchor_mono_ns": server_anchor_mono_ns,
         "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
         "automatic_retry": False, "join_minimum_remaining_seconds": CI_JOIN_SECONDS,
@@ -1303,7 +1305,7 @@ def ci_capture_job_deadline(evidence):
 def ci_require_time(evidence, seconds):
     value = read_json(evidence / "job-deadline.original.json")
     need(value["source_sha"] == os.environ["GITHUB_SHA"] and value["run_id"] == os.environ["GITHUB_RUN_ID"]
-         and value["run_attempt"] == os.environ["GITHUB_RUN_ATTEMPT"] == "1" and value["job_seconds"] == 2700
+         and value["run_attempt"] == os.environ["GITHUB_RUN_ATTEMPT"] == "1" and value["job_seconds"] == CI_JOB_SECONDS
          and value["boot_id"] == Path("/proc/sys/kernel/random/boot_id").read_text().strip(), "CI_JOB_DEADLINE_BINDING")
     need(time.monotonic_ns() + int(seconds * 1e9) <= value["deadline_mono_ns"],
          "CI_COMPLETE_NEXT_EFFECT_AND_CUSTODY_DO_NOT_FIT")

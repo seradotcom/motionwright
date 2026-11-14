@@ -598,8 +598,14 @@ class InstalledCiCustodyWiringTests(PrivateScenarioCase):
             clock.assert_not_called()
 
     def test_original_job_deadline_does_not_reset_for_another_phase_or_boot(self):
+        workflow = (TOOLING.parent / ".github/workflows/package-candidate.yml").read_text()
+        header = workflow.split("\n  linux-first-use-installed:\n", 1)[1].split("\n    steps:", 1)[0]
+        budgets = [line for line in header.splitlines() if line.startswith("    timeout-minutes: ")]
+        self.assertEqual(len(budgets), 1)
+        self.assertEqual(int(budgets[0].partition(":")[2]) * 60, installed.CI_JOB_SECONDS)
+        self.assertEqual((installed.CI_JOIN_SECONDS, installed.CI_TAIL_SECONDS), (1800, 360))
         evidence = self.root / "evidence"; evidence.mkdir()
-        record = {"source_sha": "a" * 40, "run_id": "123", "run_attempt": "1", "job_seconds": 2700,
+        record = {"source_sha": "a" * 40, "run_id": "123", "run_attempt": "1", "job_seconds": installed.CI_JOB_SECONDS,
             "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(), "deadline_mono_ns": 1000000000000}
         installed.publish(evidence / "job-deadline.original.json", record)
         with patch.dict(os.environ, GITHUB_SHA="a" * 40, GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="1"), \
@@ -609,6 +615,13 @@ class InstalledCiCustodyWiringTests(PrivateScenarioCase):
                 installed.ci_require_time(evidence, 101)
             with patch.dict(os.environ, GITHUB_RUN_ATTEMPT="2"), self.assertRaisesRegex(installed.ScenarioError, "DEADLINE_BINDING"):
                 installed.ci_require_time(evidence, 1)
+            for field, value in (("job_seconds", 2700), ("boot_id", "another-boot")):
+                old_evidence = self.root / field; old_evidence.mkdir()
+                old_record = {**record, field: value}
+                installed.publish(old_evidence / "job-deadline.original.json", old_record)
+                with self.subTest(field=field), self.assertRaisesRegex(installed.ScenarioError, "DEADLINE_BINDING"):
+                    installed.ci_require_time(old_evidence, 1)
+                self.assertEqual(installed.read_json(old_evidence / "job-deadline.original.json"), old_record)
         self.assertEqual(installed.read_json(evidence / "job-deadline.original.json"), record)
 
     def test_source_original_copies_bind_actual_bytes_and_refuse_changed_source(self):
@@ -645,7 +658,8 @@ class InstalledCiPriorCapacityTests(PrivateScenarioCase):
         calls, anchors = [], []
         class Response:
             status = 200
-            headers = {"Date": "Tue, 14 Nov 2023 22:18:20 GMT", "Age": "0"}
+            # Twenty minutes already elapsed before this original metadata response.
+            headers = {"Date": "Tue, 14 Nov 2023 22:33:20 GMT", "Age": "0"}
             def __init__(self, body, delayed=False):
                 self.raw, self.delayed = json.dumps(body).encode(), delayed
             def __enter__(self): return self
@@ -675,9 +689,10 @@ class InstalledCiPriorCapacityTests(PrivateScenarioCase):
              patch.object(installed.time, "monotonic_ns", side_effect=lambda: now[0]):
             result = installed.ci_capture_job_deadline(evidence)
         self.assertEqual(len(calls), 2)
-        self.assertEqual(result["deadline_mono_ns"], anchors[0] + (2700 - 300 - 2) * 1_000_000_000)
+        self.assertEqual(result["job_seconds"], installed.CI_JOB_SECONDS)
+        self.assertEqual(result["deadline_mono_ns"], anchors[0] + (installed.CI_JOB_SECONDS - 1200 - 2) * 1_000_000_000)
         self.assertEqual(result["server_anchor_mono_ns"], anchors[0])
-        self.assertLess(result["deadline_mono_ns"], now[0] + (2700 - 300) * 1_000_000_000)
+        self.assertLess(result["deadline_mono_ns"], now[0] + (installed.CI_JOB_SECONDS - 1200) * 1_000_000_000)
 
     def test_measured_copies_are_charged_before_open_and_the_allocation_is_never_refunded(self):
         evidence = self.root / "evidence"; evidence.mkdir()
