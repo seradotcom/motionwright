@@ -222,6 +222,35 @@ def validate_originals(originals, expected_request, expected_sources):
     return parsed
 
 
+def _abort_retaining(supervisor, record_error):
+    """Consume control at most once; an uncertain close never loses ownership."""
+    if supervisor is None or not hasattr(supervisor, "abort"):
+        return
+    try:
+        supervisor.abort()
+    except BaseException as exc:
+        record_error("abort:" + type(exc).__name__)
+
+
+def _persist_originals(paths, originals, *, retained):
+    """Attempt each exclusive original once; keep prefixes and unresolved handles."""
+    first_error, failed = None, []
+    for key, raw in originals.items():
+        if key == "request":
+            continue  # Written before any child can exist; never overwritten.
+        try:
+            with paths[key].open("xb") as stream:
+                stream.write(raw)
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
+            failed.append(key + ":" + type(exc).__name__)
+    if first_error is not None:
+        failure = ExtractionError("extraction_original_custody_failed", retained=retained)
+        failure.add_note("originals_not_persisted:" + ",".join(failed))
+        raise failure from first_error
+
+
 def run_owned(command, cwd, directory, label, *, env=None, stream_limit=MAX_STREAM,
               timeout=MAX_SECONDS):
     """Invoke once; success requires closed descendants, complete originals and waits."""
@@ -315,7 +344,7 @@ def run_owned(command, cwd, directory, label, *, env=None, stream_limit=MAX_STRE
                 elif len(raw) > core.FRAME_LIMIT:
                     error("launch_frame_budget")
             if errors:
-                supervisor.abort()
+                _abort_retaining(supervisor, error)
             if cli_fd is not None and cli_exit_ns is None:
                 if select.select([cli_fd], [], [], 0)[0]:
                     cli_exit_ns = time.monotonic_ns()
@@ -331,7 +360,7 @@ def run_owned(command, cwd, directory, label, *, env=None, stream_limit=MAX_STRE
                 break
             if time.monotonic_ns() >= budget.join_ns:
                 error("original_join_deadline")
-                supervisor.abort()
+                _abort_retaining(supervisor, error)
                 # Only the already retained supervisor is waited here. The
                 # subreaper owns descendant cleanup; no name/PID-wide signals.
                 select.select([supervisor.pidfd], [], [], .005)
@@ -353,7 +382,7 @@ def run_owned(command, cwd, directory, label, *, env=None, stream_limit=MAX_STRE
         if isinstance(exc, core.RetainedChildError):
             supervisor = exc
         if supervisor is not None and hasattr(supervisor, "abort"):
-            supervisor.abort()
+            _abort_retaining(supervisor, error)
         # Continue the original bounded capture and exact-child wait on failure.
         # Cleanup cannot extend the budget or turn a failed extraction into PASS.
         if pump is not None and isinstance(supervisor, core.SupervisorHandle):
@@ -380,7 +409,7 @@ def run_owned(command, cwd, directory, label, *, env=None, stream_limit=MAX_STRE
         completed_ns = time.monotonic_ns()
     finally:
         if isinstance(supervisor, core.SupervisorHandle):
-            supervisor.abort()
+            _abort_retaining(supervisor, error)
         unresolved = supervisor is not None and wait is None
         protected = {getattr(supervisor, "pidfd", None), getattr(supervisor, "status_fd", None)} if unresolved else set()
         for fd in fds - protected:
@@ -389,35 +418,40 @@ def run_owned(command, cwd, directory, label, *, env=None, stream_limit=MAX_STRE
             except OSError:
                 error("descriptor_close_failed")
 
-    raw_streams, stream_rows = {}, {}
-    for key, fd in (("stdout", locals().get("out_r")), ("stderr", locals().get("err_r")),
-                    ("subtree", getattr(supervisor, "status_fd", None))):
-        stream = pump.streams.get(fd) if pump is not None else None
-        raw_streams[key] = bytes(stream.data) if stream is not None else b""
-        stream_rows[key] = {"bytes": len(raw_streams[key]), "sha256": sha(raw_streams[key]),
-                            "eof": stream.eof if stream is not None else False,
-                            "truncated": stream.truncated if stream is not None else False}
-    binding_raw = encoded(binding if binding is not None else {
-        "schema": SCHEMA + "/binding", "status": "NOT_BOUND"})
-    closure = {"schema": SCHEMA + "/closure", "budget": budget.record(),
-               "producer_sources": producer_sources, "binding_sha256": sha(binding_raw),
-               "subtree_sha256": sha(raw_streams["subtree"]), "streams": stream_rows,
-               "supervisor_wait": wait, "cli_pidfd_exit_monotonic_ns": cli_exit_ns,
-               "streams_completed_monotonic_ns": pump.ended_ns if pump is not None else None,
-               "completed_monotonic_ns": completed_ns, "errors": errors}
-    closure_raw = encoded(closure)
-    completion = {**expected, "returncode": returncode, "errors": errors,
-                  "stdout_sha256": sha(raw_streams["stdout"]),
-                  "stderr_sha256": sha(raw_streams["stderr"]),
-                  "closure_sha256": sha(closure_raw)}
-    originals = {"request": encoded(expected), **raw_streams, "binding": binding_raw,
-                 "closure": closure_raw, "completion": encoded(completion)}
-    for key, raw in originals.items():
-        if key != "request":
-            with paths[key].open("xb") as stream:
-                stream.write(raw)
-    if errors:
-        raise ExtractionError("extraction_failed_originals_retained",
-                              retained=supervisor if wait is None else None)
-    validate_originals(originals, expected, producer_sources)
-    return {"returncode": returncode, "process_closure": "SUBREAPER_ECHILD_AND_RETAINED_PIDFD_WAIT"}
+    retained = supervisor if wait is None else None
+    try:
+        raw_streams, stream_rows = {}, {}
+        for key, fd in (("stdout", locals().get("out_r")), ("stderr", locals().get("err_r")),
+                        ("subtree", getattr(supervisor, "status_fd", None))):
+            stream = pump.streams.get(fd) if pump is not None else None
+            raw_streams[key] = bytes(stream.data) if stream is not None else b""
+            stream_rows[key] = {"bytes": len(raw_streams[key]), "sha256": sha(raw_streams[key]),
+                                "eof": stream.eof if stream is not None else False,
+                                "truncated": stream.truncated if stream is not None else False}
+        binding_raw = encoded(binding if binding is not None else {
+            "schema": SCHEMA + "/binding", "status": "NOT_BOUND"})
+        closure = {"schema": SCHEMA + "/closure", "budget": budget.record(),
+                   "producer_sources": producer_sources, "binding_sha256": sha(binding_raw),
+                   "subtree_sha256": sha(raw_streams["subtree"]), "streams": stream_rows,
+                   "supervisor_wait": wait, "cli_pidfd_exit_monotonic_ns": cli_exit_ns,
+                   "streams_completed_monotonic_ns": pump.ended_ns if pump is not None else None,
+                   "completed_monotonic_ns": completed_ns, "errors": errors}
+        closure_raw = encoded(closure)
+        completion = {**expected, "returncode": returncode, "errors": errors,
+                      "stdout_sha256": sha(raw_streams["stdout"]),
+                      "stderr_sha256": sha(raw_streams["stderr"]),
+                      "closure_sha256": sha(closure_raw)}
+        originals = {"request": encoded(expected), **raw_streams, "binding": binding_raw,
+                     "closure": closure_raw, "completion": encoded(completion)}
+        _persist_originals(paths, originals, retained=retained)
+        if errors:
+            raise ExtractionError("extraction_failed_originals_retained", retained=retained)
+        validate_originals(originals, expected, producer_sources)
+        return {"returncode": returncode, "process_closure": "SUBREAPER_ECHILD_AND_RETAINED_PIDFD_WAIT"}
+    except BaseException as exc:
+        if isinstance(exc, ExtractionError) and exc.retained is retained:
+            raise
+        failure = ExtractionError("extraction_finalization_failed", retained=retained)
+        if errors:
+            failure.add_note("prior_capture_errors:" + ",".join(errors))
+        raise failure from exc

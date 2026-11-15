@@ -299,6 +299,21 @@ class InventoryFilesystemTests(unittest.TestCase):
             inventory._operation_summary(directory, [("extract", command, self.base)])
         self.assertFalse((directory / "inventory.json").exists())
 
+    def test_package_descriptor_close_cannot_replace_a_retained_owner_failure(self):
+        import candidate_package_extraction as extraction
+        retained = object()  # Pure exception identity, never a process assertion.
+        primary = extraction.ExtractionError("pure owner failure", retained=retained)
+        with self.assertRaises(extraction.ExtractionError) as caught:
+            try:
+                raise primary
+            finally:
+                inventory._close_package_reader(-1, sys.exception())
+        self.assertIs(caught.exception, primary)
+        self.assertIs(caught.exception.retained, retained)
+        self.assertEqual(primary.__notes__, ["inventory_package_descriptor_close_failed:OSError"])
+        with self.assertRaises(OSError):
+            inventory._close_package_reader(-1, None)
+
     def test_macos_extraction_is_refused_before_effects_without_kernel_closure(self):
         work, output = self.base / "never-mounted", self.base / "never-inventoried"
         with self.assertRaisesRegex(inventory.InventoryError, "full_process_closure_unavailable"):

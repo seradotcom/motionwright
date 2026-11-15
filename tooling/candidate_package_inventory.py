@@ -769,6 +769,16 @@ def observe_existing(*, repo, source, kind, artifact, receipt, roots, directory,
     return _write_report(directory, compose(before, observed, nsis_listing=nsis_listing))
 
 
+def _close_package_reader(fd, primary_error):
+    """Keep a pending owner/retained exception if this one close is uncertain."""
+    try:
+        os.close(fd)
+    except OSError as closing:
+        if primary_error is None:
+            raise
+        primary_error.add_note("inventory_package_descriptor_close_failed:" + type(closing).__name__)
+
+
 def extract_and_observe(*, repo, source, kind, artifact, receipt, work, directory, environment=None):
     """Replace, never repeat, one existing owned Linux extraction.
 
@@ -828,7 +838,7 @@ def extract_and_observe(*, repo, source, kind, artifact, receipt, work, director
                    "operations": _operation_summary(directory, commands)}
         return _write_report(directory, compose(before, observed, custody=custody))
     finally:
-        os.close(package_fd)
+        _close_package_reader(package_fd, sys.exception())
 
 
 def consume(*, repo, source, kind, artifact, receipt, directory, expected_sha256,

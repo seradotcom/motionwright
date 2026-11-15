@@ -47,6 +47,39 @@ class ExtractionPolicyTests(unittest.TestCase):
                 extraction.request([str(Path(tmp) / ("x" * 4000))] + ["x" * 4096] * 15,
                                    Path(tmp), "extract")
 
+    def test_abort_close_error_is_recorded_without_losing_the_owner_object(self):
+        class InertControl:
+            def __init__(self):
+                self.calls = 0
+            def abort(self):
+                self.calls += 1
+                raise OSError("pure close-failure control")
+        control, errors = InertControl(), []
+        extraction._abort_retaining(control, errors.append)
+        self.assertEqual(control.calls, 1)
+        self.assertEqual(errors, ["abort:OSError"])
+        self.assertIsNotNone(control)
+
+    def test_publication_failure_preserves_other_originals_and_unresolved_reference(self):
+        # This sentinel tests exception transport only. It is not a process,
+        # pidfd, closure observation or physical custody proof.
+        retained = object()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = {name: root / name for name in ("request", "stdout", "stderr", "closure")}
+            paths["request"].write_bytes(b"original request")
+            paths["stdout"].write_bytes(b"retained earlier prefix")
+            originals = {"request": b"never rewrite", "stdout": b"must not replace",
+                         "stderr": b"original stderr", "closure": b"original failure record"}
+            with self.assertRaises(extraction.ExtractionError) as caught:
+                extraction._persist_originals(paths, originals, retained=retained)
+            self.assertIs(caught.exception.retained, retained)
+            self.assertIsInstance(caught.exception.__cause__, FileExistsError)
+            self.assertEqual(paths["request"].read_bytes(), b"original request")
+            self.assertEqual(paths["stdout"].read_bytes(), b"retained earlier prefix")
+            self.assertEqual(paths["stderr"].read_bytes(), b"original stderr")
+            self.assertEqual(paths["closure"].read_bytes(), b"original failure record")
+
     def test_closed_boolean_without_originals_is_never_custody(self):
         with self.assertRaisesRegex(extraction.ExtractionError, "original_set"):
             extraction.validate_originals({"process_tree_closed": True}, {}, {})
