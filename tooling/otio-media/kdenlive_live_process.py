@@ -160,16 +160,21 @@ def check_commandline(raw: bytes, exe: Path, phase: str,
             and exe.name in APP_NAMES,
             "native_Kdenlive_executable_or_source_phase_does_not_match")
     first = Path(arguments[0])
-    owned_launcher = exe.parents[2] / "AppRun.wrapped"
-    pinned_launcher = False
     if first.name == "AppRun.wrapped":
         # The original, source-bound 26.08.3 AppImage AppRun script executes
         # its AppRun.wrapped alias. /proc/exe must still be the SHA-pinned
         # real kdenlive ELF, verified independently by the caller.
-        require(exe.is_absolute()
-                and exe.parent == exe.parents[2] / "usr" / "bin"
+        # Resolve the distribution root *only* after confirming this is an
+        # absolute canonical usr/bin executable; synthetic short paths must
+        # remain valid for the direct-binary parser's existing tests.
+        require(exe.is_absolute() and len(exe.parents) >= 3,
+                "native_Kdenlive_executable_or_source_phase_does_not_match")
+        appdir = exe.parents[2]
+        owned_launcher = appdir / "AppRun.wrapped"
+        require(exe.parent == appdir / "usr" / "bin"
                 and arguments[0] == str(owned_launcher),
                 "native_Kdenlive_executable_or_source_phase_does_not_match")
+        pinned_launcher = False
         try:
             pinned_launcher = owned_launcher.is_file() and owned_launcher.samefile(exe)
         except (OSError, ValueError):

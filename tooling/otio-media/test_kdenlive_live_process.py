@@ -86,6 +86,21 @@ class KdenliveNativeProcessControls(unittest.TestCase):
             )
             self.assertFalse(result["saved_project_was_an_exact_launch_argument"])
             self.assertEqual(result["bounded_arg_count"], 2)
+            # Version-composition fixtures use a direct executable without
+            # an AppImage parent tree. They must remain admissible as a
+            # direct-binary *argument shape*, not crash with IndexError.
+            direct = check_commandline(
+                b"kdenlive\0--new-instance\0",
+                Path("kdenlive"), "import", native)
+            self.assertEqual(direct["bounded_arg_count"], 2)
+            self.assertFalse(direct["saved_project_was_an_exact_launch_argument"])
+            with self.assertRaisesRegex(
+                NativeKdenliveProcessRejected,
+                "executable_or_source_phase_does_not_match",
+            ):
+                check_commandline(
+                    b"AppRun.wrapped\0--config\0motionwright-ci.rc\0",
+                    Path("kdenlive"), "import", native)
         # Retain the existing 24-case public source roster; exercise the
         # exact authenticated AppRun alias in this import-phase contract.
         self._check_exact_owned_AppRun_wrapped_alias_binds_the_original_native_elf()
