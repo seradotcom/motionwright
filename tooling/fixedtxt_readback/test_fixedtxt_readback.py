@@ -11,6 +11,7 @@ import native_fixedtxt_session as serial
 import native_fixedtxt_workflow as route
 import review_fixedtxt_result_matrix_gn1_bound as reader
 import fixedtxt_typed_matrix_probe as typed
+import preparation_session as preparation
 
 TEMPLATE = (Path(__file__).parent / "request-contract-fixture.json").read_bytes()
 CONTEXT = {"source_sha": "76f05572ec7a41035fc42054e27d01c869cd6176",
@@ -281,6 +282,99 @@ class ReadbackOutputOwnershipTests(unittest.TestCase):
             owner.write("readback.terminal.json", {"status": "incomplete"})
         self.assertEqual(list(path.iterdir()), [])
         self.assertEqual(list(original.iterdir()), [])
+
+
+
+class PreparationOutputOwnershipTests(unittest.TestCase):
+    """Exercise real output ownership without creating a Native permission."""
+
+    def setUp(self):
+        ReadbackOutputOwnershipTests.setUp(self)
+
+        def read_stable(path, maximum):
+            raw = path.read_bytes()
+            if len(raw) > maximum:
+                raise ValueError("test_read_bound")
+            return raw
+
+        self.base.read_stable = read_stable
+
+    def test_preexisting_or_lost_creation_race_never_acquires_foreign_output(self):
+        existing = self.root / "existing-preparation"
+        existing.mkdir()
+        (existing / "retained.original").write_bytes(b"previous")
+        owner = None
+        with self.assertRaisesRegex(preparation.ReviewRejected, "new_private_output_required"):
+            owner = preparation.PreparationOutput(self.base, existing, self.source, {})
+        self.assertIsNone(owner)
+        self.assertEqual({p.name: p.read_bytes() for p in existing.iterdir()},
+                         {"retained.original": b"previous"})
+        path = self.root / "preparation-race"
+        real_mkdir = Path.mkdir
+
+        def competing_mkdir(candidate, *args, **kwargs):
+            real_mkdir(candidate, *args, **kwargs)
+            (candidate / "winner.original").write_bytes(b"winner")
+            raise FileExistsError(str(candidate))
+
+        with patch.object(Path, "mkdir", competing_mkdir), self.assertRaises(FileExistsError):
+            owner = preparation.PreparationOutput(self.base, path, self.source, {})
+        self.assertIsNone(owner)
+        self.assertEqual({p.name: p.read_bytes() for p in path.iterdir()},
+                         {"winner.original": b"winner"})
+
+    def test_replaced_directory_cannot_receive_permission_or_failure_receipt(self):
+        path = self.root / "preparation-replaced"
+        owner = preparation.PreparationOutput(self.base, path, self.source, {})
+        retained = self.root / "preparation-original"
+        path.rename(retained)
+        path.mkdir()
+        for name in preparation.PreparationOutput.NAMES:
+            with self.subTest(name=name), self.assertRaisesRegex(
+                    preparation.ReviewRejected, "preparation_output_identity_changed"):
+                owner.write_raw(name, b"offline fixture only")
+        with self.assertRaisesRegex(preparation.ReviewRejected, "preparation_output_identity_changed"):
+            owner.read_dispatch()
+        self.assertEqual(list(path.iterdir()), [])
+        self.assertEqual(list(retained.iterdir()), [])
+
+    def test_dispatch_is_exact_exclusive_and_closed_to_unexpected_names(self):
+        path = self.root / "preparation-dispatch"
+        owner = preparation.PreparationOutput(self.base, path, self.source, {})
+        raw = b'{"offline_fixture":true,"native_calls":0}'
+        owner.write_raw("dispatch.original.json", raw)
+        self.assertEqual(owner.read_dispatch(), raw)
+        with self.assertRaises(FileExistsError):
+            owner.write_raw("dispatch.original.json", b"replacement")
+        for name in ("unrelated.json", "../escaped.json", "nested/dispatch.original.json"):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                    preparation.ReviewRejected, "preparation_output_name"):
+                owner.write_raw(name, b"unexpected")
+        self.assertEqual({p.name: p.read_bytes() for p in path.iterdir()},
+                         {"dispatch.original.json": raw})
+
+    def test_owned_failure_preserves_started_and_never_replaces_terminal(self):
+        path = self.root / "preparation-failure"
+        owner = preparation.PreparationOutput(self.base, path, self.source, {})
+        started = {"status": "STARTED", "native_calls": 0}
+        failed = {"status": "PREPARATION_REVIEW_INCOMPLETE", "R28_issued": False}
+        owner.write("review.started.json", started)
+        owner.write("review.terminal.json", failed)
+        with self.assertRaises(FileExistsError):
+            owner.write("review.terminal.json", {"status": "replacement"})
+        self.assertEqual(json.loads((path / "review.started.json").read_bytes()), started)
+        self.assertEqual(json.loads((path / "review.terminal.json").read_bytes()), failed)
+
+    def test_physical_reader_pins_exact_preparation_bytes_before_import(self):
+        path = Path(preparation.__file__)
+        raw = path.read_bytes()
+        self.assertEqual(reader.sha(raw), reader.OUTER_SHA)
+        loaded = reader.load(path, reader.OUTER_SHA, "preparation_dependency_fixture")
+        self.assertTrue(callable(loaded.verify_preparation))
+        changed = self.root / "changed-preparation.py"
+        changed.write_bytes(raw + b"\nraise AssertionError('must never execute')\n")
+        with self.assertRaisesRegex(reader.ReadRejected, "physical_reader_dependency_digest"):
+            reader.load(changed, reader.OUTER_SHA, "changed_dependency_fixture")
 
 
 if __name__ == "__main__":

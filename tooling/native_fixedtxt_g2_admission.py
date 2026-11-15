@@ -637,7 +637,7 @@ def verify_owner_resource_prefix(originals, *, plan, current, runner_temp):
     if session is None:
         need(initial == selected_clock, "fixedtxt-resource-single-clock-differs")
     else:
-        first_clock = (clock_raw if index == 0 else originals["control/reused-preparation/control/clock.original.json"])
+        first_clock = (clock_raw if index == 0 else originals["control/" + serial.reused_original_member("control", "clock.original.json")])
         need(initial["clock"] == descriptor(first_clock)
              and initial["request"] == session["session"]["template"]
              and initial["started_monotonic"] == session["session"]["started_monotonic"]

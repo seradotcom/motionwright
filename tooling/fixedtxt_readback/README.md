@@ -53,3 +53,21 @@ request-contract-fixture.json is a public-shaped request used for those pure
 checks; it is not a dispatch grant or evidence of a Native execution. The tests
 cover distinct PNG limits, forged/missing originals, namespace and clock
 binding, mandatory frame cardinality, and over-limit rejection before decoding.
+
+## Session preparation review
+
+preparation_session.py is a separate entry point for the candidate24 preparation
+review. It authenticates the retained source, clock, preparation children, P/R/Q,
+selected session and runtime handoff before writing one bounded R28 commitment.
+It never dispatches a workflow or executes Native, and grants no formal or human
+acceptance. The actual producer must independently admit that commitment before
+its one operation. result_session_bounded.py preserves the exact source oracle's
+predicates while reading authenticated bounded views.
+
+The preparation entry point uses the same private-caller path contract described
+above. Its output directory is acquired only after successful exclusive creation.
+Started, intent, dispatch and terminal files use a closed name set; replacement of
+the owned directory blocks later writes and dispatch readback. Existing receipts
+remain exclusive. The physical reader's preparation dependency pin matches these
+integrated bytes. A wrapper must bind the new hashes together when it selects this
+pair; historical frozen invocations keep their original reader identities.
