@@ -1146,5 +1146,84 @@ class ModalReadbackTests(unittest.TestCase):
                 scenario.session.tree.assert_not_called()
 
 
+class RenderFieldCustodyTests(unittest.TestCase):
+    """Offline selection/custody regressions; never live Native evidence."""
+
+    def observed(self, fields):
+        label = row("app/1/output-label", "Output file", "label")
+        label["rect"] = [10, 10, 80, 20]
+        dialog = row("app/1", "Rendering", "dialog")
+        rows = [dialog, label] + fields
+        session = actions.AtspiSession.__new__(actions.AtspiSession)
+        session.pid = 41
+        events, reads = [], []
+        def tree():
+            reads.append("original-observation")
+            session.last_snapshot = {"complete": True, "rows": rows}
+            return rows
+        session.tree = tree
+        session.journal = SimpleNamespace(emit=events.append)
+        def forbidden(*_args, **_kwargs):
+            self.fail("Field resolution/custody must not perform a Native action")
+        session.text = session.action = session.focus = forbidden
+        return session, dialog, rows, events, reads
+
+    def field(self, key, rect=(100, 10, 200, 20)):
+        value = row(key, "", "text")
+        value.update(editable=True, text="/original/output.mov", rect=list(rect))
+        return value
+
+    def test_unique_and_nested_editable_leaf_keep_original_selection(self):
+        for nested in (False, True):
+            with self.subTest(nested=nested):
+                leaf = self.field("app/1/field/line")
+                fields = [self.field("app/1/field"), leaf] if nested else [leaf]
+                session, dialog, rows, events, reads = self.observed(fields)
+                selected = session.render_output_field("before-edit", dialog)
+                self.assertIs(selected, leaf)
+                self.assertEqual(reads, ["original-observation"])
+                self.assertEqual(events, [])
+
+    def test_zero_and_multiple_candidates_retain_exact_original_tree(self):
+        for fields in ([], [self.field("app/1/a"), self.field("app/1/b")]):
+            with self.subTest(candidate_count=len(fields)):
+                session, dialog, rows, events, reads = self.observed(fields)
+                with self.assertRaisesRegex(actions.GuiRejected,
+                                            "native_gui_labeled_field_not_unique"):
+                    session.render_output_field("before-edit", dialog)
+                self.assertEqual(reads, ["original-observation"])
+                self.assertEqual(len(events), 1)
+                event = events[0]
+                self.assertEqual(event["label_keys"], ["app/1/output-label"])
+                self.assertEqual(event["geometric_candidate_keys"], [r["key"] for r in fields])
+                self.assertEqual(event["editable_leaf_keys"], [r["key"] for r in fields])
+                self.assertEqual(event["snapshot"], independent_snapshot(rows))
+                for flag in ("new_accessibility_query", "native_render_dispatched_here",
+                             "native_operation_retried", "semantic_effect_verified", "formal_acceptance"):
+                    self.assertIs(event[flag], False)
+
+    def test_recording_error_preserves_selection_error_without_requery(self):
+        session, dialog, _rows, events, reads = self.observed([])
+        def failed_sink(_event):
+            raise OSError("retained sink unavailable")
+        session.journal.emit = failed_sink
+        with self.assertRaisesRegex(actions.GuiRejected,
+                                    "native_gui_labeled_field_not_unique") as caught:
+            session.render_output_field("after-edit", dialog)
+        self.assertIn("native_render_output_custody_failed:OSError", caught.exception.__notes__)
+        self.assertEqual(reads, ["original-observation"])
+        self.assertEqual(events, [])
+
+    def test_foreign_snapshot_pid_cannot_replace_original_error(self):
+        session, dialog, rows, events, reads = self.observed([])
+        rows[1]["pid"] = 99
+        with self.assertRaisesRegex(actions.GuiRejected,
+                                    "native_gui_labeled_field_not_unique") as caught:
+            session.render_output_field("before-edit", dialog)
+        self.assertIn("native_render_output_custody_failed:GuiRejected", caught.exception.__notes__)
+        self.assertEqual(reads, ["original-observation"])
+        self.assertEqual(events, [])
+
+
 if __name__ == "__main__":
     unittest.main()

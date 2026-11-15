@@ -327,6 +327,13 @@ def labeled_field(rows: list[dict], labels: tuple[str, ...]) -> dict:
                     r["role"] == "label"], code="native_gui_label_not_unique")
     lx, ly, lw, lh = label["rect"]
     require(lw > 0 and lh > 0, "native_gui_label_geometry_missing")
+    _, leaves = labeled_field_candidates(rows, label)
+    return unique(leaves, code="native_gui_labeled_field_not_unique")
+
+
+def labeled_field_candidates(rows: list[dict], label: dict) -> tuple[list[dict], list[dict]]:
+    """Pure geometry projection used by selection and original failure custody."""
+    lx, ly, lw, lh = label["rect"]
     candidates = []
     for row in rows:
         if not (row["visible"] and row["enabled"] and row["editable"]):
@@ -338,7 +345,7 @@ def labeled_field(rows: list[dict], labels: tuple[str, ...]) -> dict:
     # editable leaf of the same accessibility ancestry, never a second field.
     leaves = [r for r in candidates if not any(
         s["key"].startswith(r["key"] + "/") for s in candidates if s is not r)]
-    return unique(leaves, code="native_gui_labeled_field_not_unique")
+    return candidates, leaves
 
 
 def check_duration_fields(position: str, crop: str, duration: str) -> None:
@@ -1202,6 +1209,47 @@ class AtspiSession:
         require(node.get_process_id() == self.pid, "native_render_state_wrong_pid")
         return bool(node.get_state_set().contains(getattr(self.api.StateType, name)))
 
+    def render_output_field(self, step: str, dialog: dict) -> dict:
+        """Resolve one observed field and retain its original ambiguity."""
+        rows = self.descendants(dialog)
+        try:
+            return labeled_field(rows, ("Output file",))
+        except BaseException as original:
+            try:
+                snapshot = self.last_snapshot
+                require(isinstance(snapshot, dict)
+                        and snapshot.get("complete") is True
+                        and type(snapshot.get("rows")) is list
+                        and rows == [r for r in snapshot["rows"]
+                                     if r["key"].startswith(dialog["key"] + "/")],
+                        "native_render_output_failure_tree_incomplete")
+                labels = [r for r in rows if r["visible"]
+                          and r["role"] == "label"
+                          and normalized(r["name"]) == "Output file"]
+                candidates, leaves = [], []
+                if len(labels) == 1 and all(v > 0 for v in labels[0]["rect"][2:]):
+                    candidates, leaves = labeled_field_candidates(rows, labels[0])
+                retained = modal_snapshot(snapshot["rows"], self.pid)
+                self.journal.emit({
+                    "step": step + ".output-last-complete-tree",
+                    "state": "READ_ONLY_FAILURE_CUSTODY",
+                    "expected_pid": self.pid, "dialog_key": dialog["key"],
+                    "requested_label": "Output file",
+                    "label_keys": [r["key"] for r in labels],
+                    "geometric_candidate_keys": [r["key"] for r in candidates],
+                    "editable_leaf_keys": [r["key"] for r in leaves],
+                    "snapshot": retained,
+                    "new_accessibility_query": False,
+                    "native_render_dispatched_here": False,
+                    "native_operation_retried": False,
+                    "semantic_effect_verified": False,
+                    "formal_acceptance": False,
+                })
+            except BaseException as recording_error:
+                original.add_note("native_render_output_custody_failed:"
+                                  + type(recording_error).__name__)
+            raise
+
     def render_action(self, step: str, row: dict, allowed: tuple[str, ...]) -> None:
         node = self.nodes[row["key"]]
         require(row["visible"] and row["enabled"] and node.get_process_id() == self.pid,
@@ -1442,12 +1490,12 @@ class AtspiSession:
             checkbox(name, False)
         for name in ("Use Proxy Clips", "Embed subtitles instead of burning them"):
             checkbox(name, False, optional=True)
-        output_field = labeled_field(self.descendants(dialog), ("Output file",))
+        output_field = self.render_output_field(step + ".output-before-edit", dialog)
         self.text(step + ".output", output_field, str(output))
         generate = self.journal.wait(step + ".generate-control", lambda: self.find(
             ("Generate Script",), ("push button",), scope=dialog["key"]))
         self.focus(step + ".output-editing-finished", generate)
-        output_field = labeled_field(self.descendants(dialog), ("Output file",))
+        output_field = self.render_output_field(step + ".output-after-edit", dialog)
         require(output_field["text"] == str(output), "native_render_output_rewritten_by_editor")
         observed = {"preset": "Alpha MOV", "category": "Video with Alpha", "output_field": output_field,
                     "options": observations, "rows_before_generate": self.descendants(dialog),
