@@ -1190,5 +1190,271 @@ class EditorReadbackTests(unittest.TestCase):
             with self.subTest(error_type=type(error).__name__):
                 self.assertEqual(installed.read_ui_failure_code(error), "UNCLASSIFIED_READ_FAILURE")
 
+
+class EditorReadDiagnosticTests(unittest.TestCase):
+    """Synthetic reader observations only; no installed UI or Native execution."""
+
+    Node = EditorReadbackTests.Node
+    fixture = EditorReadbackTests.fixture
+    binding = {"pid": 700, "start_time": "123", "window": "0x42"}
+
+    def missing(self, bridge):
+        with self.assertRaisesRegex(installed.accessible.NotReady, "MISSING_REOPENED_TITLE"):
+            installed.select_reopened_view(bridge, 700, 0)
+
+    @contextmanager
+    def clock(self, bridge, deadline=0.3):
+        now = [0.0]
+        clock = SimpleNamespace(monotonic=lambda: now[0],
+                                sleep=lambda seconds: now.__setitem__(0, now[0] + max(seconds, 0.001)))
+        bridge.deadline = deadline
+        with patch.object(installed, "time", clock), patch.object(
+            installed.accessible, "time", clock
+        ), patch.object(installed.accessible, "x11_identity", return_value=self.binding):
+            yield now
+
+    def exhausted(self, bridge):
+        diagnostics = {}
+        with self.clock(bridge), self.assertRaisesRegex(installed.ScenarioError, "READ_UI_DEADLINE"):
+            installed.observe_editor_until(bridge, self.binding, 0, installed.TITLE, 0.3,
+                                           diagnostics=diagnostics)
+        return diagnostics
+
+    def test_all_four_counts_do_not_verify_later_witnesses_before_missing_title(self):
+        bridge, _, _, nodes, _ = self.fixture()
+        nodes[0].name = nodes[0].text = "private unrelated name"
+        with patch.object(nodes[1], "get_application", side_effect=AssertionError("later owner read")):
+            self.missing(bridge)
+        summary = bridge.read_diagnostics.export()
+        self.assertEqual(summary["last"]["candidates"],
+                         {"title": 0, "revision": 1, "library": 1, "workspace": 1})
+        self.assertNotIn("private unrelated name", json.dumps(summary))
+        self.assertEqual(summary["census"]["calls"], 0)
+
+    def test_library_rejection_keeps_priority_and_does_not_spend_the_census(self):
+        bridge, _, app, nodes, _ = self.fixture()
+        nodes[0].name = nodes[0].text = "not the title"
+        dialog = self.Node("DIALOG", "Project library")
+        dialog.owner = app
+        app.nodes.append(dialog)
+        diagnostics = self.exhausted(bridge)
+        self.assertEqual(diagnostics["last_condition"], "EDITOR_STILL_IN_LIBRARY")
+        summary = diagnostics["read_diagnostics"]
+        self.assertEqual(summary["last"]["markers"]["library_dialog"], 1)
+        self.assertEqual(summary["last"]["candidates"]["title"], 0)
+        self.assertEqual(summary["census"]["status"], "NOT_STARTED")
+        self.assertEqual(summary["census"]["calls"], 0)
+
+    def test_real_role_values_states_and_node_counts_never_disclose_unmatched_text(self):
+        bridge, _, _, nodes, _ = self.fixture()
+        nodes[0].role = 123
+        nodes[0].states.remove("SHOWING")
+        nodes[0].name = nodes[0].text = "PRIVATE ORIGINAL / not retained"
+        self.missing(bridge)
+        summary = bridge.read_diagnostics.export()
+        self.assertEqual(summary["last"]["nodes"], 5)
+        self.assertIn([123, 13, 1], summary["last"]["role_states"])
+        self.assertNotIn("PRIVATE ORIGINAL", json.dumps(summary))
+        self.assertNotIn(123, bridge.roles)
+
+    def test_first_and_last_summaries_keep_distinct_complete_observations(self):
+        bridge, _, app, nodes, _ = self.fixture()
+        nodes[0].name = nodes[0].text = "pending"
+        self.missing(bridge)
+        original = bridge.read_diagnostics.export()["first"]
+        extra = self.Node("PUSH_BUTTON", "Timeline")
+        extra.owner = app
+        app.nodes.append(extra)
+        self.missing(bridge)
+        summary = bridge.read_diagnostics.export()
+        self.assertEqual(summary["first"], original)
+        self.assertEqual(summary["first"]["candidates"]["workspace"], 1)
+        self.assertEqual(summary["last"]["candidates"]["workspace"], 2)
+        self.assertEqual(summary["last"]["ordinal"], 2)
+        self.assertEqual(summary["last"]["nodes"], 6)
+
+    def test_incomplete_traversal_preserves_the_previous_valid_summaries(self):
+        bridge, _, app, nodes, _ = self.fixture()
+        nodes[0].role = "UNACCEPTED_ROLE"
+        scans = [0]
+        original_child = app.get_child_at_index
+
+        def child_count():
+            scans[0] += 1
+            return len(app.nodes)
+
+        app.get_child_count = child_count
+        app.get_child_at_index = lambda index: original_child(index) if scans[0] == 1 else None
+        diagnostics = self.exhausted(bridge)
+        summary = diagnostics["read_diagnostics"]
+        self.assertEqual(diagnostics["last_condition"], "ACCESSIBLE_TREE_INCOMPLETE")
+        self.assertEqual(summary["first"], summary["last"])
+        self.assertEqual(summary["first"]["ordinal"], 1)
+        self.assertGreater(summary["partial"]["ordinal"], 1)
+        self.assertTrue(summary["incomplete"])
+
+    def test_pass_makes_identical_api_reads_and_never_starts_diagnostic_census(self):
+        traces = []
+        for enabled in (False, True):
+            bridge, _, _, _, _ = self.fixture()
+            trace = []
+            call = bridge.call
+
+            def observed(function, *arguments):
+                trace.append(function.__name__)
+                return call(function, *arguments)
+
+            with patch.object(bridge, "call", side_effect=observed):
+                if enabled:
+                    witnesses = installed.select_reopened_view(bridge, 700, 0)
+                else:
+                    with patch.object(installed, "editor_diagnostic"):
+                        witnesses = installed.select_reopened_view(bridge, 700, 0)
+            self.assertEqual(set(witnesses), {"title", "revision", "library", "workspace"})
+            traces.append(trace)
+        self.assertEqual(traces[0], traces[1])
+        diagnostics = {}
+        with self.clock(bridge), patch.object(bridge.read_diagnostics, "census_once") as census:
+            installed.observe_editor_until(bridge, self.binding, 0, installed.TITLE, 0.3,
+                                           diagnostics=diagnostics)
+        census.assert_not_called()
+        self.assertEqual(diagnostics["read_diagnostics"]["census"]["calls"], 0)
+
+    def test_owner_and_x11_failures_keep_their_codes_and_do_not_run_a_census(self):
+        for cause in ("owner", "x11"):
+            with self.subTest(cause=cause):
+                bridge, _, _, nodes, _ = self.fixture()
+                if cause == "owner":
+                    nodes[0].owner = self.Node("APPLICATION", pid=701)
+                diagnostics = {}
+                expected = "UI_WITNESS_OWNER_CHANGED" if cause == "owner" else "UI_PROCESS_CHANGED"
+                with self.clock(bridge), patch.object(bridge.read_diagnostics, "census_once") as census:
+                    with patch.object(installed.accessible, "x11_identity",
+                                      return_value=self.binding if cause == "owner" else
+                                      dict(self.binding, start_time="changed")):
+                        with self.assertRaisesRegex(installed.ScenarioError, expected):
+                            installed.observe_editor_until(bridge, self.binding, 0, installed.TITLE, 0.3,
+                                                           diagnostics=diagnostics)
+                census.assert_not_called()
+                self.assertEqual(diagnostics["read_diagnostics"]["census"]["calls"], 0)
+
+    def test_census_records_exact_excluded_role_matches_without_making_them_witnesses(self):
+        bridge, _, _, nodes, _ = self.fixture()
+        nodes[0].role = "UNACCEPTED_ROLE"
+        diagnostics = self.exhausted(bridge)
+        self.assertEqual(diagnostics["last_condition"], "MISSING_REOPENED_TITLE")
+        summary = diagnostics["read_diagnostics"]
+        self.assertEqual(summary["last"]["candidates"]["title"], 0)
+        matches = summary["census"]["matches"]
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0]["role"], "UNACCEPTED_ROLE")
+        self.assertEqual(matches[0]["name_matches"], ["title"])
+        self.assertEqual(matches[0]["text_matches"], ["title"])
+        self.assertIs(matches[0]["owner_matches"], True)
+        self.assertLessEqual(summary["census"]["calls"], 16)
+        self.assertNotIn("UNACCEPTED_ROLE", bridge.roles)
+        with patch.object(bridge, "deadline", None):
+            self.missing(bridge)
+
+    def test_census_budget_is_sixteen_total_calls_including_failed_attempts_and_owner_reads(self):
+        bridge, _, app, nodes, _ = self.fixture()
+        discarded = [self.Node("UNACCEPTED_ROLE", "private unrelated name") for _ in range(25)]
+        for node in discarded:
+            node.owner = app
+        app.nodes = discarded + nodes[1:]
+        diagnostics = self.exhausted(bridge)
+        self.assertGreater(diagnostics["read_attempts"], 1)
+        census = diagnostics["read_diagnostics"]["census"]
+        self.assertEqual(census["calls"], 16)
+        self.assertEqual(census["status"], "INCOMPLETE_CALL_LIMIT")
+        self.assertEqual(census["matches"], [])
+        self.assertNotIn("private unrelated name", json.dumps(diagnostics))
+        with self.clock(bridge):
+            bridge.read_diagnostics.census_once(bridge, self.binding, 0.3, "MISSING_REOPENED_TITLE")
+        self.assertEqual(bridge.read_diagnostics.census["calls"], 16)
+
+    def test_expired_census_deadline_sends_no_additional_read_and_cannot_restart(self):
+        bridge, _, app, nodes, _ = self.fixture()
+        nodes[0].role = "UNACCEPTED_ROLE"
+        self.missing(bridge)
+        with self.clock(bridge) as now, patch.object(app, "get_name") as name:
+            now[0] = 0.3
+            bridge.read_diagnostics.census_once(bridge, self.binding, 0.3, "MISSING_REOPENED_TITLE")
+            now[0] = 0
+            bridge.read_diagnostics.census_once(bridge, self.binding, 0.3, "MISSING_REOPENED_TITLE")
+        name.assert_not_called()
+        self.assertEqual(bridge.read_diagnostics.census["calls"], 0)
+        self.assertEqual(bridge.read_diagnostics.census["status"], "INCOMPLETE_DEADLINE")
+
+    def test_census_read_error_keeps_original_notready_and_does_not_leak_exception_text(self):
+        bridge, _, app, nodes, _ = self.fixture()
+        nodes[0].role = "UNACCEPTED_ROLE"
+        with patch.object(app, "get_name", side_effect=ValueError("PRIVATE EXCEPTION / input")):
+            diagnostics = self.exhausted(bridge)
+        self.assertEqual(diagnostics["last_condition"], "MISSING_REOPENED_TITLE")
+        summary = diagnostics["read_diagnostics"]
+        self.assertEqual(summary["census"]["status"], "INCOMPLETE_READ_ERROR")
+        self.assertEqual(summary["census"]["calls"], 1)
+        self.assertIsNotNone(summary["first"])
+        self.assertIsNotNone(summary["last"])
+        self.assertNotIn("PRIVATE EXCEPTION", json.dumps(summary))
+
+    def test_event_drain_records_the_original_iteration_cap_and_incomplete_deadline(self):
+        bridge, _, _, _, context = self.fixture()
+        context.actions = [lambda: None] * 70
+        bridge.drain_events()
+        summary = bridge.read_diagnostics.export()
+        self.assertEqual(summary["last_event_drain"],
+                         {"iterations": 64, "complete": True, "iteration_limit_reached": True})
+        self.assertEqual(len(context.actions), 6)
+        before = context.iterations
+        bridge.deadline = installed.time.monotonic() - 1
+        with self.assertRaisesRegex(installed.accessible.ProbeError, "DEADLINE"):
+            bridge.drain_events()
+        self.assertEqual(context.iterations, before)
+        self.assertEqual(bridge.read_diagnostics.export()["last_event_drain"],
+                         {"iterations": 0, "complete": False, "iteration_limit_reached": False})
+
+    def test_role_histogram_and_serialized_summary_are_bounded_and_keep_last_valid_data(self):
+        bridge, _, app, nodes, _ = self.fixture()
+        nodes[0].name = nodes[0].text = "pending"
+        for index in range(64):
+            extra = self.Node(1000 + index, "PRIVATE CONTENT")
+            extra.owner = app
+            app.nodes.append(extra)
+        self.missing(bridge)
+        summary = bridge.read_diagnostics.export()
+        self.assertEqual(len(summary["last"]["role_states"]), 16)
+        self.assertGreater(summary["last"]["role_state_overflow"], 0)
+        raw = json.dumps(summary, sort_keys=True, separators=(",", ":")).encode()
+        self.assertLessEqual(len(raw), 8 * 1024)
+        self.assertNotIn(b"PRIVATE CONTENT", raw)
+        bridge.read_diagnostics.last = {"invalid_large_summary": "PRIVATE" * 2000}
+        retained = bridge.read_diagnostics.export()
+        self.assertEqual(retained["first"], summary["first"])
+        self.assertEqual(retained["last"], summary["last"])
+        self.assertTrue(retained["incomplete"])
+        self.assertEqual(retained["diagnostic_error"], "SUMMARY_UNAVAILABLE")
+        self.assertLessEqual(len(json.dumps(retained).encode()), 8 * 1024)
+        self.assertLess(len(json.dumps({"read_diagnostics": retained, "status": "FAIL"}).encode()), 16 * 1024)
+
+    def test_diagnostic_faults_cannot_replace_the_rejection_or_erase_a_valid_summary(self):
+        for operation in ("completed", "export"):
+            with self.subTest(operation=operation):
+                bridge, _, _, nodes, _ = self.fixture()
+                nodes[0].name = nodes[0].text = "pending"
+                self.missing(bridge)
+                original = bridge.read_diagnostics.export()
+                with patch.object(bridge.read_diagnostics, operation,
+                                  side_effect=RuntimeError("PRIVATE DIAGNOSTIC FAILURE")):
+                    diagnostics = self.exhausted(bridge)
+                self.assertEqual(diagnostics["last_condition"], "MISSING_REOPENED_TITLE")
+                retained = diagnostics["read_diagnostics"]
+                self.assertEqual(retained["first"], original["first"])
+                self.assertIsNotNone(retained["last"])
+                self.assertTrue(retained["incomplete"])
+                self.assertNotIn("PRIVATE DIAGNOSTIC FAILURE", json.dumps(retained))
+
+
 if __name__ == "__main__":
     unittest.main()

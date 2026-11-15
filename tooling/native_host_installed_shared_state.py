@@ -348,6 +348,203 @@ def validate_candidate(value, args, artifact):
          and matching[0].get("sha256") == artifact["sha256"], "CANDIDATE_ARTIFACT_MISMATCH")
 
 
+READ_UI_DIAGNOSTIC_BYTES = 8 * 1024
+READ_UI_CENSUS_CALLS = 16
+
+
+class _EditorCensusStopped(Exception):
+    pass
+
+
+class EditorReadDiagnostics:
+    """Bounded observations only; none of these fields is an acceptance witness."""
+
+    STATE_NAMES = ("visible", "showing", "enabled", "sensitive", "editable", "defunct")
+    MARKERS = {"library_dialog": "Project library", "library_button": "Open project library",
+               "timeline": "Timeline", "opening": "Opening Motionwright",
+               "choose_project": "Choose a project", "open_error": "Project open error"}
+
+    def __init__(self, expected_texts):
+        self.expected = dict(zip(("title", "revision"), expected_texts))
+        self.sequence = 0
+        self.scan = None
+        self.candidates = []
+        self.first = self.last = self.partial = None
+        self.drain = {"iterations": 0, "complete": False, "iteration_limit_reached": False}
+        self.census = {"status": "NOT_STARTED", "calls": 0, "matches": []}
+        self.census_started = False
+        self.error = None
+        self._last_good = b'{"incomplete":true,"diagnostic_error":"NOT_STARTED"}'
+
+    @staticmethod
+    def role_code(role):
+        if isinstance(role, int) and not isinstance(role, bool) and 0 <= role <= 65535:
+            return int(role)
+        # Synthetic protocol controls use closed role tokens instead of GI enums.
+        if type(role) is str and re.fullmatch(r"[A-Z][A-Z0-9_]{0,47}", role):
+            return role
+        return "UNREPRESENTABLE_ROLE"
+
+    def begin(self):
+        self.sequence += 1
+        self.scan = {"ordinal": self.sequence, "nodes": 0, "complete": False,
+                     "role_states": {}, "role_state_overflow": 0,
+                     "discarded_candidates": 0,
+                     "markers": {name: 0 for name in self.MARKERS}}
+        self.candidates = []
+
+    def observed(self, raw_role, view):
+        if self.scan is None:
+            return
+        scan = self.scan
+        scan["nodes"] += 1
+        role = self.role_code(raw_role)
+        mask = sum(1 << index for index, name in enumerate(self.STATE_NAMES) if name in view.states)
+        key = (role, mask)
+        if key in scan["role_states"] or len(scan["role_states"]) < 16:
+            scan["role_states"][key] = scan["role_states"].get(key, 0) + 1
+        else:
+            scan["role_state_overflow"] += 1
+        visible = accessible.VISIBLE <= view.states and "defunct" not in view.states
+        if visible:
+            for label, name in self.MARKERS.items():
+                scan["markers"][label] += int(view.name == name)
+        accepted_shape = (visible and "editable" not in view.states
+                          and "EditableText" not in view.interfaces
+                          and ((view.role in ("text", "static", "label")
+                                and view.name in self.expected.values())
+                               or (view.role == "button"
+                                   and view.name in ("Open project library", "Timeline"))))
+        if not accepted_shape and (not view.name or view.name in self.expected.values()):
+            scan["discarded_candidates"] += 1
+            if len(self.candidates) < READ_UI_CENSUS_CALLS:
+                self.candidates.append((scan["nodes"], role, mask, view))
+
+    def snapshot(self):
+        scan = self.scan
+        return {"ordinal": scan["ordinal"], "nodes": scan["nodes"],
+                "role_states": [[role, mask, count]
+                                for (role, mask), count in scan["role_states"].items()],
+                "role_state_overflow": scan["role_state_overflow"],
+                "discarded_candidates": scan["discarded_candidates"],
+                "markers": dict(scan["markers"]), "event_drain": dict(self.drain)}
+
+    def completed(self, counts):
+        summary = self.snapshot()
+        summary["candidates"] = dict(counts)
+        self.scan["complete"] = True
+        if self.first is None:
+            self.first = summary
+        self.last = summary
+        self.partial = None
+        self.export()
+
+    def unfinished(self):
+        if self.scan is not None and not self.scan["complete"]:
+            self.partial = self.snapshot()
+
+    def drained(self, iterations, complete, iteration_limit_reached):
+        self.drain = {"iterations": iterations, "complete": complete,
+                      "iteration_limit_reached": iteration_limit_reached}
+
+    def labels(self, value):
+        return [label for label, expected in self.expected.items() if value == expected]
+
+    def census_once(self, bridge, binding, deadline, condition):
+        # Missing application/incomplete trees/library transitions must not spend
+        # the sole census before a complete editor observation has failed.
+        if (self.census_started or self.scan is None or not self.scan["complete"]
+                or not condition.startswith("MISSING_REOPENED_")):
+            return
+        self.census_started = True
+
+        effective_deadline = min(deadline, bridge.deadline) if bridge.deadline is not None else deadline
+
+        def read(function, *arguments):
+            # Count before invocation, including errors and the two owner reads.
+            # No diagnostic read can renew either inherited deadline.
+            if time.monotonic() >= effective_deadline:
+                raise _EditorCensusStopped("INCOMPLETE_DEADLINE")
+            if self.census["calls"] >= READ_UI_CENSUS_CALLS:
+                raise _EditorCensusStopped("INCOMPLETE_CALL_LIMIT")
+            self.census["calls"] += 1
+            return bridge.call(function, *arguments)
+
+        try:
+            if time.monotonic() >= effective_deadline:
+                raise _EditorCensusStopped("INCOMPLETE_DEADLINE")
+            for ordinal, role, mask, view in self.candidates:
+                if "defunct" in view.states:
+                    continue
+                name = view.name or read(view.node.get_name)
+                name_matches = self.labels(name)
+                text_matches = []
+                interfaces = view.interfaces
+                if not name or name_matches:
+                    if not interfaces:
+                        interfaces = frozenset(read(view.node.get_interfaces))
+                    if ("Text" in interfaces and "EditableText" not in interfaces
+                            and "editable" not in view.states):
+                        count = read(bridge.api.Text.get_character_count, view.node)
+                        if (type(count) is int and 0 <= count <= 256
+                                and count in {len(value) for value in self.expected.values()}):
+                            text_matches = self.labels(read(bridge.api.Text.get_text, view.node, 0, count))
+                if not name_matches and not text_matches:
+                    continue
+                row = {"node": ordinal, "role": role, "states": mask,
+                       "name_matches": name_matches, "text_matches": text_matches,
+                       "interfaces": [value for value in ("Text", "EditableText", "Component", "Action")
+                                      if value in interfaces],
+                       "owner_matches": None}
+                self.census["matches"].append(row)
+                owner = read(view.node.get_application)
+                row["owner_matches"] = owner is not None and read(owner.get_process_id) == binding["pid"]
+            self.census["status"] = ("INCOMPLETE_NODE_LIMIT"
+                                    if self.scan["discarded_candidates"] > len(self.candidates)
+                                    else "COMPLETE")
+        except _EditorCensusStopped as error:
+            self.census["status"] = str(error)
+        except Exception:
+            # Do not replace the original NotReady or disclose exception text.
+            self.census["status"] = "INCOMPLETE_READ_ERROR"
+
+    def export(self):
+        value = {"schema": "motionwright.ci.editor-read-diagnostics/1",
+                 "incomplete": bool(self.error or self.partial
+                                    or self.census["status"].startswith("INCOMPLETE_")),
+                 "diagnostic_error": self.error, "state_bits": list(self.STATE_NAMES),
+                 "first": self.first, "last": self.last, "partial": self.partial,
+                 "last_event_drain": dict(self.drain), "census": self.census}
+        try:
+            raw = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+            if len(raw) > READ_UI_DIAGNOSTIC_BYTES - 256:
+                raise ValueError
+        except Exception:
+            # Retain the last valid summary. The small reserve also bounds this
+            # closed failure marker inside the unchanged 8 KiB diagnostic cap.
+            retained = json.loads(self._last_good)
+            retained.update(incomplete=True, diagnostic_error="SUMMARY_UNAVAILABLE")
+            return retained
+        self._last_good = raw
+        return json.loads(raw)
+
+
+def editor_diagnostic(bridge, operation, *arguments):
+    """Diagnostic faults never change a product predicate or its first error."""
+    try:
+        return getattr(bridge.read_diagnostics, operation)(*arguments)
+    except Exception:
+        try:
+            bridge.read_diagnostics.error = "DIAGNOSTIC_ERROR"
+            if operation == "export":
+                retained = json.loads(bridge.read_diagnostics._last_good)
+                retained.update(incomplete=True, diagnostic_error="DIAGNOSTIC_ERROR")
+                return retained
+        except Exception:
+            pass
+        return None
+
+
 class EditorReadBridge(accessible.AtspiBridge):
     """Read editor labels without borrowing the create-dialog role filter."""
 
@@ -355,18 +552,27 @@ class EditorReadBridge(accessible.AtspiBridge):
         super().__init__(api, deadline=deadline, glib=glib)
         self.roles.update({api.Role.STATIC: "static", api.Role.LABEL: "label"})
         self.expected_texts = frozenset(expected_texts)
+        self.read_diagnostics = EditorReadDiagnostics(expected_texts)
 
     def drain_events(self):
         # Service the same fresh structural cache within the inherited deadline.
         # A busy event queue cannot consume an unbounded number of iterations.
         context = self.glib.MainContext.default()
-        for _ in range(64):
-            if not self.call(context.pending):
-                return
-            self.call(context.iteration, False)
+        iterations, complete, limit_reached = 0, False, False
+        try:
+            for _ in range(64):
+                if not self.call(context.pending):
+                    complete = True
+                    return
+                self.call(context.iteration, False)
+                iterations += 1
+            complete = limit_reached = True
+        finally:
+            editor_diagnostic(self, "drained", iterations, complete, limit_reached)
 
     def view(self, node):
-        role = self.roles.get(self.call(node.get_role), "other")
+        raw_role = self.call(node.get_role)
+        role = self.roles.get(raw_role, "other")
         state = self.call(node.get_state_set)
         states = frozenset(k for k, v in self.states.items() if state.contains(v))
         visible = accessible.VISIBLE <= states and "defunct" not in states
@@ -389,8 +595,9 @@ class EditorReadBridge(accessible.AtspiBridge):
                 value = self.read_text(node)
                 if value in self.expected_texts:
                     name = value
-        return accessible.View(node, role, name, states, interfaces)
-
+        view = accessible.View(node, role, name, states, interfaces)
+        editor_diagnostic(self, "observed", raw_role, view)
+        return view
 
 def read_ui_failure_code(error):
     if isinstance(error, (ScenarioError, accessible.ProbeError)):
@@ -402,21 +609,29 @@ def read_ui_failure_code(error):
 
 def select_reopened_view(bridge, pid, revision, title=TITLE):
     """Read actual visible editor text, with ownership checked on every witness."""
+    editor_diagnostic(bridge, "begin")
     apps = bridge.applications()
     need(len(apps) <= 128, "UI_APPLICATION_LIMIT")
     app = accessible.unique([item for item in apps if bridge.pid(item) == pid], "APPLICATION")
     views = accessible.walk(bridge, app)
     visible = [view for view in views
                if accessible.VISIBLE <= view.states and "defunct" not in view.states]
+    requests = (("title", title, False), ("revision", "r" + str(revision), False),
+                ("library", "Open project library", True), ("workspace", "Timeline", True))
+    # Pure counts over the SAME views. No owner/Text verification is moved ahead
+    # of the original library/title/revision/button failure order.
+    candidates = {
+        label: [view for view in visible if view.name == name
+                and (view.role == "button" if button else view.role in ("text", "static", "label"))
+                and "editable" not in view.states and "EditableText" not in view.interfaces]
+        for label, name, button in requests
+    }
+    editor_diagnostic(bridge, "completed", {label: len(found) for label, found in candidates.items()})
     if any(view.role == "dialog" and view.name == "Project library" for view in visible):
         raise accessible.NotReady("EDITOR_STILL_IN_LIBRARY")
     witnesses = {}
-    for label, name, button in (("title", title, False), ("revision", "r" + str(revision), False),
-                                 ("library", "Open project library", True),
-                                 ("workspace", "Timeline", True)):
-        found = [view for view in visible if view.name == name
-                 and (view.role == "button" if button else view.role in ("text", "static", "label"))
-                 and "editable" not in view.states and "EditableText" not in view.interfaces]
+    for label, name, button in requests:
+        found = candidates[label]
         if not found:
             raise accessible.NotReady("MISSING_REOPENED_" + label.upper())
         need(len(found) <= 8, "REOPENED_TEXT_AMBIGUITY_LIMIT")
@@ -464,23 +679,32 @@ def read_ui_worker(argv):
 
 def observe_editor_until(bridge, binding, revision, title, deadline, *, diagnostics=None):
     attempts = 0
-    while time.monotonic() < deadline:
-        try:
-            bridge.drain_events()
-            attempts += 1
-            if diagnostics is not None:
-                diagnostics["read_attempts"] = attempts
-            need(accessible.x11_identity(deadline=deadline) == binding, "UI_PROCESS_CHANGED")
-            witnesses = select_reopened_view(bridge, binding["pid"], revision, title)
-            need(accessible.x11_identity(deadline=deadline) == binding, "UI_PROCESS_CHANGED")
-        except accessible.NotReady as error:
-            if diagnostics is not None:
-                diagnostics["last_condition"] = read_ui_failure_code(error)
-            time.sleep(min(0.1, max(0, deadline - time.monotonic())))
-            continue
-        return witnesses
-    raise ScenarioError("READ_UI_DEADLINE")
-
+    try:
+        while time.monotonic() < deadline:
+            try:
+                bridge.drain_events()
+                attempts += 1
+                if diagnostics is not None:
+                    diagnostics["read_attempts"] = attempts
+                need(accessible.x11_identity(deadline=deadline) == binding, "UI_PROCESS_CHANGED")
+                witnesses = select_reopened_view(bridge, binding["pid"], revision, title)
+                need(accessible.x11_identity(deadline=deadline) == binding, "UI_PROCESS_CHANGED")
+            except accessible.NotReady as error:
+                condition = read_ui_failure_code(error)
+                if diagnostics is not None:
+                    diagnostics["last_condition"] = condition
+                editor_diagnostic(bridge, "unfinished")
+                editor_diagnostic(bridge, "census_once", bridge, binding, deadline, condition)
+                time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+                continue
+            return witnesses
+        raise ScenarioError("READ_UI_DEADLINE")
+    finally:
+        editor_diagnostic(bridge, "unfinished")
+        if diagnostics is not None:
+            retained = editor_diagnostic(bridge, "export")
+            if retained is not None:
+                diagnostics["read_diagnostics"] = retained
 
 def invoke_read_ui(root, binding, revision, seconds, *, phase="reopened", title=TITLE):
     need(phase in ("created", "reopened"), "UI_PHASE_INVALID")
@@ -1007,7 +1231,7 @@ CI_FUTURE_PRIVATE_FILES = 1024
 CI_JOB_SECONDS = 60 * 60
 CI_JOIN_SECONDS = 1800
 CI_TAIL_SECONDS = 360  # sealing, cipher upload and the existing package upload
-CI_EXPECTED_CONTROLS = 43
+CI_EXPECTED_CONTROLS = 57
 CI_CAPACITY_JOURNAL_BYTES = 1024 * 1024
 CI_PRODUCER_CLOSE_BYTES = 1024 * 1024
 CI_PRODUCER_CLOSE_FILES = 8
