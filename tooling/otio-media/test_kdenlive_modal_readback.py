@@ -994,6 +994,54 @@ class ModalReadbackTests(unittest.TestCase):
                     self.assertFalse(observed_events[0]["formal_acceptance"])
                     self.assertFalse(session.journal.blocked)
 
+        # The authenticated pre-render tree of run 43660784941 contains
+        # File/Render… and toolbar-Render/Render… simultaneously. A global
+        # lookup is ambiguous; the selected item must be owned by File.
+        file_row = row("app/1/2/0", "File", "menu item")
+        file_render = row("app/1/2/0/0/12", "Render…", "menu item")
+        toolbar_render = row("app/1/5/1/0/0", "Render…", "menu item")
+        routed = actions.AtspiSession.__new__(actions.AtspiSession)
+        routed.journal = actions.ActionJournal(lambda _event: None, lambda: None)
+        routed.tree = Mock(return_value=[file_row, file_render, toolbar_render])
+        routed.action = Mock()
+        with self.assertRaisesRegex(actions.GuiRejected,
+                                    "native_gui_control_not_unique"):
+            routed.find(("Render...",), ("menu item",))
+        routed.menu("editor-before.menu", "File", "Render...")
+        self.assertEqual(routed.action.call_count, 2)
+        self.assertEqual(
+            [(call.args[0], call.args[1]["key"])
+             for call in routed.action.call_args_list],
+            [("editor-before.menu.0", file_row["key"]),
+             ("editor-before.menu.1", file_render["key"])])
+        self.assertFalse(routed.journal.blocked)
+
+        # A duplicate *under File* must still stop; foreign toolbar entries
+        # cannot serve as fallbacks or grant an extra Native action.
+        duplicated = actions.AtspiSession.__new__(actions.AtspiSession)
+        duplicated.journal = actions.ActionJournal(
+            lambda _event: None, lambda: None)
+        duplicated.tree = Mock(return_value=[
+            file_row, file_render, toolbar_render,
+            row("app/1/2/0/0/13", "Render…", "menu item")])
+        duplicated.action = Mock()
+        with self.assertRaisesRegex(actions.GuiRejected,
+                                    "native_gui_control_not_unique"):
+            duplicated.menu("editor-before.menu", "File", "Render...")
+        duplicated.action.assert_called_once()
+        self.assertEqual(duplicated.action.call_args.args[1]["key"],
+                         file_row["key"])
+        self.assertTrue(duplicated.journal.blocked)
+        denied = actions.AtspiSession.__new__(actions.AtspiSession)
+        denied.journal = actions.ActionJournal(lambda _event: None, lambda: None)
+        denied.journal.blocked = True
+        denied.tree = Mock(return_value=[file_row, file_render, toolbar_render])
+        denied.action = Mock()
+        with self.assertRaises(actions.GuiRejected):
+            denied.menu("editor-before.menu", "File", "Render...")
+        denied.action.assert_not_called()
+        denied.tree.assert_not_called()
+
         # Import may populate >512 descendants in one timeline node after
         # Submit. Original dialog closure must check every *direct* owned
         # application window, not increase that 512-node traversal budget.
@@ -1074,8 +1122,8 @@ class ModalReadbackTests(unittest.TestCase):
             observed._owned_top_level_windows()
         self.assertEqual(timeline.child_count_calls, 0)
 
-        for path in (("File", "Render..."), ("File", "Quit"),
-                     ("Other", "Save As..."), ("File", "OpenTimelineIO Import")):
+        for path in (("File", "Quit"), ("Other", "Save As..."),
+                     ("File", "OpenTimelineIO Import")):
             with self.subTest(path=path):
                 session = actions.AtspiSession.__new__(actions.AtspiSession)
                 session.control = Mock()

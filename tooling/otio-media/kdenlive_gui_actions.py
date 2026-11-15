@@ -1010,6 +1010,24 @@ class AtspiSession:
 
     def menu(self, step: str, *names: str) -> None:
         kind = MODAL_MENU_PATHS.get(names)
+        if names == ("File", "Render..."):
+            # Source-authenticated 43660784941 initial UI contained two
+            # "Render…" menu items: one under File, one under a toolbar Render
+            # button. A global name search cannot select either legitimately.
+            # Bind the second action to the exact owned File row acted on
+            # first. No extra GUI dispatch, shortcut, fuzzy label or retry.
+            file_row = self.journal.wait(
+                step + ".0.discover",
+                lambda: self.find(("File",), ("menu item",)))
+            self.action(step + ".0", file_row)
+            render_row = self.journal.wait(
+                step + ".1.discover",
+                lambda: self.find(("Render...",), ("menu item",),
+                                  scope=file_row["key"]))
+            require(render_row["key"].startswith(file_row["key"] + "/"),
+                    "native_gui_render_item_not_under_original_file_menu")
+            self.action(step + ".1", render_row)
+            return
         skip_top_level = False
         if names == ("Sequence", "Current Item", "Edit Duration"):
             require(not self.journal.blocked, "native_gui_previous_action_uncertain")
