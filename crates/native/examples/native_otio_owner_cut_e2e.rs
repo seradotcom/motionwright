@@ -3052,7 +3052,10 @@ mod tests {
         let path = store.lock().verified_blob_path(&digest).unwrap();
         assert_eq!(fs::read(path).unwrap(), original);
         assert_eq!(fs::read(&f.native_path).unwrap(), original);
-        assert_eq!(current.branches[0].created_at, f.before.branches[0].created_at);
+        assert_eq!(
+            current.branches[0].created_at,
+            f.before.branches[0].created_at
+        );
         let events = service.history(f.source.id, f.source.revision, 3).unwrap();
         let event = events
             .iter()
