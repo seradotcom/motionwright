@@ -775,3 +775,15 @@ inventory closure, redistribution permission or formal acceptance. These states
 remain `NOT_VERIFIED` / `NOT_INFERRED`. Historical captures without the explicit
 profile remain historical evidence and receive no retroactive native-output
 credit. Unit fixtures exercise refusal logic and are never physical build proof.
+
+
+## Detached physical package member inventory
+
+The bounded producer/consumer and format-specific integration contract are in
+[candidate-package-inventory.md](candidate-package-inventory.md). It observes
+complete actual extracted namespaces and joins members to authenticated source,
+Cargo root and notice bytes. It preserves unresolved container, native-origin,
+linker and legal obligations; its v1 output cannot grant full package inventory,
+redistribution permission, G2 or G3. Candidate receipt/attestation shapes remain
+unchanged. A1 must wire each wrapper in place of the existing single extraction
+and retain its original streams before any physical observation can be claimed.

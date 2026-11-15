@@ -144,6 +144,22 @@ def verify_dmg(repo, source):
     return report
 
 
+def verify_package_inventory(repo, source, *, directory, expected_sha256):
+    """Consume original volume/copy observations after the recorded detach."""
+    import candidate_package_inventory as inventory_reader
+
+    candidate = shared.read_json(repo, "ci-evidence/macos-candidate.json")
+    rows = [row for row in candidate["artifacts"] if row["bundle_kind"] == "dmg"]
+    require(len(rows) == 1, "macos_inventory_package_required")
+    name = inventory_reader.relative(rows[0]["filename"])
+    require("/" not in name, "macos_inventory_package_filename")
+    return inventory_reader.consume(
+        repo=repo, source=source, kind="dmg",
+        artifact=repo / BINARY.parent / "bundle/dmg" / name,
+        receipt=repo / "ci-evidence/macos-candidate.json", directory=directory,
+        expected_sha256=expected_sha256)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("frontend", "stage", "bundle", "frontend-recheck", "verify"))

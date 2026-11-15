@@ -229,6 +229,23 @@ def verify_packages(repo, source):
     return report
 
 
+def verify_package_inventory(repo, source, *, kind, directory, expected_sha256, payload=None):
+    """Consume a detached inventory without expanding the candidate receipt."""
+    import candidate_package_inventory as inventory_reader
+
+    require(kind in ("deb", "appimage"), "linux_inventory_kind")
+    candidate = shared.read_json(repo, "ci-evidence/linux-candidate.json")
+    rows = [row for row in candidate["artifacts"] if row["bundle_kind"] == kind]
+    require(len(rows) == 1, "linux_inventory_package_required")
+    name = inventory_reader.relative(rows[0]["filename"])
+    require("/" not in name, "linux_inventory_package_filename")
+    return inventory_reader.consume(
+        repo=repo, source=source, kind=kind,
+        artifact=repo / BINARY.parent / "bundle" / kind / name,
+        receipt=repo / "ci-evidence/linux-candidate.json", directory=directory,
+        expected_sha256=expected_sha256, roots=None if payload is None else {"payload": payload})
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("frontend", "stage", "bundle", "frontend-recheck", "verify"))

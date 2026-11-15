@@ -112,6 +112,79 @@ def select_member(raw, setup_bytes):
     return selected[0]
 
 
+def inventory_listing(raw, setup_bytes):
+    """Keep every original listed member, never invent unextracted hashes.
+
+    This stricter view is used only by the detached package inventory. The
+    existing static uninstaller contract and its original roster are unchanged.
+    select_member authenticates the listing structure/diagnostics first.
+    """
+    selected = select_member(raw, setup_bytes)
+    # splitlines handles the CRLF originals accepted by select_member.
+    lines = raw.decode("utf-8-sig").splitlines()
+    lines = lines[lines.index("----------") + 1:]
+    blocks, block = [], {}
+    for line in [*lines, ""]:
+        if not line:
+            if block:
+                blocks.append(block)
+                block = {}
+        else:
+            key, value = line.split(" = ", 1)
+            block[key] = value
+    result, seen = [], set()
+    for properties in blocks:
+        path = properties["Path"]
+        canonical = path.replace("\\", "/")
+        parts = canonical.split("/")
+        require(len(parts) <= 16 and all(p not in ("", ".", "..") and ":" not in p
+                and p == p.rstrip(" .") for p in parts)
+                and not any(ord(c) == 127 for c in canonical)
+                and canonical.casefold() not in seen, "nsis_inventory_member_path")
+        seen.add(canonical.casefold())
+        folder = properties.get("Folder", "-")
+        size = properties.get("Size", "")
+        require(folder in ("+", "-") and re.fullmatch(r"(?:0|[1-9][0-9]*)?", size),
+                "nsis_inventory_member_metadata")
+        size = int(size) if size else None
+        require(size is None or 0 <= size <= 512 * 1024 * 1024, "nsis_inventory_member_budget")
+        result.append({"path": path, "canonical_path": canonical,
+                       "kind": "directory" if folder == "+" else "file",
+                       "listed_bytes": size, "properties": properties})
+    kinds = {row["canonical_path"]: row["kind"] for row in result}
+    spellings = {}
+    for name in kinds:
+        parts = name.split("/")
+        for length in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:length])
+            previous = spellings.setdefault(prefix.casefold(), prefix)
+            require(previous == prefix, "nsis_inventory_member_path")
+            if length < len(parts):
+                require(kinds.get(prefix, "directory") == "directory",
+                        "nsis_inventory_member_prefix")
+    return {"members": sorted(result, key=lambda r: r["canonical_path"]),
+            "selected_member": selected}
+
+
+def retained_inventory_listing(*, capture, observations, reference):
+    """Bind the listing to a reference already returned by verify(), read only."""
+    raw_reference = capture.stable_read(observations, "reference.json", 1024 * 1024)
+    require(digest(raw_reference)["sha256"] == reference["reference_sha256"],
+            "nsis_inventory_reference_changed")
+    record = capture.parse_json(raw_reference)
+    raw = capture.stable_read(observations, "listing.stdout", MAX_LIST)
+    require(digest(raw) == record["originals"]["listing.stdout"]
+            and record["identity"] == reference["expected_identity"]
+            and record["context"]["setup"]["sha256"] == reference["setup_sha256"],
+            "nsis_inventory_original_changed")
+    listing = inventory_listing(raw, record["context"]["setup"]["bytes"])
+    require(listing["selected_member"] == record["member"], "nsis_inventory_selected_member_changed")
+    require(capture.stable_read(observations, "reference.json", 1024 * 1024) == raw_reference,
+            "nsis_inventory_reference_changed")
+    return {**listing, "listing": digest(raw), "selected_identity": record["identity"],
+            "static_reference_sha256": reference["reference_sha256"]}
+
+
 def inspect_pe(raw):
     require(64 <= len(raw) <= MAX_SELF and raw[:2] == b"MZ", "nsis_static_member_not_pe")
     offset = struct.unpack_from("<I", raw, 60)[0]

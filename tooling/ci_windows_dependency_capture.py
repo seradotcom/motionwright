@@ -505,6 +505,47 @@ def verify_installed(repo, source, *, run_id, install_root, expected_inventory_s
     return report
 
 
+def package_inventory(repo, source, *, run_id, install_root, expected_inventory_sha256,
+                      directory, expected_package_inventory_sha256=None):
+    """Observe/consume the actual closed destination plus retained static listing.
+
+    The installed payload closure is narrower than all setup member bytes and
+    effects. Existing generated-uninstaller authority is required and reused.
+    """
+    import candidate_package_inventory as inventory_reader
+    import nsis_static_uninstaller as static
+
+    sealed_raw = capture.stable_read(repo, INVENTORY, 2 * 1024 * 1024)
+    require(capture.sha(sealed_raw) == expected_inventory_sha256,
+            "windows_package_inventory_preinstall_seal_changed")
+    expected = capture.parse_json(sealed_raw)
+    require(expected.get("schema") == "motionwright.windows-application-expectation/2"
+            and isinstance(expected.get("generated_members"), dict)
+            and "uninstall.exe" in expected["generated_members"],
+            "windows_package_inventory_static_reference_required")
+    application = verify_application_inventory(
+        repo, source, run_id, install_root, expected_inventory_sha256, static_uninstaller=True)
+    require(application.get("namespace_closed") is True
+            and application.get("all_member_bytes_authenticated") is True,
+            "windows_package_inventory_application_not_closed")
+    reference = expected["generated_members"]["uninstall.exe"]
+    listing = static.retained_inventory_listing(
+        capture=capture, observations=repo / BASE / "uninstaller", reference=reference)
+    setup = repo / BINARY.parent / "bundle/nsis" / expected["setup"]["filename"]
+    common = dict(repo=repo, source=source, kind="nsis", artifact=setup,
+                  receipt=repo / "ci-evidence/windows-candidate.json", directory=directory,
+                  roots={"application": install_root}, nsis_listing=listing)
+    if expected_package_inventory_sha256 is None:
+        result = inventory_reader.observe_existing(**common)
+    else:
+        result = inventory_reader.consume(**common, expected_sha256=expected_package_inventory_sha256)
+    require(capture.stable_read(repo, INVENTORY, 2 * 1024 * 1024) == sealed_raw
+            and static.retained_inventory_listing(
+                capture=capture, observations=repo / BASE / "uninstaller", reference=reference) == listing,
+            "windows_package_inventory_inputs_changed")
+    return result
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("reader", "frontend", "frontend-recheck", "stage", "inventory", "verify"))
