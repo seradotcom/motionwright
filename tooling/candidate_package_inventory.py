@@ -228,6 +228,38 @@ def _profile(kind):
     return profile
 
 
+def candidate_artifact_roster(candidate, kind):
+    """Validate every path-bearing receipt field before constructing paths.
+
+    The existing receipt permits exactly appimage+deb on Linux, one dmg on
+    macOS, or one nsis on Windows. Rebuilding the receipt still authenticates
+    all other fields and bytes; it cannot be the first path boundary.
+    """
+    require(kind in PROFILES, "inventory_candidate_kind")
+    platform = PROFILES[kind][0]
+    require(isinstance(candidate, dict)
+            and isinstance(candidate.get("candidate"), dict)
+            and candidate["candidate"].get("platform") == platform,
+            "inventory_candidate_platform")
+    allowed = {"linux": {"appimage", "deb"}, "macos": {"dmg"},
+               "windows": {"nsis"}}[platform]
+    artifacts = candidate.get("artifacts")
+    require(isinstance(artifacts, list) and len(artifacts) == len(allowed),
+            "inventory_candidate_artifacts")
+    seen = set()
+    for row in artifacts:
+        require(isinstance(row, dict)
+                and isinstance(row.get("bundle_kind"), str)
+                and row["bundle_kind"] in allowed
+                and row["bundle_kind"] not in seen,
+                "inventory_candidate_bundle_roster")
+        seen.add(row["bundle_kind"])
+        name = relative(row.get("filename"))
+        require("/" not in name, "inventory_candidate_filename")
+    require(seen == allowed, "inventory_candidate_bundle_roster")
+    return artifacts
+
+
 def authenticate_inputs(repo, source, kind, artifact, receipt):
     """Reuse existing source/Cargo/receipt authority, not caller assertions."""
     repo, _ = plain_directory(repo)
@@ -235,20 +267,15 @@ def authenticate_inputs(repo, source, kind, artifact, receipt):
     require(os.environ.get("GITHUB_RUN_ATTEMPT") == "1"
             and re.fullmatch(r"[1-9][0-9]*", os.environ.get("GITHUB_RUN_ID", "")),
             "inventory_first_run_identity_required")
-    snapshot, complete, index_raw, binary = profile.cargo_binding(repo, source)
     raw = capture.stable_read(repo, receipt, 1024 * 1024)
     candidate = capture.parse_json(raw)
-    require(candidate.get("candidate", {}).get("source_revision") == source
-            and candidate["candidate"].get("platform") == PROFILES[kind][0],
+    artifacts = candidate_artifact_roster(candidate, kind)
+    require(candidate["candidate"].get("source_revision") == source,
             "inventory_candidate_source")
+    snapshot, complete, index_raw, binary = profile.cargo_binding(repo, source)
     from package_receipt import make_receipt
-    artifacts = candidate.get("artifacts")
-    require(isinstance(artifacts, list) and artifacts, "inventory_candidate_artifacts")
-    paths = []
-    for row in artifacts:
-        name = relative(row.get("filename"))
-        require("/" not in name, "inventory_candidate_filename")
-        paths.append(repo / profile.BINARY.parent / "bundle" / row["bundle_kind"] / name)
+    paths = [repo / profile.BINARY.parent / "bundle" / row["bundle_kind"] / row["filename"]
+             for row in artifacts]
     rebuilt = make_receipt(
         repo, source, PROFILES[kind][0], candidate["candidate"]["arch"], paths,
         cargo_index=repo / profile.BASE / "resources/cargo/index.json",

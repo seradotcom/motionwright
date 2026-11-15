@@ -44,6 +44,50 @@ def git_origin(path, raw):
             "git_blob": "5" * 40, "checkout_transform": "EXACT", **inventory.digest(raw)}
 
 
+class CandidateArtifactRosterTests(unittest.TestCase):
+    def receipt(self, platform, kinds):
+        return {"candidate": {"platform": platform}, "artifacts": [
+            {"bundle_kind": kind, "filename": "candidate-" + str(number)}
+            for number, kind in enumerate(kinds)]}
+
+    def test_existing_receipt_cardinality_is_preserved(self):
+        for platform, kinds, requested in [
+                ("linux", ["deb", "appimage"], "deb"),
+                ("linux", ["appimage", "deb"], "appimage"),
+                ("macos", ["dmg"], "dmg"), ("windows", ["nsis"], "nsis")]:
+            with self.subTest(platform=platform, requested=requested):
+                candidate = self.receipt(platform, kinds)
+                self.assertIs(inventory.candidate_artifact_roster(candidate, requested),
+                              candidate["artifacts"])
+
+    def test_absolute_traversal_and_foreign_kinds_fail_before_path_construction(self):
+        for bad in ["/outside", r"E:\outside", "../outside", "deb/..",
+                    "nsis", "", None, ["deb"]]:
+            with self.subTest(kind=bad):
+                candidate = self.receipt("linux", ["appimage", bad])
+                with self.assertRaisesRegex(inventory.InventoryError, "bundle_roster"):
+                    inventory.candidate_artifact_roster(candidate, "appimage")
+
+    def test_missing_duplicate_extra_and_wrong_platform_rosters_are_refused(self):
+        for kinds in [[], ["deb"], ["deb", "deb"], ["deb", "appimage", "dmg"]]:
+            with self.subTest(kinds=kinds):
+                with self.assertRaises(inventory.InventoryError):
+                    inventory.candidate_artifact_roster(self.receipt("linux", kinds), "deb")
+        for platform in ["windows", "macos", None]:
+            with self.subTest(platform=platform):
+                with self.assertRaisesRegex(inventory.InventoryError, "platform"):
+                    inventory.candidate_artifact_roster(
+                        self.receipt(platform, ["deb", "appimage"]), "deb")
+
+    def test_path_bearing_filenames_are_rejected_in_every_row(self):
+        for bad in ["/outside", "../outside", r"E:\outside", "sub/file", "a.", "", None]:
+            with self.subTest(filename=bad):
+                candidate = self.receipt("linux", ["appimage", "deb"])
+                candidate["artifacts"][1]["filename"] = bad
+                with self.assertRaises(inventory.InventoryError):
+                    inventory.candidate_artifact_roster(candidate, "appimage")
+
+
 class InventoryFilesystemTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="mw-inventory-unit-")
