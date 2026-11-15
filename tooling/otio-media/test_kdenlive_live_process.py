@@ -86,8 +86,11 @@ class KdenliveNativeProcessControls(unittest.TestCase):
             )
             self.assertFalse(result["saved_project_was_an_exact_launch_argument"])
             self.assertEqual(result["bounded_arg_count"], 2)
+        # Retain the existing 24-case public source roster; exercise the
+        # exact authenticated AppRun alias in this import-phase contract.
+        self._check_exact_owned_AppRun_wrapped_alias_binds_the_original_native_elf()
 
-    def test_exact_owned_AppRun_wrapped_alias_binds_the_original_native_elf(self):
+    def _check_exact_owned_AppRun_wrapped_alias_binds_the_original_native_elf(self):
         # Source-authenticated distribution observation c470ce85 recorded
         # AppRun.wrapped -> usr/bin/kdenlive. The real NativeProcess launches
         # AppRun, whose pinned script execs this wrapped alias with --config.
