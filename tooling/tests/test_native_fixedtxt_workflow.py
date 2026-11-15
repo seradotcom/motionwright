@@ -871,6 +871,30 @@ class FixedTxtSourceKitPinTests(unittest.TestCase):
         block = rust.split('const OBSERVED_NATIVE_SOURCES:', 1)[1].split('];', 1)[0]
         pins = dict(re.findall(r'\(\s*"(RED|GREEN)",\s*"([0-9a-f]{64})",?\s*\)', block))
         self.assertEqual(pins, overlay.OBSERVED)
+        # The physical 120-frame timeout occurs at a selected full-canvas
+        # glyph sample. Avoid allocating an array callback per pixel while
+        # preserving the identical opaque RGB contrast predicate, complete
+        # 1920x1080 sampling and fail-closed source derivation.
+        painted = next(after for name, _, after in overlay.INK_EDITS
+                       if name == "native_text_pixel_observation_3")
+        self.assertIn("||before!.data[at]!==color[0]||before!.data[at+1]!==color[1]"
+                      "||before!.data[at+2]!==color[2]", painted)
+        self.assertNotIn("color.some((c,i)=>before!.data[at+i]!==c)", painted)
+        for color in ((0, 0, 0), (1, 2, 3), (128, 127, 255)):
+            pixels = (color, (color[0] ^ 1, color[1], color[2]),
+                      (color[0], color[1] ^ 1, color[2]),
+                      (color[0], color[1], color[2] ^ 1))
+            for pixel in pixels:
+                for transparent in (True, False):
+                    for prior_text in (True, False):
+                        old = transparent or prior_text or any(
+                            component != color[index]
+                            for index, component in enumerate(pixel))
+                        direct = (transparent or prior_text or
+                                  pixel[0] != color[0] or
+                                  pixel[1] != color[1] or
+                                  pixel[2] != color[2])
+                        self.assertEqual(old, direct)
 
         # Cross-language producer/selector contract. Derive the filename from
         # the actual Python argv, Rust command route, retained directory and
