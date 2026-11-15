@@ -413,7 +413,7 @@ def check_duration_fields(position: str, crop: str, duration: str) -> None:
 def closed_original_file_dialog(original: dict, titles: tuple[str, ...],
                                 windows: list[dict], pid: int,
                                 *, render_parent: dict | None = None) -> dict | None:
-    """Prove one original top-level file dialog absent without scanning timeline.
+    """Prove one original file/duration dialog absent without scanning timeline.
 
     Qt retains a root window roster even when a loaded project's child tree
     exceeds its fixed per-node budget. The original menu/dialog observation
@@ -421,7 +421,7 @@ def closed_original_file_dialog(original: dict, titles: tuple[str, ...],
     save, editorial correctness, or open another effect.
     """
     allowed = (("OpenTimelineIO Import",), ("Save As", "Save Project"),
-               ("OpenTimelineIO Export",))
+               ("OpenTimelineIO Export",), ("Duration",))
     require((titles in allowed if render_parent is None else titles == ("Save As",))
             and type(pid) is int and 0 < pid <= 0xffffffff,
             "native_gui_root_close_profile")
@@ -723,7 +723,12 @@ class AtspiSession:
                 rows.append(row)
                 nodes[key] = node
                 count = node.get_child_count()
-                require(0 <= count <= MAX_CHILDREN, "native_gui_child_budget")
+                if not (type(count) is int and 0 <= count <= MAX_CHILDREN):
+                    original = GuiRejected("native_gui_child_budget")
+                    observed = str(count) if type(count) is int else type(count).__name__
+                    original.add_note(
+                        f"owned_key={key}; observed_children={observed}; limit={MAX_CHILDREN}")
+                    raise original
                 queue.extend((key + "/" + str(i), node.get_child_at_index(i), depth + 1)
                              for i in range(count))
             except BaseException as original:
@@ -1976,8 +1981,21 @@ class AtspiSession:
         okay = self.journal.wait("edit.accept-discover", lambda: self.find(
             ("OK",), ("push button",), scope=dialog["key"]))
         self.action("edit.accept-once", okay)
-        self.journal.wait("edit.dialog-closed", lambda: not self.find(
-            ("Duration",), ("dialog",)))
+        # The accepted duration can rebuild the timeline descendants. Closure
+        # needs the already observed dialog and two complete owned root rosters,
+        # not a traversal of that unrelated tree or a larger child budget.
+        closed = self.journal.wait(
+            "edit.dialog-closed",
+            lambda: self._observed_file_dialog_closed(dialog, ("Duration",)))
+        self.journal.blocked = True
+        self.journal.emit({
+            "step": "edit.dialog-closed-root-readback",
+            "state": "ORIGINAL_DIALOG_CLOSED_OBSERVED",
+            "observed": closed, "native_operation_retried": False,
+            "native_edit_verified": False, "native_save_verified": False,
+            "formal_acceptance": False,
+        })
+        self.journal.blocked = False
 
     def quit(self, step: str) -> None:
         self.menu(step + ".menu", "File")
