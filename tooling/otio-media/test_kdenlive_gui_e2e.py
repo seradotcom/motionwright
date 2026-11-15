@@ -2939,7 +2939,11 @@ class EditorRenderLogTests(unittest.TestCase):
         finish = "Rendering of /owner/editor-before.mov finished\n"
         for text in (start, finish, start + finish + finish, start + start + finish,
                      start + finish + "Rendering of /owner/editor-before.mov aborted, corrupt\n",
-                     start + "Rendering of /owner/editor-before.mov finished-but-not-closed\n"):
+                     start + "Rendering of /owner/editor-before.mov finished-but-not-closed\n",
+                     start + "Rendering of /foreign.mov finished\n" + finish,
+                     start + "Rendering of /foreign.mov aborted\n" + finish,
+                     finish + start,
+                     start + finish + "Rendering of malformed terminal\n"):
             with self.subTest(log=text), self.assertRaises(actions.GuiRejected):
                 self.inspect(text)
 

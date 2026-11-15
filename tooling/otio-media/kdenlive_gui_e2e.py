@@ -346,8 +346,10 @@ def verify_editor_render_log(log_text: str, *, melt: str, playlist: Path, output
                       + quote(str(playlist), safe=""))
     lines = log_text.splitlines()
     starts = [line for line in lines if line.startswith("Started render process: ")]
-    require(starts == [expected_start]
-            and lines.count("Rendering of " + str(output) + " finished") == 1
+    finished = "Rendering of " + str(output) + " finished"
+    terminals = [line for line in lines if line.startswith("Rendering of ")]
+    require(starts == [expected_start] and terminals == [finished]
+            and lines.index(expected_start) < lines.index(finished)
             and "Rendering of " + str(output) + " aborted" not in log_text,
             "editor_render_native_melt_success_log_missing")
 
