@@ -727,15 +727,25 @@ class InstalledCiPriorCapacityTests(PrivateScenarioCase):
         self.assertIn('ci_copy_original(binary, copied, 256 * 1024 * 1024, expected=identity)', actual)
         self.assertEqual(installed.CI_PRIVATE_BYTES, 240 * 1024 * 1024)
         self.assertEqual(installed.CI_FUTURE_PRIVATE_BYTES, 64 * 1024 * 1024)
-        self.assertEqual(installed.CI_COMMAND_STREAM_BYTES["sdk-daemon-cli"], 2 * 1024 * 1024)
-        self.assertEqual(installed.CI_COMMAND_STREAM_BYTES["sdk-sandbox"], 2 * 1024 * 1024)
-        self.assertEqual(installed.CI_COMMAND_STREAM_BYTES["product-provider"], 4 * 1024 * 1024)
-        # Two streams per command, all reserved BEFORE the first child:
-        # 48 MiB old => 16 MiB new, 32 MiB regained with no refunds.
+        self.assertEqual(installed.CI_COMMAND_STREAM_BYTES["sdk-daemon-cli"], 768 * 1024)
+        self.assertEqual(installed.CI_COMMAND_STREAM_BYTES["sdk-sandbox"], 256 * 1024)
+        self.assertEqual(installed.CI_COMMAND_STREAM_BYTES["product-provider"], 512 * 1024)
+        # Actual original Linux build logs retained in 43679808311, independently
+        # authenticated by A1. All six streams have a >2x safety margin.
+        originals = {"sdk-daemon-cli": (357392, 21479),
+                     "sdk-sandbox": (77947, 3211),
+                     "product-provider": (218228, 15444)}
+        for name, (stdout, stderr) in originals.items():
+            self.assertGreater(installed.CI_COMMAND_STREAM_BYTES[name], 2 * max(stdout, stderr))
+        # Two streams per command, reserved BEFORE any child. 48 MiB in the
+        # original => 3 MiB now; 13 MiB more than the 92319952f source.
+        self.assertEqual(
+            sum(2 * installed.CI_COMMAND_STREAM_BYTES[label] for label in originals),
+            3 * 1024 * 1024)
         self.assertEqual(
             sum(2 * (8 * 1024 * 1024 - installed.CI_COMMAND_STREAM_BYTES[label])
-                for label in ("sdk-daemon-cli", "sdk-sandbox", "product-provider")),
-            32 * 1024 * 1024)
+                for label in originals),
+            45 * 1024 * 1024)
 
     def test_file_slots_are_held_before_write_and_the_same_namespace_cannot_reset(self):
         evidence = self.root / "evidence"; evidence.mkdir()

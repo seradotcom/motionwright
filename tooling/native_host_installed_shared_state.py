@@ -954,22 +954,24 @@ CI_COMMAND_CLOSURE_BYTES = 1024 * 1024
 CI_PIPE_BYTES = 65536
 CI_OVERFLOW_BYTES = 2 * CI_PIPE_BYTES
 # These are predeclared suballocations, not observations of future outputs.
-# The original hosted SDK Cargo builds emitted well below 2 MiB per stream
-# (CLI stdout ~357 KiB; sandbox stdout ~78 KiB). Each bounded successful
-# source build still retains its *entire* real stdout/stderr, with overflow
-# failing closed. Preallocating 8 MiB on EACH stream of all three builds
-# consumed 48 MiB of immutable custody even when their output was tiny.
-# Tighten only these source-specific limits (2/2/4 MiB); this recovers
-# 32 MiB of reserved headroom WITHOUT a refund, removing original files,
-# increasing global custody, or touching the 64 MiB scenario reserve.
+# The authenticated installed run 43679808311 retained complete Cargo
+# stdout/stderr: daemon+CLI 357392/21479 B, sandbox 77947/3211 B,
+# provider 218228/15444 B. Its four genuine source-built binaries were
+# also retained, but the *second* 39545032 B provider copy could not be
+# pre-reserved before entering Host. Every new per-stream bound is >2x the
+# measured original stdout. Tighten only these three source-built Cargo
+# limits: 768/256/512 KiB. Their two streams now reserve 3 MiB, reclaiming
+# 13 MiB more than 92319952f and 45 MiB against the original 8 MiB/stream
+# policy. Retain exact original stdout/stderr or fail closed on overflow;
+# never refund any reservation or reduce 240 MiB global/64 MiB Native tail.
 CI_COMMAND_STREAM_BYTES = {
     "seal-venv": 65536, "seal-dependencies": 512 * 1024,
     "recipient-admission": 65536, "sdk-init": 65536,
     "sdk-fetch": 512 * 1024, "sdk-checkout": 65536,
     "product-toolchain": 65536, "sdk-toolchain": 65536,
     "cargo-toolchain": 65536, "sdk-sandbox-profile": 65536,
-    "sdk-daemon-cli": 2 * 1024 * 1024, "sdk-sandbox": 2 * 1024 * 1024,
-    "product-provider": 4 * 1024 * 1024, "installed-controls": 256 * 1024,
+    "sdk-daemon-cli": 768 * 1024, "sdk-sandbox": 256 * 1024,
+    "product-provider": 512 * 1024, "installed-controls": 256 * 1024,
 }
 
 
