@@ -650,13 +650,14 @@ def validate(report):
                 "inventory_operation_count")
         labels = []
         for op in custody["operations"]:
-            fields(op, ("label", "request", "completion", "stdout", "stderr"), "inventory_operation_fields")
-            require(op["label"] in ("extract", "attach", "copy", "detach"), "inventory_operation_label")
-            for key in ("request", "completion", "stdout", "stderr"):
+            fields(op, ("label", "request", "completion", "stdout", "stderr", "subtree",
+                        "binding", "closure"), "inventory_operation_fields")
+            require(op["label"] == "extract", "inventory_operation_label")
+            for key in ("request", "completion", "stdout", "stderr", "subtree", "binding", "closure"):
                 file_identity(op[key])
             labels.append(op["label"])
-        require(labels == (["attach", "copy", "detach"] if context["kind"] == "dmg" else ["extract"])
-                and context["kind"] != "nsis", "inventory_operation_order")
+        require(labels == ["extract"] and context["kind"] in ("appimage", "deb"),
+                "inventory_operation_order")
     require(isinstance(report["format_observation"], dict), "inventory_format_fields")
     nsis_listing = report["format_observation"].get("original_setup_listing") if context["kind"] == "nsis" else None
     if nsis_listing is not None:
@@ -729,23 +730,15 @@ def _tool_identities(commands):
 
 
 def _operation_summary(directory, commands):
+    import candidate_package_extraction as extraction
     rows = []
     for label, command, cwd in commands:
-        names = {"request": label + ".request.json", "completion": label + ".completion.json",
-                 "stdout": label + ".stdout", "stderr": label + ".stderr"}
-        originals = {key: capture.stable_read(directory, name, MAX_STREAM)
-                     for key, name in names.items()}
-        request = capture.parse_json(originals["request"])
-        completed = capture.parse_json(originals["completion"])
-        expected = {"command": command, "cwd": str(cwd), "label": label, "executed_once": True}
-        require(request == expected and set(completed) == set(expected) | {
-            "returncode", "errors", "stdout_sha256", "stderr_sha256"}
-            and all(completed[k] == v for k, v in expected.items())
-            and type(completed["returncode"]) is int and completed["returncode"] == 0
-            and completed["errors"] == []
-            and completed["stdout_sha256"] == capture.sha(originals["stdout"])
-            and completed["stderr_sha256"] == capture.sha(originals["stderr"]),
-            "inventory_extraction_originals_not_successful")
+        originals = {key: capture.stable_read(
+            directory, label + "." + suffix, MAX_STREAM if key in ("stdout", "stderr")
+            else extraction.core.STATUS_LIMIT if key == "subtree" else extraction.MAX_RECORD)
+                     for key, suffix in extraction.SUFFIXES.items()}
+        expected = extraction.request(command, cwd, label)
+        extraction.validate_originals(originals, expected, extraction.sources())
         rows.append({"label": label, **{key: digest(raw) for key, raw in originals.items()}})
     return rows
 
@@ -777,19 +770,23 @@ def observe_existing(*, repo, source, kind, artifact, receipt, roots, directory,
 
 
 def extract_and_observe(*, repo, source, kind, artifact, receipt, work, directory, environment=None):
-    """Replace, never repeat, one existing Linux or DMG extraction/copy cycle.
+    """Replace, never repeat, one existing owned Linux extraction.
 
     This function runs package extraction tools only when explicitly invoked by
     the existing CI scope. It builds nothing, launches no installed application
     or Native host, and performs no download. Originals survive every failure.
     """
-    require(kind in ("appimage", "deb", "dmg"), "inventory_extraction_profile")
+    # No equivalent kernel subtree closure is admitted for macOS here.
+    # Keep its existing workflow; never create a new inventory extraction with
+    # only hdiutil/ditto exit statuses or a caller-supplied "closed" boolean.
+    require(kind in ("appimage", "deb"), "inventory_full_process_closure_unavailable")
+    import candidate_package_extraction as extraction
     profile = _profile(kind)
-    admitted_source = (profile.macos_source(os.environ) if kind == "dmg"
-                       else profile.linux_source(os.environ))
+    admitted_source = profile.linux_source(os.environ)
     require(admitted_source == source
             and Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True) == repo,
             "inventory_extraction_scope_mismatch")
+    extraction.require_supported()
     repo = owned._validated_path(repo)
     artifact = owned._validated_path(artifact)
     before = authenticate_inputs(repo, source, kind, artifact, receipt)
@@ -814,35 +811,10 @@ def extract_and_observe(*, repo, source, kind, artifact, receipt, work, director
         opened = os.fstat(package_fd)
         change = owned._source_change_time(package_fd)
         owned._require_path_descriptor_match(opened, package_stat, "candidate package")
-        observed = None
-        if kind != "dmg":
-            label, argv, cwd = commands[0]
-            capture.run_captured(argv, cwd, directory, label, env=environment,
-                                 stream_limit=MAX_STREAM, timeout=90)
-            observed = [observe_tree(path, role) for role, path in sorted(roots.items())]
-        else:
-            (work / "mount").mkdir()
-            (work / "installed").mkdir()
-            primary = None
-            try:
-                for label, argv, cwd in commands[:2]:
-                    capture.run_captured(argv, cwd, directory, label, env=environment,
-                                         stream_limit=MAX_STREAM, timeout=90)
-                observed = [observe_tree(path, role) for role, path in sorted(roots.items())]
-                # Compare the copied namespace before detaching the source.
-                _format_observation(kind, sorted(observed, key=lambda r: r["role"]), None)
-            except BaseException as error:
-                primary = error
-                raise
-            finally:
-                label, argv, cwd = commands[-1]
-                try:
-                    capture.run_captured(argv, cwd, directory, label, env=environment,
-                                         stream_limit=MAX_STREAM, timeout=90)
-                except BaseException as closing:
-                    if primary is None:
-                        raise
-                    primary.add_note("inventory_detach_failed:" + type(closing).__name__)
+        label, argv, cwd = commands[0]
+        extraction.run_owned(argv, cwd, directory, label, env=environment,
+                             stream_limit=MAX_STREAM, timeout=90)
+        observed = [observe_tree(path, role) for role, path in sorted(roots.items())]
         require(_tool_identities(commands) == tools, "inventory_extraction_tool_changed")
         require(authenticate_inputs(repo, source, kind, artifact, receipt) == before,
                 "inventory_inputs_changed")
@@ -903,7 +875,8 @@ def consume(*, repo, source, kind, artifact, receipt, directory, expected_sha256
                 "inventory_extraction_originals_changed")
         allowed.add("input.json")
         allowed |= {label + "." + suffix for label, _, _ in commands
-                    for suffix in ("request.json", "completion.json", "stdout", "stderr")}
+                    for suffix in ("request.json", "completion.json", "stdout", "stderr",
+                                   "subtree.original", "binding.json", "closure.json")}
     require({p.name for p in directory.iterdir()} == allowed, "inventory_original_roster")
     expected = compose(before, observed, custody=custody, nsis_listing=nsis_listing)
     require(expected == report, "inventory_authenticated_relations_changed")

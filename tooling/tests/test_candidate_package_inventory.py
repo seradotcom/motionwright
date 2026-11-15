@@ -286,20 +286,27 @@ class InventoryFilesystemTests(unittest.TestCase):
         with self.assertRaisesRegex(inventory.InventoryError, "no_nsis_install_authority"):
             inventory._layout("nsis", artifact, work)
 
-    def test_original_process_receipts_are_recomputed_from_real_inert_python_streams(self):
+    def test_exit_zero_and_closed_streams_are_not_owned_extraction_custody(self):
         directory = self.base / "originals"
         directory.mkdir()
         command = [sys.executable, "-I", "-B", "-c", "print('inert inventory fixture process')"]
         inventory.capture.run_captured(command, self.base, directory, "extract",
                                        stream_limit=1024, timeout=10)
-        rows = inventory._operation_summary(directory, [("extract", command, self.base)])
-        self.assertEqual(rows[0]["stdout"], inventory.digest(b"inert inventory fixture process\r\n"
-                         if os.name == "nt" else b"inert inventory fixture process\n"))
         complete = inventory.capture.parse_json((directory / "extract.completion.json").read_bytes())
-        complete["returncode"] = True
-        (directory / "extract.completion.json").write_bytes(inventory.capture.encoded(complete))
-        with self.assertRaisesRegex(inventory.InventoryError, "not_successful"):
+        self.assertEqual(complete["returncode"], 0)
+        self.assertEqual(complete["errors"], [])
+        with self.assertRaises((ValueError, OSError)):
             inventory._operation_summary(directory, [("extract", command, self.base)])
+        self.assertFalse((directory / "inventory.json").exists())
+
+    def test_macos_extraction_is_refused_before_effects_without_kernel_closure(self):
+        work, output = self.base / "never-mounted", self.base / "never-inventoried"
+        with self.assertRaisesRegex(inventory.InventoryError, "full_process_closure_unavailable"):
+            inventory.extract_and_observe(
+                repo=self.base, source="1" * 40, kind="dmg", artifact=self.base / "not-executed",
+                receipt=self.base / "not-read", work=work, directory=output)
+        self.assertFalse(work.exists())
+        self.assertFalse(output.exists())
 
     def test_link_relations_do_not_normalize_through_regular_file_or_symlink_prefix(self):
         roots = [{"role": "payload", "members": [

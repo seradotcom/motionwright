@@ -49,17 +49,30 @@ hardlinked regular members, nested filesystem changes and case aliases fail.
 Symlinks are recorded without following targets. Output cannot be inside an
 observed root or contain one.
 
-The extraction wrapper holds the original candidate descriptor across the
-operation, binds tool bytes, creates a fresh external work directory, retains
-exclusive input/request/completion/stdout/stderr originals and rechecks source,
-candidate and tools before publication. It builds/downloads nothing and runs
-neither an installed application nor Native. The fixed process bound is
-90 seconds per extraction command. The receipt does not claim descendant
-authority that the existing run_captured helper does not establish.
+The Linux extraction wrapper holds the original candidate descriptor across the
+operation, binds tool bytes, creates a fresh external work directory, and retains
+exclusive input/request/completion/stdout/stderr originals. The scoped owner in
+tooling/candidate_package_extraction.py reuses startup_capture_core.py; the common
+run_captured helper is unchanged. Before exec it independently binds the
+supervisor and command identities while the exec barrier is closed and retains
+both pidfds. Success requires the original subreaper transcript, a terminal
+waitid ECHILD proof for all descendants, complete streams, and the exact
+supervisor's successful waitid(P_PIDFD) after its retained pidfd becomes readable.
+A leader exit or a closed stdout/stderr pair is insufficient.
 
-DMG detach is attempted after an attach attempt, including failure paths. A
-failed detach prevents success. If an earlier operation failed, that remains
-the primary error and the close error is attached. Originals survive failures.
+The original 90-second ceiling includes 88 seconds of operation, one second
+for descendant closure/stream joining, and a final second for the exact
+supervisor wait. No retry or extended cleanup budget is permitted. Failure
+retains original prefixes and failure records; it cannot publish an inventory.
+The original kernel transcript is bounded at 128 KiB, each metadata record at
+64 KiB, and each command stream at the existing 8 MiB limit. Source, candidate
+and tool identities are rechecked before publication. No installed application,
+Native host, compiler, download, or second extraction is introduced.
+
+macOS has no equivalent admitted kernel subtree owner in this unit. The new
+extract API refuses DMG before creating work or invoking hdiutil. Its existing
+workflow remains in place, with package inventory and complete process closure
+NOT_VERIFIED. A successful detach or a caller's boolean cannot fill this gap.
 
 ## Wiring into the existing workflow
 
@@ -110,31 +123,18 @@ The exact authenticated candidate runs once with --appimage-extract in fresh
 work. Continue existing inspection at "$work/appimage-inventory/squashfs-root".
 Runtime-prefix and SquashFS-container metadata remain gaps.
 
-### macOS DMG
+### macOS DMG: extraction wiring deferred
 
-Replace the existing attach/copy/detach block and permissive detach trap with:
+Do not replace the existing attach/copy/detach workflow with this new extractor.
+The DMG namespace reader and adapter are source-only building blocks until an
+equivalent process owner can prove closure for attach, copy and detach. The
+remaining obligation is a single read-only mount, whole-volume scan plus
+complete copied application comparison, original process streams, and genuine
+closure including detach, with the same source/package identities and bounded
+failure cleanup. No remount may be used to reconstruct an earlier observation.
 
-~~~sh
-python tooling/candidate_package_inventory.py extract \
-  --kind dmg --artifact "$GITHUB_WORKSPACE/$dmg" \
-  --candidate-receipt "$GITHUB_WORKSPACE/ci-evidence/macos-candidate.json" \
-  --work "$RUNNER_TEMP/motionwright-macos-inventory" \
-  --directory "$GITHUB_WORKSPACE/ci-evidence/macos-dmg-package-inventory"
-~~~
-
-The fixed commands are:
-
-1. /usr/bin/hdiutil attach -readonly -nobrowse -mountpoint WORK/mount ORIGINAL_DMG
-2. /usr/bin/ditto WORK/mount/Motionwright.app WORK/installed/Motionwright.app
-3. /usr/bin/hdiutil detach WORK/mount -quiet
-
-Before detach the producer enumerates the whole mounted volume, including
-members outside the application, and the entire copied application. Every copy
-member, regular-file byte hash, link literal and permission bit must match;
-missing empty directories and extra copied members fail. Continue smoke on
-WORK/installed/Motionwright.app. Later consumption authenticates retained volume
-observations and original process streams; it does not remount or call them
-fresh volume reads. Extended attributes/resource forks remain unverified.
+The existing flow does not gain inventory credit here. Extended attributes,
+resource forks and container metadata remain unverified as before.
 
 ### NSIS: reuse the owned install and original static listing
 
