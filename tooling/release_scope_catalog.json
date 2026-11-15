@@ -19221,7 +19221,7 @@
     },
     {
       "path": ".github/workflows/v05-otio-real-media.yml",
-      "sha256": "0bbf0bf43a824cbcb7dcd23fddfd8ba82f998497f736939cdcb28944729915f4",
+      "sha256": "874f17f517715aa96be0be728a01c7996744251ee63dc5e2a9dbc72077aef98c",
       "preamble_sha256": "bc85bc588c3dd5c633986c73f9812f2a6528bc1f96564f0b3979b22ae5be1a2f",
       "evidence_class": "mixed_source_media_native_readonly",
       "purpose": "Source OTIO/media interchange and Windows junction controls, separate Kdenlive accessibility/roundtrip observations, and externally admitted read-only ALab metadata.",
@@ -19308,7 +19308,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "1ef2f3e6ded6d977397c3702be163c575537e59d3270b03fa4b612c278a83d00",
+          "source_sha256": "eb1cdb806c7242dc01d5aaadfc37520e7fa1c7b09d80d11e9696070ef62dee29",
           "instance_sets": {
             "source": [
               {}
@@ -19349,10 +19349,10 @@
             },
             {
               "ordinal": 9,
-              "name": "Require the three original owner-cut Rust cases",
+              "name": "Require all twenty-one original owner and retained-source Rust cases",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "ba3155d4c4282ed1bd07a74944cb104bf9a2a6959ec9d6ad8014c90c5be58969",
+              "source_block_sha256": "6e2238e3e36b7dcf7ca8ee77fad87cabc06da62aa90bc8396ce0e7f9b3a4158d",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -19442,7 +19442,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "c46ec6c948f37c6616123ea4994eeca00104a5423fc73f3a335c035944b6784a",
+          "source_sha256": "54aa6d7bf32c8a5a833af81885c467d1674f864f9fde5098caf097a9e119800a",
           "instance_sets": {
             "accessibility-only": [
               {}
@@ -19473,10 +19473,10 @@
             },
             {
               "ordinal": 6,
-              "name": "Require the three original owner-cut Rust cases",
+              "name": "Require all twenty-one original owner and retained-source Rust cases",
               "guard": "inputs.verification_scope == 'kdenlive-gui'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "b6ea9613d0e8e754a95d03d3b5dd8cdee4c963aa584892a42397d2f619e83b4c",
+              "source_block_sha256": "9f5756536b6248d9a4b7931a797d46991c94fe2ede9985268ebb86b6350ba739",
               "api_binding": "EXPLICIT_NAME"
             },
             {
