@@ -1,6 +1,7 @@
 """Workflow contracts for detached package observations; no package effects."""
 from __future__ import annotations
 
+import ast
 from fnmatch import fnmatchcase
 from pathlib import Path
 import unittest
@@ -118,12 +119,22 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
             self.assertEqual(actual, expected)
             self.assertNotIn("*", selected)
             self.assertIn("always()", upload)
-        from tooling import candidate_attestation_input as attestation
+        attestation_source = ast.parse(
+            (ROOT / "tooling/candidate_attestation_input.py").read_text(encoding="utf-8")
+        )
+        evidence_rosters = [
+            node.value for node in attestation_source.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "KNOWN_EVIDENCE_FILES"
+                    for target in node.targets)
+        ]
+        self.assertEqual(len(evidence_rosters), 1)
+        attestation_evidence = ast.literal_eval(evidence_rosters[0])
         common = self.linux.split("          name: motionwright-linux-candidate\n", 1)[1]
         common = common.split("          if-no-files-found:", 1)[0]
         evidence = {Path(line.strip()).name for line in common.splitlines()
                     if line.strip().startswith("ci-evidence/")}
-        self.assertEqual(evidence, attestation.KNOWN_EVIDENCE_FILES["linux"])
+        self.assertEqual(evidence, attestation_evidence["linux"])
 
     def test_macos_keeps_existing_flow_without_activating_unproved_inventory_extraction(self):
         macos = job_source(self.workflow, "macos")
