@@ -197,6 +197,17 @@ def original_source(scope, repo, current):
     return closure
 
 
+def validate_original_clock_window(start, end, seconds, now, *, allow_expired=False):
+    """Check the exact issued deadline without reversing floating-point addition."""
+    # Native clocks are issued as start + seconds. Subtracting start again can
+    # round across a binary exponent boundary, even for an unchanged original.
+    # Reconstruct the issued value exactly; no epsilon or deadline extension.
+    need(all(type(n) in (int, float) and math.isfinite(n) for n in (start, end))
+         and type(seconds) is int and 0 < seconds <= 3900 and 0 <= start <= now
+         and (allow_expired or now < end) and end == start + seconds,
+         "owner-resource-original-clock-expired")
+
+
 def clock_originals(scope, current, temp, *, uid, allow_expired=False):
     folder = (temp / ("hp" + current["run_id"] + "-1") if scope == "hero" else
               temp / ("mw-fixedtxt-g2-control-" + current["run_id"] + "-1"))
@@ -219,9 +230,7 @@ def clock_originals(scope, current, temp, *, uid, allow_expired=False):
         need(clock.get("request_sha256") == descriptor(request_raw)["sha256"], "owner-resource-original-request-pin")
     start, end = clock.get("started_monotonic"), clock.get("deadline_monotonic")
     seconds = request.get("limits", {}).get("attempt_seconds")
-    need(all(type(n) in (int, float) and math.isfinite(n) for n in (start, end))
-         and type(seconds) is int and 0 < seconds <= 3900 and 0 <= start <= time.monotonic()
-         and (allow_expired or time.monotonic() < end) and end - start == seconds, "owner-resource-original-clock-expired")
+    validate_original_clock_window(start, end, seconds, time.monotonic(), allow_expired=allow_expired)
     return {"folder": str(folder), "clock": descriptor(raw), "request": descriptor(request_raw),
             "started_monotonic": start, "deadline_monotonic": end, "boot_id": clock["boot_id"]}, request
 
