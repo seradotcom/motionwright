@@ -86,6 +86,95 @@ class KdenliveNativeProcessControls(unittest.TestCase):
             )
             self.assertFalse(result["saved_project_was_an_exact_launch_argument"])
             self.assertEqual(result["bounded_arg_count"], 2)
+            # Version-composition fixtures use a direct executable without
+            # an AppImage parent tree. They must remain admissible as a
+            # direct-binary *argument shape*, not crash with IndexError.
+            direct = check_commandline(
+                b"kdenlive\0--new-instance\0",
+                Path("kdenlive"), "import", native)
+            self.assertEqual(direct["bounded_arg_count"], 2)
+            self.assertFalse(direct["saved_project_was_an_exact_launch_argument"])
+            with self.assertRaisesRegex(
+                NativeKdenliveProcessRejected,
+                "executable_or_source_phase_does_not_match",
+            ):
+                check_commandline(
+                    b"AppRun.wrapped\0--config\0motionwright-ci.rc\0",
+                    Path("kdenlive"), "import", native)
+        # Retain the existing 24-case public source roster; exercise the
+        # exact authenticated AppRun alias in this import-phase contract.
+        self._check_exact_owned_AppRun_wrapped_alias_binds_the_original_native_elf()
+
+    def _check_exact_owned_AppRun_wrapped_alias_binds_the_original_native_elf(self):
+        # Source-authenticated distribution observation c470ce85 recorded
+        # AppRun.wrapped -> usr/bin/kdenlive. The real NativeProcess launches
+        # AppRun, whose pinned script execs this wrapped alias with --config.
+        # Synthetic files here exercise only commandline policy; no GUI runs.
+        with tempfile.TemporaryDirectory() as directory:
+            appdir = Path(directory) / "original-appdir"
+            (appdir / "usr" / "bin").mkdir(parents=True)
+            executable = appdir / "usr" / "bin" / "kdenlive"
+            executable.write_bytes(b"synthetic-pinned-elf")
+            alias = appdir / "AppRun.wrapped"
+            try:
+                alias.symlink_to("usr/bin/kdenlive")
+            except OSError:
+                # Windows development accounts can disallow symlink creation;
+                # a same-inode hardlink proves the invariant locally. Linux CI
+                # must exercise the real relative-symlink branch above.
+                os.link(executable, alias)
+            native = appdir / "owner" / "initial.kdenlive"
+
+            def argv(*parts):
+                return ("\0".join(parts) + "\0").encode("utf-8")
+
+            base = (str(alias), "--config", "motionwright-ci.rc")
+            first = check_commandline(argv(*base), executable, "import", native)
+            self.assertEqual(first["bounded_arg_count"], 3)
+            self.assertFalse(first["saved_project_was_an_exact_launch_argument"])
+            self.assertEqual(first["native_process_phase"], "import")
+            reopened = check_commandline(
+                argv(*base, str(native)), executable, "reopen", native)
+            self.assertEqual(reopened["bounded_arg_count"], 4)
+            self.assertTrue(reopened["saved_project_was_an_exact_launch_argument"])
+            for values in (
+                (*base, "extra.mp4"),
+                (str(alias), "--config", "foreign.rc"),
+                (str(alias), "--other", "motionwright-ci.rc"),
+                (*base, str(native)),
+            ):
+                with self.subTest(values=values):
+                    with self.assertRaisesRegex(
+                        NativeKdenliveProcessRejected,
+                        "AppRun_arguments_not_the_selected_original_route",
+                    ):
+                        check_commandline(argv(*values), executable, "import", native)
+            for values in (
+                (*base,),
+                (*base, "initial.kdenlive"),
+                (*base, str(appdir / "foreign" / native.name)),
+            ):
+                with self.subTest(reopen=values):
+                    with self.assertRaisesRegex(
+                        NativeKdenliveProcessRejected,
+                        "AppRun_arguments_not_the_selected_original_route",
+                    ):
+                        check_commandline(argv(*values), executable, "reopen", native)
+            with self.assertRaisesRegex(
+                NativeKdenliveProcessRejected,
+                "executable_or_source_phase_does_not_match",
+            ):
+                check_commandline(
+                    argv(str(appdir / "other" / "AppRun.wrapped"),
+                         "--config", "motionwright-ci.rc"),
+                    executable, "import", native)
+            alias.unlink()
+            alias.write_bytes(b"different-untrusted-executable")
+            with self.assertRaisesRegex(
+                NativeKdenliveProcessRejected,
+                "AppRun_was_not_the_pinned_binary_alias",
+            ):
+                check_commandline(argv(*base), executable, "import", native)
 
     def test_malformed_argv_and_foreign_binary_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -38,7 +38,7 @@ PROFILES = {
            "reports": (("alab-caller-g0", CALLER_CASES),)},
     "alab": {"job": "admitted-native-kdenlive-gui", "reports": (
         ("alab-caller-source-controls", CALLER_CASES),
-        ("alab-owner-source-controls", ((BRIDGE, 94),)))},
+        ("alab-owner-source-controls", ((BRIDGE, 144),)))},
 }
 REPORT_LIMIT, STREAM_LIMIT, TOTAL_LIMIT = 512 * 1024, 1024 * 1024, 8 * 1024 * 1024
 OUTPUT_NAMES = ("source-control-originals.tar", "source-control-custody.json")

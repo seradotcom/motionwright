@@ -774,8 +774,18 @@ def _nle_fields(value:object,required:set[str],optional:set[str],label:str)->dic
                  f"{label} has unsupported or missing fields")
     return value
 
+# Authenticated Kdenlive 26.08.3 exports include this exact root annotation.
+# It is untrusted format provenance only, never source identity, a permission,
+# an effect, a proposed edit, or proof of an NLE Save/reopen.
+KDENLIVE_NATIVE_ROOT_ANNOTATION = {"kdenlive": {"version": "26.08.3"}}
+
+
 def _nle_clean(value:dict,label:str)->None:
-    _nle_require(value.get("metadata",{})=={} and value.get("effects",[])==[]
+    metadata=value.get("metadata",{})
+    if label=="NLE Timeline" and metadata==KDENLIVE_NATIVE_ROOT_ANNOTATION:
+        # Do not mutate the native original or reinterpret any other metadata.
+        metadata={}
+    _nle_require(metadata=={} and value.get("effects",[])==[]
                  and value.get("markers",[])==[] and value.get("enabled",True)is True
                  and value.get("color")is None,"unsupported_native_control",
                  f"{label} contains metadata, effects, markers or disabled content outside the bounded profile")

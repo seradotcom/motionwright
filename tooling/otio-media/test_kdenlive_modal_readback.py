@@ -955,13 +955,175 @@ class ModalReadbackTests(unittest.TestCase):
                 session = actions.AtspiSession.__new__(actions.AtspiSession)
                 session.control = Mock()
                 session.modal_action = Mock()
+                if path == ("Sequence", "Current Item", "Edit Duration"):
+                    # The literal duration path performs a read-only owned
+                    # preflight before actions. Test its closed-menu branch
+                    # with a complete typed tree, rather than bypassing its
+                    # journal on an uninitialized synthetic session.
+                    observed_events = []
+                    session.pid = 41
+                    session.journal = actions.ActionJournal(
+                        observed_events.append, lambda: None)
+                    observed_rows = [
+                        row("app", "Kdenlive", "application"),
+                        row("app/main", "Untitled — Kdenlive", "frame"),
+                        row("app/main/menubar", "", "menu bar"),
+                        row("app/main/menubar/sequence", "Sequence", "menu item"),
+                        row("app/main/menubar/sequence/menu", "", "menu",
+                            visible=False),
+                        row("app/main/menubar/sequence/menu/current",
+                            "Current Item", "menu item", visible=False),
+                    ]
+                    def observe_owned_menu():
+                        session.last_snapshot = {
+                            "complete": True, "rows": observed_rows}
+                        return observed_rows
+                    session.tree = observe_owned_menu
                 session.menu("route", *path)
                 session.modal_action.assert_called_once_with(
                     "route." + str(len(path) - 1), kind,
                 )
                 self.assertEqual(session.control.call_count, len(path) - 1)
-        for path in (("File", "Render..."), ("File", "Quit"),
-                     ("Other", "Save As..."), ("File", "OpenTimelineIO Import")):
+                if path == ("Sequence", "Current Item", "Edit Duration"):
+                    self.assertEqual(
+                        [event["state"] for event in observed_events],
+                        ["COMPLETE_READ_ONLY_SELECTION"])
+                    self.assertFalse(observed_events[0]["skip_top_level_toggle"])
+                    self.assertFalse(observed_events[0]["native_action_performed_here"])
+                    self.assertFalse(observed_events[0]["native_operation_retried"])
+                    self.assertFalse(observed_events[0]["formal_acceptance"])
+                    self.assertFalse(session.journal.blocked)
+
+        # The authenticated pre-render tree of run 43660784941 contains
+        # File/Render… and toolbar-Render/Render… simultaneously. A global
+        # lookup is ambiguous; the selected item must be owned by File.
+        file_row = row("app/1/2/0", "File", "menu item")
+        file_render = row("app/1/2/0/0/12", "Render…", "menu item")
+        toolbar_render = row("app/1/5/1/0/0", "Render…", "menu item")
+        routed = actions.AtspiSession.__new__(actions.AtspiSession)
+        routed.journal = actions.ActionJournal(lambda _event: None, lambda: None)
+        routed.tree = Mock(return_value=[file_row, file_render, toolbar_render])
+        routed.action = Mock()
+        with self.assertRaisesRegex(actions.GuiRejected,
+                                    "native_gui_control_not_unique"):
+            routed.find(("Render...",), ("menu item",))
+        routed.menu("editor-before.menu", "File", "Render...")
+        self.assertEqual(routed.action.call_count, 2)
+        self.assertEqual(
+            [(call.args[0], call.args[1]["key"])
+             for call in routed.action.call_args_list],
+            [("editor-before.menu.0", file_row["key"]),
+             ("editor-before.menu.1", file_render["key"])])
+        self.assertFalse(routed.journal.blocked)
+
+        # A duplicate *under File* must still stop; foreign toolbar entries
+        # cannot serve as fallbacks or grant an extra Native action.
+        duplicated = actions.AtspiSession.__new__(actions.AtspiSession)
+        duplicated.journal = actions.ActionJournal(
+            lambda _event: None, lambda: None)
+        duplicated.tree = Mock(return_value=[
+            file_row, file_render, toolbar_render,
+            row("app/1/2/0/0/13", "Render…", "menu item")])
+        duplicated.action = Mock()
+        with self.assertRaisesRegex(actions.GuiRejected,
+                                    "native_gui_control_not_unique"):
+            duplicated.menu("editor-before.menu", "File", "Render...")
+        duplicated.action.assert_called_once()
+        self.assertEqual(duplicated.action.call_args.args[1]["key"],
+                         file_row["key"])
+        self.assertTrue(duplicated.journal.blocked)
+        denied = actions.AtspiSession.__new__(actions.AtspiSession)
+        denied.journal = actions.ActionJournal(lambda _event: None, lambda: None)
+        denied.journal.blocked = True
+        denied.tree = Mock(return_value=[file_row, file_render, toolbar_render])
+        denied.action = Mock()
+        with self.assertRaises(actions.GuiRejected):
+            denied.menu("editor-before.menu", "File", "Render...")
+        denied.action.assert_not_called()
+        denied.tree.assert_not_called()
+
+        # Import may populate >512 descendants in one timeline node after
+        # Submit. Original dialog closure must check every *direct* owned
+        # application window, not increase that 512-node traversal budget.
+        class RootNode:
+            def __init__(self, role, name="", *, pid=41, visible=False,
+                         modal=False, children=()):
+                self.role, self.name, self.pid = role, name, pid
+                self.visible, self.modal, self.children = visible, modal, list(children)
+                self.child_count_calls = 0
+
+            def get_process_id(self): return self.pid
+            def get_role_name(self): return self.role
+            def get_name(self): return self.name
+            def clear_cache_single(self): return None
+            def get_child_count(self):
+                self.child_count_calls += 1
+                return len(self.children)
+            def get_child_at_index(self, index): return self.children[index]
+            def get_state_set(self):
+                return SimpleNamespace(contains=lambda state:
+                    self.visible if state == "SHOWING"
+                    else self.modal if state == "MODAL" else False)
+
+        timeline = RootNode("frame", "Untitled / HD 1080p 25 fps - Kdenlive",
+                            visible=True,
+                            children=[RootNode("filler")] * (actions.MAX_CHILDREN + 1))
+        dialog = RootNode("dialog", "OpenTimelineIO Import — Kdenlive",
+                          visible=True)
+        app = RootNode("application", children=[
+            RootNode("filler"), timeline, RootNode("frame"),
+            RootNode("filler"), dialog,
+        ])
+        desktop = RootNode("desktop", children=[
+            RootNode("application", pid=99), app,
+        ])
+        observed = actions.AtspiSession.__new__(actions.AtspiSession)
+        observed.pid = 41
+        observed.journal = actions.ActionJournal(lambda _event: None, lambda: None)
+        observed.api = SimpleNamespace(
+            get_desktop=lambda index: desktop if index == 0 else None,
+            StateType=SimpleNamespace(SHOWING="SHOWING", MODAL="MODAL"))
+        original = row("app/4", "OpenTimelineIO Import — Kdenlive", "dialog")
+        before = observed._owned_top_level_windows()
+        self.assertEqual(len(before), 5)
+        self.assertEqual(before[4]["visible"], True)
+        self.assertIsNone(actions.closed_original_file_dialog(
+            original, ("OpenTimelineIO Import",), before, 41))
+        self.assertEqual(timeline.child_count_calls, 0)
+        dialog.visible = False
+        closed = observed._observed_file_dialog_closed(
+            original, ("OpenTimelineIO Import",))
+        self.assertTrue(closed["original_dialog_not_showing"])
+        self.assertEqual(closed["consistent_direct_root_observations"], 2)
+        self.assertEqual(closed["top_level_count"], 5)
+        self.assertFalse(closed["whole_accessibility_tree_scanned"])
+        self.assertFalse(closed["native_import_verified"])
+        self.assertFalse(closed["native_save_verified"])
+        self.assertFalse(closed["automatic_retry"])
+        self.assertFalse(closed["formal_acceptance"])
+        self.assertEqual(timeline.child_count_calls, 0)
+        self.assertEqual(app.child_count_calls, 3)
+
+        dialog.visible = True
+        dialog.name = "Unexpected Warning — Kdenlive"
+        with self.assertRaisesRegex(actions.GuiRejected,
+                                    "native_gui_root_close_unexpected_dialog"):
+            actions.closed_original_file_dialog(
+                original, ("OpenTimelineIO Import",),
+                observed._owned_top_level_windows(), 41)
+        dialog.pid = 99
+        with self.assertRaisesRegex(actions.GuiRejected,
+                                    "native_gui_root_child_foreign_pid"):
+            observed._owned_top_level_windows()
+        dialog.pid = 41
+        app.children.extend([RootNode("filler")] * 28)
+        with self.assertRaisesRegex(actions.GuiRejected,
+                                    "native_gui_root_window_budget"):
+            observed._owned_top_level_windows()
+        self.assertEqual(timeline.child_count_calls, 0)
+
+        for path in (("File", "Quit"), ("Other", "Save As..."),
+                     ("File", "OpenTimelineIO Import")):
             with self.subTest(path=path):
                 session = actions.AtspiSession.__new__(actions.AtspiSession)
                 session.control = Mock()
@@ -982,6 +1144,349 @@ class ModalReadbackTests(unittest.TestCase):
                     scenario.run()
                 scenario.effect.assert_not_called()
                 scenario.session.tree.assert_not_called()
+
+
+class RenderFieldCustodyTests(unittest.TestCase):
+    """Offline selection/custody regressions; never live Native evidence."""
+
+    def observed(self, fields):
+        label = row("app/1/output-label", "Output file", "label")
+        label["rect"] = [10, 10, 80, 20]
+        dialog = row("app/1", "Rendering", "dialog")
+        rows = [dialog, label] + fields
+        session = actions.AtspiSession.__new__(actions.AtspiSession)
+        session.pid = 41
+        events, reads = [], []
+        def tree():
+            reads.append("original-observation")
+            session.last_snapshot = {"complete": True, "rows": rows}
+            return rows
+        session.tree = tree
+        session.journal = SimpleNamespace(emit=events.append)
+        def forbidden(*_args, **_kwargs):
+            self.fail("Field resolution/custody must not perform a Native action")
+        session.text = session.action = session.focus = forbidden
+        return session, dialog, rows, events, reads
+
+    def field(self, key, rect=(100, 10, 200, 20)):
+        value = row(key, "", "text")
+        value.update(editable=True, text="/original/output.mov", rect=list(rect))
+        return value
+
+    def test_unique_and_nested_editable_leaf_keep_original_selection(self):
+        for nested in (False, True):
+            with self.subTest(nested=nested):
+                leaf = self.field("app/1/field/line")
+                fields = [self.field("app/1/field"), leaf] if nested else [leaf]
+                session, dialog, rows, events, reads = self.observed(fields)
+                selected = session.render_output_field("before-edit", dialog)
+                self.assertIs(selected, leaf)
+                self.assertEqual(reads, ["original-observation"])
+                self.assertEqual(events, [])
+
+    def test_zero_and_multiple_candidates_retain_exact_original_tree(self):
+        for fields in ([], [self.field("app/1/a"), self.field("app/1/b")]):
+            with self.subTest(candidate_count=len(fields)):
+                session, dialog, rows, events, reads = self.observed(fields)
+                with self.assertRaisesRegex(actions.GuiRejected,
+                                            "native_gui_labeled_field_not_unique"):
+                    session.render_output_field("before-edit", dialog)
+                self.assertEqual(reads, ["original-observation"])
+                self.assertEqual(len(events), 1)
+                event = events[0]
+                self.assertEqual(event["label_keys"], ["app/1/output-label"])
+                self.assertEqual(event["geometric_candidate_keys"], [r["key"] for r in fields])
+                self.assertEqual(event["editable_leaf_keys"], [r["key"] for r in fields])
+                self.assertEqual(event["snapshot"], independent_snapshot(rows))
+                for flag in ("new_accessibility_query", "native_render_dispatched_here",
+                             "native_operation_retried", "semantic_effect_verified", "formal_acceptance"):
+                    self.assertIs(event[flag], False)
+
+    def test_recording_error_preserves_selection_error_without_requery(self):
+        session, dialog, _rows, events, reads = self.observed([])
+        def failed_sink(_event):
+            raise OSError("retained sink unavailable")
+        session.journal.emit = failed_sink
+        with self.assertRaisesRegex(actions.GuiRejected,
+                                    "native_gui_labeled_field_not_unique") as caught:
+            session.render_output_field("after-edit", dialog)
+        self.assertIn("native_render_output_custody_failed:OSError", caught.exception.__notes__)
+        self.assertEqual(reads, ["original-observation"])
+        self.assertEqual(events, [])
+
+    def test_foreign_snapshot_pid_cannot_replace_original_error(self):
+        session, dialog, rows, events, reads = self.observed([])
+        rows[1]["pid"] = 99
+        with self.assertRaisesRegex(actions.GuiRejected,
+                                    "native_gui_labeled_field_not_unique") as caught:
+            session.render_output_field("before-edit", dialog)
+        self.assertIn("native_render_output_custody_failed:GuiRejected", caught.exception.__notes__)
+        self.assertEqual(reads, ["original-observation"])
+        self.assertEqual(events, [])
+
+
+
+class RenderOutputDialogTests(unittest.TestCase):
+    """Synthetic contracts for the original KUrlRequester structure; no UI."""
+
+    @staticmethod
+    def output_rows():
+        main = row("app/0", "Project - Kdenlive", "frame")
+        parent = row("app/1", "Rendering", "dialog")
+        label = row("app/1/0/0/2", "Output file", "label")
+        label["rect"] = [168, 58, 64, 32]
+        requester = row("app/1/0/0/3", "Output file", "filler")
+        requester["rect"] = [238, 58, 459, 32]
+        editor = row(requester["key"] + "/0", "", "filler")
+        editor["rect"] = [238, 60, 421, 28]
+        clear = row(editor["key"] + "/0", "", "push button")
+        clear["rect"] = [633, 65, 22, 18]
+        browse = row(requester["key"] + "/1", "", "push button")
+        browse["rect"] = [665, 58, 32, 32]
+        return [main, parent, label, requester, editor, clear, browse]
+
+    @staticmethod
+    def x11_parent():
+        return {"schema": "motionwright.native.x11-modal-parent/1",
+                "complete": True, "expected_pid": 41, "window": 21,
+                "name": "Rendering",
+                "allowed_types": ["_NET_WM_WINDOW_TYPE_NORMAL", "_NET_WM_WINDOW_TYPE_DIALOG"],
+                "records": [{"synthetic": True}],
+                "properties": {"pid": 41, "name": "Rendering",
+                               "types": ["_NET_WM_WINDOW_TYPE_DIALOG"], "states": [],
+                               "transient_for": 11, "client_leader": 11}}
+
+    def test_direct_requester_button_excludes_nested_clear_and_unrelated_controls(self):
+        rows = self.output_rows()
+        rows.append(row("app/1/unrelated", "", "push button"))
+        selected = actions.render_output_browse_button(rows, 41)
+        self.assertEqual(selected["key"], "app/1/0/0/3/1")
+        self.assertEqual(selected["url_requester"], rows[3])
+        self.assertEqual(selected["output_label"], rows[2])
+        self.assertFalse(rows[4]["editable"])
+        with self.assertRaisesRegex(actions.GuiRejected, "labeled_field_not_unique"):
+            actions.labeled_field(rows[2:], ("Output file",))
+
+    def test_ambiguous_foreign_hidden_disabled_and_misplaced_buttons_stop(self):
+        for mutation in ("duplicate", "foreign", "hidden", "disabled", "outside", "missing", "other-label"):
+            with self.subTest(mutation=mutation):
+                rows = self.output_rows()
+                if mutation == "duplicate":
+                    rows.append({**rows[-1], "key": "app/1/0/0/3/2"})
+                elif mutation == "foreign": rows[-1]["pid"] = 99
+                elif mutation == "hidden": rows[-1]["visible"] = False
+                elif mutation == "disabled": rows[-1]["enabled"] = False
+                elif mutation == "outside": rows[-1]["rect"][0] = 1000
+                elif mutation == "missing": rows.pop()
+                else: rows[2]["name"] = "Presets"
+                with self.assertRaises(actions.GuiRejected):
+                    actions.render_output_browse_button(rows, 41)
+
+    def test_output_modal_requires_original_rendering_parent_and_direct_x11_relation(self):
+        session = actions.AtspiSession.__new__(actions.AtspiSession)
+        session.pid = 41
+        session.journal = actions.ActionJournal(lambda _event: None, lambda: None)
+        before = self.output_rows()
+        parent = self.x11_parent()
+        with patch.object(actions.x11_modal, "observe_parent", return_value=parent) as observe:
+            session._modal_x11_parent = session._observe_modal_parent(before, "render_output")
+        self.assertEqual(observe.call_args.kwargs["parent_name"], "Rendering")
+        after = copy.deepcopy(before)
+        after[1]["enabled"] = False
+        dialog = row("app/2", "Save As", "dialog", modal=True)
+        after.append(dialog)
+        with patch.object(actions.x11_modal, "observe_modal", return_value={"complete": True}) as observe:
+            self.assertEqual(session._modal_readback(after, "render_output", None, deadline=30), dialog)
+        self.assertFalse(observe.call_args.kwargs["group"])
+        self.assertIs(observe.call_args.kwargs["parent_observation"], parent)
+        after[1]["key"] = "app/changed"
+        with self.assertRaisesRegex(actions.GuiRejected, "modal_parent_changed"):
+            session._modal_readback(after, "render_output", None, deadline=30)
+
+    def test_no_reply_is_reconciled_by_one_original_browse_without_replay(self):
+        for response in ("no-reply", "other-error"):
+            with self.subTest(response=response):
+                scenario = Scenario()
+                scenario.kind = "render_output"
+                scenario.before = self.output_rows()
+                scenario.target = scenario.before[-1]
+                scenario.after = copy.deepcopy(scenario.before)
+                scenario.after[1]["enabled"] = False
+                scenario.after.append(row("app/2", "Save As", "dialog", modal=True))
+                scenario.snapshots = [snapshot(scenario.before), snapshot(scenario.after)]
+                scenario.session._observe_modal_parent = actions.AtspiSession._observe_modal_parent.__get__(scenario.session)
+                if response == "other-error":
+                    scenario.response = SyntheticGlibError(code=2)
+                with patch.object(actions.x11_modal, "observe_parent", return_value=self.x11_parent()), \
+                     patch.object(actions.x11_modal, "observe_modal", return_value={"complete": True}):
+                    if response == "no-reply":
+                        self.assertEqual(scenario.run()["name"], "Save As")
+                        self.assertFalse(scenario.journal.blocked)
+                    else:
+                        with self.assertRaises(actions.GuiUncertain): scenario.run()
+                        self.assertTrue(scenario.journal.blocked)
+                scenario.effect.assert_called_once_with(0)
+                self.assertEqual(sum(e["state"] == "ERROR_OR_UNKNOWN" for e in scenario.events), 1)
+                self.assertEqual(sum(e["state"] == "INTENT" for e in scenario.events), 1)
+
+    def test_close_permits_only_original_rendering_parent_and_rejects_other_modals(self):
+        parent = self.output_rows()[1]
+        original = row("app/2", "Save As", "dialog", modal=True)
+        fields = ("key", "name", "role", "pid", "visible", "modal")
+        windows = [{k: r[k] for k in fields} for r in
+                   (self.output_rows()[0], parent, {**original, "visible": False})]
+        closed = actions.closed_original_file_dialog(original, ("Save As",), windows, 41, render_parent=parent)
+        self.assertEqual(closed["retained_render_parent"]["key"], parent["key"])
+        self.assertFalse(closed["native_save_verified"])
+        windows[2]["visible"] = True
+        self.assertIsNone(actions.closed_original_file_dialog(original, ("Save As",), windows, 41, render_parent=parent))
+        for mutation in ("overwrite", "foreign-parent", "missing-parent"):
+            changed = copy.deepcopy(windows)
+            if mutation == "overwrite": changed[2]["name"] = "Confirm overwrite"
+            elif mutation == "foreign-parent": changed[1]["pid"] = 99
+            else: changed[1]["visible"] = False
+            with self.subTest(mutation=mutation), self.assertRaises(actions.GuiRejected):
+                actions.closed_original_file_dialog(original, ("Save As",), changed, 41, render_parent=parent)
+        with self.assertRaisesRegex(actions.GuiRejected, "root_close_profile"):
+            actions.closed_original_file_dialog(original, ("OpenTimelineIO Import",), windows, 41, render_parent=parent)
+
+    def target_session(self, output, *, observed_text=None):
+        session = actions.AtspiSession.__new__(actions.AtspiSession)
+        session.pid = 41; events = []
+        session.journal = actions.ActionJournal(events.append, lambda: None)
+        rows = self.output_rows()
+        dialog = row("app/2", "Save As", "dialog", modal=True)
+        label = row("app/2/label", "File name:", "label")
+        label["rect"] = [0, 0, 50, 20]
+        field = row("app/2/filename", "", "text")
+        field.update(editable=True, rect=[50, 0, 200, 20],
+                     text=str(output) if observed_text is None else observed_text)
+        accept = row("app/2/save", "Save", "push button")
+        rows.extend((dialog, label, field, accept))
+        session._render_output_atspi_parent = dict(rows[1])
+        session._modal_x11_parent = self.x11_parent()
+        session.modal_action = Mock(return_value=dialog)
+        session.dialog = Mock(return_value=dialog)
+        session.descendants = Mock(return_value=[label, field, accept])
+        session.text = Mock()
+        session._complete_modal_tree = Mock(return_value=rows)
+        session.last_snapshot = snapshot(rows)
+        session.action = Mock()
+        fields = ("key", "name", "role", "pid", "visible", "modal")
+        closed = [{k: r[k] for k in fields} for r in
+                  (rows[0], rows[1], {**dialog, "visible": False})]
+        session._owned_top_level_windows = Mock(return_value=closed)
+        return session, events
+
+    def test_wrong_filename_cannot_submit_or_claim_requester_readback(self):
+        from pathlib import Path
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "new.mov"
+            session, events = self.target_session(output, observed_text="/foreign.mov")
+            with patch.object(actions.x11_modal, "observe_modal", return_value={"complete": True}), \
+                 self.assertRaisesRegex(actions.GuiRejected, "filename_readback"):
+                session.render_output_target("editor-before.output", output)
+            session.action.assert_not_called()
+            self.assertTrue(session.journal.blocked)
+            session._complete_modal_tree.assert_called_once()
+            custody = [e for e in events if e["step"].endswith(".selection-last-complete-tree")]
+            self.assertEqual(len(custody), 1)
+            self.assertTrue(custody[0]["complete"])
+            self.assertEqual(custody[0]["snapshot"], independent_snapshot(session.last_snapshot["rows"]))
+            self.assertFalse(custody[0]["new_accessibility_query"])
+            self.assertFalse(any("requester_text_read_back" in e for e in events))
+            output.write_bytes(b"occupied")
+            fresh, _ = self.target_session(output)
+            with self.assertRaisesRegex(actions.GuiRejected, "target_not_fresh"):
+                fresh.render_output_target("editor-before.output", output)
+            fresh.modal_action.assert_not_called()
+
+    def test_selection_retains_exact_name_and_parent_but_requires_playlist_target(self):
+        from pathlib import Path
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "new.mov"
+            for changed_parent in (False, True):
+                session, events = self.target_session(output)
+                after = self.x11_parent()
+                if changed_parent: after["window"] += 1
+                with patch.object(actions.x11_modal, "observe_modal", return_value={"complete": True}), \
+                     patch.object(actions.x11_modal, "observe_parent", return_value=after):
+                    if changed_parent:
+                        with self.assertRaisesRegex(actions.GuiRejected, "X11_parent_changed"):
+                            session.render_output_target("editor-after.output", output)
+                        self.assertTrue(session.journal.blocked)
+                    else:
+                        selected = session.render_output_target("editor-after.output", output)
+                        self.assertEqual(selected["filename_original"]["text"], str(output))
+                        self.assertTrue(selected["playlist_target_verification_required"])
+                        self.assertFalse(selected["requester_text_read_back"])
+                        self.assertFalse(selected["native_render_dispatched_here"])
+                        self.assertEqual(selected["closure"]["consistent_direct_root_observations"], 2)
+                        filename = [e for e in events if e["step"].endswith(".filename-original")]
+                        self.assertEqual(len(filename), 1)
+                        self.assertTrue(filename[0]["complete"])
+                        self.assertEqual(filename[0]["snapshot"], independent_snapshot(session.last_snapshot["rows"]))
+                        self.assertIs(filename[0]["x11_modal"], session.last_x11_modal)
+                session.modal_action.assert_called_once_with("editor-after.output.browse", "render_output")
+                session.action.assert_called_once()
+                self.assertFalse(output.exists())
+
+
+    def test_x11_rejection_keeps_primary_cause_when_failure_custody_sink_fails(self):
+        from pathlib import Path
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "new.mov"
+            session, events = self.target_session(output)
+            original = actions.x11_modal.X11Rejected("synthetic_direct_parent_rejected")
+            def failed_custody(event):
+                if event["state"] in ("READ_ONLY_FAILURE_CUSTODY", "OBSERVATION_ERROR_OR_UNKNOWN"):
+                    raise OSError("synthetic original sink unavailable")
+                events.append(event)
+            session.journal.emit = failed_custody
+            with patch.object(actions.x11_modal, "observe_modal", side_effect=original), \
+                 self.assertRaisesRegex(actions.GuiRejected, "synthetic_direct_parent_rejected") as caught:
+                session.render_output_target("editor-before.output", output)
+            self.assertIs(caught.exception.__cause__, original)
+            self.assertTrue(session.journal.blocked)
+            self.assertIs(session.journal.last_failure["original"], caught.exception)
+            self.assertFalse(session.journal.last_failure["retained"])
+            self.assertIn("native_render_output_selection_custody_failed:OSError", caught.exception.__notes__)
+            self.assertIn("native_gui_journal_recording_failed:OSError", caught.exception.__notes__)
+            session.text.assert_called_once()
+            session.action.assert_not_called()
+            session._complete_modal_tree.assert_called_once()
+            session._owned_top_level_windows.assert_not_called()
+
+    def test_submit_uncertainty_preserves_recorded_primary_and_does_not_observe_close(self):
+        from pathlib import Path
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "new.mov"
+            session, events = self.target_session(output)
+            original = SyntheticGlibError()
+            effect = Mock(side_effect=original)
+            def uncertain(step, target):
+                return session.journal.perform(step, target, effect)
+            session.action = Mock(side_effect=uncertain)
+            with patch.object(actions.x11_modal, "observe_modal", return_value={"complete": True}), \
+                 self.assertRaises(actions.GuiUncertain) as caught:
+                session.render_output_target("editor-before.output", output)
+            self.assertIs(caught.exception.__cause__, original)
+            self.assertTrue(session.journal.blocked)
+            self.assertIs(session.journal.last_failure["original"], original)
+            self.assertEqual(session.journal.last_failure["step"], "editor-before.output.submit")
+            self.assertTrue(session.journal.last_failure["retained"])
+            self.assertEqual(sum(e["state"] == "ERROR_OR_UNKNOWN" for e in events), 1)
+            self.assertEqual(sum(e["state"] == "OBSERVATION_ERROR_OR_UNKNOWN" for e in events), 0)
+            effect.assert_called_once()
+            session._owned_top_level_windows.assert_not_called()
+            next_effect = Mock()
+            with self.assertRaisesRegex(actions.GuiRejected, "previous_action_uncertain"):
+                session.journal.perform("forbidden.generate-script", {}, next_effect)
+            next_effect.assert_not_called()
 
 
 if __name__ == "__main__":

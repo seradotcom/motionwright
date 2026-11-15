@@ -610,6 +610,41 @@ class BoundedKdenliveCutTests(unittest.TestCase):
 
     def test_metadata_effects_markers_audio_tracks_and_unknown_fields_are_closed(self):
         self.prepare()
+        # An original 26.08.3 export from physical run 43645348009 had exactly
+        # {"kdenlive":{"version":"26.08.3"}} at the root, with the same three
+        # SHA/FPS/inpoint-bound clips and empty child annotations. Admit this
+        # fixed transport tag, never its value as provenance or authority.
+        annotation={"kdenlive":{"version":"26.08.3"}}
+        self.received["metadata"]=json.loads(json.dumps(annotation))
+        self.edited["metadata"]=json.loads(json.dumps(annotation))
+        self.write_raw()
+        original_bytes={name:(self.raw/name).read_bytes()
+                        for name in ("received.otio","edited.otio")}
+        result=self.check()
+        self.assertEqual(result["status"],"BOUNDED_PROPOSAL_RECEIVER_NOT_VERIFIED")
+        self.assertEqual(result["native_change_proposals"],[])
+        self.assertEqual([r["original_inpoint"]
+                          for r in result["source_identity_mapping"]],[0,30,60])
+        self.assertEqual(result["nle_receiver_acceptance"],"NOT_VERIFIED")
+        self.assertEqual(result["native_project_reopened"],"NOT_VERIFIED")
+        self.assertFalse(result["raw_files_rewritten"])
+        self.assertFalse(result["publication_approved"])
+        self.assertEqual(original_bytes,{name:(self.raw/name).read_bytes()
+                                        for name in original_bytes})
+        for untrusted in (
+            {"kdenlive":{"version":"26.08.4"}},
+            {"kdenlive":{"version":"26.08.3","authority":"approved"}},
+            {"kdenlive":{"version":"26.08.3"},"motionwright":{"scene_id":ID(10)}},
+            {"motionwright":{"scene_id":ID(10)}},
+            {"kdenlive":"26.08.3"},
+        ):
+            self.edited=json.loads(json.dumps(self.received))
+            self.edited["metadata"]=untrusted
+            self.assert_loss("unsupported_native_control")
+        # Every other existing metadata/control rejection still executes with
+        # its original empty-root fixture and no loosened child semantics.
+        self.received["metadata"]={}
+        self.edited=json.loads(json.dumps(self.received))
         original=json.loads(json.dumps(self.edited))
         for field,value in (("metadata",{"motionwright":{"scene_id":ID(10)}}),
                             ("effects",[{"OTIO_SCHEMA":"Effect.1"}]),

@@ -722,7 +722,7 @@ def synthetic_editor_cycle(members, result):
         prefix = "editor-" + phase
         originals = {}
         originals["native_source"] = retain(source, members["owner/" + source])
-        for key, name in (("playlist", prefix + ".mlt"), ("master", prefix + ".mov"),
+        for key, name in (("playlist", prefix + "-1.mlt"), ("master", prefix + ".mov"),
                           ("native_render_log", prefix + ".mov.log"),
                           ("probe", prefix + ".probe.stdout.log"),
                           ("framehash", prefix + ".framehash.stdout.log")):
@@ -1347,6 +1347,7 @@ class EditedProjectReopenContracts(unittest.TestCase):
     def run_mocked_route(self, *, mutate_third=None, final_preview=None,
                          third_close_error=None, changed_edited_bytes=False,
                          changed_readback=False, source_database=None):
+        from test_kdenlive_initial_save import original_preview
         before, after, comparison, preview = admitted_edit()
         final = copy.deepcopy(after)
         if changed_readback:
@@ -1407,7 +1408,7 @@ class EditedProjectReopenContracts(unittest.TestCase):
              patch.object(runner.readback, "compare_two_native_custody_snapshots",
                           return_value=comparison) as compare, \
              patch.object(runner, "preview_kdenlive_cut", side_effect=[
-                 preview, preview if final_preview is None else final_preview]) as cut:
+                 original_preview(), preview, preview if final_preview is None else final_preview]) as cut:
             self.launch, self.inspect, self.compare, self.cut = launch, inspect, compare, cut
             self.prepare, self.deliver = prepare, deliver
             return runner.run_route(appdir, binary, "8" * 64, capsule,
@@ -1431,7 +1432,10 @@ class EditedProjectReopenContracts(unittest.TestCase):
             process.close.assert_called_once_with()
         self.assertEqual(self.inspect.call_count, 3)
         self.assertEqual(self.compare.call_count, 2)
-        self.assertEqual(self.cut.call_count, 2)
+        self.assertEqual(self.cut.call_count, 3)
+        self.assertEqual(self.cut.call_args_list[0].args[2]["received_otio"], "received.otio")
+        self.assertEqual(self.cut.call_args_list[0].args[2]["edited_otio"], "received.otio")
+        self.processes[0].ui.refresh_third_clip_playlist.assert_called_once_with()
         self.assertEqual(self.cut.call_args.args[2]["edited_otio"], "reopened-edited.otio")
         retained = dict(call.args for call in self.records.document.call_args_list)
         self.assertFalse(retained["reopened-edited-cut-preview.json"]["edit_imported"])
@@ -2854,8 +2858,8 @@ class EditorMasterSourceControls(unittest.TestCase):
                      "native_source": {"sha256": "a" * 64}, "playlist": {"sha256": "a" * 64},
                      "native_executables": {name: {"path": "/app/" + name, "sha256": "a" * 64}
                                             for name in ("melt", "kdenlive_render")}},
-                    "source": Path("/owner/initial.kdenlive"), "playlist": Path("/owner/editor-before.mlt"),
-                    "output": Path("/owner/editor-before.mov"), "native_log": Path("/owner/editor-before.mov.log"), "environment": {}}
+                    "source": PurePosixPath("/owner/initial.kdenlive"), "playlist": PurePosixPath("/owner/editor-before-1.mlt"),
+                    "output": PurePosixPath("/owner/editor-before.mov"), "native_log": PurePosixPath("/owner/editor-before.mov.log"), "environment": {}}
         process = SimpleNamespace(process=SimpleNamespace(returncode=0), pid=1, start=2)
         with patch.object(runner, "digest", return_value="a" * 64), \
              patch.object(runner, "editor_original", return_value=(b"Rendering aborted", {})), \
@@ -2863,7 +2867,7 @@ class EditorMasterSourceControls(unittest.TestCase):
              self.assertRaises(actions.GuiRejected):
             runner.run_editor_render_once(Mock(root=Path("/owner")), prepared, process)
         self.assertEqual(command.call_count, 1)
-        self.assertEqual(command.call_args.args[2], ["/app/kdenlive_render", "delivery", "/app/melt", "/owner/editor-before.mlt", "--debug"])
+        self.assertEqual(command.call_args.args[2], ["/app/kdenlive_render", "delivery", "/app/melt", "/owner/editor-before-1.mlt", "--debug"])
 
     def test_new_master_and_playlist_originals_are_required_in_exact_sealed_snapshot(self):
         import ci_private_evidence as custody
@@ -2872,8 +2876,8 @@ class EditorMasterSourceControls(unittest.TestCase):
             expected = runner.verified_snapshot_expectations(result, {})
             runner.require_verified_snapshot(packed, expected)
             self.assertIn("owner/editor-after.mov", expected)
-            self.assertIn("owner/editor-before.mlt", expected)
-            for name in ("owner/editor-after.mov", "owner/editor-before.mlt", "owner/editor-after.delivery.terminal.json"):
+            self.assertIn("owner/editor-before-1.mlt", expected)
+            for name in ("owner/editor-after.mov", "owner/editor-before-1.mlt", "owner/editor-after.delivery.terminal.json"):
                 stream = io.BytesIO()
                 with runner.tarfile.open(fileobj=stream, mode="w") as archive:
                     for key, raw in members.items():
@@ -2894,6 +2898,570 @@ class EditorMasterSourceControls(unittest.TestCase):
                 runner.verified_snapshot_expectations(changed, {})
 
 
+class EditorRenderScriptPathTests(unittest.TestCase):
+    def fixture(self, root, phase, generated):
+        """Synthetic UI boundary only; no application or renderer is invoked."""
+        step = "editor-" + phase
+        output, base = root / (step + ".mov"), root / (step + ".mlt")
+        events, state = [], {"delayed": False, "rendering": True}
+        ui = actions.AtspiSession.__new__(actions.AtspiSession)
+        ui.pid = 41
+        ui.journal = actions.ActionJournal(events.append, lambda: None)
+        dialog = row("app/render", name="Rendering", role="dialog",
+                     editable=False, modal=True)
+        delayed = row("app/delayed", name="Delayed Rendering", role="dialog",
+                      editable=False, modal=True)
+        field = row("app/delayed/name", name="Select a name for this rendering.",
+                    text="initial", modal=False)
+        category = row("app/render/alpha", name="Video with Alpha",
+                       role="table cell", editable=False)
+        preset = row("app/render/preset", name="Alpha MOV",
+                     role="table cell", editable=False)
+        option_names = ("Full project", "More options", "Video", "Markers Multi-Export",
+                        "Render at Preview Resolution", "Enabled", "2 pass",
+                        "Separate file for each audio track", "Render full color range")
+        options = [row("app/render/option-" + str(i), name=name,
+                       role="check box", editable=False)
+                   for i, name in enumerate(option_names)]
+        generate = row("app/render/generate", name="Generate Script",
+                       role="push button", editable=False)
+        close = row("app/render/close", name="Close", role="push button", editable=False)
+        okay = row("app/delayed/ok", name="OK", role="push button", editable=False)
+        prompt = row("app/delayed/prompt", name="Select a name for this rendering.",
+                     role="label", editable=False)
+        ui.menu = Mock()
+        ui.dialog = Mock(side_effect=lambda _, names: delayed if names == ("Delayed Rendering",) else dialog)
+        ui.descendants = Mock(side_effect=lambda parent: [prompt, field, okay]
+                              if parent["key"] == delayed["key"]
+                              else [category, preset, *options, generate, close])
+        ui.render_state = Mock(side_effect=lambda item, name:
+            item is category if name == "EXPANDED"
+            else item["name"] in ("Full project", "More options", "Video"))
+        ui.select_render_preset = Mock(return_value=909)
+        ui.render_action = Mock()
+        ui.render_output_target = Mock(return_value={"synthetic_control_only": True})
+        ui.text = Mock()
+        ui.modal_action = Mock(side_effect=lambda *_: state.update(delayed=True))
+        def find(names, roles=(), **_):
+            if names == ("Delayed Rendering",):
+                return delayed if state["delayed"] else None
+            if names == ("Rendering",):
+                return dialog if state["rendering"] else None
+            return {"Alpha MOV": preset, "Generate Script": generate,
+                    "OK": okay, "Close": close}[names[0]]
+        ui.find = Mock(side_effect=find)
+        def action(name, _):
+            if name == step + ".delayed-submit-once":
+                generated(base)
+                state["delayed"] = False
+            elif name == step + ".rendering-close":
+                state["rendering"] = False
+            else:
+                self.fail("unexpected synthetic action: " + name)
+        ui.action = Mock(side_effect=action)
+        return ui, output, base, field, events
+
+    def test_base_assets_and_first_section_have_closed_phase_names(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for phase in ("before", "after"):
+                step = "editor-" + phase
+                self.assertEqual(actions.render_script_paths(
+                    step, root / (step + ".mov"), root / (step + ".mlt")),
+                    (root / (step + "-1.mlt"), root / step, root / (step + ".mov.log")))
+
+    def test_foreign_names_parents_or_replaced_parent_are_rejected_before_gui(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            wrong_parent = root / "other"; wrong_parent.mkdir()
+            transformed_parent = root / "parent.mlt"; transformed_parent.mkdir()
+            cases = (
+                ("editor-after", root / "editor-before.mov", root / "editor-before.mlt"),
+                ("editor-before", root / "editor-before.mov", root / "editor-before-1.mlt"),
+                ("editor-before", root / "editor-before.mov", wrong_parent / "editor-before.mlt"),
+                ("editor-before", transformed_parent / "editor-before.mov",
+                 transformed_parent / "editor-before.mlt"),
+            )
+            for args in cases:
+                with self.subTest(args=args):
+                    ui = actions.AtspiSession.__new__(actions.AtspiSession)
+                    ui.menu = Mock()
+                    with self.assertRaisesRegex(actions.GuiRejected, "native_render_script_paths_not_bound"):
+                        ui.generate_editor_render_job(*args)
+                    ui.menu.assert_not_called()
+
+    def test_every_existing_target_or_asset_directory_refuses_gui_and_prepare(self):
+        for name in ("editor-before.mlt", "editor-before-1.mlt", "editor-before",
+                     "editor-before.mov", "editor-before.mov.log"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp); target = root / name
+                if name == "editor-before":
+                    target.mkdir()
+                else:
+                    target.write_bytes(b"synthetic preexisting original")
+                ui = actions.AtspiSession.__new__(actions.AtspiSession); ui.menu = Mock()
+                with self.assertRaisesRegex(actions.GuiRejected, "native_render_script_targets_not_fresh"):
+                    ui.generate_editor_render_job("editor-before", root / "editor-before.mov",
+                                                  root / "editor-before.mlt")
+                ui.menu.assert_not_called()
+                process = SimpleNamespace(phase="import", records=SimpleNamespace(root=root), ui=ui)
+                with patch.object(runner, "editor_original") as original, \
+                     self.assertRaisesRegex(actions.GuiRejected, "editor_render_target_not_fresh"):
+                    runner.prepare_editor_render(process, "before", root / "initial.kdenlive", "a" * 64, {}, 90)
+                original.assert_not_called()
+                if target.is_file():
+                    self.assertEqual(target.read_bytes(), b"synthetic preexisting original")
+
+    def test_dangling_target_links_refuse_before_any_gui_effect(self):
+        # Portable fault injection: exists() is false for each fresh target;
+        # is_symlink() still identifies a dangling link. No real link is followed.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for name in ("editor-before.mlt", "editor-before-1.mlt", "editor-before",
+                         "editor-before.mov", "editor-before.mov.log"):
+                with self.subTest(name=name):
+                    target = root / name
+                    ui = actions.AtspiSession.__new__(actions.AtspiSession); ui.menu = Mock()
+                    with patch.object(Path, "is_symlink", autospec=True,
+                                      side_effect=lambda path: path == target), \
+                         self.assertRaisesRegex(actions.GuiRejected, "native_render_script_targets_not_fresh"):
+                        ui.generate_editor_render_job("editor-before", root / "editor-before.mov",
+                                                      root / "editor-before.mlt")
+                    ui.menu.assert_not_called()
+                    process = SimpleNamespace(phase="import", records=SimpleNamespace(root=root), ui=ui)
+                    with patch.object(Path, "is_symlink", autospec=True,
+                                      side_effect=lambda path: path == target), \
+                         patch.object(runner, "editor_original") as original, \
+                         self.assertRaisesRegex(actions.GuiRejected, "editor_render_target_not_fresh"):
+                        runner.prepare_editor_render(process, "before", root / "initial.kdenlive", "a" * 64, {}, 90)
+                    original.assert_not_called()
+
+    def test_generate_submits_base_and_observes_only_native_first_section(self):
+        for phase in ("before", "after"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                def generated(base):
+                    base.with_suffix("").mkdir()
+                    base.with_name(base.stem + "-1.mlt").write_bytes(b"synthetic native-boundary bytes")
+                ui, output, base, field, events = self.fixture(root, phase, generated)
+                observed = ui.generate_editor_render_job("editor-" + phase, output, base)
+                ui.text.assert_called_once_with("editor-" + phase + ".playlist-name", field, str(base))
+                ui.modal_action.assert_called_once_with("editor-" + phase + ".generate-once", "delayed_render")
+                self.assertEqual([call.args[0] for call in ui.action.call_args_list], [
+                    "editor-" + phase + ".delayed-submit-once", "editor-" + phase + ".rendering-close"])
+                self.assertEqual(observed["requested_playlist_base"], str(base))
+                self.assertEqual(observed["expected_native_playlist"], str(root / ("editor-" + phase + "-1.mlt")))
+                self.assertEqual(observed["expected_assets_directory"], str(base.with_suffix("")))
+                self.assertFalse(base.exists())
+                self.assertFalse(output.exists())
+                self.assertFalse(ui.journal.blocked)
+                ui.render_action.assert_not_called()
+
+    def test_absent_base_or_wrong_section_cannot_close_rendering_or_repeat(self):
+        for suffix in (None, ".mlt", "-0.mlt", "-2.mlt"):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                def generated(base):
+                    if suffix is not None:
+                        base.with_name(base.stem + suffix).write_bytes(b"synthetic wrong-name original")
+                ui, output, base, _, events = self.fixture(root, "before", generated)
+                ticks = iter(range(10000))
+                with patch.object(actions.time, "monotonic", side_effect=lambda: next(ticks)), \
+                     patch.object(actions.time, "sleep"), \
+                     self.assertRaisesRegex(actions.GuiUncertain, "editor-before.native-playlist-created"):
+                    ui.generate_editor_render_job("editor-before", output, base)
+                self.assertTrue(ui.journal.blocked)
+                self.assertEqual([call.args[0] for call in ui.action.call_args_list],
+                                 ["editor-before.delayed-submit-once"])
+                self.assertEqual(ui.modal_action.call_count, 1)
+                self.assertEqual(ui.text.call_count, 1)
+                self.assertEqual(events[-1]["state"], "TIMED_OUT_UNKNOWN")
+                self.assertFalse(events[-1]["replayed"])
+
+    def test_generated_playlist_link_blocks_before_rendering_close(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); state = {"submitted": False}
+            ui, output, base, _, events = self.fixture(
+                root, "before", lambda _: state.update(submitted=True))
+            target = root / "editor-before-1.mlt"
+            with patch.object(Path, "is_symlink", autospec=True,
+                              side_effect=lambda path: state["submitted"] and path == target), \
+                 self.assertRaisesRegex(actions.GuiRejected, "native_render_playlist_link"):
+                ui.generate_editor_render_job("editor-before", output, base)
+            self.assertTrue(ui.journal.blocked)
+            self.assertEqual([call.args[0] for call in ui.action.call_args_list],
+                             ["editor-before.delayed-submit-once"])
+            self.assertEqual(events[-1]["state"], "OBSERVATION_ERROR_OR_UNKNOWN")
+
+    def test_prepare_freezes_actual_section_and_preserves_exact_mov_target(self):
+        from contextlib import nullcontext
+        from xml.sax.saxutils import quoteattr
+        import ci_private_evidence as custody
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "initial.kdenlive"
+            source.write_bytes(b"synthetic saved source")
+            source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+            appdir = root / "appdir"
+            binaries = appdir / "usr" / "bin"; binaries.mkdir(parents=True)
+            for name in ("kdenlive_render", "melt"):
+                path = binaries / name
+                path.write_bytes(b"\x7fELFsynthetic unexecuted test fixture")
+                path.chmod(0o700)
+            expected = root / "editor-before-1.mlt"
+            def generated(step, output, base):
+                self.assertEqual((step, output, base), (
+                    "editor-before", root / "editor-before.mov", root / "editor-before.mlt"))
+                base.with_suffix("").mkdir()
+                expected.write_bytes((
+                    '<mlt><profile width="320" height="180" frame_rate_num="30" frame_rate_den="1"/>'
+                    '<consumer in="0" out="89" mlt_service="avformat" f="mov" vcodec="qtrle" target='
+                    + quoteattr(str(output)) + '/></mlt>').encode())
+                return {"synthetic_control_only": True}
+            records = SimpleNamespace(root=root, document=Mock())
+            process = SimpleNamespace(phase="import", records=records, appdir=appdir,
+                profile=root / "profile", pid=41, start=2, native_environment=lambda: nullcontext(),
+                ui=SimpleNamespace(generate_editor_render_job=Mock(side_effect=generated)))
+            with patch.object(runner, "custody", custody), patch.dict(os.environ, {"LD_PRELOAD": ""}), \
+                 patch.object(runner, "run_editor_command_once") as renderer:
+                prepared = runner.prepare_editor_render(process, "before", source, source_sha,
+                    {"native_saved_profile_size": [320, 180], "native_saved_frame_rate": "30/1"}, 90)
+            self.assertEqual(prepared["playlist"], expected)
+            self.assertEqual(prepared["receipt"]["playlist"]["relative_path"], "editor-before-1.mlt")
+            self.assertEqual(prepared["receipt"]["plan"]["consumer"]["target"], str(root / "editor-before.mov"))
+            self.assertEqual(prepared["receipt"]["playlist"]["sha256"], hashlib.sha256(expected.read_bytes()).hexdigest())
+            self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), source_sha)
+            self.assertFalse((root / "editor-before.mlt").exists())
+            self.assertFalse((root / "editor-before.mov").exists())
+            process.ui.generate_editor_render_job.assert_called_once()
+            renderer.assert_not_called()
+
+
+class RenderCategoryFocusTests(unittest.TestCase):
+    def fixture(self, *, focuses=True, tree_focus=None, selected=False, result=True, row_name="Video with Alpha"):
+        events = []
+        ui = actions.AtspiSession.__new__(actions.AtspiSession)
+        ui.pid = 41
+        ui.journal = actions.ActionJournal(events.append, lambda: None)
+        dialog = row("app/6", name="Rendering", role="dialog", modal=False,
+                     editable=False, rect=[100, 100, 1100, 650])
+        tree = row("app/6/tree", role="tree", modal=False,
+                   editable=False, rect=[174, 144, 930, 373])
+        category = row("app/6/tree/3", name=row_name, role="table cell",
+                       modal=False, editable=False, rect=[196, 194, 906, 24])
+        rows = [dialog, tree, category]
+        ui.nodes = {}
+        selection = {"value": False}
+        for observed in rows:
+            node = Mock()
+            node.get_process_id.return_value = 41
+            node.get_name.return_value = observed["name"]
+            component = Mock()
+            component.get_extents.side_effect = lambda _, r=observed: SimpleNamespace(
+                x=r["rect"][0], y=r["rect"][1], width=r["rect"][2], height=r["rect"][3])
+            node.get_component_iface.return_value = component
+            node.get_state_set.return_value.contains.side_effect = (
+                lambda state: state == "SELECTED" and selection["value"])
+            ui.nodes[observed["key"]] = node
+        node = ui.nodes[category["key"]]
+        parent = ui.nodes[tree["key"]]
+        node.get_parent.return_value = parent
+        parent.get_component_iface.return_value.get_accessible_at_point.return_value = node
+        def snapshot():
+            ui.last_snapshot = {"complete": True, "rows": rows}
+            return rows
+        ui.tree = Mock(side_effect=snapshot)
+        def click(*_, **__):
+            category["focused"] = focuses
+            tree["focused"] = focuses if tree_focus is None else tree_focus
+            selection["value"] = selected
+            return SimpleNamespace(returncode=0 if result else 1, stdout=b"", stderr=b"")
+        ui.pointer_command = Mock(side_effect=click)
+        ui.api = SimpleNamespace(
+            CoordType=SimpleNamespace(SCREEN="SCREEN"),
+            StateType=SimpleNamespace(SELECTED="SELECTED", EXPANDED="EXPANDED"))
+        return ui, dialog, tree, category, events
+
+    def test_one_hit_tested_click_observes_current_cell_and_real_tree_focus(self):
+        ui, dialog, tree, category, events = self.fixture()
+        with patch.object(actions.x11_modal, "observe_parent", return_value={"window": 909}), \
+             patch.object(actions.subprocess, "run", ui.pointer_command):
+            self.assertEqual(
+                ui.focus_render_category("editor-before.focus-alpha", category, dialog), 909)
+            with self.assertRaises(actions.GuiRejected):
+                ui.focus_render_category("editor-before.focus-alpha", category, dialog)
+        ui.pointer_command.assert_called_once_with(
+            ["xdotool", "mousemove", "--sync", "649", "206",
+             "click", "--window", "909", "1"],
+            stdin=actions.subprocess.DEVNULL, capture_output=True, check=False, timeout=5)
+        self.assertEqual([e["state"] for e in events],
+                         ["INTENT", "OBSERVED", "REQUEST_RETURNED"])
+        self.assertEqual(events[0]["target"]["key"], category["key"])
+        ui.nodes[category["key"]].get_component_iface.return_value.grab_focus.assert_not_called()
+        # The observed category is not selectable; focus is the keyboard target.
+        ui.nodes[category["key"]].get_state_set.assert_not_called()
+        ui.nodes[tree["key"]].get_component_iface.return_value.get_accessible_at_point.assert_called_with(
+            649, 206, "SCREEN")
+
+    def test_unbound_hidden_foreign_or_outside_category_never_sends_input(self):
+        for change in ("route", "hidden", "foreign", "outside", "dialog", "parent", "hit"):
+            with self.subTest(change=change):
+                ui, dialog, tree, category, events = self.fixture()
+                step = "editor-before.focus-alpha"
+                if change == "route":
+                    step = "unbound"
+                elif change == "hidden":
+                    category["visible"] = False
+                elif change == "foreign":
+                    ui.nodes[category["key"]].get_process_id.return_value = 42
+                elif change == "outside":
+                    category["rect"][0] = 1200
+                elif change == "dialog":
+                    dialog["name"] = "Save As"
+                elif change == "parent":
+                    ui.nodes[category["key"]].get_parent.return_value = Mock()
+                else:
+                    ui.nodes[tree["key"]].get_component_iface.return_value.get_accessible_at_point.return_value = Mock()
+                with patch.object(actions.x11_modal, "observe_parent",
+                                  return_value={"window": 909}), \
+                     patch.object(actions.subprocess, "run", ui.pointer_command), \
+                     self.assertRaises(actions.GuiRejected):
+                    ui.focus_render_category(step, category, dialog)
+                ui.pointer_command.assert_not_called()
+                self.assertFalse(events)
+
+    def test_changed_window_or_geometry_after_intent_blocks_before_click(self):
+        for change in ("window", "geometry"):
+            with self.subTest(change=change):
+                ui, dialog, tree, category, events = self.fixture()
+                calls = []
+                def observe(**_):
+                    calls.append(None)
+                    if change == "geometry" and len(calls) == 1:
+                        interface = ui.nodes[category["key"]].get_component_iface.return_value
+                        interface.get_extents.side_effect = None
+                        interface.get_extents.return_value = SimpleNamespace(
+                            x=197, y=194, width=906, height=24)
+                    return {"window": 910 if change == "window" and len(calls) == 2 else 909}
+                with patch.object(actions.x11_modal, "observe_parent", side_effect=observe), \
+                     patch.object(actions.subprocess, "run", ui.pointer_command), \
+                     self.assertRaises(actions.GuiUncertain):
+                    ui.focus_render_category("editor-before.focus-alpha", category, dialog)
+                ui.pointer_command.assert_not_called()
+                self.assertTrue(ui.journal.blocked)
+                self.assertEqual(events[-1]["state"], "ERROR_OR_UNKNOWN")
+        # Another window from the same process is still not Rendering.
+        ui, _, _, _, events = self.fixture()
+        with patch.object(actions.subprocess, "run", return_value=SimpleNamespace(
+                stdout="910", returncode=0)) as command, \
+             self.assertRaisesRegex(actions.GuiRejected, "native_gui_keyboard_window_not_bound"):
+            ui.key("editor-before.expand-alpha-right", 0xFF53, expected_window=909)
+        command.assert_called_once()
+        self.assertEqual(command.call_args.args[0], ["xdotool", "getwindowfocus"])
+        self.assertFalse(events)
+
+    def test_rejected_click_or_unfocused_selection_never_becomes_ready(self):
+        for failure in ("false", "exception", "selected-only", "row-only", "tree-only"):
+            with self.subTest(failure=failure):
+                ui, dialog, tree, category, events = self.fixture(
+                    result=failure != "false",
+                    focuses=failure not in ("selected-only", "tree-only"),
+                    tree_focus=failure not in ("selected-only", "row-only"),
+                    selected=failure == "selected-only")
+                if failure == "exception":
+                    ui.pointer_command.side_effect = OSError("original pointer failure")
+                ticks = iter(range(1000))
+                with patch.object(actions.x11_modal, "observe_parent", return_value={"window": 909}), \
+                     patch.object(actions.subprocess, "run", ui.pointer_command), \
+                     patch.object(actions.time, "monotonic", side_effect=lambda: next(ticks)), \
+                     patch.object(actions.time, "sleep"), self.assertRaises(actions.GuiUncertain):
+                    ui.focus_render_category("editor-before.focus-alpha", category, dialog)
+                self.assertEqual(ui.pointer_command.call_count, 1)
+                self.assertTrue(ui.journal.blocked)
+                self.assertIn(events[-1]["state"], ("ERROR_OR_UNKNOWN", "TIMED_OUT_UNKNOWN"))
+
+    def test_focus_failure_retains_observed_tree_without_another_query_or_key(self):
+        for failure in ("journal", "preobserve"):
+            with self.subTest(failure=failure):
+                ui, dialog, tree, category, events = self.fixture()
+                ui.last_snapshot = {"complete": True, "rows": [dialog, tree, category]}
+                ui.menu = Mock()
+                ui.dialog = Mock(return_value=dialog)
+                ui.descendants = Mock(return_value=[tree, category])
+                original = (actions.GuiUncertain("editor-before.focus-alpha")
+                            if failure == "journal"
+                            else actions.x11_modal.X11Rejected("original X11 observation"))
+                if failure == "journal":
+                    def fail(*_):
+                        ui.journal.blocked = True
+                        raise original
+                    ui.focus_render_category = Mock(side_effect=fail)
+                ui.key = Mock()
+                with tempfile.TemporaryDirectory() as temp, \
+                     patch.object(actions.subprocess, "run", ui.pointer_command), \
+                     patch.object(actions.x11_modal, "observe_parent", side_effect=original):
+                    root = Path(temp)
+                    with self.assertRaises(type(original)) as caught:
+                        ui.generate_editor_render_job("editor-before", root / "editor-before.mov",
+                                                      root / "editor-before.mlt")
+                self.assertIs(caught.exception, original)
+                self.assertEqual(ui.tree.call_count, int(failure == "preobserve"))
+                ui.key.assert_not_called()
+                ui.pointer_command.assert_not_called()
+                self.assertEqual(ui.journal.blocked, failure == "journal")
+                self.assertEqual(events[-1]["state"], "READ_ONLY_FAILURE_CUSTODY")
+                self.assertEqual(events[-1]["snapshot"]["row_count"], 3)
+                self.assertFalse(events[-1]["native_operation_retried"])
+
+
+    def test_preset_requires_one_directed_click_and_selected_readback_of_same_row(self):
+        ui, dialog, tree, preset, events = self.fixture(row_name="Alpha MOV", selected=True)
+        with patch.object(actions.x11_modal, "observe_parent", return_value={"window": 909}), \
+             patch.object(actions.subprocess, "run", ui.pointer_command):
+            self.assertEqual(ui.select_render_preset(
+                "editor-before.select-alpha-mov", preset, dialog, expected_window=909), 909)
+            with self.assertRaises(actions.GuiRejected):
+                ui.select_render_preset(
+                    "editor-before.select-alpha-mov", preset, dialog, expected_window=909)
+        ui.pointer_command.assert_called_once_with(
+            ["xdotool", "mousemove", "--sync", "649", "206",
+             "click", "--window", "909", "1"],
+            stdin=actions.subprocess.DEVNULL, capture_output=True, check=False, timeout=5)
+        self.assertEqual([event["state"] for event in events],
+                         ["INTENT", "OBSERVED", "REQUEST_RETURNED"])
+        ui.nodes[preset["key"]].get_state_set.return_value.contains.assert_called_once_with("SELECTED")
+        for node in ui.nodes.values():
+            node.get_selection_iface.assert_not_called()
+            node.get_action_iface.assert_not_called()
+            node.get_component_iface.return_value.grab_focus.assert_not_called()
+
+    def test_preset_identity_geometry_and_prior_window_guards_reject_unbound_input(self):
+        for change in ("route", "name", "hidden", "foreign", "outside", "dialog",
+                       "parent", "hit", "prior-window", "boolean-window", "zero-window",
+                       "changed-window", "changed-geometry"):
+            with self.subTest(change=change):
+                ui, dialog, tree, preset, events = self.fixture(row_name="Alpha MOV", selected=True)
+                step = "editor-before.select-alpha-mov"
+                expected = 909
+                if change == "route":
+                    step = "editor-before.focus-alpha"
+                elif change == "name":
+                    preset["name"] = "Alpha VP9"
+                elif change == "hidden":
+                    preset["visible"] = False
+                elif change == "foreign":
+                    ui.nodes[preset["key"]].get_process_id.return_value = 42
+                elif change == "outside":
+                    preset["rect"][0] = 1200
+                elif change == "dialog":
+                    dialog["name"] = "Save As"
+                elif change == "parent":
+                    ui.nodes[preset["key"]].get_parent.return_value = Mock()
+                elif change == "hit":
+                    ui.nodes[tree["key"]].get_component_iface.return_value.get_accessible_at_point.return_value = Mock()
+                elif change == "prior-window":
+                    expected = 910
+                elif change == "boolean-window":
+                    expected = True
+                elif change == "zero-window":
+                    expected = 0
+                observations = []
+                def observe(**_):
+                    observations.append(None)
+                    if change == "changed-geometry" and len(observations) == 1:
+                        component = ui.nodes[preset["key"]].get_component_iface.return_value
+                        component.get_extents.side_effect = None
+                        component.get_extents.return_value = SimpleNamespace(
+                            x=197, y=194, width=906, height=24)
+                    return {"window": 910 if change == "changed-window" and len(observations) == 2 else 909}
+                failure = actions.GuiUncertain if change.startswith("changed-") else actions.GuiRejected
+                with patch.object(actions.x11_modal, "observe_parent", side_effect=observe), \
+                     patch.object(actions.subprocess, "run", ui.pointer_command), \
+                     self.assertRaises(failure):
+                    ui.select_render_preset(step, preset, dialog, expected_window=expected)
+                ui.pointer_command.assert_not_called()
+                self.assertEqual(bool(events), change.startswith("changed-"))
+                if events:
+                    self.assertTrue(ui.journal.blocked)
+                    self.assertEqual(events[-1]["state"], "ERROR_OR_UNKNOWN")
+
+    def test_preset_focus_or_another_selected_row_does_not_confirm_this_preset(self):
+        for other_selected in (False, True):
+            with self.subTest(other_selected=other_selected):
+                ui, dialog, tree, preset, events = self.fixture(row_name="Alpha MOV")
+                if other_selected:
+                    other = row("app/6/tree/4", name="Alpha MOV", role="table cell",
+                                modal=False, editable=False, rect=[196, 218, 906, 24])
+                    ui.tree().append(other)
+                    node = Mock()
+                    node.get_process_id.return_value = 41
+                    node.get_state_set.return_value.contains.return_value = True
+                    ui.nodes[other["key"]] = node
+                ticks = iter(range(1000))
+                with patch.object(actions.x11_modal, "observe_parent", return_value={"window": 909}), \
+                     patch.object(actions.subprocess, "run", ui.pointer_command), \
+                     patch.object(actions.time, "monotonic", side_effect=lambda: next(ticks)), \
+                     patch.object(actions.time, "sleep"):
+                    with self.assertRaisesRegex(actions.GuiUncertain, "editor-before.preset-selected"):
+                        ui.select_render_preset(
+                            "editor-before.select-alpha-mov", preset, dialog, expected_window=909)
+                    with self.assertRaises(actions.GuiRejected):
+                        ui.select_render_preset(
+                            "editor-before.select-alpha-mov", preset, dialog, expected_window=909)
+                self.assertEqual(ui.pointer_command.call_count, 1)
+                self.assertTrue(ui.journal.blocked)
+                self.assertEqual(events[-1]["state"], "TIMED_OUT_UNKNOWN")
+                self.assertEqual(events[-1]["step"], "editor-before.preset-selected")
+                if other_selected:
+                    ui.nodes[other["key"]].get_state_set.assert_not_called()
+
+    def test_preset_selection_failure_retains_last_tree_and_original_error_without_requery(self):
+        ui, dialog, tree, preset, events = self.fixture(row_name="Alpha MOV")
+        category = row("app/6/tree/2", name="Video with Alpha", role="table cell",
+                       modal=False, editable=False, rect=[196, 170, 906, 24])
+        ui.tree().append(category)
+        node = Mock()
+        node.get_process_id.return_value = 41
+        node.get_state_set.return_value.contains.side_effect = lambda name: name == "EXPANDED"
+        ui.nodes[category["key"]] = node
+        ui.menu = Mock()
+        ui.dialog = Mock(return_value=dialog)
+        ui.descendants = Mock(return_value=[tree, category, preset])
+        ui.find = Mock(return_value=preset)
+        ui.key = Mock()
+        ui.render_action = Mock()
+        wait = ui.journal.wait
+        failed = {}
+        def retain_failure(step, query):
+            try:
+                return wait(step, query)
+            except actions.GuiUncertain as error:
+                failed.update(error=error, queries=ui.tree.call_count)
+                raise
+        ui.journal.wait = retain_failure
+        ticks = iter(range(1000))
+        with tempfile.TemporaryDirectory() as temp, \
+             patch.object(actions.x11_modal, "observe_parent", return_value={"window": 909}), \
+             patch.object(actions.subprocess, "run", ui.pointer_command), \
+             patch.object(actions.time, "monotonic", side_effect=lambda: next(ticks)), \
+             patch.object(actions.time, "sleep"):
+            root = Path(temp)
+            with self.assertRaises(actions.GuiUncertain) as caught:
+                ui.generate_editor_render_job("editor-before", root / "editor-before.mov", root / "editor-before.mlt")
+        self.assertIs(caught.exception, failed["error"])
+        self.assertEqual(ui.tree.call_count, failed["queries"])
+        self.assertEqual(ui.pointer_command.call_count, 1)
+        self.assertTrue(ui.journal.blocked)
+        ui.key.assert_not_called()
+        ui.render_action.assert_not_called()
+        self.assertEqual(events[-1]["state"], "READ_ONLY_FAILURE_CUSTODY")
+        self.assertEqual(events[-1]["snapshot"]["row_count"], 4)
+        self.assertFalse(events[-1]["native_operation_retried"])
+        self.assertFalse(events[-1]["native_render_dispatched_here"])
+        self.assertFalse(events[-1]["formal_acceptance"])
+
+
+
 class EditorRenderGuiControls(unittest.TestCase):
     def test_script_target_reuse_is_rejected_before_any_gui_effect(self):
         ui = actions.AtspiSession.__new__(actions.AtspiSession)
@@ -2906,6 +3474,67 @@ class EditorRenderGuiControls(unittest.TestCase):
             self.assertEqual(output.read_bytes(), b"original")
         ui.menu.assert_not_called()
 
+        # The original 43664579411 opened the Rendering dialog but timed
+        # out discovering Alpha MOV after the expansion request returned.
+        # An UNKNOWN can retain the *last complete* tree without re-querying
+        # or trying an unbound preset. An incomplete one cannot be promoted.
+        for complete in (True, False):
+            with self.subTest(last_tree_complete=complete):
+                retained = []
+                ui = actions.AtspiSession.__new__(actions.AtspiSession)
+                ui.pid = 41
+                ui.menu = Mock()
+                dialog = row("app/6", name="Rendering", role="dialog",
+                             editable=False, modal=True)
+                category = row("app/6/0/0/0/0/5/3/3", name="Video with Alpha",
+                               role="table cell", editable=False, modal=False)
+                ui.dialog = Mock(return_value=dialog)
+                ui.descendants = Mock(return_value=[category])
+                ui.render_state = Mock(return_value=False)
+                ui.render_action = Mock()
+                ui.focus_render_category = Mock(return_value=909)
+                ui.key = Mock()
+                ui.journal = Mock()
+                ui.journal.wait.side_effect = actions.GuiUncertain("editor-before.preset")
+                ui.journal.emit.side_effect = retained.append
+                ui.last_snapshot = {"complete": complete, "rows": [dialog, category]}
+                with tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    with self.assertRaisesRegex(
+                            actions.GuiUncertain, "editor-before.preset"):
+                        ui.generate_editor_render_job(
+                            "editor-before", root / "editor-before.mov",
+                            root / "editor-before.mlt")
+                ui.menu.assert_called_once_with(
+                    "editor-before.menu", "File", "Render...")
+                ui.dialog.assert_called_once()
+                ui.render_action.assert_not_called()
+                ui.focus_render_category.assert_called_once_with(
+                    "editor-before.focus-alpha", category, dialog)
+                ui.key.assert_called_once_with(
+                    "editor-before.expand-alpha-right", 0xFF53, expected_window=909)
+                self.assertEqual(ui.journal.wait.call_count, 1)
+                self.assertEqual(len(retained), int(complete))
+                if complete:
+                    event = retained[0]
+                    self.assertEqual(event["step"],
+                                     "editor-before.preset-last-complete-tree")
+                    self.assertEqual(event["state"], "READ_ONLY_FAILURE_CUSTODY")
+                    self.assertEqual(event["requested_preset"], "Alpha MOV")
+                    self.assertEqual(event["dialog_key"], dialog["key"])
+                    self.assertEqual(event["category_key"], category["key"])
+                    self.assertEqual(event["snapshot"]["row_count"], 2)
+                    self.assertEqual(event["snapshot"]["expected_pid"], 41)
+                    self.assertFalse(event["native_render_dispatched_here"])
+                    self.assertFalse(event["native_operation_retried"])
+                    self.assertFalse(event["semantic_effect_verified"])
+                    self.assertFalse(event["formal_acceptance"])
+        # The new Right key cannot be dispatched from any unrelated step.
+        unbound = actions.AtspiSession.__new__(actions.AtspiSession)
+        with self.assertRaisesRegex(
+            actions.GuiRejected, "native_gui_key_not_in_closed_route"):
+            unbound.key("unbound-render-navigation", 0xFF53)
+
     def test_render_action_requires_one_observed_owned_action(self):
         ui = actions.AtspiSession.__new__(actions.AtspiSession)
         ui.pid = 41; ui.journal = Mock()
@@ -2917,6 +3546,97 @@ class EditorRenderGuiControls(unittest.TestCase):
         with self.assertRaises(actions.GuiRejected):
             ui.render_action("one", control, ("press", "toggle"))
         ui.journal.perform.assert_not_called()
+
+    def checked_option_fixture(self, *, labels=("press", "toggle", "SetFocus"),
+                               state_changes=True, already_checked=False):
+        ui = actions.AtspiSession.__new__(actions.AtspiSession)
+        ui.pid = 41
+        events = []
+        ui.journal = actions.ActionJournal(events.append, lambda: None)
+        dialog = row("app/render", name="Rendering", role="dialog", modal=False)
+        category = row("app/render/alpha", name="Video with Alpha", role="table cell")
+        preset = row("app/render/preset", name="Alpha MOV", role="table cell")
+        full = row("app/render/full", name="Full project", role="radio button")
+        option = row("app/render/options", name="More options", role="check box")
+        state = {"checked": already_checked}
+        ui.nodes = {}
+        for observed in (category, preset, full, option):
+            node = Mock()
+            node.get_process_id.return_value = 41
+            node.get_state_set.return_value.contains.side_effect = lambda name, r=observed: (
+                (r is category and name == "EXPANDED") or
+                (r is full and name == "CHECKED") or
+                (r is option and name == "CHECKED" and state["checked"]))
+            ui.nodes[observed["key"]] = node
+        interface = ui.nodes[option["key"]].get_action_iface.return_value
+        interface.get_n_actions.return_value = len(labels)
+        interface.get_action_name.side_effect = labels.__getitem__
+        def invoke(index):
+            if labels[index] == "toggle" and state_changes:
+                state["checked"] = not state["checked"]
+            return True
+        interface.do_action.side_effect = invoke
+        ui.api = SimpleNamespace(StateType=SimpleNamespace(CHECKED="CHECKED", EXPANDED="EXPANDED"))
+        ui.menu = Mock()
+        ui.dialog = Mock(return_value=dialog)
+        ui.find = Mock(return_value=preset)
+        ui.select_render_preset = Mock(return_value=909)
+        stop = RuntimeError("Reached the next Video option after checked readback")
+        calls = []
+        def descendants(_):
+            calls.append(None)
+            # Category, Full find/readback, More options find/readback, Video.
+            if len(calls) == 6:
+                raise stop
+            return [category, preset, full, option]
+        ui.descendants = Mock(side_effect=descendants)
+        return ui, option, interface, events, stop
+
+    def test_render_checkbox_chooses_toggle_and_requires_observed_checked_change(self):
+        for state_changes in (True, False):
+            with self.subTest(state_changes=state_changes):
+                ui, option, interface, events, stop = self.checked_option_fixture(
+                    state_changes=state_changes)
+                with tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    if state_changes:
+                        with self.assertRaises(RuntimeError) as caught:
+                            ui.generate_editor_render_job("editor-before", root / "editor-before.mov", root / "editor-before.mlt")
+                        self.assertIs(caught.exception, stop)
+                    else:
+                        with self.assertRaisesRegex(actions.GuiRejected, "native_render_option_readback_changed"):
+                            ui.generate_editor_render_job("editor-before", root / "editor-before.mov", root / "editor-before.mlt")
+                interface.do_action.assert_called_once_with(1)
+                observed = next(e for e in events if e["step"].endswith(".available-actions"))
+                self.assertEqual(observed["target"]["key"], option["key"])
+                self.assertEqual(observed["allowed_actions"], ["toggle"])
+                self.assertEqual(observed["actions"], [
+                    {"index": 0, "name": "press"}, {"index": 1, "name": "toggle"},
+                    {"index": 2, "name": "SetFocus"}])
+                self.assertFalse(observed["native_operation_retried"])
+
+    def test_render_checkbox_missing_or_duplicate_toggle_never_falls_back_to_press(self):
+        for labels in (("press", "SetFocus"), ("toggle", "toggle", "press")):
+            with self.subTest(labels=labels):
+                ui, _, interface, events, _ = self.checked_option_fixture(labels=labels)
+                with tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    with self.assertRaisesRegex(actions.GuiRejected, "native_render_action_not_unique"):
+                        ui.generate_editor_render_job("editor-before", root / "editor-before.mov", root / "editor-before.mlt")
+                interface.do_action.assert_not_called()
+                self.assertEqual([e["state"] for e in events], ["OBSERVED"])
+                self.assertEqual([a["name"] for a in events[0]["actions"]], list(labels))
+
+    def test_already_checked_render_checkbox_does_not_send_a_second_toggle(self):
+        ui, _, interface, events, stop = self.checked_option_fixture(already_checked=True)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with self.assertRaises(RuntimeError) as caught:
+                ui.generate_editor_render_job("editor-before", root / "editor-before.mov", root / "editor-before.mlt")
+        self.assertIs(caught.exception, stop)
+        interface.get_n_actions.assert_not_called()
+        interface.do_action.assert_not_called()
+        self.assertFalse(events)
 
     def test_render_state_cannot_read_a_foreign_process_control(self):
         ui = actions.AtspiSession.__new__(actions.AtspiSession)

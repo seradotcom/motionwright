@@ -46,6 +46,7 @@ MODAL_OPENERS = {
     "duration": (("Edit Duration",), ("menu item",), ("Duration",), ()),
     "delayed_render": (("Generate Script",), ("push button",),
                        ("Delayed Rendering",), ("Rendering",)),
+    "render_output": ((), ("push button",), ("Save As",), ("Rendering",)),
     "discard_preferences": (("Quit",), ("menu item",), (), ()),
 }
 WINDOW_TITLES = frozenset({
@@ -71,6 +72,22 @@ class GuiUncertain(RuntimeError):
 def require(ok: object, code: str) -> None:
     if not ok:
         raise GuiRejected(code)
+
+
+def render_script_paths(step: str, output: Path, playlist_base: Path) -> tuple[Path, Path, Path]:
+    """Bind the native 26.08.3 base name, assets and first section playlist."""
+    require(step in ("editor-before", "editor-after")
+            and output.is_absolute() and playlist_base.is_absolute()
+            and output.parent == playlist_base.parent
+            and output.name == step + ".mov" and playlist_base.name == step + ".mlt"
+            and ".mlt" not in str(playlist_base.parent)
+            and output.parent.resolve(strict=True) == output.parent,
+            "native_render_script_paths_not_bound")
+    # RenderRequest::process increments its section index before replacing
+    # ".mlt". The input name stays unchanged; Native creates the "-1" job and
+    # an assets directory from the unsuffixed base. Never rename either file.
+    return (playlist_base.with_name(step + "-1.mlt"),
+            playlist_base.with_suffix(""), Path(str(output) + ".log"))
 
 
 def modal_snapshot(rows: list[dict], expected_pid: int) -> dict:
@@ -156,6 +173,165 @@ def timecode_frames(value: str, fps: int = 30) -> int:
     return ((h * 60 + m) * 60 + s) * fps + f
 
 
+def project_monitor_timecode(rows: list[dict], expected_pid: int) -> dict:
+    """Bind the clock to one complete owned monitor, never a global timecode.
+
+    In the pinned Qt dock tree, the named tab list and stacked content are
+    siblings. The selected Project Monitor tab, its sole visible page and the
+    clock's actual toolbar ancestry must agree. A directly named panel retains
+    the existing ancestry contract; a failed tabbed match has no fallback.
+    """
+    modal_snapshot(rows, expected_pid)
+    by_key = {r["key"]: r for r in rows}
+
+    def children(parent):
+        return [r for r in rows if r["key"].rpartition("/")[0] == parent["key"]]
+
+    def active(row):
+        return row["visible"] and row["enabled"]
+
+    roots = [r for r in rows if r["visible"]
+             and normalized(r["name"]) == "Project Monitor"
+             and r["role"] in ("panel", "page tab list")]
+    monitor = unique(roots, code="native_gui_project_monitor_not_unique")
+    require(active(monitor), "native_gui_project_monitor_unavailable")
+    tabbed = monitor["role"] == "page tab list"
+    if tabbed:
+        tabs = [r for r in children(monitor) if r["visible"] and r["role"] == "page tab"]
+        tab = unique([r for r in tabs if normalized(r["name"]) == "Project Monitor"],
+                     code="native_gui_project_monitor_tab_not_unique")
+        named_tabs = [r for r in rows if r["visible"] and r["role"] == "page tab"
+                      and normalized(r["name"]) == "Project Monitor"]
+        require(active(tab) and tab["focused"]
+                and [r for r in tabs if r["focused"]] == [tab]
+                and named_tabs == [tab],
+                "native_gui_project_monitor_tab_not_active")
+        dock = by_key.get(monitor["key"].rpartition("/")[0])
+        require(dock is not None and active(dock) and dock["role"] == "filler",
+                "native_gui_project_monitor_dock_not_bound")
+        siblings = [r for r in children(dock) if r["visible"]]
+        stack = unique([r for r in siblings if r["role"] == "layered pane"],
+                       code="native_gui_project_monitor_stack_not_unique")
+        require(active(stack) and {r["key"] for r in siblings}
+                == {monitor["key"], stack["key"]},
+                "native_gui_project_monitor_stack_not_bound")
+        scope = unique([r for r in children(stack) if r["visible"]],
+                       code="native_gui_project_monitor_page_not_unique")
+        require(active(scope) and scope["role"] == "filler",
+                "native_gui_project_monitor_page_unavailable")
+    else:
+        scope = monitor
+
+    fields = [r for r in rows if active(r) and r["editable"]
+              and TIMECODE.fullmatch(r["text"])
+              and r["key"].startswith(scope["key"] + "/")]
+    leaves = [r for r in fields if not any(
+        s["key"].startswith(r["key"] + "/") for s in fields if s is not r)]
+    position = unique(leaves, code="native_gui_project_monitor_timecode_not_unique")
+    require(position["role"] in ("spin button", "text", "entry"),
+            "native_gui_project_monitor_timecode_role")
+    # Every ancestor in the chosen page is present and active. A field below a
+    # hidden page or a missing intermediate object cannot supply selection.
+    current = position
+    while current["key"] != scope["key"]:
+        parent = by_key.get(current["key"].rpartition("/")[0])
+        require(parent is not None and active(parent),
+                "native_gui_project_monitor_timecode_ancestry")
+        current = parent
+    if tabbed:
+        toolbar = by_key.get(position["key"].rpartition("/")[0])
+        require(position["role"] == "spin button" and toolbar is not None
+                and toolbar["role"] == "tool bar",
+                "native_gui_project_monitor_timecode_toolbar")
+    timecode_frames(position["text"])
+    return position
+
+
+def observed_menu_failure_tree(snapshot: dict | None, expected_pid: int) -> dict:
+    """Project only the last already-observed AT-SPI menu rows; never re-query.
+
+    A timeout is UNKNOWN regardless of what this read-only evidence contains.
+    An incomplete tree cannot authorize or supply any row.
+    """
+    base = {"schema": "motionwright.native.kdenlive-menu-failure-tree/1",
+            "expected_pid": expected_pid, "complete": False,
+            "native_action_dispatched_here": False, "reconciliation_granted": False,
+            "automatic_retry": False}
+    if not isinstance(snapshot, dict) or snapshot.get("complete") is not True:
+        return {**base, "reason": "last_tree_incomplete_or_absent"}
+    rows = snapshot.get("rows")
+    if (not isinstance(rows, list) or not 0 < len(rows) <= MAX_NODES
+            or any(not isinstance(row, dict) or type(row.get("pid")) is not int
+                   or row["pid"] != expected_pid for row in rows)):
+        return {**base, "reason": "last_tree_not_fully_owned"}
+    menus = []
+    for row in rows:
+        if row.get("role") not in ("menu", "menu item", "check menu item", "menu bar"):
+            continue
+        if (not all(type(row.get(k)) is str for k in ("key", "name", "role"))
+                or not all(type(row.get(k)) is bool
+                           for k in ("visible", "enabled", "focused"))):
+            return {**base, "reason": "last_menu_row_not_typed"}
+        menus.append({k: row[k] for k in
+                      ("key", "name", "role", "visible", "enabled", "focused")})
+    # Qt can expose hundreds of *hidden* menu items on its complete tree.
+    # Retain the visible menu and closed route names with all their observed
+    # menu ancestors, while accounting for every omitted row explicitly.
+    # Nothing here is an action selection or proof that a submenu opened.
+    targets = {"Sequence", "Current Item", "Edit Duration"}
+    source_sha = hashlib.sha256(json.dumps(
+        menus, ensure_ascii=True, sort_keys=True,
+        allow_nan=False).encode("utf-8")).hexdigest()
+    by_key = {row["key"]: row for row in menus}
+    if len(by_key) != len(menus):
+        return {**base, "reason": "last_menu_keys_duplicated",
+                "source_rows": len(rows), "observed_menu_row_count": len(menus)}
+    named = [row for row in menus if normalized(row["name"]) in targets]
+    def with_ancestors(selected):
+        keys = {row["key"] for row in selected}
+        for row in selected:
+            parent = row["key"].rpartition("/")[0]
+            while parent:
+                if parent in by_key:
+                    keys.add(parent)
+                parent = parent.rpartition("/")[0]
+        return [row for row in menus if row["key"] in keys]
+    primary = with_ancestors([
+        row for row in menus if row["visible"] or row["focused"]
+        or normalized(row["name"]) in targets])
+    strategy = "visible_focused_named_and_menu_ancestors"
+    def envelope_for(selected):
+        return {**base, "complete": True, "source_rows": len(rows),
+                "menu_rows": selected, "menu_row_count": len(selected),
+                "observed_menu_row_count": len(menus),
+                "omitted_menu_row_count": len(menus) - len(selected),
+                "visible_menu_row_count": sum(row["visible"] for row in menus),
+                "named_target_row_count": len(named),
+                "all_menu_metadata_sha256": source_sha,
+                "selection_strategy": strategy,
+                "menu_selection_does_not_grant_authority": True,
+                "no_new_accessibility_query": True}
+    candidate = envelope_for(primary)
+    encoded = json.dumps(candidate, ensure_ascii=True, sort_keys=True,
+                         allow_nan=False).encode("utf-8")
+    if len(primary) > 256 or len(encoded) > 65536:
+        # Still retain the exact requested names if the visible roster is
+        # unusually large. Never silently truncate or claim a full menu.
+        strategy = "named_focused_menubar_and_menu_ancestors"
+        selected = with_ancestors([
+            row for row in menus if normalized(row["name"]) in targets
+            or row["focused"] or (row["visible"] and row["role"] == "menu bar")])
+        candidate = envelope_for(selected)
+        encoded = json.dumps(candidate, ensure_ascii=True, sort_keys=True,
+                             allow_nan=False).encode("utf-8")
+        if len(selected) > 256 or len(encoded) > 65536:
+            return {**base, "reason": "menu_projection_budget_exceeded",
+                    "source_rows": len(rows), "observed_menu_row_count": len(menus),
+                    "named_target_row_count": len(named),
+                    "all_menu_metadata_sha256": source_sha}
+    return candidate
+
+
 def labeled_field(rows: list[dict], labels: tuple[str, ...]) -> dict:
     """Select the sole editable leaf on the observed label's row.
 
@@ -168,6 +344,13 @@ def labeled_field(rows: list[dict], labels: tuple[str, ...]) -> dict:
                     r["role"] == "label"], code="native_gui_label_not_unique")
     lx, ly, lw, lh = label["rect"]
     require(lw > 0 and lh > 0, "native_gui_label_geometry_missing")
+    _, leaves = labeled_field_candidates(rows, label)
+    return unique(leaves, code="native_gui_labeled_field_not_unique")
+
+
+def labeled_field_candidates(rows: list[dict], label: dict) -> tuple[list[dict], list[dict]]:
+    """Pure geometry projection used by selection and original failure custody."""
+    lx, ly, lw, lh = label["rect"]
     candidates = []
     for row in rows:
         if not (row["visible"] and row["enabled"] and row["editable"]):
@@ -179,12 +362,133 @@ def labeled_field(rows: list[dict], labels: tuple[str, ...]) -> dict:
     # editable leaf of the same accessibility ancestry, never a second field.
     leaves = [r for r in candidates if not any(
         s["key"].startswith(r["key"] + "/") for s in candidates if s is not r)]
-    return unique(leaves, code="native_gui_labeled_field_not_unique")
+    return candidates, leaves
+
+
+def render_output_browse_button(rows: list[dict], pid: int) -> dict:
+    """Resolve the direct KUrlRequester button from the observed output row."""
+    require(type(pid) is int and 0 < pid <= 0xffffffff
+            and all(r.get("pid") == pid for r in rows),
+            "native_render_output_requester_pid")
+    rendering = unique([r for r in rows if r["visible"] and r["enabled"]
+                        and r["role"] in ("dialog", "frame")
+                        and window_title_matches(r["name"], ("Rendering",))],
+                       code="native_render_output_parent_not_unique")
+    children = [r for r in rows if r["key"].startswith(rendering["key"] + "/")]
+    label = unique([r for r in children if r["visible"] and r["enabled"]
+                    and r["role"] == "label" and normalized(r["name"]) == "Output file"],
+                   code="native_render_output_label_not_unique")
+    lx, ly, lw, lh = label["rect"]
+    require(lw > 0 and lh > 0, "native_render_output_label_geometry")
+    siblings = [r for r in children if r["key"].rpartition("/")[0]
+                == label["key"].rpartition("/")[0]
+                and r["visible"] and r["enabled"] and r["role"] == "filler"
+                and normalized(r["name"]) == "Output file"]
+    requesters = []
+    for row in siblings:
+        x, y, w, h = row["rect"]
+        if w > 0 and h > 0 and x >= lx + lw and max(ly, y) < min(ly + lh, y + h):
+            requesters.append(row)
+    requester = unique(requesters, code="native_render_output_requester_not_unique")
+    x, y, w, h = requester["rect"]
+    buttons = []
+    for row in children:
+        if (row["key"].rpartition("/")[0] != requester["key"]
+                or row["role"] != "push button" or not row["visible"] or not row["enabled"]):
+            continue
+        bx, by, bw, bh = row["rect"]
+        if bw > 0 and bh > 0 and x <= bx and y <= by and bx + bw <= x + w and by + bh <= y + h:
+            buttons.append(row)
+    button = unique(buttons, code="native_render_output_browse_not_unique")
+    # KUrlRequester creates this direct button separately from the line edit.
+    # The line edit's nested clear button is never an eligible opener.
+    return {**button, "output_label": label, "url_requester": requester}
 
 
 def check_duration_fields(position: str, crop: str, duration: str) -> None:
     require(tuple(timecode_frames(v) for v in (position, crop, duration))
             == (60, 60, 30), "native_gui_selected_clip_is_not_original_third_clip")
+
+
+def closed_original_file_dialog(original: dict, titles: tuple[str, ...],
+                                windows: list[dict], pid: int,
+                                *, render_parent: dict | None = None) -> dict | None:
+    """Prove one original top-level file dialog absent without scanning timeline.
+
+    Qt retains a root window roster even when a loaded project's child tree
+    exceeds its fixed per-node budget. The original menu/dialog observation
+    already established the root-dialog key; this check cannot prove Import,
+    save, editorial correctness, or open another effect.
+    """
+    allowed = (("OpenTimelineIO Import",), ("Save As", "Save Project"),
+               ("OpenTimelineIO Export",))
+    require((titles in allowed if render_parent is None else titles == ("Save As",))
+            and type(pid) is int and 0 < pid <= 0xffffffff,
+            "native_gui_root_close_profile")
+    if render_parent is not None:
+        require(type(render_parent) is dict and render_parent.get("pid") == pid
+                and render_parent.get("role") in ("dialog", "frame")
+                and render_parent.get("visible") is True
+                and type(render_parent.get("key")) is str
+                and re.fullmatch(r"app/(?:0|[1-9][0-9]{0,2})", render_parent["key"])
+                and window_title_matches(render_parent.get("name", ""), ("Rendering",)),
+                "native_render_output_close_parent_identity")
+    require(type(original) is dict and original.get("pid") == pid
+            and original.get("role") == "dialog"
+            and type(original.get("key")) is str
+            and re.fullmatch(r"app/(?:0|[1-9][0-9]{0,2})", original["key"])
+            and type(original.get("name")) is str
+            and window_title_matches(original["name"], titles),
+            "native_gui_root_close_original_dialog")
+    require(type(windows) is list and 0 < len(windows) <= 32,
+            "native_gui_root_close_window_budget")
+    keys = set()
+    for index, window in enumerate(windows):
+        require(type(window) is dict
+                and set(window) == {"key", "name", "role", "pid",
+                                    "visible", "modal"}
+                and window["key"] == f"app/{index}"
+                and window["key"] not in keys
+                and window["pid"] == pid and type(window["pid"]) is int
+                and all(type(window[k]) is str for k in ("key", "name", "role"))
+                and all(type(window[k]) is bool for k in ("visible", "modal")),
+                "native_gui_root_close_window_identity")
+        keys.add(window["key"])
+    parent_now = None
+    if render_parent is not None:
+        parents = [r for r in windows if r["visible"]
+                   and r["role"] in ("dialog", "frame")
+                   and window_title_matches(r["name"], ("Rendering",))]
+        parent_now = unique(parents, code="native_render_output_close_parent_not_unique")
+        require(all(parent_now[k] == render_parent[k] for k in ("key", "name", "role", "pid"))
+                and parent_now["key"] != original["key"],
+                "native_render_output_close_parent_changed")
+    mains = [r for r in windows if r["visible"] and r["role"] == "frame"
+             and r["name"].endswith((" - Kdenlive", " — Kdenlive"))
+             and (parent_now is None or r["key"] != parent_now["key"])]
+    # A window transition remains a wait, never proof of closed UI.
+    if not mains:
+        return None
+    require(len(mains) == 1, "native_gui_root_close_main_not_unique")
+    open_dialogs = [r for r in windows if r["visible"]
+                    and (r["role"] in ("dialog", "alert") or r["modal"])
+                    and (parent_now is None or r["key"] != parent_now["key"])]
+    for dialog in open_dialogs:
+        require(dialog["role"] == "dialog"
+                and window_title_matches(dialog["name"], titles),
+                "native_gui_root_close_unexpected_dialog")
+    if open_dialogs:
+        return None
+    return {"schema": "motionwright.native.kdenlive-root-dialog-close/1",
+            "original_dialog_key": original["key"],
+            "original_dialog_name": original["name"],
+            "expected_pid": pid, "main_window": mains[0],
+            **({"retained_render_parent": parent_now} if parent_now is not None else {}),
+            "top_level_windows": windows, "top_level_count": len(windows),
+            "original_dialog_not_showing": True,
+            "whole_accessibility_tree_scanned": False,
+            "native_import_verified": False, "native_save_verified": False,
+            "automatic_retry": False, "formal_acceptance": False}
 
 
 class ActionJournal:
@@ -452,6 +756,73 @@ class AtspiSession:
         self.nodes = nodes
         return rows
 
+    def _owned_top_level_windows(self) -> list[dict]:
+        """Read only direct owned application windows, not timeline descendants.
+
+        The native AppImage may expose more than 512 children under a loaded
+        timeline object. This direct-root check retains smaller limits than the
+        normal complete tree and cannot return an input/action target.
+        """
+        self.journal.guard()
+        desktop = self.api.get_desktop(0)
+        require(desktop is not None, "native_gui_root_desktop_absent")
+        count = desktop.get_child_count()
+        require(type(count) is int and 0 <= count <= MAX_CHILDREN,
+                "native_gui_root_desktop_budget")
+        apps = []
+        for index in range(count):
+            node = desktop.get_child_at_index(index)
+            if node is not None:
+                pid = node.get_process_id()
+                require(type(pid) is int and 0 <= pid <= 0xffffffff,
+                        "native_gui_root_desktop_pid")
+                if pid == self.pid:
+                    apps.append(node)
+        require(len(apps) == 1, "native_gui_root_application_not_unique")
+        app = apps[0]
+        app.clear_cache_single()
+        require(app.get_process_id() == self.pid
+                and app.get_role_name() == "application",
+                "native_gui_root_application_identity")
+        total = app.get_child_count()
+        # Never raise the 512 per-node limit, 4096 total tree limit, or the
+        # existing 30-second read-only wait. Just avoid descendant traversal.
+        require(type(total) is int and 0 < total <= 32,
+                "native_gui_root_window_budget")
+        windows = []
+        for index in range(total):
+            node = app.get_child_at_index(index)
+            require(node is not None, "native_gui_root_child_missing")
+            node.clear_cache_single()
+            require(node.get_process_id() == self.pid,
+                    "native_gui_root_child_foreign_pid")
+            name = node.get_name()
+            role = node.get_role_name()
+            require(type(name) is str and len(name.encode("utf-8")) <= 512
+                    and type(role) is str and 0 < len(role) <= 64,
+                    "native_gui_root_window_metadata")
+            state = node.get_state_set()
+            windows.append({
+                "key": f"app/{index}", "name": name, "role": role,
+                "pid": self.pid,
+                "visible": bool(state.contains(self.api.StateType.SHOWING)),
+                "modal": bool(state.contains(self.api.StateType.MODAL)),
+            })
+        self.journal.guard()
+        return windows
+
+    def _observed_file_dialog_closed(self, original: dict,
+                                     titles: tuple[str, ...],
+                                     *, render_parent: dict | None = None) -> dict | None:
+        first = self._owned_top_level_windows()
+        proof = closed_original_file_dialog(original, titles, first, self.pid, render_parent=render_parent)
+        if proof is None:
+            return None
+        second = self._owned_top_level_windows()
+        if first != second:
+            return None
+        return {**proof, "consistent_direct_root_observations": 2}
+
     def find(self, names: tuple[str, ...], roles: tuple[str, ...],
              *, scope: str | None = None) -> dict | None:
         rows = self.tree()
@@ -494,7 +865,7 @@ class AtspiSession:
         # This live X11 observation precedes the one opener. Duration's
         # qApp->activeWindow() and Qt's parentless input dialog are thus bound
         # to an actually observed parent/group, never an assumed window ID.
-        if kind == "delayed_render":
+        if kind in ("delayed_render", "render_output"):
             candidates = [r for r in rows if r["visible"] and r["enabled"]
                           and r["role"] in ("dialog", "frame")
                           and window_title_matches(r["name"], ("Rendering",))]
@@ -507,6 +878,8 @@ class AtspiSession:
                 for other in frames if other is not r)]
             parent_type = ("_NET_WM_WINDOW_TYPE_NORMAL",)
         parent = unique(candidates, code="native_gui_X11_parent_not_unique")
+        if kind == "render_output":
+            self._render_output_atspi_parent = dict(parent)
         self.last_x11_parent = {}
         try:
             return x11_modal.observe_parent(
@@ -540,6 +913,11 @@ class AtspiSession:
                        and r["role"] in ("dialog", "frame")
                        and window_title_matches(r["name"], parents)]
         require(len(parent_rows) == len(parents), "native_gui_modal_parent_not_unique")
+        if kind == "render_output" and not before:
+            retained_parent = getattr(self, "_render_output_atspi_parent", None)
+            require(type(retained_parent) is dict and len(parent_rows) == 1
+                    and all(parent_rows[0][k] == retained_parent[k] for k in ("key", "name", "role", "pid")),
+                    "native_render_output_modal_parent_changed")
         expected = [r for r in rows if r["visible"]
                     and r["role"] in ("dialog", "frame", "alert")
                     and window_title_matches(r["name"], titles)]
@@ -570,7 +948,7 @@ class AtspiSession:
             return None
         dialog = expected[0]
         require(dialog["enabled"], "native_gui_modal_postcondition_not_enabled_modal")
-        if dialog.get("modal") is not True:
+        if dialog.get("modal") is not True or kind == "render_output":
             # Keep the original AT-SPI bit false. Only a distinct, live X11
             # observation may prove the missing modality/parent relationship.
             self._observe_x11_modal(dialog, kind, deadline)
@@ -595,10 +973,11 @@ class AtspiSession:
         scopes = [r["key"] for r in before if r["visible"]
                   and r["role"] in ("dialog", "frame")
                   and window_title_matches(r["name"], parents)]
-        target = unique([r for r in before if r["visible"] and r["enabled"]
-                         and r["role"] in roles and normalized(r["name"]) in names
-                         and (not scopes or any(r["key"].startswith(s + "/") for s in scopes))],
-                        code="native_gui_modal_opener_not_unique")
+        target = (render_output_browse_button(before, self.pid) if kind == "render_output" else
+                  unique([r for r in before if r["visible"] and r["enabled"]
+                          and r["role"] in roles and normalized(r["name"]) in names
+                          and (not scopes or any(r["key"].startswith(s + "/") for s in scopes))],
+                         code="native_gui_modal_opener_not_unique"))
         try:
             self._modal_x11_parent = self._observe_modal_parent(before, kind)
         except BaseException as parent_error:
@@ -704,12 +1083,107 @@ class AtspiSession:
 
     def control(self, step: str, names: tuple[str, ...],
                 roles: tuple[str, ...]) -> None:
-        row = self.journal.wait(step + ".discover", lambda: self.find(names, roles))
+        try:
+            row = self.journal.wait(step + ".discover", lambda: self.find(names, roles))
+        except GuiUncertain as original:
+            # One prior completed query may describe which menu was visible.
+            # No new AT-SPI call, action, retry, or promotion of uncertainty.
+            try:
+                retained = observed_menu_failure_tree(self.last_snapshot, self.pid)
+                self.journal.emit({
+                    "step": step + ".last-observed-menu",
+                    "state": "READ_ONLY_FAILURE_CUSTODY",
+                    "requested_names": list(names), "requested_roles": list(roles),
+                    "observed": retained, "native_operation_retried": False,
+                    "semantic_effect_verified": False,
+                })
+            except BaseException as recording_error:
+                original.add_note("native_gui_menu_custody_failed:"
+                                  + type(recording_error).__name__)
+            raise
         self.action(step, row)
 
     def menu(self, step: str, *names: str) -> None:
         kind = MODAL_MENU_PATHS.get(names)
+        if names == ("File", "Render..."):
+            # Source-authenticated 43660784941 initial UI contained two
+            # "Render…" menu items: one under File, one under a toolbar Render
+            # button. A global name search cannot select either legitimately.
+            # Bind the second action to the exact owned File row acted on
+            # first. No extra GUI dispatch, shortcut, fuzzy label or retry.
+            file_row = self.journal.wait(
+                step + ".0.discover",
+                lambda: self.find(("File",), ("menu item",)))
+            self.action(step + ".0", file_row)
+            render_row = self.journal.wait(
+                step + ".1.discover",
+                lambda: self.find(("Render...",), ("menu item",),
+                                  scope=file_row["key"]))
+            require(render_row["key"].startswith(file_row["key"] + "/"),
+                    "native_gui_render_item_not_under_original_file_menu")
+            self.action(step + ".1", render_row)
+            return
+        skip_top_level = False
+        if names == ("Sequence", "Current Item", "Edit Duration"):
+            require(not self.journal.blocked, "native_gui_previous_action_uncertain")
+            # Select Clip leaves the Sequence top-level item focused on the
+            # observed Qt route. Reissuing show-menu can toggle that open menu
+            # closed. A complete *current* owned tree decides whether to skip
+            # the top-level toggle. No inferred popup, keyboard shortcut, or
+            # retry of an action whose outcome was UNKNOWN is permitted.
+            try:
+                self.journal.guard()
+                rows = self._complete_modal_tree()
+                require(rows is not None, "native_gui_sequence_preflight_incomplete")
+                require(not any(r["visible"] and
+                                (r["role"] in ("dialog", "alert") or r["modal"])
+                                for r in rows),
+                        "native_gui_sequence_preflight_dialog")
+                sequence = unique([
+                    r for r in rows if r["visible"] and r["enabled"]
+                    and normalized(r["name"]) == "Sequence"
+                    and r["role"] == "menu item"],
+                    code="native_gui_sequence_preflight_not_unique")
+                selected = unique([
+                    r for r in rows if r["enabled"] and
+                    normalized(r["name"]) == "Current Item" and
+                    r["role"] == "menu item" and
+                    r["key"].startswith(sequence["key"] + "/")],
+                    code="native_gui_current_item_preflight_not_unique")
+                skip_top_level = selected["visible"]
+                if skip_top_level:
+                    by_key = {r["key"]: r for r in rows}
+                    current = selected["key"]
+                    while current != sequence["key"]:
+                        parent = by_key.get(current.rpartition("/")[0])
+                        require(parent is not None and parent["visible"]
+                                and parent["enabled"],
+                                "native_gui_current_item_visible_ancestor_missing")
+                        current = parent["key"]
+                self.journal.blocked = True
+                self.journal.emit({
+                    "schema": "motionwright.native.kdenlive-current-item-preflight/1",
+                    "step": step + ".sequence-preflight",
+                    "state": "COMPLETE_READ_ONLY_SELECTION",
+                    "expected_pid": self.pid, "sequence_key": sequence["key"],
+                    "sequence_focused": sequence["focused"],
+                    "current_item_key": selected["key"],
+                    "current_item_visible": selected["visible"],
+                    "current_item_enabled": selected["enabled"],
+                    "skip_top_level_toggle": skip_top_level,
+                    "native_action_performed_here": False,
+                    "native_operation_retried": False,
+                    "dialog_open_inferred": False,
+                    "formal_acceptance": False,
+                })
+                self.journal.blocked = False
+            except BaseException as original:
+                self.journal._record_failure(step + ".sequence-preflight",
+                                             "OBSERVATION_ERROR_OR_UNKNOWN", original)
+                raise
         for index, name in enumerate(names):
+            if skip_top_level and index == 0:
+                continue
             if kind is not None and index == len(names) - 1:
                 self.modal_action(step + "." + str(index), kind)
             else:
@@ -740,8 +1214,20 @@ class AtspiSession:
         self.journal.wait(step + ".readback", lambda: any(
             r["key"] == row["key"] and r["text"] == value for r in self.tree()))
 
-    def key(self, step: str, symbol: int) -> None:
+    def key(self, step: str, symbol: int, *, expected_window: int | None = None) -> None:
         keys = {0xFF0D: "Return", 0x0031: "1"}
+        if symbol == 0xFF53:
+            # Only the owner-bound 26.08.3 Render presets tree permits a
+            # Right expansion after a separate AT-SPI category focus readback.
+            # This does not admit arbitrary editor navigation or shortcuts.
+            require(step in ("editor-before.expand-alpha-right",
+                             "editor-after.expand-alpha-right"),
+                    "native_gui_key_not_in_closed_route")
+            require(type(expected_window) is int and 0 < expected_window < 2**32,
+                    "native_gui_keyboard_window_not_bound")
+            keys[0xFF53] = "Right"
+        else:
+            require(expected_window is None, "native_gui_keyboard_window_not_in_closed_route")
         require(symbol in keys, "native_gui_key_not_in_closed_route")
         # X11 focus is measured independently of the accessibility cache.
         # Explicit --window prevents a later global focus change from retargeting
@@ -750,6 +1236,8 @@ class AtspiSession:
                                check=True, timeout=5, text=True).stdout.strip()
         require(focus.isdecimal() and 0 < int(focus) < 2**64,
                 "native_gui_X11_focus_window_invalid")
+        require(expected_window is None or focus == str(expected_window),
+                "native_gui_keyboard_window_not_bound")
         def target_pid():
             return subprocess.run(["xdotool", "getwindowpid", focus],
                                   capture_output=True, check=True, timeout=5,
@@ -776,9 +1264,22 @@ class AtspiSession:
         row = self.journal.wait(step + ".button", lambda: self.find(
             (button,), ("push button",), scope=dialog["key"]))
         self.action(step + ".submit", row)
-        self.journal.wait(step + ".closed", lambda: not any(
-            r["visible"] and r["role"] in ("dialog", "frame")
-            and window_title_matches(r["name"], titles) for r in self.tree()))
+        # A loaded Kdenlive timeline may exceed the full-tree child budget.
+        # Verify closure from *every* direct owned top-level window instead;
+        # the original dialog, PID and two complete snapshots remain bound.
+        # This is no proof of the requested file's semantic import or save.
+        closed = self.journal.wait(
+            step + ".closed",
+            lambda: self._observed_file_dialog_closed(dialog, titles))
+        self.journal.blocked = True
+        self.journal.emit({
+            "step": step + ".closed-root-readback",
+            "state": "ORIGINAL_DIALOG_CLOSED_OBSERVED",
+            "observed": closed, "native_operation_retried": False,
+            "native_import_verified": False, "native_save_verified": False,
+            "formal_acceptance": False,
+        })
+        self.journal.blocked = False
 
     def save_as(self, step: str, path: Path) -> None:
         require(not path.exists() and not path.is_symlink(), "native_gui_save_target_exists")
@@ -796,6 +1297,151 @@ class AtspiSession:
         require(node.get_process_id() == self.pid, "native_render_state_wrong_pid")
         return bool(node.get_state_set().contains(getattr(self.api.StateType, name)))
 
+    def render_output_target(self, step: str, output: Path) -> dict:
+        """Select one new target in the native file dialog; never render here."""
+        try:
+            require(step in ("editor-before.output", "editor-after.output")
+                    and output.is_absolute() and output.suffix == ".mov"
+                    and not output.exists() and not output.is_symlink(),
+                    "native_render_output_target_not_fresh")
+            original = self.modal_action(step + ".browse", "render_output")
+            parent = dict(self._render_output_atspi_parent)
+            parent_x11 = self._modal_x11_parent
+            require(type(parent_x11) is dict and parent_x11.get("complete") is True,
+                    "native_render_output_parent_not_bound")
+            dialog = self.dialog(step + ".dialog", ("Save As",))
+            require(all(dialog[k] == original[k] for k in ("key", "name", "role", "pid")),
+                    "native_render_output_dialog_changed")
+            field = labeled_field(self.descendants(dialog), ("File name:", "File name", "Name:", "Name"))
+            self.text(step + ".filename", field, str(output))
+            # Observe the exact name and parent again before the one Save request.
+            rows = self.journal.wait(step + ".before-submit", self._complete_modal_tree)
+            dialog = self._modal_readback(rows, "render_output", None,
+                                          deadline=time.monotonic() + WAIT_SECONDS)
+            require(dialog is not None and all(dialog[k] == original[k]
+                    for k in ("key", "name", "role", "pid")),
+                    "native_render_output_dialog_changed")
+            children = [r for r in rows if r["key"].startswith(dialog["key"] + "/")]
+            field = labeled_field(children, ("File name:", "File name", "Name:", "Name"))
+            require(field["text"] == str(output), "native_render_output_filename_readback")
+            submit = unique([r for r in children if r["visible"] and r["enabled"]
+                             and r["role"] == "push button" and normalized(r["name"]) == "Save"],
+                            code="native_render_output_accept_not_unique")
+            self.journal.blocked = True
+            self.journal.emit({"step": step + ".filename-original", "state": "OBSERVED",
+                               "field": field, "original_dialog": original,
+                               "render_parent": parent, "requested_path": str(output),
+                               "snapshot": modal_snapshot(rows, self.pid), "complete": True,
+                               "x11_modal": self.last_x11_modal,
+                               "requester_text_read_back": False,
+                               "native_render_dispatched_here": False,
+                               "semantic_effect_verified_here": False})
+            self.journal.blocked = False
+            self.action(step + ".submit", submit)
+            close_deadline = time.monotonic() + WAIT_SECONDS
+
+            def closed():
+                proof = self._observed_file_dialog_closed(original, ("Save As",), render_parent=parent)
+                if proof is None:
+                    return None
+                evidence = {}
+                try:
+                    after = x11_modal.observe_parent(expected_pid=self.pid,
+                        parent_name=parent["name"], parent_type=tuple(parent_x11["allowed_types"]),
+                        guard=self.journal.guard, deadline=close_deadline, evidence=evidence)
+                    require(after["window"] == parent_x11["window"]
+                            and all(after["properties"][k] == parent_x11["properties"][k]
+                                    for k in x11_modal.PROPERTY_KEYS if k != "states"),
+                            "native_render_output_X11_parent_changed")
+                except BaseException as original_error:
+                    try:
+                        self.journal.emit({"step": step + ".parent-after-close", "state": "READ_ONLY_FAILURE_CUSTODY",
+                                           "observation": evidence, "native_operation_retried": False})
+                    except BaseException as recording_error:
+                        original_error.add_note("native_render_output_parent_custody_failed:"
+                                                + type(recording_error).__name__)
+                    raise
+                return {**proof, "x11_render_parent_after": after}
+
+            proof = self.journal.wait(step + ".closed", closed)
+            require(not output.exists() and not output.is_symlink(),
+                    "native_render_output_created_before_script")
+            observed = {"requested_path": str(output), "filename_original": field,
+                        "closure": proof, "requester_text_read_back": False,
+                        "playlist_target_verification_required": True,
+                        "native_render_dispatched_here": False}
+            self.journal.blocked = True
+            self.journal.emit({"step": step + ".closed-root-readback",
+                               "state": "ORIGINAL_DIALOG_CLOSED_OBSERVED", "observed": proof,
+                               "native_operation_retried": False, "native_import_verified": False,
+                               "native_save_verified": False, "formal_acceptance": False})
+            self.journal.blocked = False
+            return observed
+
+        except BaseException as original_error:
+            self.journal.blocked = True
+            try:
+                snapshot = getattr(self, "last_snapshot", None)
+                complete = (type(snapshot) is dict and snapshot.get("complete") is True
+                            and type(snapshot.get("rows")) is list)
+                self.journal.emit({
+                    "step": step + ".selection-last-complete-tree",
+                    "state": "READ_ONLY_FAILURE_CUSTODY", "expected_pid": self.pid,
+                    "snapshot": modal_snapshot(snapshot["rows"], self.pid) if complete else None,
+                    "complete": complete, "x11_modal": getattr(self, "last_x11_modal", None),
+                    "new_accessibility_query": False, "native_render_dispatched_here": False,
+                    "native_operation_retried": False, "semantic_effect_verified": False,
+                    "formal_acceptance": False})
+            except BaseException as recording_error:
+                original_error.add_note("native_render_output_selection_custody_failed:"
+                                        + type(recording_error).__name__)
+            prior = self.journal.last_failure
+            if not (type(prior) is dict and (prior.get("original") is original_error
+                    or prior.get("original") is original_error.__cause__)):
+                self.journal._record_failure(step + ".selection", "OBSERVATION_ERROR_OR_UNKNOWN", original_error)
+            raise
+
+    def render_output_field(self, step: str, dialog: dict) -> dict:
+        """Resolve one observed field and retain its original ambiguity."""
+        rows = self.descendants(dialog)
+        try:
+            return labeled_field(rows, ("Output file",))
+        except BaseException as original:
+            try:
+                snapshot = self.last_snapshot
+                require(isinstance(snapshot, dict)
+                        and snapshot.get("complete") is True
+                        and type(snapshot.get("rows")) is list
+                        and rows == [r for r in snapshot["rows"]
+                                     if r["key"].startswith(dialog["key"] + "/")],
+                        "native_render_output_failure_tree_incomplete")
+                labels = [r for r in rows if r["visible"]
+                          and r["role"] == "label"
+                          and normalized(r["name"]) == "Output file"]
+                candidates, leaves = [], []
+                if len(labels) == 1 and all(v > 0 for v in labels[0]["rect"][2:]):
+                    candidates, leaves = labeled_field_candidates(rows, labels[0])
+                retained = modal_snapshot(snapshot["rows"], self.pid)
+                self.journal.emit({
+                    "step": step + ".output-last-complete-tree",
+                    "state": "READ_ONLY_FAILURE_CUSTODY",
+                    "expected_pid": self.pid, "dialog_key": dialog["key"],
+                    "requested_label": "Output file",
+                    "label_keys": [r["key"] for r in labels],
+                    "geometric_candidate_keys": [r["key"] for r in candidates],
+                    "editable_leaf_keys": [r["key"] for r in leaves],
+                    "snapshot": retained,
+                    "new_accessibility_query": False,
+                    "native_render_dispatched_here": False,
+                    "native_operation_retried": False,
+                    "semantic_effect_verified": False,
+                    "formal_acceptance": False,
+                })
+            except BaseException as recording_error:
+                original.add_note("native_render_output_custody_failed:"
+                                  + type(recording_error).__name__)
+            raise
+
     def render_action(self, step: str, row: dict, allowed: tuple[str, ...]) -> None:
         node = self.nodes[row["key"]]
         require(row["visible"] and row["enabled"] and node.get_process_id() == self.pid,
@@ -804,18 +1450,154 @@ class AtspiSession:
         require(interface is not None, "native_render_action_missing")
         count = interface.get_n_actions()
         require(0 < count <= 8, "native_render_action_inventory_unbounded")
-        choices = [(i, interface.get_action_name(i).lower()) for i in range(count)]
-        selected = [(i, name) for i, name in choices if name in allowed]
+        choices = [(i, interface.get_action_name(i)) for i in range(count)]
+        require(all(type(name) is str and 0 < len(name) <= 128 for _, name in choices),
+                "native_render_action_names_unbounded")
+        # Preserve the observed alternatives before rejecting an ambiguous or
+        # absent semantic action. This readback neither invokes nor retries it.
+        self.journal.emit({"step": step + ".available-actions", "state": "OBSERVED",
+                           "target": row, "actions": [
+                               {"index": i, "name": name} for i, name in choices],
+                           "allowed_actions": list(allowed),
+                           "native_operation_retried": False})
+        selected = [(i, name.lower()) for i, name in choices if name.lower() in allowed]
         require(len(selected) == 1, "native_render_action_not_unique")
         index, name = selected[0]
         self.journal.perform(step, {**row, "action": name}, lambda: interface.do_action(index))
 
-    def generate_editor_render_job(self, step: str, output: Path, playlist: Path) -> dict:
+    def focus_render_category(self, step: str, row: dict, dialog: dict) -> int:
+        return self._click_render_tree_row(step, row, dialog, "Video with Alpha")
+
+    def select_render_preset(self, step: str, row: dict, dialog: dict, *,
+                             expected_window: int | None = None) -> int:
+        window = self._click_render_tree_row(
+            step, row, dialog, "Alpha MOV", expected_window=expected_window)
+        def selected_preset():
+            rows = self._complete_modal_tree()
+            if rows is None:
+                return None
+            current = [r for r in rows if r["key"] == row["key"]
+                       and normalized(r["name"]) == "Alpha MOV"
+                       and r["role"] == row["role"] and r["pid"] == self.pid
+                       and r["visible"] and r["enabled"]]
+            return len(current) == 1 and self.render_state(current[0], "SELECTED")
+        # A returned selection request is not a native SELECTED observation.
+        self.journal.wait(step.rsplit(".", 1)[0] + ".preset-selected", selected_preset)
+        return window
+
+    def _click_render_tree_row(self, step: str, row: dict, dialog: dict, name: str, *,
+                               expected_window: int | None = None) -> int:
+        """One hit-tested click directed to the observed owned Rendering window."""
+        names = {"editor-before.focus-alpha": "Video with Alpha",
+                 "editor-after.focus-alpha": "Video with Alpha",
+                 "editor-before.select-alpha-mov": "Alpha MOV",
+                 "editor-after.select-alpha-mov": "Alpha MOV"}
+        require(step in names and names[step] == name,
+                "native_render_row_input_not_closed")
+        require(expected_window is None or (type(expected_window) is int
+                and 0 < expected_window < 2**32),
+                "native_render_row_expected_window_invalid")
+        rows = self._complete_modal_tree()
+        require(rows is not None, "native_render_row_tree_incomplete")
+        current = unique([r for r in rows if r["key"] == row["key"]],
+                         code="native_render_row_not_bound")
+        window = unique([r for r in rows if r["key"] == dialog["key"]],
+                        code="native_render_row_dialog_not_bound")
+        parent_key = current["key"].rsplit("/", 1)[0]
+        parent = unique([r for r in rows if r["key"] == parent_key],
+                        code="native_render_row_parent_not_bound")
+        require(current == row and window == dialog
+                and normalized(current["name"]) == name
+                and current["role"] in ("table cell", "tree item", "table row")
+                and parent["role"] == "tree"
+                and window_title_matches(window["name"], ("Rendering",))
+                and window["role"] in ("dialog", "frame")
+                and parent_key.startswith(window["key"] + "/")
+                and all(r["pid"] == self.pid and r["visible"] and r["enabled"]
+                        for r in (current, parent, window)),
+                "native_render_row_target_changed")
+        def contains(outer, inner):
+            x, y, w, h = outer
+            a, b, c, d = inner
+            return w > 0 and h > 0 and c >= 4 and d >= 4 and (
+                x <= a and y <= b and a + c <= x + w and b + d <= y + h)
+        require(contains(window["rect"], parent["rect"])
+                and contains(parent["rect"], current["rect"]),
+                "native_render_row_geometry_not_contained")
+        x, y, width, height = current["rect"]
+        point = (x + width // 2, y + height // 2)
+        node = self.nodes[current["key"]]
+        tree = self.nodes[parent_key]
+        require(node.get_parent() == tree
+                and node.get_process_id() == tree.get_process_id() == self.pid,
+                "native_render_row_native_parent_changed")
+        component = tree.get_component_iface()
+        require(component is not None, "native_render_row_hit_test_missing")
+
+        def observe():
+            for observed in (current, parent, window):
+                live = self.nodes[observed["key"]]
+                require(live.get_process_id() == self.pid
+                        and live.get_name() == observed["name"],
+                        "native_render_row_live_identity_changed")
+                interface = live.get_component_iface()
+                require(interface is not None,
+                        "native_render_row_component_missing")
+                rect = interface.get_extents(self.api.CoordType.SCREEN)
+                require([rect.x, rect.y, rect.width, rect.height] == observed["rect"],
+                        "native_render_row_live_geometry_changed")
+            require(component.get_accessible_at_point(
+                *point, self.api.CoordType.SCREEN) == node,
+                "native_render_row_hit_test_changed")
+            return x11_modal.observe_parent(
+                expected_pid=self.pid, parent_name=window["name"],
+                parent_type=("_NET_WM_WINDOW_TYPE_NORMAL", "_NET_WM_WINDOW_TYPE_DIALOG"),
+                guard=self.journal.guard, deadline=time.monotonic() + WAIT_SECONDS)
+
+        before = observe()
+        require(expected_window is None or before["window"] == expected_window,
+                "native_render_row_prior_window_changed")
+        argv = ["xdotool", "mousemove", "--sync", str(point[0]), str(point[1]),
+                "click", "--window", str(before["window"]), "1"]
+        def click():
+            confirmed = observe()
+            require(confirmed["window"] == before["window"],
+                    "native_render_row_X11_window_changed")
+            self.journal.emit({"step": step + ".target-confirmed",
+                               "state": "OBSERVED", "X11": confirmed,
+                               "point": list(point), "row_key": current["key"], "row_name": name,
+                               "native_operation_retried": False})
+            # Explicit --window directs the button event to the observed XID.
+            # A global AT-SPI click could hit an unrelated nonfocused overlay.
+            result = subprocess.run(argv, stdin=subprocess.DEVNULL,
+                                    capture_output=True, check=False, timeout=5)
+            require(result.returncode == 0,
+                    "native_render_row_pointer_terminal_not_success")
+            return True
+        self.journal.perform(step, {**current, "event": "X11_WINDOW_CLICK",
+                                   "point": list(point), "argv": argv,
+                                   "X11": before, "click_count": 1}, click)
+        def focused_row():
+            latest = self._complete_modal_tree()
+            if latest is None:
+                return None
+            focused = [r for r in latest if r["key"] == current["key"]
+                       and r["name"] == current["name"] and r["role"] == current["role"]
+                       and r["visible"] and r["enabled"] and r["focused"]]
+            tree_focused = any(r["key"] == parent_key and r["focused"]
+                               and r["visible"] and r["enabled"] for r in latest)
+            # Kdenlive 26.08.3 deliberately removes ItemIsSelectable from
+            # category rows. Current-cell and tree focus bind Right; SELECTED
+            # remains required by select_render_preset for the actual preset.
+            return len(focused) == 1 and tree_focused
+        self.journal.wait(step + ".focused", focused_row)
+        return before["window"]
+
+    def generate_editor_render_job(self, step: str, output: Path, playlist_base: Path) -> dict:
         """Version-pinned native Generate Script; never Render to File or Start Script."""
-        require(step in ("editor-before", "editor-after") and output.is_absolute()
-                and playlist.is_absolute() and output.parent == playlist.parent
-                and output.suffix == ".mov" and playlist.suffix == ".mlt"
-                and not any(p.exists() or p.is_symlink() for p in (output, playlist)),
+        playlist, assets, native_log = render_script_paths(step, output, playlist_base)
+        require(not any(p.exists() or p.is_symlink()
+                        for p in (playlist_base, playlist, assets, output, native_log)),
                 "native_render_script_targets_not_fresh")
         self.menu(step + ".menu", "File", "Render...")
         dialog = self.dialog(step + ".dialog", ("Rendering",))
@@ -830,24 +1612,47 @@ class AtspiSession:
         # Matroska profile or rewrite the native job to repair it.
         category = unique(controls("Video with Alpha", ("table cell", "tree item", "table row"), visible=True),
                           code="native_render_alpha_category_not_unique")
-        if not self.render_state(category, "EXPANDED"):
-            self.render_action(step + ".expand-alpha", category,
-                               ("expand", "expand or collapse", "expand or contract", "toggle"))
-        preset = self.journal.wait(step + ".preset", lambda: self.find(
-            ("Alpha MOV",), ("table cell", "tree item", "table row"), scope=dialog["key"]))
-        node = self.nodes[preset["key"]]
-        parent = node.get_parent()
-        index = node.get_index_in_parent()
-        require(parent is not None and parent.get_process_id() == self.pid
-                and type(index) is int and 0 <= index < MAX_CHILDREN,
-                "native_render_preset_parent_not_bound")
-        selection = parent.get_selection_iface()
-        require(selection is not None, "native_render_preset_selection_unavailable")
-        self.journal.perform(step + ".select-alpha-mov", {**preset, "child_index": index},
-                             lambda: selection.select_child(index))
-        self.journal.wait(step + ".preset-selected", lambda: any(
-            self.render_state(r, "SELECTED") for r in controls("Alpha MOV", visible=True)))
-
+        try:
+            render_window = None
+            if not self.render_state(category, "EXPANDED"):
+                # Qt's cell toggle changes selection, while grab_focus is
+                # unsupported. A single hit-tested click must establish this
+                # exact current item and tree focus before the owned Right key.
+                render_window = self.focus_render_category(step + ".focus-alpha", category, dialog)
+                self.key(step + ".expand-alpha-right", 0xFF53, expected_window=render_window)
+            preset = self.journal.wait(step + ".preset", lambda: self.find(
+                ("Alpha MOV",), ("table cell", "tree item", "table row"),
+                scope=dialog["key"]))
+            self.select_render_preset(step + ".select-alpha-mov", preset, dialog,
+                                      expected_window=render_window)
+        except BaseException as original:
+            # Preserve the last complete tree for focus, expansion, discovery,
+            # and selection failures alike. Never re-query Qt or repeat an uncertain action
+            # while recording the original failure.
+            try:
+                snapshot = self.last_snapshot
+                require(isinstance(snapshot, dict)
+                        and snapshot.get("complete") is True
+                        and type(snapshot.get("rows")) is list,
+                        "native_render_preset_failure_tree_incomplete")
+                retained = modal_snapshot(snapshot["rows"], self.pid)
+                self.journal.emit({
+                    "step": step + ".preset-last-complete-tree",
+                    "state": "READ_ONLY_FAILURE_CUSTODY",
+                    "expected_pid": self.pid,
+                    "dialog_key": dialog["key"],
+                    "category_key": category["key"],
+                    "requested_preset": "Alpha MOV",
+                    "snapshot": retained,
+                    "native_render_dispatched_here": False,
+                    "native_operation_retried": False,
+                    "semantic_effect_verified": False,
+                    "formal_acceptance": False,
+                })
+            except BaseException as recording_error:
+                original.add_note("native_render_preset_custody_failed:"
+                                  + type(recording_error).__name__)
+            raise
         observations = []
         def checkbox(name, wanted, *, optional=False):
             found = controls(name, ("check box", "radio button", "panel"))
@@ -856,8 +1661,11 @@ class AtspiSession:
                 return
             selected = unique(found, code="native_render_option_not_unique")
             if self.render_state(selected, "CHECKED") != wanted:
+                # Qt exposes both toggle and press for checkable buttons.
+                # CHECKED is changed by the semantic toggle action, including
+                # radio buttons and checkable groups; never guess a press fallback.
                 self.render_action(step + ".option-" + str(len(observations)), selected,
-                                   ("toggle", "press", "click", "activate"))
+                                   ("toggle",))
             selected = unique(controls(name, ("check box", "radio button", "panel")),
                               code="native_render_option_readback_not_unique")
             checked = self.render_state(selected, "CHECKED")
@@ -867,19 +1675,18 @@ class AtspiSession:
         checkbox("Full project", True)
         checkbox("More options", True)
         checkbox("Video", True)
-        for name in ("Guide Multi-Export", "Render at Preview Resolution", "Enabled", "2 pass",
+        # The admitted 26.08.3 UI names this group Markers Multi-Export.
+        for name in ("Markers Multi-Export", "Render at Preview Resolution", "Enabled", "2 pass",
                      "Separate file for each audio track", "Render full color range"):
             checkbox(name, False)
         for name in ("Use Proxy Clips", "Embed subtitles instead of burning them"):
             checkbox(name, False, optional=True)
-        output_field = labeled_field(self.descendants(dialog), ("Output file",))
-        self.text(step + ".output", output_field, str(output))
-        generate = self.journal.wait(step + ".generate-control", lambda: self.find(
-            ("Generate Script",), ("push button",), scope=dialog["key"]))
-        self.focus(step + ".output-editing-finished", generate)
-        output_field = labeled_field(self.descendants(dialog), ("Output file",))
-        require(output_field["text"] == str(output), "native_render_output_rewritten_by_editor")
-        observed = {"preset": "Alpha MOV", "category": "Video with Alpha", "output_field": output_field,
+        output_selection = self.render_output_target(step + ".output", output)
+        dialog = self.dialog(step + ".rendering-after-output", ("Rendering",))
+        observed = {"preset": "Alpha MOV", "category": "Video with Alpha", "output_selection": output_selection,
+                    "requested_playlist_base": str(playlist_base),
+                    "expected_native_playlist": str(playlist),
+                    "expected_assets_directory": str(assets),
                     "options": observations, "rows_before_generate": self.descendants(dialog),
                     "Generate_Script_attempts": 1, "Render_to_File_attempts": 0, "Start_Script_attempts": 0}
         self.journal.emit({"step": step + ".settings", "state": "OBSERVED", "render_settings": observed})
@@ -892,12 +1699,15 @@ class AtspiSession:
         field = unique(leaves, code="native_render_delayed_name_not_unique")
         require(any(normalized(r["name"]) == "Select a name for this rendering." for r in self.descendants(delayed)),
                 "native_render_delayed_prompt_changed")
-        self.text(step + ".playlist-name", field, str(playlist))
+        self.text(step + ".playlist-name", field, str(playlist_base))
         okay = self.journal.wait(step + ".delayed-confirm", lambda: self.find(
             ("OK",), ("push button",), scope=delayed["key"]))
         self.action(step + ".delayed-submit-once", okay)
         self.journal.wait(step + ".delayed-closed", lambda: not self.find(("Delayed Rendering",), ("dialog", "frame")))
-        self.journal.wait(step + ".native-playlist-created", lambda: playlist.is_file())
+        def native_playlist_created():
+            require(not playlist.is_symlink(), "native_render_playlist_link")
+            return playlist.is_file()
+        self.journal.wait(step + ".native-playlist-created", native_playlist_created)
         dialog = self.dialog(step + ".rendering-before-close", ("Rendering",))
         close = self.journal.wait(step + ".rendering-close-control", lambda: self.find(
             ("Close",), ("push button",), scope=dialog["key"]))
@@ -983,17 +1793,161 @@ class AtspiSession:
             require(not self.find((quick_setup,), ("label",)),
                     "native_gui_startup_dialog_did_not_close")
 
+    def _project_monitor_timecode(self, step: str) -> dict:
+        def observed():
+            rows = self._complete_modal_tree()
+            if rows is None:
+                return None
+            require(not any(r["visible"] and
+                            (r["role"] in ("dialog", "alert") or r["modal"]) for r in rows),
+                    "native_gui_project_monitor_selection_has_dialog")
+            return project_monitor_timecode(rows, self.pid)
+        # Observation errors and an exhausted read-only wait block the journal,
+        # including edit_third_clip; neither caller may act on a partial tree.
+        return self.journal.wait(step, observed)
+
+    def refresh_third_clip_playlist(self) -> dict:
+        """Apply two observed end trims before a separately verified Export/Save.
+
+        Kdenlive's slip changes a cut; its playlist can retain older in/out
+        points until a real playlist edit. No request return or dialog closure
+        proves that edit. The second opening must observe the applied 29-frame
+        duration before a distinct restoration request is permitted.
+        """
+        prefix = "import.playlist-refresh"
+        require(not self.journal.blocked, "native_gui_previous_action_uncertain")
+        if getattr(self, "_playlist_refresh_started", False):
+            original = GuiRejected("native_gui_playlist_refresh_replay_refused")
+            self.journal._record_failure(prefix + ".replay", "OBSERVATION_ERROR_OR_UNKNOWN", original)
+            raise original
+        self._playlist_refresh_started = True
+        state = {"phase": "STARTED", "accept_attempts": 0,
+                 "shortened_duration_reobserved": False}
+        self._playlist_refresh_state = state
+
+        def complete(step):
+            return self.journal.wait(step, self._complete_modal_tree)
+
+        def retain(step, event):
+            require(not self.journal.blocked, "native_gui_previous_action_uncertain")
+            self.journal.guard()
+            self.journal.blocked = True
+            self.journal.emit({"step": step, "expected_pid": self.pid,
+                               "native_operation_retried": False, **event})
+            self.journal.guard()
+            self.journal.blocked = False
+
+        def duration_fields(step, expected, *, applied=False):
+            rows = complete(step + ".snapshot")
+            dialogs = [r for r in rows if r["visible"] and r["enabled"]
+                       and r["role"] in ("dialog", "frame")
+                       and window_title_matches(r["name"], ("Duration",))]
+            dialog = unique(dialogs, code="native_gui_playlist_refresh_duration_not_unique")
+            require(not any(r["visible"] and
+                            (r["role"] in ("dialog", "alert") or r["modal"])
+                            and r["key"] != dialog["key"] for r in rows),
+                    "native_gui_playlist_refresh_unexpected_dialog")
+            children = [r for r in rows if r["key"].startswith(dialog["key"] + "/")]
+            require(not any(r["visible"] and normalized(r["name"]) ==
+                            "Apply duration to all items" for r in children),
+                    "native_gui_multiple_clip_duration_refused")
+            require(not any(r["visible"] and
+                            ("Resizing in Ripple mode." in r["name"]
+                             or "Resizing in Ripple mode." in r["text"]) for r in children),
+                    "native_gui_playlist_refresh_ripple_refused")
+            fields = [labeled_field(children, (label,)) for label in
+                      ("Position:", "Crop start:", "Duration:")]
+            observed = tuple(timecode_frames(r["text"]) for r in fields)
+            require(observed == (60, 60, expected),
+                    "native_gui_playlist_refresh_duration_changed")
+            okay = unique([r for r in children if r["visible"] and r["enabled"]
+                           and r["role"] == "push button"
+                           and normalized(r["name"]) == "OK"],
+                          code="native_gui_playlist_refresh_accept_not_unique")
+            retain(step, {"state": "DURATION_FIELDS_OBSERVED",
+                          "snapshot": modal_snapshot(rows, self.pid), "complete": True,
+                          "position_frames": 60, "crop_start_frames": 60,
+                          "duration_frames": expected,
+                          "after_new_open_following_accept": applied,
+                          "native_xml_playlist_verified": False,
+                          "native_save_verified": False})
+            return fields, okay
+
+        def closed(step):
+            def observed():
+                rows = self._complete_modal_tree()
+                if rows is None:
+                    return False
+                if any(r["visible"] and r["role"] in ("dialog", "frame", "alert")
+                       and window_title_matches(r["name"], ("Duration",)) for r in rows):
+                    return False
+                require(not any(r["visible"] and
+                                (r["role"] in ("dialog", "alert") or r["modal"])
+                                for r in rows),
+                        "native_gui_playlist_refresh_unexpected_dialog")
+                return True
+            self.journal.wait(step, observed)
+
+        try:
+            position = self._project_monitor_timecode(prefix + ".selection-snapshot")
+            self.text(prefix + ".seek75", position, "00:00:02:15")
+            self.key(prefix + ".commit-seek", 0xFF0D)
+            self.key(prefix + ".select-video-track1", 0x0031)
+            self.menu(prefix + ".select-clip", "Sequence", "Selection", "Select Clip")
+
+            state["phase"] = "SHORTEN"
+            self.menu(prefix + ".shorten.open", "Sequence", "Current Item", "Edit Duration")
+            fields, _ = duration_fields(prefix + ".shorten.before", 30)
+            self.text(prefix + ".shorten.duration29", fields[2], "00:00:00:29")
+            self.key(prefix + ".shorten.commit-field", 0xFF0D)
+            _, okay = duration_fields(prefix + ".shorten.request-fields", 29)
+            state["accept_attempts"] = 1
+            self.action(prefix + ".shorten.accept-once", okay)
+            closed(prefix + ".shorten.dialog-closed")
+
+            # A new modal action and fresh complete tree observe the model after
+            # acceptance, including the case where Kdenlive closed after undoing
+            # a rejected resize. Never restore based on the pending text field.
+            state["phase"] = "OBSERVE_SHORTENED"
+            self.menu(prefix + ".restore.open", "Sequence", "Current Item", "Edit Duration")
+            fields, _ = duration_fields(prefix + ".shorten.applied-readback", 29, applied=True)
+            state["shortened_duration_reobserved"] = True
+            state["phase"] = "RESTORE"
+            self.text(prefix + ".restore.duration30", fields[2], "00:00:01:00")
+            self.key(prefix + ".restore.commit-field", 0xFF0D)
+            _, okay = duration_fields(prefix + ".restore.request-fields", 30)
+            state["accept_attempts"] = 2
+            self.action(prefix + ".restore.accept-once", okay)
+            closed(prefix + ".restore.dialog-closed")
+            state["phase"] = "RESTORE_REQUEST_RETURNED_MODEL_READBACK_REQUIRED"
+            result = {
+                "schema": "motionwright.native.kdenlive-playlist-refresh/1",
+                "state": state["phase"], "expected_pid": self.pid,
+                "position_frames": 60, "crop_start_frames": 60,
+                "original_duration_frames": 30, "intermediate_duration_frames": 29,
+                "restore_duration_requested_frames": 30, "accept_attempts": 2,
+                "shortened_duration_reobserved": True,
+                "restored_duration_verified": False, "export_readback_required": True,
+                "native_xml_playlist_verified": False, "native_save_verified": False,
+                "native_operation_retried": False,
+            }
+            retain(prefix + ".result", result)
+            return result
+        except BaseException as original:
+            state["failed_phase"] = state["phase"]
+            state["phase"] = "FAILED"
+            self.journal.blocked = True
+            prior = self.journal.last_failure
+            if not (type(prior) is dict and
+                    (prior.get("original") is original
+                     or (original.__cause__ is not None
+                         and prior.get("original") is original.__cause__))):
+                self.journal._record_failure(prefix + ".failed",
+                                             "OBSERVATION_ERROR_OR_UNKNOWN", original)
+            raise
+
     def edit_third_clip(self) -> None:
-        rows = self.tree()
-        monitor_roots = [r for r in rows if r["visible"] and
-                         normalized(r["name"]) == "Project Monitor"
-                         and r["role"] not in ("menu item", "check menu item", "label")]
-        fields = {r["key"]: r for r in rows if r["visible"] and r["enabled"]
-                  and r["editable"] and TIMECODE.fullmatch(r["text"]) and any(
-                      r["key"].startswith(p["key"] + "/") for p in monitor_roots)}
-        leaves = [r for r in fields.values() if not any(
-            s["key"].startswith(r["key"] + "/") for s in fields.values() if s is not r)]
-        position = unique(leaves, code="native_gui_project_monitor_timecode_not_unique")
+        position = self._project_monitor_timecode("edit.selection-snapshot")
         self.text("edit.seek75", position, "00:00:02:15")
         self.key("edit.commit-seek", 0xFF0D)
         # The version-pinned native action maps the '1' key to Video Track 1.

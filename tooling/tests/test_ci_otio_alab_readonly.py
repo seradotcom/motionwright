@@ -165,19 +165,19 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(gate.descriptor_bytes({"alab/safe/file.bin": b"x"},
             {"path": "safe/file.bin", "bytes": 1, "sha256": gate.custody.sha(b"x")}), b"x")
 
-    def test_owner_roster_contains_all_94_controls_including_linux_symlinks(self):
+    def test_owner_roster_contains_all_144_controls_including_linux_symlinks(self):
         def ids(suite):
             if isinstance(suite, unittest.TestSuite):
                 for child in suite: yield from ids(child)
             else: yield suite.id()
         roster = list(ids(unittest.defaultTestLoader.loadTestsFromModule(owner_controls)))
-        self.assertEqual(len(roster), 94)
-        self.assertEqual(len(set(roster)), 94)
+        self.assertEqual(len(roster), 144)
+        self.assertEqual(len(set(roster)), 144)
         self.assertTrue(any("symlink" in name for name in roster))
 
     def test_workflow_reuses_existing_job_and_excludes_gui_effects_for_alab(self):
         text = (ROOT / ".github/workflows/v05-otio-real-media.yml").read_text()
-        self.assertIn("options: [source, accessibility-only, kdenlive-gui, external-alab-readonly]", text)
+        self.assertIn("options: [source, kdenlive-distribution, accessibility-only, kdenlive-gui, external-alab-readonly]", text)
         self.assertEqual(text.count("  admitted-native-kdenlive-gui:"), 1)
         self.assertNotIn("  external-alab-readonly:", text)
         for name in ("Install disposable GUI and accessibility observation dependencies",
