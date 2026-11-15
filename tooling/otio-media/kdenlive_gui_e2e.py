@@ -34,7 +34,7 @@ import kdenlive_owner_cut as owner_cut
 import kdenlive_live_process as live
 import kdenlive_readback as readback
 from bridge import KDENLIVE_REQUEST_SCHEMA, preview_kdenlive_cut
-from kdenlive_gui_actions import ActionJournal, AtspiSession, GuiRejected, require
+from kdenlive_gui_actions import ActionJournal, AtspiSession, GuiRejected, require, native_generated_render_script
 
 APPIMAGE_SHA256 = "2c8322edfc86605e4c98a78a019310d9b4fc46bb8e94e6fe313dc7dd987e7671"
 APPIMAGE_VERSION = "26.08.3"
@@ -292,9 +292,12 @@ def prepare_editor_render(process, phase: str, source: Path,
             "editor_render_phase_not_in_closed_route")
     records = process.records
     root = records.root
-    playlist, output = (root / ("editor-" + phase + suffix) for suffix in (".mlt", ".mov"))
+    requested_playlist = root / ("editor-" + phase + ".mlt")
+    playlist = native_generated_render_script(requested_playlist)
+    output = root / ("editor-" + phase + ".mov")
     native_log = Path(str(output) + ".log")
-    for path in (playlist, playlist.with_suffix(""), output, native_log):
+    for path in (requested_playlist, requested_playlist.with_suffix(""),
+                 playlist, playlist.with_suffix(""), output, native_log):
         require(not path.exists() and not path.is_symlink(), "editor_render_target_not_fresh")
     _, original = editor_original(source, root, MAX_PROJECT)
     require(original["sha256"] == source_sha, "editor_render_source_changed_before_prepare")
@@ -315,7 +318,11 @@ def prepare_editor_render(process, phase: str, source: Path,
         environment[key] = str(process.profile / sub)
     environment.update(QT_QPA_PLATFORM="xcb", LC_ALL="C.UTF-8", LANGUAGE="en_US:en")
     require(not environment.get("LD_PRELOAD"), "editor_render_preload_not_admitted")
-    gui = process.ui.generate_editor_render_job("editor-" + phase, output, playlist)
+    gui = process.ui.generate_editor_render_job("editor-" + phase, output, requested_playlist)
+    require(gui["original_requested_script"] == str(requested_playlist)
+            and gui["original_native_script"] == str(playlist)
+            and gui["native_script_renamed_or_copied"] is False,
+            "editor_render_native_generated_script_identity_changed")
     _, native_playlist = editor_original(playlist, root, MAX_PROJECT)
     raw, _ = custody.regular(playlist, MAX_PROJECT)
     plan = verify_editor_playlist(raw, output, observed, frames)
@@ -1992,7 +1999,7 @@ def verified_snapshot_expectations(result: dict, context: dict) -> dict:
                 "native_gui_verified_editor_render_missing_or_promoted")
         prefix = "editor-" + phase
         names = {"native_source": (("initial" if phase == "before" else "edited") + ".kdenlive", MAX_PROJECT),
-                 "playlist": (prefix + ".mlt", MAX_PROJECT), "master": (prefix + ".mov", EDITOR_RENDER_MAX_VIDEO),
+                 "playlist": (prefix + "-1.mlt", MAX_PROJECT), "master": (prefix + ".mov", EDITOR_RENDER_MAX_VIDEO),
                  "native_render_log": (prefix + ".mov.log", EDITOR_RENDER_MAX_LOG),
                  "probe": (prefix + ".probe.stdout.log", 256 * 1024),
                  "framehash": (prefix + ".framehash.stdout.log", 256 * 1024)}

@@ -722,7 +722,7 @@ def synthetic_editor_cycle(members, result):
         prefix = "editor-" + phase
         originals = {}
         originals["native_source"] = retain(source, members["owner/" + source])
-        for key, name in (("playlist", prefix + ".mlt"), ("master", prefix + ".mov"),
+        for key, name in (("playlist", prefix + "-1.mlt"), ("master", prefix + ".mov"),
                           ("native_render_log", prefix + ".mov.log"),
                           ("probe", prefix + ".probe.stdout.log"),
                           ("framehash", prefix + ".framehash.stdout.log")):
@@ -2858,7 +2858,7 @@ class EditorMasterSourceControls(unittest.TestCase):
                      "native_source": {"sha256": "a" * 64}, "playlist": {"sha256": "a" * 64},
                      "native_executables": {name: {"path": "/app/" + name, "sha256": "a" * 64}
                                             for name in ("melt", "kdenlive_render")}},
-                    "source": Path("/owner/initial.kdenlive"), "playlist": Path("/owner/editor-before.mlt"),
+                    "source": Path("/owner/initial.kdenlive"), "playlist": Path("/owner/editor-before-1.mlt"),
                     "output": Path("/owner/editor-before.mov"), "native_log": Path("/owner/editor-before.mov.log"), "environment": {}}
         process = SimpleNamespace(process=SimpleNamespace(returncode=0), pid=1, start=2)
         with patch.object(runner, "digest", return_value="a" * 64), \
@@ -2867,7 +2867,7 @@ class EditorMasterSourceControls(unittest.TestCase):
              self.assertRaises(actions.GuiRejected):
             runner.run_editor_render_once(Mock(root=Path("/owner")), prepared, process)
         self.assertEqual(command.call_count, 1)
-        self.assertEqual(command.call_args.args[2], ["/app/kdenlive_render", "delivery", "/app/melt", "/owner/editor-before.mlt", "--debug"])
+        self.assertEqual(command.call_args.args[2], ["/app/kdenlive_render", "delivery", "/app/melt", "/owner/editor-before-1.mlt", "--debug"])
 
     def test_new_master_and_playlist_originals_are_required_in_exact_sealed_snapshot(self):
         import ci_private_evidence as custody
@@ -2876,8 +2876,8 @@ class EditorMasterSourceControls(unittest.TestCase):
             expected = runner.verified_snapshot_expectations(result, {})
             runner.require_verified_snapshot(packed, expected)
             self.assertIn("owner/editor-after.mov", expected)
-            self.assertIn("owner/editor-before.mlt", expected)
-            for name in ("owner/editor-after.mov", "owner/editor-before.mlt", "owner/editor-after.delivery.terminal.json"):
+            self.assertIn("owner/editor-before-1.mlt", expected)
+            for name in ("owner/editor-after.mov", "owner/editor-before-1.mlt", "owner/editor-after.delivery.terminal.json"):
                 stream = io.BytesIO()
                 with runner.tarfile.open(fileobj=stream, mode="w") as archive:
                     for key, raw in members.items():
@@ -3063,8 +3063,8 @@ class RenderCategoryFocusTests(unittest.TestCase):
                      patch.object(actions.x11_modal, "observe_parent", side_effect=original):
                     root = Path(temp)
                     with self.assertRaises(type(original)) as caught:
-                        ui.generate_editor_render_job("editor-before", root / "before.mov",
-                                                      root / "before.mlt")
+                        ui.generate_editor_render_job("editor-before", root / "editor-before.mov",
+                                                      root / "editor-before.mlt")
                 self.assertIs(caught.exception, original)
                 self.assertEqual(ui.tree.call_count, int(failure == "preobserve"))
                 ui.key.assert_not_called()
@@ -3208,7 +3208,7 @@ class RenderCategoryFocusTests(unittest.TestCase):
              patch.object(actions.time, "sleep"):
             root = Path(temp)
             with self.assertRaises(actions.GuiUncertain) as caught:
-                ui.generate_editor_render_job("editor-before", root / "before.mov", root / "before.mlt")
+                ui.generate_editor_render_job("editor-before", root / "editor-before.mov", root / "editor-before.mlt")
         self.assertIs(caught.exception, failed["error"])
         self.assertEqual(ui.tree.call_count, failed["queries"])
         self.assertEqual(ui.pointer_command.call_count, 1)
@@ -3224,6 +3224,47 @@ class RenderCategoryFocusTests(unittest.TestCase):
 
 
 class EditorRenderGuiControls(unittest.TestCase):
+    def test_exact_native_script_suffix_is_derived_from_original_kdenlive_request(self):
+        mapping = actions.native_generated_render_script
+        base = Path(tempfile.gettempdir()).resolve()
+        self.assertTrue(base.is_absolute())
+        for phase in ("before", "after"):
+            requested = base / ("editor-" + phase + ".mlt")
+            self.assertEqual(mapping(requested),
+                             base / ("editor-" + phase + "-1.mlt"))
+        for path in (Path("relative.mlt"), base / "editor-before-1.mlt",
+                     base / "editor-befor.mlt", base / "editor-before.mov"):
+            with self.subTest(path=path), self.assertRaises(actions.GuiRejected):
+                mapping(path)
+
+    def test_preexisting_native_suffixed_file_blocks_before_gui_effects(self):
+        ui = actions.AtspiSession.__new__(actions.AtspiSession)
+        ui.menu = Mock()
+        for existing in ("editor-before.mlt", "editor-before-1.mlt"):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as rootdir:
+                root = Path(rootdir)
+                (root / existing).write_bytes(b"old-original")
+                with self.assertRaises(actions.GuiRejected):
+                    ui.generate_editor_render_job(
+                        "editor-before", root / "editor-before.mov", root / "editor-before.mlt")
+        ui.menu.assert_not_called()
+
+    def test_native_script_path_is_passed_unchanged_to_original_renderer(self):
+        from inspect import getsource
+        producer = getsource(actions.AtspiSession.generate_editor_render_job)
+        consumer = getsource(runner.prepare_editor_render)
+        self.assertIn("native_playlist = native_generated_render_script(playlist)", producer)
+        self.assertIn('self.text(step + ".playlist-name", field, str(playlist))', producer)
+        self.assertIn('lambda: native_playlist.is_file()', producer)
+        self.assertIn('"native_script_renamed_or_copied": False', producer)
+        self.assertIn('playlist = native_generated_render_script(requested_playlist)', consumer)
+        self.assertIn('process.ui.generate_editor_render_job("editor-" + phase, output, requested_playlist)', consumer)
+        self.assertIn('editor_original(playlist, root, MAX_PROJECT)', consumer)
+        self.assertNotIn('copyfile(', producer + consumer)
+        roster = getsource(runner.verified_snapshot_expectations)
+        self.assertIn('"playlist": (prefix + "-1.mlt", MAX_PROJECT)', roster)
+        self.assertNotIn('"playlist": (prefix + ".mlt", MAX_PROJECT)', roster)
+
     def test_script_target_reuse_is_rejected_before_any_gui_effect(self):
         ui = actions.AtspiSession.__new__(actions.AtspiSession)
         ui.menu = Mock()
@@ -3362,11 +3403,11 @@ class EditorRenderGuiControls(unittest.TestCase):
                     root = Path(temp)
                     if state_changes:
                         with self.assertRaises(RuntimeError) as caught:
-                            ui.generate_editor_render_job("editor-before", root / "before.mov", root / "before.mlt")
+                            ui.generate_editor_render_job("editor-before", root / "editor-before.mov", root / "editor-before.mlt")
                         self.assertIs(caught.exception, stop)
                     else:
                         with self.assertRaisesRegex(actions.GuiRejected, "native_render_option_readback_changed"):
-                            ui.generate_editor_render_job("editor-before", root / "before.mov", root / "before.mlt")
+                            ui.generate_editor_render_job("editor-before", root / "editor-before.mov", root / "editor-before.mlt")
                 interface.do_action.assert_called_once_with(1)
                 observed = next(e for e in events if e["step"].endswith(".available-actions"))
                 self.assertEqual(observed["target"]["key"], option["key"])
@@ -3383,7 +3424,7 @@ class EditorRenderGuiControls(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as temp:
                     root = Path(temp)
                     with self.assertRaisesRegex(actions.GuiRejected, "native_render_action_not_unique"):
-                        ui.generate_editor_render_job("editor-before", root / "before.mov", root / "before.mlt")
+                        ui.generate_editor_render_job("editor-before", root / "editor-before.mov", root / "editor-before.mlt")
                 interface.do_action.assert_not_called()
                 self.assertEqual([e["state"] for e in events], ["OBSERVED"])
                 self.assertEqual([a["name"] for a in events[0]["actions"]], list(labels))
@@ -3393,7 +3434,7 @@ class EditorRenderGuiControls(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             with self.assertRaises(RuntimeError) as caught:
-                ui.generate_editor_render_job("editor-before", root / "before.mov", root / "before.mlt")
+                ui.generate_editor_render_job("editor-before", root / "editor-before.mov", root / "editor-before.mlt")
         self.assertIs(caught.exception, stop)
         interface.get_n_actions.assert_not_called()
         interface.do_action.assert_not_called()

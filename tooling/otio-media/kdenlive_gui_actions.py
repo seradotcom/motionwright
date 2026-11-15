@@ -561,6 +561,18 @@ class ActionJournal:
             time.sleep(0.1)
 
 
+def native_generated_render_script(requested: Path) -> Path:
+    """Kdenlive 26.08.3 Generate Script adds -1 to the requested .mlt stem.
+
+    This is a path expectation only; the file must still be physically
+    created by the original native editor and independently verified.
+    """
+    require(isinstance(requested, Path) and requested.is_absolute()
+            and requested.name in ("editor-before.mlt", "editor-after.mlt"),
+            "native_render_requested_script_name_not_closed")
+    return requested.with_name(requested.stem + "-1.mlt")
+
+
 class AtspiSession:
     def __init__(self, pid: int, journal: ActionJournal):
         # Keep GI optional at import time for offline contract tests.
@@ -1579,10 +1591,14 @@ class AtspiSession:
 
     def generate_editor_render_job(self, step: str, output: Path, playlist: Path) -> dict:
         """Version-pinned native Generate Script; never Render to File or Start Script."""
+        native_playlist = native_generated_render_script(playlist)
         require(step in ("editor-before", "editor-after") and output.is_absolute()
-                and playlist.is_absolute() and output.parent == playlist.parent
+                and output.name == step + ".mov"
+                and output.parent == playlist.parent
                 and output.suffix == ".mov" and playlist.suffix == ".mlt"
-                and not any(p.exists() or p.is_symlink() for p in (output, playlist)),
+                and playlist.name == step + ".mlt"
+                and not any(p.exists() or p.is_symlink()
+                            for p in (output, playlist, native_playlist)),
                 "native_render_script_targets_not_fresh")
         self.menu(step + ".menu", "File", "Render...")
         dialog = self.dialog(step + ".dialog", ("Rendering",))
@@ -1686,13 +1702,17 @@ class AtspiSession:
             ("OK",), ("push button",), scope=delayed["key"]))
         self.action(step + ".delayed-submit-once", okay)
         self.journal.wait(step + ".delayed-closed", lambda: not self.find(("Delayed Rendering",), ("dialog", "frame")))
-        self.journal.wait(step + ".native-playlist-created", lambda: playlist.is_file())
+        self.journal.wait(step + ".native-playlist-created", lambda: native_playlist.is_file())
+        require(not playlist.exists() and not playlist.is_symlink(),
+                "native_render_unrequested_script_path_created")
         dialog = self.dialog(step + ".rendering-before-close", ("Rendering",))
         close = self.journal.wait(step + ".rendering-close-control", lambda: self.find(
             ("Close",), ("push button",), scope=dialog["key"]))
         self.action(step + ".rendering-close", close)
         self.journal.wait(step + ".rendering-closed", lambda: not self.find(("Rendering",), ("dialog", "frame")))
-        return observed
+        return {**observed, "original_requested_script": str(playlist),
+                "original_native_script": str(native_playlist),
+                "native_script_renamed_or_copied": False}
 
     def quit_after_render_script(self, step: str, source: Path) -> None:
         """Discard only the render preferences made after the saved-source hash."""
