@@ -41,6 +41,8 @@ SESSION_MEMBERS = {
 # Streams remain in the preparation envelope under the existing exclusion rule.
 SESSION_FINAL_RESERVE = 2 * MIB
 SESSION_FILE_RESERVE = 192
+# Keep retained first-case originals inside the existing 88-byte P member path.
+REUSED_PREPARATION_ROOT = "reused"
 UNIX_PATH_LIMIT = 107
 OWNER_SOCKET_TAIL = "/motionwright-native-av-g2-" + "x" * 8 + "/runtime/broker.sock"
 SHA = re.compile(r"[0-9a-f]{64}\Z")
@@ -537,6 +539,13 @@ def record_shared_preparation(current, request, session):
         write(destination / path.name, read(path, 65536))
 
 
+def reused_original_member(root, relative):
+    """Name the same first-case bytes within the unchanged plan path grammar."""
+    from native_film180_evidence_selection import fixedtxt_member_path
+    need(root in {"control", "inputs"}, "fixedtxt-session-retained-original-root")
+    return fixedtxt_member_path(REUSED_PREPARATION_ROOT + "/" + root + "/" + relative)
+
+
 def record_first_prepared(current, request, session, known, plan_raw, runtime_raw, cycle_raw):
     if session is None or session["binding"]["index"] != 0:
         return
@@ -545,6 +554,11 @@ def record_first_prepared(current, request, session, known, plan_raw, runtime_ra
     # Future work/transport/owner files are deliberately outside this roster.
     rows = [{"root": label, "relative_path": name, **descriptor(raw)}
             for (label, name), raw in sorted(known.items())]
+    # Check later-case provenance before issuing even the first preparation.
+    for row in rows:
+        if row["root"] == "control" or (row["root"] == "inputs" and row["relative_path"]
+                in {"source-descriptors.original.json", fixed.CYCLE_MEMBER}):
+            reused_original_member(row["root"], row["relative_path"])
     value = {"schema": "motionwright.native.fixedtxt-first-prepared/1", "context": current,
         "request": session["binding"]["request"], "namespace": session["binding"]["namespace"],
         "P": descriptor(plan_raw), "R": descriptor(runtime_raw), "Q": descriptor(cycle_raw),
@@ -569,7 +583,7 @@ def _copy_first_originals(current, session):
          and ref["new_native_authority"] is False and type(ref["files"]) is list,
          "fixedtxt-session-first-originals-binding")
     current_layout = route.owned_layout(current)
-    destination = current_layout["control_root"] / "reused-preparation"
+    destination = current_layout["control_root"] / REUSED_PREPARATION_ROOT
     destination.mkdir(mode=0o700, exist_ok=False)
     write(current_layout["control_root"] / "first-prepared.original.json", ref_raw)
     first_closed = read(session_root() / "case-00.closed.original.json")
@@ -594,7 +608,7 @@ def _copy_first_originals(current, session):
         # physical paths. The first snapshot inventory binds both views exactly.
         if row["root"] == "control" or (row["root"] == "inputs" and row["relative_path"]
                 in {"source-descriptors.original.json", fixed.CYCLE_MEMBER}):
-            target = destination / key
+            target = current_layout["control_root"] / reused_original_member(row["root"], row["relative_path"])
             target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
             write(target, raw)
     for label, name, path, maximum in (("P", "control/" + fixed.PLAN_MEMBER, layout["plan"], 512 * 1024),
@@ -602,7 +616,7 @@ def _copy_first_originals(current, session):
         ("Q", "inputs/" + fixed.CYCLE_MEMBER, layout["cycle"], MIB)):
         raw = read(path, maximum)
         need(descriptor(raw) == ref[label], "fixedtxt-session-first-PRQ-modified")
-        target = destination / name
+        target = current_layout["control_root"] / reused_original_member(*name.split("/", 1))
         target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         if target.exists():
             need(read(target, maximum) == raw, "fixedtxt-session-first-PRQ-overlap")
@@ -660,7 +674,7 @@ def reuse_preparation(current, request, session):
         "case_request": session["binding"]["request"], "first_prepared": descriptor(canonical(ref)),
         "first_namespace": session["plan"]["cases"][0]["namespace"],
         "shared_identity": descriptor(identity_raw), "shared_readonly": descriptor(readonly_raw),
-        "retained_original_prefix": "control/reused-preparation/", "new_preparation_children": 0,
+        "retained_original_prefix": "control/" + REUSED_PREPARATION_ROOT + "/", "new_preparation_children": 0,
         "original_preparation_children": 15, "new_native_authority": False,
         "observed_monotonic": time.monotonic(), "quiescent": quiescent(current)}
     write(layout["control_root"] / "preparation-reuse.original.json", canonical(receipt))
@@ -672,7 +686,7 @@ def verify_reused_cycle(cycle_raw, session):
     import native_fixedtxt_g2_admission as fixed
     import native_fixedtxt_workflow as route
     old = strict(read(route.owned_layout(session["binding"]["context"])["control_root"]
-                      / "reused-preparation/inputs" / fixed.CYCLE_MEMBER, MIB), MIB)
+                      / REUSED_PREPARATION_ROOT / "inputs" / fixed.CYCLE_MEMBER, MIB), MIB)
     new = strict(cycle_raw, MIB)
     def without_paths(value):
         if type(value) is dict:
@@ -688,7 +702,7 @@ def check_final_provenance_budget(known, session):
         return
     import native_evidence_projection as core
     extras = [raw for (label, name), raw in known.items() if label == "control"
-        and (name.startswith(("session-", "shared-", "reused-preparation/", "owner-resources/"))
+        and (name.startswith(("session-", "shared-", REUSED_PREPARATION_ROOT + "/", "owner-resources/"))
              or name in {"first-prepared.original.json", "first-case-closed.original.json", "preparation-reuse.original.json"})
         and not core.excluded(core.member_path(name))]
     need(len(extras) <= SESSION_FILE_RESERVE and sum(map(len, extras)) <= SESSION_FINAL_RESERVE,
@@ -789,7 +803,7 @@ def close_case(index):
     for row in plan["members"]:
         name = row["relative_path"]
         if row["root"] == "control" and (name.startswith("owner-resources/")
-                or name == "reused-preparation/control/clock.original.json"):
+                or name == reused_original_member("control", "clock.original.json")):
             verification_originals["control/" + name] = read(layout["control_root"] / name, min(row["maximum"], 65536))
     work_verified = fixed.verify_supervisor_originals(verification_originals,
         plan=plan, current=current, runner_temp=os.environ["RUNNER_TEMP"])

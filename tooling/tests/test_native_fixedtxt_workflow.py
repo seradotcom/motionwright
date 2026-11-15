@@ -1648,5 +1648,93 @@ class BundledFontPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "fixedtxt-required-original-missing"):
             fixed.validate_plan(plan, current=current)
 
+
+class ReusedPreparationPathTests(unittest.TestCase):
+    """Reproduce the three original case-01 path failures without Native."""
+    RESOURCE_NAMES = (
+        "owner-resources/commands/case-00-prepare/controller-entry.original.json",
+        "owner-resources/commands/case-00-prepare/coordinator-entry.original.json",
+        "owner-resources/commands/case-00-prepare/spawned.original.json",
+    )
+
+    def test_original_resource_members_fit_the_unchanged_plan_and_tar_grammar(self):
+        import native_fixedtxt_session as serial
+        import native_film180_evidence_selection as selection
+        import native_evidence_projection as core
+        current, plan_raw, _runtime, cycle, _dispatch = external_fixture()
+        original = fixed.strict(plan_raw, 512 * 1024)
+        request = source_request(current, original)
+        source = {"files": {row["path"]: row["sha256"] for row in original["source_bindings"]}}
+        known = {("inputs", fixed.CYCLE_MEMBER): cycle}
+        for ordinal, relative in enumerate(self.RESOURCE_NAMES):
+            with self.assertRaisesRegex(core.SelectionError, "fixedtxt-member-path"):
+                selection.fixedtxt_member_path("reused-preparation/control/" + relative)
+            retained = serial.reused_original_member("control", relative)
+            self.assertEqual(selection.fixedtxt_member_path(retained), retained)
+            self.assertLessEqual(len(("control/" + retained).encode("ascii")), 100)
+            known[("control", retained)] = ("synthetic-original-resource-" + str(ordinal)).encode()
+        # Same historical structural fixture as the pre-existing plan-builder
+        # test: no source catalogue, resource grant or Native effect is issued.
+        with mock.patch.object(route, "PAIR", route.HISTORICAL_PAIR):
+            result = fixed.strict(route.make_plan(request, current, cycle, source, known=known), 512 * 1024)
+        fixed.validate_plan(result, current=current)
+        self.assertEqual(result["limits"], original["limits"])
+        self.assertEqual(sum(row["role"] == "native-png" for row in result["members"]), 180)
+        rows = {(row["root"], row["relative_path"]): row for row in result["members"]}
+        for key, raw in known.items():
+            self.assertEqual(rows[key]["maximum"], len(raw))
+            self.assertEqual(rows[key]["expected_sha256"], route.sha(raw))
+
+    def test_future_overlong_provenance_is_rejected_before_first_preparation_write(self):
+        import native_fixedtxt_session as serial
+        import native_evidence_projection as core
+        session = {"binding": {"index": 0}}
+        with mock.patch.object(serial, "write") as write:
+            with self.assertRaisesRegex(core.SelectionError, "fixedtxt-member-path"):
+                serial.record_first_prepared({}, {}, session,
+                    {("control", "x" * 89): b"original"}, b"P", b"R", b"Q")
+            write.assert_not_called()
+        for root, relative in (("owner", "resource.json"), ("control", "../clock.original.json"),
+                               ("inputs", "dir\\file.json")):
+            with self.subTest(root=root, relative=relative), self.assertRaises(ValueError):
+                serial.reused_original_member(root, relative)
+
+    def test_reused_cycle_reads_retained_bytes_and_rejects_content_changes(self):
+        import native_fixedtxt_session as serial
+        current = {"source_sha": "a" * 40, "semwright_sha": "b" * 40,
+                   "run_id": "34567", "run_attempt": "1"}
+        old = {"asset": {"path": "/first/input", "bytes": 4, "sha256": "1" * 64},
+               "runtime": {"driver_sha256": "2" * 64}}
+        rebound = copy.deepcopy(old); rebound["asset"]["path"] = "/second/input"
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(route, "owned_layout",
+                return_value={"control_root": Path(directory)}):
+            control = Path(directory)
+            path = control / serial.reused_original_member("inputs", fixed.CYCLE_MEMBER)
+            path.parent.mkdir(parents=True)
+            path.write_bytes(serial.canonical(old))
+            session = {"binding": {"index": 1, "context": current}}
+            serial.verify_reused_cycle(serial.canonical(rebound), session)
+            rebound["runtime"]["driver_sha256"] = "3" * 64
+            with self.assertRaisesRegex(serial.SessionRejected, "Q-physical-identity-changed"):
+                serial.verify_reused_cycle(serial.canonical(rebound), session)
+
+
+
+    def test_bounded_reader_binds_exact_source_and_keeps_all_nine_io_seams(self):
+        from types import SimpleNamespace
+        from fixedtxt_readback import result_session_bounded as adapter
+        _validate, meta = adapter.make_oracle(fixed, SimpleNamespace())
+        self.assertEqual(meta["exact_io_replacements"], 9)
+        self.assertEqual(meta["oracle_predicates_removed"], 0)
+        self.assertEqual(meta["whole_plaintext_copies"], 0)
+        self.assertEqual(meta["whole_repacked_tar_copies"], 0)
+        self.assertFalse(meta["private_plaintext_written"])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "modified_source.py"
+            path.write_bytes(Path(fixed.__file__).read_bytes() + b"\\n")
+            with self.assertRaisesRegex(fixed.FixedTxtRejected, "bounded_selected_source_digest"):
+                adapter.make_oracle(SimpleNamespace(__file__=str(path), need=fixed.need), SimpleNamespace())
+
+
 if __name__ == '__main__':
     unittest.main()
