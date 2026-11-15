@@ -308,7 +308,8 @@ class SQLiteNativeOutputTests(unittest.TestCase):
 
     def test_workflow_requires_observer_and_exports_only_its_record_for_each_capture(self):
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/package-candidate.yml").read_text()
-        self.assertEqual(workflow.count("--sqlite-native-output"), 3)
+        # The installed Linux lane captures its own build, alongside the three package lanes.
+        self.assertEqual(workflow.count("--sqlite-native-output"), 4)
         self.assertEqual(workflow.count('- "scripts/cargo_sqlite_native_output.py"'), 2)
         self.assertIn("-p test_cargo_sqlite_native_output.py", workflow)
         for scope in ("internal-windows-cargo", "linux-cargo", "macos-cargo"):
