@@ -568,36 +568,141 @@ class NativeRouteContracts(unittest.TestCase):
         self.assertEqual(owned.records.emit.call_args.args[0]["returncode"], 2)
         self.assertTrue(all(s.closed for s in owned.streams))
 
-    def test_error_finalization_observes_owned_running_process_without_effect(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            records = runner.Recorder(Path(temporary))
-            records.document = Mock()
-            owned = SimpleNamespace(phase="import", pid=41, start=1234,
-                                    process=Mock(), guard=Mock(),
-                                    streams=[io.BytesIO(), io.BytesIO()])
-            owned.process.poll.return_value = None
-            records.owned_processes = [owned]
-            result = records.observe_terminals()
-            records.close()
-        self.assertEqual(result[0]["state"], "STILL_RUNNING")
-        self.assertTrue(result[0]["live_identity_still_bound"])
-        owned.process.kill.assert_not_called()
-        owned.process.terminate.assert_not_called()
-        self.assertFalse(result[0]["termination_requested_here"])
+    def test_owned_gui_failure_cleanup_precedes_audio_exit_and_keeps_primary(self):
+        for scenario in ("term", "term_then_kill", "already_terminal"):
+            with self.subTest(scenario=scenario):
+                original = actions.GuiRejected("original_unknown_edit")
+                records = Mock(spec=runner.Recorder)
+                owned = runner.NativeProcess.__new__(runner.NativeProcess)
+                owned.phase, owned.pid, owned.start = "reopen", 42, 1235
+                owned.process, owned.records, owned.ui = Mock(spec=subprocess.Popen), records, Mock()
+                owned.process.pid = 42
+                owned.streams = [io.BytesIO(), io.BytesIO()]
+                owned.failure_cleanup_attempted = owned.termination_requested_here = False
+                owned.terminal_wait_deadline = None
+                state = {"now": 100.0, "code": 0 if scenario == "already_terminal" else None, "waits": 0}
+                order = []
+                owned.process.poll.side_effect = lambda: state["code"]
+                owned.guard = Mock(side_effect=lambda: order.append("guard"))
+                def wait(timeout):
+                    state["waits"] += 1
+                    if scenario == "term_then_kill" and state["waits"] == 1:
+                        state["now"] += timeout
+                        raise subprocess.TimeoutExpired(["synthetic-owned-child"], timeout)
+                    state["code"] = -15 if scenario == "term" else -9
+                    return state["code"]
+                owned.process.wait.side_effect = wait
+                records.owned_processes = [owned]
+                records.cancel_native_after_failure = lambda error: runner.Recorder.cancel_native_after_failure(records, error)
+                operation = Mock(side_effect=original)
+                class AudioContext:
+                    def __enter__(self):return self
+                    def __exit__(self, *args):order.append("audio_exit");return False
+                # Linux signal constants are explicit pure fixtures; no local signal is sent.
+                with patch.object(runner.signal, "SIGKILL", 9, create=True), \
+                        patch.object(runner.signal, "Signals", side_effect=lambda value: SimpleNamespace(
+                            name={15: "SIGTERM", 9: "SIGKILL"}[value])), \
+                        patch.object(runner.os, "pidfd_open", return_value=91, create=True) as opened, \
+                        patch.object(runner.signal, "pidfd_send_signal",
+                            side_effect=lambda fd, sig: order.append((fd, sig)), create=True) as sent, \
+                        patch.object(runner.os, "close") as closed, \
+                        patch.object(runner.time, "monotonic", side_effect=lambda: state["now"]):
+                    with self.assertRaises(actions.GuiRejected) as raised:
+                        with AudioContext():
+                            runner.run_with_owned_failure_cleanup(records, operation)
+                    self.assertIs(raised.exception, original)
+                    operation.assert_called_once_with()
+                    if scenario == "already_terminal":
+                        opened.assert_not_called();sent.assert_not_called();closed.assert_not_called()
+                    else:
+                        opened.assert_called_once_with(42);closed.assert_called_once_with(91)
+                        expected = [runner.signal.SIGTERM] + ([runner.signal.SIGKILL] if scenario == "term_then_kill" else [])
+                        self.assertEqual([call.args for call in sent.call_args_list], [(91, sig) for sig in expected])
+                        terminal = records.document.call_args.args[1]
+                        self.assertEqual(terminal["state"], "TERMINAL_OBSERVED")
+                        self.assertEqual(terminal["returncode"], state["code"])
+                        self.assertTrue(terminal["termination_requested_here"])
+                        self.assertFalse(terminal["native_result_verified"])
+                        self.assertEqual(terminal["cleanup_errors"], [])
+                        self.assertEqual(terminal["deadline_monotonic"], 130.0)
+                        self.assertTrue(all(stream.closed for stream in owned.streams))
+                        self.assertLess(max(i for i, value in enumerate(order) if isinstance(value, tuple)), order.index("audio_exit"))
+                        with self.assertRaisesRegex(actions.GuiRejected, "cleanup_must_be_once"):
+                            owned.cancel_after_failure_once(130.0)
+                        self.assertEqual(sent.call_count, len(expected))
+                owned.ui.quit.assert_not_called();owned.ui.save_as.assert_not_called()
+                owned.process.terminate.assert_not_called();owned.process.kill.assert_not_called()
 
-    def test_error_finalization_retains_changed_identity_as_unknown(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            records = runner.Recorder(Path(temporary))
-            records.document = Mock()
-            owned = SimpleNamespace(phase="reopen", pid=42, start=1235,
-                                    process=Mock(), guard=Mock(side_effect=ValueError("PID reused")),
-                                    streams=[io.BytesIO(), io.BytesIO()])
-            owned.process.poll.return_value = None
-            records.owned_processes = [owned]
-            result = records.observe_terminals()
-            records.close()
-        self.assertEqual(result[0]["state"], "OBSERVATION_ERROR_OR_UNKNOWN")
-        self.assertEqual(result[0]["error"], "PID reused")
+    def test_owned_gui_failure_cleanup_refuses_unbound_expired_or_unclosed_authority(self):
+        for scenario in ("identity", "identity_after_fd", "pid_mismatch", "no_pidfd",
+                         "expired", "remaining_budget", "still_running", "intent_custody",
+                         "terminal_custody", "signal_denied"):
+            with self.subTest(scenario=scenario):
+                original = actions.GuiRejected("original_unknown_edit")
+                records = Mock(spec=runner.Recorder)
+                owned = runner.NativeProcess.__new__(runner.NativeProcess)
+                owned.phase, owned.pid, owned.start = "reopen", 42, 1235
+                owned.process, owned.records, owned.ui = Mock(spec=subprocess.Popen), records, Mock()
+                owned.process.pid = 43 if scenario == "pid_mismatch" else 42
+                owned.streams = [io.BytesIO(), io.BytesIO()]
+                owned.failure_cleanup_attempted = owned.termination_requested_here = False
+                owned.terminal_wait_deadline = 99.0 if scenario == "expired" else 102.0 if scenario == "remaining_budget" else None
+                state = {"now": 100.0, "code": None}
+                owned.process.poll.side_effect = lambda: state["code"]
+                owned.guard = Mock()
+                if scenario == "identity":
+                    owned.guard.side_effect = actions.GuiRejected("PID starttime changed")
+                elif scenario == "identity_after_fd":
+                    owned.guard.side_effect = [None, actions.GuiRejected("PID starttime changed after pidfd")]
+                if scenario == "intent_custody":records.emit.side_effect = OSError("original intent write failed")
+                if scenario == "terminal_custody":records.document.side_effect = OSError("original terminal write failed")
+                def wait(timeout):
+                    if scenario in ("remaining_budget", "still_running"):
+                        state["now"] += timeout
+                        raise subprocess.TimeoutExpired(["synthetic-owned-child"], timeout)
+                    state["code"] = -15
+                    return state["code"]
+                owned.process.wait.side_effect = wait
+                records.owned_processes = [owned]
+                records.cancel_native_after_failure = lambda error: runner.Recorder.cancel_native_after_failure(records, error)
+                opened = Mock(return_value=91)
+                signal_call = Mock(side_effect=PermissionError("original signal refused") if scenario == "signal_denied" else None)
+                # Linux signal constants are explicit pure fixtures; no local signal is sent.
+                with patch.object(runner.signal, "SIGKILL", 9, create=True), \
+                        patch.object(runner.signal, "Signals", side_effect=lambda value: SimpleNamespace(
+                            name={15: "SIGTERM", 9: "SIGKILL"}[value])), \
+                        patch.object(runner.os, "pidfd_open", None if scenario == "no_pidfd" else opened, create=True), \
+                        patch.object(runner.signal, "pidfd_send_signal", signal_call, create=True), \
+                        patch.object(runner.os, "close") as closed, \
+                        patch.object(runner.time, "monotonic", side_effect=lambda: state["now"]):
+                    with self.assertRaises(actions.GuiRejected) as raised:
+                        runner.run_with_owned_failure_cleanup(records, Mock(side_effect=original))
+                    self.assertIs(raised.exception, original)
+                    self.assertTrue(any("owned_native_cleanup" in note for note in original.__notes__))
+                    if scenario in ("identity", "identity_after_fd", "pid_mismatch", "no_pidfd", "expired", "intent_custody"):
+                        signal_call.assert_not_called()
+                        owned.process.wait.assert_not_called()
+                    if scenario == "remaining_budget":
+                        self.assertEqual(signal_call.call_count, 1)
+                        owned.process.wait.assert_called_once_with(timeout=2.0)
+                    if scenario == "still_running":
+                        self.assertEqual([call.args[1] for call in signal_call.call_args_list],
+                                         [runner.signal.SIGTERM, runner.signal.SIGKILL])
+                        self.assertEqual([call.kwargs["timeout"] for call in owned.process.wait.call_args_list], [5, 25.0])
+                    if scenario == "signal_denied":
+                        signal_call.assert_called_once_with(91, runner.signal.SIGTERM)
+                        owned.process.wait.assert_not_called()
+                    if scenario != "terminal_custody":
+                        terminal = records.document.call_args.args[1]
+                        self.assertEqual(terminal["state"], "UNKNOWN_STILL_RUNNING")
+                        self.assertIsNone(terminal["returncode"])
+                        self.assertTrue(terminal["cleanup_errors"])
+                        self.assertFalse(terminal["streams_closed"])
+                    if opened.called:closed.assert_called_once_with(91)
+                    else:closed.assert_not_called()
+                owned.ui.quit.assert_not_called();owned.ui.save_as.assert_not_called()
+                owned.process.terminate.assert_not_called();owned.process.kill.assert_not_called()
+                self.assertLessEqual(state["now"], 130.0)
 
     def test_recording_failure_does_not_skip_remaining_finalization(self):
         records = Mock()
@@ -606,6 +711,14 @@ class NativeRouteContracts(unittest.TestCase):
         self.assertEqual(result, "LOCAL_RECORDING_FAILED")
         records.document.assert_called_once()
         records.close.assert_called_once()
+        for state in ("STILL_RUNNING", "OBSERVATION_ERROR_OR_UNKNOWN"):
+            with self.subTest(state=state):
+                records = Mock()
+                records.observe_terminals.return_value = [{"state": state}]
+                status = runner.finalize_records(records, "NATIVE_GUI_BOUNDED_ROUNDTRIP_OBSERVED", {}, {})
+                self.assertEqual(status, "ERROR_OR_UNKNOWN")
+                self.assertEqual(records.document.call_args.args[1]["status"], status)
+                records.close.assert_called_once()
 
 
 
