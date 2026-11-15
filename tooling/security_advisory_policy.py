@@ -136,43 +136,113 @@ def ensure_zero_vulnerabilities(audit: dict[str, Any]) -> None:
         fail(f"cargo-audit reported security vulnerabilities{suffix}")
 
 
+def verified_font_dependency_edges(lock: dict[str, Any]):
+    """Reject unresolved or source-qualified drift before using the owner graph."""
+    packages = lock.get("package")
+    if not isinstance(packages, list) or not packages:
+        fail("Fontations package roster is missing")
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for package in packages:
+        if (not isinstance(package, dict)
+                or not isinstance(package.get("name"), str) or not package["name"]
+                or not isinstance(package.get("version"), str) or not package["version"]
+                or ("source" in package and (not isinstance(package["source"], str)
+                                              or not package["source"]))):
+            fail("Fontations package identity is malformed")
+        by_name.setdefault(package["name"], []).append(package)
+    for package in packages:
+        dependencies = package.get("dependencies", [])
+        if (not isinstance(dependencies, list)
+                or any(not isinstance(value, str) for value in dependencies)
+                or len(set(dependencies)) != len(dependencies)):
+            fail("Fontations dependency roster is malformed")
+        for dependency in dependencies:
+            parts = dependency.split(" ")
+            if not 1 <= len(parts) <= 3 or any(not part for part in parts):
+                fail("Fontations dependency reference is malformed: " + dependency)
+            selected = by_name.get(parts[0], [])
+            if len(parts) >= 2:
+                selected = [p for p in selected if p["version"] == parts[1]]
+            if len(parts) == 3:
+                selected = [p for p in selected
+                            if isinstance(p.get("source"), str)
+                            and parts[2] == "(" + p["source"] + ")"]
+            if len(selected) != 1:
+                fail("Fontations dependency reference is not exactly resolved: " + dependency)
+    try:
+        return lock_reverse_edges(lock)
+    except OwnerChainError as error:
+        fail("Fontations dependency graph is not uniquely resolved: " + str(error))
+
+
 def verify_ttf_parser_review(lock: dict[str, Any], advisory: dict[str, Any]) -> dict[str, Any]:
-    """Track an OPEN unmaintained parser only on exact bytes and reviewed owners."""
+    """Verify source removal in both owners; installed-product risk stays OPEN."""
     if (advisory.get("id") != "RUSTSEC-2026-0192"
             or advisory.get("package") != "ttf-parser"
             or advisory.get("locked_version") != "0.25.1"
             or advisory.get("class") != "unmaintained"
-            or advisory.get("status") != "OPEN_UPSTREAM_UNMAINTAINED"):
-        fail("ttf-parser new maintenance-risk policy changed without review")
-    matching = [p for p in lock["package"] if p.get("name") == "ttf-parser"]
-    if (len(matching) != 1
-            or matching[0].get("version") != "0.25.1"
-            or matching[0].get("source") != "registry+https://github.com/rust-lang/crates.io-index"
-            or matching[0].get("checksum") != advisory.get("registry_checksum")
+            or advisory.get("status") != "OPEN_SOURCE_REMOVED_RUNTIME_UNVERIFIED"
             or advisory.get("registry_checksum") !=
-            "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"):
-        fail("ttf-parser exact registry source or checksum changed; review required")
+            "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
+            or advisory.get("forbidden_first_party_tokens") != ["ttf_parser", "ttf-parser"]):
+        fail("ttf-parser source-removal review changed without review")
+    if any(p.get("name") == "ttf-parser" for p in lock["package"]):
+        fail("ttf-parser re-entered the reviewed source lock; source removal is not established")
+    replacement = {
+        "name": "read-fonts",
+        "version": "0.47.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "a39d2f8f681030a7bcbbcf3e8568775ac2393afd51401a2e2133ee89e3953897",
+    }
+    if advisory.get("source_replacement") != replacement:
+        fail("Fontations replacement identity changed; review required")
+    matching = [p for p in lock["package"] if p.get("name") == replacement["name"]]
+    if len(matching) != 1 or any(matching[0].get(k) != v for k, v in replacement.items()):
+        fail("Fontations exact registry source, version or checksum changed; review required")
     driver = [p for p in lock["package"] if p.get("name") == "semwright-driver-motion-canvas"]
+    reviewed_sdk = (
+        "git+https://github.com/seradotcom/semwright?rev=afe76ddea1ffb23703181b97b7b6aefd76a1ab49"
+        "#afe76ddea1ffb23703181b97b7b6aefd76a1ab49"
+    )
     if (len(driver) != 1
             or driver[0].get("version") != "1.0.0"
-            or driver[0].get("source") != advisory.get("reviewed_motion_canvas_lock_source")
-            or advisory.get("reviewed_motion_canvas_lock_source") !=
-            "git+https://github.com/seradotcom/semwright?rev=797e70884d35a068c72149ffae3e6df365bb0b64#797e70884d35a068c72149ffae3e6df365bb0b64"):
-        fail("ttf-parser reviewed Semwright driver source changed; review required")
-    try:
-        reverse = lock_reverse_edges(lock)
-    except OwnerChainError as error:
-        fail("ttf-parser dependency graph is not uniquely resolved: " + str(error))
-    source = ("ttf-parser", "0.25.1")
+            or driver[0].get("source") != reviewed_sdk
+            or "checksum" in driver[0]
+            or advisory.get("reviewed_motion_canvas_lock_source") != reviewed_sdk):
+        fail("Fontations reviewed Semwright driver source changed; review required")
+    local_owner = [p for p in lock["package"] if p.get("name") == "motionwright-manim-profile"]
+    if (len(local_owner) != 1 or local_owner[0].get("version") != "0.1.0"
+            or "source" in local_owner[0] or "checksum" in local_owner[0]):
+        fail("Fontations Manim owner is not the exact local source package")
+    reviewed_sources = {
+        "crates/manim-profile/Cargo.toml":
+            "c85a49e6a1979a2ed07ff0f746bbc4d3d75a9acf15917ef9fad1b263fbbe19ca",
+        "crates/manim-profile/src/editable_scene.rs":
+            "44e0bb4b39381ecb743657ff5cbba78b4ac91ab8956fe78e2cc128a7007583cf",
+        "crates/manim-profile/src/font_tables.rs":
+            "ad85a729848f1033c3c6be91f61cec4e63423e7b04dc632ff29fcf22312527af",
+    }
+    if advisory.get("reviewed_first_party_sources") != reviewed_sources:
+        fail("Fontations reviewed first-party source bindings changed")
+    import hashlib
+    for name, digest in reviewed_sources.items():
+        try:
+            actual = hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+        except OSError:
+            fail("Fontations reviewed first-party source is unavailable: " + name)
+        if actual != digest:
+            fail("Fontations first-party admission source changed; review required: " + name)
+    reverse = verified_font_dependency_edges(lock)
+    source = ("read-fonts", "0.47.0")
     if source not in reverse:
-        fail("ttf-parser reviewed package missing")
+        fail("Fontations reviewed package missing")
     direct = sorted(f"{name}@{version}" for name, version in reverse[source])
     expected_direct = [
         "motionwright-manim-profile@0.1.0",
         "semwright-driver-motion-canvas@1.0.0",
     ]
     if direct != expected_direct or advisory.get("reviewed_direct_owners") != expected_direct:
-        fail("ttf-parser direct owners changed; review required")
+        fail("Fontations direct owners changed; review required")
     closure, stack = {source}, [source]
     while stack:
         for parent in reverse[stack.pop()]:
@@ -189,12 +259,16 @@ def verify_ttf_parser_review(lock: dict[str, Any], advisory: dict[str, Any]) -> 
         "semwright-driver-motion-canvas@1.0.0",
     ]
     if actual != expected or advisory.get("reviewed_transitive_owners") != expected:
-        fail("ttf-parser transitive owners changed; review required")
+        fail("Fontations transitive owners changed; review required")
     return {
         "advisory_id": "RUSTSEC-2026-0192",
-        "status": "OPEN_UPSTREAM_UNMAINTAINED",
-        "source": matching[0]["source"],
-        "locked_version": "0.25.1",
+        "status": "OPEN_SOURCE_REMOVED_RUNTIME_UNVERIFIED",
+        "removed_package": "ttf-parser",
+        "removed_locked_version": "0.25.1",
+        "source_dependency_absent": True,
+        "replacement": replacement,
+        "replacement_source_verified": True,
+        "reviewed_first_party_sources": reviewed_sources,
         "direct_owners": direct,
         "transitive_owners": actual,
         "maintenance_risk_closed": False,
@@ -232,7 +306,14 @@ def main() -> None:
             fail(f"duplicate known advisory {advisory_id}")
         if not status.startswith("OPEN_"):
             fail(f"known advisory {advisory_id} must remain explicitly OPEN")
-        if locked.get(package) != {version}:
+        source_removed = (advisory_id == "RUSTSEC-2026-0192"
+                          and status == "OPEN_SOURCE_REMOVED_RUNTIME_UNVERIFIED")
+        if source_removed:
+            # The historical version remains in the policy as the retired review
+            # identity. Its replacement and both owners are checked below.
+            if package in locked:
+                fail(f"{advisory_id}: removed parser is present in the source lock")
+        elif locked.get(package) != {version}:
             fail(
                 f"{advisory_id} review is stale: expected {package} {version}, "
                 f"lock has {sorted(locked.get(package, set()))}"
@@ -295,7 +376,16 @@ def main() -> None:
         local_path_advisory = "RUSTSEC-2024-0429"
         if glib_owner_chain.get("reviewed_backport_source_verified") is not True:
             fail("local glib source audit gap has no independently verified backport")
-        required_ids = expected_ids - {local_path_advisory}
+        # Source removal is a different reason for absence from the local-path
+        # glib audit coverage gap. It is allowed only after the exact replacement
+        # and both source owners above were checked against exact source and lock bytes.
+        removed_parser = "RUSTSEC-2026-0192"
+        if (ttf_parser_review.get("source_dependency_absent") is not True
+                or ttf_parser_review.get("replacement_source_verified") is not True):
+            fail("ttf-parser audit absence has no verified source replacement")
+        if removed_parser in actual_ids:
+            fail("RUSTSEC-2026-0192 warning reappeared after verified source removal")
+        required_ids = expected_ids - {local_path_advisory, removed_parser}
         missing = sorted(required_ids - actual_ids)
         unexpected = sorted(actual_ids - expected_ids)
         if missing or unexpected:
@@ -326,6 +416,7 @@ def main() -> None:
                 "package": advisory["package"],
                 "locked_version": advisory["locked_version"],
                 "status": advisory["status"],
+                "source_dependency_present": advisory_id != "RUSTSEC-2026-0192",
             }
             for advisory_id, advisory in sorted(expected.items())
         ],
@@ -334,10 +425,15 @@ def main() -> None:
             sorted(set(expected) - set(actual_warnings))
             if actual_warnings is not None else None
         ),
+        "verified_source_removed_advisories": ["RUSTSEC-2026-0192"],
+        "registry_audit_coverage_gaps": ["RUSTSEC-2024-0429"],
         "local_path_crate_audit_coverage_complete": False,
         "upstream_glib_advisory_resolved": False,
         "statement": (
-            "Known advisories remain OPEN. cargo-audit cannot establish that the "
+            "Known advisories remain OPEN for installed-product review. The source "
+            "lock removes ttf-parser and binds Fontations in both prior owners; "
+            "installed binary absence and runtime acceptance are not proven. "
+            "cargo-audit cannot establish that the "
             "locally patched glib 0.18.5 source is safe: the registry advisory may "
             "disappear from its report for this path dependency. Exact upstream "
             "source custody is independently verified, but installed product "

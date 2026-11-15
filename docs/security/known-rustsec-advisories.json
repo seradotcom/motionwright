@@ -2,7 +2,7 @@
   "schema": "motionwright.security-known-advisories.v1",
   "policy": {
     "mode": "exact-known-warning-set",
-    "statement": "All reviewed RustSec advisories remain OPEN. Exact-source local-path glib 0.18.5 may disappear from cargo-audit's registry warning output without proving remediation. The checked Cargo.lock override and complete backport source-custody verifier must pass; all other warnings must match exactly, and any vulnerability, new warning, missing other warning or dependency drift fails closed. No advisory is waived or marked fixed.",
+    "statement": "All reviewed RustSec advisories remain OPEN for installed-product review. Exact-source local-path glib 0.18.5 may disappear from cargo-audit's registry warning output without proving remediation; its lock override and complete source-custody verifier must pass. The retired ttf-parser warning must be absent only after the exact maintained Fontations replacement, local Manim source, pinned SDK source and both owner chains are verified. This verified source removal is distinct from the glib registry-coverage gap. Every other reviewed warning must match exactly; any vulnerability, new warning, missing required warning, reappearing removed-parser warning or dependency drift fails closed. Runtime and distribution acceptance are not inferred.",
     "reviewed_against_cargo_audit": "0.22.2"
   },
   "advisories": [
@@ -81,15 +81,17 @@
       "class": "unmaintained",
       "package": "ttf-parser",
       "locked_version": "0.25.1",
-      "status": "OPEN_UPSTREAM_UNMAINTAINED",
-      "direct_dependency": true,
+      "status": "OPEN_SOURCE_REMOVED_RUNTIME_UNVERIFIED",
+      "direct_dependency": false,
       "registry_checksum": "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31",
-      "reviewed_motion_canvas_lock_source": "git+https://github.com/seradotcom/semwright?rev=797e70884d35a068c72149ffae3e6df365bb0b64#797e70884d35a068c72149ffae3e6df365bb0b64",
+      "reviewed_motion_canvas_lock_source": "git+https://github.com/seradotcom/semwright?rev=afe76ddea1ffb23703181b97b7b6aefd76a1ab49#afe76ddea1ffb23703181b97b7b6aefd76a1ab49",
       "required_lock_context": {
-        "ttf-parser": "0.25.1",
         "motionwright-manim-profile": "0.1.0",
         "semwright-driver-motion-canvas": "1.0.0",
-        "motionwright-service": "0.1.0"
+        "motionwright-service": "0.1.0",
+        "read-fonts": "0.47.0",
+        "font-types": "0.12.7",
+        "bytemuck_derive": "1.12.1"
       },
       "reviewed_direct_owners": [
         "motionwright-manim-profile@0.1.0",
@@ -103,15 +105,32 @@
         "motionwright-service@0.1.0",
         "semwright-driver-motion-canvas@1.0.0"
       ],
-      "forbidden_first_party_tokens": [],
-      "review_note": "New 2026-06-28 upstream maintenance warning, not a reported vulnerability or security fix. The exact registry bytes are locked, and Cargo.lock contains two declared dependency routes (Manim direct and Semwright Motion Canvas via the service); deployed runtime reachability remains unverified. This review tracks an OPEN risk, not a safety waiver, not replacement by skrifa, and not product G2/G3 clearance. Source-pin review 2026-11-13: the 545-package Cargo.lock graph was compared to the previously reviewed revision with only Semwright source identities remapped; ttf-parser 0.25.1 registry checksum, both direct owners, and all six transitive owners were identical. The SDK changed; font-parser runtime reachability was not re-established and this OPEN risk remains neither a security waiver nor release acceptance. Source-pin review 2026-11-15: the composed SDK retains first-error custody and adds bounded RGBA readback release. All 545 locked package records are unchanged apart from the Semwright source identity; registry checksums and dependency edges remain identical. Runtime font-parser reachability and this OPEN risk remain unclosed.",
+      "forbidden_first_party_tokens": [
+        "ttf_parser",
+        "ttf-parser"
+      ],
+      "review_note": "New 2026-06-28 upstream maintenance warning, not a reported vulnerability or security fix. The exact registry bytes are locked, and Cargo.lock contains two declared dependency routes (Manim direct and Semwright Motion Canvas via the service); deployed runtime reachability remains unverified. This review tracks an OPEN risk, not a safety waiver, not replacement by skrifa, and not product G2/G3 clearance. Source-pin review 2026-11-13: the 545-package Cargo.lock graph was compared to the previously reviewed revision with only Semwright source identities remapped; ttf-parser 0.25.1 registry checksum, both direct owners, and all six transitive owners were identical. The SDK changed; font-parser runtime reachability was not re-established and this OPEN risk remains neither a security waiver nor release acceptance. Source-pin review 2026-11-15: the composed SDK retains first-error custody and adds bounded RGBA readback release. All 545 locked package records are unchanged apart from the Semwright source identity; registry checksums and dependency edges remain identical. Runtime font-parser reachability and this OPEN risk remain unclosed. Source-removal review 2026-11-15: both existing font admission consumers use exact read-fonts 0.47.0 registry bytes. The current lock must contain no ttf-parser package or unresolved dependency edge and must preserve the reviewed two direct and six transitive owners of the replacement. The locked_version/checksum above retain the retired advisory identity; they do not claim that package is selected now. First-party admission source hashes and the replacement SDK revision are bound. Absence of this warning in a new audit is required only after those checks; it is not treated as an ignore or as the separate local-path glib coverage gap. Installed package removal, runtime acceptance, human review and G2/G3 remain unproven.",
       "recheck_when": [
         "ttf-parser registry source/checksum or locked version changes",
         "direct or transitive Cargo.lock owner closure changes",
         "the selected Semwright Motion Canvas driver source revision changes",
         "the RustSec classification or reachable font parsing behavior changes",
-        "an actively maintained parser is adopted and verified in the affected producers"
-      ]
+        "an actively maintained parser is adopted and verified in the affected producers",
+        "the exact Fontations replacement or either admission consumer changes",
+        "an installed candidate is verified to contain the new source and completes its required runtime review"
+      ],
+      "historical_direct_dependency": true,
+      "source_replacement": {
+        "name": "read-fonts",
+        "version": "0.47.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "a39d2f8f681030a7bcbbcf3e8568775ac2393afd51401a2e2133ee89e3953897"
+      },
+      "reviewed_first_party_sources": {
+        "crates/manim-profile/Cargo.toml": "c85a49e6a1979a2ed07ff0f746bbc4d3d75a9acf15917ef9fad1b263fbbe19ca",
+        "crates/manim-profile/src/editable_scene.rs": "44e0bb4b39381ecb743657ff5cbba78b4ac91ab8956fe78e2cc128a7007583cf",
+        "crates/manim-profile/src/font_tables.rs": "ad85a729848f1033c3c6be91f61cec4e63423e7b04dc632ff29fcf22312527af"
+      }
     },
     {
       "id": "RUSTSEC-2024-0370",
