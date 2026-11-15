@@ -1307,8 +1307,10 @@ class AtspiSession:
                        and r["visible"] and r["enabled"] and r["focused"]]
             tree_focused = any(r["key"] == parent_key and r["focused"]
                                and r["visible"] and r["enabled"] for r in latest)
-            return (len(focused) == 1 and tree_focused
-                    and self.render_state(focused[0], "SELECTED"))
+            # Kdenlive 26.08.3 deliberately removes ItemIsSelectable from
+            # category rows. Current-cell and tree focus bind Right; SELECTED
+            # remains required below for the actual Alpha MOV preset.
+            return len(focused) == 1 and tree_focused
         self.journal.wait(step + ".focused", focused_category)
         return before["window"]
 

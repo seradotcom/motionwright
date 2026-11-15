@@ -2899,7 +2899,7 @@ class EditorMasterSourceControls(unittest.TestCase):
 
 
 class RenderCategoryFocusTests(unittest.TestCase):
-    def fixture(self, *, focuses=True, selected=True, result=True):
+    def fixture(self, *, focuses=True, tree_focus=None, selected=False, result=True):
         events = []
         ui = actions.AtspiSession.__new__(actions.AtspiSession)
         ui.pid = 41
@@ -2933,7 +2933,8 @@ class RenderCategoryFocusTests(unittest.TestCase):
             return rows
         ui.tree = Mock(side_effect=snapshot)
         def click(*_, **__):
-            category["focused"] = tree["focused"] = focuses
+            category["focused"] = focuses
+            tree["focused"] = focuses if tree_focus is None else tree_focus
             selection["value"] = selected
             return SimpleNamespace(returncode=0 if result else 1, stdout=b"", stderr=b"")
         ui.pointer_command = Mock(side_effect=click)
@@ -2958,6 +2959,8 @@ class RenderCategoryFocusTests(unittest.TestCase):
                          ["INTENT", "OBSERVED", "REQUEST_RETURNED"])
         self.assertEqual(events[0]["target"]["key"], category["key"])
         ui.nodes[category["key"]].get_component_iface.return_value.grab_focus.assert_not_called()
+        # The observed category is not selectable; focus is the keyboard target.
+        ui.nodes[category["key"]].get_state_set.assert_not_called()
         ui.nodes[tree["key"]].get_component_iface.return_value.get_accessible_at_point.assert_called_with(
             649, 206, "SCREEN")
 
@@ -3019,11 +3022,13 @@ class RenderCategoryFocusTests(unittest.TestCase):
         self.assertFalse(events)
 
     def test_rejected_click_or_unfocused_selection_never_becomes_ready(self):
-        for failure in ("false", "exception", "selected-only", "focused-only"):
+        for failure in ("false", "exception", "selected-only", "row-only", "tree-only"):
             with self.subTest(failure=failure):
                 ui, dialog, tree, category, events = self.fixture(
-                    result=failure != "false", focuses=failure != "selected-only",
-                    selected=failure != "focused-only")
+                    result=failure != "false",
+                    focuses=failure not in ("selected-only", "tree-only"),
+                    tree_focus=failure not in ("selected-only", "row-only"),
+                    selected=failure == "selected-only")
                 if failure == "exception":
                     ui.pointer_command.side_effect = OSError("original pointer failure")
                 ticks = iter(range(1000))
