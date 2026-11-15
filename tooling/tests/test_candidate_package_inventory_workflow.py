@@ -45,7 +45,7 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
                      "test_candidate_package_inventory_workflow.py"):
             self.assertIn("--pattern " + name, source)
         self.assertIn("--mode discovery --require-complete --timeout 60", source)
-        self.assertIn('(12,33,8)', source)
+        self.assertIn('(12,39,8)', source)
         self.assertIn('counts["tests_run"]==counts["passed"]==expected', source)
         self.assertIn('"skipped","expected_failures","unexpected_successes"', source)
         self.assertIn("extraction_effects=0 full_inventory=NOT_VERIFIED G3=STOP", source)

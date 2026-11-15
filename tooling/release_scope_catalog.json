@@ -21472,7 +21472,7 @@
     },
     {
       "path": ".github/workflows/package-candidate.yml",
-      "sha256": "922bd9ade0ca56acc68c69721abdeb388197ead0a0452646616590526b1c601f",
+      "sha256": "598f4046475735c6d33b47f08e190e39849166b292267f59e530c706aa3114b5",
       "preamble_sha256": "dc89698786826d32ae88e2ee99d8cd27fb54b086c1f0f159eb23836cb7914205",
       "evidence_class": "package_source_installed_and_provenance",
       "purpose": "Exact-source candidate packages and provenance, separately guarded Windows/NSIS source, compile/lifecycle and Linux first-use scopes. The all option covers its named package lane, not complete release readiness.",
@@ -21587,7 +21587,7 @@
           "runs_on": "ubuntu-latest",
           "needs": null,
           "strategy": null,
-          "source_sha256": "89730a7351c16040b5a148bc7564879e0ad04ee17391ac71022e23a0e99ae3e9",
+          "source_sha256": "510e47f0c0ff10c99e485833f4d35876479a4f25d0c588bf8428065fc23dcf19",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -21661,7 +21661,7 @@
               "name": "Require complete package inventory and Linux ownership source controls",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "04649d38ce457c534be6ef3f21717fc2824357b9f8e326c2fe02a6668d15cde3",
+              "source_block_sha256": "9bb29907410d927ae399f78e080f1cde7d0228bc23557d2db8b753b6006c48d4",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -23507,7 +23507,7 @@
         "The nsis-source-windows checkout must retain canonical LF Git bytes for Cargo.lock, SOURCE_LOCK.json, and apps/studio/package-lock.json: GIT_CONFIG_COUNT=1 core.autocrlf=false before actions/checkout. Historical run41270091876 original Windows source receipts were SHA-bound to 8b1 but recorded CRLF-converted checkout bytes; their exact CRLF values are explained by deterministic conversion, not current F lock-byte identity. No physical installer/G2 or G3 outcome is implied.",
         "The windows-update source-bound NSIS compile/lifecycle job also keeps canonical LF bytes on Windows via core.autocrlf=false before pinned checkout, matching windows-contracts, windows installed and nsis-source-windows. This is a checkout identity/source-lock correction, not a change in the fixture executable, installer, physical lifecycle or acceptance. Historical original Windows CRLF lock digests remain historical and are not promoted to F.",
         "The installed Linux package path now requires one captured Cargo build, receipt binary binding, a bound prelaunch AppImage readback, final AppImage/deb binding, and separate original Cargo-record retention before Native. Packaging variables are scoped to individual steps. The unchanged 192-member first-use custody and 240-MiB Native private custody limits, original job clock, Native compiler profiles and acceptance predicates remain independent requirements.",
-        "Package inventory source controls require 12 owner, 33 inventory and 8 workflow tests on Linux without skips. Source controls cannot substitute for the physical DEB/AppImage extraction and independent original readback.",
+        "Package inventory source controls require 12 owner, 39 inventory and 8 workflow tests on Linux without skips. Source controls cannot substitute for the physical DEB/AppImage extraction and independent original readback.",
         "The Linux first-use and isolated linux_bundle cases replace their existing extractions of the same built candidate. Successful inventory custody requires original subreaper ECHILD, retained pidfd waits and complete streams. Any unresolved wait or custody remains UNKNOWN or failed; no runner closure is inferred.",
         "These member inventories do not grant full package origin, legal, signing or G3 acceptance. NSIS retains NOT_OBSERVED extraction custody and unobserved listed members. The new DMG extractor remains inactive; the existing macOS job and the all-scope extraction path are unchanged."
       ]
