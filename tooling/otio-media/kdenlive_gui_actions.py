@@ -1436,7 +1436,8 @@ class AtspiSession:
         checkbox("Full project", True)
         checkbox("More options", True)
         checkbox("Video", True)
-        for name in ("Guide Multi-Export", "Render at Preview Resolution", "Enabled", "2 pass",
+        # The admitted 26.08.3 UI names this group Markers Multi-Export.
+        for name in ("Markers Multi-Export", "Render at Preview Resolution", "Enabled", "2 pass",
                      "Separate file for each audio track", "Render full color range"):
             checkbox(name, False)
         for name in ("Use Proxy Clips", "Embed subtitles instead of burning them"):
