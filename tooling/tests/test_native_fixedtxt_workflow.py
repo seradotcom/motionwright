@@ -871,6 +871,7 @@ class FixedTxtSourceKitPinTests(unittest.TestCase):
         block = rust.split('const OBSERVED_NATIVE_SOURCES:', 1)[1].split('];', 1)[0]
         pins = dict(re.findall(r'\(\s*"(RED|GREEN)",\s*"([0-9a-f]{64})",?\s*\)', block))
         self.assertEqual(pins, overlay.OBSERVED)
+        self.assertEqual(route.PAIR, overlay.OBSERVED)
 
         # Cross-language producer/selector contract. Derive the filename from
         # the actual Python argv, Rust command route, retained directory and
