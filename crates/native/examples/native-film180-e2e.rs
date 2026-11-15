@@ -1693,11 +1693,11 @@ mod fixed_text_v4 {
     const OBSERVED_NATIVE_SOURCES: [(&str, &str); 2] = [
         (
             "RED",
-            "9a54b51d25e0fa8521718fd03f9f29145e7bfc0395ff8fe40bd6d3fbccb23a96",
+            "ed4f0d8f6630f14d1c3d890b3249fab79381a2fe9c8424bdb302b1ae98488cd2",
         ),
         (
             "GREEN",
-            "63ffb19cf10e042d988608fca632780dc2cdc9e7766c3d1cc1e90d4f981e43c6",
+            "e787ab2bc03af94f7e432d380b1c5ff058fb881492232ed59b5988f487b69c96",
         ),
     ];
     fn observes_text_pixels(arm: &str, source: &str) -> bool {
