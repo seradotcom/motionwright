@@ -954,16 +954,22 @@ CI_COMMAND_CLOSURE_BYTES = 1024 * 1024
 CI_PIPE_BYTES = 65536
 CI_OVERFLOW_BYTES = 2 * CI_PIPE_BYTES
 # These are predeclared suballocations, not observations of future outputs.
-# Every build keeps the existing 8 MiB per-stream ceiling. No reservation is
-# refunded, including a command that emits less than its declared allowance.
+# The original hosted SDK Cargo builds emitted well below 2 MiB per stream
+# (CLI stdout ~357 KiB; sandbox stdout ~78 KiB). Each bounded successful
+# source build still retains its *entire* real stdout/stderr, with overflow
+# failing closed. Preallocating 8 MiB on EACH stream of all three builds
+# consumed 48 MiB of immutable custody even when their output was tiny.
+# Tighten only these source-specific limits (2/2/4 MiB); this recovers
+# 32 MiB of reserved headroom WITHOUT a refund, removing original files,
+# increasing global custody, or touching the 64 MiB scenario reserve.
 CI_COMMAND_STREAM_BYTES = {
     "seal-venv": 65536, "seal-dependencies": 512 * 1024,
     "recipient-admission": 65536, "sdk-init": 65536,
     "sdk-fetch": 512 * 1024, "sdk-checkout": 65536,
     "product-toolchain": 65536, "sdk-toolchain": 65536,
     "cargo-toolchain": 65536, "sdk-sandbox-profile": 65536,
-    "sdk-daemon-cli": 8 * 1024 * 1024, "sdk-sandbox": 8 * 1024 * 1024,
-    "product-provider": 8 * 1024 * 1024, "installed-controls": 256 * 1024,
+    "sdk-daemon-cli": 2 * 1024 * 1024, "sdk-sandbox": 2 * 1024 * 1024,
+    "product-provider": 4 * 1024 * 1024, "installed-controls": 256 * 1024,
 }
 
 
