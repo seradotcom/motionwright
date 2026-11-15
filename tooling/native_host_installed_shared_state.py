@@ -1789,16 +1789,17 @@ def ci_produce_originals(repo, root, namespace, evidence):
                        repo, env, 30, 1240, sidecar_file_limit=65536)
             ci_verify_sdk_profile_sidecar(profile_original)
             binaries = {}
-            groups = (("sdk-daemon-cli", sdk, ["-p", "semwright-daemon", "-p", "semwright-cli", "--bins"], ("semwright", "semwrightd"), 480),
-                      ("sdk-sandbox", sdk, ["-p", "semwright-plugin-host", "--bin", "semwright-sandbox"], ("semwright-sandbox",), 120),
-                      ("product-provider", repo, ["-p", "motionwright-native", "--bin", "motionwright-native-provider"], ("motionwright-native-provider",), 300))
-            for group_index, (label, cwd, selected, roles, seconds) in enumerate(groups):
+            groups = (("sdk-daemon-cli", sdk, ["-p", "semwright-daemon", "-p", "semwright-cli", "--bins"], ("semwright", "semwrightd"), 480, 1),
+                      ("sdk-sandbox", sdk, ["-p", "semwright-plugin-host", "--bin", "semwright-sandbox"], ("semwright-sandbox",), 120, 1),
+                      ("product-provider", repo, ["-p", "motionwright-native", "--bin", "motionwright-native-provider"], ("motionwright-native-provider",), 300, 0))
+            for group_index, (label, cwd, selected, roles, seconds, optimization) in enumerate(groups):
                 target = sdk / "target" if cwd == sdk else root / "target"
                 build_env = dict(env, CARGO_TARGET_DIR=str(target))
                 reserve = sum(row[4] for row in groups[group_index + 1:]) + 60 + 360 + CI_TAIL_SECONDS
-                # Build compact development executables before retaining their
-                # complete original bytes. Unoptimized binaries plus the Host's
-                # second provider copy exceeded the fixed private allocation.
+                # Keep the completed SDK binaries compact while preserving the
+                # provider's prior unoptimized development build: optimizing its
+                # isolated dependency tree exceeded its existing 300 s limit.
+                # Retain every original, including the Host's second provider.
                 # Keep development assertions and overflow checks enabled; the
                 # job clock, stream bounds, 240 MiB custody cap and 64 MiB Native
                 # remainder are unchanged. No retained binary is stripped or
@@ -1806,7 +1807,7 @@ def ci_produce_originals(repo, root, namespace, evidence):
                 raw = ci_command(evidence, label, ["cargo", "build", "--locked", "--jobs", "1", "--message-format=json",
                     "--config", "profile.dev.debug=0",
                     "--config", 'profile.dev.strip="symbols"',
-                    "--config", "profile.dev.opt-level=1",
+                    "--config", f"profile.dev.opt-level={optimization}",
                     "--config", "profile.dev.debug-assertions=true",
                     "--config", "profile.dev.overflow-checks=true", *selected], cwd, build_env, seconds, reserve)
                 messages = [json.loads(line) for line in raw.splitlines() if line]
