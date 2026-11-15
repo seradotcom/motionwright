@@ -350,6 +350,9 @@ def validate_candidate(value, args, artifact):
 
 READ_UI_DIAGNOSTIC_BYTES = 8 * 1024
 READ_UI_CENSUS_CALLS = 16
+EDITOR_TITLE_ROLES = ("text", "static", "label", "heading")
+EDITOR_REVISION_ROLES = ("text", "static", "label", "status")
+EDITOR_TEXT_ROLES = frozenset(EDITOR_TITLE_ROLES + EDITOR_REVISION_ROLES)
 
 
 class _EditorCensusStopped(Exception):
@@ -411,8 +414,8 @@ class EditorReadDiagnostics:
                 scan["markers"][label] += int(view.name == name)
         accepted_shape = (visible and "editable" not in view.states
                           and "EditableText" not in view.interfaces
-                          and ((view.role in ("text", "static", "label")
-                                and view.name in self.expected.values())
+                          and ((view.role in EDITOR_TITLE_ROLES and view.name == self.expected["title"])
+                               or (view.role in EDITOR_REVISION_ROLES and view.name == self.expected["revision"])
                                or (view.role == "button"
                                    and view.name in ("Open project library", "Timeline"))))
         if not accepted_shape and (not view.name or view.name in self.expected.values()):
@@ -550,7 +553,8 @@ class EditorReadBridge(accessible.AtspiBridge):
 
     def __init__(self, api, *, deadline, glib, expected_texts):
         super().__init__(api, deadline=deadline, glib=glib)
-        self.roles.update({api.Role.STATIC: "static", api.Role.LABEL: "label"})
+        self.roles.update({api.Role.STATIC: "static", api.Role.LABEL: "label",
+                           api.Role.HEADING: "heading", api.Role.STATUS_BAR: "status"})
         self.expected_texts = frozenset(expected_texts)
         self.read_diagnostics = EditorReadDiagnostics(expected_texts)
 
@@ -576,15 +580,15 @@ class EditorReadBridge(accessible.AtspiBridge):
         state = self.call(node.get_state_set)
         states = frozenset(k for k, v in self.states.items() if state.contains(v))
         visible = accessible.VISIBLE <= states and "defunct" not in states
-        named = role in ("dialog", "entry", "text", "button", "static", "label")
+        named = role in ("dialog", "entry", "button") or role in EDITOR_TEXT_ROLES
         name = self.call(node.get_name) if visible and named else ""
-        read_text_role = role in ("text", "static", "label")
+        read_text_role = role in EDITOR_TEXT_ROLES
         relevant_text = (read_text_role and "editable" not in states
                          and (name in self.expected_texts or not name))
         relevant_button = role == "button" and name in ("Open project library", "Timeline")
         interfaces = (frozenset(self.call(node.get_interfaces))
                       if visible and (relevant_text or relevant_button) else frozenset())
-        # Some static objects expose their actual contents only through Text.
+        # Semantic headings/status and static objects may expose contents only through Text.
         # Never substitute the requested title or revision for a missing value.
         if relevant_text and not name and "Text" in interfaces and "EditableText" not in interfaces:
             count = self.call(self.api.Text.get_character_count, node)
@@ -622,7 +626,8 @@ def select_reopened_view(bridge, pid, revision, title=TITLE):
     # of the original library/title/revision/button failure order.
     candidates = {
         label: [view for view in visible if view.name == name
-                and (view.role == "button" if button else view.role in ("text", "static", "label"))
+                and (view.role == "button" if button else
+                     view.role in (EDITOR_TITLE_ROLES if label == "title" else EDITOR_REVISION_ROLES))
                 and "editable" not in view.states and "EditableText" not in view.interfaces]
         for label, name, button in requests
     }

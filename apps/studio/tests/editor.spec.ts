@@ -25,6 +25,32 @@ test("editor exposes real workspaces and browser-demo mutations", async ({ page 
   await page.screenshot({ path: "test-results/motionwright-editor.png", fullPage: true });
 });
 
+test("project heading and revision remain visible in compact editor windows", async ({ page }, testInfo) => {
+  await page.goto("/");
+  const header = page.locator(".command-bar");
+  const title = header.getByRole("heading", { level: 1, name: fixtureBootstrap.project.title, exact: true });
+  const revision = header.getByRole("status");
+  for (const width of [1440, 1024, 860]) {
+    await page.setViewportSize({ width, height: 768 });
+    await expect(title).toBeVisible();
+    await expect(revision).toBeVisible();
+    await expect(revision).toHaveText("r" + fixtureBootstrap.project.revision);
+    await expect(title).toBeInViewport({ ratio: 1 });
+    await expect(revision).toBeInViewport({ ratio: 1 });
+    const bounds = await title.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.width).toBeGreaterThan(0);
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+  }
+  await page.screenshot({ path: testInfo.outputPath("project-context-860.png") });
+  await page.getByRole("button", { name: "Brief", exact: true }).click();
+  await page.getByLabel("Project title").fill("Renamed compact project");
+  await page.getByRole("button", { name: "Save title" }).click();
+  await expect(header.getByRole("heading", { level: 1, name: "Renamed compact project", exact: true })).toBeVisible();
+  await expect(revision).toHaveText("r13");
+});
+
 test("renderer and locks mutate the same visible project revision", async ({ page }) => {
   await page.goto("/");
   const renderer = page.getByLabel("Renderer", { exact: true });

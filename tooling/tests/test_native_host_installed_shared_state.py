@@ -1011,7 +1011,7 @@ class EditorReadbackTests(unittest.TestCase):
             self.role, self.name, self.pid_value = role, name, pid
             self.text = name if text is None else text
             self.states = {"VISIBLE", "SHOWING", "ENABLED", "SENSITIVE"}
-            self.interfaces = {"Text"} if role in ("STATIC", "LABEL", "TEXT") else set()
+            self.interfaces = {"Text"} if role in ("STATIC", "LABEL", "TEXT", "HEADING", "STATUS_BAR") else set()
             self.nodes, self.owner, self.cache_mask = [], self, None
 
         def get_role(self):
@@ -1062,7 +1062,7 @@ class EditorReadbackTests(unittest.TestCase):
 
         context.pending = lambda: bool(context.actions)
         context.iteration = iterate
-        roles = ("DIALOG", "ENTRY", "TEXT", "PUSH_BUTTON", "STATIC", "LABEL")
+        roles = ("DIALOG", "ENTRY", "TEXT", "PUSH_BUTTON", "STATIC", "LABEL", "HEADING", "STATUS_BAR")
         states = ("VISIBLE", "SHOWING", "ENABLED", "SENSITIVE", "EDITABLE", "DEFUNCT")
         api = SimpleNamespace(
             Role=SimpleNamespace(**{k: k for k in roles}),
@@ -1084,6 +1084,63 @@ class EditorReadbackTests(unittest.TestCase):
         self.assertEqual(witnesses["revision"]["name"], "r0")
         self.assertEqual(bridge.view(nodes[0]).interfaces, frozenset({"Text"}))
         self.assertEqual(desktop.cache_mask, 7)
+
+    def test_semantic_heading_and_status_read_actual_named_and_unnamed_values(self):
+        for unnamed in (False, True):
+            with self.subTest(unnamed=unnamed):
+                bridge, _, _, nodes, _ = self.fixture()
+                nodes[0].role, nodes[1].role = "HEADING", "STATUS_BAR"
+                if unnamed:
+                    nodes[0].name = nodes[1].name = ""
+                witnesses = installed.select_reopened_view(bridge, 700, 0)
+                self.assertEqual(witnesses["title"]["name"], installed.TITLE)
+                self.assertEqual(witnesses["revision"]["name"], "r0")
+                self.assertEqual(bridge.read_diagnostics.export()["last"]["candidates"],
+                                 {"title": 1, "revision": 1, "library": 1, "workspace": 1})
+
+    def test_semantic_roles_cannot_impersonate_another_project_field(self):
+        for index, role, code in ((0, "STATUS_BAR", "TITLE"), (1, "HEADING", "REVISION"),
+                                  (0, "SECTION", "TITLE"), (1, "SECTION", "REVISION")):
+            with self.subTest(index=index, role=role):
+                bridge, _, _, nodes, _ = self.fixture()
+                nodes[index].role = role
+                with self.assertRaisesRegex(installed.accessible.NotReady, "MISSING_REOPENED_" + code):
+                    installed.select_reopened_view(bridge, 700, 0)
+
+    def test_semantic_witnesses_keep_identity_visibility_and_readonly_requirements(self):
+        for index, role, field in ((0, "HEADING", "TITLE"), (1, "STATUS_BAR", "REVISION")):
+            for condition in ("hidden", "defunct", "editable", "editable-interface", "owner", "text"):
+                with self.subTest(role=role, condition=condition):
+                    bridge, _, _, nodes, _ = self.fixture()
+                    node = nodes[index]
+                    node.role = role
+                    expected = "MISSING_REOPENED_" + field
+                    if condition == "hidden":
+                        node.states.remove("SHOWING")
+                    elif condition == "defunct":
+                        node.states.add("DEFUNCT")
+                    elif condition == "editable":
+                        node.states.add("EDITABLE")
+                    elif condition == "editable-interface":
+                        node.interfaces.add("EditableText")
+                    elif condition == "owner":
+                        node.owner = self.Node("APPLICATION", pid=701)
+                        expected = "UI_WITNESS_OWNER_CHANGED"
+                    else:
+                        node.text = "different retained text"
+                        expected = "UI_NAME_AND_TEXT_DISAGREE"
+                    with self.assertRaisesRegex((installed.ScenarioError, installed.accessible.ProbeError), expected):
+                        installed.select_reopened_view(bridge, 700, 0)
+
+    def test_semantic_text_never_uses_the_requested_value_as_a_fallback(self):
+        for index, role, field in ((0, "HEADING", "TITLE"), (1, "STATUS_BAR", "REVISION")):
+            for content in ("", "x" * 257, "unrelated visible content"):
+                with self.subTest(role=role, bytes=len(content)):
+                    bridge, _, _, nodes, _ = self.fixture()
+                    node = nodes[index]
+                    node.role, node.name, node.text = role, "", content
+                    with self.assertRaisesRegex(installed.accessible.NotReady, "MISSING_REOPENED_" + field):
+                        installed.select_reopened_view(bridge, 700, 0)
 
     def test_hidden_defunct_editable_and_entry_nodes_cannot_supply_title(self):
         for condition in ("hidden", "defunct", "editable", "editable-interface", "entry"):

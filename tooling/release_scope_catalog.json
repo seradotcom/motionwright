@@ -21472,7 +21472,7 @@
     },
     {
       "path": ".github/workflows/package-candidate.yml",
-      "sha256": "598f4046475735c6d33b47f08e190e39849166b292267f59e530c706aa3114b5",
+      "sha256": "e037daebf31fa3c4c02f8df4b7630491a0a3f11d62e69d543f1139b2d3dcf067",
       "preamble_sha256": "dc89698786826d32ae88e2ee99d8cd27fb54b086c1f0f159eb23836cb7914205",
       "evidence_class": "package_source_installed_and_provenance",
       "purpose": "Exact-source candidate packages and provenance, separately guarded Windows/NSIS source, compile/lifecycle and Linux first-use scopes. The all option covers its named package lane, not complete release readiness.",
@@ -21841,7 +21841,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": "receipt-policy",
           "strategy": null,
-          "source_sha256": "541aa3748576d5b07b358f21c5c2c2103f1b8b7ba7b452e8c1d723b9d850468b",
+          "source_sha256": "85673477c3cb2ccea980daf4195738a68376c45809e3868f32d4088e0ced83d5",
           "instance_sets": {
             "linux-first-use-source": [
               {}
@@ -21872,7 +21872,7 @@
               "name": "Verify exact installed Native pre-effect controls in Ubuntu without any Native dispatch",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "a5ea3e5143d8211e22c82cf2b4ed2d39f48a11156dced5e28e779853a8e64466",
+              "source_block_sha256": "bda4cdf05c27c912a4f6f405de40807609b55dbfd20e4811bfb4ffd41644b8fc",
               "api_binding": "EXPLICIT_NAME"
             },
             {

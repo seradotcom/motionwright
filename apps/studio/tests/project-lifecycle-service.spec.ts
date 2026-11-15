@@ -301,6 +301,14 @@ test("real pagination preserves all identities and library keyboard focus surviv
   expect(bounds!.y).toBeGreaterThanOrEqual(0); expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(768);
   await button(page, "Close project library").click({ trial: true });
   await page.screenshot({ path: testInfo.outputPath("library-25-projects-1024.png") });
+  await button(page, "Close project library").click();
+  await expect(dialog(page)).not.toBeVisible();
+  const header = page.locator(".command-bar");
+  await expect(header.getByRole("heading", { level: 1, name: selected.title, exact: true })).toBeVisible();
+  await expect(header.getByRole("status")).toHaveText("r0");
+  await expect(header.getByRole("status")).toBeVisible();
+  await expect(header.getByRole("heading", { level: 1, name: selected.title, exact: true })).toBeInViewport({ ratio: 1 });
+  await expect(header.getByRole("status")).toBeInViewport({ ratio: 1 });
   expect(calls(service, "create_project")).toHaveLength(25);
   for (const original of projects) expect(await service.project(original.id)).toEqual(original);
 });

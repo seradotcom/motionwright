@@ -236,7 +236,9 @@ textarea:focus-visible {
   letter-spacing: -0.01em;
 }
 
-.brand-copy span {
+.brand-copy .project-title {
+  margin: 0;
+  font-weight: 400;
   min-width: 0;
   max-width: 290px;
   color: var(--muted);
@@ -2525,10 +2527,18 @@ select:focus {
   }
 
   .command-bar {
-    grid-template-columns: minmax(220px, 1fr) auto;
+    grid-template-columns: minmax(160px, 1fr) auto auto;
+    column-gap: 8px;
   }
 
-  .project-context {
+  .brand-copy {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+  }
+
+  .project-context .branch-chip,
+  .project-context .status-pill {
     display: none;
   }
 
@@ -2557,7 +2567,6 @@ select:focus {
     grid-template-columns: 44px minmax(0, 1fr);
   }
 
-  .brand-copy span,
   .sdk-chip {
     display: none;
   }

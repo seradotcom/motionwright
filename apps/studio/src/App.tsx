@@ -2475,12 +2475,12 @@ export default function App() {
           <div className="brand-mark">MW</div>
           <div className="brand-copy">
             <strong>Motionwright</strong>
-            <span>{project.title}</span>
+            <h1 className="project-title">{project.title}</h1>
           </div>
         </div>
         <div className="project-context">
           <span className="branch-chip"><GitBranch size={13} /> {project.branches.find((branch) => branch.id === project.active_branch)?.name ?? "main"}</span>
-          <span className="revision-chip">r{project.revision}</span>
+          <output className="revision-chip">r{project.revision}</output>
           <span className={"status-pill status-" + project.state}>{stateLabel(project.state)}</span>
         </div>
         <div className="command-actions">
