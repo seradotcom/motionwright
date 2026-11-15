@@ -727,6 +727,15 @@ class InstalledCiPriorCapacityTests(PrivateScenarioCase):
         self.assertIn('ci_copy_original(binary, copied, 256 * 1024 * 1024, expected=identity)', actual)
         self.assertEqual(installed.CI_PRIVATE_BYTES, 240 * 1024 * 1024)
         self.assertEqual(installed.CI_FUTURE_PRIVATE_BYTES, 64 * 1024 * 1024)
+        # Original 43679808311: 14 command closure JSONs at most 1,068 B;
+        # every closure retains >100x measured headroom and fails closed.
+        self.assertEqual(installed.CI_COMMAND_CLOSURE_BYTES, 128 * 1024)
+        self.assertGreater(installed.CI_COMMAND_CLOSURE_BYTES, 100 * 1068)
+        self.assertEqual(installed.CI_COMMAND_RECORD_BYTES, 65536)
+        self.assertEqual(installed.CI_PRODUCER_CLOSE_BYTES, 1024 * 1024)
+        self.assertEqual(
+            14 * (1024 * 1024 - installed.CI_COMMAND_CLOSURE_BYTES),
+            12 * 1024 * 1024 + 256 * 1024)
         self.assertEqual(installed.CI_COMMAND_STREAM_BYTES["sdk-daemon-cli"], 768 * 1024)
         self.assertEqual(installed.CI_COMMAND_STREAM_BYTES["sdk-sandbox"], 256 * 1024)
         self.assertEqual(installed.CI_COMMAND_STREAM_BYTES["product-provider"], 512 * 1024)

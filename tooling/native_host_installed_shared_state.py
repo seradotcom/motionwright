@@ -950,7 +950,12 @@ CI_CAPACITY_JOURNAL_BYTES = 1024 * 1024
 CI_PRODUCER_CLOSE_BYTES = 1024 * 1024
 CI_PRODUCER_CLOSE_FILES = 8
 CI_COMMAND_RECORD_BYTES = 65536
-CI_COMMAND_CLOSURE_BYTES = 1024 * 1024
+# Exactly 14 authentic installed Native command closure originals in
+# 43679808311 measured 447..1068 bytes each. Their old 1 MiB immutable
+# reservation consumed 14 MiB before Native could start. Hold 128 KiB each,
+# >100x the greatest original; an oversized closure still fails closed
+# without touching the 240 MiB global or 64 MiB future Native budget.
+CI_COMMAND_CLOSURE_BYTES = 128 * 1024
 CI_PIPE_BYTES = 65536
 CI_OVERFLOW_BYTES = 2 * CI_PIPE_BYTES
 # These are predeclared suballocations, not observations of future outputs.
