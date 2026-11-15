@@ -106,6 +106,16 @@ class InventoryFilesystemTests(unittest.TestCase):
         return inventory.compose(original or inputs(kind),
                                  [inventory.observe_tree(self.payload, "payload")])
 
+    def dmg_roots(self):
+        # Actual temporary directories, not a mounted DMG or process receipt.
+        app = self.payload / "Motionwright.app"
+        (app / "empty").mkdir(parents=True)
+        (app / "file").write_bytes(b"abcd")
+        copied = self.base / "copied.app"
+        shutil.copytree(app, copied)
+        return [inventory.observe_tree(self.payload, "volume"),
+                inventory.observe_tree(copied, "application")]
+
     def test_actual_member_set_includes_empty_directories_empty_files_and_native_header(self):
         (self.payload / "empty-directory").mkdir()
         self.write("empty-file", b"")
@@ -260,6 +270,84 @@ class InventoryFilesystemTests(unittest.TestCase):
             inventory.compose(inputs("dmg"),
                               [roots[0], inventory.observe_tree(copied, "application")])
 
+    def test_dmg_copy_root_cannot_alias_the_original_application(self):
+        roots = self.dmg_roots()
+        report = inventory.compose(inputs("dmg"), roots)
+        alias = inventory.observe_tree(self.payload / "Motionwright.app", "application")
+        with self.assertRaisesRegex(inventory.InventoryError, "copy_root_aliases_source"):
+            inventory.compose(inputs("dmg"), [roots[0], alias])
+        report["roots"][0] = alias
+        with self.assertRaisesRegex(inventory.InventoryError, "copy_root_aliases_source"):
+            inventory.validate(report)
+
+    def test_dmg_copy_root_permissions_are_part_of_the_comparison(self):
+        roots = self.dmg_roots()
+        report = inventory.compose(inputs("dmg"), roots)
+        self.assertEqual(report["format_observation"]["application_root_permissions"],
+                         "MATCH_OBSERVED_SOURCE")
+        # Corrupt retained metadata; this does not emulate macOS chmod behavior.
+        roots[1]["root_stat"]["st_mode"] ^= 0o200
+        with self.assertRaisesRegex(inventory.InventoryError, "copy_root_permissions_differ"):
+            inventory.compose(inputs("dmg"), roots)
+        with self.assertRaisesRegex(inventory.InventoryError, "copy_root_permissions_differ"):
+            inventory.validate(report)
+
+    def test_dmg_namespace_cannot_promote_mount_or_detach_observation(self):
+        report = inventory.compose(inputs("dmg"), self.dmg_roots())
+        expected = {"readonly_mount": "NOT_OBSERVED", "mount_device_identity": "NOT_OBSERVED",
+                    "detach": "NOT_OBSERVED", "process_subtree_closure": "NOT_VERIFIED"}
+        for key, value in expected.items():
+            self.assertEqual(report["format_observation"][key], value)
+            changed = copy.deepcopy(report)
+            changed["format_observation"][key] = "PASS"
+            with self.subTest(field=key), self.assertRaisesRegex(
+                    inventory.InventoryError, "relations_or_claims_changed"):
+                inventory.validate(changed)
+        for code in ("DMG_READONLY_MOUNT_NOT_OBSERVED", "DMG_MOUNT_DEVICE_IDENTITY_NOT_BOUND",
+                     "DMG_DETACH_NOT_OBSERVED"):
+            self.assertIn(code, [row["code"] for row in report["gaps"]])
+            changed = copy.deepcopy(report)
+            changed["gaps"] = [row for row in changed["gaps"] if row["code"] != code]
+            with self.subTest(gap=code), self.assertRaisesRegex(
+                    inventory.InventoryError, "relations_or_claims_changed"):
+                inventory.validate(changed)
+
+    def test_dmg_cannot_relabel_linux_shaped_receipts_as_mount_custody(self):
+        roots = self.dmg_roots()
+        report = inventory.compose(inputs("dmg"), roots)
+        # Inert byte identities test refusal only; no process is represented.
+        identity = inventory.digest(b"inert unexecuted receipt fixture")
+        forged = {"status": "DIRECT_CAPTURED_EXTRACTION", "input": identity,
+                  "operations": [{"label": "extract", **{key: identity for key in (
+                      "request", "completion", "stdout", "stderr", "subtree", "binding", "closure")}}]}
+        with self.assertRaisesRegex(inventory.InventoryError, "dmg_mount_custody_unavailable"):
+            inventory.compose(inputs("dmg"), roots, custody=forged)
+        report["custody"] = forged
+        with self.assertRaisesRegex(inventory.InventoryError, "dmg_mount_custody_unavailable"):
+            inventory.validate(report)
+
+    def test_dmg_detached_consumer_refuses_promoted_claim_with_matching_digest(self):
+        report = inventory.compose(inputs("dmg"), self.dmg_roots())
+        report["format_observation"]["detach"] = "OBSERVED"
+        output = self.base / "retained-originals"
+        output.mkdir()
+        raw = inventory.capture.encoded(report)
+        (output / "inventory.json").write_bytes(raw)
+        with mock.patch.object(inventory, "authenticate_inputs") as authenticate:
+            with self.assertRaisesRegex(inventory.InventoryError, "relations_or_claims_changed"):
+                inventory.consume(repo=self.base, source="1" * 40, kind="dmg",
+                                  artifact=self.base / "unread.dmg", receipt=self.base / "unread.json",
+                                  directory=output, expected_sha256=inventory.capture.sha(raw))
+            authenticate.assert_not_called()
+        self.assertEqual((output / "inventory.json").read_bytes(), raw)
+
+    def test_dmg_volume_and_copy_share_the_aggregate_byte_limit(self):
+        roots = self.dmg_roots()
+        self.assertEqual(sum(root["file_bytes"] for root in roots), 8)
+        with mock.patch.object(inventory, "MAX_TOTAL", 7):
+            with self.assertRaisesRegex(inventory.InventoryError, "budget"):
+                inventory.compose(inputs("dmg"), roots)
+
     def test_dmg_same_size_changed_copy_is_rejected(self):
         app = self.payload / "Motionwright.app"
         app.mkdir()
@@ -271,7 +359,7 @@ class InventoryFilesystemTests(unittest.TestCase):
             inventory.compose(inputs("dmg"), [inventory.observe_tree(self.payload, "volume"),
                                               inventory.observe_tree(copied, "application")])
 
-    def test_fixed_extraction_commands_preserve_one_operation_and_capture_dmg_detach(self):
+    def test_fixed_extraction_commands_preserve_linux_operations_and_refuse_dmg(self):
         artifact = self.base / "candidate"
         work = self.base / "fresh"
         roots, commands = inventory._layout("deb", artifact, work)
@@ -280,9 +368,8 @@ class InventoryFilesystemTests(unittest.TestCase):
         self.assertEqual(roots, {"payload": work / "payload"})
         _, commands = inventory._layout("appimage", artifact, work)
         self.assertEqual(commands[0][1], [str(artifact), "--appimage-extract"])
-        _, commands = inventory._layout("dmg", artifact, work)
-        self.assertEqual([row[0] for row in commands], ["attach", "copy", "detach"])
-        self.assertIn("-readonly", commands[0][1])
+        with self.assertRaisesRegex(inventory.InventoryError, "full_process_closure_unavailable"):
+            inventory._layout("dmg", artifact, work)
         with self.assertRaisesRegex(inventory.InventoryError, "no_nsis_install_authority"):
             inventory._layout("nsis", artifact, work)
 
@@ -316,10 +403,16 @@ class InventoryFilesystemTests(unittest.TestCase):
 
     def test_macos_extraction_is_refused_before_effects_without_kernel_closure(self):
         work, output = self.base / "never-mounted", self.base / "never-inventoried"
-        with self.assertRaisesRegex(inventory.InventoryError, "full_process_closure_unavailable"):
-            inventory.extract_and_observe(
-                repo=self.base, source="1" * 40, kind="dmg", artifact=self.base / "not-executed",
-                receipt=self.base / "not-read", work=work, directory=output)
+        with mock.patch.object(inventory, "_profile") as profile, \
+             mock.patch.object(inventory, "_layout") as commands, \
+             mock.patch.object(inventory.capture, "new_directory") as create:
+            with self.assertRaisesRegex(inventory.InventoryError, "full_process_closure_unavailable"):
+                inventory.extract_and_observe(
+                    repo=self.base, source="1" * 40, kind="dmg", artifact=self.base / "not-executed",
+                    receipt=self.base / "not-read", work=work, directory=output)
+            profile.assert_not_called()
+            commands.assert_not_called()
+            create.assert_not_called()
         self.assertFalse(work.exists())
         self.assertFalse(output.exists())
 

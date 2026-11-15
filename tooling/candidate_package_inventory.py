@@ -391,10 +391,19 @@ def _format_observation(kind, roots, nsis_listing):
                 "squashfs_container_metadata": "NOT_INVENTORIED"}
     if kind == "dmg":
         volume, application = mapping["volume"], mapping["application"]
-        appdirs = [m["path"] for m in volume["members"] if m["kind"] == "directory"
-                   and "/" not in m["path"] and m["path"].endswith(".app")]
-        require(len(appdirs) == 1, "inventory_dmg_one_application_required")
-        prefix = appdirs[0] + "/"
+        applications = [m for m in volume["members"] if m["kind"] == "directory"
+                        and "/" not in m["path"] and m["path"].endswith(".app")]
+        require(len(applications) == 1, "inventory_dmg_one_application_required")
+        source_application = applications[0]
+        source_root, copied_root = source_application["stat"], application["root_stat"]
+        # A second scan of the original directory is not a copied application.
+        # Compare recorded identity and permissions; copying changes inodes/times.
+        require((source_root["st_dev"], source_root["st_ino"])
+                != (copied_root["st_dev"], copied_root["st_ino"]),
+                "inventory_dmg_copy_root_aliases_source")
+        require(stat.S_IMODE(source_root["st_mode"]) == stat.S_IMODE(copied_root["st_mode"]),
+                "inventory_dmg_copy_root_permissions_differ")
+        prefix = source_application["path"] + "/"
         def comparable(row, path):
             # ditto copies bytes, link literals and file permissions; copied
             # inode/timestamps are not source volume identities.
@@ -409,9 +418,17 @@ def _format_observation(kind, roots, nsis_listing):
         actual = [comparable(m, m["path"]) for m in application["members"]]
         require(expected == actual, "inventory_dmg_copy_namespace_or_bytes_differ")
         return {"volume_namespace": "OBSERVED", "application_namespace": "OBSERVED",
-                "volume_application_directory": appdirs[0],
+                "volume_application_directory": source_application["path"],
                 "application_copy": "ALL_OBSERVED_MEMBERS_BYTE_AND_LINK_EXACT",
+                "application_root_permissions": "MATCH_OBSERVED_SOURCE",
+                "application_copy_identity": "DISTINCT_RECORDED_ROOT_IDENTITY",
                 "volume_members_outside_application": len(volume["members"]) - len(expected) - 1,
+                # A directory scan observes none of the mount lifecycle. There
+                # is no admitted Darwin owner or caller flag that can grant it.
+                "readonly_mount": "NOT_OBSERVED",
+                "mount_device_identity": "NOT_OBSERVED",
+                "detach": "NOT_OBSERVED",
+                "process_subtree_closure": "NOT_VERIFIED",
                 "dmg_container_metadata": "NOT_INVENTORIED"}
     if nsis_listing is not None:
         selected = [r for r in mapping["application"]["members"]
@@ -474,6 +491,10 @@ def _derive(context, roots, origins, components, custody, nsis_listing):
         gaps.append({"code": "EXTRACTION_CUSTODY_NOT_OBSERVED", "members": []})
     if context["kind"] == "deb" and format_observation["control_namespace"] == "NOT_OBSERVED":
         gaps.append({"code": "DEB_CONTROL_NAMESPACE_NOT_OBSERVED", "members": []})
+    if context["kind"] == "dmg":
+        gaps.extend({"code": code, "members": []} for code in (
+            "DMG_READONLY_MOUNT_NOT_OBSERVED", "DMG_MOUNT_DEVICE_IDENTITY_NOT_BOUND",
+            "DMG_DETACH_NOT_OBSERVED"))
     if context["kind"] == "nsis":
         gaps.append({"code": "NSIS_LISTED_MEMBER_BYTES_NOT_ALL_OBSERVED", "members": []})
     return {
@@ -645,6 +666,7 @@ def validate(report):
     if custody["status"] == "NOT_OBSERVED":
         require(custody["input"] is None and custody["operations"] == [], "inventory_custody_unobserved")
     else:
+        require(context["kind"] != "dmg", "inventory_dmg_mount_custody_unavailable")
         file_identity(custody["input"])
         require(isinstance(custody["operations"], list) and 1 <= len(custody["operations"]) <= 3,
                 "inventory_operation_count")
@@ -715,14 +737,10 @@ def _layout(kind, artifact, work):
         # cannot establish the DEBIAN/control observation.
         return {"payload": work / "payload"}, [
             ("extract", ["/usr/bin/dpkg-deb", "--raw-extract", artifact, str(work / "payload")], work)]
-    require(kind == "dmg", "inventory_no_nsis_install_authority")
-    return {"volume": work / "mount", "application": work / "installed/Motionwright.app"}, [
-        ("attach", ["/usr/bin/hdiutil", "attach", "-readonly", "-nobrowse",
-                    "-mountpoint", str(work / "mount"), artifact], work),
-        ("copy", ["/usr/bin/ditto", str(work / "mount/Motionwright.app"),
-                  str(work / "installed/Motionwright.app")], work),
-        ("detach", ["/usr/bin/hdiutil", "detach", str(work / "mount"), "-quiet"], work),
-    ]
+    # Do not expose a dormant command recipe as an extraction fallback. A
+    # Darwin owner must establish real subtree and mount authority first.
+    require(kind != "dmg", "inventory_full_process_closure_unavailable")
+    raise InventoryError("inventory_no_nsis_install_authority")
 
 
 def _tool_identities(commands):

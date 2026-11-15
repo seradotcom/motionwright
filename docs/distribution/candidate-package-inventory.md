@@ -136,6 +136,71 @@ failure cleanup. No remount may be used to reconstruct an earlier observation.
 The existing flow does not gain inventory credit here. Extended attributes,
 resource forks and container metadata remain unverified as before.
 
+#### What the current DMG reader can establish
+
+The reader compares every recorded member of the selected application,
+including empty directories, bytes, link literals and permissions. It also
+requires the copied application root's permissions to match the source root
+and its recorded device/inode pair to differ. Scanning the original application
+twice cannot stand in for a copy. These checks describe the recorded directories;
+they do not authenticate a copy process or a mounted device.
+
+Both the producer and detached consumer derive these fixed limitations:
+
+| Field | Current value | Missing observation |
+| --- | --- | --- |
+| readonly_mount | NOT_OBSERVED | Kernel-backed read-only mount of the exact candidate |
+| mount_device_identity | NOT_OBSERVED | Binding between the original image, mount and device |
+| detach | NOT_OBSERVED | Original bounded detach and device/mount closure |
+| process_subtree_closure | NOT_VERIFIED | Authority and closure for the full operation subtree |
+
+The three corresponding DMG gap codes remain present alongside
+EXTRACTION_CUSTODY_NOT_OBSERVED. The consumer refuses edited claims or removed
+gaps, even when the supplied outer digest matches those edited bytes. DMG cannot
+borrow Linux extraction receipts or publish DIRECT_CAPTURED_EXTRACTION. The
+command-layout helper also refuses DMG; it exposes no dormant attach/copy/detach
+recipe that could become a fallback around the public extraction guard.
+An older retained inventory remains bound to its original source and consumer;
+never rewrite that original to satisfy a newer reader.
+
+#### Platform authority still required
+
+The source review on 2026-11-15 found no admitted Darwin owner in this contract.
+Apple's [XNU event definitions][xnu-event] explicitly mark NOTE_TRACK,
+NOTE_TRACKERR and NOTE_CHILD unsupported. A PID event or process-group signal
+does not provide the Linux subreaper/pidfd ownership used here. Apple's
+[setsid documentation][apple-setsid] permits eligible processes to create a new
+session/group, and [wait documentation][apple-wait] limits reaping to children.
+A direct-child exit or local ECHILD cannot establish closure of descendants
+that have been reparented. These references explain the absent contract; they
+are not a test of the target macOS kernel.
+
+Apple also documents [es_new_descendants_client][apple-es-descendants] for
+macOS 27.0. It observes the calling process's subtree without root or TCC, but
+requires the Endpoint Security client entitlement. This repository's package
+scope does not establish such an entitled owner. Its available contract has
+not demonstrated complete identity-bound termination and closure either.
+The [es_sync_client marker][apple-es-sync] is not an empty-subtree certificate:
+callbacks also run when the client is destroyed, or immediately for a null
+client. No account, entitlement, privilege or backend is provisioned by this
+unit, and no claim that all macOS custody mechanisms are impossible is made.
+
+Any later owner needs an independently reviewed pre-effect authority boundary,
+stable process/device identities, descendant tracking that detects loss or
+escape, bounded abort after parent loss, retained original streams, and a real
+whole-subtree closure witness. Mount closure remains a separate obligation.
+Preserve the existing 90-second total, stream and inventory caps. One original
+attach, copy and detach must share the reviewed bounded lifetime; retries,
+remounts and a fresh deadline per phase cannot replace missing evidence.
+Until that contract and authentic platform evidence exist, extraction stays
+refused before work-directory creation, tool lookup or process launch.
+
+[xnu-event]: https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/event.h
+[apple-setsid]: https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/setsid.2.html
+[apple-wait]: https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/wait.2.html
+[apple-es-descendants]: <https://developer.apple.com/documentation/endpointsecurity/es_new_descendants_client(_:_:).md>
+[apple-es-sync]: <https://developer.apple.com/documentation/endpointsecurity/es_sync_client(_:_:).md>
+
 ### NSIS: reuse the owned install and original static listing
 
 The common wrapper has no NSIS execution profile. After the existing single
