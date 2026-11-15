@@ -610,16 +610,25 @@ fn source_cut_scope(
     Ok((source, before, sha(&source_bytes), sha(&cut_bytes)))
 }
 
+struct ObservedNativeSource<'a> {
+    path: &'a Path,
+    sha256: &'a str,
+    bytes: &'a [u8],
+}
+
 fn import_observed_native_capsule_source(
     service: &StudioService,
     before: &Project,
     request_id: &str,
-    native_path: &Path,
-    observed_sha: &str,
-    observed_bytes: &[u8],
+    observed: ObservedNativeSource<'_>,
     spec: NativeCapsuleSourceSpec,
     returned_path: &Path,
 ) -> Result<motionwright_storage::ApplyOutcome> {
+    let ObservedNativeSource {
+        path: native_path,
+        sha256: observed_sha,
+        bytes: observed_bytes,
+    } = observed;
     require(
         !observed_bytes.is_empty()
             && lower_sha(observed_sha)
@@ -703,9 +712,11 @@ fn attach_native_source(
         &service,
         &before,
         &request_id,
-        native_path,
-        native_sha,
-        &native_bytes,
+        ObservedNativeSource {
+            path: native_path,
+            sha256: native_sha,
+            bytes: &native_bytes,
+        },
         spec.clone(),
         &receipt_path.with_extension("return.original.json"),
     )?;
@@ -1526,10 +1537,10 @@ fn alab_adopt_with_expected(
             || Ok(service.apply(project.id, &project.stamp(), &request, &change)?),
         )?;
     }
-    for index in 0..2 {
+    for (index, source_name) in ALAB_SOURCE_NAMES.iter().enumerate() {
         let request = format!("original:alab-source:media:{index}");
         let intent = motionwright_storage::FileImportIntent::Asset {
-            name: ALAB_SOURCE_NAMES[index].into(),
+            name: (*source_name).into(),
             media_type: "video/quicktime".into(),
         };
         project = alab_stage(
@@ -2078,17 +2089,27 @@ fn alab_verify_edited_assets(
     )
 }
 
+struct ReturnedCutFiles<'a> {
+    source: &'a Path,
+    preview: &'a Path,
+    raw: &'a Path,
+    native: &'a Path,
+}
+
 fn alab_commit_returned_cut(
     database: &Path,
     adoption_path: &Path,
-    source_path: &Path,
-    preview_path: &Path,
-    raw_path: &Path,
-    native_path: &Path,
+    files: ReturnedCutFiles<'_>,
     native_sha: &str,
     receipt_path: &Path,
     expected: &AlabExpected,
 ) -> Result<Value> {
+    let ReturnedCutFiles {
+        source: source_path,
+        preview: preview_path,
+        raw: raw_path,
+        native: native_path,
+    } = files;
     let source_bytes = read_regular(source_path, MAX_JSON)?;
     let source: Project = serde_json::from_slice(&source_bytes)?;
     let preview_bytes = read_regular(preview_path, MAX_JSON)?;
@@ -2431,16 +2452,25 @@ fn alab_edited_readback(
     )
 }
 
+struct PortableOwnerDestination<'a> {
+    bundle: &'a Path,
+    database: &'a Path,
+    receipt: &'a Path,
+}
+
 fn alab_edited_bundle(
     database: &Path,
     adoption_path: &Path,
     edit_receipt: &Path,
     expected_edit_sha: &str,
-    bundle: &Path,
-    destination: &Path,
-    receipt_path: &Path,
+    output: PortableOwnerDestination<'_>,
     expected: &AlabExpected,
 ) -> Result<Value> {
+    let PortableOwnerDestination {
+        bundle,
+        database: destination,
+        receipt: receipt_path,
+    } = output;
     let AlabEditedSource {
         service,
         original,
@@ -2618,16 +2648,20 @@ fn main() -> Result<()> {
     let result = match args.first().map(String::as_str) {
         Some("alab-returned-cut") if args.len() == 9 => alab_commit_returned_cut(
             &owned_path(&root,&args[1],true)?, &owned_path(&root,&args[2],true)?,
-            &owned_path(&root,&args[3],true)?, &owned_path(&root,&args[4],true)?,
-            &owned_path(&root,&args[5],true)?, &owned_path(&root,&args[6],true)?, &args[7],
+            ReturnedCutFiles {
+                source: &owned_path(&root,&args[3],true)?, preview: &owned_path(&root,&args[4],true)?,
+                raw: &owned_path(&root,&args[5],true)?, native: &owned_path(&root,&args[6],true)?,
+            }, &args[7],
             &owned_path(&root,&args[8],false)?, &alab_expected())?,
         Some("alab-returned-readback") if args.len() == 5 => alab_edited_readback(
             &owned_path(&root,&args[1],true)?, &owned_path(&root,&args[2],true)?,
             &owned_path(&root,&args[3],true)?, &args[4], &alab_expected())?,
         Some("alab-edited-bundle") if args.len() == 8 => alab_edited_bundle(
             &owned_path(&root,&args[1],true)?, &owned_path(&root,&args[2],true)?,
-            &owned_path(&root,&args[3],true)?, &args[4], &owned_path(&root,&args[5],false)?,
-            &owned_path(&root,&args[6],false)?, &owned_path(&root,&args[7],false)?, &alab_expected())?,
+            &owned_path(&root,&args[3],true)?, &args[4], PortableOwnerDestination {
+                bundle: &owned_path(&root,&args[5],false)?, database: &owned_path(&root,&args[6],false)?,
+                receipt: &owned_path(&root,&args[7],false)?,
+            }, &alab_expected())?,
         Some("alab-edited-portable-readback") if args.len() == 4 => alab_edited_portable_readback(
             &owned_path(&root,&args[1],true)?, &owned_path(&root,&args[2],true)?, &args[3], &alab_expected())?,
         Some("alab-adopt") if args.len() == 10 => {
@@ -3665,9 +3699,11 @@ mod tests {
                 &service,
                 &f.before,
                 &request,
-                &f.native_path,
-                &observed_sha,
-                &observed,
+                ObservedNativeSource {
+                    path: &f.native_path,
+                    sha256: &observed_sha,
+                    bytes: &observed,
+                },
                 native_source_spec(&f.before).unwrap(),
                 &result_path,
             )
@@ -3728,10 +3764,12 @@ mod tests {
             alab_commit_returned_cut(
                 &self.source_fixture.database,
                 &self.source_fixture.receipt,
-                &self.source_path,
-                &self.preview,
-                &self.raw,
-                &self.native,
+                ReturnedCutFiles {
+                    source: &self.source_path,
+                    preview: &self.preview,
+                    raw: &self.raw,
+                    native: &self.native,
+                },
                 &sha(&fs::read(&self.native)?),
                 &self.receipt,
                 &self.source_fixture.expected,
@@ -3839,9 +3877,11 @@ mod tests {
             &fixture.source_fixture.receipt,
             &fixture.receipt,
             &original_receipt_sha,
-            &bundle,
-            &destination,
-            &portable,
+            PortableOwnerDestination {
+                bundle: &bundle,
+                database: &destination,
+                receipt: &portable,
+            },
             &fixture.source_fixture.expected,
         )
         .unwrap();
