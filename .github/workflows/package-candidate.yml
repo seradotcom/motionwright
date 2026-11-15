@@ -689,10 +689,41 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends python3-gi gir1.2-atspi-2.0
+          sudo apt-get install -y --no-install-recommends python3-gi gir1.2-atspi-2.0 python3-cryptography
           /usr/bin/python3 -B -E -s tooling/ci_linux_atspi_binding_preflight.py \
             --source "$GITHUB_SHA" \
             --output "$RUNNER_TEMP/linux-first-use-atspi-binding/original.json"
+      - name: Verify exact installed Native pre-effect controls in Ubuntu without any Native dispatch
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          originals="$RUNNER_TEMP/linux-native-installed-source"
+          test ! -e "$originals"
+          mkdir -m 700 "$originals"
+          /usr/bin/python3 -B -E -s tooling/ci_test_runner.py \
+            --repo "$GITHUB_WORKSPACE" --pattern test_native_host_installed_shared_state.py \
+            --mode discovery --require-complete --timeout 60 --bounded-installed-capture \
+            --expected-source "$GITHUB_SHA" --report "$originals/native-controls.original.json"
+          /usr/bin/python3 -B -E -s - "$originals/native-controls.original.json" "$GITHUB_SHA" <<'PY_NATIVE_G1'
+          import json,sys
+          from pathlib import Path
+          data=json.loads(Path(sys.argv[1]).read_bytes())
+          assert data["status"]=="PASS" and data["executed_source_sha"]==sys.argv[2]
+          assert len(data["steps"])==1
+          counts=data["steps"][0]["counts"]
+          assert counts["tests_run"]==counts["passed"]==37
+          assert all(counts[key]==0 for key in ("failures","errors","skipped","expected_failures","unexpected_successes"))
+          print("native-profile-original-source-g1=PASS tests=37 native_effects=0")
+          PY_NATIVE_G1
+      - name: Preserve authenticated Native installed source-only originals
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-native-installed-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: ${{ runner.temp }}/linux-native-installed-source/
+          if-no-files-found: warn
+          retention-days: 30
       - name: Preserve original Ubuntu AT-SPI GI ABI check independently of source-gate roster
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
