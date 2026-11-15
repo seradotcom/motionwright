@@ -1796,18 +1796,19 @@ def ci_produce_originals(repo, root, namespace, evidence):
                 target = sdk / "target" if cwd == sdk else root / "target"
                 build_env = dict(env, CARGO_TARGET_DIR=str(target))
                 reserve = sum(row[4] for row in groups[group_index + 1:]) + 60 + 360 + CI_TAIL_SECONDS
-                # The authenticated original Semwright ELF retained 21.6 MB
-                # of .symtab/.strtab in a 50.1 MB executable. Cargo's native
-                # dev-profile symbol stripping removes non-runtime symbols
-                # BEFORE we retain the *exact executable* as original bytes.
-                # This prevents a needless CI_PRIVATE_CUSTODY_CAPACITY_BEFORE_WRITE
-                # without reducing 240 MiB private custody, the reserved 64 MiB
-                # scenario tail, or the existing 8 MiB per-stream log budgets.
-                # No post-copy mutation, independent "strip" command, or
-                # source binary identity downgrade is authorized.
+                # Build compact development executables before retaining their
+                # complete original bytes. Unoptimized binaries plus the Host's
+                # second provider copy exceeded the fixed private allocation.
+                # Keep development assertions and overflow checks enabled; the
+                # job clock, stream bounds, 240 MiB custody cap and 64 MiB Native
+                # remainder are unchanged. No retained binary is stripped or
+                # rewritten after its source-bound identity has been observed.
                 raw = ci_command(evidence, label, ["cargo", "build", "--locked", "--jobs", "1", "--message-format=json",
                     "--config", "profile.dev.debug=0",
-                    "--config", 'profile.dev.strip="symbols"', *selected], cwd, build_env, seconds, reserve)
+                    "--config", 'profile.dev.strip="symbols"',
+                    "--config", "profile.dev.opt-level=1",
+                    "--config", "profile.dev.debug-assertions=true",
+                    "--config", "profile.dev.overflow-checks=true", *selected], cwd, build_env, seconds, reserve)
                 messages = [json.loads(line) for line in raw.splitlines() if line]
                 need(messages[-1].get("reason") == "build-finished" and messages[-1].get("success") is True, "CI_CARGO_BUILD_TERMINAL")
                 for role in roles:
