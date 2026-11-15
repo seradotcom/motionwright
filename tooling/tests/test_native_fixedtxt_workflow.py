@@ -1198,8 +1198,8 @@ class FailedOutputCustodyTests(unittest.TestCase):
         tree = ast.parse(Path(__file__).read_text())
         count = sum(item.name.startswith("test_") for cls in tree.body if isinstance(cls, ast.ClassDef)
                     for item in cls.body if isinstance(item, ast.FunctionDef))
-        self.assertEqual(count, 45)
-        self.assertIn("'dotted:tooling.tests.test_native_fixedtxt_workflow':45", workflow)
+        self.assertEqual(count, 47)
+        self.assertIn("'dotted:tooling.tests.test_native_fixedtxt_workflow':47", workflow)
         self.assertIn("--pattern test_native_fixedtxt_workflow.py", workflow)
         self.assertIn("      - 'tooling/native_fixedtxt_workflow.py'", workflow)
         self.assertIn("      - 'tooling/tests/test_native_fixedtxt_workflow.py'", workflow)
@@ -1734,6 +1734,67 @@ class ReusedPreparationPathTests(unittest.TestCase):
             path.write_bytes(Path(fixed.__file__).read_bytes() + b"\\n")
             with self.assertRaisesRegex(fixed.FixedTxtRejected, "bounded_selected_source_digest"):
                 adapter.make_oracle(SimpleNamespace(__file__=str(path), need=fixed.need), SimpleNamespace())
+
+
+
+class ReusedObserverBundleTests(unittest.TestCase):
+    """A complete source roster must satisfy the independent overlay validator."""
+
+    def sources(self, root):
+        result = {key: {"path": str(root / "source" / (key + ".original"))}
+                  for key in ("template_film", "managed_project", "caption_source",
+                              "red_native", "measurement_protocol")}
+        result["project_files"] = [{"relative": "font.ttf",
+                                   "original": {"path": str(root / "source/project/font.ttf")}}]
+        return result
+
+    def test_reused_roster_carries_manifest_and_satisfies_original_overlay_contract(self):
+        import native_fixedtxt_session as serial
+        import native_fixedtxt_observer_overlay as overlay
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = self.sources(root)
+            before = copy.deepcopy(sources)
+            selected = serial.reused_source_input_names(sources, root)
+            self.assertEqual(sources, before)
+            self.assertIn("source-kit.original.zip", selected)
+            self.assertIn("source/project/font.ttf", selected)
+            descriptors = overlay.bundle_descriptors()
+            def plan(names):
+                return {"context": {"semwright_sha": "b" * 40},
+                        "arm_sources": {arm: {"source_sha": "b" * 40, "tree_sha": "c" * 40,
+                                              "native_source_sha256": digest}
+                                        for arm, digest in overlay.OBSERVED.items()},
+                        "members": [{"root": "inputs", "relative_path": name,
+                                     "role": "input-original", "maximum": desc["bytes"],
+                                     "expected_sha256": desc["sha256"]}
+                                    for name, desc in descriptors.items() if name in names]}
+            # The previous selection contains every source variant but omits
+            # the manifest. The original custody validator must still deny it.
+            with self.assertRaisesRegex(overlay.OverlayRejected, "observer_custody_original_missing"):
+                overlay.validate_bundle_plan(plan(set(overlay.BUNDLE_PATHS.values())))
+            self.assertTrue(overlay.validate_bundle_plan(plan(selected)))
+            self.assertIn(overlay.MANIFEST_PATH, selected)
+            self.assertEqual(set(descriptors) - selected, set())
+
+    def test_reused_source_and_asset_paths_stay_inside_the_original_input_root(self):
+        import native_fixedtxt_session as serial
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = self.sources(root)
+            outside = str(root.parent / "outside-original")
+            for key in ("template_film", "managed_project", "caption_source",
+                        "red_native", "measurement_protocol", "project_files"):
+                with self.subTest(key=key):
+                    changed = copy.deepcopy(sources)
+                    if key == "project_files":
+                        changed[key][0]["original"]["path"] = outside
+                        code = "fixedtxt-session-reused-asset-root"
+                    else:
+                        changed[key]["path"] = outside
+                        code = "fixedtxt-session-reused-source-root"
+                    with self.assertRaisesRegex(serial.SessionRejected, code):
+                        serial.reused_source_input_names(changed, root)
 
 
 if __name__ == '__main__':
