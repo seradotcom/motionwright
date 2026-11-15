@@ -2898,6 +2898,178 @@ class EditorMasterSourceControls(unittest.TestCase):
                 runner.verified_snapshot_expectations(changed, {})
 
 
+class RenderCategoryFocusTests(unittest.TestCase):
+    def fixture(self, *, focuses=True, selected=True, result=True):
+        events = []
+        ui = actions.AtspiSession.__new__(actions.AtspiSession)
+        ui.pid = 41
+        ui.journal = actions.ActionJournal(events.append, lambda: None)
+        dialog = row("app/6", name="Rendering", role="dialog", modal=False,
+                     editable=False, rect=[100, 100, 1100, 650])
+        tree = row("app/6/tree", role="tree", modal=False,
+                   editable=False, rect=[174, 144, 930, 373])
+        category = row("app/6/tree/3", name="Video with Alpha", role="table cell",
+                       modal=False, editable=False, rect=[196, 194, 906, 24])
+        rows = [dialog, tree, category]
+        ui.nodes = {}
+        selection = {"value": False}
+        for observed in rows:
+            node = Mock()
+            node.get_process_id.return_value = 41
+            node.get_name.return_value = observed["name"]
+            component = Mock()
+            component.get_extents.side_effect = lambda _, r=observed: SimpleNamespace(
+                x=r["rect"][0], y=r["rect"][1], width=r["rect"][2], height=r["rect"][3])
+            node.get_component_iface.return_value = component
+            node.get_state_set.return_value.contains.side_effect = (
+                lambda state: state == "SELECTED" and selection["value"])
+            ui.nodes[observed["key"]] = node
+        node = ui.nodes[category["key"]]
+        parent = ui.nodes[tree["key"]]
+        node.get_parent.return_value = parent
+        parent.get_component_iface.return_value.get_accessible_at_point.return_value = node
+        def snapshot():
+            ui.last_snapshot = {"complete": True, "rows": rows}
+            return rows
+        ui.tree = Mock(side_effect=snapshot)
+        def click(*_, **__):
+            category["focused"] = tree["focused"] = focuses
+            selection["value"] = selected
+            return SimpleNamespace(returncode=0 if result else 1, stdout=b"", stderr=b"")
+        ui.pointer_command = Mock(side_effect=click)
+        ui.api = SimpleNamespace(
+            CoordType=SimpleNamespace(SCREEN="SCREEN"),
+            StateType=SimpleNamespace(SELECTED="SELECTED", EXPANDED="EXPANDED"))
+        return ui, dialog, tree, category, events
+
+    def test_one_hit_tested_click_observes_current_cell_and_real_tree_focus(self):
+        ui, dialog, tree, category, events = self.fixture()
+        with patch.object(actions.x11_modal, "observe_parent", return_value={"window": 909}), \
+             patch.object(actions.subprocess, "run", ui.pointer_command):
+            self.assertEqual(
+                ui.focus_render_category("editor-before.focus-alpha", category, dialog), 909)
+            with self.assertRaises(actions.GuiRejected):
+                ui.focus_render_category("editor-before.focus-alpha", category, dialog)
+        ui.pointer_command.assert_called_once_with(
+            ["xdotool", "mousemove", "--sync", "649", "206",
+             "click", "--window", "909", "1"],
+            stdin=actions.subprocess.DEVNULL, capture_output=True, check=False, timeout=5)
+        self.assertEqual([e["state"] for e in events],
+                         ["INTENT", "OBSERVED", "REQUEST_RETURNED"])
+        self.assertEqual(events[0]["target"]["key"], category["key"])
+        ui.nodes[category["key"]].get_component_iface.return_value.grab_focus.assert_not_called()
+        ui.nodes[tree["key"]].get_component_iface.return_value.get_accessible_at_point.assert_called_with(
+            649, 206, "SCREEN")
+
+    def test_unbound_hidden_foreign_or_outside_category_never_sends_input(self):
+        for change in ("route", "hidden", "foreign", "outside", "dialog", "parent", "hit"):
+            with self.subTest(change=change):
+                ui, dialog, tree, category, events = self.fixture()
+                step = "editor-before.focus-alpha"
+                if change == "route":
+                    step = "unbound"
+                elif change == "hidden":
+                    category["visible"] = False
+                elif change == "foreign":
+                    ui.nodes[category["key"]].get_process_id.return_value = 42
+                elif change == "outside":
+                    category["rect"][0] = 1200
+                elif change == "dialog":
+                    dialog["name"] = "Save As"
+                elif change == "parent":
+                    ui.nodes[category["key"]].get_parent.return_value = Mock()
+                else:
+                    ui.nodes[tree["key"]].get_component_iface.return_value.get_accessible_at_point.return_value = Mock()
+                with patch.object(actions.x11_modal, "observe_parent",
+                                  return_value={"window": 909}), \
+                     patch.object(actions.subprocess, "run", ui.pointer_command), \
+                     self.assertRaises(actions.GuiRejected):
+                    ui.focus_render_category(step, category, dialog)
+                ui.pointer_command.assert_not_called()
+                self.assertFalse(events)
+
+    def test_changed_window_or_geometry_after_intent_blocks_before_click(self):
+        for change in ("window", "geometry"):
+            with self.subTest(change=change):
+                ui, dialog, tree, category, events = self.fixture()
+                calls = []
+                def observe(**_):
+                    calls.append(None)
+                    if change == "geometry" and len(calls) == 1:
+                        interface = ui.nodes[category["key"]].get_component_iface.return_value
+                        interface.get_extents.side_effect = None
+                        interface.get_extents.return_value = SimpleNamespace(
+                            x=197, y=194, width=906, height=24)
+                    return {"window": 910 if change == "window" and len(calls) == 2 else 909}
+                with patch.object(actions.x11_modal, "observe_parent", side_effect=observe), \
+                     patch.object(actions.subprocess, "run", ui.pointer_command), \
+                     self.assertRaises(actions.GuiUncertain):
+                    ui.focus_render_category("editor-before.focus-alpha", category, dialog)
+                ui.pointer_command.assert_not_called()
+                self.assertTrue(ui.journal.blocked)
+                self.assertEqual(events[-1]["state"], "ERROR_OR_UNKNOWN")
+        # Another window from the same process is still not Rendering.
+        ui, _, _, _, events = self.fixture()
+        with patch.object(actions.subprocess, "run", return_value=SimpleNamespace(
+                stdout="910", returncode=0)) as command, \
+             self.assertRaisesRegex(actions.GuiRejected, "native_gui_keyboard_window_not_bound"):
+            ui.key("editor-before.expand-alpha-right", 0xFF53, expected_window=909)
+        command.assert_called_once()
+        self.assertEqual(command.call_args.args[0], ["xdotool", "getwindowfocus"])
+        self.assertFalse(events)
+
+    def test_rejected_click_or_unfocused_selection_never_becomes_ready(self):
+        for failure in ("false", "exception", "selected-only", "focused-only"):
+            with self.subTest(failure=failure):
+                ui, dialog, tree, category, events = self.fixture(
+                    result=failure != "false", focuses=failure != "selected-only",
+                    selected=failure != "focused-only")
+                if failure == "exception":
+                    ui.pointer_command.side_effect = OSError("original pointer failure")
+                ticks = iter(range(1000))
+                with patch.object(actions.x11_modal, "observe_parent", return_value={"window": 909}), \
+                     patch.object(actions.subprocess, "run", ui.pointer_command), \
+                     patch.object(actions.time, "monotonic", side_effect=lambda: next(ticks)), \
+                     patch.object(actions.time, "sleep"), self.assertRaises(actions.GuiUncertain):
+                    ui.focus_render_category("editor-before.focus-alpha", category, dialog)
+                self.assertEqual(ui.pointer_command.call_count, 1)
+                self.assertTrue(ui.journal.blocked)
+                self.assertIn(events[-1]["state"], ("ERROR_OR_UNKNOWN", "TIMED_OUT_UNKNOWN"))
+
+    def test_focus_failure_retains_observed_tree_without_another_query_or_key(self):
+        for failure in ("journal", "preobserve"):
+            with self.subTest(failure=failure):
+                ui, dialog, tree, category, events = self.fixture()
+                ui.last_snapshot = {"complete": True, "rows": [dialog, tree, category]}
+                ui.menu = Mock()
+                ui.dialog = Mock(return_value=dialog)
+                ui.descendants = Mock(return_value=[tree, category])
+                original = (actions.GuiUncertain("editor-before.focus-alpha")
+                            if failure == "journal"
+                            else actions.x11_modal.X11Rejected("original X11 observation"))
+                if failure == "journal":
+                    def fail(*_):
+                        ui.journal.blocked = True
+                        raise original
+                    ui.focus_render_category = Mock(side_effect=fail)
+                ui.key = Mock()
+                with tempfile.TemporaryDirectory() as temp, \
+                     patch.object(actions.subprocess, "run", ui.pointer_command), \
+                     patch.object(actions.x11_modal, "observe_parent", side_effect=original):
+                    root = Path(temp)
+                    with self.assertRaises(type(original)) as caught:
+                        ui.generate_editor_render_job("editor-before", root / "before.mov",
+                                                      root / "before.mlt")
+                self.assertIs(caught.exception, original)
+                self.assertEqual(ui.tree.call_count, int(failure == "preobserve"))
+                ui.key.assert_not_called()
+                ui.pointer_command.assert_not_called()
+                self.assertEqual(ui.journal.blocked, failure == "journal")
+                self.assertEqual(events[-1]["state"], "READ_ONLY_FAILURE_CUSTODY")
+                self.assertEqual(events[-1]["snapshot"]["row_count"], 3)
+                self.assertFalse(events[-1]["native_operation_retried"])
+
+
 class EditorRenderGuiControls(unittest.TestCase):
     def test_script_target_reuse_is_rejected_before_any_gui_effect(self):
         ui = actions.AtspiSession.__new__(actions.AtspiSession)
@@ -2928,7 +3100,7 @@ class EditorRenderGuiControls(unittest.TestCase):
                 ui.descendants = Mock(return_value=[category])
                 ui.render_state = Mock(return_value=False)
                 ui.render_action = Mock()
-                ui.focus = Mock()
+                ui.focus_render_category = Mock(return_value=909)
                 ui.key = Mock()
                 ui.journal = Mock()
                 ui.journal.wait.side_effect = actions.GuiUncertain("editor-before.preset")
@@ -2945,10 +3117,10 @@ class EditorRenderGuiControls(unittest.TestCase):
                     "editor-before.menu", "File", "Render...")
                 ui.dialog.assert_called_once()
                 ui.render_action.assert_not_called()
-                ui.focus.assert_called_once_with(
-                    "editor-before.focus-alpha", category)
+                ui.focus_render_category.assert_called_once_with(
+                    "editor-before.focus-alpha", category, dialog)
                 ui.key.assert_called_once_with(
-                    "editor-before.expand-alpha-right", 0xFF53)
+                    "editor-before.expand-alpha-right", 0xFF53, expected_window=909)
                 self.assertEqual(ui.journal.wait.call_count, 1)
                 self.assertEqual(len(retained), int(complete))
                 if complete:
