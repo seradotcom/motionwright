@@ -625,6 +625,21 @@ def _copy_first_originals(current, session):
     return ref, source_roots, destination
 
 
+def reused_source_input_names(first_sources, source_inputs):
+    """Carry the complete observer bundle, including its original manifest."""
+    import native_fixedtxt_observer_overlay as overlay
+    names = {"source-kit.original.zip", *overlay.bundle_descriptors()}
+    for key in ("template_film", "managed_project", "caption_source", "red_native", "measurement_protocol"):
+        path = Path(first_sources[key]["path"])
+        need(path.is_relative_to(source_inputs), "fixedtxt-session-reused-source-root")
+        names.add(path.relative_to(source_inputs).as_posix())
+    for item in first_sources["project_files"]:
+        path = Path(item["original"]["path"])
+        need(path.is_relative_to(source_inputs), "fixedtxt-session-reused-asset-root")
+        names.add(path.relative_to(source_inputs).as_posix())
+    return names
+
+
 def reuse_preparation(current, request, session):
     """No GET, npm, apt, compiler or overlay mutation occurs in this path."""
     import native_fixedtxt_workflow as route
@@ -641,16 +656,7 @@ def reuse_preparation(current, request, session):
     inputs = layout["inputs_root"]
     inputs.mkdir(mode=0o700, exist_ok=False)
     first_sources = strict(read(source_roots["inputs"] / "source-descriptors.original.json"))
-    import native_fixedtxt_observer_overlay as overlay
-    names = {"source-kit.original.zip", *overlay.BUNDLE_PATHS.values()}
-    for key in ("template_film", "managed_project", "caption_source", "red_native", "measurement_protocol"):
-        path = Path(first_sources[key]["path"])
-        need(path.is_relative_to(source_roots["inputs"]), "fixedtxt-session-reused-source-root")
-        names.add(path.relative_to(source_roots["inputs"]).as_posix())
-    for item in first_sources["project_files"]:
-        path = Path(item["original"]["path"])
-        need(path.is_relative_to(source_roots["inputs"]), "fixedtxt-session-reused-asset-root")
-        names.add(path.relative_to(source_roots["inputs"]).as_posix())
+    names = reused_source_input_names(first_sources, source_roots["inputs"])
     expected = {(row["root"], row["relative_path"]): row for row in ref["files"]}
     for name in sorted(names):
         row = expected.get(("inputs", name))
