@@ -1210,8 +1210,17 @@ class AtspiSession:
         require(interface is not None, "native_render_action_missing")
         count = interface.get_n_actions()
         require(0 < count <= 8, "native_render_action_inventory_unbounded")
-        choices = [(i, interface.get_action_name(i).lower()) for i in range(count)]
-        selected = [(i, name) for i, name in choices if name in allowed]
+        choices = [(i, interface.get_action_name(i)) for i in range(count)]
+        require(all(type(name) is str and 0 < len(name) <= 128 for _, name in choices),
+                "native_render_action_names_unbounded")
+        # Preserve the observed alternatives before rejecting an ambiguous or
+        # absent semantic action. This readback neither invokes nor retries it.
+        self.journal.emit({"step": step + ".available-actions", "state": "OBSERVED",
+                           "target": row, "actions": [
+                               {"index": i, "name": name} for i, name in choices],
+                           "allowed_actions": list(allowed),
+                           "native_operation_retried": False})
+        selected = [(i, name.lower()) for i, name in choices if name.lower() in allowed]
         require(len(selected) == 1, "native_render_action_not_unique")
         index, name = selected[0]
         self.journal.perform(step, {**row, "action": name}, lambda: interface.do_action(index))
@@ -1413,8 +1422,11 @@ class AtspiSession:
                 return
             selected = unique(found, code="native_render_option_not_unique")
             if self.render_state(selected, "CHECKED") != wanted:
+                # Qt exposes both toggle and press for checkable buttons.
+                # CHECKED is changed by the semantic toggle action, including
+                # radio buttons and checkable groups; never guess a press fallback.
                 self.render_action(step + ".option-" + str(len(observations)), selected,
-                                   ("toggle", "press", "click", "activate"))
+                                   ("toggle",))
             selected = unique(controls(name, ("check box", "radio button", "panel")),
                               code="native_render_option_readback_not_unique")
             checked = self.render_state(selected, "CHECKED")

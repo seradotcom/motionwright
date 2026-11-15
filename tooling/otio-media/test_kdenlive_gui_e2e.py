@@ -3308,6 +3308,97 @@ class EditorRenderGuiControls(unittest.TestCase):
             ui.render_action("one", control, ("press", "toggle"))
         ui.journal.perform.assert_not_called()
 
+    def checked_option_fixture(self, *, labels=("press", "toggle", "SetFocus"),
+                               state_changes=True, already_checked=False):
+        ui = actions.AtspiSession.__new__(actions.AtspiSession)
+        ui.pid = 41
+        events = []
+        ui.journal = actions.ActionJournal(events.append, lambda: None)
+        dialog = row("app/render", name="Rendering", role="dialog", modal=False)
+        category = row("app/render/alpha", name="Video with Alpha", role="table cell")
+        preset = row("app/render/preset", name="Alpha MOV", role="table cell")
+        full = row("app/render/full", name="Full project", role="radio button")
+        option = row("app/render/options", name="More options", role="check box")
+        state = {"checked": already_checked}
+        ui.nodes = {}
+        for observed in (category, preset, full, option):
+            node = Mock()
+            node.get_process_id.return_value = 41
+            node.get_state_set.return_value.contains.side_effect = lambda name, r=observed: (
+                (r is category and name == "EXPANDED") or
+                (r is full and name == "CHECKED") or
+                (r is option and name == "CHECKED" and state["checked"]))
+            ui.nodes[observed["key"]] = node
+        interface = ui.nodes[option["key"]].get_action_iface.return_value
+        interface.get_n_actions.return_value = len(labels)
+        interface.get_action_name.side_effect = labels.__getitem__
+        def invoke(index):
+            if labels[index] == "toggle" and state_changes:
+                state["checked"] = not state["checked"]
+            return True
+        interface.do_action.side_effect = invoke
+        ui.api = SimpleNamespace(StateType=SimpleNamespace(CHECKED="CHECKED", EXPANDED="EXPANDED"))
+        ui.menu = Mock()
+        ui.dialog = Mock(return_value=dialog)
+        ui.find = Mock(return_value=preset)
+        ui.select_render_preset = Mock(return_value=909)
+        stop = RuntimeError("Reached the next Video option after checked readback")
+        calls = []
+        def descendants(_):
+            calls.append(None)
+            # Category, Full find/readback, More options find/readback, Video.
+            if len(calls) == 6:
+                raise stop
+            return [category, preset, full, option]
+        ui.descendants = Mock(side_effect=descendants)
+        return ui, option, interface, events, stop
+
+    def test_render_checkbox_chooses_toggle_and_requires_observed_checked_change(self):
+        for state_changes in (True, False):
+            with self.subTest(state_changes=state_changes):
+                ui, option, interface, events, stop = self.checked_option_fixture(
+                    state_changes=state_changes)
+                with tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    if state_changes:
+                        with self.assertRaises(RuntimeError) as caught:
+                            ui.generate_editor_render_job("editor-before", root / "before.mov", root / "before.mlt")
+                        self.assertIs(caught.exception, stop)
+                    else:
+                        with self.assertRaisesRegex(actions.GuiRejected, "native_render_option_readback_changed"):
+                            ui.generate_editor_render_job("editor-before", root / "before.mov", root / "before.mlt")
+                interface.do_action.assert_called_once_with(1)
+                observed = next(e for e in events if e["step"].endswith(".available-actions"))
+                self.assertEqual(observed["target"]["key"], option["key"])
+                self.assertEqual(observed["allowed_actions"], ["toggle"])
+                self.assertEqual(observed["actions"], [
+                    {"index": 0, "name": "press"}, {"index": 1, "name": "toggle"},
+                    {"index": 2, "name": "SetFocus"}])
+                self.assertFalse(observed["native_operation_retried"])
+
+    def test_render_checkbox_missing_or_duplicate_toggle_never_falls_back_to_press(self):
+        for labels in (("press", "SetFocus"), ("toggle", "toggle", "press")):
+            with self.subTest(labels=labels):
+                ui, _, interface, events, _ = self.checked_option_fixture(labels=labels)
+                with tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    with self.assertRaisesRegex(actions.GuiRejected, "native_render_action_not_unique"):
+                        ui.generate_editor_render_job("editor-before", root / "before.mov", root / "before.mlt")
+                interface.do_action.assert_not_called()
+                self.assertEqual([e["state"] for e in events], ["OBSERVED"])
+                self.assertEqual([a["name"] for a in events[0]["actions"]], list(labels))
+
+    def test_already_checked_render_checkbox_does_not_send_a_second_toggle(self):
+        ui, _, interface, events, stop = self.checked_option_fixture(already_checked=True)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with self.assertRaises(RuntimeError) as caught:
+                ui.generate_editor_render_job("editor-before", root / "before.mov", root / "before.mlt")
+        self.assertIs(caught.exception, stop)
+        interface.get_n_actions.assert_not_called()
+        interface.do_action.assert_not_called()
+        self.assertFalse(events)
+
     def test_render_state_cannot_read_a_foreign_process_control(self):
         ui = actions.AtspiSession.__new__(actions.AtspiSession)
         ui.pid = 41; node = Mock(); node.get_process_id.return_value = 42
