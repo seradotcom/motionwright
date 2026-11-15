@@ -46,6 +46,7 @@ MODAL_OPENERS = {
     "duration": (("Edit Duration",), ("menu item",), ("Duration",), ()),
     "delayed_render": (("Generate Script",), ("push button",),
                        ("Delayed Rendering",), ("Rendering",)),
+    "render_output": ((), ("push button",), ("Save As",), ("Rendering",)),
     "discard_preferences": (("Quit",), ("menu item",), (), ()),
 }
 WINDOW_TITLES = frozenset({
@@ -348,13 +349,54 @@ def labeled_field_candidates(rows: list[dict], label: dict) -> tuple[list[dict],
     return candidates, leaves
 
 
+def render_output_browse_button(rows: list[dict], pid: int) -> dict:
+    """Resolve the direct KUrlRequester button from the observed output row."""
+    require(type(pid) is int and 0 < pid <= 0xffffffff
+            and all(r.get("pid") == pid for r in rows),
+            "native_render_output_requester_pid")
+    rendering = unique([r for r in rows if r["visible"] and r["enabled"]
+                        and r["role"] in ("dialog", "frame")
+                        and window_title_matches(r["name"], ("Rendering",))],
+                       code="native_render_output_parent_not_unique")
+    children = [r for r in rows if r["key"].startswith(rendering["key"] + "/")]
+    label = unique([r for r in children if r["visible"] and r["enabled"]
+                    and r["role"] == "label" and normalized(r["name"]) == "Output file"],
+                   code="native_render_output_label_not_unique")
+    lx, ly, lw, lh = label["rect"]
+    require(lw > 0 and lh > 0, "native_render_output_label_geometry")
+    siblings = [r for r in children if r["key"].rpartition("/")[0]
+                == label["key"].rpartition("/")[0]
+                and r["visible"] and r["enabled"] and r["role"] == "filler"
+                and normalized(r["name"]) == "Output file"]
+    requesters = []
+    for row in siblings:
+        x, y, w, h = row["rect"]
+        if w > 0 and h > 0 and x >= lx + lw and max(ly, y) < min(ly + lh, y + h):
+            requesters.append(row)
+    requester = unique(requesters, code="native_render_output_requester_not_unique")
+    x, y, w, h = requester["rect"]
+    buttons = []
+    for row in children:
+        if (row["key"].rpartition("/")[0] != requester["key"]
+                or row["role"] != "push button" or not row["visible"] or not row["enabled"]):
+            continue
+        bx, by, bw, bh = row["rect"]
+        if bw > 0 and bh > 0 and x <= bx and y <= by and bx + bw <= x + w and by + bh <= y + h:
+            buttons.append(row)
+    button = unique(buttons, code="native_render_output_browse_not_unique")
+    # KUrlRequester creates this direct button separately from the line edit.
+    # The line edit's nested clear button is never an eligible opener.
+    return {**button, "output_label": label, "url_requester": requester}
+
+
 def check_duration_fields(position: str, crop: str, duration: str) -> None:
     require(tuple(timecode_frames(v) for v in (position, crop, duration))
             == (60, 60, 30), "native_gui_selected_clip_is_not_original_third_clip")
 
 
 def closed_original_file_dialog(original: dict, titles: tuple[str, ...],
-                                windows: list[dict], pid: int) -> dict | None:
+                                windows: list[dict], pid: int,
+                                *, render_parent: dict | None = None) -> dict | None:
     """Prove one original top-level file dialog absent without scanning timeline.
 
     Qt retains a root window roster even when a loaded project's child tree
@@ -364,8 +406,17 @@ def closed_original_file_dialog(original: dict, titles: tuple[str, ...],
     """
     allowed = (("OpenTimelineIO Import",), ("Save As", "Save Project"),
                ("OpenTimelineIO Export",))
-    require(titles in allowed and type(pid) is int and 0 < pid <= 0xffffffff,
+    require((titles in allowed if render_parent is None else titles == ("Save As",))
+            and type(pid) is int and 0 < pid <= 0xffffffff,
             "native_gui_root_close_profile")
+    if render_parent is not None:
+        require(type(render_parent) is dict and render_parent.get("pid") == pid
+                and render_parent.get("role") in ("dialog", "frame")
+                and render_parent.get("visible") is True
+                and type(render_parent.get("key")) is str
+                and re.fullmatch(r"app/(?:0|[1-9][0-9]{0,2})", render_parent["key"])
+                and window_title_matches(render_parent.get("name", ""), ("Rendering",)),
+                "native_render_output_close_parent_identity")
     require(type(original) is dict and original.get("pid") == pid
             and original.get("role") == "dialog"
             and type(original.get("key")) is str
@@ -387,14 +438,25 @@ def closed_original_file_dialog(original: dict, titles: tuple[str, ...],
                 and all(type(window[k]) is bool for k in ("visible", "modal")),
                 "native_gui_root_close_window_identity")
         keys.add(window["key"])
+    parent_now = None
+    if render_parent is not None:
+        parents = [r for r in windows if r["visible"]
+                   and r["role"] in ("dialog", "frame")
+                   and window_title_matches(r["name"], ("Rendering",))]
+        parent_now = unique(parents, code="native_render_output_close_parent_not_unique")
+        require(all(parent_now[k] == render_parent[k] for k in ("key", "name", "role", "pid"))
+                and parent_now["key"] != original["key"],
+                "native_render_output_close_parent_changed")
     mains = [r for r in windows if r["visible"] and r["role"] == "frame"
-             and r["name"].endswith((" - Kdenlive", " — Kdenlive"))]
+             and r["name"].endswith((" - Kdenlive", " — Kdenlive"))
+             and (parent_now is None or r["key"] != parent_now["key"])]
     # A window transition remains a wait, never proof of closed UI.
     if not mains:
         return None
     require(len(mains) == 1, "native_gui_root_close_main_not_unique")
     open_dialogs = [r for r in windows if r["visible"]
-                    and (r["role"] in ("dialog", "alert") or r["modal"])]
+                    and (r["role"] in ("dialog", "alert") or r["modal"])
+                    and (parent_now is None or r["key"] != parent_now["key"])]
     for dialog in open_dialogs:
         require(dialog["role"] == "dialog"
                 and window_title_matches(dialog["name"], titles),
@@ -405,6 +467,7 @@ def closed_original_file_dialog(original: dict, titles: tuple[str, ...],
             "original_dialog_key": original["key"],
             "original_dialog_name": original["name"],
             "expected_pid": pid, "main_window": mains[0],
+            **({"retained_render_parent": parent_now} if parent_now is not None else {}),
             "top_level_windows": windows, "top_level_count": len(windows),
             "original_dialog_not_showing": True,
             "whole_accessibility_tree_scanned": False,
@@ -733,9 +796,10 @@ class AtspiSession:
         return windows
 
     def _observed_file_dialog_closed(self, original: dict,
-                                     titles: tuple[str, ...]) -> dict | None:
+                                     titles: tuple[str, ...],
+                                     *, render_parent: dict | None = None) -> dict | None:
         first = self._owned_top_level_windows()
-        proof = closed_original_file_dialog(original, titles, first, self.pid)
+        proof = closed_original_file_dialog(original, titles, first, self.pid, render_parent=render_parent)
         if proof is None:
             return None
         second = self._owned_top_level_windows()
@@ -785,7 +849,7 @@ class AtspiSession:
         # This live X11 observation precedes the one opener. Duration's
         # qApp->activeWindow() and Qt's parentless input dialog are thus bound
         # to an actually observed parent/group, never an assumed window ID.
-        if kind == "delayed_render":
+        if kind in ("delayed_render", "render_output"):
             candidates = [r for r in rows if r["visible"] and r["enabled"]
                           and r["role"] in ("dialog", "frame")
                           and window_title_matches(r["name"], ("Rendering",))]
@@ -798,6 +862,8 @@ class AtspiSession:
                 for other in frames if other is not r)]
             parent_type = ("_NET_WM_WINDOW_TYPE_NORMAL",)
         parent = unique(candidates, code="native_gui_X11_parent_not_unique")
+        if kind == "render_output":
+            self._render_output_atspi_parent = dict(parent)
         self.last_x11_parent = {}
         try:
             return x11_modal.observe_parent(
@@ -831,6 +897,11 @@ class AtspiSession:
                        and r["role"] in ("dialog", "frame")
                        and window_title_matches(r["name"], parents)]
         require(len(parent_rows) == len(parents), "native_gui_modal_parent_not_unique")
+        if kind == "render_output" and not before:
+            retained_parent = getattr(self, "_render_output_atspi_parent", None)
+            require(type(retained_parent) is dict and len(parent_rows) == 1
+                    and all(parent_rows[0][k] == retained_parent[k] for k in ("key", "name", "role", "pid")),
+                    "native_render_output_modal_parent_changed")
         expected = [r for r in rows if r["visible"]
                     and r["role"] in ("dialog", "frame", "alert")
                     and window_title_matches(r["name"], titles)]
@@ -861,7 +932,7 @@ class AtspiSession:
             return None
         dialog = expected[0]
         require(dialog["enabled"], "native_gui_modal_postcondition_not_enabled_modal")
-        if dialog.get("modal") is not True:
+        if dialog.get("modal") is not True or kind == "render_output":
             # Keep the original AT-SPI bit false. Only a distinct, live X11
             # observation may prove the missing modality/parent relationship.
             self._observe_x11_modal(dialog, kind, deadline)
@@ -886,10 +957,11 @@ class AtspiSession:
         scopes = [r["key"] for r in before if r["visible"]
                   and r["role"] in ("dialog", "frame")
                   and window_title_matches(r["name"], parents)]
-        target = unique([r for r in before if r["visible"] and r["enabled"]
-                         and r["role"] in roles and normalized(r["name"]) in names
-                         and (not scopes or any(r["key"].startswith(s + "/") for s in scopes))],
-                        code="native_gui_modal_opener_not_unique")
+        target = (render_output_browse_button(before, self.pid) if kind == "render_output" else
+                  unique([r for r in before if r["visible"] and r["enabled"]
+                          and r["role"] in roles and normalized(r["name"]) in names
+                          and (not scopes or any(r["key"].startswith(s + "/") for s in scopes))],
+                         code="native_gui_modal_opener_not_unique"))
         try:
             self._modal_x11_parent = self._observe_modal_parent(before, kind)
         except BaseException as parent_error:
@@ -1209,6 +1281,110 @@ class AtspiSession:
         require(node.get_process_id() == self.pid, "native_render_state_wrong_pid")
         return bool(node.get_state_set().contains(getattr(self.api.StateType, name)))
 
+    def render_output_target(self, step: str, output: Path) -> dict:
+        """Select one new target in the native file dialog; never render here."""
+        try:
+            require(step in ("editor-before.output", "editor-after.output")
+                    and output.is_absolute() and output.suffix == ".mov"
+                    and not output.exists() and not output.is_symlink(),
+                    "native_render_output_target_not_fresh")
+            original = self.modal_action(step + ".browse", "render_output")
+            parent = dict(self._render_output_atspi_parent)
+            parent_x11 = self._modal_x11_parent
+            require(type(parent_x11) is dict and parent_x11.get("complete") is True,
+                    "native_render_output_parent_not_bound")
+            dialog = self.dialog(step + ".dialog", ("Save As",))
+            require(all(dialog[k] == original[k] for k in ("key", "name", "role", "pid")),
+                    "native_render_output_dialog_changed")
+            field = labeled_field(self.descendants(dialog), ("File name:", "File name", "Name:", "Name"))
+            self.text(step + ".filename", field, str(output))
+            # Observe the exact name and parent again before the one Save request.
+            rows = self.journal.wait(step + ".before-submit", self._complete_modal_tree)
+            dialog = self._modal_readback(rows, "render_output", None,
+                                          deadline=time.monotonic() + WAIT_SECONDS)
+            require(dialog is not None and all(dialog[k] == original[k]
+                    for k in ("key", "name", "role", "pid")),
+                    "native_render_output_dialog_changed")
+            children = [r for r in rows if r["key"].startswith(dialog["key"] + "/")]
+            field = labeled_field(children, ("File name:", "File name", "Name:", "Name"))
+            require(field["text"] == str(output), "native_render_output_filename_readback")
+            submit = unique([r for r in children if r["visible"] and r["enabled"]
+                             and r["role"] == "push button" and normalized(r["name"]) == "Save"],
+                            code="native_render_output_accept_not_unique")
+            self.journal.blocked = True
+            self.journal.emit({"step": step + ".filename-original", "state": "OBSERVED",
+                               "field": field, "original_dialog": original,
+                               "render_parent": parent, "requested_path": str(output),
+                               "snapshot": modal_snapshot(rows, self.pid), "complete": True,
+                               "x11_modal": self.last_x11_modal,
+                               "requester_text_read_back": False,
+                               "native_render_dispatched_here": False,
+                               "semantic_effect_verified_here": False})
+            self.journal.blocked = False
+            self.action(step + ".submit", submit)
+            close_deadline = time.monotonic() + WAIT_SECONDS
+
+            def closed():
+                proof = self._observed_file_dialog_closed(original, ("Save As",), render_parent=parent)
+                if proof is None:
+                    return None
+                evidence = {}
+                try:
+                    after = x11_modal.observe_parent(expected_pid=self.pid,
+                        parent_name=parent["name"], parent_type=tuple(parent_x11["allowed_types"]),
+                        guard=self.journal.guard, deadline=close_deadline, evidence=evidence)
+                    require(after["window"] == parent_x11["window"]
+                            and all(after["properties"][k] == parent_x11["properties"][k]
+                                    for k in x11_modal.PROPERTY_KEYS if k != "states"),
+                            "native_render_output_X11_parent_changed")
+                except BaseException as original_error:
+                    try:
+                        self.journal.emit({"step": step + ".parent-after-close", "state": "READ_ONLY_FAILURE_CUSTODY",
+                                           "observation": evidence, "native_operation_retried": False})
+                    except BaseException as recording_error:
+                        original_error.add_note("native_render_output_parent_custody_failed:"
+                                                + type(recording_error).__name__)
+                    raise
+                return {**proof, "x11_render_parent_after": after}
+
+            proof = self.journal.wait(step + ".closed", closed)
+            require(not output.exists() and not output.is_symlink(),
+                    "native_render_output_created_before_script")
+            observed = {"requested_path": str(output), "filename_original": field,
+                        "closure": proof, "requester_text_read_back": False,
+                        "playlist_target_verification_required": True,
+                        "native_render_dispatched_here": False}
+            self.journal.blocked = True
+            self.journal.emit({"step": step + ".closed-root-readback",
+                               "state": "ORIGINAL_DIALOG_CLOSED_OBSERVED", "observed": proof,
+                               "native_operation_retried": False, "native_import_verified": False,
+                               "native_save_verified": False, "formal_acceptance": False})
+            self.journal.blocked = False
+            return observed
+
+        except BaseException as original_error:
+            self.journal.blocked = True
+            try:
+                snapshot = getattr(self, "last_snapshot", None)
+                complete = (type(snapshot) is dict and snapshot.get("complete") is True
+                            and type(snapshot.get("rows")) is list)
+                self.journal.emit({
+                    "step": step + ".selection-last-complete-tree",
+                    "state": "READ_ONLY_FAILURE_CUSTODY", "expected_pid": self.pid,
+                    "snapshot": modal_snapshot(snapshot["rows"], self.pid) if complete else None,
+                    "complete": complete, "x11_modal": getattr(self, "last_x11_modal", None),
+                    "new_accessibility_query": False, "native_render_dispatched_here": False,
+                    "native_operation_retried": False, "semantic_effect_verified": False,
+                    "formal_acceptance": False})
+            except BaseException as recording_error:
+                original_error.add_note("native_render_output_selection_custody_failed:"
+                                        + type(recording_error).__name__)
+            prior = self.journal.last_failure
+            if not (type(prior) is dict and (prior.get("original") is original_error
+                    or prior.get("original") is original_error.__cause__)):
+                self.journal._record_failure(step + ".selection", "OBSERVATION_ERROR_OR_UNKNOWN", original_error)
+            raise
+
     def render_output_field(self, step: str, dialog: dict) -> dict:
         """Resolve one observed field and retain its original ambiguity."""
         rows = self.descendants(dialog)
@@ -1490,14 +1666,9 @@ class AtspiSession:
             checkbox(name, False)
         for name in ("Use Proxy Clips", "Embed subtitles instead of burning them"):
             checkbox(name, False, optional=True)
-        output_field = self.render_output_field(step + ".output-before-edit", dialog)
-        self.text(step + ".output", output_field, str(output))
-        generate = self.journal.wait(step + ".generate-control", lambda: self.find(
-            ("Generate Script",), ("push button",), scope=dialog["key"]))
-        self.focus(step + ".output-editing-finished", generate)
-        output_field = self.render_output_field(step + ".output-after-edit", dialog)
-        require(output_field["text"] == str(output), "native_render_output_rewritten_by_editor")
-        observed = {"preset": "Alpha MOV", "category": "Video with Alpha", "output_field": output_field,
+        output_selection = self.render_output_target(step + ".output", output)
+        dialog = self.dialog(step + ".rendering-after-output", ("Rendering",))
+        observed = {"preset": "Alpha MOV", "category": "Video with Alpha", "output_selection": output_selection,
                     "options": observations, "rows_before_generate": self.descendants(dialog),
                     "Generate_Script_attempts": 1, "Render_to_File_attempts": 0, "Start_Script_attempts": 0}
         self.journal.emit({"step": step + ".settings", "state": "OBSERVED", "render_settings": observed})
