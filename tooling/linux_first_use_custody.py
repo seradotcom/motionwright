@@ -37,7 +37,8 @@ REPOSITORY_FILES = (
     "glib-patched-source.json", "glib-compiled-owner-tree.txt",
 )
 JOURNAL_FILES = frozenset(name + ".json" for name in (
-    "launch-intent", "worker-start", "edit-intent", "edit-return",
+    "launch-intent", "worker-start", "focus-intent", "focus-return",
+    "edit-intent", "edit-return",
     "create-intent", "create-return", "result", "parent-timeout", "parent-failure",
     "listeners-start", "listeners-ready", "event-loop-start", "first-step-start",
     "first-identity-start", "first-identity-return",

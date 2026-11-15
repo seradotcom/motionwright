@@ -982,7 +982,11 @@ class FixedArchiveCustodyTests(unittest.TestCase):
         events = next(ast.literal_eval(node.value) for node in worker.body if isinstance(node, ast.Assign)
                       and any(isinstance(target, ast.Name) and target.id == "events" for target in node.targets))
         names.update("listener-ready-" + event.replace(":", "-") + ".json" for event in events)
-        self.assertEqual(len(names), 20)
+        # Frozen legacy test name stays unchanged for source-roster identity.
+        # The real keyboard fallback adds two create-only focus originals;
+        # they MUST both be retained, never treated as arbitrary JSON.
+        self.assertEqual(len(names), 22)
+        self.assertTrue({"focus-intent.json", "focus-return.json"} <= names)
         names.update(("worker.stdout", "worker.stderr"))
         for name in names:
             self.write(self.namespace / "isolated-gui/first-use-atspi" / name, b"{}")
