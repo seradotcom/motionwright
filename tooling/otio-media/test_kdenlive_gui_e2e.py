@@ -2898,6 +2898,52 @@ class EditorMasterSourceControls(unittest.TestCase):
                 runner.verified_snapshot_expectations(changed, {})
 
 
+class EditorRenderLogTests(unittest.TestCase):
+    def inspect(self, text, *, playlist="/owner/editor-before-1.mlt"):
+        return runner.verify_editor_render_log(text, melt="/app/melt-7",
+            playlist=PurePosixPath(playlist), output=PurePosixPath("/owner/editor-before.mov"))
+
+    def test_original_percent_encoded_playlist_and_exact_finished_output_are_bound(self):
+        text = ("Started render process: /app/melt-7 -loglevel debug -progress2 "
+                "%2Fowner%2Feditor-before-1.mlt\n"
+                "[consumer avformat] finished processing 90 frames\n"
+                "Rendering of /owner/editor-before.mov finished\n")
+        self.assertIsNone(self.inspect(text))
+
+    def test_utf8_spaces_percent_and_unreserved_characters_have_one_spelling(self):
+        text = ("Started render process: /app/melt-7 -loglevel debug -progress2 "
+                "%2Fowner%2Fa%20b%25%C3%BC~.mlt\n"
+                "Rendering of /owner/editor-before.mov finished\n")
+        self.assertIsNone(self.inspect(text, playlist="/owner/a b%\u00fc~.mlt"))
+
+    def test_foreign_or_noncanonical_paths_and_executables_are_rejected(self):
+        text = ("Started render process: /app/melt-7 -loglevel debug -progress2 "
+                "%2Fowner%2Feditor-before-1.mlt\n"
+                "Rendering of /owner/editor-before.mov finished\n")
+        changes = (
+            ("%2Fowner%2Feditor-before-1.mlt", "/owner/editor-before-1.mlt"),
+            ("%2Fowner", "%2Fforeign"),
+            ("%2Fowner", "%252Fowner"),
+            ("%2Fowner", "%2fowner"),
+            ("/app/melt-7", "/foreign/melt-7"),
+            ("editor-before.mov", "foreign.mov"),
+            ("-progress2 ", "-progress2 -consumer fake "),
+        )
+        for before, after in changes:
+            with self.subTest(change=(before, after)), self.assertRaises(actions.GuiRejected):
+                self.inspect(text.replace(before, after))
+
+    def test_aborted_missing_and_conflicting_markers_do_not_authorize_decode(self):
+        start = ("Started render process: /app/melt-7 -loglevel debug -progress2 "
+                 "%2Fowner%2Feditor-before-1.mlt\n")
+        finish = "Rendering of /owner/editor-before.mov finished\n"
+        for text in (start, finish, start + finish + finish, start + start + finish,
+                     start + finish + "Rendering of /owner/editor-before.mov aborted, corrupt\n",
+                     start + "Rendering of /owner/editor-before.mov finished-but-not-closed\n"):
+            with self.subTest(log=text), self.assertRaises(actions.GuiRejected):
+                self.inspect(text)
+
+
 class EditorRenderScriptPathTests(unittest.TestCase):
     def fixture(self, root, phase, generated):
         """Synthetic UI boundary only; no application or renderer is invoked."""

@@ -24,6 +24,7 @@ import tarfile
 import time
 import traceback
 from fractions import Fraction
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tooling"))
@@ -337,6 +338,20 @@ def prepare_editor_render(process, phase: str, source: Path,
             "output": output, "native_log": native_log, "environment": environment}
 
 
+def verify_editor_render_log(log_text: str, *, melt: str, playlist: Path, output: Path) -> None:
+    """Bind the original 26.08.3 log to its exact native executable and outputs."""
+    # QUrl::toPercentEncoding encodes the UTF-8 playlist, including slashes.
+    # Generate that one spelling from the pinned path; never unquote a log.
+    expected_start = ("Started render process: " + melt + " -loglevel debug -progress2 "
+                      + quote(str(playlist), safe=""))
+    lines = log_text.splitlines()
+    starts = [line for line in lines if line.startswith("Started render process: ")]
+    require(starts == [expected_start]
+            and lines.count("Rendering of " + str(output) + " finished") == 1
+            and "Rendering of " + str(output) + " aborted" not in log_text,
+            "editor_render_native_melt_success_log_missing")
+
+
 def run_editor_render_once(records, prepared: dict, editor_process) -> dict:
     """One official editor delivery after natural GUI closure, then real decoding."""
     receipt = prepared["receipt"]
@@ -363,10 +378,7 @@ def run_editor_render_once(records, prepared: dict, editor_process) -> dict:
         output_limits={output: EDITOR_RENDER_MAX_VIDEO, native_log: EDITOR_RENDER_MAX_LOG})
     raw_log, log_original = editor_original(native_log, root, EDITOR_RENDER_MAX_LOG)
     log_text = raw_log.decode("utf-8", errors="replace")
-    expected_start = "Started render process: " + exes["melt"]["path"] + " -loglevel debug -progress2 " + str(playlist)
-    require(expected_start in log_text and "Rendering of " + str(output) + " finished" in log_text
-            and "Rendering of " + str(output) + " aborted" not in log_text,
-            "editor_render_native_melt_success_log_missing")
+    verify_editor_render_log(log_text, melt=exes["melt"]["path"], playlist=playlist, output=output)
     _, video_original = editor_original(output, root, EDITOR_RENDER_MAX_VIDEO)
     # Independent system decoder, with no AppImage library injection. No
     # remux, repair, render retry, or synthesized frames are permitted.
