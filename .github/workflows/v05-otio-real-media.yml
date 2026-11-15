@@ -156,7 +156,7 @@ jobs:
           python3 -m py_compile tooling/otio-media/*.py
           python3 tooling/source_policy.py
           python3 tooling/creative_status_policy.py
-      - name: Require the three original owner-cut Rust cases
+      - name: Require all twenty-one original owner and retained-source Rust cases
         run: |
           python3 - <<'PY'
           import hashlib, json, os, pathlib, re, subprocess
@@ -166,6 +166,24 @@ jobs:
               "tests::sqlite_owner_cut_commits_once_and_reopens_preserving_editable_source",
               "tests::retained_unknown_intent_prevents_any_second_apply",
               "tests::concurrent_source_change_rejects_before_owner_intent_or_commit",
+              "tests::native_capsule_source_commits_one_additional_revision_and_reopens_original_bytes",
+              "tests::native_capsule_wrong_original_digest_refuses_before_intent_or_mutation",
+              "tests::retained_source_import_unknown_intent_prevents_any_replay",
+              "tests::changed_owner_cut_project_cannot_mint_a_source_import_intent",
+              "tests::portable_native_source_uses_inspection_and_survives_new_generation_without_local_receipts",
+              "tests::alab_source_adoption_uses_real_service_journal_cas_and_independent_sqlite_reopen",
+              "tests::alab_invalid_original_identity_is_rejected_before_database_or_mutation_intent",
+              "tests::alab_derived_profile_cannot_promote_flags_change_intervals_or_self_admit_a_source",
+              "tests::alab_same_stage_verified_import_rejects_substitution_without_asset_commit_even_if_custody_fails",
+              "tests::alab_reopen_checks_each_original_request_outcome_against_actual_sqlite_history",
+              "tests::alab_portable_source_reopens_all_originals_from_a_separate_owner_cas_with_new_generation",
+              "tests::alab_completed_attempt_is_not_reseeded_and_false_native_claims_never_pass_readback",
+              "tests::original_three_scene_source_capture_rejects_substitution_before_cas_or_revision_even_if_custody_fails",
+              "tests::alab_returned_cut_and_native_source_use_two_real_revisions_and_four_blobs_survive_portable_reopen",
+              "tests::alab_unselected_or_promoted_return_rejects_before_cut_intent_and_original_history_change",
+              "tests::alab_unknown_return_intent_or_completed_source_never_replays_a_cut_or_capsule",
+              "tests::alab_new_process_joins_each_cut_and_source_outcome_to_the_original_nine_event_journal",
+              "tests::alab_concurrent_source_change_after_native_return_is_not_overwritten_or_rebased",
           }
           def source():
               head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
@@ -205,8 +223,8 @@ jobs:
           names = re.findall(r"^test (\S+) \.\.\. ok$", view, re.M)
           summaries = re.findall(r"^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored;", view, re.M)
           receipt["source_after"] = source()
-          complete = (code == 0 and len(names) == 3 and set(names) == expected
-                      and summaries == [("3", "0", "0")] and receipt["source_after"] == before)
+          complete = (code == 0 and len(names) == 21 and set(names) == expected
+                      and summaries == [("21", "0", "0")] and receipt["source_after"] == before)
           receipt.update(state="PASS" if complete else receipt["state"] if code == 124 else "FAIL",
                          observed=names, tests_run=len(names))
           retain()
@@ -566,7 +584,7 @@ jobs:
           cargo fmt --all -- --check
           cargo build --locked -p motionwright-domain --example otio_real_media_fixture
           cargo build --locked -p motionwright-native --example native_otio_owner_cut_e2e
-      - name: Require the three original owner-cut Rust cases
+      - name: Require all twenty-one original owner and retained-source Rust cases
         if: inputs.verification_scope == 'kdenlive-gui'
         run: |
           python3 - <<'PY'
@@ -577,6 +595,24 @@ jobs:
               "tests::sqlite_owner_cut_commits_once_and_reopens_preserving_editable_source",
               "tests::retained_unknown_intent_prevents_any_second_apply",
               "tests::concurrent_source_change_rejects_before_owner_intent_or_commit",
+              "tests::native_capsule_source_commits_one_additional_revision_and_reopens_original_bytes",
+              "tests::native_capsule_wrong_original_digest_refuses_before_intent_or_mutation",
+              "tests::retained_source_import_unknown_intent_prevents_any_replay",
+              "tests::changed_owner_cut_project_cannot_mint_a_source_import_intent",
+              "tests::portable_native_source_uses_inspection_and_survives_new_generation_without_local_receipts",
+              "tests::alab_source_adoption_uses_real_service_journal_cas_and_independent_sqlite_reopen",
+              "tests::alab_invalid_original_identity_is_rejected_before_database_or_mutation_intent",
+              "tests::alab_derived_profile_cannot_promote_flags_change_intervals_or_self_admit_a_source",
+              "tests::alab_same_stage_verified_import_rejects_substitution_without_asset_commit_even_if_custody_fails",
+              "tests::alab_reopen_checks_each_original_request_outcome_against_actual_sqlite_history",
+              "tests::alab_portable_source_reopens_all_originals_from_a_separate_owner_cas_with_new_generation",
+              "tests::alab_completed_attempt_is_not_reseeded_and_false_native_claims_never_pass_readback",
+              "tests::original_three_scene_source_capture_rejects_substitution_before_cas_or_revision_even_if_custody_fails",
+              "tests::alab_returned_cut_and_native_source_use_two_real_revisions_and_four_blobs_survive_portable_reopen",
+              "tests::alab_unselected_or_promoted_return_rejects_before_cut_intent_and_original_history_change",
+              "tests::alab_unknown_return_intent_or_completed_source_never_replays_a_cut_or_capsule",
+              "tests::alab_new_process_joins_each_cut_and_source_outcome_to_the_original_nine_event_journal",
+              "tests::alab_concurrent_source_change_after_native_return_is_not_overwritten_or_rebased",
           }
           def source():
               head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
@@ -616,8 +652,8 @@ jobs:
           names = re.findall(r"^test (\S+) \.\.\. ok$", view, re.M)
           summaries = re.findall(r"^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored;", view, re.M)
           receipt["source_after"] = source()
-          complete = (code == 0 and len(names) == 3 and set(names) == expected
-                      and summaries == [("3", "0", "0")] and receipt["source_after"] == before)
+          complete = (code == 0 and len(names) == 21 and set(names) == expected
+                      and summaries == [("21", "0", "0")] and receipt["source_after"] == before)
           receipt.update(state="PASS" if complete else receipt["state"] if code == 124 else "FAIL",
                          observed=names, tests_run=len(names))
           retain()
