@@ -2899,7 +2899,7 @@ class EditorMasterSourceControls(unittest.TestCase):
 
 
 class RenderCategoryFocusTests(unittest.TestCase):
-    def fixture(self, *, focuses=True, tree_focus=None, selected=False, result=True):
+    def fixture(self, *, focuses=True, tree_focus=None, selected=False, result=True, row_name="Video with Alpha"):
         events = []
         ui = actions.AtspiSession.__new__(actions.AtspiSession)
         ui.pid = 41
@@ -2908,7 +2908,7 @@ class RenderCategoryFocusTests(unittest.TestCase):
                      editable=False, rect=[100, 100, 1100, 650])
         tree = row("app/6/tree", role="tree", modal=False,
                    editable=False, rect=[174, 144, 930, 373])
-        category = row("app/6/tree/3", name="Video with Alpha", role="table cell",
+        category = row("app/6/tree/3", name=row_name, role="table cell",
                        modal=False, editable=False, rect=[196, 194, 906, 24])
         rows = [dialog, tree, category]
         ui.nodes = {}
@@ -3073,6 +3073,154 @@ class RenderCategoryFocusTests(unittest.TestCase):
                 self.assertEqual(events[-1]["state"], "READ_ONLY_FAILURE_CUSTODY")
                 self.assertEqual(events[-1]["snapshot"]["row_count"], 3)
                 self.assertFalse(events[-1]["native_operation_retried"])
+
+
+    def test_preset_requires_one_directed_click_and_selected_readback_of_same_row(self):
+        ui, dialog, tree, preset, events = self.fixture(row_name="Alpha MOV", selected=True)
+        with patch.object(actions.x11_modal, "observe_parent", return_value={"window": 909}), \
+             patch.object(actions.subprocess, "run", ui.pointer_command):
+            self.assertEqual(ui.select_render_preset(
+                "editor-before.select-alpha-mov", preset, dialog, expected_window=909), 909)
+            with self.assertRaises(actions.GuiRejected):
+                ui.select_render_preset(
+                    "editor-before.select-alpha-mov", preset, dialog, expected_window=909)
+        ui.pointer_command.assert_called_once_with(
+            ["xdotool", "mousemove", "--sync", "649", "206",
+             "click", "--window", "909", "1"],
+            stdin=actions.subprocess.DEVNULL, capture_output=True, check=False, timeout=5)
+        self.assertEqual([event["state"] for event in events],
+                         ["INTENT", "OBSERVED", "REQUEST_RETURNED"])
+        ui.nodes[preset["key"]].get_state_set.return_value.contains.assert_called_once_with("SELECTED")
+        for node in ui.nodes.values():
+            node.get_selection_iface.assert_not_called()
+            node.get_action_iface.assert_not_called()
+            node.get_component_iface.return_value.grab_focus.assert_not_called()
+
+    def test_preset_identity_geometry_and_prior_window_guards_reject_unbound_input(self):
+        for change in ("route", "name", "hidden", "foreign", "outside", "dialog",
+                       "parent", "hit", "prior-window", "boolean-window", "zero-window",
+                       "changed-window", "changed-geometry"):
+            with self.subTest(change=change):
+                ui, dialog, tree, preset, events = self.fixture(row_name="Alpha MOV", selected=True)
+                step = "editor-before.select-alpha-mov"
+                expected = 909
+                if change == "route":
+                    step = "editor-before.focus-alpha"
+                elif change == "name":
+                    preset["name"] = "Alpha VP9"
+                elif change == "hidden":
+                    preset["visible"] = False
+                elif change == "foreign":
+                    ui.nodes[preset["key"]].get_process_id.return_value = 42
+                elif change == "outside":
+                    preset["rect"][0] = 1200
+                elif change == "dialog":
+                    dialog["name"] = "Save As"
+                elif change == "parent":
+                    ui.nodes[preset["key"]].get_parent.return_value = Mock()
+                elif change == "hit":
+                    ui.nodes[tree["key"]].get_component_iface.return_value.get_accessible_at_point.return_value = Mock()
+                elif change == "prior-window":
+                    expected = 910
+                elif change == "boolean-window":
+                    expected = True
+                elif change == "zero-window":
+                    expected = 0
+                observations = []
+                def observe(**_):
+                    observations.append(None)
+                    if change == "changed-geometry" and len(observations) == 1:
+                        component = ui.nodes[preset["key"]].get_component_iface.return_value
+                        component.get_extents.side_effect = None
+                        component.get_extents.return_value = SimpleNamespace(
+                            x=197, y=194, width=906, height=24)
+                    return {"window": 910 if change == "changed-window" and len(observations) == 2 else 909}
+                failure = actions.GuiUncertain if change.startswith("changed-") else actions.GuiRejected
+                with patch.object(actions.x11_modal, "observe_parent", side_effect=observe), \
+                     patch.object(actions.subprocess, "run", ui.pointer_command), \
+                     self.assertRaises(failure):
+                    ui.select_render_preset(step, preset, dialog, expected_window=expected)
+                ui.pointer_command.assert_not_called()
+                self.assertEqual(bool(events), change.startswith("changed-"))
+                if events:
+                    self.assertTrue(ui.journal.blocked)
+                    self.assertEqual(events[-1]["state"], "ERROR_OR_UNKNOWN")
+
+    def test_preset_focus_or_another_selected_row_does_not_confirm_this_preset(self):
+        for other_selected in (False, True):
+            with self.subTest(other_selected=other_selected):
+                ui, dialog, tree, preset, events = self.fixture(row_name="Alpha MOV")
+                if other_selected:
+                    other = row("app/6/tree/4", name="Alpha MOV", role="table cell",
+                                modal=False, editable=False, rect=[196, 218, 906, 24])
+                    ui.tree().append(other)
+                    node = Mock()
+                    node.get_process_id.return_value = 41
+                    node.get_state_set.return_value.contains.return_value = True
+                    ui.nodes[other["key"]] = node
+                ticks = iter(range(1000))
+                with patch.object(actions.x11_modal, "observe_parent", return_value={"window": 909}), \
+                     patch.object(actions.subprocess, "run", ui.pointer_command), \
+                     patch.object(actions.time, "monotonic", side_effect=lambda: next(ticks)), \
+                     patch.object(actions.time, "sleep"):
+                    with self.assertRaisesRegex(actions.GuiUncertain, "editor-before.preset-selected"):
+                        ui.select_render_preset(
+                            "editor-before.select-alpha-mov", preset, dialog, expected_window=909)
+                    with self.assertRaises(actions.GuiRejected):
+                        ui.select_render_preset(
+                            "editor-before.select-alpha-mov", preset, dialog, expected_window=909)
+                self.assertEqual(ui.pointer_command.call_count, 1)
+                self.assertTrue(ui.journal.blocked)
+                self.assertEqual(events[-1]["state"], "TIMED_OUT_UNKNOWN")
+                self.assertEqual(events[-1]["step"], "editor-before.preset-selected")
+                if other_selected:
+                    ui.nodes[other["key"]].get_state_set.assert_not_called()
+
+    def test_preset_selection_failure_retains_last_tree_and_original_error_without_requery(self):
+        ui, dialog, tree, preset, events = self.fixture(row_name="Alpha MOV")
+        category = row("app/6/tree/2", name="Video with Alpha", role="table cell",
+                       modal=False, editable=False, rect=[196, 170, 906, 24])
+        ui.tree().append(category)
+        node = Mock()
+        node.get_process_id.return_value = 41
+        node.get_state_set.return_value.contains.side_effect = lambda name: name == "EXPANDED"
+        ui.nodes[category["key"]] = node
+        ui.menu = Mock()
+        ui.dialog = Mock(return_value=dialog)
+        ui.descendants = Mock(return_value=[tree, category, preset])
+        ui.find = Mock(return_value=preset)
+        ui.key = Mock()
+        ui.render_action = Mock()
+        wait = ui.journal.wait
+        failed = {}
+        def retain_failure(step, query):
+            try:
+                return wait(step, query)
+            except actions.GuiUncertain as error:
+                failed.update(error=error, queries=ui.tree.call_count)
+                raise
+        ui.journal.wait = retain_failure
+        ticks = iter(range(1000))
+        with tempfile.TemporaryDirectory() as temp, \
+             patch.object(actions.x11_modal, "observe_parent", return_value={"window": 909}), \
+             patch.object(actions.subprocess, "run", ui.pointer_command), \
+             patch.object(actions.time, "monotonic", side_effect=lambda: next(ticks)), \
+             patch.object(actions.time, "sleep"):
+            root = Path(temp)
+            with self.assertRaises(actions.GuiUncertain) as caught:
+                ui.generate_editor_render_job("editor-before", root / "before.mov", root / "before.mlt")
+        self.assertIs(caught.exception, failed["error"])
+        self.assertEqual(ui.tree.call_count, failed["queries"])
+        self.assertEqual(ui.pointer_command.call_count, 1)
+        self.assertTrue(ui.journal.blocked)
+        ui.key.assert_not_called()
+        ui.render_action.assert_not_called()
+        self.assertEqual(events[-1]["state"], "READ_ONLY_FAILURE_CUSTODY")
+        self.assertEqual(events[-1]["snapshot"]["row_count"], 4)
+        self.assertFalse(events[-1]["native_operation_retried"])
+        self.assertFalse(events[-1]["native_render_dispatched_here"])
+        self.assertFalse(events[-1]["formal_acceptance"])
+
 
 
 class EditorRenderGuiControls(unittest.TestCase):

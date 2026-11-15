@@ -1217,20 +1217,48 @@ class AtspiSession:
         self.journal.perform(step, {**row, "action": name}, lambda: interface.do_action(index))
 
     def focus_render_category(self, step: str, row: dict, dialog: dict) -> int:
-        """One observed row click; Qt table cells do not expose setFocus."""
-        require(step in ("editor-before.focus-alpha", "editor-after.focus-alpha"),
-                "native_render_category_focus_not_closed")
+        return self._click_render_tree_row(step, row, dialog, "Video with Alpha")
+
+    def select_render_preset(self, step: str, row: dict, dialog: dict, *,
+                             expected_window: int | None = None) -> int:
+        window = self._click_render_tree_row(
+            step, row, dialog, "Alpha MOV", expected_window=expected_window)
+        def selected_preset():
+            rows = self._complete_modal_tree()
+            if rows is None:
+                return None
+            current = [r for r in rows if r["key"] == row["key"]
+                       and normalized(r["name"]) == "Alpha MOV"
+                       and r["role"] == row["role"] and r["pid"] == self.pid
+                       and r["visible"] and r["enabled"]]
+            return len(current) == 1 and self.render_state(current[0], "SELECTED")
+        # A returned selection request is not a native SELECTED observation.
+        self.journal.wait(step.rsplit(".", 1)[0] + ".preset-selected", selected_preset)
+        return window
+
+    def _click_render_tree_row(self, step: str, row: dict, dialog: dict, name: str, *,
+                               expected_window: int | None = None) -> int:
+        """One hit-tested click directed to the observed owned Rendering window."""
+        names = {"editor-before.focus-alpha": "Video with Alpha",
+                 "editor-after.focus-alpha": "Video with Alpha",
+                 "editor-before.select-alpha-mov": "Alpha MOV",
+                 "editor-after.select-alpha-mov": "Alpha MOV"}
+        require(step in names and names[step] == name,
+                "native_render_row_input_not_closed")
+        require(expected_window is None or (type(expected_window) is int
+                and 0 < expected_window < 2**32),
+                "native_render_row_expected_window_invalid")
         rows = self._complete_modal_tree()
-        require(rows is not None, "native_render_category_tree_incomplete")
+        require(rows is not None, "native_render_row_tree_incomplete")
         current = unique([r for r in rows if r["key"] == row["key"]],
-                         code="native_render_category_not_bound")
+                         code="native_render_row_not_bound")
         window = unique([r for r in rows if r["key"] == dialog["key"]],
-                        code="native_render_category_dialog_not_bound")
+                        code="native_render_row_dialog_not_bound")
         parent_key = current["key"].rsplit("/", 1)[0]
         parent = unique([r for r in rows if r["key"] == parent_key],
-                        code="native_render_category_parent_not_bound")
+                        code="native_render_row_parent_not_bound")
         require(current == row and window == dialog
-                and normalized(current["name"]) == "Video with Alpha"
+                and normalized(current["name"]) == name
                 and current["role"] in ("table cell", "tree item", "table row")
                 and parent["role"] == "tree"
                 and window_title_matches(window["name"], ("Rendering",))
@@ -1238,7 +1266,7 @@ class AtspiSession:
                 and parent_key.startswith(window["key"] + "/")
                 and all(r["pid"] == self.pid and r["visible"] and r["enabled"]
                         for r in (current, parent, window)),
-                "native_render_category_target_changed")
+                "native_render_row_target_changed")
         def contains(outer, inner):
             x, y, w, h = outer
             a, b, c, d = inner
@@ -1246,59 +1274,61 @@ class AtspiSession:
                 x <= a and y <= b and a + c <= x + w and b + d <= y + h)
         require(contains(window["rect"], parent["rect"])
                 and contains(parent["rect"], current["rect"]),
-                "native_render_category_geometry_not_contained")
+                "native_render_row_geometry_not_contained")
         x, y, width, height = current["rect"]
         point = (x + width // 2, y + height // 2)
         node = self.nodes[current["key"]]
         tree = self.nodes[parent_key]
         require(node.get_parent() == tree
                 and node.get_process_id() == tree.get_process_id() == self.pid,
-                "native_render_category_native_parent_changed")
+                "native_render_row_native_parent_changed")
         component = tree.get_component_iface()
-        require(component is not None, "native_render_category_hit_test_missing")
+        require(component is not None, "native_render_row_hit_test_missing")
 
         def observe():
             for observed in (current, parent, window):
                 live = self.nodes[observed["key"]]
                 require(live.get_process_id() == self.pid
                         and live.get_name() == observed["name"],
-                        "native_render_category_live_identity_changed")
+                        "native_render_row_live_identity_changed")
                 interface = live.get_component_iface()
                 require(interface is not None,
-                        "native_render_category_component_missing")
+                        "native_render_row_component_missing")
                 rect = interface.get_extents(self.api.CoordType.SCREEN)
                 require([rect.x, rect.y, rect.width, rect.height] == observed["rect"],
-                        "native_render_category_live_geometry_changed")
+                        "native_render_row_live_geometry_changed")
             require(component.get_accessible_at_point(
                 *point, self.api.CoordType.SCREEN) == node,
-                "native_render_category_hit_test_changed")
+                "native_render_row_hit_test_changed")
             return x11_modal.observe_parent(
                 expected_pid=self.pid, parent_name=window["name"],
                 parent_type=("_NET_WM_WINDOW_TYPE_NORMAL", "_NET_WM_WINDOW_TYPE_DIALOG"),
                 guard=self.journal.guard, deadline=time.monotonic() + WAIT_SECONDS)
 
         before = observe()
+        require(expected_window is None or before["window"] == expected_window,
+                "native_render_row_prior_window_changed")
         argv = ["xdotool", "mousemove", "--sync", str(point[0]), str(point[1]),
                 "click", "--window", str(before["window"]), "1"]
         def click():
             confirmed = observe()
             require(confirmed["window"] == before["window"],
-                    "native_render_category_X11_window_changed")
+                    "native_render_row_X11_window_changed")
             self.journal.emit({"step": step + ".target-confirmed",
                                "state": "OBSERVED", "X11": confirmed,
-                               "point": list(point), "category_key": current["key"],
+                               "point": list(point), "row_key": current["key"], "row_name": name,
                                "native_operation_retried": False})
             # Explicit --window directs the button event to the observed XID.
             # A global AT-SPI click could hit an unrelated nonfocused overlay.
             result = subprocess.run(argv, stdin=subprocess.DEVNULL,
                                     capture_output=True, check=False, timeout=5)
             require(result.returncode == 0,
-                    "native_render_category_pointer_terminal_not_success")
+                    "native_render_row_pointer_terminal_not_success")
             return True
         self.journal.perform(step, {**current, "event": "X11_WINDOW_CLICK",
                                    "point": list(point), "argv": argv,
                                    "X11": before, "click_count": 1}, click)
-        def focused_category():
+        def focused_row():
             latest = self._complete_modal_tree()
             if latest is None:
                 return None
@@ -1309,9 +1339,9 @@ class AtspiSession:
                                and r["visible"] and r["enabled"] for r in latest)
             # Kdenlive 26.08.3 deliberately removes ItemIsSelectable from
             # category rows. Current-cell and tree focus bind Right; SELECTED
-            # remains required below for the actual Alpha MOV preset.
+            # remains required by select_render_preset for the actual preset.
             return len(focused) == 1 and tree_focused
-        self.journal.wait(step + ".focused", focused_category)
+        self.journal.wait(step + ".focused", focused_row)
         return before["window"]
 
     def generate_editor_render_job(self, step: str, output: Path, playlist: Path) -> dict:
@@ -1335,6 +1365,7 @@ class AtspiSession:
         category = unique(controls("Video with Alpha", ("table cell", "tree item", "table row"), visible=True),
                           code="native_render_alpha_category_not_unique")
         try:
+            render_window = None
             if not self.render_state(category, "EXPANDED"):
                 # Qt's cell toggle changes selection, while grab_focus is
                 # unsupported. A single hit-tested click must establish this
@@ -1344,9 +1375,11 @@ class AtspiSession:
             preset = self.journal.wait(step + ".preset", lambda: self.find(
                 ("Alpha MOV",), ("table cell", "tree item", "table row"),
                 scope=dialog["key"]))
+            self.select_render_preset(step + ".select-alpha-mov", preset, dialog,
+                                      expected_window=render_window)
         except BaseException as original:
-            # Preserve the last complete tree for focus, expansion, and preset
-            # failures alike. Never re-query Qt or repeat an uncertain action
+            # Preserve the last complete tree for focus, expansion, discovery,
+            # and selection failures alike. Never re-query Qt or repeat an uncertain action
             # while recording the original failure.
             try:
                 snapshot = self.last_snapshot
@@ -1372,19 +1405,6 @@ class AtspiSession:
                 original.add_note("native_render_preset_custody_failed:"
                                   + type(recording_error).__name__)
             raise
-        node = self.nodes[preset["key"]]
-        parent = node.get_parent()
-        index = node.get_index_in_parent()
-        require(parent is not None and parent.get_process_id() == self.pid
-                and type(index) is int and 0 <= index < MAX_CHILDREN,
-                "native_render_preset_parent_not_bound")
-        selection = parent.get_selection_iface()
-        require(selection is not None, "native_render_preset_selection_unavailable")
-        self.journal.perform(step + ".select-alpha-mov", {**preset, "child_index": index},
-                             lambda: selection.select_child(index))
-        self.journal.wait(step + ".preset-selected", lambda: any(
-            self.render_state(r, "SELECTED") for r in controls("Alpha MOV", visible=True)))
-
         observations = []
         def checkbox(name, wanted, *, optional=False):
             found = controls(name, ("check box", "radio button", "panel"))
