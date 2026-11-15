@@ -31,6 +31,12 @@ on:
         type: string
   pull_request:
     paths:
+      - "tooling/candidate_package_inventory.py"
+      - "tooling/candidate_package_extraction.py"
+      - "tooling/startup_capture_core.py"
+      - "tooling/tests/test_candidate_package_inventory.py"
+      - "tooling/tests/test_candidate_package_extraction.py"
+      - "tooling/tests/test_candidate_package_inventory_workflow.py"
       - "apps/desktop/**"
       - "apps/studio/**"
       - "crates/**"
@@ -144,6 +150,12 @@ on:
   push:
     branches: ["main", "feat/**"]
     paths:
+      - "tooling/candidate_package_inventory.py"
+      - "tooling/candidate_package_extraction.py"
+      - "tooling/startup_capture_core.py"
+      - "tooling/tests/test_candidate_package_inventory.py"
+      - "tooling/tests/test_candidate_package_extraction.py"
+      - "tooling/tests/test_candidate_package_inventory_workflow.py"
       - "apps/desktop/**"
       - "apps/studio/**"
       - "crates/**"
@@ -331,6 +343,40 @@ jobs:
         run: python3 -B -m unittest tooling.tests.test_ci_linux_dependency_capture -v
       - name: macOS captured dependency composition contracts
         run: python3 -B -m unittest tooling.tests.test_ci_macos_dependency_capture -v
+      - name: Require complete package inventory and Linux ownership source controls
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B -E -s tooling/ci_test_runner.py \
+            --repo "$GITHUB_WORKSPACE" --test-directory tooling/tests \
+            --pattern test_candidate_package_extraction.py \
+            --pattern test_candidate_package_inventory.py \
+            --pattern test_candidate_package_inventory_workflow.py \
+            --mode discovery --require-complete --timeout 60 \
+            --expected-source "$GITHUB_SHA" --report "$RUNNER_TEMP/package-inventory-source/receipt.json"
+          python3 -B -E -s - "$RUNNER_TEMP/package-inventory-source/receipt.json" "$GITHUB_SHA" <<'PY_PACKAGE_G1'
+          import json,sys
+          from pathlib import Path
+          receipt=json.loads(Path(sys.argv[1]).read_bytes())
+          assert receipt["status"]=="PASS" and receipt["executed_source_sha"]==sys.argv[2]
+          assert len(receipt["steps"])==3
+          for step,expected in zip(receipt["steps"],(12,33,8),strict=True):
+              counts=step["counts"]
+              assert step["status"]=="PASS" and counts["tests_run"]==counts["passed"]==expected
+              assert all(counts[key]==0 for key in ("failures","errors","skipped","expected_failures","unexpected_successes"))
+          print("package-inventory-source=PASS extraction_effects=0 full_inventory=NOT_VERIFIED G3=STOP")
+          PY_PACKAGE_G1
+      - name: Retain original package inventory source control records
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-package-inventory-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/package-inventory-source/*.json
+            ${{ runner.temp }}/package-inventory-source/*.log
+          if-no-files-found: warn
+          retention-days: 30
       - name: Captured SQLite native output contracts
         run: python3 -B -m unittest discover -s scripts -p test_cargo_sqlite_native_output.py -v
       - name: Static NSIS reference and installed-byte comparison contracts
@@ -881,6 +927,7 @@ jobs:
             --require-cargo-binding \
             --output ci-evidence/linux-candidate.json
       - name: One accessible first-use attempt and a read-only cold relaunch
+        id: first_use_package_inventory
         shell: bash
         timeout-minutes: 5
         run: |
@@ -889,10 +936,22 @@ jobs:
           appimage="$(find "$MW_LINUX_BUNDLE_ROOT/bundle/appimage" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
           work="$RUNNER_TEMP/linux-first-use-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_SHA"
           test -f "$work/reservation.json"
-          mkdir "$work/deb" "$work/appimage"
-          dpkg-deb --extract "$deb" "$work/deb"
-          mapfile -t deb_bins < <(find "$work/deb/usr/bin" -maxdepth 1 -type f -executable -iname "*motionwright*")
-          mapfile -t deb_desktop < <(find "$work/deb/usr/share/applications" -maxdepth 1 -type f -name '*.desktop')
+          package_inventory() {
+            local kind="$1" artifact="$2"
+            local output="$GITHUB_WORKSPACE/ci-evidence/linux-$kind-package-inventory"
+            (
+              set -o noclobber
+              python3 -B -E -s tooling/candidate_package_inventory.py extract \
+                --kind "$kind" --artifact "$GITHUB_WORKSPACE/$artifact" \
+                --candidate-receipt "$GITHUB_WORKSPACE/ci-evidence/linux-candidate.json" \
+                --work "$work/$kind-inventory" --directory "$output" \
+                > "$output.producer.json"
+            )
+          }
+          package_inventory deb "$deb"
+          deb_payload="$work/deb-inventory/payload"
+          mapfile -t deb_bins < <(find "$deb_payload/usr/bin" -maxdepth 1 -type f -executable -iname "*motionwright*")
+          mapfile -t deb_desktop < <(find "$deb_payload/usr/share/applications" -maxdepth 1 -type f -name '*.desktop')
           test "${#deb_bins[@]}" -eq 1
           test "${#deb_desktop[@]}" -eq 1
           /usr/bin/python3 -B -E -s tooling/candidate_smoke.py \
@@ -905,11 +964,22 @@ jobs:
           echo "Debian extracted program and desktop metadata validated"
           chmod u+x "$appimage"
           echo "Extracting AppImage to disposable runner directory"
-          if ! (cd "$work/appimage" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null); then
-            echo "::error::AppImage extraction failed (no FUSE or sandbox bypass was attempted)"
-            exit 1
-          fi
-          extracted="$work/appimage/squashfs-root"
+          package_inventory appimage "$appimage"
+          extracted="$work/appimage-inventory/squashfs-root"
+          python3 -B -E -s - <<'PY_PACKAGE_SEALS'
+          import os,sys
+          from pathlib import Path
+          repo=Path(os.environ["GITHUB_WORKSPACE"])
+          sys.path.insert(0,str(repo/"tooling"))
+          import candidate_package_inventory as inventory
+          for kind in ("deb","appimage"):
+              raw=inventory.capture.stable_read(repo,"ci-evidence/linux-"+kind+"-package-inventory.producer.json",65536)
+              seal=inventory.capture.parse_json(raw)
+              inventory.file_identity(seal)
+              inventory.require(0 < seal["bytes"] <= inventory.MAX_REPORT,"inventory_producer_seal_budget")
+              with Path(os.environ["GITHUB_OUTPUT"]).open("a",encoding="utf-8") as output:
+                  output.write(kind+"_inventory_sha256="+seal["sha256"]+"\n")
+          PY_PACKAGE_SEALS
           if ! test -x "$extracted/AppRun"; then
             echo "::error::AppImage extraction contains no executable AppRun"
             find "$extracted" -maxdepth 2 -name 'AppRun' -o -name '*.desktop'
@@ -950,6 +1020,9 @@ jobs:
             --output ci-evidence/linux-appimage-smoke.json
       - name: Verify both extracted installed packages against the original Cargo capture
         shell: bash
+        env:
+          MW_DEB_PACKAGE_INVENTORY_SHA256: ${{ steps.first_use_package_inventory.outputs.deb_inventory_sha256 }}
+          MW_APPIMAGE_PACKAGE_INVENTORY_SHA256: ${{ steps.first_use_package_inventory.outputs.appimage_inventory_sha256 }}
         run: |
           set -euo pipefail
           export CARGO_HOME="$RUNNER_TEMP/motionwright-linux-cargo-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -958,6 +1031,60 @@ jobs:
           export PATCHELF='/usr/bin/patchelf'
           export NO_STRIP='1'
           python3 -B tooling/ci_linux_dependency_capture.py verify
+          python3 -B -E -s - <<'PY_PACKAGE_CONSUMER'
+          import os,sys
+          from pathlib import Path
+          repo=Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          sys.path.insert(0,str(repo/"tooling"))
+          import ci_linux_dependency_capture as gate
+          import candidate_package_inventory as inventory
+          source=gate.linux_source(os.environ)
+          runner=Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          if os.environ["GITHUB_JOB"]=="linux-first-use-installed":
+              work=runner/("linux-first-use-"+os.environ["GITHUB_RUN_ID"]+"-"+os.environ["GITHUB_RUN_ATTEMPT"]+"-"+source)
+          else:
+              work=runner/"motionwright-smoke"
+          for kind,leaf in (("deb","payload"),("appimage","squashfs-root")):
+              prefix="ci-evidence/linux-"+kind+"-package-inventory"
+              expected=os.environ["MW_"+kind.upper()+"_PACKAGE_INVENTORY_SHA256"]
+              seal=inventory.capture.parse_json(inventory.capture.stable_read(repo,prefix+".producer.json",65536))
+              inventory.file_identity(seal)
+              inventory.require(seal["sha256"]==expected,"inventory_producer_seal_changed")
+              reference=gate.verify_package_inventory(repo,source,kind=kind,directory=repo/prefix,
+                  expected_sha256=expected,payload=work/(kind+"-inventory")/leaf)
+              inventory.require(reference["bytes"]==seal["bytes"],"inventory_producer_length_changed")
+              inventory.capture.write_new(repo/(prefix+".consumer.json"),inventory.capture.encoded(reference))
+          PY_PACKAGE_CONSUMER
+      - name: Preserve original installed Linux package inventories
+        if: ${{ always() && steps.first_use_package_inventory.outcome != 'skipped' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-linux-installed-package-inventories-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ci-evidence/linux-deb-package-inventory.producer.json
+            ci-evidence/linux-deb-package-inventory.consumer.json
+            ci-evidence/linux-deb-package-inventory/input.json
+            ci-evidence/linux-deb-package-inventory/inventory.json
+            ci-evidence/linux-deb-package-inventory/extract.request.json
+            ci-evidence/linux-deb-package-inventory/extract.completion.json
+            ci-evidence/linux-deb-package-inventory/extract.stdout
+            ci-evidence/linux-deb-package-inventory/extract.stderr
+            ci-evidence/linux-deb-package-inventory/extract.subtree.original
+            ci-evidence/linux-deb-package-inventory/extract.binding.json
+            ci-evidence/linux-deb-package-inventory/extract.closure.json
+            ci-evidence/linux-appimage-package-inventory.producer.json
+            ci-evidence/linux-appimage-package-inventory.consumer.json
+            ci-evidence/linux-appimage-package-inventory/input.json
+            ci-evidence/linux-appimage-package-inventory/inventory.json
+            ci-evidence/linux-appimage-package-inventory/extract.request.json
+            ci-evidence/linux-appimage-package-inventory/extract.completion.json
+            ci-evidence/linux-appimage-package-inventory/extract.stdout
+            ci-evidence/linux-appimage-package-inventory/extract.stderr
+            ci-evidence/linux-appimage-package-inventory/extract.subtree.original
+            ci-evidence/linux-appimage-package-inventory/extract.binding.json
+            ci-evidence/linux-appimage-package-inventory/extract.closure.json
+          if-no-files-found: warn
+          retention-days: 30
       - name: Retain bounded first-use originals without following application data links
         if: always()
         shell: bash
@@ -1219,6 +1346,7 @@ jobs:
             "${cargo_args[@]}" \
             --output ci-evidence/linux-candidate.json
       - name: Inspect extracted Linux packages and launch a rootless AppImage window
+        id: linux_package_inventory
         shell: bash
         timeout-minutes: 5
         run: |
@@ -1226,10 +1354,29 @@ jobs:
           deb="$(find "$MW_LINUX_BUNDLE_ROOT/bundle/deb" -maxdepth 1 -type f -name '*.deb' -print -quit)"
           appimage="$(find "$MW_LINUX_BUNDLE_ROOT/bundle/appimage" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
           work="$RUNNER_TEMP/motionwright-smoke"
-          mkdir -p "$work/deb" "$work/appimage"
-          dpkg-deb --extract "$deb" "$work/deb"
-          mapfile -t deb_bins < <(find "$work/deb/usr/bin" -maxdepth 1 -type f -executable -iname "*motionwright*")
-          mapfile -t deb_desktop < <(find "$work/deb/usr/share/applications" -maxdepth 1 -type f -name '*.desktop')
+          package_inventory() {
+            local kind="$1" artifact="$2"
+            local output="$GITHUB_WORKSPACE/ci-evidence/linux-$kind-package-inventory"
+            (
+              set -o noclobber
+              python3 -B -E -s tooling/candidate_package_inventory.py extract \
+                --kind "$kind" --artifact "$GITHUB_WORKSPACE/$artifact" \
+                --candidate-receipt "$GITHUB_WORKSPACE/ci-evidence/linux-candidate.json" \
+                --work "$work/$kind-inventory" --directory "$output" \
+                > "$output.producer.json"
+            )
+          }
+          if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' && "$MW_LINUX_CANDIDATE_SCOPE" == 'linux_bundle' ]]; then
+            mkdir "$work"
+            package_inventory deb "$deb"
+            deb_payload="$work/deb-inventory/payload"
+          else
+            mkdir -p "$work/deb" "$work/appimage"
+            dpkg-deb --extract "$deb" "$work/deb"
+            deb_payload="$work/deb"
+          fi
+          mapfile -t deb_bins < <(find "$deb_payload/usr/bin" -maxdepth 1 -type f -executable -iname "*motionwright*")
+          mapfile -t deb_desktop < <(find "$deb_payload/usr/share/applications" -maxdepth 1 -type f -name '*.desktop')
           test "${#deb_bins[@]}" -eq 1
           test "${#deb_desktop[@]}" -eq 1
           python3 tooling/candidate_smoke.py \
@@ -1242,11 +1389,30 @@ jobs:
           echo "Debian extracted program and desktop metadata validated"
           chmod u+x "$appimage"
           echo "Extracting AppImage to disposable runner directory"
-          if ! (cd "$work/appimage" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null); then
-            echo "::error::AppImage extraction failed (no FUSE or sandbox bypass was attempted)"
-            exit 1
+          if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' && "$MW_LINUX_CANDIDATE_SCOPE" == 'linux_bundle' ]]; then
+            package_inventory appimage "$appimage"
+            extracted="$work/appimage-inventory/squashfs-root"
+          python3 -B -E -s - <<'PY_PACKAGE_SEALS'
+          import os,sys
+          from pathlib import Path
+          repo=Path(os.environ["GITHUB_WORKSPACE"])
+          sys.path.insert(0,str(repo/"tooling"))
+          import candidate_package_inventory as inventory
+          for kind in ("deb","appimage"):
+              raw=inventory.capture.stable_read(repo,"ci-evidence/linux-"+kind+"-package-inventory.producer.json",65536)
+              seal=inventory.capture.parse_json(raw)
+              inventory.file_identity(seal)
+              inventory.require(0 < seal["bytes"] <= inventory.MAX_REPORT,"inventory_producer_seal_budget")
+              with Path(os.environ["GITHUB_OUTPUT"]).open("a",encoding="utf-8") as output:
+                  output.write(kind+"_inventory_sha256="+seal["sha256"]+"\n")
+          PY_PACKAGE_SEALS
+          else
+            if ! (cd "$work/appimage" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null); then
+              echo "::error::AppImage extraction failed (no FUSE or sandbox bypass was attempted)"
+              exit 1
+            fi
+            extracted="$work/appimage/squashfs-root"
           fi
-          extracted="$work/appimage/squashfs-root"
           if ! test -x "$extracted/AppRun"; then
             echo "::error::AppImage extraction contains no executable AppRun"
             find "$extracted" -maxdepth 2 -name 'AppRun' -o -name '*.desktop'
@@ -1318,7 +1484,67 @@ jobs:
             --output ci-evidence/linux-appimage-smoke.json
       - name: Verify both extracted Linux packages against the original Cargo capture
         if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle'
-        run: python3 -B tooling/ci_linux_dependency_capture.py verify
+        shell: bash
+        env:
+          MW_DEB_PACKAGE_INVENTORY_SHA256: ${{ steps.linux_package_inventory.outputs.deb_inventory_sha256 }}
+          MW_APPIMAGE_PACKAGE_INVENTORY_SHA256: ${{ steps.linux_package_inventory.outputs.appimage_inventory_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -B tooling/ci_linux_dependency_capture.py verify
+          python3 -B -E -s - <<'PY_PACKAGE_CONSUMER'
+          import os,sys
+          from pathlib import Path
+          repo=Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          sys.path.insert(0,str(repo/"tooling"))
+          import ci_linux_dependency_capture as gate
+          import candidate_package_inventory as inventory
+          source=gate.linux_source(os.environ)
+          runner=Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          if os.environ["GITHUB_JOB"]=="linux-first-use-installed":
+              work=runner/("linux-first-use-"+os.environ["GITHUB_RUN_ID"]+"-"+os.environ["GITHUB_RUN_ATTEMPT"]+"-"+source)
+          else:
+              work=runner/"motionwright-smoke"
+          for kind,leaf in (("deb","payload"),("appimage","squashfs-root")):
+              prefix="ci-evidence/linux-"+kind+"-package-inventory"
+              expected=os.environ["MW_"+kind.upper()+"_PACKAGE_INVENTORY_SHA256"]
+              seal=inventory.capture.parse_json(inventory.capture.stable_read(repo,prefix+".producer.json",65536))
+              inventory.file_identity(seal)
+              inventory.require(seal["sha256"]==expected,"inventory_producer_seal_changed")
+              reference=gate.verify_package_inventory(repo,source,kind=kind,directory=repo/prefix,
+                  expected_sha256=expected,payload=work/(kind+"-inventory")/leaf)
+              inventory.require(reference["bytes"]==seal["bytes"],"inventory_producer_length_changed")
+              inventory.capture.write_new(repo/(prefix+".consumer.json"),inventory.capture.encoded(reference))
+          PY_PACKAGE_CONSUMER
+      - name: Preserve original isolated Linux package inventories
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle' && steps.linux_package_inventory.outcome != 'skipped' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-linux-package-inventories-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ci-evidence/linux-deb-package-inventory.producer.json
+            ci-evidence/linux-deb-package-inventory.consumer.json
+            ci-evidence/linux-deb-package-inventory/input.json
+            ci-evidence/linux-deb-package-inventory/inventory.json
+            ci-evidence/linux-deb-package-inventory/extract.request.json
+            ci-evidence/linux-deb-package-inventory/extract.completion.json
+            ci-evidence/linux-deb-package-inventory/extract.stdout
+            ci-evidence/linux-deb-package-inventory/extract.stderr
+            ci-evidence/linux-deb-package-inventory/extract.subtree.original
+            ci-evidence/linux-deb-package-inventory/extract.binding.json
+            ci-evidence/linux-deb-package-inventory/extract.closure.json
+            ci-evidence/linux-appimage-package-inventory.producer.json
+            ci-evidence/linux-appimage-package-inventory.consumer.json
+            ci-evidence/linux-appimage-package-inventory/input.json
+            ci-evidence/linux-appimage-package-inventory/inventory.json
+            ci-evidence/linux-appimage-package-inventory/extract.request.json
+            ci-evidence/linux-appimage-package-inventory/extract.completion.json
+            ci-evidence/linux-appimage-package-inventory/extract.stdout
+            ci-evidence/linux-appimage-package-inventory/extract.stderr
+            ci-evidence/linux-appimage-package-inventory/extract.subtree.original
+            ci-evidence/linux-appimage-package-inventory/extract.binding.json
+            ci-evidence/linux-appimage-package-inventory/extract.closure.json
+          if-no-files-found: warn
+          retention-days: 30
       - name: Retain isolated GUI launch diagnostics if smoke fails
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -1880,6 +2106,54 @@ jobs:
           $dest = Join-Path $env:RUNNER_TEMP 'motionwright-nsis-current-user'
           python -B tooling/ci_windows_dependency_capture.py verify --installed-root "$dest" --expected-inventory-sha256 "$env:MW_WINDOWS_APPLICATION_INVENTORY_SHA256" --require-static-uninstaller
           if ($LASTEXITCODE -ne 0) { throw 'Installed binary, notices and application member set failed' }
+      - name: Observe detached NSIS members after existing ownership checks
+        id: windows_package_inventory
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'
+        shell: python
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          import os,sys
+          from pathlib import Path
+          repo=Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          sys.path.insert(0,str(repo/"tooling"))
+          import ci_windows_dependency_capture as gate
+          import candidate_package_inventory as inventory
+          source=gate.internal_source(os.environ)
+          destination=Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)/gate.INSTALL_DIRECTORY
+          seal=gate.package_inventory(repo,source,run_id=os.environ["GITHUB_RUN_ID"],
+              install_root=destination,expected_inventory_sha256=os.environ["MW_WINDOWS_APPLICATION_INVENTORY_SHA256"],
+              directory=repo/"ci-evidence/windows-package-inventory")
+          inventory.file_identity(seal)
+          gate.capture.write_new(repo/"ci-evidence/windows-package-inventory.producer.json",gate.capture.encoded(seal))
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a",encoding="utf-8") as output:
+              output.write("package_inventory_sha256="+seal["sha256"]+"\n")
+          print("nsis-member-observation=RETAINED installer_process_closure=NOT_OBSERVED full_inventory=NOT_VERIFIED")
+      - name: Consume the original NSIS member observation with its retained producer seal
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'
+        shell: python
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          MW_WINDOWS_PACKAGE_INVENTORY_SHA256: ${{ steps.windows_package_inventory.outputs.package_inventory_sha256 }}
+        run: |
+          import os,sys
+          from pathlib import Path
+          repo=Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          sys.path.insert(0,str(repo/"tooling"))
+          import ci_windows_dependency_capture as gate
+          import candidate_package_inventory as inventory
+          source=gate.internal_source(os.environ)
+          destination=Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)/gate.INSTALL_DIRECTORY
+          expected=os.environ["MW_WINDOWS_PACKAGE_INVENTORY_SHA256"]
+          seal=gate.capture.parse_json(gate.capture.stable_read(repo,"ci-evidence/windows-package-inventory.producer.json",65536))
+          inventory.file_identity(seal)
+          gate.require(seal["sha256"]==expected,"windows_package_inventory_producer_seal_changed")
+          reference=gate.package_inventory(repo,source,run_id=os.environ["GITHUB_RUN_ID"],
+              install_root=destination,expected_inventory_sha256=os.environ["MW_WINDOWS_APPLICATION_INVENTORY_SHA256"],
+              directory=repo/"ci-evidence/windows-package-inventory",expected_package_inventory_sha256=expected)
+          gate.require(reference["bytes"]==seal["bytes"] and reference["custody"]=="NOT_OBSERVED",
+                       "windows_package_inventory_custody_changed")
+          gate.capture.write_new(repo/"ci-evidence/windows-package-inventory.consumer.json",gate.capture.encoded(reference))
       - name: Cold launch and reopen the real NSIS-installed application
         shell: pwsh
         timeout-minutes: 5
@@ -1923,6 +2197,17 @@ jobs:
             ci-evidence/windows-nsis-smoke.json
             ci-evidence/windows-nsis-cold-relaunch-diagnostic.json
           if-no-files-found: warn
+      - name: Preserve original NSIS member observation without invented setup bytes
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed' && steps.windows_package_inventory.outcome != 'skipped' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-windows-package-inventory-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ci-evidence/windows-package-inventory/inventory.json
+            ci-evidence/windows-package-inventory.producer.json
+            ci-evidence/windows-package-inventory.consumer.json
+          if-no-files-found: warn
+          retention-days: 30
       - name: Preserve original isolated Cargo and frontend capture records
         if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed' && steps.windows_candidate_build.outcome != 'skipped' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
