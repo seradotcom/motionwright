@@ -1125,6 +1125,9 @@ jobs:
             ci-evidence/linux-cargo/bundle.completion.json
             ci-evidence/linux-cargo/bundle.stdout
             ci-evidence/linux-cargo/bundle.stderr
+            ci-evidence/linux-cargo/tauri-inputs/*.json
+            ci-evidence/linux-cargo/tauri-inputs/pre/*.original
+            ci-evidence/linux-cargo/tauri-inputs/post/*.original
             ci-evidence/linux-cargo/state/source-before.json
             ci-evidence/linux-cargo/state/source-after.json
             ci-evidence/linux-cargo/state/metadata.stdout
@@ -1579,6 +1582,9 @@ jobs:
             ci-evidence/linux-cargo/bundle.completion.json
             ci-evidence/linux-cargo/bundle.stdout
             ci-evidence/linux-cargo/bundle.stderr
+            ci-evidence/linux-cargo/tauri-inputs/*.json
+            ci-evidence/linux-cargo/tauri-inputs/pre/*.original
+            ci-evidence/linux-cargo/tauri-inputs/post/*.original
             ci-evidence/linux-cargo/state/source-before.json
             ci-evidence/linux-cargo/state/source-after.json
             ci-evidence/linux-cargo/state/metadata.stdout

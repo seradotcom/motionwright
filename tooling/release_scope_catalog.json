@@ -21508,7 +21508,7 @@
     },
     {
       "path": ".github/workflows/package-candidate.yml",
-      "sha256": "e037daebf31fa3c4c02f8df4b7630491a0a3f11d62e69d543f1139b2d3dcf067",
+      "sha256": "f80fea6df5cbc1a2bc57941683fe62a94050aa8134a937d17126ac1e7eff008f",
       "preamble_sha256": "dc89698786826d32ae88e2ee99d8cd27fb54b086c1f0f159eb23836cb7914205",
       "evidence_class": "package_source_installed_and_provenance",
       "purpose": "Exact-source candidate packages and provenance, separately guarded Windows/NSIS source, compile/lifecycle and Linux first-use scopes. The all option covers its named package lane, not complete release readiness.",
@@ -21946,7 +21946,7 @@
             "linux-first-use-source"
           ],
           "strategy": null,
-          "source_sha256": "6fdb0343360bd79d11312afe5f74f8f8155238e7a440978ff8be73ee95900582",
+          "source_sha256": "23536326c0b5afae90c4138383b9eab66851b693ab0a0960156a511dca07e97e",
           "instance_sets": {
             "linux-first-use": [
               {}
@@ -22062,7 +22062,7 @@
               "name": "Preserve original installed Linux dependency records",
               "guard": "${{ always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_first_use' && steps.installed_candidate_build.outcome != 'skipped' }}",
               "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "505e57c806eb615070bc59418599713c1f6702ebfe976ad15d2c8b69173470bc",
+              "source_block_sha256": "90bcf2f8dcb8ebb91601bc99c5c5818b69f0fd37e9f7d4cb5e3e8ee4cfef5c74",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -22113,7 +22113,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": "receipt-policy",
           "strategy": null,
-          "source_sha256": "b391ed439fc8a881fa40ed540ec2c1b5436c91710c49f90a4350eef70322696c",
+          "source_sha256": "b9278d0d9be9a1373c5a7af7d2f75d7d607a8c96416af05577c5f5bc2d47dfe8",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -22208,7 +22208,7 @@
               "name": "Preserve original isolated Linux dependency records",
               "guard": "${{ always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle' && steps.linux_candidate_build.outcome != 'skipped' }}",
               "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "2b703e87c7db35c3607689bd5ee9c48b739fa3cb5aea22bf1e1de911c0c67127",
+              "source_block_sha256": "dfd226ad7dadf50891824548acf19544d012c73dcde8e3d327cd3737354df789",
               "api_binding": "EXPLICIT_NAME"
             }
           ]

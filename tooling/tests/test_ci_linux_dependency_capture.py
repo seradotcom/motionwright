@@ -354,6 +354,11 @@ class InstalledLinuxCaptureWorkflowTests(unittest.TestCase):
         self.assertEqual(
             upload_paths(self.installed, "Preserve original installed Linux dependency records"),
             upload_paths(self.bundle, "Preserve original isolated Linux dependency records"))
+        self.assertTrue({
+            "ci-evidence/linux-cargo/tauri-inputs/*.json",
+            "ci-evidence/linux-cargo/tauri-inputs/pre/*.original",
+            "ci-evidence/linux-cargo/tauri-inputs/post/*.original",
+        }.issubset(upload_paths(self.installed, "Preserve original installed Linux dependency records")))
         self.assertLess(self.installed.index("Preserve original installed Linux dependency records"),
                         self.installed.index("Same-job original installed Desktop to Native and back"))
         self.assertIn("always() && github.event_name == 'workflow_dispatch' && "
@@ -383,6 +388,617 @@ class LinuxFrontendLayoutTests(unittest.TestCase):
         self.assertEqual(gate.shared.BASE, before_base)
         self.assertTrue((self.directory / "after-bundle.json").is_file())
         self.assertFalse((self.f.repo / before_base / "frontend/after-bundle.json").exists())
+
+
+
+
+class TauriInputObservationTests(unittest.TestCase):
+    """Inert files and a fake capture writer; no tool, JS, bundle or Native executes."""
+
+    symlink_denied = False
+
+    def setUp(self):
+        import tempfile
+        self.temporary = tempfile.TemporaryDirectory(prefix="mw-tauri-input-controls-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.source = "a" * 40
+        self.tree = "b" * 40
+        self.directory = self.root / "observations"
+        self.directory.mkdir()
+        (self.root / "apps/desktop").mkdir(parents=True)
+        self.studio = self.root / "apps/studio"
+        self.studio.mkdir()
+        self.input = self.root / "input.js"
+        self.input.write_bytes(b"alpha")
+        self.tools = self.root / "toolchain"
+        self.bin = self.tools / "bin"
+        self.bin.mkdir(parents=True)
+        for name in ("node", "npm"):
+            path = self.bin / name
+            path.write_bytes(b"INERT TOOL FIXTURE; NEVER EXECUTED\n")
+            path.chmod(0o755)
+        npm_package = self.tools / "lib/node_modules/npm/package.json"
+        npm_package.parent.mkdir(parents=True)
+        npm_package.write_text('{"name":"npm","version":"0.0.0-fixture"}')
+        self.environment = {
+            "PATH": str(self.bin), "RUSTFLAGS": gate.RUSTFLAGS,
+            "PATCHELF": gate.PATCHELF, "NO_STRIP": "1",
+        }
+        self.cli = self.studio / "node_modules/@tauri-apps/cli"
+        self.native = self.studio / "node_modules/@tauri-apps/cli-linux-x64-gnu"
+        self.cli.mkdir(parents=True)
+        self.native.mkdir()
+        (self.studio / "node_modules/.bin").mkdir()
+        self.put_json(self.studio / "package.json", {"devDependencies": {"@tauri-apps/cli": "2.12.1"}})
+        self.put_json(self.studio / "package-lock.json", {"lockfileVersion": 3, "packages": {
+            "node_modules/@tauri-apps/cli": {"version": "2.12.1", "bin": {"tauri": "tauri.js"},
+                "optionalDependencies": {"@tauri-apps/cli-linux-x64-gnu": "2.12.1"}},
+            "node_modules/@tauri-apps/cli-linux-x64-gnu": {"version": "2.12.1"},
+        }})
+        self.put_json(self.cli / "package.json", {
+            "name": "@tauri-apps/cli", "version": "2.12.1", "bin": {"tauri": "./tauri.js"}})
+        self.put_json(self.native / "package.json", {
+            "name": "@tauri-apps/cli-linux-x64-gnu", "version": "2.12.1",
+            "main": "fixture.node", "os": ["linux"], "cpu": ["x64"]})
+        (self.cli / "tauri.js").write_bytes(b"INERT WRAPPER\n")
+        (self.cli / "index.js").write_bytes(b"INERT LOADER\n")
+        (self.native / "fixture.node").write_bytes(b"INERT NOT A LOADABLE MODULE\n")
+        base = self.root / gate.BASE
+        base.mkdir(parents=True)
+        self.put_json(base / "tauri-resources.json", {"bundle": {"resources": {}}})
+
+    def put_json(self, path, value):
+        path.write_bytes(gate.capture.encoded(value))
+
+    def link(self, target, path):
+        if type(self).symlink_denied:
+            self.skipTest("Filesystem symlink creation denied; no permission or junction fallback")
+        try:
+            path.symlink_to(target)
+        except OSError as error:
+            if isinstance(error, PermissionError) or getattr(error, "winerror", None) == 1314:
+                type(self).symlink_denied = True
+                self.skipTest("Filesystem symlink creation denied; POSIX link controls remain pending")
+            raise
+
+    def observer(self, label):
+        directory = self.directory / label
+        directory.mkdir()
+        return gate._CliInputObservation(self.root, self.source, self.tree,
+                                         self.environment, directory, label)
+
+    def minimal_collect(self, observer):
+        observer.file("inert-input", self.root, self.input, self.input, retain=True, limit=64)
+        observer.record["collection_complete"] = True
+
+    def bundle_originals(self, command, cwd, directory, *, code=0):
+        request = {"command": command, "cwd": str(cwd), "label": "bundle", "executed_once": True}
+        streams = {"stdout": b"INERT CAPTURE FIXTURE\n", "stderr": b""}
+        for suffix, raw in streams.items():
+            gate.capture.write_new(directory / ("bundle." + suffix), raw)
+        gate.capture.write_new(directory / "bundle.request.json", gate.capture.encoded(request))
+        complete = {**request, "returncode": code, "errors": [],
+                    **{name + "_sha256": gate.capture.sha(raw) for name, raw in streams.items()}}
+        gate.capture.write_new(directory / "bundle.completion.json", gate.capture.encoded(complete))
+        return complete
+
+    def invoke(self, *, callback=None, failure=None, collect=None):
+        binding = ({"tree": self.tree}, {}, {}, {})
+        def run(command, cwd, directory, label, **kwargs):
+            self.assertEqual(label, "bundle")
+            self.assertEqual(kwargs, {"env": self.environment, "timeout": 900})
+            complete = self.bundle_originals(command, cwd, directory, code=23 if failure else 0)
+            if callback:
+                callback()
+            if failure is not None:
+                raise failure
+            return complete
+        chosen = collect if collect is not None else self.minimal_collect
+        with mock.patch.object(gate, "cargo_binding", return_value=binding), \
+             mock.patch.object(gate.shared, "resource_mapping", return_value={}), \
+             mock.patch.object(gate._CliInputObservation, "collect", side_effect=chosen, autospec=True), \
+             mock.patch.object(gate.capture, "run_captured", side_effect=run) as process:
+            try:
+                return gate.bundle_packages(self.root, self.source, self.environment)
+            finally:
+                self.process_calls = process.call_args_list
+
+    def sidecar(self, name):
+        return json.loads((self.root / gate.CLI_INPUTS / name).read_bytes())
+
+    def test_small_original_bytes_and_all_file_identity_fields_are_retained(self):
+        observer = self.observer("pre")
+        raw = observer.file("input", self.root, self.input, self.input, retain=True, limit=64)
+        item = observer.record["roles"][0]
+        self.assertEqual(raw, b"alpha")
+        self.assertEqual(item["sha256"], gate.capture.sha(raw))
+        self.assertEqual((self.root / item["retained_path"]).read_bytes(), raw)
+        self.assertEqual(item["file_before"], item["file_after"])
+        self.assertEqual(item["file_before"], item["path_before"]["nodes"][-1]["stat"])
+        self.assertEqual(item["file_before"], item["endpoint_admission"]["nodes"][-1]["stat"])
+        self.assertIn("st_ctime_ns", item["file_before"])
+        self.assertIn("st_size", item["path_before"]["nodes"][0]["stat"])
+
+    def test_same_size_content_drift_with_restored_mtime_is_not_equivalent(self):
+        first = self.observer("pre")
+        first.file("input", self.root, self.input, self.input, retain=True, limit=64)
+        info = self.input.stat()
+        self.input.write_bytes(b"bravo")
+        os.utime(self.input, ns=(info.st_atime_ns, info.st_mtime_ns))
+        second = self.observer("post")
+        second.file("input", self.root, self.input, self.input, retain=True, limit=64)
+        self.assertNotEqual(gate._cli_projection(first.record["roles"]),
+                            gate._cli_projection(second.record["roles"]))
+
+    def test_equal_bytes_at_a_new_inode_are_not_equivalent(self):
+        first = self.observer("pre")
+        first.file("input", self.root, self.input, self.input, retain=True, limit=64)
+        original = self.input.stat()
+        replacement = self.root / "replacement.js"
+        replacement.write_bytes(b"alpha")
+        os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+        replacement.replace(self.input)
+        second = self.observer("post")
+        second.file("input", self.root, self.input, self.input, retain=True, limit=64)
+        self.assertNotEqual(first.record["roles"][0]["file_before"]["st_ino"],
+                            second.record["roles"][0]["file_before"]["st_ino"])
+        self.assertNotEqual(gate._cli_projection(first.record["roles"]),
+                            gate._cli_projection(second.record["roles"]))
+
+    def test_endpoint_trace_must_bind_to_the_file_selected_for_reading(self):
+        observer = self.observer("pre")
+        replacement = self.root / "replacement.js"
+        replacement.write_bytes(b"bravo")
+        saved = self.root / "saved.js"
+        original_admitted = gate.capture.admitted
+        changed = False
+        def admitted(root, path, **kwargs):
+            nonlocal changed
+            if Path(path) == self.input and not changed:
+                changed = True
+                self.input.rename(saved)
+                replacement.rename(self.input)
+            return original_admitted(root, path, **kwargs)
+        with mock.patch.object(gate.capture, "admitted", side_effect=admitted):
+            with self.assertRaisesRegex(ValueError, "endpoint_identity_disagrees"):
+                observer.file("input", self.root, self.input, self.input, retain=True, limit=64)
+        self.assertFalse((observer.directory / "input.original").exists())
+
+    def test_per_file_budget_keeps_partial_originals_and_the_actual_error(self):
+        original = ValueError("original admission failure")
+        def collect(observer):
+            self.minimal_collect(observer)
+            observer.record["collection_complete"] = False
+            raise original
+        with mock.patch.object(gate._CliInputObservation, "collect", side_effect=collect, autospec=True):
+            record = gate._cli_phase(self.root, self.source, self.tree, self.environment,
+                                     self.directory, "pre")
+        self.assertIs(record["_collection_exception"], original)
+        self.assertFalse(record["collection_complete"])
+        self.assertEqual((self.directory / "pre/inert-input.original").read_bytes(), b"alpha")
+        index = json.loads((self.directory / "pre.json").read_bytes())
+        self.assertEqual(index["error"]["message"], "original admission failure")
+
+    def test_small_read_and_retention_budgets_are_enforced_before_publication(self):
+        observer = self.observer("pre")
+        with self.assertRaisesRegex(gate.capture.CaptureError, "file_budget_exceeded"):
+            observer.file("too-large", self.root, self.input, self.input, retain=True, limit=4)
+        self.assertFalse((observer.directory / "too-large.original").exists())
+        with mock.patch.object(gate, "CLI_MAX_RETAINED", 5):
+            observer.file("first", self.root, self.input, self.input, retain=True, limit=64)
+            with self.assertRaisesRegex(gate.capture.CaptureError, "file_budget_exceeded"):
+                observer.file("second", self.root, self.input, self.input, retain=True, limit=64)
+        self.assertEqual((observer.directory / "first.original").read_bytes(), b"alpha")
+        self.assertFalse((observer.directory / "second.original").exists())
+
+    def test_hash_budget_is_bounded_without_retaining_binary_bytes(self):
+        observer = self.observer("pre")
+        with mock.patch.object(gate, "CLI_MAX_HASHED", 4):
+            with self.assertRaisesRegex(gate.capture.CaptureError, "artifact_budget_exceeded"):
+                observer.file("native", self.root, self.input, self.input, retain=False, limit=128)
+        self.assertEqual(list(observer.directory.iterdir()), [])
+
+    def test_metadata_budget_is_explicit_and_original_files_survive(self):
+        def collect(observer):
+            self.minimal_collect(observer)
+            observer.record["tool_search"] = {"oversized": "x" * 10000}
+        with mock.patch.object(gate._CliInputObservation, "collect", side_effect=collect, autospec=True), \
+             mock.patch.object(gate, "CLI_MAX_RECORD", 6000):
+            record = gate._cli_phase(self.root, self.source, self.tree, self.environment,
+                                     self.directory, "pre")
+        self.assertFalse(record["collection_complete"])
+        self.assertEqual(str(record["_collection_exception"]), "tauri_input_record_budget")
+        self.assertEqual((self.directory / "pre/inert-input.original").read_bytes(), b"alpha")
+        self.assertLessEqual((self.directory / "pre.json").stat().st_size, 6000)
+
+    def test_bad_json_keeps_the_original_lock_without_executing_tools(self):
+        (self.studio / "package-lock.json").write_bytes(b'{"lockfileVersion":3,"lockfileVersion":3}')
+        record = gate._cli_phase(self.root, self.source, self.tree, self.environment,
+                                 self.directory, "pre")
+        self.assertFalse(record["collection_complete"])
+        self.assertIn("duplicate_json_key", record["error"]["message"])
+        self.assertEqual((self.directory / "pre/studio-lock.original").read_bytes(),
+                         (self.studio / "package-lock.json").read_bytes())
+
+    def test_crossed_native_version_and_escaping_main_refuse_before_binary_read(self):
+        for number, change in enumerate(({"version": "9.9.9"}, {"main": "../outside.node"})):
+            path = self.native / "package.json"
+            data = json.loads(path.read_bytes())
+            data.update(version="2.12.1", main="fixture.node")
+            data.update(change)
+            self.put_json(path, data)
+            record = gate._cli_phase(self.root, self.source, self.tree, self.environment,
+                                     self.directory, "pre" + str(number))
+            self.assertFalse(record["collection_complete"])
+            self.assertNotIn("native-module", {item["role"] for item in record["roles"]})
+
+    def test_ambiguous_parent_components_are_rejected_without_collapsing_them(self):
+        with self.assertRaisesRegex(ValueError, "ambiguous_parent_component"):
+            gate._cli_target(self.root, self.root, "redirect/../input.js")
+        with self.assertRaisesRegex(ValueError, "ambiguous_parent_component"):
+            gate._cli_lexical(self.root, self.root / "redirect/../input.js")
+        observer = self.observer("pre")
+        observer.record["path_literal"] = str(self.root / "redirect/../toolchain/bin")
+        with self.assertRaisesRegex(ValueError, "ambiguous_parent_component"):
+            observer.tool("node")
+
+    def test_anchor_components_consume_the_declared_trace_budget(self):
+        record = {}
+        with mock.patch.object(gate, "CLI_MAX_PARTS", len(self.root.parts) - 1):
+            with self.assertRaisesRegex(ValueError, "anchor_invalid_or_budget"):
+                gate._cli_trace(self.root, self.input, record, links=True)
+        self.assertNotIn("nodes", record)
+
+    def test_path_priority_and_absence_are_recorded_without_running_node(self):
+        earlier = self.root / "earlier/bin"
+        earlier.mkdir(parents=True)
+        observer = self.observer("pre")
+        observer.record["path_literal"] = os.pathsep.join((str(earlier), str(self.bin)))
+        with mock.patch.object(gate.capture.subprocess, "Popen", side_effect=AssertionError("no process")):
+            observer.tool("node")
+        search = observer.record["tool_search"]["node"]
+        self.assertEqual(search["candidates"][0]["status"], "ABSENT")
+        self.assertEqual(search["selection"], str(self.bin / "node"))
+        earlier_node = earlier / "node"
+        earlier_node.write_bytes(b"INERT EARLIER TOOL")
+        earlier_node.chmod(0o755)
+        second = self.observer("post")
+        second.record["path_literal"] = observer.record["path_literal"]
+        second.tool("node")
+        self.assertNotEqual(gate._cli_projection(search),
+                            gate._cli_projection(second.record["tool_search"]["node"]))
+
+    def test_relative_symlink_chain_is_preserved_and_endpoint_admitted_independently(self):
+        links = self.root / "links"
+        links.mkdir()
+        first, second = links / "first", links / "second"
+        self.link("second", first)
+        self.link("../input.js", second)
+        observer = self.observer("pre")
+        with self.assertRaisesRegex(gate.capture.CaptureError, "redirected_path"):
+            gate.capture.stable_read(self.root, first)
+        observer.file("wrapper", self.root, first, self.input, retain=True, limit=64)
+        nodes = observer.record["roles"][0]["path_before"]["nodes"]
+        self.assertEqual([item["target_literal"] for item in nodes if item["kind"] == "link"],
+                         ["second", "../input.js"])
+
+    def test_linked_wrong_endpoint_is_rejected_even_when_bytes_match(self):
+        wrong = self.root / "wrong.js"
+        wrong.write_bytes(b"alpha")
+        alias = self.root / "alias"
+        self.link("wrong.js", alias)
+        observer = self.observer("pre")
+        with self.assertRaisesRegex(ValueError, "endpoint_unexpected"):
+            observer.file("wrapper", self.root, alias, self.input, retain=True, limit=64)
+        self.assertFalse((observer.directory / "wrapper.original").exists())
+
+    def test_cycle_escape_and_link_depth_refuse_with_literal_partials(self):
+        first, second = self.root / "first", self.root / "second"
+        self.link("second", first)
+        self.link("first", second)
+        trace = {}
+        with self.assertRaisesRegex(ValueError, "link_cycle_or_budget"):
+            gate._cli_trace(self.root, first, trace, links=True)
+        self.assertTrue(any(item.get("target_literal") == "second" for item in trace["nodes"]))
+        first.unlink()
+        self.link("../outside", first)
+        with self.assertRaisesRegex(ValueError, "link_escape"):
+            gate._cli_trace(self.root, first, {}, links=True)
+        first.unlink()
+        second.unlink()
+        self.link("second", first)
+        self.link("input.js", second)
+        with mock.patch.object(gate, "CLI_MAX_LINKS", 1):
+            with self.assertRaisesRegex(ValueError, "link_cycle_or_budget"):
+                gate._cli_trace(self.root, first, {}, links=True)
+
+    def test_link_change_during_readlink_is_refused(self):
+        alias = self.root / "alias"
+        self.link("input.js", alias)
+        other = self.root / "other.js"
+        other.write_bytes(b"alpha")
+        original = gate.os.readlink
+        changed = False
+        def readlink(path):
+            nonlocal changed
+            value = original(path)
+            if Path(path) == alias and not changed:
+                changed = True
+                alias.unlink()
+                alias.symlink_to("other.js")
+            return value
+        with mock.patch.object(gate.os, "readlink", side_effect=readlink):
+            with self.assertRaisesRegex(ValueError, "link_changed"):
+                gate._cli_trace(self.root, alias, {}, links=True)
+
+    def test_full_static_roster_does_not_claim_native_load_or_archive_authentication(self):
+        self.link("../@tauri-apps/cli/tauri.js", self.studio / "node_modules/.bin/tauri")
+        record = gate._cli_phase(self.root, self.source, self.tree, self.environment,
+                                 self.directory, "pre")
+        self.assertTrue(record["collection_complete"], record.get("error"))
+        self.assertEqual(len(record["roles"]), 11)
+        self.assertEqual(len({item["role"] for item in record["roles"]}), 11)
+        for key, value in gate.CLI_CLAIMS.items():
+            self.assertEqual(record[key], value)
+        self.assertFalse((self.directory / "pre/native-module.original").exists())
+        self.assertFalse((self.directory / "pre/node.original").exists())
+
+    def test_one_unchanged_bundle_command_and_bound_post_originals(self):
+        self.invoke()
+        self.assertEqual(len(self.process_calls), 1)
+        call = self.process_calls[0]
+        self.assertEqual(call.args[:2], (
+            ["npm", "--prefix", "../studio", "exec", "--", "tauri", "bundle", "--target",
+             gate.TARGET, "--features", "tauri/custom-protocol", "--bundles", "deb,appimage",
+             "--config", "../../ci-evidence/linux-cargo/tauri-resources.json",
+             "--no-binary-patching", "--no-sign", "--ci"],
+            self.root / "apps/desktop"))
+        comparison = self.sidecar("comparison.json")
+        self.assertTrue(comparison["observations_match"])
+        self.assertTrue(comparison["bundle_binding_complete"])
+        self.assertIsNone(comparison["primary_error"])
+        self.assertTrue(all(item["status"] == "OBSERVED"
+                            for item in self.sidecar("bundle-records.json")["files"].values()))
+
+    def test_bundle_primary_survives_post_drift_with_both_original_inputs(self):
+        original = RuntimeError("original inert bundle failure")
+        with self.assertRaises(RuntimeError) as raised:
+            self.invoke(failure=original, callback=lambda: self.input.write_bytes(b"bravo"))
+        self.assertIs(raised.exception, original)
+        self.assertEqual(len(self.process_calls), 1)
+        comparison = self.sidecar("comparison.json")
+        self.assertFalse(comparison["observations_match"])
+        self.assertEqual(comparison["primary_error"]["message"], str(original))
+        directory = self.root / gate.CLI_INPUTS
+        self.assertEqual((directory / "pre/inert-input.original").read_bytes(), b"alpha")
+        self.assertEqual((directory / "post/inert-input.original").read_bytes(), b"bravo")
+
+    def test_post_retention_failure_keeps_bundle_primary_and_partial_originals(self):
+        original = RuntimeError("primary bundle")
+        write = gate.capture.write_new
+        def fail(path, raw):
+            if Path(path).name == "post.json":
+                raise OSError("post retention refused")
+            return write(path, raw)
+        with mock.patch.object(gate.capture, "write_new", side_effect=fail):
+            with self.assertRaises(RuntimeError) as raised:
+                self.invoke(failure=original)
+        self.assertIs(raised.exception, original)
+        failure = self.sidecar("post-failure.json")
+        self.assertEqual(failure["post_error"]["message"], "post retention refused")
+        self.assertEqual(failure["primary_error"]["message"], "primary bundle")
+        self.assertTrue((self.root / gate.CLI_INPUTS / "bundle-records.json").is_file())
+        self.assertTrue((self.root / gate.CLI_INPUTS / "post/inert-input.original").is_file())
+
+    def test_pre_exception_object_survives_and_absent_bundle_records_are_explicit(self):
+        original = PermissionError("inert input admission denied")
+        calls = 0
+        def collect(observer):
+            nonlocal calls
+            calls += 1
+            self.minimal_collect(observer)
+            observer.record["collection_complete"] = False
+            raise original if calls == 1 else ValueError("post input failure")
+        with self.assertRaises(PermissionError) as raised:
+            self.invoke(collect=collect)
+        self.assertIs(raised.exception, original)
+        self.assertEqual(self.process_calls, [])
+        self.assertTrue(all(item["status"] == "ABSENT"
+                            for item in self.sidecar("bundle-records.json")["files"].values()))
+        self.assertEqual(self.sidecar("pre.json")["error"]["type"], "PermissionError")
+
+    def test_successful_bundle_cannot_hide_same_size_input_drift(self):
+        before = self.input.stat()
+        def mutate():
+            self.input.write_bytes(b"bravo")
+            os.utime(self.input, ns=(before.st_atime_ns, before.st_mtime_ns))
+        with self.assertRaisesRegex(ValueError, "pre_post_changed_or_incomplete"):
+            self.invoke(callback=mutate)
+        self.assertFalse(self.sidecar("comparison.json")["observations_match"])
+
+    def test_phase_json_tampering_cannot_be_linked_as_original(self):
+        def mutate():
+            path = self.root / gate.CLI_INPUTS / "pre.json"
+            path.write_bytes(path.read_bytes().replace(b'"phase": "pre"', b'"phase": "bad"'))
+        with self.assertRaisesRegex(ValueError, "phase_record_changed"):
+            self.invoke(callback=mutate)
+        self.assertFalse((self.root / gate.CLI_INPUTS / "comparison.json").exists())
+        self.assertEqual(self.sidecar("post-failure.json")["post_error"]["message"],
+                         "tauri_input_phase_record_changed")
+
+    def test_retained_small_original_mutation_is_refused(self):
+        def mutate():
+            (self.root / gate.CLI_INPUTS / "pre/inert-input.original").write_bytes(b"bravo")
+        with self.assertRaisesRegex(ValueError, "retained_original_changed"):
+            self.invoke(callback=mutate)
+        self.assertFalse((self.root / gate.CLI_INPUTS / "comparison.json").exists())
+
+    def test_replay_and_existing_sidecar_are_refused_without_process(self):
+        path = self.root / gate.BASE / "bundle.stdout"
+        path.write_bytes(b"existing original")
+        with self.assertRaisesRegex(ValueError, "bundle_replay_refused"):
+            self.invoke()
+        self.assertEqual(self.process_calls, [])
+        self.assertEqual(path.read_bytes(), b"existing original")
+        path.unlink()
+        (self.root / gate.CLI_INPUTS).mkdir()
+        with self.assertRaises(FileExistsError):
+            self.invoke()
+        self.assertEqual(self.process_calls, [])
+
+    def test_missing_unclosed_or_mismatched_bundle_records_are_not_authenticated(self):
+        command = ["INERT", "fixture"]
+        initial = gate._cli_bundle_records(self.root, command)
+        self.assertFalse(initial["binding_complete"])
+        self.assertTrue(all(item["status"] == "ABSENT" for item in initial["files"].values()))
+        base = self.root / gate.BASE
+        complete = self.bundle_originals(command, self.root / "apps/desktop", base)
+        self.assertTrue(gate._cli_bundle_records(self.root, command)["binding_complete"])
+        complete["stdout_final"] = False
+        self.put_json(base / "bundle.completion.json", complete)
+        self.assertFalse(gate._cli_bundle_records(self.root, command)["binding_complete"])
+        complete.pop("stdout_final")
+        self.put_json(base / "bundle.completion.json", complete)
+        (base / "bundle.stdout").write_bytes(b"different inert stream")
+        self.assertFalse(gate._cli_bundle_records(self.root, command)["binding_complete"])
+
+    def test_observer_adds_no_process_or_js_execution_and_keeps_timeout(self):
+        import ast
+        tree = ast.parse((ROOT / "tooling/ci_linux_dependency_capture.py").read_bytes())
+        observers = [node for node in tree.body if
+                     isinstance(node, (ast.FunctionDef, ast.ClassDef)) and
+                     (node.name.startswith("_cli_") or node.name == "_CliInputObservation")]
+        forbidden = {"Popen", "run_captured", "run", "system", "exec", "eval", "resolve", "normpath"}
+        for node in observers:
+            calls = [item.func for item in ast.walk(node) if isinstance(item, ast.Call)]
+            names = {func.attr if isinstance(func, ast.Attribute) else func.id
+                     for func in calls if isinstance(func, (ast.Attribute, ast.Name))}
+            self.assertFalse(names & forbidden, node.name)
+        bundle = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                      and node.name == "bundle_packages")
+        calls = [node for node in ast.walk(bundle) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute) and node.func.attr == "run_captured"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(next(ast.literal_eval(value.value) for value in calls[0].keywords
+                              if value.arg == "timeout"), 900)
+
+
+    def test_intent_tampering_is_refused_before_post_publication(self):
+        def mutate():
+            path = self.root / gate.CLI_INPUTS / "intent.json"
+            path.write_bytes(path.read_bytes() + b" ")
+        with self.assertRaisesRegex(ValueError, "tauri_input_intent_changed"):
+            self.invoke(callback=mutate)
+        self.assertFalse((self.root / gate.CLI_INPUTS / "bundle-records.json").exists())
+
+    def test_pre_retention_error_cannot_replace_the_original_admission_error(self):
+        original = PermissionError("original pre admission")
+        calls = 0
+        def collect(observer):
+            nonlocal calls
+            calls += 1
+            self.minimal_collect(observer)
+            raise original if calls == 1 else ValueError("post admission")
+        write = gate.capture.write_new
+        def fail(path, raw):
+            if Path(path).name == "pre.json":
+                raise OSError("pre retention failure")
+            return write(path, raw)
+        with mock.patch.object(gate.capture, "write_new", side_effect=fail):
+            with self.assertRaises(PermissionError) as raised:
+                self.invoke(collect=collect)
+        self.assertIs(raised.exception, original)
+        self.assertEqual(self.process_calls, [])
+        self.assertTrue(any("Phase retention also failed" in note for note in original.__notes__))
+        self.assertEqual((self.root / gate.CLI_INPUTS / "pre/inert-input.original").read_bytes(), b"alpha")
+        self.assertEqual(self.sidecar("comparison.json")["phase_records"]["pre"]["status"], "ABSENT")
+
+    def test_redirected_output_ancestor_cannot_receive_post_sidecars(self):
+        if type(self).symlink_denied:
+            self.skipTest("Filesystem symlink creation denied; no permission or junction fallback")
+        moved = self.root / "moved-cargo"
+        original = RuntimeError("inert bundle failure")
+        def redirect():
+            base = self.root / gate.BASE
+            base.rename(moved)
+            self.link(str(moved), base)
+        with self.assertRaises(RuntimeError) as raised:
+            self.invoke(failure=original, callback=redirect)
+        self.assertIs(raised.exception, original)
+        self.assertFalse((moved / "tauri-inputs/bundle-records.json").exists())
+        self.assertFalse((moved / "tauri-inputs/comparison.json").exists())
+        self.assertEqual((moved / "tauri-inputs/pre/inert-input.original").read_bytes(), b"alpha")
+
+
+    def test_actual_open_handle_is_bound_to_the_expected_file_identity(self):
+        if os.name == "nt":
+            self.skipTest("Windows refused rename of an open file (WinError 32); POSIX ABA control pending")
+        observer = self.observer("pre")
+        replacement = self.root / "replacement.js"
+        held = self.root / "held.js"
+        replacement.write_bytes(b"bravo")
+        opened = gate.os.open
+        switched = False
+        def swap(path, flags, *args, **kwargs):
+            nonlocal switched
+            if Path(path) == self.input and not switched:
+                switched = True
+                self.input.rename(held)
+                replacement.rename(self.input)
+                descriptor = opened(path, flags, *args, **kwargs)
+                try:
+                    self.input.rename(replacement)
+                    held.rename(self.input)
+                except BaseException:
+                    os.close(descriptor)
+                    raise
+                return descriptor
+            return opened(path, flags, *args, **kwargs)
+        with mock.patch.object(gate.os, "open", side_effect=swap):
+            with self.assertRaisesRegex(ValueError, "handle_identity_disagrees"):
+                observer.file("input", self.root, self.input, self.input, retain=True, limit=64)
+        item = observer.record["roles"][0]
+        self.assertTrue(item["reader"]["descriptor_closed"])
+        self.assertEqual(self.input.read_bytes(), b"alpha")
+        self.assertFalse((observer.directory / "input.original").exists())
+
+    def test_post_collect_error_survives_a_second_retained_original_failure(self):
+        original = PermissionError("original post observation")
+        calls = 0
+        def collect(observer):
+            nonlocal calls
+            calls += 1
+            self.minimal_collect(observer)
+            if calls == 2:
+                raise original
+        def mutate():
+            (self.root / gate.CLI_INPUTS / "pre/inert-input.original").write_bytes(b"bravo")
+        with self.assertRaises(PermissionError) as raised:
+            self.invoke(collect=collect, callback=mutate)
+        self.assertIs(raised.exception, original)
+        self.assertTrue(any("Post readback/retention also failed" in note for note in original.__notes__))
+        failure = self.sidecar("post-failure.json")
+        self.assertIsNone(failure["primary_error"])
+        self.assertEqual(failure["post_error"]["message"], "original post observation")
+
+
+    def test_foreign_inert_descriptor_is_rejected_and_closed_without_renaming(self):
+        observer = self.observer("pre")
+        replacement = self.root / "foreign.js"
+        replacement.write_bytes(b"bravo")
+        opened = gate.os.open
+        def wrong_descriptor(path, flags, *args, **kwargs):
+            selected = replacement if Path(path) == self.input else path
+            return opened(selected, flags, *args, **kwargs)
+        with mock.patch.object(gate.os, "open", side_effect=wrong_descriptor):
+            with self.assertRaisesRegex(ValueError, "handle_identity_disagrees"):
+                observer.file("input", self.root, self.input, self.input, retain=True, limit=64)
+        self.assertTrue(observer.record["roles"][0]["reader"]["descriptor_closed"])
+        self.assertEqual(self.input.read_bytes(), b"alpha")
+        self.assertFalse((observer.directory / "input.original").exists())
+
+
 
 
 if __name__ == "__main__":
