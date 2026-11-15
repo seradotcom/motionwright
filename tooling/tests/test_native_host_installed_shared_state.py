@@ -716,6 +716,20 @@ class InstalledCiPriorCapacityTests(PrivateScenarioCase):
         events = [json.loads(line) for line in (evidence / "private-capacity.original.ndjson").read_text().splitlines()]
         self.assertTrue(all(row.get("no_refund", True) for row in events))
         self.assertEqual(events[0]["refunds"], False)
+        # The original source built a 50,116,864-byte Semwright ELF with
+        # 21,604,217 bytes of non-runtime symbols. Strip during the real
+        # Cargo build rather than losing any byte of the retained executable.
+        # Frozen byte, file, scenario and stream caps must never be raised
+        # merely to make a source gate green.
+        actual = Path(installed.__file__).read_text(encoding="utf8")
+        self.assertEqual(actual.count('profile.dev.strip="symbols"'), 1)
+        self.assertIn('"--config", "profile.dev.debug=0"', actual)
+        self.assertIn('ci_copy_original(binary, copied, 256 * 1024 * 1024, expected=identity)', actual)
+        self.assertEqual(installed.CI_PRIVATE_BYTES, 240 * 1024 * 1024)
+        self.assertEqual(installed.CI_FUTURE_PRIVATE_BYTES, 64 * 1024 * 1024)
+        self.assertEqual(installed.CI_COMMAND_STREAM_BYTES["sdk-daemon-cli"], 8 * 1024 * 1024)
+        self.assertEqual(installed.CI_COMMAND_STREAM_BYTES["sdk-sandbox"], 8 * 1024 * 1024)
+        self.assertEqual(installed.CI_COMMAND_STREAM_BYTES["product-provider"], 8 * 1024 * 1024)
 
     def test_file_slots_are_held_before_write_and_the_same_namespace_cannot_reset(self):
         evidence = self.root / "evidence"; evidence.mkdir()
