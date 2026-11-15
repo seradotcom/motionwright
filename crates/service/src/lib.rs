@@ -119,8 +119,8 @@ fn source_looks_like_svg(
     // a BOM when its initial characters are ASCII XML/whitespace. Treating its
     // NUL-containing header as ordinary raster bytes would let a caller
     // mislabel active SVG as image/png and bypass the SVG admission guard.
-    let mut header = [0_u8; 4];
-    // A regular-file read is permitted to return fewer than four bytes.
+    let mut header = [0_u8; 8];
+    // A regular-file read is permitted to return fewer than eight bytes.
     // Finish the short header read before classifying BOM-less UTF-16/32;
     // otherwise an ASCII space followed by NUL may masquerade as a raster.
     let mut header_size = 0;
@@ -131,9 +131,9 @@ fn source_looks_like_svg(
         }
         header_size += count;
     }
-    let first = &header[..header_size];
+    let first = &header[..header_size.min(4)];
     // (code-unit bytes, little endian, BOM byte count)
-    let encoded = if first.starts_with(&[0xff, 0xfe, 0, 0]) {
+    let mut encoded = if first.starts_with(&[0xff, 0xfe, 0, 0]) {
         Some((4_usize, true, 4_usize))
     } else if first.starts_with(&[0, 0, 0xfe, 0xff]) {
         Some((4, false, 4))
@@ -141,23 +141,23 @@ fn source_looks_like_svg(
         Some((2, true, 2))
     } else if first.starts_with(&[0xfe, 0xff]) {
         Some((2, false, 2))
-    } else if header_size == 4
-        && header[1..] == [0, 0, 0]
+    } else if header_size >= 4
+        && header[1..4] == [0, 0, 0]
         && (header[0] == b'<' || header[0].is_ascii_whitespace())
     {
         Some((4, true, 0))
-    } else if header_size == 4
+    } else if header_size >= 4
         && header[..3] == [0, 0, 0]
         && (header[3] == b'<' || header[3].is_ascii_whitespace())
     {
         Some((4, false, 0))
-    } else if header_size == 4
+    } else if header_size >= 4
         && header[1] == 0
         && header[3] == 0
         && (header[0] == b'<' || header[0].is_ascii_whitespace())
     {
         Some((2, true, 0))
-    } else if header_size == 4
+    } else if header_size >= 4
         && header[0] == 0
         && header[2] == 0
         && (header[1] == b'<' || header[1].is_ascii_whitespace())
@@ -166,6 +166,26 @@ fn source_looks_like_svg(
     } else {
         None
     };
+
+    // One BOM-less whitespace unit does not establish UTF-32 encoding: a
+    // binary length may have the same bytes (for example, 00 00 00 20).
+    // A complete next unit outside Unicode proves that inference wrong.
+    // Keep explicit BOMs, XML openers and incomplete lookahead fail-closed.
+    // Do not fall through to a UTF-16 reinterpretation of that binary header.
+    if let Some((4, little_endian, 0)) = encoded {
+        let leading = if little_endian { header[0] } else { header[3] };
+        if leading.is_ascii_whitespace() && header_size == header.len() {
+            let second = [header[4], header[5], header[6], header[7]];
+            let scalar = if little_endian {
+                u32::from_le_bytes(second)
+            } else {
+                u32::from_be_bytes(second)
+            };
+            if char::from_u32(scalar).is_none() {
+                encoded = None;
+            }
+        }
+    }
 
     if let Some((unit_bytes, little_endian, bom_bytes)) = encoded {
         // Multibyte XML-looking bytes cannot be admitted as a raster just
@@ -2132,6 +2152,132 @@ mod audio_import_tests {
                 );
             }
             Err(error) => panic!("unexpected generation-boundary failure: {error:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod encoded_source_prefix_tests {
+    use super::*;
+    use std::io::{Cursor, Read, Seek, SeekFrom};
+
+    // These are the first 64 authenticated bytes of the original MP4 rejected
+    // by source-bundle. This fixture tests admission, not video decoding.
+    const ORIGINAL_MP4_PREFIX: &[u8] = &[
+        0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0x00, 0x00, 0x02,
+        0x00, 0x69, 0x73, 0x6f, 0x6d, 0x69, 0x73, 0x6f, 0x32, 0x61, 0x76, 0x63, 0x31, 0x6d, 0x70,
+        0x34, 0x31, 0x00, 0x00, 0x04, 0x8b, 0x6d, 0x6f, 0x6f, 0x76, 0x00, 0x00, 0x00, 0x6c, 0x6d,
+        0x76, 0x68, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x03, 0xe8,
+    ];
+
+    struct ShortReads<'a> {
+        input: Cursor<&'a [u8]>,
+        maximum: usize,
+    }
+
+    impl Read for ShortReads<'_> {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            let maximum = self.maximum.min(output.len());
+            self.input.read(&mut output[..maximum])
+        }
+    }
+
+    impl Seek for ShortReads<'_> {
+        fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+            self.input.seek(position)
+        }
+    }
+
+    fn admit(bytes: &[u8], media_type: &str, maximum: usize) -> StorageResult<()> {
+        validate_importable_asset_reader(
+            ShortReads {
+                input: Cursor::new(bytes),
+                maximum,
+            },
+            bytes.len() as u64,
+            media_type,
+            false,
+        )
+    }
+
+    fn utf32(text: &str, little_endian: bool, bom: bool) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        if bom {
+            bytes.extend_from_slice(if little_endian {
+                &[0xff, 0xfe, 0, 0]
+            } else {
+                &[0, 0, 0xfe, 0xff]
+            });
+        }
+        for scalar in text.chars() {
+            let scalar = scalar as u32;
+            bytes.extend_from_slice(&if little_endian {
+                scalar.to_le_bytes()
+            } else {
+                scalar.to_be_bytes()
+            });
+        }
+        bytes
+    }
+
+    #[test]
+    fn binary_box_size_is_not_a_bomless_utf32_encoding() {
+        for maximum in [1, 3, 8] {
+            for media_type in ["video/mp4", "application/octet-stream", "image/png"] {
+                admit(ORIGINAL_MP4_PREFIX, media_type, maximum).unwrap();
+            }
+            assert!(admit(ORIGINAL_MP4_PREFIX, "image/svg+xml", maximum).is_err());
+
+            // The same ambiguity can occur in either byte order. Removing the
+            // UTF-32 inference must not reinterpret its LE header as UTF-16.
+            let mut little_endian = ORIGINAL_MP4_PREFIX.to_vec();
+            little_endian[..4].copy_from_slice(&[0x20, 0, 0, 0]);
+            admit(&little_endian, "application/octet-stream", maximum).unwrap();
+        }
+    }
+
+    #[test]
+    fn encoded_svg_remains_rejected_after_long_bomless_whitespace() {
+        let active = r#"<svg xmlns="http://www.w3.org/2000/svg"><script>void 0</script></svg>"#;
+        for little_endian in [false, true] {
+            for padding in [0, 1, 17_031] {
+                let text = format!("{}{active}", " ".repeat(padding));
+                for bom in [false, true] {
+                    let bytes = utf32(&text, little_endian, bom);
+                    for media_type in ["image/png", "application/octet-stream", "text/plain"] {
+                        assert!(admit(&bytes, media_type, 3).is_err());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_or_ambiguous_encoded_prefixes_remain_closed() {
+        for little_endian in [false, true] {
+            // A BOM or literal XML opener is decisive even when a later unit
+            // is invalid; it must never fall back to opaque-media admission.
+            for bom in [false, true] {
+                let mut bytes = utf32("<", little_endian, bom);
+                bytes.extend_from_slice(&[0xff; 4]);
+                assert!(admit(&bytes, "application/octet-stream", 1).is_err());
+                assert!(admit(&bytes, "text/plain", 1).is_err());
+            }
+            let whitespace = utf32("  ", little_endian, false);
+            // No complete second unit proves a binary prefix. Keep rejection
+            // when the initial whitespace unit ends at EOF or is followed by
+            // an incomplete unit.
+            for length in 4..8 {
+                assert!(admit(&whitespace[..length], "image/png", 1).is_err());
+            }
+            let ordinary = utf32(" ordinary text", little_endian, false);
+            assert!(admit(&ordinary, "application/octet-stream", 1).is_err());
+            admit(&ordinary, "text/plain", 1).unwrap();
+        }
+        for bytes in [vec![0xff, 0xfe, 0x00, 0xd8], vec![0xfe, 0xff, 0xd8, 0x00]] {
+            assert!(admit(&bytes, "application/octet-stream", 1).is_err());
+            assert!(admit(&bytes, "text/plain", 1).is_err());
         }
     }
 }
