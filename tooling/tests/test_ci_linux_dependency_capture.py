@@ -275,6 +275,100 @@ class LinuxScopeTests(unittest.TestCase):
                 gate.link_environment({**selected, key: value})
 
 
+    def test_installed_scope_requires_its_exact_original_job(self):
+        env = {
+            "GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_REPOSITORY": "seradotcom/motionwright",
+            "GITHUB_REF": "refs/heads/integrate/phase1-final-composition-20261027",
+            "MW_LINUX_CANDIDATE_SCOPE": "linux_first_use", "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_JOB": "linux-first-use-installed",
+            "GITHUB_SHA": "1" * 40, "GITHUB_RUN_ID": "123",
+        }
+        self.assertEqual(gate.linux_source(env), env["GITHUB_SHA"])
+        for key, value in (("GITHUB_JOB", "linux"), ("GITHUB_JOB", ""),
+                           ("GITHUB_JOB", "linux-first-use-source"),
+                           ("MW_LINUX_CANDIDATE_SCOPE", "linux_first_use_source"),
+                           ("GITHUB_RUN_ATTEMPT", "2"), ("GITHUB_REF", "refs/heads/main"),
+                           ("GITHUB_EVENT_NAME", "pull_request")):
+            with self.subTest(key=key, value=value), self.assertRaisesRegex(
+                    ValueError, "linux_dependency_scope_refused"):
+                gate.linux_source({**env, key: value})
+
+
+class InstalledLinuxCaptureWorkflowTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from tooling.tests.test_ci_candidate_macos_scope import job_source
+        workflow = (ROOT / ".github/workflows/package-candidate.yml").read_text(encoding="utf-8")
+        cls.installed = job_source(workflow, "linux-first-use-installed")
+        cls.bundle = job_source(workflow, "linux")
+
+    def test_original_capture_and_bound_prelaunch_precede_one_installed_attempt(self):
+        body = self.installed
+        chain = (
+            "tooling/ci_linux_first_use.py reserve",
+            "tooling/native_host_installed_shared_state.py --ci-controls",
+            "scripts/candidate_dependency_capture.py",
+            "tooling/ci_linux_dependency_capture.py stage",
+            "tooling/ci_linux_dependency_capture.py bundle",
+            "tooling/ci_linux_dependency_capture.py frontend-recheck",
+            "--require-cargo-binding",
+            "--output ci-evidence/linux-appimage-prelaunch.json",
+            "tooling/ci_linux_first_use.py installed",
+            "--output ci-evidence/linux-appimage-smoke.json",
+            "tooling/ci_linux_dependency_capture.py verify",
+            "tooling/native_host_installed_shared_state.py --ci-run",
+        )
+        positions = [body.index(token) for token in chain]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(body.count('"$cargo_executable" build --locked --release --bins'), 1)
+        self.assertEqual(body.count("tooling/ci_linux_first_use.py installed"), 1)
+        self.assertNotIn("tauri build", body)
+        self.assertIn("--cargo-index ci-evidence/linux-cargo/resources/cargo/index.json", body)
+        self.assertIn('--cargo-binary "$MW_LINUX_BUNDLE_ROOT/motionwright-desktop"', body)
+
+    def test_packaging_environment_and_payload_root_cannot_cross_into_native(self):
+        import re
+        body = self.installed
+        header = body.split("    steps:\n", 1)[0]
+        self.assertIn("      MW_LINUX_BUNDLE_ROOT: " + gate.BINARY.parent.as_posix() + "\n", header)
+        self.assertNotIn("target/release", body)
+        self.assertNotIn("GITHUB_ENV", body)
+        for variable in ("RUSTFLAGS", "CARGO_HOME", "CARGO_TARGET_DIR", "PATCHELF", "NO_STRIP"):
+            self.assertNotRegex(header, r"(?m)^      " + variable + ":")
+            self.assertIn("export " + variable + "=", body)
+        native = body.split("      - name: Same-job original installed Desktop to Native and back\n", 1)[1]
+        for variable in ("RUSTFLAGS", "CARGO_HOME", "CARGO_TARGET_DIR", "PATCHELF", "NO_STRIP"):
+            self.assertNotIn("export " + variable + "=", native)
+        producer = (ROOT / "tooling/native_host_installed_shared_state.py").read_text(encoding="utf-8")
+        expected = (gate.BINARY.parent / "bundle/appimage").as_posix()
+        self.assertIn('repo / "' + expected + '"', producer)
+        self.assertNotIn('repo / "target/release/bundle/appimage"', producer)
+
+    def test_all_cargo_original_paths_are_retained_before_native_without_private_quota_growth(self):
+        import ast
+        def upload_paths(body, label):
+            selected = body.split("      - name: " + label + "\n", 1)[1]
+            selected = selected.split("          path: |\n", 1)[1].split("          if-no-files-found:", 1)[0]
+            return {line.strip() for line in selected.splitlines() if line.strip()}
+        self.assertEqual(
+            upload_paths(self.installed, "Preserve original installed Linux dependency records"),
+            upload_paths(self.bundle, "Preserve original isolated Linux dependency records"))
+        self.assertLess(self.installed.index("Preserve original installed Linux dependency records"),
+                        self.installed.index("Same-job original installed Desktop to Native and back"))
+        self.assertIn("always() && github.event_name == 'workflow_dispatch' && "
+                      "inputs.verification_scope == 'linux_first_use' && "
+                      "steps.installed_candidate_build.outcome != 'skipped'", self.installed)
+        custody = ast.parse((ROOT / "tooling/linux_first_use_custody.py").read_text(encoding="utf-8"))
+        declarations = {node.targets[0].id: node.value for node in custody.body
+                        if isinstance(node, ast.Assign) and len(node.targets) == 1
+                        and isinstance(node.targets[0], ast.Name)}
+        self.assertEqual(ast.literal_eval(declarations["MAX_MEMBERS"]), 192)
+        retained = ast.literal_eval(declarations["REPOSITORY_FILES"])
+        self.assertIn("linux-appimage-prelaunch.json", retained)
+        self.assertIn("linux-cargo-binding.json", retained)
+
+
 class LinuxFrontendLayoutTests(unittest.TestCase):
     def test_explicit_linux_base_rechecks_real_archives_without_mutating_windows_default(self):
         from test_ci_windows_dependency_capture import FrontendInputCustodyTests

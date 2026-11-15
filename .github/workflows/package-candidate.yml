@@ -751,6 +751,8 @@ jobs:
       actions: read
     env:
       PYTHONDONTWRITEBYTECODE: '1'
+      MW_LINUX_CANDIDATE_SCOPE: ${{ inputs.verification_scope }}
+      MW_LINUX_BUNDLE_ROOT: target/linux-captured/x86_64-unknown-linux-gnu/release
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -798,41 +800,93 @@ jobs:
       - name: Install locked Studio and Tauri CLI dependencies
         run: npm --prefix apps/studio ci --no-audit --no-fund
       - name: Build unsigned Linux candidate bundles
+        id: installed_candidate_build
+        shell: bash
         run: |
-          cd apps/desktop
-          npm --prefix ../studio exec -- tauri build --bundles deb,appimage
+          set -euo pipefail
+          cargo_home="$RUNNER_TEMP/motionwright-linux-cargo-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          target_dir="$GITHUB_WORKSPACE/target/linux-captured"
+          test ! -e "$cargo_home"
+          test ! -e "$target_dir"
+          test -z "${RUSTFLAGS:-}${CARGO_ENCODED_RUSTFLAGS:-}${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS:-}"
+          mkdir -p "$cargo_home" "$target_dir"
+          export CARGO_HOME="$cargo_home"
+          export CARGO_TARGET_DIR="$target_dir"
+          export RUSTFLAGS='-C link-arg=-Wl,--enable-new-dtags,-rpath,$ORIGIN/../lib'
+          export PATCHELF='/usr/bin/patchelf'
+          export NO_STRIP='1'
+          export MOTIONWRIGHT_CANDIDATE_BUILD=1
+          export MOTIONWRIGHT_CANDIDATE_SOURCE_SHA="$GITHUB_SHA"
+          npm --prefix apps/studio run build
+          python3 -B tooling/ci_linux_dependency_capture.py frontend
+          export RUSTUP_TOOLCHAIN='1.98.1'
+          cargo_executable="$(rustup which cargo)"
+          rustc_executable="$(rustup which rustc)"
+          test -f "$cargo_executable"
+          test -x "$rustc_executable"
+          test "$(dirname "$cargo_executable")" = "$(dirname "$rustc_executable")"
+          export RUSTC="$rustc_executable"
+          "$RUSTC" --version
+          python3 -B scripts/candidate_dependency_capture.py \
+            --repo "$GITHUB_WORKSPACE" --expected-source "$GITHUB_SHA" --cargo "$cargo_executable" \
+            --cargo-home "$cargo_home" --manifest apps/desktop/src-tauri/Cargo.toml \
+            --root-package motionwright-desktop --target x86_64-unknown-linux-gnu \
+            --features tauri/custom-protocol --tauri-generated-schemas --tauri-generated-command-permissions --sqlite-native-output \
+            --state-directory ci-evidence/linux-cargo/state \
+            --resources-directory ci-evidence/linux-cargo/resources \
+            -- "$cargo_executable" build --locked --release --bins --package motionwright-desktop \
+            --manifest-path apps/desktop/src-tauri/Cargo.toml --target x86_64-unknown-linux-gnu \
+            --features tauri/custom-protocol --message-format=json-render-diagnostics
+          python3 -B tooling/ci_linux_dependency_capture.py stage
+          python3 -B tooling/ci_linux_dependency_capture.py bundle
       - name: Verify actual Linux candidate compiled the reviewed local glib source
         run: |
           set -euo pipefail
+          export CARGO_HOME="$RUNNER_TEMP/motionwright-linux-cargo-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/linux-captured"
+          export RUSTFLAGS='-C link-arg=-Wl,--enable-new-dtags,-rpath,$ORIGIN/../lib'
+          export PATCHELF='/usr/bin/patchelf'
+          export NO_STRIP='1'
           mkdir -p ci-evidence
           /usr/bin/python3 -B -E -s tooling/v01_glib_product_admission.py --output ci-evidence/glib-patched-source.json
           cargo tree --locked -p motionwright-desktop --target x86_64-unknown-linux-gnu -i glib > ci-evidence/glib-compiled-owner-tree.txt
           grep -F 'vendor/glib-0.18.5' ci-evidence/glib-compiled-owner-tree.txt >/dev/null
-          count="$(find target/release/deps -maxdepth 1 -type f -name 'libglib-*.rlib' | wc -l)"
+          count="$(find "$MW_LINUX_BUNDLE_ROOT/deps" -maxdepth 1 -type f -name 'libglib-*.rlib' | wc -l)"
           test "$count" -ge 1
           echo 'v01-glib-product-candidate=LOCAL_BACKPORT_COMPILED linux_installed_gui=NOT_YET_VERIFIED'
       - name: Record exact Linux candidate artifacts
+        shell: bash
         run: |
-          appimage_count="$(find target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' | wc -l)"
-          deb_count="$(find target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' | wc -l)"
+          set -euo pipefail
+          export CARGO_HOME="$RUNNER_TEMP/motionwright-linux-cargo-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/linux-captured"
+          export RUSTFLAGS='-C link-arg=-Wl,--enable-new-dtags,-rpath,$ORIGIN/../lib'
+          export PATCHELF='/usr/bin/patchelf'
+          export NO_STRIP='1'
+          python3 -B tooling/ci_linux_dependency_capture.py frontend-recheck
+          appimage_count="$(find "$MW_LINUX_BUNDLE_ROOT/bundle/appimage" -maxdepth 1 -type f -name '*.AppImage' | wc -l)"
+          deb_count="$(find "$MW_LINUX_BUNDLE_ROOT/bundle/deb" -maxdepth 1 -type f -name '*.deb' | wc -l)"
           test "$appimage_count" -eq 1
           test "$deb_count" -eq 1
-          appimage="$(find target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print)"
-          deb="$(find target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' -print)"
+          appimage="$(find "$MW_LINUX_BUNDLE_ROOT/bundle/appimage" -maxdepth 1 -type f -name '*.AppImage' -print)"
+          deb="$(find "$MW_LINUX_BUNDLE_ROOT/bundle/deb" -maxdepth 1 -type f -name '*.deb' -print)"
           /usr/bin/python3 -B -E -s tooling/package_receipt.py \
             --git-sha "$GITHUB_SHA" \
             --platform linux \
             --arch x86_64 \
             --artifact "$appimage" \
             --artifact "$deb" \
+            --cargo-index ci-evidence/linux-cargo/resources/cargo/index.json \
+            --cargo-binary "$MW_LINUX_BUNDLE_ROOT/motionwright-desktop" \
+            --require-cargo-binding \
             --output ci-evidence/linux-candidate.json
       - name: One accessible first-use attempt and a read-only cold relaunch
         shell: bash
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          deb="$(find target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' -print -quit)"
-          appimage="$(find target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          deb="$(find "$MW_LINUX_BUNDLE_ROOT/bundle/deb" -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          appimage="$(find "$MW_LINUX_BUNDLE_ROOT/bundle/appimage" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
           work="$RUNNER_TEMP/linux-first-use-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_SHA"
           test -f "$work/reservation.json"
           mkdir "$work/deb" "$work/appimage"
@@ -873,6 +927,13 @@ jobs:
             find "$extracted" -maxdepth 1 -name '*.desktop' -printf '%f\n'
             exit 1
           fi
+          /usr/bin/python3 -B -E -s tooling/candidate_smoke.py \
+            --candidate-receipt ci-evidence/linux-candidate.json \
+            --expected-source-sha "$GITHUB_SHA" \
+            --kind appimage --method appimage_extract \
+            --artifact "$appimage" --installed-binary "${image_bins[0]}" \
+            --linux-desktop-entry "${image_desktop[0]}" \
+            --output ci-evidence/linux-appimage-prelaunch.json
           echo "One accessible creation attempt; second real window has no interaction"
           xvfb-run -a -s "-screen 0 1440x940x24" \
             dbus-run-session -- /usr/bin/python3 -B -E -s tooling/ci_linux_first_use.py installed \
@@ -887,6 +948,16 @@ jobs:
             --linux-desktop-entry "${image_desktop[0]}" \
             --linux-gui-probe "$work/window.json" \
             --output ci-evidence/linux-appimage-smoke.json
+      - name: Verify both extracted installed packages against the original Cargo capture
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CARGO_HOME="$RUNNER_TEMP/motionwright-linux-cargo-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/linux-captured"
+          export RUSTFLAGS='-C link-arg=-Wl,--enable-new-dtags,-rpath,$ORIGIN/../lib'
+          export PATCHELF='/usr/bin/patchelf'
+          export NO_STRIP='1'
+          python3 -B tooling/ci_linux_dependency_capture.py verify
       - name: Retain bounded first-use originals without following application data links
         if: always()
         shell: bash
@@ -915,6 +986,69 @@ jobs:
             ${{ runner.temp }}/linux-first-use-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}-custody/originals.zip
             ${{ runner.temp }}/linux-first-use-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}-custody/custody.json
           if-no-files-found: error
+          retention-days: 30
+      - name: Preserve original installed Linux dependency records
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_first_use' && steps.installed_candidate_build.outcome != 'skipped' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-linux-installed-cargo-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ci-evidence/linux-cargo/tauri-resources.json
+            ci-evidence/linux-cargo/bundle.request.json
+            ci-evidence/linux-cargo/bundle.completion.json
+            ci-evidence/linux-cargo/bundle.stdout
+            ci-evidence/linux-cargo/bundle.stderr
+            ci-evidence/linux-cargo/state/source-before.json
+            ci-evidence/linux-cargo/state/source-after.json
+            ci-evidence/linux-cargo/state/metadata.stdout
+            ci-evidence/linux-cargo/state/metadata.stderr
+            ci-evidence/linux-cargo/state/metadata.request.json
+            ci-evidence/linux-cargo/state/metadata.completion.json
+            ci-evidence/linux-cargo/state/build.stdout
+            ci-evidence/linux-cargo/state/build.stderr
+            ci-evidence/linux-cargo/state/build.request.json
+            ci-evidence/linux-cargo/state/build.completion.json
+            ci-evidence/linux-cargo/state/cargo-components.json
+            ci-evidence/linux-cargo/state/cargo-artifacts.json
+            ci-evidence/linux-cargo/state/cargo-license-sources.json
+            ci-evidence/linux-cargo/state/cargo-native-outputs.json
+            ci-evidence/linux-cargo/state/tauri-generated-schemas.json
+            ci-evidence/linux-cargo/state/capture-complete.json
+            ci-evidence/linux-cargo/state/generated-metadata/tauri/acl-manifests.json
+            ci-evidence/linux-cargo/state/generated-metadata/tauri/capabilities.json
+            ci-evidence/linux-cargo/state/generated-metadata/tauri/desktop-schema.json
+            ci-evidence/linux-cargo/state/generated-metadata/tauri/linux-schema.json
+            ci-evidence/linux-cargo/state/generated-metadata/tauri-command-source/build.rs
+            ci-evidence/linux-cargo/state/generated-metadata/tauri-command-permissions/*.toml
+            ci-evidence/linux-cargo/state/generated-metadata/cargo-markers/*.bin
+            ci-evidence/linux-cargo/resources/cargo/index.json
+            ci-evidence/linux-cargo/resources/cargo/texts/*.txt
+            ci-evidence/linux-cargo/frontend/archive-map.json
+            ci-evidence/linux-cargo/frontend/pre-archive-index.original.json
+            ci-evidence/linux-cargo/frontend/pre-archive-emitted-set.json
+            ci-evidence/linux-cargo/frontend/pre-recheck-index.original.json
+            ci-evidence/linux-cargo/frontend/pre-recheck-emitted-set.json
+            ci-evidence/linux-cargo/frontend/before-build.json
+            ci-evidence/linux-cargo/frontend/after-bundle.json
+            ci-evidence/linux-cargo/link-layout/result.json
+            ci-evidence/linux-cargo/link-layout/version.request.json
+            ci-evidence/linux-cargo/link-layout/version.completion.json
+            ci-evidence/linux-cargo/link-layout/version.stdout
+            ci-evidence/linux-cargo/link-layout/version.stderr
+            ci-evidence/linux-cargo/link-layout/runpath.request.json
+            ci-evidence/linux-cargo/link-layout/runpath.completion.json
+            ci-evidence/linux-cargo/link-layout/runpath.stdout
+            ci-evidence/linux-cargo/link-layout/runpath.stderr
+            ci-evidence/linux-cargo/link-layout/same-runpath.request.json
+            ci-evidence/linux-cargo/link-layout/same-runpath.completion.json
+            ci-evidence/linux-cargo/link-layout/same-runpath.stdout
+            ci-evidence/linux-cargo/link-layout/same-runpath.stderr
+            ci-evidence/linux-candidate.json
+            ci-evidence/linux-deb-smoke.json
+            ci-evidence/linux-appimage-prelaunch.json
+            ci-evidence/linux-appimage-smoke.json
+            ci-evidence/linux-cargo-binding.json
+          if-no-files-found: warn
           retention-days: 30
       - name: Same-job original installed Desktop to Native and back
         id: installed-native
@@ -963,8 +1097,8 @@ jobs:
         with:
           name: linux-first-use-candidate-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
           path: |
-            target/release/bundle/appimage/*.AppImage
-            target/release/bundle/deb/*.deb
+            ${{ env.MW_LINUX_BUNDLE_ROOT }}/bundle/appimage/*.AppImage
+            ${{ env.MW_LINUX_BUNDLE_ROOT }}/bundle/deb/*.deb
           if-no-files-found: warn
           retention-days: 30
 

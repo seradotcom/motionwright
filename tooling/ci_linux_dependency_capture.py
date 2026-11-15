@@ -1,6 +1,6 @@
 """Compose real Linux Cargo capture with exact DEB/AppImage inspection.
 
-Only the existing isolated linux_bundle CI scope is admitted. This does not
+Only the existing isolated bundle and exact installed first-use CI scopes are admitted. This does not
 grant redistribution, full dependency closure, Native execution or acceptance.
 """
 from __future__ import annotations
@@ -32,10 +32,14 @@ def linux_source(environment):
         "GITHUB_EVENT_NAME": "workflow_dispatch",
         "GITHUB_REPOSITORY": "seradotcom/motionwright",
         "GITHUB_REF": "refs/heads/integrate/phase1-final-composition-20261027",
-        "MW_LINUX_CANDIDATE_SCOPE": "linux_bundle",
         "GITHUB_RUN_ATTEMPT": "1",
     }
     require(all(environment.get(key) == value for key, value in required.items()),
+            "linux_dependency_scope_refused")
+    scope = environment.get("MW_LINUX_CANDIDATE_SCOPE")
+    require(scope == "linux_bundle" or
+            (scope == "linux_first_use" and
+             environment.get("GITHUB_JOB") == "linux-first-use-installed"),
             "linux_dependency_scope_refused")
     source = environment.get("GITHUB_SHA", "")
     require(re.fullmatch(r"[0-9a-f]{40}", source) is not None

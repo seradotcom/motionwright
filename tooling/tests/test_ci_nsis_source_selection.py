@@ -741,7 +741,7 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
         self.assertIn("    needs: [receipt-policy, linux-first-use-source]\n", installed_job)
         self.assertEqual(installed_job.count("tooling/ci_linux_first_use.py installed"), 1)
         self.assertLess(installed_job.index("tooling/ci_linux_first_use.py reserve"),
-                        installed_job.index("tauri build --bundles deb,appimage"))
+                        installed_job.index("scripts/candidate_dependency_capture.py"))
 
     def test_only_existing_two_jobs_select_distribution_and_all_historical_scopes_remain(self):
         import fnmatch

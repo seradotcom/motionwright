@@ -21161,8 +21161,8 @@
     },
     {
       "path": ".github/workflows/package-candidate.yml",
-      "sha256": "2031fcbf114c42c0922ee3f6a74e7870f88f9c74b12838eb1438000795e5885a",
-      "preamble_sha256": "03d7f1d550746fef23bb97dbfd4e8e6a5a80b4b9033269380f2496aeb628f834",
+      "sha256": "187a1d31841c4885ebb8cecb00fbde26ad63a8e962ae19120b6cd718a7aba5a6",
+      "preamble_sha256": "10a4687cf518b6311791cc0072e68c37dd0bd910b29b712817a671ee73503326",
       "evidence_class": "package_source_installed_and_provenance",
       "purpose": "Exact-source candidate packages and provenance, separately guarded Windows/NSIS source, compile/lifecycle and Linux first-use scopes. The all option covers its named package lane, not complete release readiness.",
       "inputs": {
@@ -21172,6 +21172,8 @@
           "default": "all",
           "options": [
             "all",
+            "linux_bundle",
+            "macos_bundle",
             "windows_contracts",
             "windows_installed",
             "nsis_source",
@@ -21200,6 +21202,18 @@
           "all": {
             "covered_by": [
               "candidate-packages"
+            ],
+            "basis": "These cases describe this exact existing input selection, including its guarded jobs and steps. Alternative selection is not an authorization or an additional mandatory dispatch; original source-specific readback is required."
+          },
+          "linux_bundle": {
+            "covered_by": [
+              "linux-bundle"
+            ],
+            "basis": "These cases describe this exact existing input selection, including its guarded jobs and steps. Alternative selection is not an authorization or an additional mandatory dispatch; original source-specific readback is required."
+          },
+          "macos_bundle": {
+            "covered_by": [
+              "macos-bundle"
             ],
             "basis": "These cases describe this exact existing input selection, including its guarded jobs and steps. Alternative selection is not an authorization or an additional mandatory dispatch; original source-specific readback is required."
           },
@@ -21262,7 +21276,7 @@
           "runs_on": "ubuntu-latest",
           "needs": null,
           "strategy": null,
-          "source_sha256": "09075abec05b25ee0b2bd450c2a06f7aff4b29bd86c968ea59d9a5e219cea1bb",
+          "source_sha256": "7a82544fa7fca8e4bcf78f7c1c3167c69cdad6ad1fba64029408922180f0fb30",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -21290,6 +21304,12 @@
             ],
             "linux-first-use": [
               {}
+            ],
+            "linux-bundle": [
+              {}
+            ],
+            "macos-bundle": [
+              {}
             ]
           },
           "steps": [
@@ -21298,11 +21318,51 @@
               "name": "Quick source and conformance policies for every verification scope",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "7910aa3a654b5478ff883f81921fca8e9b9539cf39c49ab9aa8953425bbdcc2e",
+              "source_block_sha256": "95f355c2ab95e1cefca9fbd78537f116cc53c2467fcaffa9588bcddd4a5a94fe",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 4,
+              "name": "Verify bounded platform bundle selections without acceptance",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "eaef318db98b87ff1ea65ffd177524fd9e8e4ba6b2c26c273837759ddc65d39f",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 5,
+              "name": "Linux captured dependency composition contracts",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "d0d14458de03b0f04e3925c556d5b8080d8ee20dabb227d34408e57afdf44a23",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 6,
+              "name": "macOS captured dependency composition contracts",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "52688d23e09f3b0d4130d63d780fd5ec3aae68f6b14d89d73fb169955aa9bdf5",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 7,
+              "name": "Captured SQLite native output contracts",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "e3cd4bd8d6095220ff0e45ebaa0172710f4b18a40f443d36b8f77cbddb53f269",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 8,
+              "name": "Static NSIS reference and installed-byte comparison contracts",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "d0c02edc793f45c1f79d62191208c0f96adb162cce95591d8c704cf81319eebd",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 9,
               "name": "Candidate receipt and installed-package smoke policy tests",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -21310,7 +21370,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 5,
+              "ordinal": 10,
               "name": "Linux first-use gate control tests in both import modes",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -21318,7 +21378,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 6,
+              "ordinal": 11,
               "name": "Require closed selected source contracts through both entrypoints on Linux",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -21326,7 +21386,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 7,
+              "ordinal": 12,
               "name": "Require sixty-seven lifecycle contracts through both existing runner entrypoints",
               "guard": "github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source'",
               "kind": "EXECUTABLE_STEP",
@@ -21334,7 +21394,23 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 8,
+              "ordinal": 13,
+              "name": "Require tamper evidence contracts in both import modes",
+              "guard": "github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "08ff4162f75f8f8a964cbee870dd2f72b68fba61aba6d8e359e58177157b40c6",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 14,
+              "name": "Retain exact tamper evidence contract receipts",
+              "guard": "always() && (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source')",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "6be0a313c064f5d58f5943a5c155755c8a04c5904c20d0d7cc0e065266e7e7e4",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 15,
               "name": "Retain exact lifecycle contract receipts",
               "guard": "always() && (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source')",
               "kind": "ARTIFACT_RETENTION",
@@ -21342,7 +21418,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 9,
+              "ordinal": 16,
               "name": "Retain the exact Linux selected source-test result",
               "guard": "always()",
               "kind": "ARTIFACT_RETENTION",
@@ -21353,11 +21429,11 @@
         },
         "nsis-source-windows": {
           "source_name": "nsis-source-windows",
-          "guard": "github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')",
+          "guard": "github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use' && inputs.verification_scope != 'macos_bundle' && inputs.verification_scope != 'linux_bundle')",
           "runs_on": "windows-latest",
           "needs": "receipt-policy",
           "strategy": null,
-          "source_sha256": "e3063698fd4f6aa9c8e8ee6ea289d1ed1f96dbbccc463bf6abefbf1fffd0ccd2",
+          "source_sha256": "052fc483ce6810265ea98f783606025818a310ffdf66e3f230f558cabfa577d6",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -21400,6 +21476,22 @@
             },
             {
               "ordinal": 5,
+              "name": "Require tamper evidence contracts in both import modes",
+              "guard": "github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "0fd970ddcd3cfaf25af7d54662d2ec486fd9090aa700ae86a5b24d7e17b1593d",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 6,
+              "name": "Retain exact tamper evidence contract receipts",
+              "guard": "always() && (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source')",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "6be0a313c064f5d58f5943a5c155755c8a04c5904c20d0d7cc0e065266e7e7e4",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 7,
               "name": "Retain exact lifecycle contract receipts",
               "guard": "always() && (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'distribution_source')",
               "kind": "ARTIFACT_RETENTION",
@@ -21407,7 +21499,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 6,
+              "ordinal": 8,
               "name": "Retain the exact Windows selected source-test result",
               "guard": "always()",
               "kind": "ARTIFACT_RETENTION",
@@ -21422,7 +21514,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": "receipt-policy",
           "strategy": null,
-          "source_sha256": "20027ef5447631b67706612eb604e62aa666029fa9d833242ad171a65bd27032",
+          "source_sha256": "f6f25fbf39c5b909b75d2dd32d0ee4c2ad40b6c9bc208de3af5f538a1204a8f0",
           "instance_sets": {
             "linux-first-use-source": [
               {}
@@ -21442,6 +21534,38 @@
             },
             {
               "ordinal": 3,
+              "name": "Verify Ubuntu AT-SPI MatchRule binding headlessly before any build or UI effect",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "fa00591f9ea3440e6b91950706f82d9368fcc1ba8d3201951bc4580b9257a7d0",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 4,
+              "name": "Verify exact installed Native pre-effect controls in Ubuntu without any Native dispatch",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "1cdab3c59aa0cb79cd94d4d1c533c09f31e057fe433389c1666c69487345451e",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 5,
+              "name": "Preserve authenticated Native installed source-only originals",
+              "guard": "always()",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "8c008cf3b8b66ba12ca60ccafc5dbcdf174303ffadb6d0c55b3bb2c1bba24596",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 6,
+              "name": "Preserve original Ubuntu AT-SPI GI ABI check independently of source-gate roster",
+              "guard": "always()",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "5efa93765ef6fdb87e0eb51be1619355b2e68d96b78fd18bb50931ea3afe6df7",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 7,
               "name": "Preserve exact source execution originals on every terminal",
               "guard": "always()",
               "kind": "ARTIFACT_RETENTION",
@@ -21459,7 +21583,7 @@
             "linux-first-use-source"
           ],
           "strategy": null,
-          "source_sha256": "7ca881f0a1e1413a21dc3ad8e2821c1b848c282e46cf4d6acce48fdb15ab6365",
+          "source_sha256": "29f64cae6a69e40f39da2269961639ba2061e76de3a22985e099fba675d1142a",
           "instance_sets": {
             "linux-first-use": [
               {}
@@ -21503,7 +21627,7 @@
               "name": "Build unsigned Linux candidate bundles",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "edf2f205479d00380dde53980bc73265bc98da3450df8cf4273c696914162ca5",
+              "source_block_sha256": "6639ba0e27c9f42364763544750b810d4104d9c35e20fc0157d69828bbabf1c5",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -21511,7 +21635,7 @@
               "name": "Verify actual Linux candidate compiled the reviewed local glib source",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "8de9004e8aaf216c7c17a104581dfae0f04d7673e66c5b68473351123a0b7adf",
+              "source_block_sha256": "491cf36eaa78a8669c2c3b48420e08320ac5f8dca12f5ebd1bfc4d2a86658af2",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -21519,7 +21643,7 @@
               "name": "Record exact Linux candidate artifacts",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "5412b67513999c070b01e4d0432c73f4a2ca14968ea207e5069d26e9a61c1bfb",
+              "source_block_sha256": "36c6287df40f669476a5d250af010254bbcc7b2256c23c8d626569992c1b6b46",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -21527,11 +21651,19 @@
               "name": "One accessible first-use attempt and a read-only cold relaunch",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "bf1db124c332a22142dd3e90c7a2e27a0e2e593d1bd566ec34e523ead9fb09ea",
+              "source_block_sha256": "ca8017eec73b53f2614f84639fab46986e9b1b428cae3d8402fc50ce2fb58cf0",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 14,
+              "name": "Verify both extracted installed packages against the original Cargo capture",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "b012278e9bd38d65fc704dd58ec1f4e5472ea830e41e3ff425eaeeba8a488770",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 15,
               "name": "Retain bounded first-use originals without following application data links",
               "guard": "always()",
               "kind": "EXECUTABLE_STEP",
@@ -21539,7 +21671,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 15,
+              "ordinal": 16,
               "name": "Admit only fixed retained files for upload",
               "guard": "always()",
               "kind": "EXECUTABLE_STEP",
@@ -21547,7 +21679,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 16,
+              "ordinal": 17,
               "name": "Preserve admitted first-use archive or explicit custody refusal",
               "guard": "always() && steps.first-use-originals-custody.outputs.ready == 'true'",
               "kind": "ARTIFACT_RETENTION",
@@ -21555,7 +21687,15 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 17,
+              "ordinal": 18,
+              "name": "Preserve original installed Linux dependency records",
+              "guard": "${{ always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_first_use' && steps.installed_candidate_build.outcome != 'skipped' }}",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "505e57c806eb615070bc59418599713c1f6702ebfe976ad15d2c8b69173470bc",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 19,
               "name": "Same-job original installed Desktop to Native and back",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -21563,7 +21703,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 18,
+              "ordinal": 20,
               "name": "Seal complete private installed originals or explicit partial custody",
               "guard": "always() && steps.installed_native_controls.outcome != 'skipped'",
               "kind": "EXECUTABLE_STEP",
@@ -21571,7 +21711,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 19,
+              "ordinal": 21,
               "name": "Admit only the installed private ciphertext and public custody receipt",
               "guard": "always() && steps.installed_native_controls.outcome != 'skipped'",
               "kind": "EXECUTABLE_STEP",
@@ -21579,7 +21719,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 20,
+              "ordinal": 22,
               "name": "Preserve encrypted installed Native originals",
               "guard": "always() && steps.installed-native-upload.outputs.ready == 'true'",
               "kind": "ARTIFACT_RETENTION",
@@ -21587,24 +21727,27 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 21,
+              "ordinal": 23,
               "name": "Preserve exact unsigned package payloads for the installed attempt",
               "guard": "always()",
               "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "debf9dc32c8b5560ee84594787156cc9b666c09623821d24d130de747b3a5009",
+              "source_block_sha256": "e2acb8f4051e6010166055ac9f15ae4abdcd213696360606a07e2968ea6efbef",
               "api_binding": "EXPLICIT_NAME"
             }
           ]
         },
         "linux": {
           "source_name": "linux",
-          "guard": "github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')",
+          "guard": "github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use' && inputs.verification_scope != 'macos_bundle')",
           "runs_on": "ubuntu-24.04",
           "needs": "receipt-policy",
           "strategy": null,
-          "source_sha256": "d2ecbc5e276fa33f6cfc791bbab519a59143a76220d11ace005b5ac918f7fe21",
+          "source_sha256": "e562209cbd55b049aadbddcb625c8bf460b4097e1fe3cf333d3b8b506748db9e",
           "instance_sets": {
             "candidate-packages": [
+              {}
+            ],
+            "linux-bundle": [
               {}
             ]
           },
@@ -21630,7 +21773,7 @@
               "name": "Build unsigned Linux candidate bundles",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "edf2f205479d00380dde53980bc73265bc98da3450df8cf4273c696914162ca5",
+              "source_block_sha256": "0328b1ed60f9b851d7ef506714c96913131db4734da9ec620217b5f41d129432",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -21638,7 +21781,7 @@
               "name": "Verify actual Linux candidate compiled the reviewed local glib source",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "21b386de6279870e592ca2a98fa14673cd7d5fa3614f94f89834a1833d4db744",
+              "source_block_sha256": "608a229bf485d27af0ea8a9c1d5fdf1c08d6ce9b0385b23fc6d400f9c7e74912",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -21646,7 +21789,7 @@
               "name": "Record exact Linux candidate artifacts",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "e3c69d596dd1ce75d80c4cdd59cb3a0ae9fe49d8a6ee6017d7808e251e9fb623",
+              "source_block_sha256": "01d5809c2c847fa349aa61347ef1fff07121535a51ec892d8909f47cf2a83ffa",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -21654,34 +21797,50 @@
               "name": "Inspect extracted Linux packages and launch a rootless AppImage window",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "47d737cc08e54c3c1c7c95ca9b854750f9b1120b8e0a24525ea66707d4bb7b3e",
+              "source_block_sha256": "e0e3be853e9f758793371049db25bc37e9f8af08035dd1e0fb2bde837f42283e",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 12,
-              "name": "Retain isolated GUI launch diagnostics if smoke fails",
-              "guard": "failure()",
-              "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "b80e966e46ab41512e4f88c391a0112bcfd84d01afb8071ad8c7109e138f0dcf",
+              "name": "Verify both extracted Linux packages against the original Cargo capture",
+              "guard": "github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "09ff43c3e45b348851dbedd89b14dee8081c95076198f399488ab74c8c91d685",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 13,
+              "name": "Retain isolated GUI launch diagnostics if smoke fails",
+              "guard": "failure()",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "b12af5de48d83ca41e2b40634490d0685da43f2483be2e8bc01b1808f693837a",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 14,
               "name": null,
               "guard": null,
               "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "5d925bd741ae9af7af68dfeba1adabe739f89544176febe4af800cff056c1fd6",
+              "source_block_sha256": "1741f2a7fbc35fa1d34dc1472deae3993e2d790a6393d8038c8a571d5a2907d9",
               "api_binding": "REQUIRES_ORIGINAL_RUN_MAPPING"
+            },
+            {
+              "ordinal": 15,
+              "name": "Preserve original isolated Linux dependency records",
+              "guard": "${{ always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle' && steps.linux_candidate_build.outcome != 'skipped' }}",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "2b703e87c7db35c3607689bd5ee9c48b739fa3cb5aea22bf1e1de911c0c67127",
+              "api_binding": "EXPLICIT_NAME"
             }
           ]
         },
         "windows-contracts": {
           "source_name": "windows-contracts",
-          "guard": "github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')",
+          "guard": "github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use' && inputs.verification_scope != 'macos_bundle' && inputs.verification_scope != 'linux_bundle')",
           "runs_on": "windows-latest",
           "needs": null,
           "strategy": null,
-          "source_sha256": "ab15bf5411eca3a9aff3363b092df48302dde8126d67a8d67e9cb13e27a86b85",
+          "source_sha256": "f058c11d4db497de2b7ff2856a00ff10a7bc9cb792084b9ab41d6f56770c225d",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -21699,7 +21858,7 @@
               "name": "Verify isolated Windows candidate admission controls",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "845ec10a6d013ad2526bfccdcc185bac877760574baa1734000938b8e828be12",
+              "source_block_sha256": "1d22bb086cc13efc9f2ed57bfafcd0dc555f32e9eac8b974c0791bdc84a43e2c",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -21715,7 +21874,7 @@
               "name": "Windows cold-start unit contracts before package build",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "bcadb3f75632dee09094cbcd67e4d37ff15748854aa0b7c638b4d9703d8b13c8",
+              "source_block_sha256": "9460263b158da11c9334003efdb395866a332ccf8c6a6f2bd7cc04e60f13df87",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -21746,7 +21905,7 @@
         },
         "windows": {
           "source_name": "windows",
-          "guard": ">-\n      ${{ !cancelled() && needs['receipt-policy'].result == 'success' &&\n          needs['windows-contracts'].result == 'success' && needs['nsis-source-windows'].result == 'success' &&\n          (github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')) }}",
+          "guard": ">-\n      ${{ !cancelled() && needs['receipt-policy'].result == 'success' &&\n          needs['windows-contracts'].result == 'success' && needs['nsis-source-windows'].result == 'success' &&\n          (github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use' && inputs.verification_scope != 'macos_bundle' && inputs.verification_scope != 'linux_bundle')) }}",
           "runs_on": "windows-latest",
           "needs": [
             "receipt-policy",
@@ -21755,7 +21914,7 @@
             "linux"
           ],
           "strategy": null,
-          "source_sha256": "6e3f68f408e1f0814cc3c682b9ba03b19e837abb49265f9032b7ba83f7e8d8d8",
+          "source_sha256": "3592ab600eba74c7542a63e08bc1123c17c2e0586fb7ac7ebcf39ffdc691c297",
           "instance_sets": {
             "candidate-packages": [
               {}
@@ -21767,6 +21926,14 @@
           "steps": [
             {
               "ordinal": 6,
+              "name": "Provision pinned static NSIS reader without executing its installer",
+              "guard": "github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "50ada202ab55b7eb57ab7792c02acad31d9979222f9593d29d9b356ff84a8f6d",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 7,
               "name": "Install locked Studio and Tauri CLI dependencies",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -21774,47 +21941,55 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 7,
+              "ordinal": 8,
               "name": "Build unsigned Windows candidate",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "827c5f91af8fd1b4bc5bec952e2d5ed65e55ce1475bc8d07f185e14c89c5ed15",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 8,
-              "name": "Prepare isolated Windows candidate capture",
-              "guard": "github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "c840205decd026ee115f5e99f2da28564e967dbc99f85d5e686e327030040776",
+              "source_block_sha256": "636c5234e916ff2b747d154f3e4ff8bd9c2c5669ccac5ced1527a1ef9c7d3968",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 9,
-              "name": "Bundle the exact isolated Windows candidate",
+              "name": "Prepare isolated Windows candidate capture",
               "guard": "github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "223a7550b17fe52ac43dfbe5c1c0e3781c927ffadfa2e5039c4923616a37dd23",
+              "source_block_sha256": "bf942d0e98309ba39cff28a22f8257533a9e00236b482695f193b6d11e2c4eaf",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 10,
-              "name": "Record exact Windows candidate artifact",
-              "guard": null,
+              "name": "Bundle the exact isolated Windows candidate",
+              "guard": "github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "9e249133c03f24eb16aa8762c659daa664a7bfa4eddf11fcaf9daa3462b5121b",
+              "source_block_sha256": "867b12ec2cc4adbdce799b0309d88676a7a5667250efc0ccb43fd165b69250d1",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 11,
-              "name": "Silent current-user NSIS install and inspect installed Windows executable",
+              "name": "Record exact Windows candidate artifact",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "3db7c43eb31ab61328d61cba3d3ad7c8d455b026fa274b68da2531767efe452e",
+              "source_block_sha256": "ab3657d37bc69767c641c2d5969d6943a2df11ba952e093cc15108a273596e06",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 12,
+              "name": "Silent current-user NSIS install and inspect installed Windows executable",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "9d696db486e6c0d034d6ef1ce7271b9567eac89a4ac9ba119a0657d60964a730",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 13,
+              "name": "Verify isolated installed Windows application inventory",
+              "guard": "github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "d7aea8232bf6db0c656b2192de58b9cd7265f3f00dafa84a224e268e9234d9e6",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 14,
               "name": "Cold launch and reopen the real NSIS-installed application",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -21822,7 +21997,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 13,
+              "ordinal": 15,
               "name": "Preserve sanitized Windows first-use failure evidence",
               "guard": "failure()",
               "kind": "ARTIFACT_RETENTION",
@@ -21830,20 +22005,28 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 14,
-              "name": "Retain isolated Windows installation results",
-              "guard": "github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'",
+              "ordinal": 16,
+              "name": "Preserve original isolated Cargo and frontend capture records",
+              "guard": "${{ always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed' && steps.windows_candidate_build.outcome != 'skipped' }}",
               "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "7bc1daa726a30175f8e2a921cd5f946349fa536379b4e59bf949e1b8f600c8e7",
+              "source_block_sha256": "ce408e3a936ac738a8c5b6baa9f482164545abbcb43feb0bb7c658753109d37c",
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 15,
-              "name": null,
-              "guard": "github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_installed'",
+              "ordinal": 17,
+              "name": "Retain isolated Windows installation results",
+              "guard": "github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'windows_installed'",
               "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "18b38a0fa50727e2dc783933bba84cdc75b56b385d92d011025d75391996402f",
-              "api_binding": "REQUIRES_ORIGINAL_RUN_MAPPING"
+              "source_block_sha256": "2f5ccfd45559a2b8fa82642b6cd934d39633742a6d9bc849aa70db31f26259dc",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 18,
+              "name": "Retain original Windows candidate package",
+              "guard": "success()",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "7af937d7d62102dcebba66bc77295b4c3fa16469f4feb8f932938d369bfa6c82",
+              "api_binding": "EXPLICIT_NAME"
             }
           ]
         },
@@ -21856,7 +22039,7 @@
             "nsis-source-windows"
           ],
           "strategy": null,
-          "source_sha256": "6f750ce83def93e14936e0188b43414bd4a89d5d5453bc05ddba2065d5cf4246",
+          "source_sha256": "a34787b0116966e1c8cd8480ff8cf3fee31082d6382d4744ead1837164f643f2",
           "instance_sets": {
             "nsis-compile": [
               {}
@@ -21911,7 +22094,7 @@
               "name": "Compile the actual NSIS template with two resources and two distinct PE sidecars",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "912759284a029918dd36f3d32b2588e3fd9c234c5fbb06c99c406772d9990e63",
+              "source_block_sha256": "7fccd470c3e57ff0327588019964ee0ec5d129c1f00a914a67f93e0cddefe467",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -21951,7 +22134,7 @@
               "name": "Retain original lifecycle observations even after ERROR or UNKNOWN",
               "guard": "always() && inputs.verification_scope == 'nsis_lifecycle'",
               "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "8f1e7740fa4146b44c09ea9bb713679aad329749703212d36e940acb19d4ca87",
+              "source_block_sha256": "a88a02ba166f833dc92b7bdb36c9495605add8dc9a65ad31faad0c3115a654ce",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -21964,15 +22147,66 @@
             }
           ]
         },
+        "windows-uninstall-tamper": {
+          "source_name": "NSIS same-size refusal (${{ matrix.role }})",
+          "guard": "github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'nsis_lifecycle'",
+          "runs_on": "windows-latest",
+          "needs": "windows-update",
+          "strategy": {
+            "fail-fast": false,
+            "matrix": {
+              "role": [
+                "main",
+                "resource",
+                "external_binary"
+              ]
+            }
+          },
+          "source_sha256": "7eb7b0aa6afa178650e56eb706189aa45f4f7143f9fc18fa79bd78f56dea1522",
+          "instance_sets": {
+            "nsis-lifecycle": [
+              {
+                "role": "main"
+              },
+              {
+                "role": "resource"
+              },
+              {
+                "role": "external_binary"
+              }
+            ]
+          },
+          "steps": [
+            {
+              "ordinal": 3,
+              "name": "Admit the original producer and observe one refused uninstall",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "df2852c1f6418d30ef45c37a32576fa031dae75caabcd6952b6014ac79cb68eb",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 4,
+              "name": "Retain original case observations even after ERROR or UNKNOWN",
+              "guard": "always()",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "da24d8edc7d40996bae09991ed2c666b5da1914e9f0dc7557f9925c5df7990a4",
+              "api_binding": "EXPLICIT_NAME"
+            }
+          ]
+        },
         "macos": {
           "source_name": "macos",
-          "guard": "github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use')",
+          "guard": "github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'all' || inputs.verification_scope == 'macos_bundle'",
           "runs_on": "macos-latest",
           "needs": "receipt-policy",
           "strategy": null,
-          "source_sha256": "a226139f6030a4e184e100e7a303b3a4d1546430c2eb619630820fca7f42086f",
+          "source_sha256": "cf785bd693a4d4f1ff60aa1c579900f6fa4c9fa0db7e45fc791e71b0b0949c60",
           "instance_sets": {
             "candidate-packages": [
+              {}
+            ],
+            "macos-bundle": [
               {}
             ]
           },
@@ -21990,7 +22224,7 @@
               "name": "Build unsigned macOS DMG candidate",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "79fc3edac1feb914dc86fe4fc5749166e03cb20c5c97bba9193bcc459970a238",
+              "source_block_sha256": "2c4b9ad5b9f377e00476254be6ba660a5171ea7fad524e0ab6c63978418874df",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -21998,7 +22232,7 @@
               "name": "Record exact macOS candidate artifact",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "3a96f73d68a3598dac094c54eb4801f8978579de74a74b6c1e0149eedf928891",
+              "source_block_sha256": "e21f81268005011daddca6ff10616e24fd457d76481355bdbd9cc019c4cc570f",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -22006,16 +22240,32 @@
               "name": "Read-only DMG mount, copy application and inspect macOS Mach-O",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "072093e956f684877f13344fd38af51039b750a17768834cce56d26b243be612",
+              "source_block_sha256": "8a6461bb562f4580b66a2c86ed4adae84bb74ac3364cff2b41a33fa97f6a04eb",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 10,
+              "name": "Verify the copied DMG executable against the original Cargo capture",
+              "guard": "github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'macos_bundle'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "eb0cb67e89a80a1bf4e3d6e357e10a4d92412c39f37382da6427d2d9ee0439f5",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 11,
               "name": null,
               "guard": null,
               "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "925dce3ba1e58ca293f0137767940c62122a33e7a529084f8225ccc33671c57c",
+              "source_block_sha256": "989278bbdf3ea23b7de4010fac1cf243a2d57cde60a310591972ceb48b63b86c",
               "api_binding": "REQUIRES_ORIGINAL_RUN_MAPPING"
+            },
+            {
+              "ordinal": 12,
+              "name": "Preserve original isolated macOS dependency records",
+              "guard": "${{ always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'macos_bundle' && steps.macos_candidate_build.outcome != 'skipped' }}",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "d758ffe63e196d0cda60b5b98f601a00d3c4526ae6bfe00f34d2c91fc6dd7840",
+              "api_binding": "EXPLICIT_NAME"
             }
           ]
         },
@@ -22101,7 +22351,14 @@
                 6,
                 7,
                 8,
-                9
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16
               ]
             },
             {
@@ -22113,7 +22370,9 @@
                 3,
                 4,
                 5,
-                6
+                6,
+                7,
+                8
               ]
             },
             {
@@ -22128,7 +22387,7 @@
                 9,
                 10,
                 11,
-                13
+                14
               ]
             },
             {
@@ -22151,12 +22410,12 @@
               "matrix": {},
               "name_binding": "literal_definition",
               "required_steps": [
-                6,
                 7,
-                10,
+                8,
                 11,
                 12,
-                15
+                14,
+                18
               ]
             },
             {
@@ -22169,7 +22428,7 @@
                 7,
                 8,
                 9,
-                10
+                11
               ]
             },
             {
@@ -22211,7 +22470,14 @@
                 6,
                 7,
                 8,
-                9
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16
               ]
             },
             {
@@ -22223,7 +22489,9 @@
                 3,
                 4,
                 5,
-                6
+                6,
+                7,
+                8
               ]
             },
             {
@@ -22266,7 +22534,14 @@
                 6,
                 7,
                 8,
-                9
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16
               ]
             },
             {
@@ -22278,7 +22553,9 @@
                 3,
                 4,
                 5,
-                6
+                6,
+                7,
+                8
               ]
             },
             {
@@ -22308,7 +22585,11 @@
                 10,
                 11,
                 12,
-                14
+                13,
+                14,
+                16,
+                17,
+                18
               ]
             }
           ],
@@ -22337,7 +22618,14 @@
                 6,
                 7,
                 8,
-                9
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16
               ]
             },
             {
@@ -22349,7 +22637,9 @@
                 3,
                 4,
                 5,
-                6
+                6,
+                7,
+                8
               ]
             }
           ],
@@ -22376,7 +22666,12 @@
                 4,
                 5,
                 6,
-                9
+                7,
+                8,
+                9,
+                10,
+                11,
+                16
               ]
             },
             {
@@ -22386,7 +22681,7 @@
               "name_binding": "literal_definition",
               "required_steps": [
                 3,
-                6
+                8
               ]
             }
           ],
@@ -22415,7 +22710,14 @@
                 6,
                 7,
                 8,
-                9
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16
               ]
             },
             {
@@ -22427,7 +22729,9 @@
                 3,
                 4,
                 5,
-                6
+                6,
+                7,
+                8
               ]
             },
             {
@@ -22473,7 +22777,14 @@
                 6,
                 7,
                 8,
-                9
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16
               ]
             },
             {
@@ -22485,7 +22796,9 @@
                 3,
                 4,
                 5,
-                6
+                6,
+                7,
+                8
               ]
             },
             {
@@ -22506,9 +22819,45 @@
                 15,
                 16
               ]
+            },
+            {
+              "job_id": "windows-uninstall-tamper",
+              "display_name": "NSIS same-size refusal (main)",
+              "matrix": {
+                "role": "main"
+              },
+              "name_binding": "reviewed_literal_matrix_expansion",
+              "required_steps": [
+                3,
+                4
+              ]
+            },
+            {
+              "job_id": "windows-uninstall-tamper",
+              "display_name": "NSIS same-size refusal (resource)",
+              "matrix": {
+                "role": "resource"
+              },
+              "name_binding": "reviewed_literal_matrix_expansion",
+              "required_steps": [
+                3,
+                4
+              ]
+            },
+            {
+              "job_id": "windows-uninstall-tamper",
+              "display_name": "NSIS same-size refusal (external_binary)",
+              "matrix": {
+                "role": "external_binary"
+              },
+              "name_binding": "reviewed_literal_matrix_expansion",
+              "required_steps": [
+                3,
+                4
+              ]
             }
           ],
-          "coverage_basis": "The selected disposable NSIS fixture uses a retained 0.1.0 predecessor from run 39032220978/source 679cc48baf7c6f9bb4a0b803508c9b2a9891d944 and a source-bound 0.1.1 version overlay. Exact retained predecessor bytes, the NTFS junction negative, real compiler, captured resources/two PE sidecars and compiled receipts must be read back. The lifecycle alternative additionally performs one distinct-version install/upgrade/uninstall sequence and retains its originals even after ERROR or UNKNOWN.",
+          "coverage_basis": "The selected disposable NSIS fixture uses a retained 0.1.0 predecessor from run 39032220978/source 679cc48baf7c6f9bb4a0b803508c9b2a9891d944 and a source-bound 0.1.1 version overlay. Exact retained predecessor bytes, the NTFS junction negative, real compiler, captured resources/two PE sidecars and compiled receipts must be read back. The lifecycle alternative additionally performs one distinct-version install/upgrade/uninstall sequence and retains its originals even after ERROR or UNKNOWN. The same existing selection also requires each original main/resource/external_binary refused-uninstall matrix instance and its original retention.",
           "original_attempt": null,
           "blocking_reason": null
         },
@@ -22533,7 +22882,14 @@
                 6,
                 7,
                 8,
-                9
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16
               ]
             },
             {
@@ -22543,7 +22899,11 @@
               "name_binding": "literal_definition",
               "required_steps": [
                 2,
-                3
+                3,
+                4,
+                5,
+                6,
+                7
               ]
             }
           ],
@@ -22576,7 +22936,14 @@
                 6,
                 7,
                 8,
-                9
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16
               ]
             },
             {
@@ -22586,7 +22953,11 @@
               "name_binding": "literal_definition",
               "required_steps": [
                 2,
-                3
+                3,
+                4,
+                5,
+                6,
+                7
               ]
             },
             {
@@ -22610,11 +22981,117 @@
                 18,
                 19,
                 20,
-                21
+                21,
+                22,
+                23
               ]
             }
           ],
           "coverage_basis": "The installed Linux alternative requires the exact source roster, reserves one source/run namespace, builds unsigned bundles and verifies compiled glib provenance, performs one accessible first-use attempt and read-only cold relaunch, then bounds and admits retained originals. The custody archive upload requires its ready output; a refusal must be read back and cannot count as successful first-use evidence. The physically reviewed R3 composition additionally requires source controls on the pristine checkout, one same-job original installed Desktop-to-Native-to-Desktop execution, complete or explicitly partial sealing, ciphertext/public-receipt admission and retained encrypted originals. Both existing public recipient bindings and original attempt1 are mandatory. All eleven prior positive steps remain mapped and five authentic positive steps are added; no new dispatch, runtime credit or success inference follows.",
+          "original_attempt": 1,
+          "blocking_reason": null
+        },
+        {
+          "id": "linux-bundle",
+          "inputs": {
+            "verification_scope": "linux_bundle",
+            "evidence_recipient_spki": "",
+            "evidence_recipient_sha256": ""
+          },
+          "kind": "CONDITIONAL_ALTERNATIVE",
+          "required_job_instances": [
+            {
+              "job_id": "receipt-policy",
+              "display_name": "receipt-policy",
+              "matrix": {},
+              "name_binding": "proposed_github_default_requires_original_readback",
+              "required_steps": [
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16
+              ]
+            },
+            {
+              "job_id": "linux",
+              "display_name": "linux",
+              "matrix": {},
+              "name_binding": "proposed_github_default_requires_original_readback",
+              "required_steps": [
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                14,
+                15
+              ]
+            }
+          ],
+          "coverage_basis": "Existing isolated linux_bundle selection requires the receipt-policy source contracts and its original captured package job, including final binary binding and separate original-record retention. Other platform effects and all-scope attestation are not selected. This definition does not authorize execution or admit evidence.",
+          "original_attempt": 1,
+          "blocking_reason": null
+        },
+        {
+          "id": "macos-bundle",
+          "inputs": {
+            "verification_scope": "macos_bundle",
+            "evidence_recipient_spki": "",
+            "evidence_recipient_sha256": ""
+          },
+          "kind": "CONDITIONAL_ALTERNATIVE",
+          "required_job_instances": [
+            {
+              "job_id": "receipt-policy",
+              "display_name": "receipt-policy",
+              "matrix": {},
+              "name_binding": "proposed_github_default_requires_original_readback",
+              "required_steps": [
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16
+              ]
+            },
+            {
+              "job_id": "macos",
+              "display_name": "macos",
+              "matrix": {},
+              "name_binding": "proposed_github_default_requires_original_readback",
+              "required_steps": [
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12
+              ]
+            }
+          ],
+          "coverage_basis": "Existing isolated macos_bundle selection requires the receipt-policy source contracts and its original captured package job, including final binary binding and separate original-record retention. Other platform effects and all-scope attestation are not selected. This definition does not authorize execution or admit evidence.",
           "original_attempt": 1,
           "blocking_reason": null
         }
@@ -22626,15 +23103,16 @@
         "Successful GitHub job and step observations remain unadmitted until source-specific artifact and physical behavior evidence is read back.",
         "The remaining reviewed workflow plans have separate scope-specific original evidence obligations; workflow enumeration is not release readiness.",
         "The current selections require case-specific step inventories, including distribution_source exclusions and Linux first-use. This definition uses reviewed schema v2; the legacy generic run/jobs observation checker is not an evidence reader for these cases. Every case remains READBACK_REQUIRED.",
-        "The installed Linux source uses one authenticated original45-minute GitHub job clock including metadata HTTP latency. The6-minute controls and35-minute owner step remain within that original clock; setup, source controls, capacity admission, original effects and custody do not reset it.",
-        "Only linux-first-use selects the added Native join and requires the two admitted public recipient values. The other eight existing dispatch alternatives retain explicit empty new inputs and their prior job/step obligations; all does not silently acquire this alternative.",
+        "The installed Linux source uses one authenticated original60-minute GitHub job clock including metadata HTTP latency. The6-minute controls and35-minute owner step remain within that original clock; setup, source controls, capacity admission, original effects and custody do not reset it.",
+        "Only linux-first-use selects the installed Native join and requires the two admitted public recipient values. The other ten dispatch alternatives retain explicit empty recipient inputs and their case-specific job/step obligations; all does not silently acquire this alternative.",
         "The installed harness requires exact final source/tree/SDK/locks, original attempt1, same boot/job and retained pristine-checkout control bindings. UNKNOWN remains nonreplayable; a ciphertext upload or source review cannot substitute for original physical behavior and independent acceptance.",
         "Exact-branch, first-attempt development windows_contracts may defer the stale assessed-source acceptance policies only after independent receipt-policy source/public and all 60+64 unasserted acceptance rows plus unfinished creative-status guard. Windows source/public checks remain mandatory. This does not satisfy all or windows_installed, full G0 on F, physical installation, G2 or G3.",
         "Original PowerShell exit-guard retention runs when the producer finished successfully, failed or was cancelled; when it was skipped due an earlier failure, the upload is also skipped, avoiding false missing-originals errors. Observed producer failures still require original upload and error-on-missing; this never converts failure/UNKNOWN into acceptance.",
         "The exact first-attempt development-only acceptance deferral requires all 208 unique requirements to retain current_contract_verdict=open and technical_assessment.contract_acceptance.status=open, in addition to 60+64 NOT_RUN acceptance rows and incomplete creative-status requirements. Mutating any single contract verdict causes both pre-final source guards to deny; full final G0 and independent G3 remain unchanged.",
         "Only GitHub first-attempt workflow_dispatch on the exact canonical integration branch may use source-only nonpromotion guards for nsis_lifecycle, windows_contracts or windows_installed development. For installed Windows, this unblocks actual physical installer/SQLite cold-reopen observation but does not establish independent G2/F/G3 acceptance. Both Linux receipt-policy and Windows contracts require all 208 unique open contract rows, 60+64 NOT_RUN independent=false cases, exactly 64 incomplete creative rows and v05_release_ready=false. All, other refs/attempts and F retain full strict acceptance policies.",
         "The nsis-source-windows checkout must retain canonical LF Git bytes for Cargo.lock, SOURCE_LOCK.json, and apps/studio/package-lock.json: GIT_CONFIG_COUNT=1 core.autocrlf=false before actions/checkout. Historical run41270091876 original Windows source receipts were SHA-bound to 8b1 but recorded CRLF-converted checkout bytes; their exact CRLF values are explained by deterministic conversion, not current F lock-byte identity. No physical installer/G2 or G3 outcome is implied.",
-        "The windows-update source-bound NSIS compile/lifecycle job also keeps canonical LF bytes on Windows via core.autocrlf=false before pinned checkout, matching windows-contracts, windows installed and nsis-source-windows. This is a checkout identity/source-lock correction, not a change in the fixture executable, installer, physical lifecycle or acceptance. Historical original Windows CRLF lock digests remain historical and are not promoted to F."
+        "The windows-update source-bound NSIS compile/lifecycle job also keeps canonical LF bytes on Windows via core.autocrlf=false before pinned checkout, matching windows-contracts, windows installed and nsis-source-windows. This is a checkout identity/source-lock correction, not a change in the fixture executable, installer, physical lifecycle or acceptance. Historical original Windows CRLF lock digests remain historical and are not promoted to F.",
+        "The installed Linux package path now requires one captured Cargo build, receipt binary binding, a bound prelaunch AppImage readback, final AppImage/deb binding, and separate original Cargo-record retention before Native. Packaging variables are scoped to individual steps. The unchanged 192-member first-use custody and 240-MiB Native private custody limits, original job clock, Native compiler profiles and acceptance predicates remain independent requirements."
       ]
     }
   ],

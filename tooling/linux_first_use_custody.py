@@ -35,6 +35,7 @@ NAMESPACE_FILES = (
 REPOSITORY_FILES = (
     "linux-candidate.json", "linux-deb-smoke.json", "linux-appimage-smoke.json",
     "glib-patched-source.json", "glib-compiled-owner-tree.txt",
+    "linux-appimage-prelaunch.json", "linux-cargo-binding.json",
 )
 JOURNAL_FILES = frozenset(name + ".json" for name in (
     "launch-intent", "worker-start", "focus-intent", "focus-return",

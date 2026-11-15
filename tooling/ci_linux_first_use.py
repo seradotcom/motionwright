@@ -104,6 +104,8 @@ PATHS = (
     "tooling/linux_first_use_custody.py",
     "tooling/source_checkout_observation.py", "tooling/storage_schema_contract.py",
     "tooling/package_receipt.py", "tooling/candidate_smoke.py",
+    "tooling/ci_linux_dependency_capture.py", "tooling/ci_windows_dependency_capture.py",
+    "scripts/candidate_dependency_capture.py",
     "SOURCE_LOCK.json", "Cargo.lock", "apps/studio/package-lock.json",
 ) + tuple("tooling/tests/" + pattern for pattern in G0_PATTERNS)
 LOCKS = ("Cargo.lock", "SOURCE_LOCK.json", "apps/studio/package-lock.json")

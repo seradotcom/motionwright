@@ -957,11 +957,13 @@ class FixedArchiveCustodyTests(unittest.TestCase):
 
     def test_missing_namespace_before_launch_is_custodied_without_claiming_execution(self):
         self.namespace.rmdir()
-        self.write(self.repo / "ci-evidence/linux-candidate.json", b"{}")
+        names = ("linux-candidate.json", "linux-appimage-prelaunch.json", "linux-cargo-binding.json")
+        for name in names:
+            self.write(self.repo / "ci-evidence" / name, b"{}")
         result, receipt = self.run_custody()
         self.assertEqual(result, 0)
         self.assertEqual(receipt["database"], "NOT_PRESENT")
-        self.assertEqual(set(receipt["members"]), {"ci-evidence/linux-candidate.json"})
+        self.assertEqual(set(receipt["members"]), {"ci-evidence/" + name for name in names})
         self.assertEqual(receipt["installed_result"], "NOT_INFERRED")
 
     def test_unrelated_json_with_valid_journal_basename_is_rejected(self):

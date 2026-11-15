@@ -1835,7 +1835,7 @@ def ci_produce_originals(repo, root, namespace, evidence):
             need(own == after and sdk_before == sdk_after, "CI_BUILD_SOURCE_CHANGED")
             publish(evidence / "four-build-originals.json", binaries)
             ci_verify_early_controls(repo, evidence, os.environ.get("MW_INSTALLED_CONTROLS_BINDING_SHA256"))
-            artifacts = list((repo / "target/release/bundle/appimage").glob("*.AppImage"))
+            artifacts = list((repo / "target/linux-captured/x86_64-unknown-linux-gnu/release/bundle/appimage").glob("*.AppImage"))
             need(len(artifacts) == 1, "CI_ONE_CURRENT_APPIMAGE")
             provider = binaries["motionwright-native-provider"]
             args = parse_args(["--repo", str(repo), "--source-sha", os.environ["GITHUB_SHA"], "--semwright-sha", lock["revision"],
