@@ -1163,6 +1163,73 @@ class ModalReadbackTests(unittest.TestCase):
         self.assertEqual(timeline.child_count_calls, 0)
         self.assertEqual(app.child_count_calls, 3)
 
+        # Duration closure uses the same original root identity and limits.
+        # Save/export still has to verify the actual editorial result later.
+        dialog.name = "Duration — Kdenlive"
+        dialog.visible = True
+        duration = row("app/4", dialog.name, "dialog")
+        self.assertIsNone(observed._observed_file_dialog_closed(duration, ("Duration",)))
+        fields = {
+            "Position:": {**row("app/4/1", "", "spin button"), "text": "00:00:02:00"},
+            "Crop start:": {**row("app/4/3", "", "spin button"), "text": "00:00:02:00"},
+            "Duration:": {**row("app/4/5", "", "spin button"), "text": "00:00:01:00"},
+        }
+        okay = row("app/4/0/0", "OK", "push button")
+        events = []
+        observed.journal = actions.ActionJournal(events.append, lambda: None)
+        observed._project_monitor_timecode = Mock(return_value=row("clock", "", "spin button"))
+        observed.menu = Mock()
+        observed.key = Mock()
+        observed.dialog = Mock(return_value=duration)
+        observed.descendants = Mock(return_value=list(fields.values()))
+        observed.tree = Mock(side_effect=AssertionError(
+            "Do not traverse timeline descendants to prove Duration closure"))
+
+        def find_accept(names, roles, *, scope=None):
+            self.assertEqual((names, roles, scope), (("OK",), ("push button",), "app/4"))
+            return okay
+
+        def set_text(_step, target, value):
+            target["text"] = value
+
+        def accept(step, target):
+            def effect():
+                dialog.visible = False
+                return True
+            return observed.journal.perform(step, target, effect)
+
+        observed.find = find_accept
+        observed.text = set_text
+        observed.action = Mock(side_effect=accept)
+        with patch.object(actions, "labeled_field",
+                          side_effect=lambda _rows, labels: fields[labels[0]]):
+            observed.edit_third_clip()
+        observed.action.assert_called_once_with("edit.accept-once", okay)
+        observed.tree.assert_not_called()
+        self.assertEqual(timeline.child_count_calls, 0)
+        self.assertEqual(events[-1]["state"], "ORIGINAL_DIALOG_CLOSED_OBSERVED")
+        self.assertFalse(events[-1]["native_edit_verified"])
+        self.assertFalse(events[-1]["native_save_verified"])
+        self.assertEqual(events[-1]["observed"]["consistent_direct_root_observations"], 2)
+        self.assertFalse(observed.journal.blocked)
+
+        def failed_custody(event):
+            if event["step"] == "edit.dialog-closed-root-readback":
+                raise OSError("original closure receipt unavailable")
+
+        fields["Duration:"]["text"] = "00:00:01:00"
+        dialog.visible = True
+        observed.journal = actions.ActionJournal(failed_custody, lambda: None)
+        observed.action.reset_mock()
+        with patch.object(actions, "labeled_field",
+                          side_effect=lambda _rows, labels: fields[labels[0]]):
+            with self.assertRaisesRegex(OSError, "original closure receipt unavailable"):
+                observed.edit_third_clip()
+        self.assertTrue(observed.journal.blocked)
+        observed.action.assert_called_once_with("edit.accept-once", okay)
+        observed.tree.assert_not_called()
+        self.assertEqual(timeline.child_count_calls, 0)
+
         dialog.visible = True
         dialog.name = "Unexpected Warning — Kdenlive"
         with self.assertRaisesRegex(actions.GuiRejected,
