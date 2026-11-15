@@ -16,6 +16,7 @@ import math
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 import tarfile
 import time
@@ -52,6 +53,63 @@ def load(path, expected, name):
     module.__file__ = str(path)
     exec(compile(raw, str(path), 'exec'), module.__dict__)
     return module
+
+
+DECODER_NAMESPACE_POLICY = 'windows-decoder-directory-size-excluded/1'
+
+
+def decoder_namespace_identity(rows, *, platform):
+    """Compare directory identity, never a Windows directory's allocation size.
+
+    The approved inspector still rejects redirects and non-regular/hardlinked
+    leaves. Only ancestor st_size is excluded on Windows; raw observations are
+    retained separately. All regular-file and opened-handle fields stay exact.
+    """
+    need(type(rows) in (list, tuple) and 2 <= len(rows) <= 64,
+         'physical_decoder_namespace_bound')
+    result = []
+    for index, row in enumerate(rows):
+        need(type(row) in (list, tuple) and len(row) == 8
+             and all(type(value) is int for value in row),
+             'physical_decoder_namespace_shape')
+        leaf = index == len(rows) - 1
+        need((stat.S_ISREG(row[2]) if leaf else stat.S_ISDIR(row[2]))
+             and not row[7] & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+             and (not leaf or row[3] == 1), 'physical_decoder_namespace_kind')
+        result.append(tuple(row[:4]) + (None,) + tuple(row[5:])
+                      if platform == 'nt' and not leaf else tuple(row))
+    return result
+
+
+class DecoderPathView:
+    """A decoder-only view; the approved base and every other path are intact."""
+
+    def __init__(self, base, path, observations):
+        self.base, self.path, self.observations = base, path, observations
+        self.first_identity = None
+
+    def __getattr__(self, name):
+        return getattr(self.base, name)
+
+    def inspect_path(self, path, *, directory=False):
+        need(path == self.path and directory is False, 'physical_decoder_path_scope')
+        need(len(self.observations) < 16, 'physical_decoder_observation_bound')
+        rows = self.base.inspect_path(path)
+        projected = decoder_namespace_identity(rows, platform=os.name)
+        self.observations.append({'path': str(path), 'platform': os.name,
+            'policy': DECODER_NAMESPACE_POLICY,
+            'raw_namespace_identity': [list(row) for row in rows]})
+        if self.first_identity is None:
+            self.first_identity = projected
+        return projected
+
+
+def decoder_reference(bounded, base, path, expected_sha256, observations):
+    view = DecoderPathView(base, path, observations)
+    reference = bounded.decoder_file_reference(path, expected_sha256, view)
+    # Bind the full projected namespace across the physical decode as well.
+    return dict(reference, namespace_chain_identity=view.first_identity,
+                namespace_policy=DECODER_NAMESPACE_POLICY)
 
 
 FIXTURE_FRAMES = {
@@ -403,7 +461,7 @@ def adapt_native_profile(originals, plan, profile, spec, base, typed, selection,
 
 
 def physical_readback(originals, plan, held, bounded, base, ffmpeg, ffmpeg_sha, numeric, spec, typed,
-                      selection, png_limit, transform_spec_raw=None, transform_numeric=None):
+                      selection, png_limit, decoder_observations, transform_spec_raw=None, transform_numeric=None):
     arm, fixture, selected_frames = selection
     need(type(png_limit) is int and 0 < png_limit <= selected_png_limit(fixture),
          'physical_validated_png_bound')
@@ -411,7 +469,7 @@ def physical_readback(originals, plan, held, bounded, base, ffmpeg, ffmpeg_sha, 
     import PIL
     from manim_native_readback import run_bounded
     from native_motion_canvas_roundtrip import validate_png_crc_bytes
-    before = bounded.decoder_file_reference(ffmpeg, ffmpeg_sha, base)
+    before = decoder_reference(bounded, base, ffmpeg, ffmpeg_sha, decoder_observations)
     native_root = 'owner/' + plan['native_directory'] + '/frames/'
     readback = 'observation/' + fixture + '/fixed-text-original-readback/'
     profile = native_profile(originals, plan, base, selection)
@@ -468,7 +526,8 @@ def physical_readback(originals, plan, held, bounded, base, ffmpeg, ffmpeg_sha, 
             finally:
                 rgba.release()
         need(base.identity(opened) == base.identity(os.fstat(executable.fileno())), 'physical_decoder_handle_changed')
-    need(bounded.decoder_file_reference(ffmpeg, ffmpeg_sha, base) == before, 'physical_decoder_changed')
+    need(decoder_reference(bounded, base, ffmpeg, ffmpeg_sha, decoder_observations) == before,
+         'physical_decoder_changed')
     fonts = originals.json(readback + 'font-source-inventory.json', MIB)
     return {'mandatory_original_PNGs_checked': 180, 'selected_RGBA_decoded_and_exactly_equal': len(selected_frames),
             'original_PNG_chain_sha256': png_chain.hexdigest(), 'selected_frames': frames,
@@ -539,7 +598,8 @@ def main(*, configure_private_paths=None):
     state = {'schema': 'motionwright.fixedtxt.bounded-authentic-result-readback/1',
              'native_calls': 0, 'R28_issued': False, 'private_plaintext_written': False,
              'candidate24_executed_contexts': 0, 'candidate24_total_contexts': 24, 'candidate24_accepted': 0,
-             'G2_accepted': False, 'P2_accepted': False, 'F_accepted': False, 'automatic_retry': False}
+             'G2_accepted': False, 'P2_accepted': False, 'F_accepted': False, 'automatic_retry': False,
+             'decoder_namespace_observations': []}
     disk_options = {'storage_mode': 'reuse-selected', 'max_new_bytes': 128 * MIB, 'disk_floor_gib': 10}
     try:
         need(os.name == 'nt', 'windows_required')
@@ -606,7 +666,7 @@ def main(*, configure_private_paths=None):
         memory = bounded.memory_plan(header['plaintext_bytes'], bounded.available_memory())
         need(memory['admitted'], 'physical_reader_memory_not_admitted')
         ffmpeg = base.absolute_e(args.ffmpeg)
-        bounded.decoder_file_reference(ffmpeg, args.ffmpeg_sha256, base)
+        decoder_reference(bounded, base, ffmpeg, args.ffmpeg_sha256, state['decoder_namespace_observations'])
         output = ReadbackOutput(base, args.output_dir, source, disk_options)
         state.update(context=context, io_scope=io_scope, memory_preflight=memory, envelope=reference,
                      reader_sha256=sha(base.read_stable(Path(__file__).resolve(), 2 * MIB)))
@@ -630,7 +690,8 @@ def main(*, configure_private_paths=None):
         transport_binding = original_transport_binding(originals, plan, route, serial, selection, runner_temp)
         phase = 'actual_selected_PNG_RGBA_and_frozen_numeric_measurements'
         physical = physical_readback(originals, plan, held, bounded, base, ffmpeg, args.ffmpeg_sha256, numeric, spec, typed,
-            selection, transport_binding['png_limit_bytes'], transform_spec_raw, transform_numeric)
+            selection, transport_binding['png_limit_bytes'], state['decoder_namespace_observations'],
+            transform_spec_raw, transform_numeric)
         del originals
         snapshot.close()
         snapshot = None

@@ -1,41 +1,62 @@
 {
-  "schema": "motionwright.fixedtxt.reader-version-provenance/1",
+  "ancestor_reader_sha256": "40aa09d311ec9d1a8d6bc99f7d62db2fa94c4e48c8bbc8ce84fec7558f907d9b",
+  "authenticated_session_caption_PNG_limit": 763904,
+  "decoder_directory_observation": {
+    "after": 65536,
+    "all_other_namespace_and_handle_fields_unchanged": true,
+    "before": 0,
+    "corrected_reader_hashed_real_binary": true,
+    "decoder_bytes": 87638016,
+    "decoder_executed_in_focused_checks": false,
+    "decoder_sha256": "2ce797a0f88d7f067180338fb227f7b1928ea727bd9a4d7a1d022f7c52af71a3",
+    "observed_field": "ancestor_st_size",
+    "trace_sha256": "240c925e0752ec3ac0fa07a2f309d42c0dcf23638dd5f7e4d6999fdfa7ef21cd"
+  },
+  "existing_originals_modified": false,
+  "fixture_helper_bytes": 44617,
+  "fixture_helper_sha256": "372b1aab1412fa61b7003b897729f9ac2e6152f3cc5334890256ba025a1984f6",
+  "focused_contracts": {
+    "errors": 0,
+    "failures": 0,
+    "native_calls": 0,
+    "result_sha256": "018298b32105e16694c7b9cd80074106e46219ffa10f9607217615fd31a39032",
+    "skipped": 0,
+    "tests": 22
+  },
+  "formal_acceptance": false,
+  "individual_caption_PNG_limit": 768000,
+  "inherited_focused_contracts": {
+    "errors": 0,
+    "failures": 0,
+    "native_calls": 0,
+    "result_sha256": "b443f87547a02e254a5dcc0a0be82d4ffc0160a47e163d2d77f90b5a67a88ec7",
+    "skipped": 0,
+    "tests": 13
+  },
+  "native_calls": 0,
+  "offline_clock_binds_retained_runner": true,
+  "original_numeric_oracle_sha256": "6bf3027594f978ffa338fb823be49749bb506374530052b77037bd60c2b3347a",
+  "original_numeric_spec_sha256": "6c8edaa4d082c9f980ec6b91a1c99e31481fdd2b4b6d29643f7117a251502946",
   "original_reader_sha256": "9545a4230781d3a58365a8f8a2d4bb9cfb6c146adb1322c0db1fe08171a25cea",
   "original_typed_adapter_sha256": "832bb6ddb59846075230c5e9cde131935a3f020b2c157d2696ffde481bb085ee",
-  "reader_sha256": "b9cbd1fe4cd9f20265f9950fc6271617125645e601bf071e12dacc1c75793299",
-  "typed_adapter_sha256": "5db186321c1b2864468a8c38fe62ca87703819f12e99848b038dfbcb2e65f162",
-  "producer_source_sha": "76f05572ec7a41035fc42054e27d01c869cd6176",
-  "producer_SDK_sha": "797e70884d35a068c72149ffae3e6df365bb0b64",
-  "fixture_helper_sha256": "372b1aab1412fa61b7003b897729f9ac2e6152f3cc5334890256ba025a1984f6",
-  "fixture_helper_bytes": 44617,
-  "typed_code_changes_only_four_exact_identity_literals": true,
-  "original_numeric_spec_sha256": "6c8edaa4d082c9f980ec6b91a1c99e31481fdd2b4b6d29643f7117a251502946",
-  "original_numeric_oracle_sha256": "6bf3027594f978ffa338fb823be49749bb506374530052b77037bd60c2b3347a",
-  "individual_caption_PNG_limit": 768000,
-  "authenticated_session_caption_PNG_limit": 763904,
-  "native_calls": 0,
-  "existing_originals_modified": false,
-  "formal_acceptance": false,
-  "offline_clock_binds_retained_runner": true,
-  "parent_reader_sha256": "40aa09d311ec9d1a8d6bc99f7d62db2fa94c4e48c8bbc8ce84fec7558f907d9b",
-  "inherited_focused_contracts": {
-    "tests": 13,
-    "failures": 0,
+  "parent_focused_contracts": {
     "errors": 0,
+    "failures": 0,
+    "native_calls": 0,
+    "result_sha256": "d2c94f477ed7237d5de73d5567b476885a99d7fb9ce99718eeea2ceb9c631d4c",
     "skipped": 0,
-    "result_sha256": "b443f87547a02e254a5dcc0a0be82d4ffc0160a47e163d2d77f90b5a67a88ec7",
-    "native_calls": 0
+    "tests": 17
   },
+  "parent_reader_sha256": "b9cbd1fe4cd9f20265f9950fc6271617125645e601bf071e12dacc1c75793299",
+  "producer_SDK_sha": "797e70884d35a068c72149ffae3e6df365bb0b64",
+  "producer_source_sha": "76f05572ec7a41035fc42054e27d01c869cd6176",
   "reader_changes": [
     "Caller-supplied private path policy; no personal root in versioned code",
-    "Exclusive output directory ownership and replacement rejection"
+    "Exclusive output directory ownership and replacement rejection",
+    "Decoder-only Windows namespace comparison excludes directory st_size; raw observations and all other identity checks retained"
   ],
-  "focused_contracts": {
-    "tests": 17,
-    "failures": 0,
-    "errors": 0,
-    "skipped": 0,
-    "result_sha256": "d2c94f477ed7237d5de73d5567b476885a99d7fb9ce99718eeea2ceb9c631d4c",
-    "native_calls": 0
-  }
+  "reader_sha256": "1d1e88691d402d2dd0858fd24ed3b3105b9600fdd7728ef8ce89ffdc7de84a56",
+  "schema": "motionwright.fixedtxt.reader-version-provenance/1",
+  "typed_adapter_sha256": "5db186321c1b2864468a8c38fe62ca87703819f12e99848b038dfbcb2e65f162",
+  "typed_code_changes_only_four_exact_identity_literals": true
 }
