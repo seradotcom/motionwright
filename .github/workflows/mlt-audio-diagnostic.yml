@@ -245,8 +245,8 @@ jobs:
           sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
           source=json.loads((public/"source-inputs.json").read_text())
           receipt=json.loads((public/"official-runtime-contracts.json").read_text())
-          expected={"tooling/mlt_official_runtime_intake.py":"6995e2f9ad35cf11a46a8e280f5928e3284c4318d353bbd6d11dced496034bc6",
-                    "tooling/tests/test_mlt_official_runtime_intake.py":"14835911ddd681b4fe155bee9c9e9b0219991a91ea1e8ecd19752f4c2f599267"}
+          expected={"tooling/mlt_official_runtime_intake.py":"0d5e640f0b4750c30666bcdad1968d9883c1ab86866b391949f4bf45fa1f1467",
+                    "tooling/tests/test_mlt_official_runtime_intake.py":"79e8f5ebe82e3c88e150062fdb74e9c5c7c0f741c6c1a19dda1648748cffcde9"}
           test="tooling/tests/test_mlt_official_runtime_intake.py"
           assert source["official_intake_sources"]==expected
           assert set(source["official_intake_blob_oids"])==set(expected)
@@ -1658,8 +1658,8 @@ jobs:
           require(not git("status","--porcelain=v1","--untracked-files=all"),"checkout changed")
           require(not git("ls-files","--others","--ignored","--exclude-standard","-z"),
                   "ignored checkout files")
-          pins={"tooling/mlt_official_runtime_intake.py":"6995e2f9ad35cf11a46a8e280f5928e3284c4318d353bbd6d11dced496034bc6",
-                    "tooling/tests/test_mlt_official_runtime_intake.py":"14835911ddd681b4fe155bee9c9e9b0219991a91ea1e8ecd19752f4c2f599267"}
+          pins={"tooling/mlt_official_runtime_intake.py":"0d5e640f0b4750c30666bcdad1968d9883c1ab86866b391949f4bf45fa1f1467",
+                    "tooling/tests/test_mlt_official_runtime_intake.py":"79e8f5ebe82e3c88e150062fdb74e9c5c7c0f741c6c1a19dda1648748cffcde9"}
           workflow=".github/workflows/mlt-audio-diagnostic.yml"
           runner="tooling/ci_test_runner.py"
           sources={}
@@ -1709,8 +1709,8 @@ jobs:
           sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
           source=json.loads((public/"source-inputs.json").read_text())
           receipt=json.loads((public/"official-runtime-contracts.json").read_text())
-          expected={"tooling/mlt_official_runtime_intake.py":"6995e2f9ad35cf11a46a8e280f5928e3284c4318d353bbd6d11dced496034bc6",
-                    "tooling/tests/test_mlt_official_runtime_intake.py":"14835911ddd681b4fe155bee9c9e9b0219991a91ea1e8ecd19752f4c2f599267"}
+          expected={"tooling/mlt_official_runtime_intake.py":"0d5e640f0b4750c30666bcdad1968d9883c1ab86866b391949f4bf45fa1f1467",
+                    "tooling/tests/test_mlt_official_runtime_intake.py":"79e8f5ebe82e3c88e150062fdb74e9c5c7c0f741c6c1a19dda1648748cffcde9"}
           test="tooling/tests/test_mlt_official_runtime_intake.py"
           assert source["official_intake_sources"]==expected
           assert set(source["official_intake_blob_oids"])==set(expected)
