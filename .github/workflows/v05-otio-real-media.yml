@@ -232,6 +232,19 @@ jobs:
           if not complete:
               raise SystemExit("Every original owner-cut Rust case must actually execute once")
           PY
+      - name: Require all six encoded-source admission regressions
+        id: encoded_source_gate
+        run: |
+          python3 -B tooling/otio-media/verify_encoded_source_gate.py
+      - name: Retain original encoded-source gate receipts and streams
+        if: always() && steps.encoded_source_gate.outcome != '' && steps.encoded_source_gate.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: otio-encoded-source-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/otio-encoded-source/
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 7
       - name: Install and identify OpenTimelineIO, FFmpeg and FFprobe on disposable CI
         run: |
           set -euo pipefail
@@ -661,6 +674,20 @@ jobs:
           if not complete:
               raise SystemExit("Every original owner-cut Rust case must actually execute once")
           PY
+      - name: Require all six encoded-source admission regressions
+        id: encoded_source_gate
+        if: inputs.verification_scope == 'kdenlive-gui'
+        run: |
+          python3 -B tooling/otio-media/verify_encoded_source_gate.py
+      - name: Retain original encoded-source gate receipts and streams
+        if: always() && steps.encoded_source_gate.outcome != '' && steps.encoded_source_gate.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: otio-encoded-source-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/otio-encoded-source/
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 7
       - name: Install disposable GUI and accessibility observation dependencies
         if: inputs.verification_scope != 'external-alab-readonly'
         run: |
