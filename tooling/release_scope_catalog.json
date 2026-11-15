@@ -18910,7 +18910,7 @@
     },
     {
       "path": ".github/workflows/v05-otio-real-media.yml",
-      "sha256": "fb9640390cabe36dc099335af7c68d5b7a64fb2323a998435a8fdc702c1cf114",
+      "sha256": "0bbf0bf43a824cbcb7dcd23fddfd8ba82f998497f736939cdcb28944729915f4",
       "preamble_sha256": "bc85bc588c3dd5c633986c73f9812f2a6528bc1f96564f0b3979b22ae5be1a2f",
       "evidence_class": "mixed_source_media_native_readonly",
       "purpose": "Source OTIO/media interchange and Windows junction controls, separate Kdenlive accessibility/roundtrip observations, and externally admitted read-only ALab metadata.",
@@ -18997,7 +18997,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "e1cdd1bb6ab0ac5685661f8ac9d1feb6b6428c62ce21159168a34d354877f431",
+          "source_sha256": "1ef2f3e6ded6d977397c3702be163c575537e59d3270b03fa4b612c278a83d00",
           "instance_sets": {
             "source": [
               {}
@@ -19057,7 +19057,7 @@
               "name": "Run complete OTIO discovery with explicit platform-specific cases",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "c87a62a687a329eedfed0da7e718559b9f9568544b5b94387784052f22cdb97d",
+              "source_block_sha256": "67ad3cf956c2de29e28fdc503461b405bcfa344187ef869b0bca1c9dfd82c72f",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -19131,7 +19131,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "b1e3bc72cf5a3f27dbea11800ae4b76b02da74b3e379f9736a4c70eca660d297",
+          "source_sha256": "c46ec6c948f37c6616123ea4994eeca00104a5423fc73f3a335c035944b6784a",
           "instance_sets": {
             "accessibility-only": [
               {}
@@ -19173,7 +19173,7 @@
               "name": "Install disposable GUI and accessibility observation dependencies",
               "guard": "inputs.verification_scope != 'external-alab-readonly'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "960f69abaeeb86321092425899e8b95032aecff158102f54760590d0fc725be6",
+              "source_block_sha256": "f5f070cec1711d1b64d2dfbd38c1df0d8db03171ff9dcaea65dbf95084821e84",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -19181,7 +19181,7 @@
               "name": "Run exact offline GUI contracts without native effects or skips",
               "guard": "inputs.verification_scope != 'external-alab-readonly'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "076a4465b2ea4d97a74118b5bee8493096932761c38d751a01f76530faa15050",
+              "source_block_sha256": "369d073cf9ba0fefd7840d659f4997084ed4f6d314451160a92088fdb81928fb",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -19189,7 +19189,7 @@
               "name": "Obtain the exact official Kdenlive distribution once",
               "guard": "inputs.verification_scope != 'external-alab-readonly'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "9ede1064c2a3476e515783fbd86e7ba81c062ba60d61da551f6e78ada01087e5",
+              "source_block_sha256": "00ae2109d1c0e2c95aa377e1aa54ac40c875ec1be640aa41592a6aacd269d32a",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -19237,7 +19237,7 @@
               "name": "Run one selected native observation or import-edit-owner route",
               "guard": "inputs.verification_scope != 'external-alab-readonly'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "568d28ba1626abeb005a733acd8556d8792e1b0c8fce299bc3b81034994067a0",
+              "source_block_sha256": "5c58930c866148a70cad3973bec926066733877ae322119fb2007a01ed17e103",
               "api_binding": "EXPLICIT_NAME"
             },
             {
