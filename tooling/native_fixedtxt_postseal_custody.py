@@ -270,13 +270,31 @@ def unchanged(handles, marks):
              "postseal_original_changed_after_capture")
 
 
-def publish_closed_envelope(directory, envelope, public, *, uid, gid):
-    """Hold the exclusive output directory through literal encrypted readback."""
-    from ci_private_evidence import new_bytes
-    from native_evidence_projection import RootHandles, identity
+def validate_publication_budget(session_ciphertext, session_public, envelope, public):
+    """Charge both custody pairs to the existing session ciphertext ceiling.
+
+    The original descriptors come from the literal bytes checked by
+    validate_originals. seal_session already caps its ciphertext at 16 MiB;
+    conservatively keep that same ceiling for all four published files.
+    The separate per-case control reserve does not fund this later output.
+    """
     need(type(envelope) is bytes and type(public) is bytes
          and 0 < len(envelope) and 0 < len(public) <= MAX_JSON
          and len(envelope) + len(public) <= MAX_POSTSEAL, "postseal_output_bound")
+    for value, maximum in ((session_ciphertext, MAX_SESSION_CIPHER), (session_public, MAX_JSON)):
+        need(type(value) is dict and set(value) == {"bytes", "sha256"}
+             and type(value["bytes"]) is int and 0 < value["bytes"] <= maximum
+             and type(value["sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is not None,
+             "postseal_original_budget_descriptor")
+    need(session_ciphertext["bytes"] + session_public["bytes"] + len(envelope) + len(public)
+         <= MAX_SESSION_CIPHER, "postseal_session_custody_aggregate_bound")
+
+
+def publish_closed_envelope(directory, envelope, public, *, uid, gid, session_ciphertext, session_public):
+    """Check the aggregate ceiling before creating the exclusive output directory."""
+    validate_publication_budget(session_ciphertext, session_public, envelope, public)
+    from ci_private_evidence import new_bytes
+    from native_evidence_projection import RootHandles, identity
     directory.mkdir(mode=0o700, exist_ok=False)
     resources.private_directory(directory, uid)
     held = RootHandles({"sealed": str(directory)})
@@ -395,13 +413,15 @@ def capture_postseal():
             "session_public": verification["session_public"],
             "seal_session_guard_completion_observed": True, "observer_completion_claimed": False,
             "native_acceptance": False, "G2_accepted": False, "F_accepted": False, "automatic_retry": False})
-        need(len(public) <= MAX_JSON and len(envelope) + len(public) <= MAX_POSTSEAL,
-             "postseal_existing_final_reserve")
+        validate_publication_budget(verification["session_ciphertext"], verification["session_public"],
+                                    envelope, public)
         unchanged(handles, marks)
         need(resources.available_memory() >= resources.RESERVE, "postseal_physical_reserve")
         check_time(time.monotonic(), started, deadline)
         directory = temp / ("mw-fixedtxt-postseal-custody-" + current["run_id"] + "-1")
-        publish_closed_envelope(directory, envelope, public, uid=uid, gid=gid)
+        publish_closed_envelope(directory, envelope, public, uid=uid, gid=gid,
+                                session_ciphertext=verification["session_ciphertext"],
+                                session_public=verification["session_public"])
         unchanged(handles, marks)
         check_time(time.monotonic(), started, deadline)
         serial.output(directory=str(directory))

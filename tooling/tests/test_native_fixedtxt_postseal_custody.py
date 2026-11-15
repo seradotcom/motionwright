@@ -280,6 +280,77 @@ class PostsealCustodyTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 self.validate(values)
 
+    def publication_boundary_parts(self):
+        # Literal synthetic byte strings for budget arithmetic only; no Native
+        # custody or cryptographic validity is inferred from these fixtures.
+        old_public = b"synthetic-session-public\n"
+        public = b"synthetic-postseal-public\n"
+        envelope = b"n" * (post.MIB - len(public))
+        old_cipher = b"o" * (post.MAX_SESSION_CIPHER - len(old_public) - len(envelope) - len(public))
+        return old_cipher, old_public, envelope, public
+
+    def test_publication_budget_accepts_exact_existing_session_ceiling(self):
+        old_cipher, old_public, envelope, public = self.publication_boundary_parts()
+        self.assertEqual(sum(map(len, (old_cipher, old_public, envelope, public))), post.MAX_SESSION_CIPHER)
+        for original in (old_cipher[:-1], old_cipher):
+            with self.subTest(original_bytes=len(original)):
+                post.validate_publication_budget(post.descriptor(original), post.descriptor(old_public),
+                                                 envelope, public)
+
+    def test_publication_budget_rejects_one_extra_byte_in_each_of_four_files(self):
+        parts = self.publication_boundary_parts()
+        for index in range(len(parts)):
+            changed = list(parts)
+            changed[index] += b"x"
+            old_cipher, old_public, envelope, public = changed
+            with self.subTest(file_index=index), self.assertRaisesRegex(
+                    post.PostsealRejected, "^postseal_session_custody_aggregate_bound$"):
+                post.validate_publication_budget(post.descriptor(old_cipher), post.descriptor(old_public),
+                                                 envelope, public)
+
+    def test_publication_budget_preserves_own_two_mib_ceiling(self):
+        verified = self.validate()
+        public = b"synthetic-postseal-public\n"
+        envelope = b"n" * (post.MAX_POSTSEAL - len(public))
+        post.validate_publication_budget(verified["session_ciphertext"], verified["session_public"],
+                                         envelope, public)
+        with self.assertRaisesRegex(post.PostsealRejected, "^postseal_output_bound$"):
+            post.validate_publication_budget(verified["session_ciphertext"], verified["session_public"],
+                                             envelope + b"x", public)
+
+    def test_publication_budget_rejects_invalid_original_descriptors(self):
+        verified = self.validate()
+        originals = [verified["session_ciphertext"], verified["session_public"]]
+        for index, maximum in enumerate((post.MAX_SESSION_CIPHER, post.MAX_JSON)):
+            for value in (True, 1.0, 0, -1, maximum + 1):
+                changed = copy.deepcopy(originals)
+                changed[index]["bytes"] = value
+                with self.subTest(index=index, bytes=value), self.assertRaisesRegex(
+                        post.PostsealRejected, "^postseal_original_budget_descriptor$"):
+                    post.validate_publication_budget(*changed, b"synthetic-envelope", b"synthetic-public")
+            for change in (lambda row: row.pop("sha256"),
+                           lambda row: row.__setitem__("sha256", "not-a-digest"),
+                           lambda row: row.__setitem__("unexpected", 1)):
+                changed = copy.deepcopy(originals)
+                change(changed[index])
+                with self.subTest(index=index, descriptor=changed[index]), self.assertRaisesRegex(
+                        post.PostsealRejected, "^postseal_original_budget_descriptor$"):
+                    post.validate_publication_budget(*changed, b"synthetic-envelope", b"synthetic-public")
+
+    def test_publication_budget_rejection_creates_no_directory_or_files(self):
+        old_cipher, old_public, envelope, public = self.publication_boundary_parts()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            directory = root / "postseal-output"
+            self.assertFalse(directory.exists())
+            # The budget must reject before any platform-specific output handles
+            # or ownership are used. No physical evidence is mocked or claimed.
+            with self.assertRaisesRegex(post.PostsealRejected, "^postseal_session_custody_aggregate_bound$"):
+                post.publish_closed_envelope(directory, envelope + b"x", public, uid=0, gid=0,
+                    session_ciphertext=post.descriptor(old_cipher), session_public=post.descriptor(old_public))
+            self.assertFalse(directory.exists())
+            self.assertEqual(list(root.iterdir()), [])
+
     def test_current_checkout_source_roster_matches_real_git_blobs(self):
         from native_evidence_projection import RootHandles, SelectionError
         if os.name != "posix":
@@ -339,13 +410,18 @@ class PostsealCustodyTests(unittest.TestCase):
             finally:
                 held.close()
             output = Path(temporary) / "sealed-output"
+            verified = self.validate()
             post.publish_closed_envelope(output, self.cipher, b"public-test-fixture\n",
-                                         uid=os.geteuid(), gid=os.getegid())
+                                         uid=os.geteuid(), gid=os.getegid(),
+                                         session_ciphertext=verified["session_ciphertext"],
+                                         session_public=verified["session_public"])
             self.assertEqual((output / "sealed-postseal-originals.bin").read_bytes(), self.cipher)
             self.assertEqual((output / "postseal-public.json").read_bytes(), b"public-test-fixture\n")
             with self.assertRaises(FileExistsError):
                 post.publish_closed_envelope(output, self.cipher, b"public-test-fixture\n",
-                                             uid=os.geteuid(), gid=os.getegid())
+                                             uid=os.geteuid(), gid=os.getegid(),
+                                             session_ciphertext=verified["session_ciphertext"],
+                                             session_public=verified["session_public"])
 
     def test_observer_manifest_budget_and_previous_native_failure_stay_separate(self):
         result = self.validate()
