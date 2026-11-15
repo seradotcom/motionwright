@@ -19221,7 +19221,7 @@
     },
     {
       "path": ".github/workflows/v05-otio-real-media.yml",
-      "sha256": "874f17f517715aa96be0be728a01c7996744251ee63dc5e2a9dbc72077aef98c",
+      "sha256": "3a8e46fba1894e7c7918537e7f96a4e8f2d28fec8a8d3b66aedcfcada3d9abac",
       "preamble_sha256": "bc85bc588c3dd5c633986c73f9812f2a6528bc1f96564f0b3979b22ae5be1a2f",
       "evidence_class": "mixed_source_media_native_readonly",
       "purpose": "Source OTIO/media interchange and Windows junction controls, separate Kdenlive accessibility/roundtrip observations, and externally admitted read-only ALab metadata.",
@@ -19308,7 +19308,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "eb1cdb806c7242dc01d5aaadfc37520e7fa1c7b09d80d11e9696070ef62dee29",
+          "source_sha256": "0841c723277bf7e85e0e8dc073ddb92813c45dc5e8ac88d6d32b72c6897268b3",
           "instance_sets": {
             "source": [
               {}
@@ -19357,6 +19357,22 @@
             },
             {
               "ordinal": 10,
+              "name": "Require all six encoded-source admission regressions",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "706b5368820254d81795f6a33e7be145566a9f52f912d99a07860217119fdba5",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 11,
+              "name": "Retain original encoded-source gate receipts and streams",
+              "guard": "always() && steps.encoded_source_gate.outcome != '' && steps.encoded_source_gate.outcome != 'skipped'",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "18db90da9f5c217ffd3a304e51de19cf65ab45dc49e2f7f3e2db716ed11e8fef",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 12,
               "name": "Install and identify OpenTimelineIO, FFmpeg and FFprobe on disposable CI",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -19364,7 +19380,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 11,
+              "ordinal": 13,
               "name": "Run complete OTIO discovery with explicit platform-specific cases",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -19372,7 +19388,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 12,
+              "ordinal": 14,
               "name": "Decode actual original MP4 and verify source-bound OTIO import/export",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -19380,7 +19396,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 13,
+              "ordinal": 15,
               "name": "Stage source-bound synthetic-only public OTIO and H264 media",
               "guard": "always()",
               "kind": "EXECUTABLE_STEP",
@@ -19388,7 +19404,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 14,
+              "ordinal": 16,
               "name": "Publish synthetic OTIO and media only, never private owner evidence",
               "guard": "always()",
               "kind": "ARTIFACT_RETENTION",
@@ -19396,7 +19412,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 15,
+              "ordinal": 17,
               "name": "Retain original owner-cut source-test receipts",
               "guard": "always()",
               "kind": "ARTIFACT_RETENTION",
@@ -19442,7 +19458,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "54aa6d7bf32c8a5a833af81885c467d1674f864f9fde5098caf097a9e119800a",
+          "source_sha256": "995778e4a0a7bc34567c84e0b3c44b2d7997cc91e8a2ececad5f90d0c93b3367",
           "instance_sets": {
             "accessibility-only": [
               {}
@@ -19481,6 +19497,22 @@
             },
             {
               "ordinal": 7,
+              "name": "Require all six encoded-source admission regressions",
+              "guard": "inputs.verification_scope == 'kdenlive-gui'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "14806cef7d71489d67fde13dbe175259bd30703244bfc1d7e1d503802ba6000a",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 8,
+              "name": "Retain original encoded-source gate receipts and streams",
+              "guard": "always() && steps.encoded_source_gate.outcome != '' && steps.encoded_source_gate.outcome != 'skipped'",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "18db90da9f5c217ffd3a304e51de19cf65ab45dc49e2f7f3e2db716ed11e8fef",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 9,
               "name": "Install disposable GUI and accessibility observation dependencies",
               "guard": "inputs.verification_scope != 'external-alab-readonly'",
               "kind": "EXECUTABLE_STEP",
@@ -19488,7 +19520,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 8,
+              "ordinal": 10,
               "name": "Run exact offline GUI contracts without native effects or skips",
               "guard": "inputs.verification_scope != 'external-alab-readonly'",
               "kind": "EXECUTABLE_STEP",
@@ -19496,7 +19528,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 9,
+              "ordinal": 11,
               "name": "Obtain the exact official Kdenlive distribution once",
               "guard": "inputs.verification_scope != 'external-alab-readonly'",
               "kind": "EXECUTABLE_STEP",
@@ -19504,7 +19536,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 10,
+              "ordinal": 12,
               "name": "Install only metadata and existing custody dependencies for ALab",
               "guard": "inputs.verification_scope == 'external-alab-readonly'",
               "kind": "EXECUTABLE_STEP",
@@ -19512,7 +19544,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 11,
+              "ordinal": 13,
               "name": "Require the exact ALab source controls without real media execution",
               "guard": "inputs.verification_scope == 'external-alab-readonly'",
               "kind": "EXECUTABLE_STEP",
@@ -19520,7 +19552,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 12,
+              "ordinal": 14,
               "name": "Close bounded ALab alab source-control originals",
               "guard": "always() && inputs.verification_scope == 'external-alab-readonly'",
               "kind": "EXECUTABLE_STEP",
@@ -19528,7 +19560,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 13,
+              "ordinal": 15,
               "name": "Retain the closed ALab alab source-control artifact",
               "guard": "always() && steps.alab_controls_custody.outputs.ready == 'true'",
               "kind": "ARTIFACT_RETENTION",
@@ -19536,7 +19568,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 14,
+              "ordinal": 16,
               "name": "Run one admitted read-only ALab metadata observation",
               "guard": "inputs.verification_scope == 'external-alab-readonly' && steps.alab_controls_custody.outputs.verified == 'true'",
               "kind": "EXECUTABLE_STEP",
@@ -19544,7 +19576,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 15,
+              "ordinal": 17,
               "name": "Run one selected native observation or import-edit-owner route",
               "guard": "inputs.verification_scope != 'external-alab-readonly'",
               "kind": "EXECUTABLE_STEP",
@@ -19552,7 +19584,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 16,
+              "ordinal": 18,
               "name": "Preserve a closed status if preflight or the native caller failed",
               "guard": "always()",
               "kind": "EXECUTABLE_STEP",
@@ -19560,7 +19592,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 17,
+              "ordinal": 19,
               "name": "Retain only sealed originals and the closed public projection",
               "guard": "always()",
               "kind": "ARTIFACT_RETENTION",
@@ -19568,7 +19600,7 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 18,
+              "ordinal": 20,
               "name": "Retain original owner-cut source-test receipts",
               "guard": "always() && inputs.verification_scope != 'external-alab-readonly'",
               "kind": "ARTIFACT_RETENTION",
@@ -19677,7 +19709,9 @@
                 12,
                 13,
                 14,
-                15
+                15,
+                16,
+                17
               ]
             },
             {
@@ -19717,13 +19751,13 @@
               "name_binding": "literal_definition",
               "required_steps": [
                 2,
-                7,
-                8,
                 9,
-                15,
-                16,
+                10,
+                11,
                 17,
-                18
+                18,
+                19,
+                20
               ]
             }
           ],
@@ -19758,10 +19792,12 @@
                 7,
                 8,
                 9,
-                15,
-                16,
+                10,
+                11,
                 17,
-                18
+                18,
+                19,
+                20
               ]
             }
           ],
@@ -19791,13 +19827,13 @@
               "name_binding": "literal_definition",
               "required_steps": [
                 2,
-                10,
-                11,
                 12,
                 13,
                 14,
+                15,
                 16,
-                17
+                18,
+                19
               ]
             }
           ],
