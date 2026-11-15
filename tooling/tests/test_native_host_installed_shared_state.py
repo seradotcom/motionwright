@@ -913,31 +913,54 @@ class InstalledEarlyControlsJoinTests(PrivateScenarioCase):
         before = resource.getrlimit(resource.RLIMIT_FSIZE)
         evidence = self.root / "evidence"; evidence.mkdir()
         script = self.root / "ci-driver-bwrap-profile.sh"
-        # This is an inert emission fixture with the same final tee file
-        # writer. Its stdout is redirected only in this fixture so the parent
-        # stream cap cannot explain the observed file-size denial.
-        # It contains no SDK, sudo, sysctl, installation or Native operation.
-        script.write_text("set -euo pipefail\n" +
-            "\"$INERT_PYTHON\" -c 'import os; os.write(1,b\"x\"*65537)' | tee \"$1\" >/dev/null\n")
+        # The REAL pinned SDK script copied /bin/sh (larger than 64 KiB)
+        # and received SIGXFSZ before any scenario effect. This inert test
+        # copies known 128 KiB bytes under the OS child limit, and then
+        # writes ONLY a small evidence sidecar through tee. It has no SDK,
+        # sudo, apparmor, Native provider, or product effect.
+        original = self.root / "inert-os-driver.original"
+        original.write_bytes(b"x" * (128 * 1024))
+        copied = self.root / "inert-os-driver.copy"
+        script.write_text(
+            "set -euo pipefail\n"
+            "cp \"$INERT_SOURCE\" \"$INERT_COPIED\"\n"
+            "printf 'fixture-profile-ok\\n' | tee \"$1\" >/dev/null\n"
+        )
         profile = evidence / "sandbox-profile.original.txt"
         @contextmanager
         def inert_scope(receipt, **_):
             try: yield
-            finally: installed.publish(receipt, {"status": "INERT_EMISSION_FIXTURE_ONLY", "native": False})
+            finally: installed.publish(receipt, {"status": "INERT_PROFILE_FIXTURE_ONLY", "native": False})
         with installed.ci_capacity_scope(evidence, self.root / "scenario") as capacity, \
              patch.object(installed, "ci_require_time"), patch.object(installed, "owned_process_scope", inert_scope), \
              patch.dict(os.environ, GITHUB_SHA="a" * 40, GITHUB_RUN_ID="123"):
             capacity.reserve(profile, 65536); capacity.claim(profile, 0)
-            with self.assertRaises(installed.ScenarioError):
-                installed.ci_command(evidence, "sdk-sandbox-profile", ["bash", str(script), str(profile)],
-                    self.root, dict(os.environ, INERT_PYTHON=sys.executable), 5, sidecar_file_limit=65536)
-        self.assertEqual(profile.stat().st_size, 65536)
+            installed.ci_command(
+                evidence, "sdk-sandbox-profile", ["bash", str(script), str(profile)],
+                self.root, dict(os.environ, INERT_SOURCE=str(original),
+                                INERT_COPIED=str(copied)), 5, sidecar_file_limit=65536)
+        self.assertEqual(copied.read_bytes(), original.read_bytes())
+        self.assertEqual(profile.read_text(), "fixture-profile-ok\n")
+        self.assertEqual(installed.ci_verify_sdk_profile_sidecar(profile)["bytes"],
+                         len("fixture-profile-ok\n"))
         self.assertEqual(resource.getrlimit(resource.RLIMIT_FSIZE), before)
         terminal = installed.read_json(evidence / "sdk-sandbox-profile.terminal.original.json")
-        self.assertEqual(terminal["status"], "UNKNOWN")
-        self.assertNotEqual(terminal["exit_code"], 0)
+        self.assertEqual(terminal["status"], "EXIT_ZERO_AND_COMPLETE_COHORT_CLOSED")
+        self.assertEqual(terminal["exit_code"], 0)
         self.assertFalse(terminal["overflow"])
+        self.assertFalse(terminal["deadline_exceeded"])
         self.assertEqual(terminal["retained_stream_bytes"]["stdout"], 0)
+        intent = installed.read_json(evidence / "sdk-sandbox-profile.intent.original.json")
+        self.assertEqual(intent["sdk_profile_child_file_limit_bytes"],
+                         installed.CI_SDK_PROFILE_TEMP_FILE_BYTES)
+        self.assertEqual(intent["sdk_profile_sidecar_limit_bytes"], 65536)
+        self.assertFalse(intent["cargo_file_size_limit_changed"])
+        # The separate original evidence cap still denies an oversized
+        # profile, even though sandbox setup may copy bounded OS binaries.
+        profile.write_bytes(b"x" * 65537)
+        with self.assertRaisesRegex(installed.ScenarioError,
+                                    "CI_PROFILE_SIDECAR_LIMIT_REACHED"):
+            installed.ci_verify_sdk_profile_sidecar(profile)
 
 
 if __name__ == "__main__":

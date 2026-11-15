@@ -48,6 +48,13 @@ SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 SCHEMA = "motionwright.ci.installed-native-shared-state/1"
 MAX_INPUT_BYTES = 4 * 1024 * 1024 * 1024
 _CI_CAPACITY = None
+# The pinned Semwright bwrap profile probe copies the host /bin/sh (and
+# other executables) into a disposable scratch directory. The old 64 KiB
+# process-wide RLIMIT_FSIZE killed that *pre-Native* copy with SIGXFSZ.
+# Permit only this source-bound probe to create <=2 MiB temporary files,
+# while keeping its original evidence sidecar STRICTLY under 64 KiB.
+CI_SDK_PROFILE_TEMP_FILE_BYTES = 2 * 1024 * 1024
+CI_SDK_PROFILE_SIDECAR_BYTES = 65536
 SOURCE_PATHS = (
     "SOURCE_LOCK.json", "Cargo.toml", "Cargo.lock",
     "tooling/native_host_installed_shared_state.py",
@@ -1341,7 +1348,7 @@ def ci_command(evidence, label, argv, cwd, env, seconds, reserve=CI_TAIL_SECONDS
     need(_CI_CAPACITY is not None and sys.platform == "linux", "CI_CAPACITY_REQUIRED_BEFORE_COMMAND")
     child_limit = None
     if sidecar_file_limit is not None:
-        need(label == "sdk-sandbox-profile" and sidecar_file_limit == 65536
+        need(label == "sdk-sandbox-profile" and sidecar_file_limit == CI_SDK_PROFILE_SIDECAR_BYTES
              and len(argv) == 3 and argv[0] == "bash"
              and Path(argv[1]).name == "ci-driver-bwrap-profile.sh"
              and argv[2] == str(evidence / "sandbox-profile.original.txt"),
@@ -1349,8 +1356,13 @@ def ci_command(evidence, label, argv, cwd, env, seconds, reserve=CI_TAIL_SECONDS
         def child_limit():
             import resource
             prior = resource.getrlimit(resource.RLIMIT_FSIZE)
-            maximum = min([sidecar_file_limit, *(n for n in prior if n != resource.RLIM_INFINITY)])
-            need(0 < maximum <= 65536, "CI_PROFILE_EXISTING_FILE_LIMIT")
+            # RLIMIT_FSIZE applies to *all* files written by bash/cp, not
+            # just the output sidecar. Keep this scoped OS bound separate
+            # from the exact 64 KiB source-evidence limit enforced below.
+            maximum = min([CI_SDK_PROFILE_TEMP_FILE_BYTES,
+                           *(n for n in prior if n != resource.RLIM_INFINITY)])
+            need(CI_SDK_PROFILE_SIDECAR_BYTES < maximum <= CI_SDK_PROFILE_TEMP_FILE_BYTES,
+                 "CI_PROFILE_EXISTING_FILE_LIMIT")
             resource.setrlimit(resource.RLIMIT_FSIZE, (maximum, maximum))
     ci_require_time(evidence, seconds + reserve + 22)
     limit = CI_COMMAND_STREAM_BYTES.get(label, 8 * 1024 * 1024) if stream_bytes is None else stream_bytes
@@ -1362,7 +1374,8 @@ def ci_command(evidence, label, argv, cwd, env, seconds, reserve=CI_TAIL_SECONDS
               "timeout_seconds": seconds, "automatic_retry": False, "stream_limit_bytes": limit,
               "overflow_reserve_per_stream_bytes": CI_OVERFLOW_BYTES, "cargo_file_size_limit_changed": False}
     if sidecar_file_limit is not None:
-        intent["sdk_profile_child_file_limit_bytes"] = sidecar_file_limit
+        intent["sdk_profile_child_file_limit_bytes"] = CI_SDK_PROFILE_TEMP_FILE_BYTES
+        intent["sdk_profile_sidecar_limit_bytes"] = sidecar_file_limit
     publish(metadata["intent"], intent)
     terminal = {"status": "UNKNOWN", "exit_code": None, "automatic_retry": False,
                 "overflow": False, "deadline_exceeded": False, "retention_exhausted": False,
@@ -1713,6 +1726,22 @@ def ci_prepare_and_run():
         return ci_produce_originals(repo, root, namespace, evidence)
 
 
+def ci_verify_sdk_profile_sidecar(path):
+    """The separate evidence sidecar remains <64 KiB after the real probe.
+
+    No cargo or Native child inherits our temporary probe's RLIMIT_FSIZE.
+    The byte cap is checked by stat *before* read/hash, then by the original
+    guarded file observer. Oversized, missing or linked sidecars fail closed.
+    """
+    need(path.is_file() and not path.is_symlink()
+         and 0 < path.stat().st_size < CI_SDK_PROFILE_SIDECAR_BYTES,
+         "CI_PROFILE_SIDECAR_LIMIT_REACHED")
+    observed = source.regular_file(path, CI_SDK_PROFILE_SIDECAR_BYTES)
+    need(0 < observed["bytes"] < CI_SDK_PROFILE_SIDECAR_BYTES,
+         "CI_PROFILE_SIDECAR_LIMIT_REACHED")
+    return observed
+
+
 def ci_produce_originals(repo, root, namespace, evidence):
     need(_CI_CAPACITY is not None, "CI_ORIGINAL_CAPACITY_NOT_ADMITTED")
     terminal = {"status": "UNKNOWN", "automatic_retry": False, "native_scenario_started": False}
@@ -1745,7 +1774,7 @@ def ci_produce_originals(repo, root, namespace, evidence):
             _CI_CAPACITY.reserve(profile_original, 65536); _CI_CAPACITY.claim(profile_original, 0)
             ci_command(evidence, "sdk-sandbox-profile", ["bash", str(sdk / "scripts/dev/ci-driver-bwrap-profile.sh"), str(profile_original)],
                        repo, env, 30, 1240, sidecar_file_limit=65536)
-            need(source.regular_file(profile_original, 65536)["bytes"] < 65536, "CI_PROFILE_SIDECAR_LIMIT_REACHED")
+            ci_verify_sdk_profile_sidecar(profile_original)
             binaries = {}
             groups = (("sdk-daemon-cli", sdk, ["-p", "semwright-daemon", "-p", "semwright-cli", "--bins"], ("semwright", "semwrightd"), 480),
                       ("sdk-sandbox", sdk, ["-p", "semwright-plugin-host", "--bin", "semwright-sandbox"], ("semwright-sandbox",), 120),
