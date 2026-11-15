@@ -350,6 +350,21 @@ fn check_transition(source: &Project, final_project: &Project, change: &Change) 
     )?;
     let mut expected = source.clone();
     expected.apply_change(change)?;
+    if matches!(change, Change::AddScene { .. }) {
+        require(
+            final_project.scenes.len() == expected.scenes.len(),
+            "Added scene roster changed",
+        )?;
+        let appended = source.scenes.len();
+        let scene_id = final_project.scenes[appended].id;
+        require(
+            !scene_id.is_nil() && source.scenes.iter().all(|scene| scene.id != scene_id),
+            "Added scene identity is missing or reused",
+        )?;
+        // AddScene allocates a UUID in the committed outcome. Bind only that
+        // generated identity; compare every authored field and prior scene below.
+        expected.scenes[appended].id = scene_id;
+    }
     expected.commit_revision(final_project.revision, change)?;
     expected.updated_at = final_project.updated_at;
     require(
@@ -955,7 +970,13 @@ fn portable_native_source(
             "original_manifest_bytes":manifest_bytes.len(),
         }),
     )?;
-    let inspected = service.inspect_project_bundle_with_fingerprint(bundle)?;
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?
+        .sync_all()?;
+    let restored = StudioService::open(destination)?;
+    let inspected = restored.inspect_project_bundle_with_fingerprint(bundle)?;
     new_json(
         &receipt_path.with_extension("inspection.original.json"),
         &serde_json::to_value(&inspected)?,
@@ -973,12 +994,6 @@ fn portable_native_source(
             "original_manifest_sha256":manifest_sha, "automatic_retry":false,
         }),
     )?;
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)?
-        .sync_all()?;
-    let restored = StudioService::open(destination)?;
     let imported = restored.import_project_bundle_inspected(bundle, &inspected.fingerprint)?;
     // Retain the original typed result before any qualification of that result.
     new_json(
@@ -1810,7 +1825,13 @@ fn alab_source_bundle(
         &serde_json::to_value(&exported)?,
     )?;
     let manifest = read_regular(&bundle.join("manifest.json"), MAX_JSON)?;
-    let inspected = service.inspect_project_bundle_with_fingerprint(bundle)?;
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?
+        .sync_all()?;
+    let restored = StudioService::open(destination)?;
+    let inspected = restored.inspect_project_bundle_with_fingerprint(bundle)?;
     new_json(
         &receipt_path.with_extension("inspection.original.json"),
         &serde_json::to_value(&inspected)?,
@@ -1826,12 +1847,6 @@ fn alab_source_bundle(
         "inspection_fingerprint":inspected.fingerprint,"manifest_sha256":sha(&manifest),
         "source_generation":source.generation,"automatic_retry":false}),
     )?;
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)?
-        .sync_all()?;
-    let restored = StudioService::open(destination)?;
     let imported = restored.import_project_bundle_inspected(bundle, &inspected.fingerprint)?;
     new_json(
         &receipt_path.with_extension("import.original.json"),
@@ -2505,7 +2520,13 @@ fn alab_edited_bundle(
         &serde_json::to_value(&exported)?,
     )?;
     let manifest = read_regular(&bundle.join("manifest.json"), MAX_JSON)?;
-    let inspected = service.inspect_project_bundle_with_fingerprint(bundle)?;
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?
+        .sync_all()?;
+    let restored = StudioService::open(destination)?;
+    let inspected = restored.inspect_project_bundle_with_fingerprint(bundle)?;
     new_json(
         &receipt_path.with_extension("inspection.original.json"),
         &serde_json::to_value(&inspected)?,
@@ -2521,12 +2542,6 @@ fn alab_edited_bundle(
         "inspection_fingerprint":inspected.fingerprint,"manifest_sha256":sha(&manifest),
         "source_generation":source.generation,"automatic_retry":false}),
     )?;
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)?
-        .sync_all()?;
-    let restored = StudioService::open(destination)?;
     let imported = restored.import_project_bundle_inspected(bundle, &inspected.fingerprint)?;
     new_json(
         &receipt_path.with_extension("import.original.json"),
@@ -3406,6 +3421,38 @@ mod tests {
         assert_eq!(project.scenes.len(), 2);
         assert_eq!(project.assets.len(), 3);
         assert_eq!(project.production_design.capsules.len(), 1);
+        let mut before: Project =
+            serde_json::from_value(returned["created_project"].clone()).unwrap();
+        let history = StudioService::open(&fixture.database)
+            .unwrap()
+            .history(project.id, before.revision, 8)
+            .unwrap();
+        for (index, event) in history.iter().enumerate() {
+            let path = fixture
+                .receipt
+                .with_extension(format!("stage-{index:02}.result.original.json"));
+            let outcome: motionwright_storage::ApplyOutcome =
+                serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            if matches!(&event.change, Change::AddScene { .. }) {
+                check_transition(&before, &outcome.project, &event.change).unwrap();
+                let appended = before.scenes.len();
+                let mut changed = outcome.project.clone();
+                changed.scenes[appended].objective.push_str(" changed");
+                assert!(check_transition(&before, &changed, &event.change).is_err());
+                changed = outcome.project.clone();
+                changed.scenes[appended].id = Uuid::nil();
+                assert!(check_transition(&before, &changed, &event.change).is_err());
+                if let Some(prior) = before.scenes.first() {
+                    changed = outcome.project.clone();
+                    changed.scenes[appended].id = prior.id;
+                    assert!(check_transition(&before, &changed, &event.change).is_err());
+                    changed = outcome.project.clone();
+                    changed.scenes[0].name.push_str(" changed");
+                    assert!(check_transition(&before, &changed, &event.change).is_err());
+                }
+            }
+            before = outcome.project;
+        }
         assert_eq!(
             project.scenes[1].duration,
             RationalTime::new(91, 12).unwrap()
