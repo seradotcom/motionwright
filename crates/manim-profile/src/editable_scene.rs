@@ -1,6 +1,9 @@
 //! Versioned, inert text/shape source for the original Manim Community Host.
 //! A source carrier confers no native authority. Only this trusted compiler may
 //! produce a program; imported scene.py is compared as data and never executed.
+#[path = "font_tables.rs"]
+mod font_tables;
+
 use super::*;
 
 pub const PROFILE_ID: &str = "mw-manim-editable-text-v3";
@@ -326,46 +329,32 @@ pub fn inspect_font(plan: &Plan, font: &FontSource, bytes: &[u8]) -> Result<Font
     {
         return Err(profile_invalid("editable_font_bytes_or_identity_mismatch"));
     }
-    use ttf_parser::{Face, Permissions, Tag, name_id};
-    let face = Face::parse(bytes, 0).map_err(|_| profile_invalid("editable_font_parse_failed"))?;
-    if face.is_italic()
-        || face.is_oblique()
-        || (face.tables().glyf.is_none()
-            && face.tables().cff.is_none()
-            && face.tables().cff2.is_none())
-        || !matches!(
-            face.permissions(),
-            Some(Permissions::Installable | Permissions::Editable)
-        )
-        || !face.is_outline_embedding_allowed()
-        || face.names().len() > 256
-    {
+    use read_fonts::types::Tag;
+    let face = font_tables::Face::parse(bytes)
+        .ok_or_else(|| profile_invalid("editable_font_parse_failed"))?;
+    if face.is_italic() || face.is_oblique() || !face.has_outlines() {
         return Err(profile_invalid(
             "editable_font_face_or_embedding_unsupported",
         ));
     }
-    let mut families = BTreeSet::new();
-    for name in face.names() {
-        if matches!(name.name_id, name_id::FAMILY | name_id::TYPOGRAPHIC_FAMILY)
-            && name.name.len() <= 1024
-            && let Some(value) = name.to_string()
-            && family_valid(&value)
-        {
-            families.insert(value);
-        }
+    let embedding_rights = face.embedding_rights();
+    if !matches!(embedding_rights & 0x000f, 0 | 8) || embedding_rights & 0x0200 != 0 {
+        return Err(profile_invalid("editable_font_embedding_restricted"));
     }
+    let families = face
+        .names()
+        .iter()
+        .filter(|name| family_valid(name))
+        .cloned()
+        .collect::<BTreeSet<_>>();
     if !families.contains(&font.family) || families.len() > 16 {
         return Err(profile_invalid("editable_font_family_not_observed"));
     }
     let axes = face.variation_axes();
-    if axes.len() > 1
-        || axes
-            .into_iter()
-            .any(|axis| axis.tag != Tag::from_bytes(b"wght"))
-    {
+    if axes.len() > 1 || axes.iter().any(|axis| axis.tag != Tag::new(b"wght")) {
         return Err(profile_invalid("editable_font_variation_unsupported"));
     }
-    let (weight_min, weight_max) = if let Some(axis) = axes.into_iter().next() {
+    let (weight_min, weight_max) = if let Some(axis) = axes.first() {
         if !axis.min_value.is_finite()
             || !axis.max_value.is_finite()
             || axis.min_value < 1.0
@@ -376,7 +365,7 @@ pub fn inspect_font(plan: &Plan, font: &FontSource, bytes: &[u8]) -> Result<Font
         }
         (axis.min_value.ceil() as u16, axis.max_value.floor() as u16)
     } else {
-        let weight = face.weight().to_number();
+        let weight = face.weight();
         (weight, weight)
     };
     if weight_min > weight_max {
@@ -398,18 +387,9 @@ pub fn inspect_font(plan: &Plan, font: &FontSource, bytes: &[u8]) -> Result<Font
     }
     for cp in &points {
         let index = char::from_u32(*cp).and_then(|cp| face.glyph_index(cp));
-        if !index.is_some_and(|id| id.0 > 0 && id.0 < face.number_of_glyphs()) {
+        if !index.is_some_and(|id| id > 0 && id < face.number_of_glyphs()) {
             return Err(profile_invalid("editable_font_requested_glyph_absent"));
         }
-    }
-    let os2 = face
-        .raw_face()
-        .table(Tag::from_bytes(b"OS/2"))
-        .and_then(|table| table.get(8..10))
-        .ok_or_else(|| profile_invalid("editable_font_embedding_unobserved"))?;
-    let embedding_rights = u16::from_be_bytes([os2[0], os2[1]]);
-    if !matches!(embedding_rights & 0x000f, 0 | 8) || embedding_rights & 0x0200 != 0 {
-        return Err(profile_invalid("editable_font_embedding_restricted"));
     }
     Ok(FontMetadata {
         sha256: source_digest(bytes),
@@ -920,6 +900,42 @@ mod tests {
         assert!(inspect_font(&missing, &missing.fonts[0], FONT).is_err());
         assert!(inspect_font(&plan, &plan.fonts[0], b"not a font").is_err());
     }
+
+    #[test]
+    fn zero_and_out_of_range_glyphs_cannot_be_laundered_by_a_new_digest() {
+        let glyph_count = u32::from(font_tables::Face::parse(FONT).unwrap().number_of_glyphs());
+        for glyph in [0, glyph_count] {
+            let mut bytes = FONT.to_vec();
+            let count = u16::from_be_bytes(bytes[4..6].try_into().unwrap()) as usize;
+            let record = (0..count)
+                .map(|index| 12 + index * 16)
+                .find(|at| &bytes[*at..*at + 4] == b"cmap")
+                .unwrap();
+            let offset = bytes.len() as u32;
+            let mut cmap = vec![0u8; 40];
+            cmap[2..4].copy_from_slice(&1u16.to_be_bytes());
+            cmap[4..6].copy_from_slice(&3u16.to_be_bytes());
+            cmap[6..8].copy_from_slice(&10u16.to_be_bytes());
+            cmap[8..12].copy_from_slice(&12u32.to_be_bytes());
+            cmap[12..14].copy_from_slice(&12u16.to_be_bytes());
+            cmap[16..20].copy_from_slice(&28u32.to_be_bytes());
+            cmap[24..28].copy_from_slice(&1u32.to_be_bytes());
+            cmap[28..32].copy_from_slice(&u32::from('N').to_be_bytes());
+            cmap[32..36].copy_from_slice(&u32::from('N').to_be_bytes());
+            cmap[36..40].copy_from_slice(&glyph.to_be_bytes());
+            bytes[record + 8..record + 12].copy_from_slice(&offset.to_be_bytes());
+            bytes[record + 12..record + 16].copy_from_slice(&40u32.to_be_bytes());
+            bytes.extend(cmap);
+            let face = font_tables::Face::parse(&bytes).unwrap();
+            assert_eq!(face.glyph_index('N'), Some(glyph as u16));
+            assert!(face.has_outlines());
+            let mut plan = plan();
+            plan.nodes[0].typography.as_mut().unwrap().text = "N".into();
+            plan.fonts[0].sha256 = source_digest(&bytes);
+            assert!(inspect_font(&plan, &plan.fonts[0], &bytes).is_err());
+        }
+    }
+
     #[test]
     fn actual_os2_restricted_embedding_cannot_be_laundered_by_a_new_digest() {
         let mut bytes = FONT.to_vec();
