@@ -201,7 +201,7 @@ def pack_snapshot(originals, verification, observation):
     need(len(manifest) <= MAX_MANIFEST, "postseal_manifest_bound")
     plaintext = _pack_originals(originals, manifest)
     need(0 < len(plaintext) <= MAX_POSTSEAL - 8192 - MAX_JSON - 64,
-         "postseal_existing_final_reserve")
+         "postseal_snapshot_payload_bound")
     return plaintext
 
 
