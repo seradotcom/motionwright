@@ -348,6 +348,58 @@ def validate_candidate(value, args, artifact):
          and matching[0].get("sha256") == artifact["sha256"], "CANDIDATE_ARTIFACT_MISMATCH")
 
 
+class EditorReadBridge(accessible.AtspiBridge):
+    """Read editor labels without borrowing the create-dialog role filter."""
+
+    def __init__(self, api, *, deadline, glib, expected_texts):
+        super().__init__(api, deadline=deadline, glib=glib)
+        self.roles.update({api.Role.STATIC: "static", api.Role.LABEL: "label"})
+        self.expected_texts = frozenset(expected_texts)
+
+    def drain_events(self):
+        # Service the same fresh structural cache within the inherited deadline.
+        # A busy event queue cannot consume an unbounded number of iterations.
+        context = self.glib.MainContext.default()
+        for _ in range(64):
+            if not self.call(context.pending):
+                return
+            self.call(context.iteration, False)
+
+    def view(self, node):
+        role = self.roles.get(self.call(node.get_role), "other")
+        state = self.call(node.get_state_set)
+        states = frozenset(k for k, v in self.states.items() if state.contains(v))
+        visible = accessible.VISIBLE <= states and "defunct" not in states
+        named = role in ("dialog", "entry", "text", "button", "static", "label")
+        name = self.call(node.get_name) if visible and named else ""
+        read_text_role = role in ("text", "static", "label")
+        relevant_text = (read_text_role and "editable" not in states
+                         and (name in self.expected_texts or not name))
+        relevant_button = role == "button" and name in ("Open project library", "Timeline")
+        interfaces = (frozenset(self.call(node.get_interfaces))
+                      if visible and (relevant_text or relevant_button) else frozenset())
+        # Some static objects expose their actual contents only through Text.
+        # Never substitute the requested title or revision for a missing value.
+        if relevant_text and not name and "Text" in interfaces and "EditableText" not in interfaces:
+            count = self.call(self.api.Text.get_character_count, node)
+            need(type(count) is int and count >= 0, "READ_UI_TEXT_COUNT_INVALID")
+            # Unrelated editor prose is not a title candidate. Do not read it
+            # or apply the selected-title length limit to the whole document.
+            if count in {len(value) for value in self.expected_texts}:
+                value = self.read_text(node)
+                if value in self.expected_texts:
+                    name = value
+        return accessible.View(node, role, name, states, interfaces)
+
+
+def read_ui_failure_code(error):
+    if isinstance(error, (ScenarioError, accessible.ProbeError)):
+        code = str(error)
+        if re.fullmatch(r"[A-Z][A-Z0-9_]{0,95}", code):
+            return code
+    return "UNCLASSIFIED_READ_FAILURE"
+
+
 def select_reopened_view(bridge, pid, revision, title=TITLE):
     """Read actual visible editor text, with ownership checked on every witness."""
     apps = bridge.applications()
@@ -363,7 +415,7 @@ def select_reopened_view(bridge, pid, revision, title=TITLE):
                                  ("library", "Open project library", True),
                                  ("workspace", "Timeline", True)):
         found = [view for view in visible if view.name == name
-                 and (view.role == "button" if button else view.role != "entry")
+                 and (view.role == "button" if button else view.role in ("text", "static", "label"))
                  and "editable" not in view.states and "EditableText" not in view.interfaces]
         if not found:
             raise accessible.NotReady("MISSING_REOPENED_" + label.upper())
@@ -394,26 +446,36 @@ def read_ui_worker(argv):
     try:
         import gi
         gi.require_version("Atspi", "2.0")
-        from gi.repository import Atspi
+        from gi.repository import Atspi, GLib
         need(Atspi.init() in (0, 1), "ATSPI_INIT")
         Atspi.set_timeout(800, 2500)
-        bridge = accessible.AtspiBridge(Atspi, deadline=args.deadline)
-        witnesses = observe_editor_until(bridge, binding, revision, title, args.deadline)
+        bridge = EditorReadBridge(Atspi, deadline=args.deadline, glib=GLib,
+                                  expected_texts=(title, "r" + str(revision)))
+        witnesses = observe_editor_until(bridge, binding, revision, title, args.deadline,
+                                         diagnostics=result)
         result.update(status="PASS", witnesses=witnesses)
     except Exception as error:
         result["failure_type"] = type(error).__name__
+        result["failure_code"] = read_ui_failure_code(error)
     finally:
         publish(args.directory / "result.json", result)
     return 0 if result["status"] == "PASS" else 1
 
 
-def observe_editor_until(bridge, binding, revision, title, deadline):
+def observe_editor_until(bridge, binding, revision, title, deadline, *, diagnostics=None):
+    attempts = 0
     while time.monotonic() < deadline:
         try:
+            bridge.drain_events()
+            attempts += 1
+            if diagnostics is not None:
+                diagnostics["read_attempts"] = attempts
             need(accessible.x11_identity(deadline=deadline) == binding, "UI_PROCESS_CHANGED")
             witnesses = select_reopened_view(bridge, binding["pid"], revision, title)
             need(accessible.x11_identity(deadline=deadline) == binding, "UI_PROCESS_CHANGED")
-        except accessible.NotReady:
+        except accessible.NotReady as error:
+            if diagnostics is not None:
+                diagnostics["last_condition"] = read_ui_failure_code(error)
             time.sleep(min(0.1, max(0, deadline - time.monotonic())))
             continue
         return witnesses
@@ -440,7 +502,7 @@ def invoke_read_ui(root, binding, revision, seconds, *, phase="reopened", title=
     result = read_json(directory / "result.json", 16384)
     need(process.returncode == 0 and result.get("status") == "PASS"
          and result.get("binding") == binding and result.get("mutations") == 0,
-         "REOPENED_UI_NOT_OBSERVED")
+         phase.upper() + "_UI_NOT_OBSERVED")
     return result
 
 
@@ -945,7 +1007,7 @@ CI_FUTURE_PRIVATE_FILES = 1024
 CI_JOB_SECONDS = 60 * 60
 CI_JOIN_SECONDS = 1800
 CI_TAIL_SECONDS = 360  # sealing, cipher upload and the existing package upload
-CI_EXPECTED_CONTROLS = 37
+CI_EXPECTED_CONTROLS = 43
 CI_CAPACITY_JOURNAL_BYTES = 1024 * 1024
 CI_PRODUCER_CLOSE_BYTES = 1024 * 1024
 CI_PRODUCER_CLOSE_FILES = 8

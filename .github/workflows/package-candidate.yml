@@ -712,9 +712,9 @@ jobs:
           assert data["status"]=="PASS" and data["executed_source_sha"]==sys.argv[2]
           assert len(data["steps"])==1
           counts=data["steps"][0]["counts"]
-          assert counts["tests_run"]==counts["passed"]==37
+          assert counts["tests_run"]==counts["passed"]==43
           assert all(counts[key]==0 for key in ("failures","errors","skipped","expected_failures","unexpected_successes"))
-          print("native-profile-original-source-g1=PASS tests=37 native_effects=0")
+          print("native-profile-original-source-g1=PASS tests=43 native_effects=0")
           PY_NATIVE_G1
       - name: Preserve authenticated Native installed source-only originals
         if: always()

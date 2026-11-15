@@ -1002,5 +1002,193 @@ class InstalledEarlyControlsJoinTests(PrivateScenarioCase):
             installed.ci_verify_sdk_profile_sidecar(profile)
 
 
+
+class EditorReadbackTests(unittest.TestCase):
+    """Synthetic protocol controls only; these do not prove an installed GUI."""
+
+    class Node:
+        def __init__(self, role, name="", *, text=None, pid=700):
+            self.role, self.name, self.pid_value = role, name, pid
+            self.text = name if text is None else text
+            self.states = {"VISIBLE", "SHOWING", "ENABLED", "SENSITIVE"}
+            self.interfaces = {"Text"} if role in ("STATIC", "LABEL", "TEXT") else set()
+            self.nodes, self.owner, self.cache_mask = [], self, None
+
+        def get_role(self):
+            return self.role
+
+        def get_name(self):
+            return self.name
+
+        def get_state_set(self):
+            return self
+
+        def contains(self, state):
+            return state in self.states
+
+        def get_interfaces(self):
+            return self.interfaces
+
+        def get_child_count(self):
+            return len(self.nodes)
+
+        def get_child_at_index(self, index):
+            return self.nodes[index]
+
+        def get_process_id(self):
+            return self.pid_value
+
+        def get_application(self):
+            return self.owner
+
+        def set_cache_mask(self, mask):
+            self.cache_mask = mask
+
+    def fixture(self):
+        desktop, app = self.Node("DESKTOP"), self.Node("APPLICATION")
+        desktop.nodes = [app]
+        nodes = [self.Node("STATIC", installed.TITLE), self.Node("LABEL", "r0"),
+                 self.Node("PUSH_BUTTON", "Open project library"),
+                 self.Node("PUSH_BUTTON", "Timeline")]
+        app.nodes = nodes
+        for node in nodes:
+            node.owner = app
+        context = SimpleNamespace(actions=[], iterations=0)
+
+        def iterate(blocking):
+            self.assertIs(blocking, False)
+            context.iterations += 1
+            context.actions.pop(0)()
+
+        context.pending = lambda: bool(context.actions)
+        context.iteration = iterate
+        roles = ("DIALOG", "ENTRY", "TEXT", "PUSH_BUTTON", "STATIC", "LABEL")
+        states = ("VISIBLE", "SHOWING", "ENABLED", "SENSITIVE", "EDITABLE", "DEFUNCT")
+        api = SimpleNamespace(
+            Role=SimpleNamespace(**{k: k for k in roles}),
+            StateType=SimpleNamespace(**{k: k for k in states}),
+            Cache=SimpleNamespace(ALL=7), get_desktop=lambda _: desktop,
+            Text=SimpleNamespace(get_character_count=lambda n: len(n.text),
+                                 get_text=lambda n, start, end: n.text[start:end]),
+        )
+        glib = SimpleNamespace(MainContext=SimpleNamespace(default=lambda: context))
+        bridge = installed.EditorReadBridge(api, deadline=installed.time.monotonic() + 10,
+            glib=glib, expected_texts=(installed.TITLE, "r0"))
+        return bridge, desktop, app, nodes, context
+
+    def test_static_and_label_text_remain_owned_readonly_witnesses(self):
+        bridge, desktop, _, nodes, _ = self.fixture()
+        witnesses = installed.select_reopened_view(bridge, 700, 0)
+        self.assertEqual(set(witnesses), {"title", "revision", "library", "workspace"})
+        self.assertEqual(witnesses["title"], {"name": installed.TITLE, "visible_matches": 1})
+        self.assertEqual(witnesses["revision"]["name"], "r0")
+        self.assertEqual(bridge.view(nodes[0]).interfaces, frozenset({"Text"}))
+        self.assertEqual(desktop.cache_mask, 7)
+
+    def test_hidden_defunct_editable_and_entry_nodes_cannot_supply_title(self):
+        for condition in ("hidden", "defunct", "editable", "editable-interface", "entry"):
+            with self.subTest(condition=condition):
+                bridge, _, _, nodes, _ = self.fixture()
+                title = nodes[0]
+                if condition == "hidden":
+                    title.states.remove("SHOWING")
+                elif condition == "defunct":
+                    title.states.add("DEFUNCT")
+                elif condition == "editable":
+                    title.states.add("EDITABLE")
+                elif condition == "editable-interface":
+                    title.interfaces.add("EditableText")
+                else:
+                    title.role = "ENTRY"
+                with self.assertRaisesRegex(installed.accessible.NotReady, "MISSING_REOPENED_TITLE"):
+                    installed.select_reopened_view(bridge, 700, 0)
+
+    def test_identity_text_revision_library_and_ambiguity_fail_closed(self):
+        cases = ("owner", "text", "revision", "duplicate-title", "library", "duplicate-app")
+        for condition in cases:
+            with self.subTest(condition=condition):
+                bridge, desktop, app, nodes, _ = self.fixture()
+                if condition == "owner":
+                    nodes[0].owner = self.Node("APPLICATION", pid=701)
+                    expected = "UI_WITNESS_OWNER_CHANGED"
+                elif condition == "text":
+                    nodes[0].text = "different original text"
+                    expected = "UI_NAME_AND_TEXT_DISAGREE"
+                elif condition == "revision":
+                    nodes[1].name = nodes[1].text = "r1"
+                    expected = "MISSING_REOPENED_REVISION"
+                elif condition == "duplicate-title":
+                    for _ in range(8):
+                        extra = self.Node("STATIC", installed.TITLE)
+                        extra.owner = app
+                        app.nodes.append(extra)
+                    expected = "REOPENED_TEXT_AMBIGUITY_LIMIT"
+                elif condition == "library":
+                    dialog = self.Node("DIALOG", "Project library")
+                    dialog.owner = app
+                    app.nodes.append(dialog)
+                    expected = "EDITOR_STILL_IN_LIBRARY"
+                else:
+                    desktop.nodes.append(self.Node("APPLICATION"))
+                    expected = "AMBIGUOUS_APPLICATION"
+                with self.assertRaisesRegex((installed.ScenarioError, installed.accessible.ProbeError),
+                                            expected):
+                    installed.select_reopened_view(bridge, 700, 0)
+
+    def test_unnamed_static_witness_uses_actual_bounded_text(self):
+        bridge, _, _, nodes, _ = self.fixture()
+        nodes[0].name = ""
+        self.assertEqual(installed.select_reopened_view(bridge, 700, 0)["title"]["name"],
+                         installed.TITLE)
+        nodes[0].text = "some other text"
+        with self.assertRaisesRegex(installed.accessible.NotReady, "MISSING_REOPENED_TITLE"):
+            installed.select_reopened_view(bridge, 700, 0)
+        for unrelated_text in ("x" * 257, installed.TITLE + " extra" * 64):
+            nodes[0].text = unrelated_text
+            with self.subTest(text_length=len(unrelated_text)), self.assertRaisesRegex(
+                    installed.accessible.NotReady, "MISSING_REOPENED_TITLE"):
+                installed.select_reopened_view(bridge, 700, 0)
+        bridge, _, app, _, _ = self.fixture()
+        unrelated = self.Node("STATIC", "", text="x" * 4096)
+        unrelated.owner = app
+        app.nodes.insert(0, unrelated)
+        self.assertEqual(installed.select_reopened_view(bridge, 700, 0)["title"]["name"],
+                         installed.TITLE)
+
+    def test_cache_events_are_serviced_with_bounded_iterations_and_original_deadline(self):
+        bridge, _, _, nodes, context = self.fixture()
+        title = nodes[0]
+        title.name = title.text = "pending label"
+
+        def update():
+            title.name = title.text = installed.TITLE
+
+        context.actions.append(update)
+        with self.assertRaisesRegex(installed.accessible.NotReady, "MISSING_REOPENED_TITLE"):
+            installed.select_reopened_view(bridge, 700, 0)
+        bridge.drain_events()
+        self.assertEqual(installed.select_reopened_view(bridge, 700, 0)["title"]["name"],
+                         installed.TITLE)
+        context.actions = [lambda: None] * 70
+        before = context.iterations
+        bridge.drain_events()
+        self.assertEqual(context.iterations - before, 64)
+        self.assertEqual(len(context.actions), 6)
+        before = context.iterations
+        bridge.deadline = installed.time.monotonic() - 1
+        with self.assertRaisesRegex(installed.accessible.ProbeError, "DEADLINE"):
+            bridge.drain_events()
+        self.assertEqual(context.iterations, before)
+
+    def test_failure_codes_preserve_only_bounded_known_error_classes(self):
+        self.assertEqual(installed.read_ui_failure_code(
+            installed.accessible.ProbeError("DEADLINE")), "DEADLINE")
+        self.assertEqual(installed.read_ui_failure_code(
+            installed.accessible.NotReady("MISSING_REOPENED_TITLE")), "MISSING_REOPENED_TITLE")
+        for error in (ValueError("DEADLINE"), installed.ScenarioError("private path / detail"),
+                      installed.ScenarioError("x"), installed.ScenarioError("A" * 97)):
+            with self.subTest(error_type=type(error).__name__):
+                self.assertEqual(installed.read_ui_failure_code(error), "UNCLASSIFIED_READ_FAILURE")
+
 if __name__ == "__main__":
     unittest.main()
