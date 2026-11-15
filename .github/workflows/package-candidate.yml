@@ -1843,8 +1843,10 @@ jobs:
             ci-evidence/windows-nsis-smoke.json
             ci-evidence/windows-nsis-cold-relaunch.json
           if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_installed'
+      # Installed verification retains its original setup for independent inventory.
+      - name: Retain original Windows candidate package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: success()
         with:
           name: motionwright-windows-candidate
           path: |
