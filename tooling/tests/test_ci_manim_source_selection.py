@@ -121,6 +121,34 @@ class DevelopmentSourceSelectionTests(unittest.TestCase):
         result, _ = self.execute(environment={**base, "MW_MANIM_DEVELOPMENT_NATIVE": "true"})
         self.assertEqual(result.returncode, 2, result.stderr)
 
+    def test_new_a4_physical_branch_only_admits_one_explicit_development_scope(self):
+        base = {"GITHUB_REF": "refs/heads/fix/a4-manim-editable-physical-20261115",
+                "MW_MANIM_DEVELOPMENT_NATIVE": "true",
+                "MW_MANIM_SCENARIO": "editable-source-cycle"}
+        result, calls = self.execute(environment=base)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, ["source_policy", "public_surface_policy"])
+        self.assertIn("dev-manim-native=SOURCE_ADMITTED", result.stdout)
+        self.assertIn("formal-G2=NOT_GRANTED G3=STOP release=false", result.stdout)
+        for key, value in (("GITHUB_REF", base["GITHUB_REF"] + "-other"),
+                           ("GITHUB_RUN_ATTEMPT", "2"),
+                           ("GITHUB_EVENT_NAME", "pull_request"),
+                           ("GITHUB_REPOSITORY", "other/motionwright"),
+                           ("MW_MANIM_SCENARIO", "camera120"),
+                           ("MW_MANIM_DEVELOPMENT_NATIVE", "false")):
+            with self.subTest(key=key):
+                rejected, calls = self.execute(environment={**base, key: value})
+                if key == "MW_MANIM_DEVELOPMENT_NATIVE":
+                    self.assertEqual(rejected.returncode, 97, rejected.stderr)
+                    self.assertEqual(calls[-1], "acceptance_policy")
+                else:
+                    self.assertEqual(rejected.returncode, 2, rejected.stderr)
+                    self.assertEqual(calls, ["source_policy", "public_surface_policy"])
+        self.acceptance["cases"][-1]["status"] = "PASS"
+        rejected, calls = self.execute(environment=base)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertEqual(calls, ["source_policy", "public_surface_policy"])
+
     def test_rust_rosters_select_all_five_edit_commit_regressions(self):
         text = WORKFLOW.read_text(encoding="utf-8")
         rosters = [ast.literal_eval(line.strip().split(" = ", 1)[1])
