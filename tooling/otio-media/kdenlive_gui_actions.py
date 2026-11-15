@@ -74,6 +74,22 @@ def require(ok: object, code: str) -> None:
         raise GuiRejected(code)
 
 
+def render_script_paths(step: str, output: Path, playlist_base: Path) -> tuple[Path, Path, Path]:
+    """Bind the native 26.08.3 base name, assets and first section playlist."""
+    require(step in ("editor-before", "editor-after")
+            and output.is_absolute() and playlist_base.is_absolute()
+            and output.parent == playlist_base.parent
+            and output.name == step + ".mov" and playlist_base.name == step + ".mlt"
+            and ".mlt" not in str(playlist_base.parent)
+            and output.parent.resolve(strict=True) == output.parent,
+            "native_render_script_paths_not_bound")
+    # RenderRequest::process increments its section index before replacing
+    # ".mlt". The input name stays unchanged; Native creates the "-1" job and
+    # an assets directory from the unsuffixed base. Never rename either file.
+    return (playlist_base.with_name(step + "-1.mlt"),
+            playlist_base.with_suffix(""), Path(str(output) + ".log"))
+
+
 def modal_snapshot(rows: list[dict], expected_pid: int) -> dict:
     """Retain every observed field once per column, without dropping any row."""
     require(type(expected_pid) is int and 0 < expected_pid <= 0xffffffff
@@ -1577,12 +1593,11 @@ class AtspiSession:
         self.journal.wait(step + ".focused", focused_row)
         return before["window"]
 
-    def generate_editor_render_job(self, step: str, output: Path, playlist: Path) -> dict:
+    def generate_editor_render_job(self, step: str, output: Path, playlist_base: Path) -> dict:
         """Version-pinned native Generate Script; never Render to File or Start Script."""
-        require(step in ("editor-before", "editor-after") and output.is_absolute()
-                and playlist.is_absolute() and output.parent == playlist.parent
-                and output.suffix == ".mov" and playlist.suffix == ".mlt"
-                and not any(p.exists() or p.is_symlink() for p in (output, playlist)),
+        playlist, assets, native_log = render_script_paths(step, output, playlist_base)
+        require(not any(p.exists() or p.is_symlink()
+                        for p in (playlist_base, playlist, assets, output, native_log)),
                 "native_render_script_targets_not_fresh")
         self.menu(step + ".menu", "File", "Render...")
         dialog = self.dialog(step + ".dialog", ("Rendering",))
@@ -1669,6 +1684,9 @@ class AtspiSession:
         output_selection = self.render_output_target(step + ".output", output)
         dialog = self.dialog(step + ".rendering-after-output", ("Rendering",))
         observed = {"preset": "Alpha MOV", "category": "Video with Alpha", "output_selection": output_selection,
+                    "requested_playlist_base": str(playlist_base),
+                    "expected_native_playlist": str(playlist),
+                    "expected_assets_directory": str(assets),
                     "options": observations, "rows_before_generate": self.descendants(dialog),
                     "Generate_Script_attempts": 1, "Render_to_File_attempts": 0, "Start_Script_attempts": 0}
         self.journal.emit({"step": step + ".settings", "state": "OBSERVED", "render_settings": observed})
@@ -1681,12 +1699,15 @@ class AtspiSession:
         field = unique(leaves, code="native_render_delayed_name_not_unique")
         require(any(normalized(r["name"]) == "Select a name for this rendering." for r in self.descendants(delayed)),
                 "native_render_delayed_prompt_changed")
-        self.text(step + ".playlist-name", field, str(playlist))
+        self.text(step + ".playlist-name", field, str(playlist_base))
         okay = self.journal.wait(step + ".delayed-confirm", lambda: self.find(
             ("OK",), ("push button",), scope=delayed["key"]))
         self.action(step + ".delayed-submit-once", okay)
         self.journal.wait(step + ".delayed-closed", lambda: not self.find(("Delayed Rendering",), ("dialog", "frame")))
-        self.journal.wait(step + ".native-playlist-created", lambda: playlist.is_file())
+        def native_playlist_created():
+            require(not playlist.is_symlink(), "native_render_playlist_link")
+            return playlist.is_file()
+        self.journal.wait(step + ".native-playlist-created", native_playlist_created)
         dialog = self.dialog(step + ".rendering-before-close", ("Rendering",))
         close = self.journal.wait(step + ".rendering-close-control", lambda: self.find(
             ("Close",), ("push button",), scope=dialog["key"]))
