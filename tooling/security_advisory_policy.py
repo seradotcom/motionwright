@@ -201,8 +201,8 @@ def verify_ttf_parser_review(lock: dict[str, Any], advisory: dict[str, Any]) -> 
         fail("Fontations exact registry source, version or checksum changed; review required")
     driver = [p for p in lock["package"] if p.get("name") == "semwright-driver-motion-canvas"]
     reviewed_sdk = (
-        "git+https://github.com/seradotcom/semwright?rev=afe76ddea1ffb23703181b97b7b6aefd76a1ab49"
-        "#afe76ddea1ffb23703181b97b7b6aefd76a1ab49"
+        "git+https://github.com/seradotcom/semwright?rev=e60e789035b1afe02df127e510b6be533371f567"
+        "#e60e789035b1afe02df127e510b6be533371f567"
     )
     if (len(driver) != 1
             or driver[0].get("version") != "1.0.0"
