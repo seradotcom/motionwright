@@ -46,6 +46,8 @@ RUNTIME_VARIABLES = (
 )
 MAX_PROJECT = 5 * 1024 * 1024
 MAX_OTIO = 2 * 1024 * 1024
+NATIVE_TERMINAL_SECONDS = 30
+NATIVE_FAILURE_TERM_SECONDS = 5
 SOURCE_PATHS = (
     "SOURCE_LOCK.json", ".github/workflows/v05-otio-real-media.yml",
     "tooling/ci_private_evidence.py", "tooling/mlt_official_runtime_intake.py",
@@ -874,6 +876,24 @@ class Recorder:
     def document(self, name: str, value: dict):
         custody.new_json(self.root / name, value)
 
+    def cancel_native_after_failure(self, original: BaseException):
+        # One shared existing terminal window; never a new GUI/Save attempt.
+        deadline = time.monotonic() + NATIVE_TERMINAL_SECONDS
+        for owned in reversed(self.owned_processes):
+            if not isinstance(owned, NativeProcess):
+                continue
+            try:
+                if owned.process.poll() is not None:
+                    continue
+                terminal = owned.cancel_after_failure_once(deadline)
+                if terminal["state"] != "TERMINAL_OBSERVED" or terminal["cleanup_errors"]:
+                    original.add_note("owned_native_cleanup_unknown:" + owned.phase)
+            except BaseException as cleanup:
+                try:
+                    original.add_note("owned_native_cleanup_failed:" + owned.phase + ":" + type(cleanup).__name__)
+                except BaseException:
+                    pass
+
     def observe_terminals(self):
         observations = []
         for owned in self.owned_processes:
@@ -1562,6 +1582,9 @@ class NativeProcess(OwnedProcess):
         require(accessibility_only or isinstance(self.audio, NativeAudioSession),
                 "native_gui_private_audio_session_required")
         self.render_preferences_source = None
+        self.failure_cleanup_attempted = False
+        self.termination_requested_here = False
+        self.terminal_wait_deadline = None
         self.logs = [records.root / (phase + ".stdout.log"),
                      records.root / (phase + ".stderr.log")]
         self.streams = [path.open("xb") for path in self.logs]
@@ -1681,14 +1704,104 @@ class NativeProcess(OwnedProcess):
         self.records.document(self.phase + "-live-process.json", result)
         return result
 
+    def cancel_after_failure_once(self, deadline: float) -> dict:
+        """Cancel only our bound child; a terminal here never verifies its GUI effect."""
+        require(not getattr(self, "failure_cleanup_attempted", False),
+                "native_gui_failure_cleanup_must_be_once")
+        self.failure_cleanup_attempted = True
+        fd, signals, errors = None, [], []
+        terminal = {"schema": "motionwright.native.kdenlive-owned-failure-cleanup/1",
+            "phase": self.phase, "pid": self.pid, "starttime": self.start,
+            "authority": "original_Popen_with_rechecked_pid_starttime_uid_executable_and_pidfd",
+            "signals": signals, "cleanup_errors": errors, "state": "UNKNOWN_STILL_RUNNING",
+            "returncode": None, "terminal_window_seconds": NATIVE_TERMINAL_SECONDS,
+            "gui_action_dispatched_here": False, "save_action_dispatched_here": False,
+            "native_operation_retried": False, "native_result_verified": False,
+            "descendants_not_adopted": True, "process_group_signaled": False}
+        try:
+            require(isinstance(self.process, subprocess.Popen)
+                    and type(self.pid) is int and self.pid == self.process.pid,
+                    "native_gui_failure_cleanup_not_original_Popen")
+            now = time.monotonic()
+            require(type(deadline) in (int, float) and now <= deadline <= now + NATIVE_TERMINAL_SECONDS,
+                    "native_gui_failure_cleanup_window_changed")
+            previous = getattr(self, "terminal_wait_deadline", None)
+            if previous is not None:
+                require(type(previous) in (int, float) and 0 < previous <= now + NATIVE_TERMINAL_SECONDS,
+                        "native_gui_original_terminal_window_changed")
+                deadline = min(deadline, previous)
+            self.terminal_wait_deadline = deadline
+            terminal["deadline_monotonic"] = deadline
+            if self.process.poll() is None:
+                require(deadline > time.monotonic(), "native_gui_original_terminal_budget_exhausted")
+                require(type(self.start) is int and self.start > 0
+                        and callable(getattr(os, "pidfd_open", None))
+                        and callable(getattr(signal, "pidfd_send_signal", None)),
+                        "native_gui_failure_cleanup_bound_pidfd_required")
+                self.guard()
+                fd = os.pidfd_open(self.pid)
+                self.guard()
+                for sig, grace in ((signal.SIGTERM, NATIVE_FAILURE_TERM_SECONDS),
+                                   (signal.SIGKILL, None)):
+                    if self.process.poll() is not None:
+                        break
+                    remaining = deadline - time.monotonic()
+                    require(remaining > 0, "native_gui_original_terminal_budget_exhausted")
+                    self.guard()
+                    row = {"signal": signal.Signals(sig).name, "syscall_returned": False}
+                    self.records.emit({"step": self.phase + ".failure-cleanup",
+                        "state": "INTENT", "pid": self.pid, "starttime": self.start,
+                        "signal": row["signal"], "authority": "owned_pidfd",
+                        "deadline_monotonic": deadline, "native_operation_retried": False})
+                    signals.append(row)
+                    self.termination_requested_here = True
+                    signal.pidfd_send_signal(fd, sig)
+                    row["syscall_returned"] = True
+                    try:
+                        self.records.emit({"step": self.phase + ".failure-cleanup",
+                            "state": "RETURNED", "pid": self.pid, "starttime": self.start,
+                            "signal": row["signal"], "native_operation_retried": False})
+                    except BaseException as error:
+                        errors.append({"stage": "signal_return_custody", "type": type(error).__name__})
+                    remaining = deadline - time.monotonic()
+                    require(remaining > 0, "native_gui_original_terminal_budget_exhausted")
+                    try:
+                        self.process.wait(timeout=remaining if grace is None else min(grace, remaining))
+                    except subprocess.TimeoutExpired:
+                        if sig == signal.SIGKILL:
+                            raise
+        except BaseException as error:
+            errors.append({"stage": "owned_cancellation", "type": type(error).__name__,
+                           "message": str(error)[:2048]})
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except BaseException as error:
+                    errors.append({"stage": "pidfd_close", "type": type(error).__name__})
+            try:
+                code = self.process.poll()
+                terminal["returncode"] = code
+                if code is not None:
+                    terminal["state"] = "TERMINAL_OBSERVED"
+                    for stream in self.streams:
+                        stream.close()
+            except BaseException as error:
+                errors.append({"stage": "terminal_observation", "type": type(error).__name__})
+            terminal["termination_requested_here"] = bool(getattr(self, "termination_requested_here", False))
+            terminal["streams_closed"] = all(stream.closed for stream in self.streams)
+            self.records.document(self.phase + ".failure-cleanup.original.json", terminal)
+        return terminal
+
     def close(self):
         preferences_source = getattr(self, "render_preferences_source", None)
         if preferences_source is None:
             self.ui.quit(self.phase + ".quit")
         else:
             self.ui.quit_after_render_script(self.phase + ".quit", preferences_source)
+        self.terminal_wait_deadline = time.monotonic() + NATIVE_TERMINAL_SECONDS
         try:
-            code = self.process.wait(timeout=30)
+            code = self.process.wait(timeout=NATIVE_TERMINAL_SECONDS)
         except subprocess.TimeoutExpired as original:
             try:
                 self.records.emit({"step": self.phase + ".terminal",
@@ -1933,11 +2046,29 @@ def run_route(appdir: Path, binary: Path, binary_sha: str,
     return result
 
 
+def run_with_owned_failure_cleanup(records: Recorder, operation):
+    """Keep the primary route exception; cleanup occurs before the audio context exits."""
+    try:
+        return operation()
+    except BaseException as original:
+        try:
+            records.cancel_native_after_failure(original)
+        except BaseException as cleanup:
+            try:
+                original.add_note("owned_native_cleanup_dispatch_failed:" + type(cleanup).__name__)
+            except BaseException:
+                pass
+        raise
+
+
 def finalize_records(records: Recorder, status: str, result: dict, context: dict) -> str:
     # A failure retaining one record does not skip the single sealing attempt.
     errors = []
     try:
-        records.observe_terminals()
+        observations = records.observe_terminals()
+        if status in ("NATIVE_ACCESSIBILITY_OBSERVED", "NATIVE_GUI_BOUNDED_ROUNDTRIP_OBSERVED"):
+            if any(row["state"] != "TERMINAL_OBSERVED" for row in observations):
+                status = "ERROR_OR_UNKNOWN"
     except BaseException as error:
         errors.append(type(error).__name__)
     try:
@@ -2766,9 +2897,9 @@ def main(argv=None) -> int:
             "source_checkout": context})
         selected_kwargs = {} if alab_inputs is None else {"alab_inputs": alab_inputs}
         def selected_native():
-            return run_selected_native(
+            return run_with_owned_failure_cleanup(records, lambda: run_selected_native(
                 args.verification_scope, args.appdir, binary, binary_sha,
-                args.capsule, records, profile, **selected_kwargs)
+                args.capsule, records, profile, **selected_kwargs))
         if args.verification_scope == "kdenlive-gui":
             with NativeAudioSession(records, runner_temp, context,
                     (args.evidence_root, args.capsule, args.public_dir, args.distribution_evidence)):
