@@ -58,6 +58,8 @@ class Bridge:
         self.dialog.children = [self.entry, self.button]
         self.apps = [self.app]
         self.edits, self.clicks = 0, 0
+        self.focuses, self.registry_types = 0, 0
+        self.focus_result = True
         self.names = ["click"]
         self.set_result, self.action_result = True, True
         self.set_error = self.action_error = None
@@ -92,6 +94,19 @@ class Bridge:
         if self.set_error:
             raise self.set_error
         return self.set_result
+
+    def focus_title(self, node):
+        assert "focus-intent" in self.journal.entries
+        assert node is self.entry
+        self.focuses += 1
+        return self.focus_result
+
+    def type_text(self, node, value):
+        assert "focus-intent" in self.journal.entries
+        assert "focus-return" in self.journal.entries
+        assert "edit-intent" in self.journal.entries
+        self.registry_types += 1
+        return self.set_text(node, value)
 
     def actions(self, node):
         return self.names
@@ -188,7 +203,32 @@ class SelectionAndAttemptTests(unittest.TestCase):
         self.rejected_without_effect("TITLE_NOT_EDITABLE", probe.NotReady)
         self.bridge.entry.states.add("editable")
         self.bridge.entry.interfaces.remove("EditableText")
+        # HTML input lacks EditableText on the real Ubuntu WebKit provider.
+        # Before dispatch, the exact title must at least offer Component+Text.
         self.rejected_without_effect("TITLE_INTERFACES_UNAVAILABLE")
+        self.bridge.entry.interfaces.add("Component")
+        self.assertFalse(self.attempt.step())
+        self.assertTrue(self.attempt.step())
+        self.assertEqual((self.bridge.focuses,self.bridge.registry_types,
+                          self.bridge.edits,self.bridge.clicks),(1,1,1,1))
+        self.assertEqual(self.journal.order,
+                         ["worker-start","focus-intent","focus-return",
+                          "edit-intent","edit-return","create-intent","create-return"])
+        self.assertEqual(self.journal.entries["edit-intent"]["method"],
+                         "AT_SPI_KEY_STRING")
+        self.assertEqual(self.attempt.report("ACTION_RETURNED_TRUE")["text_method"],
+                         "AT_SPI_KEY_STRING")
+
+        # Exact owner alone never permits injection without Text/Component.
+        for missing in ("Text","Component"):
+            with self.subTest(missing=missing):
+                journal=Journal();bridge=Bridge(journal)
+                bridge.entry.interfaces={"Text","Component"}-{missing}
+                attempt=probe.Attempt(bridge,lambda:dict(BINDING),journal,dict(BINDING))
+                with self.assertRaisesRegex(probe.ProbeError,"TITLE_INTERFACES_UNAVAILABLE"):
+                    attempt.step()
+                self.assertEqual((bridge.focuses,bridge.registry_types,bridge.clicks),(0,0,0))
+                self.assertNotIn("focus-intent",journal.entries)
 
     def test_existing_input_text_is_not_overwritten(self):
         self.bridge.entry.text = "owner data"
@@ -297,6 +337,30 @@ class SelectionAndAttemptTests(unittest.TestCase):
         with self.assertRaises(OSError):
             self.attempt.step()
         self.assertEqual((self.bridge.edits, self.bridge.clicks), (0, 0))
+        for failed_journal in ("focus-intent","edit-intent"):
+            with self.subTest(stage=failed_journal):
+                journal=Journal();bridge=Bridge(journal)
+                bridge.entry.interfaces={"Text","Component"}
+                journal.fail=failed_journal
+                attempt=probe.Attempt(bridge,lambda:dict(BINDING),journal,dict(BINDING))
+                with self.assertRaises(OSError):
+                    attempt.step()
+                self.assertEqual((bridge.registry_types,bridge.edits,bridge.clicks),(0,0,0))
+                self.assertNotIn("create-intent",journal.entries)
+                self.assertNotIn("edit-return",journal.entries)
+        journal=Journal();bridge=Bridge(journal)
+        bridge.entry.interfaces={"Text","Component"}
+        bridge.focus_result=False
+        attempt=probe.Attempt(bridge,lambda:dict(BINDING),journal,dict(BINDING))
+        with self.assertRaisesRegex(probe.ProbeError,"TITLE_FOCUS_UNCONFIRMED"):
+            attempt.step()
+        self.assertEqual((bridge.focuses,bridge.registry_types,bridge.edits,bridge.clicks),(1,0,0,0))
+        self.assertEqual(journal.order,["worker-start","focus-intent","focus-return"])
+        self.assertEqual(attempt.report("TITLE_FOCUS_UNCONFIRMED")["status"],"NOT_SENT")
+        self.assertEqual(attempt.report("TITLE_FOCUS_UNCONFIRMED")["text_method"],"NOT_SELECTED")
+        with self.assertRaisesRegex(probe.ProbeError,"MUTATION_ALREADY_ATTEMPTED"):
+            attempt.step()
+        self.assertEqual(bridge.focuses,1)
 
     def test_create_journal_failure_prevents_button_effect(self):
         self.edit_once()
@@ -648,7 +712,7 @@ class WorkerBudgetTests(unittest.TestCase):
 
     def run_worker(self, *, setup_seconds=0.0, register_seconds=0.0,
                    missing_controls=False, setter_error=False, parent_deadline=None,
-                   recover_controls_after_timer=False):
+                   recover_controls_after_timer=False, registry_text=False):
         from contextlib import ExitStack
         from types import ModuleType
         clock = [100.0]
@@ -658,6 +722,8 @@ class WorkerBudgetTests(unittest.TestCase):
             bridge.apps = []
         if setter_error:
             bridge.set_error = TimeoutError("controlled missing reply")
+        if registry_text:
+            bridge.entry.interfaces = {"Text", "Component"}
         idle = []
         timers = []
         registrations = []
@@ -772,11 +838,25 @@ class WorkerBudgetTests(unittest.TestCase):
         result, bridge, _, _, _ = self.run_worker(setup_seconds=0.5)
         self.assertEqual(result["status"], "ACTION_ACCEPTED")
         self.assertEqual((bridge.edits, bridge.clicks), (1, 1))
+        result, bridge, _, _, journal = self.run_worker(
+            setup_seconds=0.5, registry_text=True)
+        self.assertEqual(result["status"], "ACTION_ACCEPTED")
+        self.assertEqual((bridge.focuses,bridge.registry_types,bridge.edits,bridge.clicks),(1,1,1,1))
+        self.assertEqual(journal.order.count("focus-intent"),1)
+        self.assertEqual(journal.order.count("edit-intent"),1)
+        self.assertEqual(journal.order.count("create-intent"),1)
 
     def test_missing_reply_stays_unknown_without_second_effect(self):
         result, bridge, _, _, journal = self.run_worker(setter_error=True)
         self.assertEqual(result["status"], "UNKNOWN")
         self.assertEqual((bridge.edits, bridge.clicks), (1, 0))
+        self.assertNotIn("create-intent", journal.entries)
+        result, bridge, _, _, journal = self.run_worker(
+            setter_error=True, registry_text=True)
+        self.assertEqual(result["status"], "UNKNOWN")
+        self.assertEqual((bridge.focuses,bridge.registry_types,bridge.edits,bridge.clicks),(1,1,1,0))
+        self.assertEqual(journal.order.count("focus-intent"),1)
+        self.assertEqual(journal.order.count("edit-intent"),1)
         self.assertNotIn("create-intent", journal.entries)
 
 

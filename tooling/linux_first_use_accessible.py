@@ -3,7 +3,10 @@
 
 Run with Ubuntu's /usr/bin/python3 inside the disposable Xvfb/DBus CI session.
 Offline tests are selection/latch tests, never GTK/WebKit or install acceptance.
-No JavaScript invocation, XTest fallback, SQLite writes, or automatic UI retry.
+No JavaScript invocation, direct XTest/xdotool fallback, SQLite writes,
+or automatic UI retry. A single AT-SPI registry input string is permitted
+only after a source-bound native focus and durable edit intent, and always
+requires exact Text readback before the separately journaled Create action.
 Use --storage-source-repo to bind current storage to the exact source checkout;
 without explicit admission, the shared observers retain their historical contract.
 """
@@ -132,6 +135,7 @@ class Attempt:
         self.last_condition = "NOT_OBSERVED"
         self.edit_intended = False
         self.create_intended = False
+        self.registry_input_method = False
         self.finished = False
         self.journal.put("worker-start", {"binding": binding})
 
@@ -160,7 +164,16 @@ class Attempt:
                 raise ProbeError("CONTROLS_REPLACED_AFTER_EDIT")
             if not (USABLE | {"editable"}) <= entry.states:
                 raise NotReady("TITLE_NOT_EDITABLE")
-            if not {"EditableText", "Text"} <= entry.interfaces:
+            # WebKitGTK exposes real editable HTML entries with Text and
+            # Component, but often no EditableText. The source-bound Ubuntu
+            # original verified one AT-SPI registry KEY_STRING input with
+            # exact readback, never any direct XTest or DOM mutation.
+            native_editable = {"EditableText", "Text"} <= entry.interfaces
+            registry_candidate = (
+                "EditableText" not in entry.interfaces
+                and {"Text", "Component"} <= entry.interfaces
+            )
+            if not native_editable and not registry_candidate:
                 raise ProbeError("TITLE_INTERFACES_UNAVAILABLE")
             if "Action" not in button.interfaces:
                 raise ProbeError("CREATE_ACTION_INTERFACE_UNAVAILABLE")
@@ -173,15 +186,40 @@ class Attempt:
                     self.bridge.owner_pid(entry.node) != self.binding["pid"]
                 ):
                     raise ProbeError("TITLE_OWNER_CHANGED")
+                if registry_candidate:
+                    # Focus is a real OS UI effect, never a project edit. One
+                    # create-only latch precedes the sole focus request. A
+                    # missing return or FOCUSED state closes this worker and
+                    # cannot restart the original focus or send any text.
+                    self.phase = "FOCUS_JOURNAL_PENDING"
+                    self.journal.put("focus-intent", {"binding": self.binding,
+                        "method": "AT_SPI_COMPONENT_GRAB_FOCUS"})
+                    self.phase = "FOCUS_UNKNOWN"
+                    focused = self.bridge.focus_title(entry.node)
+                    self.journal.put("focus-return", {"verified": focused is True})
+                    if focused is not True:
+                        raise ProbeError("TITLE_FOCUS_UNCONFIRMED")
+                    self.phase = "FOCUS_ACKNOWLEDGED"
+                    self.check_identity()
+                    if self.bridge.pid(app) != self.binding["pid"] or (
+                            self.bridge.owner_pid(entry.node) != self.binding["pid"]):
+                        raise ProbeError("TITLE_OWNER_CHANGED_AFTER_FOCUS")
+                    if self.bridge.read_text(entry.node) != "":
+                        raise ProbeError("TITLE_CHANGED_DURING_FOCUS")
                 self.phase = "EDIT_JOURNAL_PENDING"
                 self.journal.put("edit-intent", {
                     "binding": self.binding,
                     "title_sha256": hashlib.sha256(
                         EXPECTED_INITIAL_TITLE.encode()).hexdigest(),
+                    "method": ("AT_SPI_KEY_STRING" if registry_candidate
+                               else "AT_SPI_EDITABLE_TEXT"),
                 })
                 self.edit_intended = True
+                self.registry_input_method = registry_candidate
                 self.phase = "EDIT_UNKNOWN"
-                returned = self.bridge.set_text(entry.node, EXPECTED_INITIAL_TITLE)
+                returned = (self.bridge.type_text(entry.node, EXPECTED_INITIAL_TITLE)
+                            if registry_candidate else
+                            self.bridge.set_text(entry.node, EXPECTED_INITIAL_TITLE))
                 self.journal.put("edit-return", {"returned": returned is True})
                 if returned is not True:
                     raise ProbeError("EDIT_RETURNED_FALSE_UNCONFIRMED")
@@ -235,6 +273,9 @@ class Attempt:
             "last_condition": self.last_condition,
             "edit_intended": self.edit_intended,
             "create_intended": self.create_intended,
+            "text_method": ("NOT_SELECTED" if not self.edit_intended else
+                            "AT_SPI_KEY_STRING" if self.registry_input_method
+                            else "AT_SPI_EDITABLE_TEXT"),
             "binding": self.binding,
             "project_commit": "NOT_VERIFIED_BY_ACTION",
         }
@@ -319,9 +360,10 @@ def x11_identity(*, deadline=None):
 
 
 class AtspiBridge:
-    def __init__(self, api, *, deadline=None):
+    def __init__(self, api, *, deadline=None, glib=None):
         self.api = api
         self.deadline = deadline
+        self.glib = glib
         self.desktop = self.call(api.get_desktop, 0)
         if self.desktop is None:
             raise ProbeError("ATSPI_DESKTOP_UNAVAILABLE")
@@ -436,6 +478,42 @@ class AtspiBridge:
     def set_text(self, node, value):
         return self.call(self.api.EditableText.set_text_contents, node, value)
 
+    def focus_title(self, node):
+        # The real disposable Ubuntu WebKit trial proved that Component
+        # grab_focus may ACK before the cached FOCUSED bit updates. Read the
+        # one bound target twice, then refresh ONLY that one state's cache
+        # once. Never clear the live application tree or run a second focus.
+        if self.call(self.api.Component.grab_focus, node) is not True:
+            return False
+        for index in range(6):
+            state = self.call(node.get_state_set)
+            if state.contains(self.api.StateType.FOCUSED):
+                return True
+            if index == 1:
+                self.call(node.clear_cache_single)
+            context = (self.glib.MainContext.default()
+                       if self.glib is not None else None)
+            if context is not None:
+                for _ in range(16):
+                    if not context.pending():
+                        break
+                    context.iteration(False)
+            # A late focus cannot renew the original worker's deadline.
+            if self.deadline is not None and time.monotonic() >= self.deadline:
+                raise ProbeError("DEADLINE")
+            time.sleep(0.2)
+        return False
+
+    def type_text(self, node, value):
+        # The one focused, PID-bound entry was independently checked before
+        # edit-intent. Verify a fresh focused state immediately before this
+        # ONE registry event. Every possible keyboard effect is UNKNOWN
+        # until the original Text readback proves the exact expected value.
+        if not self.call(node.get_state_set).contains(self.api.StateType.FOCUSED):
+            return False
+        return self.call(self.api.generate_keyboard_event, 0, value,
+                         self.api.KeySynthType.STRING)
+
     def actions(self, node):
         count = self.call(self.api.Action.get_n_actions, node)
         if not 0 <= count <= 16:
@@ -487,7 +565,7 @@ def worker(scratch, seconds, *, parent_deadline=None):
             raise ProbeError("JOURNAL_DATA_ROOT_MISMATCH")
         binding = launch["binding"]
         remaining()
-        bridge = AtspiBridge(Atspi, deadline=deadline)
+        bridge = AtspiBridge(Atspi, deadline=deadline, glib=GLib)
         identity_started = False
 
         def identity():
@@ -530,7 +608,7 @@ def worker(scratch, seconds, *, parent_deadline=None):
                     schedule()
             except NotReady as exc:
                 attempt.last_condition = str(exc)
-                if attempt.phase in ("EDIT_UNKNOWN", "CREATE_UNKNOWN"):
+                if attempt.phase in ("FOCUS_UNKNOWN", "EDIT_UNKNOWN", "CREATE_UNKNOWN"):
                     finish("EFFECT_UNCONFIRMED")
             except ProbeError as exc:
                 finish(str(exc))
