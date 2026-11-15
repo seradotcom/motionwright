@@ -1225,8 +1225,41 @@ class AtspiSession:
         if not self.render_state(category, "EXPANDED"):
             self.render_action(step + ".expand-alpha", category,
                                ("expand", "expand or collapse", "expand or contract", "toggle"))
-        preset = self.journal.wait(step + ".preset", lambda: self.find(
-            ("Alpha MOV",), ("table cell", "tree item", "table row"), scope=dialog["key"]))
+        try:
+            preset = self.journal.wait(step + ".preset", lambda: self.find(
+                ("Alpha MOV",), ("table cell", "tree item", "table row"),
+                scope=dialog["key"]))
+        except GuiUncertain as original:
+            # The authenticated 43664579411 run opened Rendering and
+            # expanded Video with Alpha, but Alpha MOV was not found. Retain
+            # the *last already queried* complete PID-owned AT-SPI tree; it
+            # can distinguish profile-label drift from an unopened category.
+            # Do not re-query Qt, select a different preset, relax timeouts,
+            # or promote the original UNKNOWN into a successful render.
+            try:
+                snapshot = self.last_snapshot
+                require(isinstance(snapshot, dict)
+                        and snapshot.get("complete") is True
+                        and type(snapshot.get("rows")) is list,
+                        "native_render_preset_failure_tree_incomplete")
+                retained = modal_snapshot(snapshot["rows"], self.pid)
+                self.journal.emit({
+                    "step": step + ".preset-last-complete-tree",
+                    "state": "READ_ONLY_FAILURE_CUSTODY",
+                    "expected_pid": self.pid,
+                    "dialog_key": dialog["key"],
+                    "category_key": category["key"],
+                    "requested_preset": "Alpha MOV",
+                    "snapshot": retained,
+                    "native_render_dispatched_here": False,
+                    "native_operation_retried": False,
+                    "semantic_effect_verified": False,
+                    "formal_acceptance": False,
+                })
+            except BaseException as recording_error:
+                original.add_note("native_render_preset_custody_failed:"
+                                  + type(recording_error).__name__)
+            raise
         node = self.nodes[preset["key"]]
         parent = node.get_parent()
         index = node.get_index_in_parent()

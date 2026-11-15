@@ -2910,6 +2910,56 @@ class EditorRenderGuiControls(unittest.TestCase):
             self.assertEqual(output.read_bytes(), b"original")
         ui.menu.assert_not_called()
 
+        # The original 43664579411 opened the Rendering dialog but timed
+        # out discovering Alpha MOV after the expansion request returned.
+        # An UNKNOWN can retain the *last complete* tree without re-querying
+        # or trying an unbound preset. An incomplete one cannot be promoted.
+        for complete in (True, False):
+            with self.subTest(last_tree_complete=complete):
+                retained = []
+                ui = actions.AtspiSession.__new__(actions.AtspiSession)
+                ui.pid = 41
+                ui.menu = Mock()
+                dialog = row("app/6", name="Rendering", role="dialog",
+                             editable=False, modal=True)
+                category = row("app/6/0/0/0/0/5/3/3", name="Video with Alpha",
+                               role="table cell", editable=False, modal=False)
+                ui.dialog = Mock(return_value=dialog)
+                ui.descendants = Mock(return_value=[category])
+                ui.render_state = Mock(return_value=True)
+                ui.render_action = Mock()
+                ui.journal = Mock()
+                ui.journal.wait.side_effect = actions.GuiUncertain("editor-before.preset")
+                ui.journal.emit.side_effect = retained.append
+                ui.last_snapshot = {"complete": complete, "rows": [dialog, category]}
+                with tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    with self.assertRaisesRegex(
+                            actions.GuiUncertain, "editor-before.preset"):
+                        ui.generate_editor_render_job(
+                            "editor-before", root / "editor-before.mov",
+                            root / "editor-before.mlt")
+                ui.menu.assert_called_once_with(
+                    "editor-before.menu", "File", "Render...")
+                ui.dialog.assert_called_once()
+                ui.render_action.assert_not_called()
+                self.assertEqual(ui.journal.wait.call_count, 1)
+                self.assertEqual(len(retained), int(complete))
+                if complete:
+                    event = retained[0]
+                    self.assertEqual(event["step"],
+                                     "editor-before.preset-last-complete-tree")
+                    self.assertEqual(event["state"], "READ_ONLY_FAILURE_CUSTODY")
+                    self.assertEqual(event["requested_preset"], "Alpha MOV")
+                    self.assertEqual(event["dialog_key"], dialog["key"])
+                    self.assertEqual(event["category_key"], category["key"])
+                    self.assertEqual(event["snapshot"]["row_count"], 2)
+                    self.assertEqual(event["snapshot"]["expected_pid"], 41)
+                    self.assertFalse(event["native_render_dispatched_here"])
+                    self.assertFalse(event["native_operation_retried"])
+                    self.assertFalse(event["semantic_effect_verified"])
+                    self.assertFalse(event["formal_acceptance"])
+
     def test_render_action_requires_one_observed_owned_action(self):
         ui = actions.AtspiSession.__new__(actions.AtspiSession)
         ui.pid = 41; ui.journal = Mock()
