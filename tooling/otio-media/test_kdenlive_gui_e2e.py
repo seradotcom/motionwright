@@ -3647,42 +3647,63 @@ class EditorRenderGuiControls(unittest.TestCase):
         node.get_state_set.assert_not_called()
 
     def test_native_discard_is_bound_to_saved_filename_and_only_unsaved_preferences(self):
-        ui = actions.AtspiSession.__new__(actions.AtspiSession)
-        ui.menu = Mock(); ui.modal_action = Mock(); ui.action = Mock(); ui.journal = Mock()
-        ui.journal.wait.side_effect = lambda _, query: query()
-        dialog = row("app/prompt", role="dialog", editable=False, modal=True)
-        # Only the opener boundary is stubbed; confirmation reads its own tree.
-        # Eligibility and NoReply custody are covered by modal_readback controls.
-        ui.modal_action.return_value = dialog
-        label = row("app/prompt/label", role="label", editable=False,
-                    name='The project "edited.kdenlive" has been changed.\nDo you want to save your changes?')
-        buttons = [row("app/prompt/" + name, role="push button", editable=False, name=name)
-                   for name in ("Save", "Discard", "Cancel")]
-        ui.tree = Mock(return_value=[dialog, label, *buttons])
-        ui.quit_after_render_script("reopen-edited.quit", Path("/owner/edited.kdenlive"))
-        ui.menu.assert_called_once_with("reopen-edited.quit.menu", "File")
-        ui.modal_action.assert_called_once_with(
-            "reopen-edited.quit.submit", "discard_preferences", source_name="edited.kdenlive")
-        ui.action.assert_called_once()
-        self.assertEqual(ui.action.call_args.args[1]["name"], "Discard")
-        self.assertTrue(ui.action.call_args.kwargs["exits"])
+        for source, phase in (("initial.kdenlive", "import"), ("edited.kdenlive", "reopen-edited")):
+            for discard in ("Don't Save", "Discard", "Do Not Save"):
+                with self.subTest(source=source, discard=discard):
+                    ui = actions.AtspiSession.__new__(actions.AtspiSession)
+                    ui.menu = Mock(); ui.modal_action = Mock(); ui.action = Mock(); ui.journal = Mock()
+                    ui.journal.wait.side_effect = lambda _, query: query()
+                    dialog = row("app/prompt", role="dialog", editable=False, modal=True)
+                    # Only the opener boundary is stubbed; confirmation reads its own tree.
+                    # Eligibility and NoReply custody are covered by modal_readback controls.
+                    ui.modal_action.return_value = dialog
+                    label = row("app/prompt/label", role="label", editable=False,
+                                name='The project "' + source + '" has been changed.\nDo you want to save your changes?')
+                    buttons = [row("app/prompt/" + str(i), role="push button", editable=False, name=name)
+                               for i, name in enumerate(("Save", discard, "Cancel"))]
+                    ui.tree = Mock(return_value=[dialog, label, *buttons])
+                    ui.quit_after_render_script(phase + ".quit", Path("/owner") / source)
+                    ui.menu.assert_called_once_with(phase + ".quit.menu", "File")
+                    ui.modal_action.assert_called_once_with(
+                        phase + ".quit.submit", "discard_preferences", source_name=source)
+                    ui.action.assert_called_once_with(
+                        phase + ".quit.discard-render-preferences", buttons[1], exits=True)
 
     def test_unsaved_dialog_with_extra_action_cannot_discard_or_render(self):
-        ui = actions.AtspiSession.__new__(actions.AtspiSession)
-        ui.menu = Mock(); ui.modal_action = Mock(); ui.action = Mock(); ui.journal = Mock()
-        ui.journal.wait.side_effect = lambda _, query: query()
-        dialog = row("app/prompt", role="dialog", modal=True)
-        ui.modal_action.return_value = dialog
-        ui.tree = Mock(return_value=[dialog,
-            row("app/prompt/message", role="label", name='edited.kdenlive has been changed. Do you want to save your changes?'),
-            *[row("app/prompt/" + str(i), role="push button", name=name)
-              for i, name in enumerate(("Save", "Discard", "Cancel", "Start them now"))]])
-        with self.assertRaises(actions.GuiRejected):
-            ui.quit_after_render_script("quit", Path("/owner/edited.kdenlive"))
-        ui.menu.assert_called_once_with("quit.menu", "File")
-        ui.modal_action.assert_called_once_with(
-            "quit.submit", "discard_preferences", source_name="edited.kdenlive")
-        ui.action.assert_not_called()
+        for discard in ("Discard", "Do Not Save"):
+            for failure in ("extra-action", "wrong-source", "unrelated-confirmation",
+                            "different-action", "duplicate-discard"):
+                with self.subTest(discard=discard, failure=failure):
+                    ui = actions.AtspiSession.__new__(actions.AtspiSession)
+                    ui.menu = Mock(); ui.modal_action = Mock(); ui.action = Mock()
+                    ui.journal = actions.ActionJournal(lambda _: None, lambda: None)
+                    dialog = row("app/prompt", role="dialog", modal=True)
+                    ui.modal_action.return_value = dialog
+                    label = row("app/prompt/message", role="label",
+                                name='initial.kdenlive has been changed. Do you want to save your changes?')
+                    buttons = [row("app/prompt/" + str(i), role="push button", name=name)
+                               for i, name in enumerate(("Save", discard, "Cancel"))]
+                    if failure == "extra-action":
+                        buttons.append(row("app/prompt/other", role="push button", name="Start them now"))
+                    elif failure == "wrong-source":
+                        label["name"] = label["name"].replace("initial.kdenlive", "unrelated.kdenlive")
+                    elif failure == "unrelated-confirmation":
+                        label["name"] = "initial.kdenlive: Rendering jobs are still running."
+                    elif failure == "different-action":
+                        buttons[1]["name"] = "Do not save"
+                    else:
+                        buttons.append({**buttons[1], "key": "app/prompt/duplicate"})
+                    ui.tree = Mock(return_value=[dialog, label, *buttons])
+                    ticks = iter(range(10000))
+                    with patch.object(actions.time, "monotonic", side_effect=lambda: next(ticks)), \
+                         patch.object(actions.time, "sleep"), \
+                         self.assertRaises((actions.GuiRejected, actions.GuiUncertain)):
+                        ui.quit_after_render_script("import.quit", Path("/owner/initial.kdenlive"))
+                    ui.menu.assert_called_once_with("import.quit.menu", "File")
+                    ui.modal_action.assert_called_once_with(
+                        "import.quit.submit", "discard_preferences", source_name="initial.kdenlive")
+                    ui.action.assert_not_called()
+                    self.assertTrue(ui.journal.blocked)
 
 
 

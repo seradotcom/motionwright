@@ -908,26 +908,85 @@ class ModalReadbackTests(unittest.TestCase):
 
     def test_discard_preferences_requires_exact_source_prompt_and_three_buttons(self):
         for source in ("initial.kdenlive", "edited.kdenlive"):
-            scenario = Scenario("discard_preferences", source_name=source)
-            self.assertEqual(scenario.run()["key"], "app/modal")
-            scenario.effect.assert_called_once_with(0)
-        for failure in ("wrong-source", "wrong-prompt", "missing-button", "duplicate-button"):
+            for discard in ("Don't Save", "Discard", "Do Not Save"):
+                with self.subTest(source=source, discard=discard):
+                    scenario = Scenario("discard_preferences", source_name=source)
+                    next(r for r in scenario.after if r["name"] == "Don't Save")["name"] = discard
+                    self.assertEqual(scenario.run()["key"], "app/modal")
+                    scenario.effect.assert_called_once_with(0)
+        for discard in ("Don't Save", "Do Not Save"):
+            for failure in ("wrong-source", "wrong-prompt", "missing-button",
+                            "duplicate-button", "different-action"):
+                with self.subTest(discard=discard, failure=failure):
+                    scenario = Scenario("discard_preferences")
+                    button = next(r for r in scenario.after if r["name"] == "Don't Save")
+                    button["name"] = discard
+                    label = next(r for r in scenario.after if r["role"] == "label")
+                    if failure == "wrong-source":
+                        label["name"] = label["name"].replace("initial.kdenlive", "unrelated.kdenlive")
+                    elif failure == "wrong-prompt":
+                        label["name"] = "initial.kdenlive: Rendering jobs are still running."
+                    elif failure == "missing-button":
+                        scenario.after.pop()
+                    elif failure == "duplicate-button":
+                        scenario.after.append(row("app/modal/duplicate", "Save", "push button"))
+                    else:
+                        button["name"] = "Do not save"
+                    with self.assertRaises(actions.GuiUncertain) as caught:
+                        scenario.run()
+                    self.assert_original_unknown(scenario, caught)
+                    scenario.effect.assert_called_once_with(0)
+                    self.assert_blocked(scenario)
+
+    def test_do_not_save_requires_owned_X11_modal_before_no_reply_reconciliation(self):
+        # Synthetic rows reproduce the names/false AT-SPI modal bit retained
+        # in cef12c69; the X11 boundary remains a separate required witness.
+        for failure in (None, "X11-rejected", "foreign-pid"):
             with self.subTest(failure=failure):
                 scenario = Scenario("discard_preferences")
-                label = next(r for r in scenario.after if r["role"] == "label")
-                if failure == "wrong-source":
-                    label["name"] = label["name"].replace("initial.kdenlive", "unrelated.kdenlive")
-                elif failure == "wrong-prompt":
-                    label["name"] = "initial.kdenlive: Rendering jobs are still running."
-                elif failure == "missing-button":
-                    scenario.after.pop()
-                else:
-                    scenario.after.append(row("app/modal/duplicate", "Save", "push button"))
-                with self.assertRaises(actions.GuiUncertain) as caught:
-                    scenario.run()
-                self.assert_original_unknown(scenario, caught)
-                scenario.effect.assert_called_once_with(0)
-                self.assert_blocked(scenario)
+                button = next(r for r in scenario.after if r["name"] == "Don't Save")
+                button["name"] = "Do Not Save"
+                prompt = next(r for r in scenario.after if r["role"] == "label")
+                prompt["name"] = ('The project "initial.kdenlive" has been changed. '
+                                  'Do you want to save your changes?')
+                dialog = next(r for r in scenario.after if r["role"] == "dialog")
+                dialog.update(name="Warning — Kdenlive", modal=False)
+                parent = {"complete": True, "window": 909, "expected_pid": 41}
+                scenario.session._observe_modal_parent.return_value = parent
+                if failure == "foreign-pid":
+                    button["pid"] = 42
+                def observed(**kwargs):
+                    if failure == "X11-rejected":
+                        raise actions.x11_modal.X11Rejected("synthetic_owned_modal_not_verified")
+                    kwargs["evidence"].update(complete=True, synthetic_control_only=True)
+                    return kwargs["evidence"]
+                with patch.object(actions.x11_modal, "observe_modal", side_effect=observed) as x11:
+                    if failure is None:
+                        self.assertIs(scenario.run("import.quit.submit"), dialog)
+                        self.assertFalse(scenario.journal.blocked)
+                        retained = [e for e in scenario.events if e["state"] == "MODAL_OPEN_RECONCILED"]
+                        self.assertEqual(len(retained), 1)
+                        self.assertEqual(retained[0]["verified_effect"], "owned_dialog_open_only")
+                        self.assertFalse(retained[0]["native_save_or_import_verified"])
+                        decoded = self.decode_snapshot(retained[0]["snapshot"])
+                        self.assertFalse(next(r for r in decoded if r["key"] == dialog["key"])["modal"])
+                        self.assertTrue(any(e["state"] == "ERROR_OR_UNKNOWN" for e in scenario.events))
+                    else:
+                        with self.assertRaises(actions.GuiUncertain) as caught:
+                            scenario.run("import.quit.submit")
+                        self.assert_original_unknown(scenario, caught)
+                        self.assert_blocked(scenario)
+                        self.assertFalse(any(e["state"] == "MODAL_OPEN_RECONCILED" for e in scenario.events))
+                    scenario.effect.assert_called_once_with(0)
+                    if failure == "foreign-pid":
+                        x11.assert_not_called()
+                    else:
+                        x11.assert_called_once()
+                        self.assertEqual(x11.call_args.kwargs["expected_pid"], 41)
+                        self.assertEqual(x11.call_args.kwargs["dialog_name"], "Warning — Kdenlive")
+                        self.assertIs(x11.call_args.kwargs["parent_observation"], parent)
+                        self.assertIs(x11.call_args.kwargs["group"], False)
+                        self.assertIs(x11.call_args.kwargs["guard"], scenario.guard)
 
     def test_replay_or_prior_uncertainty_never_dispatches_again(self):
         scenario = Scenario()
