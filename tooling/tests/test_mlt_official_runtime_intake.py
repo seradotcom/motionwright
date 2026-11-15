@@ -134,10 +134,15 @@ def collection_fixture(root, keyring):
         if path == keyring:
             # Exercise the observed non-root/group-writable metadata case.
             # Neither the file nor any OS permissions are changed.
-            for name in ("before", "after", "namespace_after"):
-                observation[name]["uid"] = 1001
-                observation[name]["gid"] = 1001
-                observation[name]["mode"] = intake.stat.S_IFREG | 0o664
+            snapshots = [observation[name] for name in
+                         ("before", "after", "namespace_after")]
+            if "windows_namespace" in observation:
+                snapshots.extend(observation["windows_namespace"][name] for name in
+                                 ("path_before", "handle_before", "handle_after"))
+            for snapshot in snapshots:
+                snapshot["uid"] = 1001
+                snapshot["gid"] = 1001
+                snapshot["mode"] = intake.stat.S_IFREG | 0o664
         return data, observation
 
     with mock.patch.object(intake, "KEYRING", keyring), \
@@ -145,6 +150,114 @@ def collection_fixture(root, keyring):
             mock.patch.object(intake.platform, "machine", return_value="x86_64"), \
             mock.patch.object(intake, "capture_regular", side_effect=capture):
         yield
+
+
+def assert_capture_stable(test, observation):
+    test.assertEqual(observation["before"], observation["after"])
+    windows = observation.get("windows_namespace")
+    if windows is None:
+        test.assertEqual(observation["before"], observation["namespace_after"])
+        return
+    test.assertEqual(windows["comparison"], "separate-stat-domains/1")
+    test.assertEqual(observation["before"], windows["handle_before"])
+    test.assertEqual(observation["before"], windows["handle_after"])
+    test.assertEqual(windows["path_before"], observation["namespace_after"])
+    for field in observation["before"]:
+        if field != "ctime_ns":
+            test.assertEqual(observation["before"][field],
+                             observation["namespace_after"][field])
+    test.assertEqual(len(set(windows["birthtime_ns"].values())), 1)
+
+
+def exercise_windows_capture_domains(test, path):
+    # Source fixtures reproduce the documented API distinction without
+    # altering timestamps, rereading content, or granting physical credit.
+    original = path.lstat()
+    attrs = {name: getattr(original, name) for name in (
+        "st_dev", "st_ino", "st_size", "st_mode", "st_uid", "st_gid",
+        "st_mtime_ns", "st_ctime_ns")}
+    attrs.update(st_ctime_ns=200, st_birthtime_ns=100, st_file_attributes=0)
+    handle = SimpleNamespace(**attrs)
+    pathname = SimpleNamespace(**{**attrs, "st_ctime_ns": 100})
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    real_close = os.close
+
+    with mock.patch.object(intake.os, "fstat", return_value=handle), \
+            mock.patch.object(Path, "lstat", return_value=pathname), \
+            mock.patch.object(intake.os, "read",
+                              side_effect=AssertionError("namespace content reread")) as reader, \
+            mock.patch.object(intake.os, "close", wraps=real_close) as closer:
+        namespace, evidence = intake._capture_windows_namespace(
+            path, flags, handle, handle)
+        test.assertEqual(namespace["ctime_ns"], 100)
+        test.assertEqual(evidence["handle_after"]["ctime_ns"], 200)
+        test.assertEqual(evidence["path_before"], namespace)
+        reader.assert_not_called()
+        test.assertEqual(closer.call_count, 1)
+
+    cases = (
+        ("handle_ctime_changed", "handle_after", "st_ctime_ns", 201),
+        ("handle_mtime_changed", "handle_after", "st_mtime_ns", attrs["st_mtime_ns"] + 1),
+        ("new_handle_inode", "handle_before", "st_ino", attrs["st_ino"] + 1),
+        ("path_ctime_changed", "path_after", "st_ctime_ns", 101),
+        ("path_inode_changed", "path_after", "st_ino", attrs["st_ino"] + 1),
+        ("birthtime_changed", "handle_after", "st_birthtime_ns", 101),
+        ("path_reparse_after", "path_after", "st_file_attributes", 0x400),
+        ("path_reparse_before", "path_before", "st_file_attributes", 0x400),
+    )
+    for label, role, field, value in cases:
+        with test.subTest(windows_domain_rejection=label):
+            observations = {"handle_before": handle, "handle_after": handle,
+                            "path_before": pathname, "path_after": pathname}
+            observations[role] = SimpleNamespace(
+                **{**vars(observations[role]), field: value})
+            with mock.patch.object(intake.os, "fstat", side_effect=[
+                    observations["handle_before"], observations["handle_after"]]), \
+                    mock.patch.object(Path, "lstat", side_effect=[
+                        observations["path_before"], observations["path_after"]]), \
+                    mock.patch.object(intake.os, "read",
+                                      side_effect=AssertionError("namespace content reread")) as reader, \
+                    mock.patch.object(intake.os, "close", wraps=real_close) as closer:
+                with test.assertRaises(intake.IntakeError):
+                    intake._capture_windows_namespace(path, flags, handle, handle)
+                reader.assert_not_called()
+                test.assertEqual(closer.call_count,
+                                 0 if role == "path_before" else 1)
+
+    open_error = OSError(errno.EACCES, "namespace open denied")
+    with mock.patch.object(Path, "lstat", return_value=pathname), \
+            mock.patch.object(intake.os, "open", side_effect=open_error), \
+            mock.patch.object(intake.os, "close", wraps=real_close) as closer:
+        with test.assertRaises(OSError) as caught:
+            intake._capture_windows_namespace(path, flags, handle, handle)
+        test.assertIs(caught.exception, open_error)
+        closer.assert_not_called()
+
+    for primary in (OSError(errno.EIO, "namespace metadata failed"),
+                    KeyboardInterrupt("namespace metadata interrupted"), None):
+        with test.subTest(namespace_close_primary=type(primary).__name__):
+            secondary = OSError(errno.EIO, "namespace close failed")
+            def close_then_fail(fd):
+                real_close(fd)
+                raise secondary
+            with mock.patch.object(Path, "lstat", return_value=pathname), \
+                    mock.patch.object(intake.os, "fstat",
+                                      side_effect=primary, return_value=handle), \
+                    mock.patch.object(intake.os, "close", side_effect=close_then_fail) as closer:
+                caught = None
+                try:
+                    intake._capture_windows_namespace(path, flags, handle, handle)
+                except BaseException as error:
+                    caught = error
+                test.assertIs(caught, primary if primary is not None else secondary)
+                test.assertEqual(closer.call_count, 1)
+                descriptor = closer.call_args.args[0]
+                if primary is not None:
+                    test.assertEqual(primary.__notes__, [
+                        "capture_regular namespace close failed: " + repr(secondary)])
+            with test.assertRaises(OSError) as closed:
+                os.fstat(descriptor)
+            test.assertEqual(closed.exception.errno, errno.EBADF)
 
 
 class OfficialRuntimeIntakeTests(unittest.TestCase):
@@ -516,12 +629,12 @@ class OfficialRuntimeIntakeTests(unittest.TestCase):
             self.assertEqual(observation["sha256"], sha(data))
             self.assertEqual(observation["size"], len(data))
             self.assertEqual(observation["before"], observation["after"])
-            self.assertEqual(observation["before"], observation["namespace_after"])
+            assert_capture_stable(self, observation)
             actual = path.lstat()
             for key, attr in (("device", "st_dev"), ("inode", "st_ino"), ("mode", "st_mode"),
                               ("uid", "st_uid"), ("gid", "st_gid"), ("size", "st_size"),
                               ("mtime_ns", "st_mtime_ns"), ("ctime_ns", "st_ctime_ns")):
-                self.assertEqual(observation["before"][key], getattr(actual, attr))
+                self.assertEqual(observation["namespace_after"][key], getattr(actual, attr))
 
     def test_keyring_capture_does_not_convert_permissions_into_signing_authority(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -576,7 +689,7 @@ class OfficialRuntimeIntakeTests(unittest.TestCase):
             self.assertEqual(observation["before"]["uid"], 1001)
             self.assertEqual(observation["before"]["mode"] & 0o777, 0o664)
             self.assertEqual(observation["before"], observation["after"])
-            self.assertEqual(observation["before"], observation["namespace_after"])
+            assert_capture_stable(self, observation)
             copied = (root / "raw/ubuntu-archive-keyring.gpg").read_bytes()
             self.assertEqual(copied, keyring.read_bytes())
             self.assertEqual(observation["sha256"], sha(copied))
@@ -794,7 +907,8 @@ class BinaryReadbackTests(unittest.TestCase):
             self.assertEqual(receipt["sha256"], hashlib.sha256(raw).hexdigest())
             self.assertEqual(receipt["size"], len(raw))
             self.assertEqual(receipt["before"], receipt["after"])
-            self.assertEqual(receipt["after"], receipt["namespace_after"])
+            assert_capture_stable(self, receipt)
+            exercise_windows_capture_domains(self, path)
 
     def test_regular_capture_preserves_empty_original_and_metadata(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -806,14 +920,14 @@ class BinaryReadbackTests(unittest.TestCase):
             self.assertEqual(receipt["size"], 0)
             self.assertEqual(receipt["sha256"], hashlib.sha256(b"").hexdigest())
             self.assertEqual(receipt["before"], receipt["after"])
-            self.assertEqual(receipt["before"], receipt["namespace_after"])
+            assert_capture_stable(self, receipt)
             actual = path.lstat()
             self.assertTrue(intake.stat.S_ISREG(actual.st_mode))
             for key, attr in (("device", "st_dev"), ("inode", "st_ino"),
                               ("size", "st_size"), ("mode", "st_mode"),
                               ("uid", "st_uid"), ("gid", "st_gid"),
                               ("mtime_ns", "st_mtime_ns"), ("ctime_ns", "st_ctime_ns")):
-                self.assertEqual(receipt["before"][key], getattr(actual, attr))
+                self.assertEqual(receipt["namespace_after"][key], getattr(actual, attr))
 
     @unittest.skipUnless(sys.platform.startswith("linux") and hasattr(os, "mkfifo"),
                          "Linux FIFO open regression with an external child deadline")
@@ -1023,12 +1137,35 @@ print(json.dumps({"pid": os.getpid(), "leaf_checks": leaf_checks,
                 with self.assertRaises(OSError) as caught:
                     intake.capture_regular(path, len(raw))
                 self.assertIs(caught.exception, secondary)
-                self.assertEqual(closer.call_count, 1)
+                self.assertEqual(closer.call_count, 2 if os.name == "nt" else 1)
                 fd = closer.call_args.args[0]
             self.assertEqual(path.read_bytes(), raw)
             with self.assertRaises(OSError) as closed:
                 os.fstat(fd)
             self.assertEqual(closed.exception.errno, errno.EBADF)
+            if os.name == "nt":
+                namespace_error = OSError(errno.EIO, "namespace close failed first")
+                original_error = OSError(errno.EIO, "original close failed second")
+                descriptors = []
+
+                def close_both_then_fail(descriptor):
+                    descriptors.append(descriptor)
+                    real_close(descriptor)
+                    raise namespace_error if len(descriptors) == 1 else original_error
+
+                with mock.patch.object(intake.os, "close",
+                                       side_effect=close_both_then_fail):
+                    with self.assertRaises(OSError) as caught:
+                        intake.capture_regular(path, len(raw))
+                    self.assertIs(caught.exception, namespace_error)
+                self.assertEqual(len(descriptors), 2)
+                self.assertEqual(len(set(descriptors)), 2)
+                self.assertEqual(namespace_error.__notes__, [
+                    "capture_regular close failed: " + repr(original_error)])
+                for descriptor in descriptors:
+                    with self.assertRaises(OSError) as closed:
+                        os.fstat(descriptor)
+                    self.assertEqual(closed.exception.errno, errno.EBADF)
 
     def test_regular_capture_close_diagnostic_failure_keeps_original_error(self):
         class Primary(OSError):

@@ -82,6 +82,77 @@ def json_bytes(value):
     return (json.dumps(value, sort_keys=True, indent=2) + "\n").encode("utf-8")
 
 
+def _capture_identity(value):
+    return {"device": value.st_dev, "inode": value.st_ino,
+            "size": value.st_size, "mode": value.st_mode,
+            "uid": value.st_uid, "gid": value.st_gid,
+            "mtime_ns": value.st_mtime_ns, "ctime_ns": value.st_ctime_ns}
+
+
+def _capture_windows_namespace(path, flags, before, after):
+    # CPython reports different ctime meanings through Windows fstat and
+    # pathname stat (python/cpython#157671). Compare each complete timestamp
+    # observation within its own API domain; never normalize or omit ctime.
+    namespace_before = path.lstat()
+
+    def plain(value):
+        require(stat.S_ISREG(value.st_mode)
+                and not getattr(value, "st_file_attributes", 0)
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400),
+                "input namespace is not a plain regular file")
+
+    plain(namespace_before)
+    namespace_fd = os.open(path, flags)
+    primary = None
+    try:
+        handle_before = os.fstat(namespace_fd)
+        namespace_after = path.lstat()
+        handle_after = os.fstat(namespace_fd)
+        for value in (before, after, handle_before, handle_after, namespace_after):
+            plain(value)
+        handles = [_capture_identity(value) for value in
+                   (before, after, handle_before, handle_after)]
+        names = [_capture_identity(value) for value in
+                 (namespace_before, namespace_after)]
+        require(all(value == handles[0] for value in handles)
+                and names[0] == names[1], "input changed during read")
+        compatible = tuple(key for key in handles[0] if key != "ctime_ns")
+        require(all(all(value[key] == handles[0][key] for key in compatible)
+                    for value in names), "input namespace changed during read")
+        values = (before, after, handle_before, handle_after,
+                  namespace_before, namespace_after)
+        birthtimes = [getattr(value, "st_birthtime_ns", None) for value in values]
+        if any(value is not None for value in birthtimes):
+            require(all(type(value) is int and value >= 0 for value in birthtimes)
+                    and len(set(birthtimes)) == 1,
+                    "input creation time changed during read")
+        else:
+            # Older Windows runtimes expose creation time as ctime in both APIs.
+            require(names[0] == handles[0], "input changed during read")
+        return names[1], {
+            "comparison": "separate-stat-domains/1",
+            "path_before": names[0],
+            "handle_before": handles[2],
+            "handle_after": handles[3],
+            "birthtime_ns": dict(zip(
+                ("before", "after", "handle_before", "handle_after",
+                 "path_before", "path_after"), birthtimes)),
+        }
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            os.close(namespace_fd)
+        except BaseException as close_error:
+            if primary is None:
+                raise
+            try:
+                primary.add_note("capture_regular namespace close failed: " + repr(close_error))
+            except BaseException:
+                pass
+
+
 def capture_regular(path, limit):
     """Read one stable handle and preserve observed metadata, without granting trust."""
     path = Path(path)
@@ -104,20 +175,24 @@ def capture_regular(path, limit):
             total += len(chunk)
             require(total <= limit, "input exceeds size limit")
         after = os.fstat(fd)
-        namespace = path.lstat()
-        def identity(value):
-            return {"device": value.st_dev, "inode": value.st_ino,
-                    "size": value.st_size, "mode": value.st_mode,
-                    "uid": value.st_uid, "gid": value.st_gid,
-                    "mtime_ns": value.st_mtime_ns, "ctime_ns": value.st_ctime_ns}
-        observations = [identity(value) for value in (before, after, namespace)]
-        require(observations[0] == observations[1] == observations[2],
-                "input changed during read")
+        observations = [_capture_identity(value) for value in (before, after)]
+        require(observations[0] == observations[1], "input changed during read")
+        windows = None
+        if os.name == "nt":
+            namespace, windows = _capture_windows_namespace(path, flags, before, after)
+        else:
+            namespace = _capture_identity(path.lstat())
+            require(observations[0] == namespace, "input changed during read")
         require(total == before.st_size, "input read size differs")
         data = b"".join(chunks)
-        return data, {"path": str(path), "sha256": digest(data), "size": len(data),
-                      "before": observations[0], "after": observations[1],
-                      "namespace_after": observations[2]}
+        observation = {"path": str(path), "sha256": digest(data), "size": len(data),
+                       "before": observations[0], "after": observations[1],
+                       "namespace_after": namespace}
+        if windows is not None:
+            # Keep the original pathname observation distinct. Closed-schema
+            # formal consumers must explicitly admit this Windows extension.
+            observation["windows_namespace"] = windows
+        return data, observation
     except BaseException as error:
         primary = error
         raise
