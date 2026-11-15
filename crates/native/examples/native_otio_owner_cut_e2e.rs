@@ -3052,17 +3052,17 @@ mod tests {
         let path = store.lock().verified_blob_path(&digest).unwrap();
         assert_eq!(fs::read(path).unwrap(), original);
         assert_eq!(fs::read(&f.native_path).unwrap(), original);
-        assert_eq!(current.created_at, f.before.created_at);
+        assert_eq!(current.branches[0].created_at, f.before.branches[0].created_at);
         let events = service.history(f.source.id, f.source.revision, 3).unwrap();
         let event = events
             .iter()
             .find(|item| item.revision == current.revision)
             .unwrap();
         assert_eq!(event.created_at, current.updated_at.to_rfc3339());
-        // Only the observed updated_at may differ. Authored creation time and
+        // Only the observed updated_at may differ. Branch creation time and
         // the exact committed history timestamp retain their independent checks.
         let mut changed_creation = serde_json::to_value(&current).unwrap();
-        changed_creation["created_at"] = json!("2000-01-01T00:00:00Z");
+        changed_creation["branches"][0]["created_at"] = json!("2000-01-01T00:00:00Z");
         let changed_creation: Project = serde_json::from_value(changed_creation).unwrap();
         assert!(check_source_attachment(&f.before, &changed_creation, &digest).is_err());
         let mut changed_history = receipt.clone();
@@ -3228,7 +3228,10 @@ mod tests {
             serde_json::from_value(receipt["source_project"].clone()).unwrap();
         let imported_project: Project =
             serde_json::from_value(receipt["imported_project"].clone()).unwrap();
-        assert_eq!(source_project.created_at, imported_project.created_at);
+        assert_eq!(
+            source_project.branches[0].created_at,
+            imported_project.branches[0].created_at
+        );
         assert_eq!(
             receipt["source_updated_at"],
             serde_json::to_value(source_project.updated_at).unwrap()
