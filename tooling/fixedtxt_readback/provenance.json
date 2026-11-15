@@ -2,7 +2,7 @@
   "schema": "motionwright.fixedtxt.reader-version-provenance/1",
   "original_reader_sha256": "9545a4230781d3a58365a8f8a2d4bb9cfb6c146adb1322c0db1fe08171a25cea",
   "original_typed_adapter_sha256": "832bb6ddb59846075230c5e9cde131935a3f020b2c157d2696ffde481bb085ee",
-  "reader_sha256": "26f8c30230ccdc499a2f855d1fdbfaf80e1902070097be95544106f63647e692",
+  "reader_sha256": "17f807149583930da410706f76df348081bd8e024121dbe40e97e8b72ab52688",
   "typed_adapter_sha256": "5db186321c1b2864468a8c38fe62ca87703819f12e99848b038dfbcb2e65f162",
   "producer_source_sha": "76f05572ec7a41035fc42054e27d01c869cd6176",
   "producer_SDK_sha": "797e70884d35a068c72149ffae3e6df365bb0b64",
@@ -17,7 +17,7 @@
   "existing_originals_modified": false,
   "formal_acceptance": false,
   "offline_clock_binds_retained_runner": true,
-  "parent_reader_sha256": "b9cbd1fe4cd9f20265f9950fc6271617125645e601bf071e12dacc1c75793299",
+  "parent_reader_sha256": "26f8c30230ccdc499a2f855d1fdbfaf80e1902070097be95544106f63647e692",
   "inherited_focused_contracts": {
     "tests": 13,
     "failures": 0,
@@ -31,14 +31,15 @@
     "Exclusive output directory ownership and replacement rejection",
     "Session preparation preserves the approved helper defaults unless an authenticated private caller supplies its path policy",
     "Preparation output ownership and closed filenames protect both failure receipts and the single bound dispatch",
-    "The physical reader pins the integrated preparation reader after its ownership corrections"
+    "The physical reader pins the integrated preparation reader after its ownership corrections",
+    "Decoder-only Windows namespace comparison excludes directory st_size; raw observations and all other identity checks retained"
   ],
   "focused_contracts": {
-    "tests": 22,
+    "tests": 27,
     "failures": 0,
     "errors": 0,
     "skipped": 0,
-    "result_sha256": "ebefc117146caa0156f5d19f0012be7b6fe2ad8a464f89d0f790c4a4e93cdc18",
+    "result_sha256": "ae416adc853eab91ed8fdcade6d3f331341174d64060f848cd5958ea08c05371",
     "native_calls": 0,
     "R28_issued": false
   },
@@ -54,6 +55,19 @@
         "result_sha256": "d2c94f477ed7237d5de73d5567b476885a99d7fb9ce99718eeea2ceb9c631d4c",
         "native_calls": 0
       }
+    },
+    {
+      "reader_sha256": "26f8c30230ccdc499a2f855d1fdbfaf80e1902070097be95544106f63647e692",
+      "parent_reader_sha256": "b9cbd1fe4cd9f20265f9950fc6271617125645e601bf071e12dacc1c75793299",
+      "focused_contracts": {
+        "tests": 22,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "result_sha256": "ebefc117146caa0156f5d19f0012be7b6fe2ad8a464f89d0f790c4a4e93cdc18",
+        "native_calls": 0,
+        "R28_issued": false
+      }
     }
   ],
   "session_producer_source_sha": "3d2d045b1f41877d3a5fcf6913785603a9293f63",
@@ -68,5 +82,29 @@
     "artifact_sha256": "846d319117c394e0e683961a76d2dd0b4de3b53932bed0e45747c7cc8753ef9f",
     "original_source": "3d2d045b1f41877d3a5fcf6913785603a9293f63",
     "reexecuted": false
+  },
+  "decoder_directory_observation": {
+    "after": 65536,
+    "all_other_namespace_and_handle_fields_unchanged": true,
+    "before": 0,
+    "corrected_reader_hashed_real_binary": true,
+    "decoder_bytes": 87638016,
+    "decoder_executed_in_focused_checks": false,
+    "decoder_sha256": "2ce797a0f88d7f067180338fb227f7b1928ea727bd9a4d7a1d022f7c52af71a3",
+    "observed_field": "ancestor_st_size",
+    "trace_sha256": "240c925e0752ec3ac0fa07a2f309d42c0dcf23638dd5f7e4d6999fdfa7ef21cd"
+  },
+  "decoder_patch_provenance": {
+    "donor_commit": "947817e74c5a0d77cfd246e2af120b4731b9607b",
+    "donor_reader_sha256": "1d1e88691d402d2dd0858fd24ed3b3105b9600fdd7728ef8ce89ffdc7de84a56",
+    "donor_focused_contracts": {
+      "errors": 0,
+      "failures": 0,
+      "native_calls": 0,
+      "result_sha256": "018298b32105e16694c7b9cd80074106e46219ffa10f9607217615fd31a39032",
+      "skipped": 0,
+      "tests": 22
+    },
+    "donor_physical_readback_is_not_execution_of_this_composed_reader": true
   }
 }

@@ -44,6 +44,17 @@ private wrapper may call main(configure_private_paths=...) after validating its
 source digest, the operator-authorized roots, and the existing owner-private ACL.
 That callback carries the local routing policy; it does not issue a Native grant.
 
+Decoder inspection retains the approved path, reparse, hardlink, opened-handle,
+file size, and SHA-256 checks. A decoder-only view excludes ancestor directory
+st_size from Windows equality; device, inode, mode, link count, timestamps and
+attributes remain exact, as does every regular-file field. Python documents
+[st_size](https://docs.python.org/3.13/library/os.html#os.stat_result.st_size)
+for regular files and symbolic links, not as directory identity. An original
+Windows trace recorded a directory size change from 0 to 65536 while all those
+other fields and the executable hash remained equal. Raw namespace observations
+are kept in the receipt, separately from the comparison. The approved helper,
+private-key checks and all non-decoder path inspections are unchanged.
+
 Output receipts belong only to a directory successfully created by the current
 invocation. A pre-existing directory, a lost creation race, or a replaced output
 directory cannot receive this invocation's terminal receipt.

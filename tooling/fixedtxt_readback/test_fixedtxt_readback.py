@@ -375,6 +375,81 @@ class PreparationOutputOwnershipTests(unittest.TestCase):
         changed.write_bytes(raw + b"\nraise AssertionError('must never execute')\n")
         with self.assertRaisesRegex(reader.ReadRejected, "physical_reader_dependency_digest"):
             reader.load(changed, reader.OUTER_SHA, "changed_dependency_fixture")
+class DecoderNamespaceTests(unittest.TestCase):
+    # Two original Windows observations differed only in directory st_size.
+    # Trace SHA-256: 240c925e0752ec3ac0fa07a2f309d42c0dcf23638dd5f7e4d6999fdfa7ef21cd
+    ROWS = (
+        (11699299553584006063, 281474979259182, 16895, 1, 0,
+         1792463341308406100, 1792256567244601900, 16),
+        (11699299553584006063, 3659174699789933, 33279, 1, 87638016,
+         1788887299039865900, 1792258113047420000, 32),
+    )
+
+    def compare(self, rows, platform='nt'):
+        return reader.decoder_namespace_identity(rows, platform=platform)
+
+    def test_observed_directory_size_change_is_windows_only_and_nonmutating(self):
+        before = [list(row) for row in self.ROWS]
+        after = copy.deepcopy(before)
+        after[0][4] = 65536
+        retained = copy.deepcopy((before, after))
+        self.assertEqual(self.compare(before), self.compare(after))
+        self.assertNotEqual(self.compare(before, 'posix'), self.compare(after, 'posix'))
+        self.assertEqual((before, after), retained)
+        self.assertEqual(self.compare(before)[-1], self.ROWS[-1])
+
+    def test_every_other_directory_identity_field_remains_exact(self):
+        for index in (0, 1, 2, 3, 5, 6, 7):
+            rows = [list(row) for row in self.ROWS]
+            rows[0][index] ^= 1
+            with self.subTest(field=index):
+                self.assertNotEqual(self.compare(rows), self.compare(self.ROWS))
+
+    def test_all_regular_file_fields_including_size_remain_exact(self):
+        for index in range(8):
+            rows = [list(row) for row in self.ROWS]
+            rows[-1][index] ^= 1
+            with self.subTest(field=index):
+                if index == 3:
+                    with self.assertRaisesRegex(reader.ReadRejected, 'physical_decoder_namespace_kind'):
+                        self.compare(rows)
+                else:
+                    self.assertNotEqual(self.compare(rows), self.compare(self.ROWS))
+
+    def test_redirects_wrong_kinds_hardlinks_and_malformed_chains_are_rejected(self):
+        invalid = [[], [self.ROWS[-1]], self.ROWS * 33]
+        for row_index, field, value in ((0, 2, 33279), (1, 2, 16895),
+                                       (0, 2, 41471), (1, 3, 2),
+                                       (0, 7, 0x400), (1, 7, 0x400),
+                                       (0, 4, True)):
+            rows = [list(row) for row in self.ROWS]
+            rows[row_index][field] = value
+            invalid.append(rows)
+        invalid.append([self.ROWS[0][:-1], self.ROWS[-1]])
+        for rows in invalid:
+            with self.subTest(rows=rows), self.assertRaises(reader.ReadRejected):
+                self.compare(rows)
+
+    def test_decoder_view_retains_raw_sizes_and_cannot_inspect_other_paths(self):
+        rows = [list(row) for row in self.ROWS]
+        base = SimpleNamespace(inspect_path=lambda path: rows, identity=object())
+        observed = []
+        path = Path('ffmpeg.exe')
+        view = reader.DecoderPathView(base, path, observed)
+        view.inspect_path(path)
+        rows[0][4] = 65536
+        view.inspect_path(path)
+        self.assertEqual([row['raw_namespace_identity'][0][4] for row in observed], [0, 65536])
+        self.assertIs(view.identity, base.identity)
+        self.assertEqual(base.inspect_path(path)[0][4], 65536)
+        with self.assertRaisesRegex(reader.ReadRejected, 'physical_decoder_path_scope'):
+            view.inspect_path(Path('foreign.exe'))
+        with self.assertRaisesRegex(reader.ReadRejected, 'physical_decoder_path_scope'):
+            view.inspect_path(path, directory=True)
+        for _ in range(14):
+            view.inspect_path(path)
+        with self.assertRaisesRegex(reader.ReadRejected, 'physical_decoder_observation_bound'):
+            view.inspect_path(path)
 
 
 if __name__ == "__main__":
