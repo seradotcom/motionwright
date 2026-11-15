@@ -934,7 +934,8 @@ class AtspiSession:
                            and r["key"].startswith(dialog["key"] + "/")]
                 names = {normalized(r["name"]) for r in buttons}
                 require(len(buttons) == 3 and names in (
-                    {"Save", "Don't Save", "Cancel"}, {"Save", "Discard", "Cancel"}),
+                    {"Save", "Don't Save", "Cancel"}, {"Save", "Discard", "Cancel"},
+                    {"Save", "Do Not Save", "Cancel"}),
                     "native_gui_modal_unsaved_actions_changed")
         require(len(expected) <= 1, "native_gui_modal_dialog_not_unique")
         allowed = {r["key"] for r in parent_rows}
@@ -1734,9 +1735,10 @@ class AtspiSession:
             buttons = [r for r in rows if r["visible"] and r["enabled"] and r["role"] == "push button"
                        and r["key"].startswith(dialog["key"] + "/")]
             names = {normalized(r["name"]) for r in buttons}
-            require(names in ({"Save", "Don't Save", "Cancel"}, {"Save", "Discard", "Cancel"}),
+            require(names in ({"Save", "Don't Save", "Cancel"}, {"Save", "Discard", "Cancel"},
+                              {"Save", "Do Not Save", "Cancel"}),
                     "native_render_unsaved_actions_changed")
-            return unique([r for r in buttons if normalized(r["name"]) in ("Don't Save", "Discard")],
+            return unique([r for r in buttons if normalized(r["name"]) in ("Don't Save", "Discard", "Do Not Save")],
                           code="native_render_discard_not_unique")
         discard = self.journal.wait(step + ".render-preferences-prompt", confirmation)
         self.action(step + ".discard-render-preferences", discard, exits=True)
