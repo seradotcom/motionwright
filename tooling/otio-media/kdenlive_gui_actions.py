@@ -1121,6 +1121,14 @@ class AtspiSession:
 
     def key(self, step: str, symbol: int) -> None:
         keys = {0xFF0D: "Return", 0x0031: "1"}
+        if symbol == 0xFF53:
+            # Only the owner-bound 26.08.3 Render presets tree permits a
+            # Right expansion after a separate AT-SPI category focus readback.
+            # This does not admit arbitrary editor navigation or shortcuts.
+            require(step in ("editor-before.expand-alpha-right",
+                             "editor-after.expand-alpha-right"),
+                    "native_gui_key_not_in_closed_route")
+            keys[0xFF53] = "Right"
         require(symbol in keys, "native_gui_key_not_in_closed_route")
         # X11 focus is measured independently of the accessibility cache.
         # Explicit --window prevents a later global focus change from retargeting
@@ -1223,8 +1231,14 @@ class AtspiSession:
         category = unique(controls("Video with Alpha", ("table cell", "tree item", "table row"), visible=True),
                           code="native_render_alpha_category_not_unique")
         if not self.render_state(category, "EXPANDED"):
-            self.render_action(step + ".expand-alpha", category,
-                               ("expand", "expand or collapse", "expand or contract", "toggle"))
+            # In original physical run 43666218631 Qt exposed only a
+            # "toggle" action. It returned without expanding this QTreeView
+            # category: the authenticated 2944-row tree had zero children
+            # under Video with Alpha. Use a single real, PID-scoped X11 Right
+            # key after focusing this exact category via AT-SPI and observing
+            # that focus. An UNKNOWN at either step remains terminal.
+            self.focus(step + ".focus-alpha", category)
+            self.key(step + ".expand-alpha-right", 0xFF53)
         try:
             preset = self.journal.wait(step + ".preset", lambda: self.find(
                 ("Alpha MOV",), ("table cell", "tree item", "table row"),

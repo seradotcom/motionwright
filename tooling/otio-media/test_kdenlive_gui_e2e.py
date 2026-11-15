@@ -2926,8 +2926,10 @@ class EditorRenderGuiControls(unittest.TestCase):
                                role="table cell", editable=False, modal=False)
                 ui.dialog = Mock(return_value=dialog)
                 ui.descendants = Mock(return_value=[category])
-                ui.render_state = Mock(return_value=True)
+                ui.render_state = Mock(return_value=False)
                 ui.render_action = Mock()
+                ui.focus = Mock()
+                ui.key = Mock()
                 ui.journal = Mock()
                 ui.journal.wait.side_effect = actions.GuiUncertain("editor-before.preset")
                 ui.journal.emit.side_effect = retained.append
@@ -2943,6 +2945,10 @@ class EditorRenderGuiControls(unittest.TestCase):
                     "editor-before.menu", "File", "Render...")
                 ui.dialog.assert_called_once()
                 ui.render_action.assert_not_called()
+                ui.focus.assert_called_once_with(
+                    "editor-before.focus-alpha", category)
+                ui.key.assert_called_once_with(
+                    "editor-before.expand-alpha-right", 0xFF53)
                 self.assertEqual(ui.journal.wait.call_count, 1)
                 self.assertEqual(len(retained), int(complete))
                 if complete:
@@ -2959,6 +2965,11 @@ class EditorRenderGuiControls(unittest.TestCase):
                     self.assertFalse(event["native_operation_retried"])
                     self.assertFalse(event["semantic_effect_verified"])
                     self.assertFalse(event["formal_acceptance"])
+        # The new Right key cannot be dispatched from any unrelated step.
+        unbound = actions.AtspiSession.__new__(actions.AtspiSession)
+        with self.assertRaisesRegex(
+            actions.GuiRejected, "native_gui_key_not_in_closed_route"):
+            unbound.key("unbound-render-navigation", 0xFF53)
 
     def test_render_action_requires_one_observed_owned_action(self):
         ui = actions.AtspiSession.__new__(actions.AtspiSession)
