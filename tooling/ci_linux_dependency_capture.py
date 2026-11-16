@@ -390,6 +390,7 @@ class _CliInputObservation:
         native_package = self.json("native-package", native / "package.json")
         require(cli_package.get("name") == cli_name and cli_package.get("version") == version
                 and cli_package.get("bin") in ({"tauri": "tauri.js"}, {"tauri": "./tauri.js"})
+                and cli_package.get("main") == "main.js"
                 and native_package.get("name") == native_name
                 and native_package.get("version") == version,
                 "tauri_input_installed_metadata_mismatch")
@@ -400,11 +401,13 @@ class _CliInputObservation:
         self.record["declared_package_relation"] = {
             "cli": cli_name, "native": native_name, "version": version,
             "wrapper": "tauri.js", "installed_bin_literal": cli_package["bin"],
-            "loader_candidate": "index.js", "native_main": main,
+            "cli_main": cli_package["main"], "loader_candidate": "index.js", "native_main": main,
             "basis": "Observed lock and installed metadata; neither archive authentication nor load tracing.",
         }
         wrapper = cli / "tauri.js"
         self.file("cli-wrapper", self.repo, wrapper, wrapper, retain=True, limit=256 * 1024)
+        self.file("cli-main", self.repo, cli / "main.js", cli / "main.js",
+                  retain=True, limit=256 * 1024)
         self.file("cli-loader", self.repo, cli / "index.js", cli / "index.js",
                   retain=True, limit=256 * 1024)
         self.file("native-module", self.repo, native / main, native / main,

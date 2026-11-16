@@ -437,11 +437,13 @@ class TauriInputObservationTests(unittest.TestCase):
             "node_modules/@tauri-apps/cli-linux-x64-gnu": {"version": "2.12.1"},
         }})
         self.put_json(self.cli / "package.json", {
-            "name": "@tauri-apps/cli", "version": "2.12.1", "bin": {"tauri": "./tauri.js"}})
+            "name": "@tauri-apps/cli", "version": "2.12.1", "bin": {"tauri": "./tauri.js"},
+            "main": "main.js"})
         self.put_json(self.native / "package.json", {
             "name": "@tauri-apps/cli-linux-x64-gnu", "version": "2.12.1",
             "main": "fixture.node", "os": ["linux"], "cpu": ["x64"]})
         (self.cli / "tauri.js").write_bytes(b"INERT WRAPPER\n")
+        (self.cli / "main.js").write_bytes(b"INERT MAIN A\n")
         (self.cli / "index.js").write_bytes(b"INERT LOADER\n")
         (self.native / "fixture.node").write_bytes(b"INERT NOT A LOADABLE MODULE\n")
         base = self.root / gate.BASE
@@ -737,12 +739,84 @@ class TauriInputObservationTests(unittest.TestCase):
         record = gate._cli_phase(self.root, self.source, self.tree, self.environment,
                                  self.directory, "pre")
         self.assertTrue(record["collection_complete"], record.get("error"))
-        self.assertEqual(len(record["roles"]), 11)
-        self.assertEqual(len({item["role"] for item in record["roles"]}), 11)
+        self.assertEqual(len(record["roles"]), 12)
+        self.assertEqual(len({item["role"] for item in record["roles"]}), 12)
+        self.assertEqual(record["declared_package_relation"]["cli_main"], "main.js")
+        self.assertEqual((self.directory / "pre/cli-main.original").read_bytes(),
+                         (self.cli / "main.js").read_bytes())
         for key, value in gate.CLI_CLAIMS.items():
             self.assertEqual(record[key], value)
         self.assertFalse((self.directory / "pre/native-module.original").exists())
         self.assertFalse((self.directory / "pre/node.original").exists())
+
+
+    def test_cli_main_is_retained_and_missing_bridge_refuses_before_bundle(self):
+        # The absent launcher deliberately stops this inert fixture after main;
+        # neither the incomplete collection nor this control claims a loaded module.
+        record = gate._cli_phase(self.root, self.source, self.tree, self.environment,
+                                 self.directory, "bridge-present")
+        self.assertFalse(record["collection_complete"])
+        main = next(row for row in record["roles"] if row["role"] == "cli-main")
+        self.assertEqual(main["status"], "OBSERVED")
+        self.assertEqual(main["sha256"], gate.capture.sha(b"INERT MAIN A\n"))
+        self.assertEqual(record["declared_package_relation"]["cli_main"], "main.js")
+        self.assertEqual((self.directory / "bridge-present/cli-main.original").read_bytes(),
+                         b"INERT MAIN A\n")
+        self.assertEqual(record["roles"][-1]["role"], "tauri-launcher")
+        (self.cli / "main.js").unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.invoke(collect=gate._CliInputObservation.collect)
+        self.assertEqual(self.process_calls, [])
+        pre = self.sidecar("pre.json")
+        self.assertFalse(pre["collection_complete"])
+        self.assertEqual(pre["roles"][-1]["role"], "cli-main")
+        self.assertEqual(pre["roles"][-1]["error"]["type"], "FileNotFoundError")
+        self.assertTrue((self.root / gate.CLI_INPUTS / "pre/cli-package.original").is_file())
+        self.assertFalse((self.root / gate.CLI_INPUTS / "pre/cli-main.original").exists())
+
+    def test_cli_main_manifest_relation_is_required_before_bundle(self):
+        path = self.cli / "package.json"
+        original = json.loads(path.read_bytes())
+        for index, value in enumerate((None, "index.js", "../main.js")):
+            with self.subTest(main=value):
+                altered = dict(original)
+                if value is None:
+                    altered.pop("main")
+                else:
+                    altered["main"] = value
+                self.put_json(path, altered)
+                record = gate._cli_phase(self.root, self.source, self.tree, self.environment,
+                                         self.directory, "manifest-" + str(index))
+                self.assertFalse(record["collection_complete"])
+                self.assertEqual(record["error"]["message"], "tauri_input_installed_metadata_mismatch")
+                self.assertNotIn("cli-main", [row["role"] for row in record["roles"]])
+        with self.assertRaisesRegex(ValueError, "tauri_input_installed_metadata_mismatch"):
+            self.invoke(collect=gate._CliInputObservation.collect)
+        self.assertEqual(self.process_calls, [])
+
+    def test_cli_main_drift_during_pre_read_refuses_before_bundle(self):
+        path = self.cli / "main.js"
+        before = path.stat()
+        original_reader = gate._cli_expected_read
+        changed = False
+        def change_after_read(anchor, target, *args, **kwargs):
+            nonlocal changed
+            raw = original_reader(anchor, target, *args, **kwargs)
+            if target == path and not changed:
+                changed = True
+                path.write_bytes(b"INERT MAIN B\n")
+                os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1000000000))
+            return raw
+        with mock.patch.object(gate, "_cli_expected_read", side_effect=change_after_read):
+            with self.assertRaisesRegex(ValueError, "tauri_input_changed_during_observation"):
+                self.invoke(collect=gate._CliInputObservation.collect)
+        self.assertTrue(changed)
+        self.assertEqual(self.process_calls, [])
+        self.assertEqual((self.root / gate.CLI_INPUTS / "pre/cli-main.original").read_bytes(),
+                         b"INERT MAIN A\n")
+        self.assertEqual((self.root / gate.CLI_INPUTS / "post/cli-main.original").read_bytes(),
+                         b"INERT MAIN B\n")
+        self.assertFalse(self.sidecar("comparison.json")["observations_match"])
 
     def test_one_unchanged_bundle_command_and_bound_post_originals(self):
         self.invoke()
