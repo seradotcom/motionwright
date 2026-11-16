@@ -750,7 +750,7 @@ jobs:
           import test_kdenlive_owner_cut as owner_tests
           import test_kdenlive_accessibility_preflight as preflight_tests
           modules = [
-              (tests, 186), (original_tests, 10), (process_tests, 24),
+              (tests, 186), (original_tests, 14), (process_tests, 24),
               (diagnostic_tests, 16), (modal_tests, 44), (x11_tests, 27),
               (refresh_tests, 16), (project_monitor_tests, 9),
               (initial_save_tests, 6), (owner_tests, 31), (preflight_tests, 9),
@@ -770,8 +770,8 @@ jobs:
               suites.append(suite)
               roster.extend(names)
               groups[module.__name__] = names
-          if len(roster) != 378 or len(set(roster)) != 378:
-              raise SystemExit("Require all 378 GUI, route, owner, editor-render custody and observer-only cases")
+          if len(roster) != 382 or len(set(roster)) != 382:
+              raise SystemExit("Require all 382 GUI, route, owner, editor-render custody and observer-only cases")
           result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(suites))
           print(json.dumps({"tests_run": result.testsRun, "roster": roster, "modules": groups,
                             "existing_route_and_owner_cases": 196, "private_preview_audio_controls": 19,
@@ -781,7 +781,7 @@ jobs:
                             "accessibility_preflight_cases": 9,
                             "skips": len(result.skipped), "failures": len(result.failures),
                             "errors": len(result.errors), "native_execution": False}, sort_keys=True))
-          if (not result.wasSuccessful() or result.testsRun != 378 or result.skipped
+          if (not result.wasSuccessful() or result.testsRun != 382 or result.skipped
                   or result.expectedFailures or result.unexpectedSuccesses):
               raise SystemExit(1)
           PY
