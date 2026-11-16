@@ -1878,22 +1878,21 @@ class AtspiSession:
                           "after_new_open_following_accept": applied,
                           "native_xml_playlist_verified": False,
                           "native_save_verified": False})
-            return fields, okay
+            return fields, okay, dialog
 
-        def closed(step):
-            def observed():
-                rows = self._complete_modal_tree()
-                if rows is None:
-                    return False
-                if any(r["visible"] and r["role"] in ("dialog", "frame", "alert")
-                       and window_title_matches(r["name"], ("Duration",)) for r in rows):
-                    return False
-                require(not any(r["visible"] and
-                                (r["role"] in ("dialog", "alert") or r["modal"])
-                                for r in rows),
-                        "native_gui_playlist_refresh_unexpected_dialog")
-                return True
-            self.journal.wait(step, observed)
+        def closed(step, original_dialog):
+            # Qt may expose >512 timeline descendants immediately after OK.
+            # Observe only owned direct-root windows twice, with the exact
+            # original Duration dialog identity bound before the effect.
+            # This proves closure, not an accepted model edit or persistence.
+            proof = self.journal.wait(
+                step, lambda: self._observed_file_dialog_closed(
+                    original_dialog, ("Duration",)))
+            retain(step + ".root-readback", {
+                "state": "ORIGINAL_DIALOG_CLOSED_OBSERVED",
+                "observed": proof, "semantic_effect_verified_here": False,
+                "native_xml_playlist_verified": False,
+                "native_save_verified": False})
 
         try:
             position = self._project_monitor_timecode(prefix + ".selection-snapshot")
@@ -1904,28 +1903,28 @@ class AtspiSession:
 
             state["phase"] = "SHORTEN"
             self.menu(prefix + ".shorten.open", "Sequence", "Current Item", "Edit Duration")
-            fields, _ = duration_fields(prefix + ".shorten.before", 30)
+            fields, _, _ = duration_fields(prefix + ".shorten.before", 30)
             self.text(prefix + ".shorten.duration29", fields[2], "00:00:00:29")
             self.key(prefix + ".shorten.commit-field", 0xFF0D)
-            _, okay = duration_fields(prefix + ".shorten.request-fields", 29)
+            _, okay, shorten_dialog = duration_fields(prefix + ".shorten.request-fields", 29)
             state["accept_attempts"] = 1
             self.action(prefix + ".shorten.accept-once", okay)
-            closed(prefix + ".shorten.dialog-closed")
+            closed(prefix + ".shorten.dialog-closed", shorten_dialog)
 
             # A new modal action and fresh complete tree observe the model after
             # acceptance, including the case where Kdenlive closed after undoing
             # a rejected resize. Never restore based on the pending text field.
             state["phase"] = "OBSERVE_SHORTENED"
             self.menu(prefix + ".restore.open", "Sequence", "Current Item", "Edit Duration")
-            fields, _ = duration_fields(prefix + ".shorten.applied-readback", 29, applied=True)
+            fields, _, _ = duration_fields(prefix + ".shorten.applied-readback", 29, applied=True)
             state["shortened_duration_reobserved"] = True
             state["phase"] = "RESTORE"
             self.text(prefix + ".restore.duration30", fields[2], "00:00:01:00")
             self.key(prefix + ".restore.commit-field", 0xFF0D)
-            _, okay = duration_fields(prefix + ".restore.request-fields", 30)
+            _, okay, restore_dialog = duration_fields(prefix + ".restore.request-fields", 30)
             state["accept_attempts"] = 2
             self.action(prefix + ".restore.accept-once", okay)
-            closed(prefix + ".restore.dialog-closed")
+            closed(prefix + ".restore.dialog-closed", restore_dialog)
             state["phase"] = "RESTORE_REQUEST_RETURNED_MODEL_READBACK_REQUIRED"
             result = {
                 "schema": "motionwright.native.kdenlive-playlist-refresh/1",
