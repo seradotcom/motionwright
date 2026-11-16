@@ -9,6 +9,12 @@ on:
         options: [source, kdenlive-distribution, accessibility-only, kdenlive-gui, external-alab-readonly]
         default: source
         required: true
+      audio_source:
+        description: 'Kdenlive GUI only: silent original or bounded 997 Hz AAC source. No output audio credit.'
+        type: choice
+        options: [silent, tone-997hz]
+        default: silent
+        required: true
       expected_source_sha:
         description: 'Exact source SHA; required for every explicit native selection'
         type: string
@@ -283,7 +289,7 @@ jobs:
 
           discovered = list(test_ids(suite))
           contract_counts = {
-              "test_kdenlive_gui_e2e": 186, "test_kdenlive_complete_g2_fixture": 10,
+              "test_kdenlive_gui_e2e": 186, "test_kdenlive_complete_g2_fixture": 14,
               "test_kdenlive_live_process": 24, "test_kdenlive_accessibility_diagnostics": 16,
               "test_kdenlive_modal_readback": 44, "test_kdenlive_x11_modal": 27,
               "test_kdenlive_playlist_refresh": 16, "test_kdenlive_project_monitor": 9,
@@ -536,6 +542,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
       PYTHONDONTWRITEBYTECODE: '1'
       MOTIONWRIGHT_KDENLIVE_GUI_SCOPE: ${{ inputs.verification_scope }}
+      MOTIONWRIGHT_KDENLIVE_G2_AUDIO_SOURCE: ${{ inputs.verification_scope == 'kdenlive-gui' && inputs.audio_source == 'tone-997hz' && '1' || '0' }}
       MOTIONWRIGHT_APPROVED_KDENLIVE_G2_SOURCE: ${{ inputs.verification_scope == 'external-alab-readonly' && '0' || '1' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

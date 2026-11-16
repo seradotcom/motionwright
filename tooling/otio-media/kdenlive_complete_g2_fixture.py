@@ -56,6 +56,88 @@ def sha(path: Path) -> str:
     return hasher.hexdigest()
 
 
+AUDIO_TONE_HZ = 997
+AUDIO_SAMPLE_RATE = 48000
+
+
+def selected_audio_source_mode() -> bool:
+    """An explicit option; the historical silent fixture remains unchanged."""
+    value = os.environ.get("MOTIONWRIGHT_KDENLIVE_G2_AUDIO_SOURCE", "0")
+    require(value in ("0", "1"), "original_Kdenlive_audio_source_mode_invalid")
+    return value == "1"
+
+
+def firstparty_media_command(destination: Path, *, audio_source: bool = False) -> list[str]:
+    """Source construction only; no media process is launched here."""
+    require(isinstance(destination, Path) and destination.is_absolute()
+            and type(audio_source) is bool,
+            "original_Kdenlive_audio_source_command_invalid")
+    argv = [
+        "ffmpeg", "-nostdin", "-hide_banner", "-v", "error",
+        "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=3",
+    ]
+    if audio_source:
+        argv.extend([
+            "-f", "lavfi", "-i",
+            f"sine=frequency={AUDIO_TONE_HZ}:sample_rate={AUDIO_SAMPLE_RATE}:duration=3",
+            "-map", "0:v:0", "-map", "1:a:0",
+        ])
+    argv.extend(["-frames:v", "90"])
+    if not audio_source:
+        argv.append("-an")
+    argv.extend(["-c:v", "libx264", "-preset", "ultrafast",
+                 "-pix_fmt", "yuv420p"])
+    if audio_source:
+        argv.extend(["-c:a", "aac", "-b:a", "128k",
+                     "-ar", str(AUDIO_SAMPLE_RATE), "-ac", "1"])
+    argv.extend(["-movflags", "+faststart", str(destination)])
+    return argv
+
+
+def firstparty_audio_probe_command(source: Path) -> list[str]:
+    require(isinstance(source, Path) and source.is_absolute(),
+            "original_Kdenlive_audio_probe_path_invalid")
+    return ["ffprobe", "-v", "error", "-select_streams", "a",
+            "-show_entries", "stream=codec_type,codec_name,sample_rate,channels",
+            "-of", "json", str(source)]
+
+
+def require_firstparty_audio_probe(raw: bytes) -> dict:
+    """Prove only the source/container has exactly one AAC channel, NOT fidelity."""
+    require(type(raw) is bytes and 0 < len(raw) <= 16384,
+            "original_Kdenlive_audio_probe_bounds")
+    def unique(pairs):
+        data = {}
+        for key, value in pairs:
+            require(key not in data, "original_Kdenlive_audio_probe_duplicate_key")
+            data[key] = value
+        return data
+    try:
+        probe = json.loads(raw, object_pairs_hook=unique)
+    except (ValueError, UnicodeError) as original:
+        if isinstance(original, KdenliveCompleteFixtureRefused):
+            raise
+        raise KdenliveCompleteFixtureRefused(
+            "original_Kdenlive_audio_probe_invalid_json") from original
+    require(type(probe) is dict and type(probe.get("streams")) is list
+            and len(probe["streams"]) == 1,
+            "original_Kdenlive_single_audio_stream_required")
+    stream = probe["streams"][0]
+    require(type(stream) is dict
+            and stream.get("codec_type") == "audio"
+            and stream.get("codec_name") == "aac"
+            and stream.get("sample_rate") == str(AUDIO_SAMPLE_RATE)
+            and type(stream.get("channels")) is int and stream["channels"] == 1,
+            "original_Kdenlive_audio_stream_not_exact")
+    return {
+        "schema": "motionwright.native.kdenlive-firstparty-audio-source/1",
+        "status": "SOURCE_AUDIO_ONLY",
+        "codec": "aac", "sample_rate": AUDIO_SAMPLE_RATE,
+        "channels": 1, "synthesized_tone_hz": AUDIO_TONE_HZ,
+        "native_audio_fidelity_accepted": False,
+        "human_acceptance": False, "release_authorized": False,
+    }
+
 def admitted_firstparty_bindings(
     project: dict, asset_id: str, media_sha: str, *, frames: int,
     fps: int,
@@ -276,6 +358,7 @@ def firstparty_workspace(temp: Path, evidence_root: Path | None = None):
 def prepare_original(destination: Path, *, evidence_root: Path | None = None,
                      source_database: Path | None = None) -> dict:
     temp = require_ephemeral_approved_source(destination)
+    audio_source = selected_audio_source_mode()
     if source_database is not None:
         require(evidence_root is not None
                 and source_database.is_absolute()
@@ -291,17 +374,21 @@ def prepare_original(destination: Path, *, evidence_root: Path | None = None,
         original = root / "original.mp4"
         require(not original.exists(),
                 "original_Kdenlive_G2_firstparty_media_not_fresh")
-        run_firstparty_native([
-            "ffmpeg", "-nostdin", "-hide_banner", "-v", "error",
-            "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=3",
-            "-frames:v", "90", "-an", "-c:v", "libx264", "-preset", "ultrafast",
-            "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(original),
-        ], evidence_prefix=None if evidence_root is None else root / "ffmpeg")
+        run_firstparty_native(
+            firstparty_media_command(original, audio_source=audio_source),
+            evidence_prefix=None if evidence_root is None else root / "ffmpeg")
         measured = file_probe(original)
         require(measured["fps"] == EXPECTED_FRAME_RATE
                 and measured["frames"] == EXPECTED_SOURCE_FRAMES
                 and measured["codec"] == "h264",
                 "synthetic_90frame_H264_not_physically_decoded_for_original")
+        original_audio = None
+        if audio_source:
+            original_audio = require_firstparty_audio_probe(
+                run_firstparty_native(
+                    firstparty_audio_probe_command(original),
+                    evidence_prefix=None if evidence_root is None
+                    else root / "ffprobe-audio-source"))
         media_sha = sha(original)
         exporter = ORIGINAL_RUST_FIXTURE if source_database is None else OWNER_RUST_FIXTURE
         command = ([str(exporter), media_sha] if source_database is None else
@@ -367,6 +454,19 @@ def prepare_original(destination: Path, *, evidence_root: Path | None = None,
                 and measured == file_probe(original_target),
                 "portable_firstparty_H264_changed_after_copy")
         # Private first-party source status; never mark external editor PASS.
+        if original_audio is not None:
+            packaged_audio = require_firstparty_audio_probe(
+                run_firstparty_native(
+                    firstparty_audio_probe_command(original_target),
+                    evidence_prefix=None if evidence_root is None
+                    else root / "ffprobe-audio-packaged"))
+            require(packaged_audio == original_audio,
+                    "original_Kdenlive_packaged_audio_track_changed")
+            inspection["firstparty_audio_source"] = {
+                **original_audio,
+                "original_and_packaged_codec_metadata_equal": True,
+                "actual_native_output_audio_fidelity_verified": False,
+            }
         result_path = destination / "firstparty-complete-native-G2-input.json"
         with result_path.open("x", encoding="utf-8") as stream:
             json.dump(inspection, stream, sort_keys=True, indent=2)

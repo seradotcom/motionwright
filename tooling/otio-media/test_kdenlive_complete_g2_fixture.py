@@ -6,6 +6,7 @@ is executed here. A separate authorized app run owns exact process custody.
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -15,7 +16,9 @@ from unittest import mock
 from kdenlive_complete_g2_fixture import (
     KdenliveCompleteFixtureRefused, EXPECTED_SOURCE_INTERVALS,
     admitted_firstparty_bindings, require_full_original_manifest,
-    require_ephemeral_approved_source,
+    require_ephemeral_approved_source, firstparty_media_command,
+    firstparty_audio_probe_command, require_firstparty_audio_probe,
+    selected_audio_source_mode,
 )
 
 SOURCE_SHA = "ab" * 32
@@ -192,6 +195,67 @@ class KdenliveFullyBoundOriginalSourceTests(unittest.TestCase):
                 ):
                     require_ephemeral_approved_source(Path(root) / "new")
 
+
+    def test_default_audio_source_mode_preserves_silent_original_and_rejects_unknown(self):
+        with mock.patch.dict("os.environ", {"MOTIONWRIGHT_KDENLIVE_G2_AUDIO_SOURCE": "0"}):
+            self.assertIs(selected_audio_source_mode(), False)
+        with mock.patch.dict("os.environ", {"MOTIONWRIGHT_KDENLIVE_G2_AUDIO_SOURCE": "1"}):
+            self.assertIs(selected_audio_source_mode(), True)
+        for value in ("TRUE", "tone", "", "2"):
+            with self.subTest(value=value), mock.patch.dict(
+                    "os.environ", {"MOTIONWRIGHT_KDENLIVE_G2_AUDIO_SOURCE": value}):
+                with self.assertRaisesRegex(KdenliveCompleteFixtureRefused, "mode_invalid"):
+                    selected_audio_source_mode()
+
+    def test_existing_silent_fixture_ffmpeg_argv_remains_video_only(self):
+        target = Path.cwd() / "original.mp4"
+        argv = firstparty_media_command(target)
+        self.assertIn("-an", argv)
+        self.assertNotIn("-c:a", argv)
+        self.assertEqual(argv.count("-i"), 1)
+        self.assertEqual(argv[argv.index("-frames:v") + 1], "90")
+        self.assertEqual(argv[-1], str(target))
+        self.assertEqual(argv, [
+            "ffmpeg", "-nostdin", "-hide_banner", "-v", "error",
+            "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=3",
+            "-frames:v", "90", "-an", "-c:v", "libx264",
+            "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart", str(target)])
+
+    def test_selected_audio_fixture_has_one_explicit_tone_and_aac_track(self):
+        target = Path.cwd() / "tone.mp4"
+        argv = firstparty_media_command(target, audio_source=True)
+        self.assertNotIn("-an", argv)
+        self.assertEqual(argv.count("-i"), 2)
+        self.assertEqual(argv[argv.index("-map") + 1], "0:v:0")
+        self.assertEqual(argv[argv.index("-map", argv.index("-map") + 1) + 1], "1:a:0")
+        self.assertEqual(argv[argv.index("-c:a") + 1], "aac")
+        self.assertEqual(argv[argv.index("-ar") + 1], "48000")
+        self.assertEqual(argv[argv.index("-ac") + 1], "1")
+        self.assertTrue(any("frequency=997:sample_rate=48000:duration=3" in a for a in argv))
+        self.assertEqual(firstparty_audio_probe_command(target)[-1], str(target))
+        with self.assertRaisesRegex(KdenliveCompleteFixtureRefused, "command_invalid"):
+            firstparty_media_command(target, audio_source=1)
+
+    def test_audio_probe_requires_one_real_aac_track_without_claiming_fidelity(self):
+        stream = {"codec_name": "aac", "codec_type": "audio",
+                  "sample_rate": "48000", "channels": 1}
+        good = json.dumps({"streams": [stream]}).encode()
+        result = require_firstparty_audio_probe(good)
+        self.assertEqual(result["status"], "SOURCE_AUDIO_ONLY")
+        self.assertIs(result["native_audio_fidelity_accepted"], False)
+        self.assertIs(result["release_authorized"], False)
+        failures = [
+            b'{"streams":[]}',
+            json.dumps({"streams": [stream, stream]}).encode(),
+            json.dumps({"streams": [{**stream, "codec_name": "opus"}]}).encode(),
+            json.dumps({"streams": [{**stream, "sample_rate": "44100"}]}).encode(),
+            json.dumps({"streams": [{**stream, "channels": True}]}).encode(),
+            b'{"streams":[{"codec_name":"aac","codec_name":"aac","codec_type":"audio","sample_rate":"48000","channels":1}]}',
+        ]
+        for value in failures:
+            with self.subTest(payload=value), self.assertRaises(KdenliveCompleteFixtureRefused):
+                require_firstparty_audio_probe(value)
 
 if __name__ == "__main__":
     unittest.main()
