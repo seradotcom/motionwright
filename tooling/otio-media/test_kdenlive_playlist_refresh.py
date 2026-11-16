@@ -41,6 +41,7 @@ class SyntheticEditor:
         self.playlist_inpoints = [0, 30, 0]
         self.clip_identity = object()
         self.initial_identity = self.clip_identity
+        self.root_observations = 0
         self.pending = None
         self.dialog_key = None
         self.seek = "00:00:00:00"
@@ -52,6 +53,7 @@ class SyntheticEditor:
         self.ui.last_snapshot = None
         self.ui.journal = actions.ActionJournal(self.emit, self.guard)
         self.ui.tree = self.tree
+        self.ui._owned_top_level_windows = self.root_windows
         self.ui.text = self.text
         self.ui.key = self.key
         self.ui.menu = self.menu
@@ -73,8 +75,45 @@ class SyntheticEditor:
             raise self.custody_error
         self.events.append(copy.deepcopy(event))
 
+    def root_windows(self):
+        """Bounded synthetic owned-root roster; never traverse timeline children."""
+        self.root_observations += 1
+        self.audit.append(("root", self.root_observations, self.pending is not None))
+        if (self.faults.get("root_incomplete_after_accept")
+                and self.accepts and self.pending is None):
+            return []
+        windows = [{
+            "key": "app/0", "name": "Untitled — Kdenlive",
+            "role": "frame", "pid": 41, "visible": True, "modal": False,
+        }]
+        if self.pending is not None:
+            windows.append({
+                "key": "app/1", "name": "Duration — Kdenlive",
+                "role": "dialog", "pid": 41, "visible": True, "modal": True,
+            })
+        elif self.faults.get("unexpected_after_accept") and self.accepts:
+            windows.append({
+                "key": "app/1", "name": "Unexpected Warning — Kdenlive",
+                "role": "alert", "pid": 41, "visible": True, "modal": True,
+            })
+        elif self.faults.get("unstable_root_after_accept") and self.accepts:
+            windows.append({
+                "key": "app/1",
+                "name": "Background " + str(self.root_observations % 2),
+                "role": "dialog", "pid": 41, "visible": False, "modal": False,
+            })
+        elif self.faults.get("foreign_root_after_accept") and self.accepts:
+            windows.append({
+                "key": "app/1", "name": "Retired Window",
+                "role": "dialog", "pid": 99, "visible": False, "modal": False,
+            })
+        return windows
+
     def tree(self):
         self.audit.append(("tree", self.openings, self.model_duration, self.pending is not None))
+        if (self.faults.get("child_budget_after_accept")
+                and self.accepts and self.pending is None):
+            raise actions.GuiRejected("native_gui_child_budget")
         rows = [row("app/main", name="Untitled — Kdenlive", role="frame"),
                 row("app/main/monitor", name="Project Monitor", role="panel"),
                 row("app/main/monitor/time", text=self.seek, editable=True)]
@@ -117,7 +156,7 @@ class SyntheticEditor:
         def invoke():
             if names == ("Sequence", "Current Item", "Edit Duration"):
                 self.openings += 1
-                self.dialog_key = "app/duration" + str(self.openings)
+                self.dialog_key = "app/1"
                 values = self.faults.get("initial_tuple", (60, 60, self.model_duration))
                 if self.openings == 2:
                     values = self.faults.get("second_tuple", (60, 60, self.model_duration))
@@ -337,11 +376,36 @@ class PlaylistRefreshTests(unittest.TestCase):
                 self.assertEqual(fake.effects, [])
                 self.assert_blocked_without_more_effects(fake)
 
-    def test_dialog_closure_requires_complete_snapshot_and_has_deadline(self):
-        for case in ({"incomplete": "after-accept"}, {"keep_dialog_open": True}):
+    def test_duration_closure_uses_two_owned_root_observations_not_timeline_children(self):
+        for fault in ({"incomplete": "after-accept"},
+                      {"child_budget_after_accept": True}):
+            with self.subTest(fault=fault):
+                fake = SyntheticEditor(**fault)
+                result = fake.run()
+                self.assertEqual(result["state"],
+                                 "RESTORE_REQUEST_RETURNED_MODEL_READBACK_REQUIRED")
+                self.assertEqual([n for _, n in fake.accepts], [29, 30])
+                proofs = [event for event in fake.events
+                          if event["step"].endswith(".dialog-closed.root-readback")]
+                self.assertEqual(len(proofs), 2)
+                self.assertGreaterEqual(fake.root_observations, 4)
+                for event in proofs:
+                    observed = event["observed"]
+                    self.assertEqual(event["state"], "ORIGINAL_DIALOG_CLOSED_OBSERVED")
+                    self.assertTrue(observed["original_dialog_not_showing"])
+                    self.assertEqual(observed["consistent_direct_root_observations"], 2)
+                    self.assertFalse(observed["whole_accessibility_tree_scanned"])
+                    self.assertFalse(event["native_xml_playlist_verified"])
+                    self.assertFalse(event["native_save_verified"])
+
+    def test_dialog_closure_requires_stable_owned_root_and_has_deadline(self):
+        for case in ({"root_incomplete_after_accept": True},
+                     {"unstable_root_after_accept": True},
+                     {"foreign_root_after_accept": True},
+                     {"keep_dialog_open": True}):
             with self.subTest(case=case):
                 fake = SyntheticEditor(**case)
-                with self.assertRaises(actions.GuiUncertain):
+                with self.assertRaises((actions.GuiUncertain, actions.GuiRejected)):
                     fake.run()
                 self.assertEqual(fake.openings, 1)
                 self.assertEqual(len(fake.accepts), 1)
