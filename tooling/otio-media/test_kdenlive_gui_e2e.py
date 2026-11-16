@@ -1407,9 +1407,11 @@ class FirstpartyOriginalRetentionContracts(unittest.TestCase):
             with patch.object(runner.fixture, "require_ephemeral_approved_source", return_value=temp), \
                  patch.object(runner.fixture, "file_probe",
                               return_value={"fps": 30, "frames": 90, "codec": "h264"}), \
+                 patch.object(runner.fixture, "selected_audio_source_mode", return_value=False) as source_mode, \
                  patch.object(runner.fixture.subprocess, "run", side_effect=call) as run:
                 with self.assertRaises(json.JSONDecodeError):
                     runner.fixture.prepare_original(temp / "capsule", evidence_root=retained)
+            source_mode.assert_called_once_with()
             self.assertEqual(run.call_count, 2)
             self.assertEqual((retained / "original.mp4").read_bytes(), b"original simulated video")
             self.assertEqual((retained / "rust-exporter.stdout.bin").read_bytes(), b"{invalid-json")
@@ -1428,11 +1430,13 @@ class FirstpartyOriginalRetentionContracts(unittest.TestCase):
             with patch.object(runner.fixture, "require_ephemeral_approved_source", return_value=temp), \
                  patch.object(runner.fixture, "file_probe",
                               return_value={"fps": 30, "frames": 90, "codec": "h264"}), \
+                 patch.object(runner.fixture, "selected_audio_source_mode", return_value=False) as source_mode, \
                  patch.object(runner.fixture.subprocess, "run", side_effect=call) as run, \
                  patch.object(runner.fixture, "export_portable",
                               side_effect=ValueError("original bridge error")) as bridge:
                 with self.assertRaisesRegex(ValueError, "original bridge error"):
                     runner.fixture.prepare_original(temp / "capsule", evidence_root=retained)
+            source_mode.assert_called_once_with()
             self.assertEqual(run.call_count, 2)
             bridge.assert_called_once()
             self.assertEqual(json.loads((retained / "original.otio").read_bytes())["name"], "original")
