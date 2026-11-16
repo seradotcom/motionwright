@@ -9,6 +9,12 @@ on:
         options: [source, kdenlive-distribution, accessibility-only, kdenlive-gui, external-alab-readonly]
         default: source
         required: true
+      audio_source:
+        description: 'Kdenlive GUI only: silent original or bounded 997 Hz AAC source. No output audio credit.'
+        type: choice
+        options: [silent, tone-997hz]
+        default: silent
+        required: true
       expected_source_sha:
         description: 'Exact source SHA; required for every explicit native selection'
         type: string
@@ -283,7 +289,7 @@ jobs:
 
           discovered = list(test_ids(suite))
           contract_counts = {
-              "test_kdenlive_gui_e2e": 186, "test_kdenlive_complete_g2_fixture": 10,
+              "test_kdenlive_gui_e2e": 186, "test_kdenlive_complete_g2_fixture": 14,
               "test_kdenlive_live_process": 24, "test_kdenlive_accessibility_diagnostics": 16,
               "test_kdenlive_modal_readback": 44, "test_kdenlive_x11_modal": 27,
               "test_kdenlive_playlist_refresh": 16, "test_kdenlive_project_monitor": 9,
@@ -536,6 +542,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
       PYTHONDONTWRITEBYTECODE: '1'
       MOTIONWRIGHT_KDENLIVE_GUI_SCOPE: ${{ inputs.verification_scope }}
+      MOTIONWRIGHT_KDENLIVE_G2_AUDIO_SOURCE: ${{ inputs.verification_scope == 'kdenlive-gui' && inputs.audio_source == 'tone-997hz' && '1' || '0' }}
       MOTIONWRIGHT_APPROVED_KDENLIVE_G2_SOURCE: ${{ inputs.verification_scope == 'external-alab-readonly' && '0' || '1' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -743,7 +750,7 @@ jobs:
           import test_kdenlive_owner_cut as owner_tests
           import test_kdenlive_accessibility_preflight as preflight_tests
           modules = [
-              (tests, 186), (original_tests, 10), (process_tests, 24),
+              (tests, 186), (original_tests, 14), (process_tests, 24),
               (diagnostic_tests, 16), (modal_tests, 44), (x11_tests, 27),
               (refresh_tests, 16), (project_monitor_tests, 9),
               (initial_save_tests, 6), (owner_tests, 31), (preflight_tests, 9),
@@ -763,8 +770,8 @@ jobs:
               suites.append(suite)
               roster.extend(names)
               groups[module.__name__] = names
-          if len(roster) != 378 or len(set(roster)) != 378:
-              raise SystemExit("Require all 378 GUI, route, owner, editor-render custody and observer-only cases")
+          if len(roster) != 382 or len(set(roster)) != 382:
+              raise SystemExit("Require all 382 GUI, route, owner, editor-render custody and observer-only cases")
           result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(suites))
           print(json.dumps({"tests_run": result.testsRun, "roster": roster, "modules": groups,
                             "existing_route_and_owner_cases": 196, "private_preview_audio_controls": 19,
@@ -774,7 +781,7 @@ jobs:
                             "accessibility_preflight_cases": 9,
                             "skips": len(result.skipped), "failures": len(result.failures),
                             "errors": len(result.errors), "native_execution": False}, sort_keys=True))
-          if (not result.wasSuccessful() or result.testsRun != 378 or result.skipped
+          if (not result.wasSuccessful() or result.testsRun != 382 or result.skipped
                   or result.expectedFailures or result.unexpectedSuccesses):
               raise SystemExit(1)
           PY
