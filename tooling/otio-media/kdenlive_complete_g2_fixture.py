@@ -427,7 +427,8 @@ def prepare_original(destination: Path, *, evidence_root: Path | None = None,
                 "synthetic_source_allowed": True,
             },
         }
-        result = export_portable(root, request, destination)
+        audio_options = {} if original_audio is None else {"firstparty_audio": original_audio}
+        result = export_portable(root, request, destination, **audio_options)
         require(result["verified_media_refs"] == 3
                 and result["missing_refs"] == 0
                 and result["owner_publication_authorized"] is False,
