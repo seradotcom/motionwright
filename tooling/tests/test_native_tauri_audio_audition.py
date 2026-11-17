@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 from copy import deepcopy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -35,7 +36,7 @@ def pure_module():
     observed = {node.name for node in selected if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
     if observed != functions | classes:
         raise AssertionError("pure guard extraction is incomplete")
-    namespace = {"uuid": uuid, "re": re, "json": json, "time": time, "os": os,
+    namespace = {"uuid": uuid, "re": re, "json": json, "time": time, "os": os, "hashlib": hashlib,
                  "pcm": SimpleNamespace(WAV_BYTES=384044, FRAMES=96000),
                  "accessible": SimpleNamespace(VISIBLE=frozenset(("visible", "showing")),
                                                 NotReady=RuntimeError,
@@ -201,11 +202,11 @@ class AudioJoinTests(unittest.TestCase):
         api = SimpleNamespace(CoordType=SimpleNamespace(SCREEN=0),
             Component=SimpleNamespace(get_extents=lambda item, _: item.bounds),
             Text=SimpleNamespace(get_character_count=lambda item: len(item.content),
-                get_text=lambda item, begin, end: item.actual,
+                get_text=lambda item, begin, end: item.content if (begin,end)==(0,len(item.content)) else item.actual,
                 get_range_extents=lambda item, begin, end, _: item.text_bounds))
         witness = {"node":node,"role":"list-item","interfaces":frozenset(node.interfaces),
             "start":start,"end":start+len(value),"characters":len(content),
-            "provider_text_sha256":"a"*64,"text":value}
+            "provider_text_sha256":hashlib.sha256(content.encode()).hexdigest(),"text":value}
         bridge = SimpleNamespace(api=api, owner_pid=lambda item:item.owner,
             states={key:key for key in ("visible","showing","editable","defunct")},
             call=lambda function,*args:function(*args), text_ranges=[witness])
@@ -223,6 +224,17 @@ class AudioJoinTests(unittest.TestCase):
         self.assertEqual(node.content[proof["start"]:proof["end"]],value)
         self.assertEqual(proof["screen_rectangle"],[40,80,230,18])
         self.assertEqual(identities,[True])
+
+    def test_inline_text_same_length_provider_change_cannot_reuse_old_hash(self):
+        ui,node,frame,value,_ = self.inline_text_model()
+        start = node.content.index(value)
+        original = node.content
+        node.content = original[:start-1] + "x" + original[start:]
+        self.assertEqual(len(node.content),len(original))
+        self.assertEqual(node.content[start:start+len(value)],value)
+        self.assertEqual(GUARDS.exact_text_offsets(node.content,value),[])
+        with self.assertRaisesRegex(RuntimeError,"UI_TEXT_PROVIDER_CHANGED"):
+            ui.observed_text_ranges(value,[frame])
 
     def test_inline_text_range_rechecks_actual_text_pid_and_readonly_state(self):
         changes = (

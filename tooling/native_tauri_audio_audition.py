@@ -513,8 +513,16 @@ class AudioUI:
             if "Component" not in interfaces:
                 continue
             count = self.bridge.call(api.Text.get_character_count, node)
-            if count != candidate["characters"]:
+            if type(count) is not int or count != candidate["characters"]:
                 raise accessible.NotReady("UI_TEXT_PROVIDER_CHANGED")
+            need(0 < count <= 4096, "UI_TEXT_PROVIDER_BOUND")
+            content = self.bridge.call(api.Text.get_text, node, 0, count)
+            if (type(content) is not str or len(content) != count
+                    or hashlib.sha256(content.encode("utf-8")).hexdigest()
+                       != candidate["provider_text_sha256"]):
+                raise accessible.NotReady("UI_TEXT_PROVIDER_CHANGED")
+            need((candidate["start"], candidate["end"]) in exact_text_offsets(content, value),
+                 "UI_TEXT_RANGE_BOUNDARY_CHANGED")
             actual = self.bridge.call(api.Text.get_text, node, candidate["start"], candidate["end"])
             need(type(actual) is str and actual == value, "UI_TEXT_RANGE_DISAGREE")
             provider = screen_rect(self.bridge.call(
