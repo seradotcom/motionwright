@@ -6,16 +6,16 @@ on:
       native_scope:
         description: "Closed native selection; scoped fixtures require explicit final-source admission"
         type: choice
-        options: [standard, n83-preview, editable-source-cycle]
+        options: [standard, n83-preview, editable-source-cycle, out-cubic-xy]
         default: standard
         required: false
       expected_source_sha:
-        description: "Exact frozen Motionwright SHA; mandatory for n83-preview or editable-source-cycle"
+        description: "Exact frozen Motionwright SHA; mandatory for n83-preview, editable-source-cycle or out-cubic-xy"
         type: string
         required: false
         default: ""
       recovery_recipient:
-        description: "Existing admitted RSA3072 public recipient JSON; mandatory for n83-preview or editable-source-cycle"
+        description: "Existing admitted RSA3072 public recipient JSON; mandatory for n83-preview, editable-source-cycle or out-cubic-xy"
         type: string
         required: false
         default: ""
@@ -36,6 +36,12 @@ on:
       - 'apps/desktop/src-tauri/**'
       - 'apps/studio/**'
       - 'tooling/native_render_e2e.py'
+      - 'tooling/native_motion_canvas_scope.py'
+      - 'tooling/native_motion_canvas_cubic_xy.py'
+      - 'tooling/tests/test_native_motion_canvas_scope.py'
+      - 'tooling/tests/test_native_motion_canvas_cubic_xy.py'
+      - 'tooling/tests/test_native_motion_canvas_retained_scope.py'
+      - 'tooling/tests/test_native_out_cubic_pixels.py'
       - 'tooling/native_render_public_artifact.py'
       - 'tooling/cross_app_public_artifact.py'
       - 'tooling/tests/test_native_render_public_artifact.py'
@@ -58,8 +64,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: native-motion-production-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}${{ inputs.native_scope == 'n83-preview' && '-n83-preview' || inputs.native_scope == 'editable-source-cycle' && '-editable-source-cycle' || '' }}
-  cancel-in-progress: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' }}
+  group: native-motion-production-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}${{ inputs.native_scope == 'n83-preview' && '-n83-preview' || inputs.native_scope == 'editable-source-cycle' && '-editable-source-cycle' || inputs.native_scope == 'out-cubic-xy' && '-out-cubic-xy' || '' }}
+  cancel-in-progress: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' }}
 
 defaults:
   run:
@@ -75,8 +81,8 @@ env:
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
   PLAYWRIGHT_BROWSERS_PATH: '0'
-  SEMWRIGHT_CHECKOUT_PATH: ${{ inputs.native_scope == 'n83-preview' && 'verification/n83-sdk' || inputs.native_scope == 'editable-source-cycle' && 'verification/mc-cycle-sdk' || '_semwright' }}
-  SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/${{ inputs.native_scope == 'n83-preview' && 'verification/n83-sdk' || inputs.native_scope == 'editable-source-cycle' && 'verification/mc-cycle-sdk' || '_semwright' }}
+  SEMWRIGHT_CHECKOUT_PATH: ${{ inputs.native_scope == 'n83-preview' && 'verification/n83-sdk' || inputs.native_scope == 'editable-source-cycle' && 'verification/mc-cycle-sdk' || inputs.native_scope == 'out-cubic-xy' && 'verification/mc-xy-sdk' || '_semwright' }}
+  SEMWRIGHT_CHECKOUT: ${{ github.workspace }}/${{ inputs.native_scope == 'n83-preview' && 'verification/n83-sdk' || inputs.native_scope == 'editable-source-cycle' && 'verification/mc-cycle-sdk' || inputs.native_scope == 'out-cubic-xy' && 'verification/mc-xy-sdk' || '_semwright' }}
 
 jobs:
   real-native-render:
@@ -92,8 +98,8 @@ jobs:
           python3 - <<'PY'
           import os, re
           scope = os.environ["MOTIONWRIGHT_NATIVE_SCOPE"]
-          assert scope in {"standard", "n83-preview", "editable-source-cycle"}, "unsupported native scope"
-          if scope in {"n83-preview", "editable-source-cycle"}:
+          assert scope in {"standard", "n83-preview", "editable-source-cycle", "out-cubic-xy"}, "unsupported native scope"
+          if scope in {"n83-preview", "editable-source-cycle", "out-cubic-xy"}:
               assert os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
               assert os.environ["GITHUB_RUN_ATTEMPT"] == "1", "native rerun forbidden"
               sha = os.environ["MW_NATIVE_EXPECTED_SOURCE_SHA"]
@@ -102,7 +108,7 @@ jobs:
           PY
 
       - name: Install pinned custody and PNG verifier in a private runner venv
-        if: ${{ inputs.native_scope == 'n83-preview' || inputs.native_scope == 'editable-source-cycle' }}
+        if: ${{ inputs.native_scope == 'n83-preview' || inputs.native_scope == 'editable-source-cycle' || inputs.native_scope == 'out-cubic-xy' }}
         run: |
           python3 - <<'PY'
           import os
@@ -112,7 +118,14 @@ jobs:
           assert not any(p.is_symlink() for p in (root, *root.parents))
           venv = root / "n83-custody-venv"
           venv.mkdir(mode=0o700, exist_ok=False)
-          prefix = "mw-n83-preflight-" if os.environ["MOTIONWRIGHT_NATIVE_SCOPE"] == "n83-preview" else "mw-mc-cycle-preflight-"
+          scope = os.environ["MOTIONWRIGHT_NATIVE_SCOPE"]
+          if scope == "n83-preview":
+              prefix = "mw-n83-preflight-"
+          else:
+              import sys
+              sys.path.insert(0, str(Path("tooling").resolve()))
+              from native_motion_canvas_scope import retained_scope
+              prefix = retained_scope(scope).preflight_prefix
           preflight = root / (prefix + os.environ["GITHUB_RUN_ID"])
           preflight.mkdir(mode=0o700, exist_ok=False)
           PY
@@ -124,6 +137,100 @@ jobs:
           else
             "$RUNNER_TEMP/n83-custody-venv/bin/python" -B tooling/native_render_e2e.py --cycle-admission-only
           fi
+
+
+      - name: Verify exact OutCubic XY source controls before Native
+        id: xy_source_controls
+        if: ${{ inputs.native_scope == 'out-cubic-xy' }}
+        run: |
+          python="$RUNNER_TEMP/n83-custody-venv/bin/python"
+          preflight="$RUNNER_TEMP/mw-mc-xy-preflight-$GITHUB_RUN_ID"
+          "$python" -B - <<'PY'
+          import hashlib, json, os, subprocess, sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path("tooling").resolve()))
+          from native_motion_canvas_scope import retained_scope
+          profile = retained_scope(os.environ["MOTIONWRIGHT_NATIVE_SCOPE"])
+          assert profile.selection == "out-cubic-xy"
+          assert profile.stages == ("original",)
+          assert (profile.jobs, profile.hosts, profile.full_frames) == (2, 1, 120)
+          root = Path(os.environ["RUNNER_TEMP"]) / (profile.preflight_prefix + os.environ["GITHUB_RUN_ID"])
+          assert root.is_dir() and not root.is_symlink() and not (root.stat().st_mode & 0o077)
+          selected = (
+              "crates/native/examples/native-render-e2e.rs", "crates/native/src/film.rs",
+              "tooling/native_motion_canvas_scope.py", "tooling/native_motion_canvas_cubic_xy.py",
+              "tooling/native_render_e2e.py", "tooling/native_motion_canvas_roundtrip.py",
+              "tooling/native_direct_mediated_parity.py", "tooling/native_render_stage_cost.py",
+              "tooling/native_av_failure_guard.py", "tooling/native_caption_pixels.py",
+              "tooling/native_provider_lifecycle.py", "tooling/native_provider_live_watch.py",
+              "tooling/native_host_shared_state.py", "tooling/ci_private_evidence.py",
+              "tooling/ci_test_runner.py", "tooling/requirements/mlt-g2-custody.txt",
+              "tooling/tests/test_native_motion_canvas_scope.py",
+              "tooling/tests/test_native_motion_canvas_cubic_xy.py",
+              "tooling/tests/test_native_motion_canvas_retained_scope.py",
+              "tooling/tests/test_native_out_cubic_pixels.py",
+              ".github/workflows/native-render-e2e.yml",
+              "SOURCE_LOCK.json", "Cargo.lock", "rust-toolchain.toml", "apps/studio/package-lock.json",
+          )
+          files = {}
+          for relative in selected:
+              source = Path(relative)
+              assert source.is_file() and not source.is_symlink()
+              original = source.read_bytes()
+              committed = subprocess.check_output(["git", "show", "HEAD:" + relative], stderr=subprocess.PIPE)
+              assert original == committed, "OutCubic XY source differs from its exact commit"
+              target = root / "source" / relative
+              target.parent.mkdir(parents=True, exist_ok=True)
+              with target.open("xb") as stream:
+                  stream.write(original)
+              files[relative] = {"bytes":len(original), "sha256":hashlib.sha256(original).hexdigest()}
+          with (root / "source-originals.json").open("x") as stream:
+              json.dump({"selection":profile.selection, "source_sha":os.environ["GITHUB_SHA"],
+                  "semwright_sha":json.loads(Path("SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"],
+                  "run_id":os.environ["GITHUB_RUN_ID"], "run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+                  "selected_stages":list(profile.stages), "maximum_native_jobs":profile.jobs,
+                  "maximum_host_processes":profile.hosts, "maximum_full_frames":profile.full_frames,
+                  "native_execution_performed":False, "formal_acceptance":False, "files":files}, stream)
+          PY
+          "$python" -B tooling/ci_test_runner.py --repo "$GITHUB_WORKSPACE" \
+            --test-directory tooling/tests \
+            --pattern test_native_motion_canvas_scope.py \
+            --pattern test_native_motion_canvas_cubic_xy.py \
+            --pattern test_native_motion_canvas_retained_scope.py \
+            --mode dotted --require-complete --expected-source "$GITHUB_SHA" --timeout 180 \
+            --report "$preflight/source-controls.json" \
+            >"$preflight/source-controls-runner.stdout.original" 2>"$preflight/source-controls-runner.stderr.original"
+          "$python" -B - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / ("mw-mc-xy-preflight-" + os.environ["GITHUB_RUN_ID"])
+          original = json.loads((root / "source-originals.json").read_bytes())
+          report = json.loads((root / "source-controls.json").read_bytes())
+          assert original["source_sha"] == report["executed_source_sha"] == os.environ["GITHUB_SHA"]
+          assert report["status"] == "PASS" and report["require_complete"] is True and report["exit_code"] == 0
+          expected = {
+              "dotted:tooling.tests.test_native_motion_canvas_scope",
+              "dotted:tooling.tests.test_native_motion_canvas_cubic_xy",
+              "dotted:tooling.tests.test_native_motion_canvas_retained_scope",
+          }
+          assert len(report["steps"]) == 3 and {step["entry_point"] for step in report["steps"]} == expected
+          for step in report["steps"]:
+              assert step["status"] == "PASS" and step["exit_code"] == 0
+              counts = step["counts"]
+              assert type(counts["tests_run"]) is int and counts["tests_run"] > 0
+              assert counts["terminal_status"] == "OK" and counts["passed"] == counts["tests_run"]
+              assert all(counts[key] == 0 for key in (
+                  "failures", "errors", "skipped", "expected_failures", "unexpected_successes"))
+          expected_definitions = {
+              "tooling/tests/" + name + ".py": original["files"]["tooling/tests/" + name + ".py"]["sha256"]
+              for name in ("test_native_motion_canvas_scope", "test_native_motion_canvas_cubic_xy",
+                           "test_native_motion_canvas_retained_scope")
+          }
+          assert report["test_definition_sha256"] == expected_definitions
+          for relative, identity in original["files"].items():
+              current = Path(relative).read_bytes()
+              assert len(current) == identity["bytes"] and hashlib.sha256(current).hexdigest() == identity["sha256"]
+          PY
 
       - name: Verify editable-source reader before any native attempt
         id: cycle_source_controls
@@ -392,17 +499,17 @@ jobs:
       - name: Render application-owned revision through real Broker and Driver Host
         env:
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
-          MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: ${{ (inputs.native_scope == 'n83-preview' || inputs.native_scope == 'editable-source-cycle') && '0' || '1' }}
+          MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: ${{ (inputs.native_scope == 'n83-preview' || inputs.native_scope == 'editable-source-cycle' || inputs.native_scope == 'out-cubic-xy') && '0' || '1' }}
           SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ env.SEMWRIGHT_CHECKOUT }}/target/debug/semwright-sandbox
         run: |
-          if [ "$MOTIONWRIGHT_NATIVE_SCOPE" = "n83-preview" ] || [ "$MOTIONWRIGHT_NATIVE_SCOPE" = "editable-source-cycle" ]; then
+          if [ "$MOTIONWRIGHT_NATIVE_SCOPE" = "n83-preview" ] || [ "$MOTIONWRIGHT_NATIVE_SCOPE" = "editable-source-cycle" ] || [ "$MOTIONWRIGHT_NATIVE_SCOPE" = "out-cubic-xy" ]; then
             "$RUNNER_TEMP/n83-custody-venv/bin/python" -B tooling/native_render_e2e.py
           else
             python3 tooling/native_render_e2e.py | tee verification/native-render-e2e/run.log
           fi
 
       - name: Verify review evidence
-        if: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' }}
+        if: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' }}
         run: |
           test -s "verification/native-render-e2e/${GITHUB_SHA}/result.json"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/motionwright-render-evidence.json"
@@ -518,7 +625,7 @@ jobs:
           PY
 
       - name: Repeat native render with a fresh owner Broker and Driver Host (v0.1 diagnostic only)
-        if: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && ((github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat/v01-provider-repeat-ci'))) }}
+        if: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && ((github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat/v01-provider-repeat-ci'))) }}
         env:
           MOTIONWRIGHT_NATIVE_RUN_LABEL: 'repeat-02'
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
@@ -541,7 +648,7 @@ jobs:
           PY
 
       - name: Stage only verified v0.1 native PNG review, not original Broker receipts
-        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' }}
+        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' }}
         env:
           NATIVE_CI_JOB_STATUS: ${{ job.status }}
         run: |
@@ -553,7 +660,7 @@ jobs:
           python3 -m json.tool verification/native-render-public/public-evidence.json >/dev/null
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' }}
+        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' }}
         with:
           name: motionwright-native-render-${{ github.sha }}
           path: verification/native-render-public
@@ -627,5 +734,49 @@ jobs:
         with:
           name: motionwright-editable-source-cycle-${{ github.sha }}
           path: verification/native-editable-public
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Preserve OutCubic XY preflight failure without starting an owner
+        if: ${{ always() && inputs.native_scope == 'out-cubic-xy' && !hashFiles('verification/native-out-cubic-xy-public/sealed-originals.bin') }}
+        run: '"$RUNNER_TEMP/n83-custody-venv/bin/python" -B tooling/native_render_e2e.py --cycle-seal-preflight-failure'
+
+      - name: Verify sealed single-pair OutCubic XY outcome
+        if: ${{ inputs.native_scope == 'out-cubic-xy' }}
+        run: |
+          "$RUNNER_TEMP/n83-custody-venv/bin/python" -B - <<'PY'
+          import hashlib, json, os, re
+          from pathlib import Path
+          root = Path("verification/native-out-cubic-xy-public")
+          result = json.loads((root / "public-evidence.json").read_bytes())
+          assert result["selection"] == "out-cubic-xy" and result["status"] == "SCOPED_COMPLETED"
+          assert result["selected_originals_complete"] is True and result["groups_quiescent"] is True
+          assert result["source_unchanged"] is True
+          assert result["context"] == {"source_sha":os.environ["GITHUB_SHA"],
+              "semwright_sha":json.loads(Path("SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"],
+              "run_id":os.environ["GITHUB_RUN_ID"], "run_attempt":"1"}
+          assert result["completed_stages"] == ["original"]
+          assert type(result["observed_native_jobs"]) is int and result["observed_native_jobs"] == 2
+          assert type(result["observed_host_processes"]) is int and result["observed_host_processes"] == 1
+          assert result["automatic_retry"] is False and result["formal_acceptance"] is False
+          assert result["master_eligible"] is False and result["release_authorized"] is False
+          assert result["absence_of_effects_asserted"] is False
+          assert type(result["ciphertext_bytes"]) is int and result["ciphertext_bytes"] > 0
+          assert type(result["ciphertext_sha256"]) is str and re.fullmatch("[0-9a-f]{64}", result["ciphertext_sha256"])
+          path = root / "sealed-originals.bin"
+          assert path.is_file() and not path.is_symlink() and path.stat().st_nlink == 1
+          assert result["ciphertext_file"] == path.name and path.stat().st_size == result["ciphertext_bytes"]
+          with path.open("rb") as stream:
+              assert hashlib.file_digest(stream, "sha256").hexdigest() == result["ciphertext_sha256"]
+          PY
+
+      - name: Publish only sealed OutCubic XY originals and closed manifest
+        if: ${{ always() && inputs.native_scope == 'out-cubic-xy' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: motionwright-out-cubic-xy-${{ github.sha }}-${{ github.run_id }}-attempt1
+          path: |
+            verification/native-out-cubic-xy-public/sealed-originals.bin
+            verification/native-out-cubic-xy-public/public-evidence.json
           if-no-files-found: error
           retention-days: 14

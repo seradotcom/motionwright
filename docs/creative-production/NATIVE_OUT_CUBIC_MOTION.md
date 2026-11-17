@@ -71,6 +71,24 @@ frames are not rendered or decoded again to claim the new coverage.
 The direct/mediated comparison still has its separate 60-pair RGBA
 decode; only the X/Y oracle shares one crop for its two measurements.
 
+The existing native-render-e2e workflow also has a closed out-cubic-xy
+development selection. It requires a manual first attempt, the exact
+published source SHA, the SDK pin in SOURCE_LOCK, and an admitted public
+RSA recovery recipient. This selection permits only the original stage,
+two distinct render jobs and one Host: 60 full frames per leg, 120 total.
+The editable-source-cycle selection retains its separate four stages;
+out-cubic-xy cannot enter its edit or reopen commands.
+
+Before Host closure, a private witness binds the original source project,
+Film, selected-SDK binding receipt, manifests and all 120 PNG files by
+size and SHA-256. After closure, the read-only finalizer checks these same
+originals, both axis measurements, complete frame parity and process
+identity. It performs no additional render or media decode. Owner,
+evidence and preflight originals remain in one authenticated encrypted
+capture; only the ciphertext and its closed public manifest are uploaded.
+This development case grants no formal or human acceptance and makes no
+new edit/reopen claim.
+
 The 12 focused pure pixel-validator tests include individually frozen
 and linear axes, instantaneous jumps, swapped displacements, incorrect
 endpoints and misleading shape/color data. They exercise the validator

@@ -26,6 +26,7 @@ from native_provider_lifecycle import ProviderLifecycleSampler, summarize_render
 from native_provider_live_watch import PassiveLiveBrokerWatch, public_lifecycle_kind_counts
 from native_render_stage_cost import assemble_native_stage_report, elapsed_us
 from native_caption_pixels import compare_caption_overlay
+from native_motion_canvas_scope import RETAINED_SCOPES, retained_scope
 from native_direct_mediated_parity import (
     DirectParityError, checked_direct_artifact, compare_native_pngs,
     run_direct_native_film,
@@ -57,8 +58,8 @@ EVIDENCE = ROOT / "verification" / "native-render-e2e" / (
 
 if NATIVE_SCOPE == "n83-preview":
     EVIDENCE = ROOT / "verification" / "native-n83-private" / GITHUB_SHA
-elif NATIVE_SCOPE == "editable-source-cycle":
-    EVIDENCE = ROOT / "verification" / "native-editable-private" / GITHUB_SHA
+elif NATIVE_SCOPE in RETAINED_SCOPES:
+    EVIDENCE = ROOT / "verification" / retained_scope(NATIVE_SCOPE).evidence_directory / GITHUB_SHA
 
 
 def digest(path: Path) -> str:
@@ -255,7 +256,7 @@ def exact_inputs() -> None:
     ).strip()
     if observed != PIN:
         raise SystemExit(f"Semwright checkout mismatch: expected {PIN}, got {observed}")
-    if NATIVE_SCOPE == "editable-source-cycle":
+    if NATIVE_SCOPE in RETAINED_SCOPES:
         changed = subprocess.check_output(["git", "-C", str(SEMWRIGHT), "status",
             "--porcelain=v1", "--untracked-files=no"], text=True, stderr=subprocess.PIPE)
         if changed:
@@ -772,7 +773,7 @@ CYCLE_CONTEXT = None
 
 
 def cycle_admission(*, preflight_only=False):
-    if (NATIVE_SCOPE != "editable-source-cycle"
+    if (NATIVE_SCOPE not in RETAINED_SCOPES
             or os.environ.get("GITHUB_REPOSITORY") != "seradotcom/motionwright"
             or os.environ.get("GITHUB_JOB") != "real-native-render"
             or os.environ.get("GITHUB_WORKFLOW_SHA") != GITHUB_SHA
@@ -793,7 +794,8 @@ def cycle_admission(*, preflight_only=False):
             or temporary.resolve(strict=True) != temporary
             or any(p.is_symlink() for p in (temporary, *temporary.parents))):
         raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_PRIVATE_PARENT_REQUIRED")
-    preflight = temporary / ("mw-mc-cycle-preflight-" + context["run_id"])
+    profile = retained_scope(NATIVE_SCOPE)
+    preflight = temporary / (profile.preflight_prefix + context["run_id"])
     if (not preflight.is_dir() or preflight.is_symlink()
             or preflight.stat().st_mode & 0o077):
         raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_PRIVATE_PREFLIGHT_REQUIRED")
@@ -807,7 +809,7 @@ def cycle_admission(*, preflight_only=False):
     except Exception:
         if not preflight_only:
             raise
-    return {"context":context, "recipient":recipient, "source":source,
+    return {"selection":NATIVE_SCOPE, "context":context, "recipient":recipient, "source":source,
         "runner_temp":temporary, "preflight":preflight, "versions":versions,
         "processes":[], "hosts":[], "calls":0, "jobs":[], "completed":[],
         "stages":{}, "failed":False, "verified":False}
@@ -815,8 +817,9 @@ def cycle_admission(*, preflight_only=False):
 
 def cycle_seal_preflight_failure():
     context = cycle_admission(preflight_only=True)
-    owner = context["runner_temp"] / ("mw-mc-cycle-" + context["context"]["run_id"])
-    public = ROOT / "verification" / "native-editable-public"
+    profile = retained_scope(context["selection"])
+    owner = context["runner_temp"] / (profile.owner_prefix + context["context"]["run_id"])
+    public = ROOT / "verification" / profile.public_directory
     if any(path.exists() or path.is_symlink() for path in (owner, EVIDENCE, public)):
         raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_PREFLIGHT_CANNOT_REPLACE_OWNER_CAPTURE")
     cycle_record(context["preflight"] / "seal.started.original.json", {
@@ -826,7 +829,7 @@ def cycle_seal_preflight_failure():
     envelope = n83_custody().encrypt_snapshot(plaintext,context["recipient"],context["context"])
     public.mkdir(mode=0o700,parents=True,exist_ok=False)
     n83_custody().new_bytes(public / "sealed-originals.bin",envelope)
-    cycle_record(public / "public-evidence.json", {"selection":"editable-source-cycle",
+    cycle_record(public / "public-evidence.json", {"selection":NATIVE_SCOPE,
         "status":"NOT_VERIFIED","context":context["context"],"capture_scope":"preflight-only",
         "recipient_spki_sha256":context["recipient"]["sha256"],"ciphertext_file":"sealed-originals.bin",
         "ciphertext_bytes":len(envelope),"ciphertext_sha256":hashlib.sha256(envelope).hexdigest(),
@@ -940,7 +943,8 @@ def cycle_execute(command, args, *, socket, session, env, timeout=90):
 
 def cycle_register_job(job):
     context = CYCLE_CONTEXT
-    if not isinstance(job, str) or not job or job in context["jobs"] or len(context["jobs"]) >= 5:
+    profile = retained_scope(context["selection"])
+    if not isinstance(job, str) or not job or job in context["jobs"] or len(context["jobs"]) >= profile.jobs:
         raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_JOB_REUSED_OR_BUDGET")
     context["jobs"].append(job)
 
@@ -1006,19 +1010,23 @@ def cycle_diagnostic_acknowledgements(diagnostic, identity, phase):
 
 def cycle_job_observation(context):
     """Private sidecar: the wrapper registry may omit a failed mediated start."""
-    report = {"source":context["source"],"derived_observation":True,
+    profile = retained_scope(context["selection"])
+    report = {"source":context["source"],"selection":profile.selection,"derived_observation":True,
         "registry":{"refs":list(context["jobs"]),"scope":"wrapper registered job references",
             "mediated_registration":"after successful command return",
             "direct_registration":"after acknowledged render.start",
             "complete_for_verified_selected_cycle":bool(context["verified"]
-                and context["completed"] == list(CYCLE_STAGES) and len(context["jobs"]) == 5)},
+                and context["completed"] == list(profile.stages) and len(context["jobs"]) == profile.jobs)},
         "diagnostics":[],"acknowledged_job_refs":[],"complete_inventory_of_effects_claimed":False,
         "absence_of_effects_asserted":False,"render_completion_inferred":False,
         "receipts_rebound_as_authority":False,"automatic_retry":False,"formal_acceptance":False}
     custody = n83_custody()
     terminal = EVIDENCE / "runner.terminal.original.json"
     report["runner_terminal"] = cycle_file(terminal) if terminal.is_file() else {"status":"NOT_RETAINED"}
-    for phase, folder in (("original", EVIDENCE), ("edited", EVIDENCE / "cycle" / "edited")):
+    phases = [("original", EVIDENCE)]
+    if "edited" in profile.stages:
+        phases.append(("edited", EVIDENCE / "cycle" / "edited"))
+    for phase, folder in phases:
         path = folder / "motionwright-render-diagnostic.json"
         row = {"phase":phase,"path":path.relative_to(EVIDENCE).as_posix(),"status":"NOT_RETAINED"}
         report["diagnostics"].append(row)
@@ -1041,6 +1049,9 @@ def cycle_job_observation(context):
 
 
 def cycle_native_render(fingerprint, *, socket, session, env):
+    profile = retained_scope(CYCLE_CONTEXT["selection"])
+    if len(CYCLE_CONTEXT["jobs"]) >= profile.jobs:
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_JOB_BUDGET_BEFORE_EFFECT")
     started_ns = time.perf_counter_ns()
     started = cycle_execute("render.start", {"expected_fingerprint":fingerprint,
         "profile":{"first_frame":0,"end_frame_exclusive":60,"scale":"full",
@@ -1122,7 +1133,8 @@ def cycle_direct_film(*, film_file, socket, session, env, mediated_job_ref, **un
 
 def cycle_new_stage(name):
     context = CYCLE_CONTEXT
-    if name != CYCLE_STAGES[len(context["stages"])]:
+    stages = retained_scope(context["selection"]).stages
+    if len(context["stages"]) >= len(stages) or name != stages[len(context["stages"])]:
         raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_STAGE_REPLAY")
     path = EVIDENCE / "cycle" / name
     path.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -1201,6 +1213,8 @@ def cycle_capture(name, *, paths, socket, session, env, artifact, job):
 
 
 def cycle_start_host(name, paths, config_path, env):
+    if len(CYCLE_CONTEXT["hosts"]) >= retained_scope(CYCLE_CONTEXT["selection"]).hosts:
+        raise N83RunnerFailure("RETAINED_SCOPE_HOST_BUDGET_BEFORE_EFFECT")
     folder = CYCLE_CONTEXT["stages"][name]
     host = folder / "host"
     host.mkdir(mode=0o700)
@@ -1253,6 +1267,8 @@ def cycle_start_host(name, paths, config_path, env):
 
 
 def cycle_remaining(database, paths, config_path, env, original_row):
+    if CYCLE_CONTEXT["selection"] != "editable-source-cycle":
+        raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_ONLY")
     rows = {"original":original_row}
     for name in CYCLE_STAGES[1:]:
         folder = cycle_new_stage(name)
@@ -1323,9 +1339,45 @@ def cycle_remaining(database, paths, config_path, env, original_row):
     CYCLE_CONTEXT["verified"] = True
 
 
+def cubic_xy_capture(*, mediated_root, direct_root, mediated_job, direct_job):
+    import native_motion_canvas_cubic_xy as reader
+    context = CYCLE_CONTEXT
+    if context["selection"] != "out-cubic-xy" or context["completed"] != ["original"]:
+        raise N83RunnerFailure("CUBIC_XY_ORIGINAL_STAGE_REQUIRED")
+    witness = reader.capture(context["owner"], EVIDENCE,
+        context=context["context"], source=context["source"],
+        jobs={"mediated":mediated_job, "direct":direct_job}, host_pid=context["hosts"][0],
+        artifacts={"mediated":mediated_root, "direct":direct_root})
+    path = EVIDENCE / "cubic-xy-witness.original.json"
+    cycle_record(path, witness)
+    context["cubic_xy_witness"] = cycle_file(path)
+
+
+def cubic_xy_finalize():
+    import native_motion_canvas_cubic_xy as reader
+    context = CYCLE_CONTEXT
+    if (context["selection"] != "out-cubic-xy" or context["completed"] != ["original"]
+            or len(context["jobs"]) != 2 or len(context["hosts"]) != 1
+            or any(not row.get("quiescent") for row in context["processes"])):
+        raise N83RunnerFailure("CUBIC_XY_SCOPE_OR_CLOSURE_NOT_VERIFIED")
+    ref = context["cubic_xy_witness"]
+    raw, _ = n83_custody().regular(EVIDENCE / ref["path"], 512 * 1024)
+    if len(raw) != ref["bytes"] or hashlib.sha256(raw).hexdigest() != ref["sha256"]:
+        raise N83RunnerFailure("CUBIC_XY_WITNESS_CHANGED_AFTER_CAPTURE")
+    witness = n83_custody().strict(raw)
+    report = reader.inspect(context["owner"], EVIDENCE, witness,
+        context=context["context"], source=context["source"], jobs=context["jobs"],
+        hosts=context["hosts"], completed=context["completed"],
+        closure=n83_read_json(EVIDENCE / "first-host-closure.original.json"),
+        terminal=n83_read_json(EVIDENCE / "first-host.terminal.original.json"))
+    cycle_record(EVIDENCE / "cubic-xy-reader.original.json", report)
+    context["verified"] = True
+
+
 @contextmanager
 def cycle_workspace(context):
-    owner = context["runner_temp"] / ("mw-mc-cycle-" + context["context"]["run_id"])
+    profile = retained_scope(context["selection"])
+    owner = context["runner_temp"] / (profile.owner_prefix + context["context"]["run_id"])
     owner.mkdir(mode=0o700, exist_ok=False)
     context["owner"] = owner
     try:
@@ -1333,7 +1385,9 @@ def cycle_workspace(context):
             SW_BINS / "semwrightd", SW_BINS / "semwright-sandbox", SW_BINS / "semwright-motion-canvas-driver")}
         cycle_record(EVIDENCE / "executables.original.json", context["executables"])
         cycle_record(EVIDENCE / "cycle.started.original.json", {"source":context["source"],
-            "selected_stages":list(CYCLE_STAGES),"maximum_native_jobs":5,"maximum_full_frames":300,
+            "selection":profile.selection,"selected_stages":list(profile.stages),
+            "maximum_native_jobs":profile.jobs,"maximum_host_processes":profile.hosts,
+            "maximum_full_frames":profile.full_frames,
             "automatic_retry":False,"formal_acceptance":False})
         yield str(owner)
     except BaseException as error:
@@ -1380,12 +1434,13 @@ def cycle_workspace(context):
         paths = {"owner":owner,"evidence":EVIDENCE,"preflight":context["preflight"]}
         plaintext, complete = n83_custody().gather_snapshot(paths,preserve_partial=True)
         ciphertext = n83_custody().encrypt_snapshot(plaintext,context["recipient"],context["context"])
-        public = ROOT / "verification" / "native-editable-public"
+        public = ROOT / "verification" / profile.public_directory
         public.mkdir(mode=0o700,parents=True,exist_ok=False)
         n83_custody().new_bytes(public / "sealed-originals.bin",ciphertext)
         success = bool(complete and all(quiet) and persisted and unchanged and not context["failed"]
-            and context["verified"] and context["completed"] == list(CYCLE_STAGES))
-        cycle_record(public / "public-evidence.json", {"selection":"editable-source-cycle",
+            and context["verified"] and context["completed"] == list(profile.stages)
+            and len(context["jobs"]) == profile.jobs and len(context["hosts"]) == profile.hosts)
+        cycle_record(public / "public-evidence.json", {"selection":NATIVE_SCOPE,
             "status":"SCOPED_COMPLETED" if success else "NOT_VERIFIED","context":context["context"],
             "recipient_spki_sha256":context["recipient"]["sha256"],"ciphertext_file":"sealed-originals.bin",
             "ciphertext_bytes":len(ciphertext),"ciphertext_sha256":hashlib.sha256(ciphertext).hexdigest(),
@@ -1401,9 +1456,9 @@ def cycle_workspace(context):
 
 def main() -> None:
     global CYCLE_CONTEXT
-    if NATIVE_SCOPE not in {"standard", "n83-preview", "editable-source-cycle"}:
+    if NATIVE_SCOPE not in {"standard", "n83-preview", *RETAINED_SCOPES}:
         raise N83RunnerFailure("N83_UNKNOWN_SCOPE")
-    if NATIVE_SCOPE == "editable-source-cycle":
+    if NATIVE_SCOPE in RETAINED_SCOPES:
         CYCLE_CONTEXT = cycle_admission()
     admitted = n83_admission() if NATIVE_SCOPE == "n83-preview" else None
     exact_inputs()
@@ -1566,6 +1621,11 @@ def main() -> None:
         socket = paths["runtime"] / "broker.sock"
         session = paths["runtime"] / "motionwright.session"
         daemon_log = EVIDENCE / "semwrightd.log"
+        if CYCLE_CONTEXT is not None and (
+                len(CYCLE_CONTEXT["hosts"]) >= retained_scope(CYCLE_CONTEXT["selection"]).hosts
+                or CYCLE_CONTEXT["completed"] or CYCLE_CONTEXT["jobs"]
+                or list(CYCLE_CONTEXT["stages"]) != ["original"]):
+            raise N83RunnerFailure("RETAINED_SCOPE_FIRST_HOST_BUDGET_BEFORE_EFFECT")
         log_stream = daemon_log.open("wb")
         daemon = subprocess.Popen(
             [
@@ -1932,6 +1992,9 @@ def main() -> None:
             if CYCLE_CONTEXT is not None:
                 original_cycle_row = cycle_capture("original", paths=paths, socket=socket,
                     session=session, env=env, artifact=direct["artifact"], job=direct["job_ref"])
+                if CYCLE_CONTEXT["selection"] == "out-cubic-xy":
+                    cubic_xy_capture(mediated_root=artifact_root, direct_root=direct_root,
+                        mediated_job=result["job_ref"], direct_job=direct["job_ref"])
 
             if CAPTION_E2E == "1":
                 # A second, explicitly authored NEW revision of the same
@@ -2101,7 +2164,10 @@ def main() -> None:
                 raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_FIRST_HOST_SHUTDOWN_UNKNOWN")
             cycle_record(EVIDENCE / "first-host.terminal.original.json", {"pid":daemon.pid,
                 "exit_code":daemon.returncode,"group_quiescent":True})
-            cycle_remaining(database, paths, config_path, env, original_cycle_row)
+            if CYCLE_CONTEXT["selection"] == "out-cubic-xy":
+                cubic_xy_finalize()
+            else:
+                cycle_remaining(database, paths, config_path, env, original_cycle_row)
 
     if CYCLE_CONTEXT is not None:
         return
@@ -2119,7 +2185,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    if NATIVE_SCOPE == "editable-source-cycle":
+    if NATIVE_SCOPE in RETAINED_SCOPES:
         try:
             if sys.argv[1:] == ["--cycle-admission-only"]:
                 cycle_admission()
@@ -2130,7 +2196,7 @@ if __name__ == "__main__":
             else:
                 main()
         except BaseException:
-            print(json.dumps({"selection":"editable-source-cycle","status":"NOT_VERIFIED",
+            print(json.dumps({"selection":NATIVE_SCOPE,"status":"NOT_VERIFIED",
                 "automatic_retry":False,"raw_diagnostics_public":False}),flush=True)
             raise SystemExit(1) from None
         raise SystemExit(0)
