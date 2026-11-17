@@ -26,7 +26,8 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
         cls.windows = job_source(cls.workflow, "windows")
 
     def test_source_filters_cover_every_new_owner_reader_and_control(self):
-        paths = ("tooling/candidate_package_inventory.py", "tooling/candidate_package_extraction.py",
+        paths = ("tooling/candidate_package_inventory.py", "tooling/linux_package_parity.py",
+                 "tooling/tests/test_linux_package_parity.py", "tooling/candidate_package_extraction.py",
                  "tooling/startup_capture_core.py", "tooling/tests/test_candidate_package_inventory.py",
                  "tooling/tests/test_candidate_package_extraction.py",
                  "tooling/tests/test_candidate_package_inventory_workflow.py")
@@ -110,6 +111,7 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
             prefix = "ci-evidence/linux-" + kind + "-package-inventory"
             expected.update((prefix + ".producer.json", prefix + ".consumer.json"))
             expected.update(prefix + "/" + name for name in suffixes)
+        expected.add("ci-evidence/linux-package-parity.json")
         for body, title in (
                 (self.installed, "Preserve original installed Linux package inventories"),
                 (self.linux, "Preserve original isolated Linux package inventories")):
@@ -119,6 +121,28 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
             self.assertEqual(actual, expected)
             self.assertNotIn("*", selected)
             self.assertIn("always()", upload)
+        for body, consumer, parity in (
+                (self.installed, "Verify both extracted installed packages against the original Cargo capture",
+                 "Reject divergent DEB and AppImage installed application payloads"),
+                (self.linux, "Verify both extracted Linux packages against the original Cargo capture",
+                 "Require exact shared payload bytes in isolated Linux bundles")):
+            with self.subTest(parity=parity):
+                self.assertLess(body.index(consumer), body.index(parity))
+                upload_title = ("Preserve original installed Linux package inventories"
+                                if body is self.installed
+                                else "Preserve original isolated Linux package inventories")
+                self.assertLess(body.index(parity), body.index(upload_title))
+                check = step(body, parity)
+                for value in (
+                        "--expected-source \"$GITHUB_SHA\"",
+                        "--deb ci-evidence/linux-deb-package-inventory/inventory.json",
+                        "--appimage ci-evidence/linux-appimage-package-inventory/inventory.json",
+                        "--expected-deb-sha256 \"$MW_DEB_PACKAGE_INVENTORY_SHA256\"",
+                        "--expected-appimage-sha256 \"$MW_APPIMAGE_PACKAGE_INVENTORY_SHA256\"",
+                        "--output ci-evidence/linux-package-parity.json"):
+                    self.assertIn(value, check)
+                self.assertIn("set -euo pipefail", check)
+                self.assertNotIn("|| true", check)
         attestation_source = ast.parse(
             (ROOT / "tooling/candidate_attestation_input.py").read_text(encoding="utf-8")
         )
