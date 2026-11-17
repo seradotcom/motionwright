@@ -25,7 +25,8 @@ def pure_module():
                  "validate_native_records", "validate_saved_readback", "validate_process_closure",
                  "validate_pcm_projection", "validate_before", "read_only_text_provider",
                  "private_transport_paths", "exact_text_offsets", "screen_rect", "rect_contains",
-                 "unmapped_action_provider", "accessible_action_index", "source_key_sequence"}
+                 "unmapped_action_provider", "accessible_action_index", "source_key_sequence",
+                 "source_key_receipt_name"}
     classes = {"AudioError", "AudioUI"}
     constants = {"PREVIEW", "AUDITION", "REQUIRED_ACTIONS", "SCROLL_ACTIONS", "SHA256"}
     selected = [node for node in tree.body if
@@ -167,6 +168,25 @@ class AudioJoinTests(unittest.TestCase):
             with self.subTest(index=index, count=count), self.assertRaisesRegex(
                     GUARDS.AudioError, "SOURCE_KEYBOARD_OPTION_BUDGET"):
                 GUARDS.source_key_sequence(index, count)
+
+    def test_keyboard_receipts_match_actual_disk_journal_without_collisions(self):
+        import re
+        observed = set()
+        for label in ("select-music", "select-sfx"):
+            for i in range(4):
+                for phase in ("intent", "return"):
+                    name = GUARDS.source_key_receipt_name(label, i, phase)
+                    self.assertRegex(name, r"^[a-z-]+$")
+                    self.assertNotIn(name, observed)
+                    observed.add(name)
+        self.assertEqual(len(observed), 16)
+        for label, index, phase in (("select-music", 4, "intent"),
+                                    ("select-sfx", -1, "intent"),
+                                    ("select-voice", 1, "return"),
+                                    ("select-music", True, "intent"),
+                                    ("select-sfx", 2, "unknown")):
+            with self.assertRaisesRegex(GUARDS.AudioError, "UI_SOURCE_JOURNAL_NAME_BOUND"):
+                GUARDS.source_key_receipt_name(label, index, phase)
 
     def test_keyboard_source_selection_rejects_foreign_process_before_focus(self):
         owner_queries = []

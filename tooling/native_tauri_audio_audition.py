@@ -306,6 +306,16 @@ def source_key_sequence(index, count):
     return ("Home",) + ("Down",) * index + ("Return",)
 
 
+def source_key_receipt_name(label, index, phase):
+    # Original DiskJournal accepts only lowercase letters and hyphens.
+    # Preserve the per-key once-only identity without broadening its parser.
+    ordinals = ("first", "second", "third", "fourth")
+    need(label in ("select-music", "select-sfx")
+         and type(index) is int and 0 <= index < len(ordinals)
+         and phase in ("intent", "return"), "UI_SOURCE_JOURNAL_NAME_BOUND")
+    return label + "-key-" + ordinals[index] + "-" + phase
+
+
 def exact_text_offsets(text, value):
     need(type(text) is str and len(text) <= 4096, "UI_TEXT_PROVIDER_BOUND")
     need(type(value) is str and 0 < len(value) <= 256, "UI_TEXT_TARGET_BOUND")
@@ -648,7 +658,7 @@ class AudioUI:
             need(len(codes) == 1, "UI_SOURCE_HARDWARE_KEY_AMBIGUOUS")
             keys[name] = codes.pop()
         for index, name in enumerate(sequence):
-            self.journal.put(label + "-key-" + str(index) + "-intent",
+            self.journal.put(source_key_receipt_name(label, index, "intent"),
                 {"key": name, "hardware_keycode": keys[name], "automatic_retry": False})
             primary, held = None, False
             try:
@@ -669,7 +679,7 @@ class AudioUI:
                             primary = error
             if primary is not None:
                 raise primary
-            self.journal.put(label + "-key-" + str(index) + "-return",
+            self.journal.put(source_key_receipt_name(label, index, "return"),
                              {"hardware_press_and_release_acknowledged": True})
         self.identity()
         return True
