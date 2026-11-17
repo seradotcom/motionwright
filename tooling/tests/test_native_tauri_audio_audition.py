@@ -158,6 +158,32 @@ class AudioJoinTests(unittest.TestCase):
                         interfaces | {"EditableText"}):
             self.assertFalse(GUARDS.unmapped_action_provider(states, invalid))
 
+    def test_scroll_ack_refreshes_only_the_owned_control_without_resending(self):
+        calls, fresh = [], []
+        node = SimpleNamespace(clear_cache_single=lambda: fresh.append(True))
+        item = SimpleNamespace(node=node, states=frozenset(("visible",)),
+                               interfaces=frozenset(("Component",)))
+        def scroll(target, placement):
+            self.assertIs(target, node)
+            calls.append(("scroll", placement))
+            return True
+        bridge = SimpleNamespace(call=lambda operation, *args: operation(*args),
+            api=SimpleNamespace(Component=SimpleNamespace(scroll_to=scroll),
+                                ScrollType=SimpleNamespace(ANYWHERE=7)))
+        ui = GUARDS.AudioUI(bridge, None, {"pid": 7}, {}, None, time.monotonic() + 2)
+        def control(name, roles, *, showing=True):
+            self.assertEqual(name, "original disclosure")
+            if showing and not fresh:
+                raise RuntimeError("stale cached SHOWING")
+            return item
+        ui.control = control
+        ui.effect = lambda label, target, operation: (
+            calls.append(("intent", label)), self.assertIs(target, item),
+            self.assertIs(operation(), True))
+        self.assertIs(ui.visible("original disclosure", {"native_action"}, "open-original-mix"), item)
+        self.assertEqual(calls, [("intent", "open-original-mix-scroll"), ("scroll", 7)])
+        self.assertEqual(fresh, [True])
+
     def test_readonly_text_still_verifies_original_value_and_process(self):
         value = "original-project-identity"
         bridge = SimpleNamespace(owner_pid=lambda _: 7, read_text=lambda _: value, text_ranges=[])

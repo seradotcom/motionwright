@@ -449,7 +449,13 @@ class AudioUI:
             need("Component" in item.interfaces, "UI_SCROLL_INTERFACE_REQUIRED")
             self.effect(label + "-scroll", item, lambda: self.bridge.call(
                 self.bridge.api.Component.scroll_to, item.node, self.bridge.api.ScrollType.ANYWHERE))
-            item = self.wait(lambda: self.control(name, roles))
+            def scrolled():
+                # Component.scroll_to can ACK before WebKit emits SHOWING.
+                # Refresh only this already-owned control, as focus_title
+                # does for FOCUSED. Keep the structural application cache.
+                self.bridge.call(item.node.clear_cache_single)
+                return self.control(name, roles)
+            item = self.wait(scrolled)
         return item
 
     def arm_action(self, label):
