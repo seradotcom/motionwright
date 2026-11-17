@@ -293,7 +293,6 @@ jobs:
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
-      CARGO_TARGET_DIR: ${{ runner.temp }}/tauri-audition-target
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -327,6 +326,7 @@ jobs:
           umask 077
           /usr/bin/python3 -B -E -s tooling/ci_tauri_audio_audition.py admit \
             --repo "$GITHUB_WORKSPACE" --expected-source "$MW_TAURI_AUDIO_EXPECTED_SOURCE"
+          printf 'CARGO_TARGET_DIR=%s/tauri-audition-target\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Verify changed development admission and routing
         shell: bash
         run: |
