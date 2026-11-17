@@ -220,7 +220,8 @@ fn real_out_cubic_motion_tile() -> CanvasNode {
     node.z_index = 4;
     node.style.fill = Some("#77C6FA".into());
     node.keyframes[0].value = 1410.0;
-    node.keyframes[1].value = node.y;
+    // Both axes move: the native pixel oracle must detect either axis freezing.
+    node.keyframes[1].value = 620.0;
     node.keyframes[2].value = node.x;
     node.keyframes[3].value = node.y;
     node.keyframes[2].interpolation = MotionInterpolation::EaseOutCubic;

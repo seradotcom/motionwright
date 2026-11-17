@@ -98,6 +98,17 @@ def native_opacity_tile_rgb(frame: Path) -> bytes:
     return process.stdout
 
 
+# Exact unparented CanvasNode fixture in native-render-e2e.rs. Coordinates are
+# ProjectPixels top-left; both axes move without intersecting the FadeIn tile.
+CUBIC_POSITION_REGION = (1370, 580, 320, 300)
+CUBIC_POSITION_SIZE = (140, 90)
+CUBIC_POSITION_START = (1410, 620)
+CUBIC_POSITION_END = (1510, 750)
+CUBIC_POSITION_RGB = (119, 198, 250)
+CUBIC_POSITION_FRAMES = (0, 2, 8, 30)
+CUBIC_POSITION_TOLERANCE = 1.5
+
+
 def source_bound_cubic_roi(frame: Path, *, kind: str) -> bytes:
     """Sample an isolated source-authored native cubic-out tile via FFmpeg.
 
@@ -105,7 +116,7 @@ def source_bound_cubic_roi(frame: Path, *, kind: str) -> bytes:
     This is inspection of original native PNGs, never a fabricated renderer.
     """
     regions = {
-        "position": (1450, 775, 12, 16),
+        "position": CUBIC_POSITION_REGION,
         "opacity": (1540, 912, 30, 24),
     }
     if kind not in regions:
@@ -130,26 +141,66 @@ def source_bound_cubic_roi(frame: Path, *, kind: str) -> bytes:
     return result.stdout
 
 
+def cubic_position_geometry(pixels: bytes, frame: int) -> dict:
+    """Measure both axes from one original RGB buffer, with pixel centers."""
+    x, y, width, height = CUBIC_POSITION_REGION
+    if frame not in CUBIC_POSITION_FRAMES or len(pixels) != width * height * 3:
+        raise AssertionError("native cubic-out position ROI byte dimensions or frame differ")
+    left, top, right, bottom = width, height, -1, -1
+    count = sum_x = sum_y = 0
+    red, green, blue = CUBIC_POSITION_RGB
+    for offset in range(0, len(pixels), 3):
+        if (abs(pixels[offset] - red) > 2 or abs(pixels[offset + 1] - green) > 2
+                or abs(pixels[offset + 2] - blue) > 2):
+            continue
+        row, column = divmod(offset // 3, width)
+        left, right = min(left, column), max(right, column)
+        top, bottom = min(top, row), max(bottom, row)
+        count += 1
+        sum_x += column
+        sum_y += row
+    tile_width, tile_height = CUBIC_POSITION_SIZE
+    minimum_solid = (tile_width - 1) * (tile_height - 1) - 4
+    maximum_solid = (tile_width + 1) * (tile_height + 1)
+    if not minimum_solid <= count <= maximum_solid:
+        raise AssertionError("native cubic-out position ROI has wrong solid fill area")
+    box_width, box_height = right - left + 1, bottom - top + 1
+    if count < box_width * box_height - 4:
+        raise AssertionError("native cubic-out position ROI contains dispersed or hollow fill")
+    observed = (x + sum_x / count + 0.5, y + sum_y / count + 0.5)
+    progress = 1.0 - (1.0 - frame / 30.0) ** 3
+    expected_left = CUBIC_POSITION_START[0] + (
+        CUBIC_POSITION_END[0] - CUBIC_POSITION_START[0]) * progress
+    expected_top = CUBIC_POSITION_START[1] + (
+        CUBIC_POSITION_END[1] - CUBIC_POSITION_START[1]) * progress
+    expected = (expected_left + tile_width / 2, expected_top + tile_height / 2)
+    actual_edges = (x + left, y + top, x + right + 1, y + bottom + 1)
+    expected_edges = (expected_left, expected_top,
+                      expected_left + tile_width, expected_top + tile_height)
+    for axis, actual, target in zip(("x", "y"), observed, expected):
+        if abs(actual - target) > CUBIC_POSITION_TOLERANCE:
+            raise AssertionError(
+                f"native cubic-out position ROI {axis} axis differs at frame {frame}")
+    if any(abs(actual - target) > CUBIC_POSITION_TOLERANCE
+           for actual, target in zip(actual_edges, expected_edges)):
+        raise AssertionError("native cubic-out position ROI bounds differ from the authored rectangle")
+    return {"frame": frame, "solid_rgb_pixels": count, "bounding_edges": list(actual_edges),
+            "observed_center": list(observed), "expected_center": list(expected),
+            "axis_error_px": [abs(actual - target) for actual, target in zip(observed, expected)]}
+
+
 def verify_source_cubic_frames(
     position: tuple[bytes, bytes, bytes, bytes],
     opacity: tuple[bytes, bytes, bytes],
 ) -> dict:
-    """Reject a static or linear approximation of the two native curves."""
-    p0, p2, p8, p30 = position
+    """Reject independently frozen, linear, swapped or displaced X/Y axes."""
+    if len(position) != len(CUBIC_POSITION_FRAMES):
+        raise AssertionError("native cubic-out position ROI frame roster differs")
+    geometry = [cubic_position_geometry(pixels, frame)
+                for frame, pixels in zip(CUBIC_POSITION_FRAMES, position)]
     o0, o15, o30 = opacity
-    position_delta = mean_byte_distance(p0, p30)
-    near_start = mean_byte_distance(p0, p2)
-    near_end = mean_byte_distance(p8, p30)
     opacity_delta = mean_byte_distance(o0, o30)
     opacity_half_remaining = mean_byte_distance(o15, o30)
-    if not (
-        position_delta >= 20.0
-        and near_start < position_delta * 0.4
-        and near_end < position_delta * 0.4
-    ):
-        raise AssertionError(
-            "native cubic-out position ROI is static, linear, or not aligned with original source at frames 0/2/8/30"
-        )
     if not (
         opacity_delta >= 18.0
         and 0.5 <= opacity_half_remaining < opacity_delta * 0.45
@@ -158,14 +209,21 @@ def verify_source_cubic_frames(
             "native cubic-out opacity ROI is not the original rapid-out fade at frames 0/15/30"
         )
     return {
+        "schema": "motionwright.native-out-cubic-pixels/2",
         "native_original_pixels_verified": True,
         "interpolation": "ease_out_cubic",
         "native_motion_easing": "out_cubic",
-        "position_sampled_frames": [0, 2, 8, 30],
+        "position_sampled_frames": list(CUBIC_POSITION_FRAMES),
+        "position_roi_pixels": list(CUBIC_POSITION_REGION),
+        "position_authored_start": list(CUBIC_POSITION_START),
+        "position_authored_end": list(CUBIC_POSITION_END),
+        "position_solid_rgb": list(CUBIC_POSITION_RGB),
+        "position_rgb_tolerance": 2,
+        "position_axis_tolerance_px": CUBIC_POSITION_TOLERANCE,
+        "position_pixel_center_convention": "column+0.5,row+0.5",
+        "position_x_verified": True, "position_y_verified": True,
+        "position_geometry": geometry,
         "opacity_sampled_frames": [0, 15, 30],
-        "position_full_mean_rgb_distance": round(position_delta, 3),
-        "position_early_to_start_mean_rgb_distance": round(near_start, 3),
-        "position_quarter_to_final_mean_rgb_distance": round(near_end, 3),
         "opacity_full_mean_rgb_distance": round(opacity_delta, 3),
         "opacity_half_to_final_mean_rgb_distance": round(opacity_half_remaining, 3),
         "pixel_difference_interpreted_as_visual_approval": False,
