@@ -130,6 +130,137 @@ class SourceLockAdmissionFixture:
 
 
 class SourceLockAdmissionTests(SourceLockAdmissionFixture, unittest.TestCase):
+    def test_real_ancestor_content_changes_preserve_full_source_admission(self):
+        target = self.evidence_path()
+        original = target.read_bytes()
+        directories = (self.root, target.parent)
+        for directory in directories:
+            info = directory.stat()
+            os.utime(directory, ns=(info.st_atime_ns, info.st_mtime_ns - 2_000_000_000))
+        before = [admission._identity(directory.lstat()) for directory in directories]
+        original_fstat = os.fstat
+        calls = 0
+
+        def observe(fd):
+            nonlocal calls
+            info = original_fstat(fd)
+            calls += 1
+            if calls == 1:
+                for directory in directories:
+                    with (directory / "unrelated-created-during-read.txt").open("xb") as writer:
+                        writer.write(b"unrelated directory content\n")
+                        writer.flush()
+                        os.fsync(writer.fileno())
+            return info
+
+        lock_before = copy.deepcopy(self.lock)
+        with patch.object(admission.os, "fstat", side_effect=observe):
+            self.assertIsNone(verify_source_lock(self.root, self.lock))
+        after = [admission._identity(directory.lstat()) for directory in directories]
+        self.assertTrue(all(first != last for first, last in zip(before, after)))
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(self.lock, lock_before)
+
+    def test_replaced_ancestor_is_rejected_even_when_leaf_identity_is_preserved(self):
+        relative = self.entry["verification"]["evidence"]["path"]
+        outer = self.root / "third_party"
+        nested_name = self.evidence_path().parent.name
+        retained = self.scratch / "original-third-party"
+        original_inspect = admission._inspect
+        observations = []
+
+        def inspect(root, parts):
+            if observations:
+                outer.rename(retained)
+                outer.mkdir()
+                (retained / nested_name).rename(outer / nested_name)
+            path, rows = original_inspect(root, parts)
+            observations.append(rows)
+            return path, rows
+
+        with patch.object(admission, "_inspect", side_effect=inspect):
+            with self.assertRaisesRegex(SourceAdmissionError, "evidence_changed"):
+                admission._read(self.root, relative, admission.MAX_EVIDENCE_BYTES)
+        self.assertEqual(len(observations), 2)
+        self.assertEqual(observations[0][-1], observations[1][-1])
+        self.assertNotEqual(observations[0][1][1], observations[1][1][1])
+
+    def test_replaced_leaf_with_identical_bytes_is_still_rejected(self):
+        target = self.evidence_path()
+        original = target.read_bytes()
+        retained = self.scratch / "original-evidence.json"
+        original_inspect = admission._inspect
+        observations = []
+
+        def inspect(root, parts):
+            if observations:
+                target.rename(retained)
+                target.write_bytes(original)
+            path, rows = original_inspect(root, parts)
+            observations.append(rows)
+            return path, rows
+
+        with patch.object(admission, "_inspect", side_effect=inspect):
+            with self.assertRaisesRegex(SourceAdmissionError, "evidence_changed"):
+                admission._read(self.root, self.entry["verification"]["evidence"]["path"],
+                                admission.MAX_EVIDENCE_BYTES)
+        self.assertEqual(target.read_bytes(), retained.read_bytes())
+        self.assertEqual(len(observations), 2)
+        self.assertNotEqual(observations[0][-1][1], observations[1][-1][1])
+
+    def test_real_leaf_mutation_during_held_descriptor_is_rejected(self):
+        target = self.evidence_path()
+        original = target.read_bytes()
+        original_info = target.stat()
+        original_fstat = os.fstat
+        calls = 0
+
+        def observe(fd):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                with target.open("r+b") as writer:
+                    writer.write(b"X" + original[1:])
+                    writer.flush()
+                    os.fsync(writer.fileno())
+                os.utime(target, ns=(original_info.st_atime_ns,
+                                      original_info.st_mtime_ns + 2_000_000_000))
+            return original_fstat(fd)
+
+        with patch.object(admission.os, "fstat", side_effect=observe):
+            with self.assertRaisesRegex(SourceAdmissionError, "evidence_changed"):
+                admission._read(self.root, self.entry["verification"]["evidence"]["path"],
+                                admission.MAX_EVIDENCE_BYTES)
+        self.assertEqual(calls, 2)
+        self.assertEqual(target.stat().st_size, len(original))
+        self.assertNotEqual(target.read_bytes(), original)
+
+    def test_ancestor_device_inode_type_and_attributes_remain_identity_fields(self):
+        original_lstat = Path.lstat
+        for field in ("st_dev", "st_ino", "st_mode", "st_file_attributes"):
+            with self.subTest(field=field):
+                root_calls = 0
+
+                def lstat(path):
+                    nonlocal root_calls
+                    info = original_lstat(path)
+                    if path == self.root:
+                        root_calls += 1
+                        if root_calls == 2:
+                            value = (stat.S_IFREG | stat.S_IMODE(info.st_mode)
+                                     if field == "st_mode"
+                                     else getattr(info, field, 0) ^ 1)
+                            return stat_view(info, **{field: value})
+                    return info
+
+                with patch.object(Path, "lstat", lstat):
+                    with self.assertRaisesRegex(
+                            SourceAdmissionError, "evidence_changed|evidence_not_regular"):
+                        admission._read(self.root,
+                            self.entry["verification"]["evidence"]["path"],
+                            admission.MAX_EVIDENCE_BYTES)
+                self.assertEqual(root_calls, 2)
+
     def test_windows_path_and_descriptor_clock_difference_preserves_stable_admission(self):
         before = self.snapshot()
         original_fstat = os.fstat

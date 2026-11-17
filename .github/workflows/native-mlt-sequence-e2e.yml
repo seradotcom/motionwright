@@ -320,6 +320,35 @@ jobs:
         assert all(counts[k]==0 for k in ('errors','failures','skipped','expected_failures','unexpected_successes'))
         print('fixedtxt-stable-reader-source=PASS controls=16 Native=NOT_RUN G2=NOT_GRANTED')
         PY_STABLE_READ
+    - name: Verify bounded FixedTxt stable-file stream without Native effects
+      env:
+        CUSTODY_PYTHON: ${{ steps.custody_python.outputs.python }}
+      run: |
+        set -euo pipefail
+        umask 077
+        root="$RUNNER_TEMP/mw-fixedtxt-stable-file-stream-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        test ! -e "$root"
+        mkdir -m 700 "$root"
+        "$CUSTODY_PYTHON" -B -E -s tooling/ci_test_runner.py \
+          --repo "$GITHUB_WORKSPACE" --test-directory tooling/fixedtxt_readback \
+          --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+          --pattern test_stable_file_stream.py --report "$root/contracts.json" \
+          > "$root/runner.stdout" 2> "$root/runner.stderr"
+        "$CUSTODY_PYTHON" -B -E -s - "$root/contracts.json" <<'PY_STABLE_STREAM'
+        import json,os,sys
+        from pathlib import Path
+        value=json.loads(Path(sys.argv[1]).read_bytes())
+        assert value['status']=='PASS' and value['exit_code']==0
+        assert value['executed_source_sha']==os.environ['GITHUB_SHA']
+        assert 'source_postcheck_error' not in value and len(value['steps'])==1
+        case=value['steps'][0]
+        assert case['entry_point']=='discovery:test_stable_file_stream.py'
+        counts=case['counts']
+        assert case['status']=='PASS' and case['exit_code']==0 and counts['terminal_status']=='OK'
+        assert counts['tests_run']==counts['passed']==9
+        assert all(counts[k]==0 for k in ('errors','failures','skipped','expected_failures','unexpected_successes'))
+        print('fixedtxt-stable-stream-source=PASS controls=9 Native=NOT_RUN G2=NOT_GRANTED')
+        PY_STABLE_STREAM
     - name: Verify preflight custody infrastructure controls
       id: g2_workflow_contracts
       env:
@@ -2068,6 +2097,7 @@ jobs:
           ${{ runner.temp }}/mw-fixedtxt-owner-close-contracts-${{ github.run_id }}-${{ github.run_attempt }}
           ${{ runner.temp }}/mw-fixedtxt-workflow-contracts-${{ github.run_id }}-${{ github.run_attempt }}
           ${{ runner.temp }}/mw-fixedtxt-stable-file-reader-${{ github.run_id }}-${{ github.run_attempt }}
+          ${{ runner.temp }}/mw-fixedtxt-stable-file-stream-${{ github.run_id }}-${{ github.run_attempt }}
           ${{ runner.temp }}/mw-aac-inspector-discovery-${{ github.run_id }}-${{ github.run_attempt }}
           ${{ runner.temp }}/mw-aac-remaining-discovery-${{ github.run_id }}-${{ github.run_attempt }}
         if-no-files-found: error

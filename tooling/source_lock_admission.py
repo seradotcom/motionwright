@@ -77,6 +77,17 @@ def _identity(info: os.stat_result) -> tuple:
     )
 
 
+def _namespace_identity(observations: list[tuple]) -> tuple:
+    """Keep ancestor object identity and the complete regular-file leaf.
+
+    Directory contents can change size, link count and timestamps without
+    replacing a component. _inspect still rejects redirects and wrong types;
+    every leaf field and each descriptor comparison remain unchanged.
+    """
+    return tuple((row[0], row[1], stat.S_IFMT(row[2]), row[7])
+                 for row in observations[:-1]) + (observations[-1],)
+
+
 def _opened_identity_matches(observed: tuple, opened: os.stat_result) -> bool:
     actual = _identity(opened)
     if _WINDOWS_STAT:
@@ -119,7 +130,8 @@ def _read(root: Path, relative: object, maximum: int) -> bytes:
             data = reader.read(maximum + 1)
             last = os.fstat(reader.fileno())
         _, after = _inspect(root, parts)
-        _need(before == after and _identity(first) == _identity(last)
+        _need(_namespace_identity(before) == _namespace_identity(after)
+              and _identity(first) == _identity(last)
               and len(data) == first.st_size, "evidence_changed")
         _need(0 < len(data) <= maximum, "evidence_bounds")
         return data
