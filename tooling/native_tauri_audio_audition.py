@@ -279,6 +279,12 @@ def read_only_text_provider(states, interfaces):
             and "EditableText" not in interfaces)
 
 
+def unmapped_action_provider(states, interfaces):
+    return ({"visible", "enabled", "sensitive"} <= states
+            and not ({"editable", "defunct"} & states)
+            and {"Action", "Component"} <= interfaces and "EditableText" not in interfaces)
+
+
 def exact_text_offsets(text, value):
     need(type(text) is str and len(text) <= 4096, "UI_TEXT_PROVIDER_BOUND")
     need(type(value) is str and 0 < len(value) <= 256, "UI_TEXT_TARGET_BOUND")
@@ -350,12 +356,20 @@ class AudioBridge(accessible.AtspiBridge):
         self.role_counts[role_name] = self.role_counts.get(role_name, 0) + 1
         state = self.call(item.get_state_set)
         states = frozenset(name for name, value in self.states.items() if state.contains(value))
-        if "defunct" in states or (role == "other" and (
-                not self.expected_texts or not accessible.VISIBLE <= states)):
+        if "defunct" in states:
             return accessible.View(item, role, "", states, frozenset())
+        interfaces = frozenset(self.call(item.get_interfaces))
+        native_action = role == "other" and unmapped_action_provider(states, interfaces)
+        if role == "other" and not native_action and (
+                not self.expected_texts or not accessible.VISIBLE <= states):
+            return accessible.View(item, role, "", states, interfaces)
         name = self.call(item.get_name)
         need(type(name) is str and len(name) <= 4096, "ACCESSIBLE_NAME_BOUND")
-        interfaces = frozenset(self.call(item.get_interfaces))
+        if native_action:
+            # WebKit disclosure controls can carry an unmapped role. Their
+            # real Action/Component interfaces, exact name, owner and usable
+            # states still govern the single original UI dispatch.
+            role = "native_action"
         # WebKit may combine inline spans in a container's Text interface.
         # Keep original character offsets and bytes; never manufacture a
         # target name from an expected UUID or accept an editable provider.
@@ -380,7 +394,7 @@ class AudioBridge(accessible.AtspiBridge):
                             "text": content[start:end]})
                 if content in self.expected_texts:
                     name = content
-                    if role == "other":
+                    if role in {"other", "native_action"}:
                         role = "readonly_text"
         return accessible.View(item, role, name, states, interfaces)
 
@@ -664,7 +678,7 @@ class AudioUI:
         opened = self.wait(lambda: self.text("r" + str(revision)))
         self.wait(lambda: self.text(title))
         self.click("Audio", {"button"}, "open-audio")
-        self.click(SUMMARY, {"button", "toggle"}, "open-original-mix")
+        self.click(SUMMARY, {"button", "toggle", "native_action"}, "open-original-mix")
         self.visible("Enable original mix recipe", {"checkbox"}, "enable-mix")
         self.wait(lambda: self.checked("Enable original mix recipe", False))
         self.click("Enable original mix recipe", {"checkbox"}, "enable-mix")
@@ -721,10 +735,10 @@ class AudioUI:
                 "role_counts": self.bridge.role_counts,
                 "readonly_text_candidates": self.bridge.text_candidates,
                 "disclosure_controls": [
-                    {"name": item.name[:256], "states": sorted(item.states),
+                    {"role": item.role, "name": item.name[:256], "states": sorted(item.states),
                      "interfaces": sorted(item.interfaces)}
-                    for item in self.last_views if item.role == "toggle"
-                ][:8]}
+                    for item in self.last_views if item.name and item.role in {"toggle", "native_action"}
+                ][:32]}
 
 def validate_before(before, context, root, database, original_sources):
     need(before.get("schema") == "motionwright.tauri-audio-fixture-before/1"

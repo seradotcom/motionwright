@@ -24,7 +24,8 @@ def pure_module():
     functions = {"need", "equal_json", "exact_json", "validate_ui_observation",
                  "validate_native_records", "validate_saved_readback", "validate_process_closure",
                  "validate_pcm_projection", "validate_before", "read_only_text_provider",
-                 "private_transport_paths", "exact_text_offsets", "screen_rect", "rect_contains"}
+                 "private_transport_paths", "exact_text_offsets", "screen_rect", "rect_contains",
+                 "unmapped_action_provider"}
     classes = {"AudioError", "AudioUI"}
     constants = {"PREVIEW", "AUDITION", "REQUIRED_ACTIONS", "SCROLL_ACTIONS", "SHA256"}
     selected = [node for node in tree.body if
@@ -143,6 +144,19 @@ class AudioJoinTests(unittest.TestCase):
             self.assertFalse(GUARDS.read_only_text_provider(invalid, interfaces))
         self.assertFalse(GUARDS.read_only_text_provider(states, interfaces | {"EditableText"}))
         self.assertFalse(GUARDS.read_only_text_provider(states, interfaces - {"Text"}))
+
+    def test_unmapped_native_action_requires_real_usable_noneditable_interfaces(self):
+        states = frozenset(("visible", "enabled", "sensitive"))
+        interfaces = frozenset(("Accessible", "Action", "Component"))
+        # An off-screen control may be scrolled through its real Component
+        # interface; click still independently requires SHOWING and ownership.
+        self.assertTrue(GUARDS.unmapped_action_provider(states, interfaces))
+        for invalid in (states - {"visible"}, states - {"enabled"},
+                        states - {"sensitive"}, states | {"editable"}, states | {"defunct"}):
+            self.assertFalse(GUARDS.unmapped_action_provider(invalid, interfaces))
+        for invalid in (interfaces - {"Action"}, interfaces - {"Component"},
+                        interfaces | {"EditableText"}):
+            self.assertFalse(GUARDS.unmapped_action_provider(states, invalid))
 
     def test_readonly_text_still_verifies_original_value_and_process(self):
         value = "original-project-identity"
