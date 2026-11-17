@@ -391,6 +391,12 @@ jobs:
           python3 -B -E -s -m unittest discover -s tooling/tests -p test_ci_linux_first_use.py -v
           python3 -B -E -s -m unittest tooling.tests.test_ci_linux_first_use -v
 
+      - name: Reject DEB and AppImage payload divergence in distribution source controls
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'distribution_source'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B -E -s -m unittest discover -s tooling/tests -p test_linux_package_parity.py -v
       - name: Require closed selected source contracts through both entrypoints on Linux
         env:
           SOURCE_CONTRACT_SCOPE: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'distribution_source' && 'distribution_source' || 'nsis_source' }}
@@ -1055,6 +1061,20 @@ jobs:
               inventory.require(reference["bytes"]==seal["bytes"],"inventory_producer_length_changed")
               inventory.capture.write_new(repo/(prefix+".consumer.json"),inventory.capture.encoded(reference))
           PY_PACKAGE_CONSUMER
+      - name: Reject divergent DEB and AppImage installed application payloads
+        shell: bash
+        env:
+          MW_DEB_PACKAGE_INVENTORY_SHA256: ${{ steps.first_use_package_inventory.outputs.deb_inventory_sha256 }}
+          MW_APPIMAGE_PACKAGE_INVENTORY_SHA256: ${{ steps.first_use_package_inventory.outputs.appimage_inventory_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -B -E -s tooling/linux_package_parity.py \
+            --deb ci-evidence/linux-deb-package-inventory/inventory.json \
+            --appimage ci-evidence/linux-appimage-package-inventory/inventory.json \
+            --expected-source "$GITHUB_SHA" \
+            --expected-deb-sha256 "$MW_DEB_PACKAGE_INVENTORY_SHA256" \
+            --expected-appimage-sha256 "$MW_APPIMAGE_PACKAGE_INVENTORY_SHA256" \
+            --output ci-evidence/linux-package-parity.json
       - name: Preserve original installed Linux package inventories
         if: ${{ always() && steps.first_use_package_inventory.outcome != 'skipped' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -1083,6 +1103,7 @@ jobs:
             ci-evidence/linux-appimage-package-inventory/extract.subtree.original
             ci-evidence/linux-appimage-package-inventory/extract.binding.json
             ci-evidence/linux-appimage-package-inventory/extract.closure.json
+            ci-evidence/linux-package-parity.json
           if-no-files-found: warn
           retention-days: 30
       - name: Retain bounded first-use originals without following application data links
