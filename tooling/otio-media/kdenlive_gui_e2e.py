@@ -65,6 +65,9 @@ SOURCE_PATHS = (
     "tooling/otio-media/test_kdenlive_initial_save.py",
     "tooling/otio-media/test_kdenlive_accessibility_preflight.py",
     "tooling/otio-media/kdenlive_complete_g2_fixture.py",
+    "tooling/otio-media/kdenlive_firstparty_audio_track.py",
+    "tooling/otio-media/test_kdenlive_firstparty_audio_track.py",
+    "tooling/otio-media/test_kdenlive_audio_roundtrip.py",
     "tooling/otio-media/kdenlive_live_process.py",
     "tooling/otio-media/test_kdenlive_live_process.py",
     "tooling/otio-media/kdenlive_readback.py",
@@ -1553,8 +1556,10 @@ def run_selected_native(scope: str, appdir: Path, binary: Path, binary_sha: str,
     records.document("existing-complete-fixture.json", source)
     records.emit({"step": "existing-complete-fixture", "state": "RETURNED"})
     relocation = relocate_capsule_once(before_relocation, capsule, records)
+    audio_options = ({"firstparty_audio": True}
+                     if source.get("firstparty_audio_source") is not None else {})
     result = run_route(appdir, binary, binary_sha, capsule, records, profile,
-                       source_database=source_database)
+                       source_database=source_database, **audio_options)
     require(result.get("owner_cut_completion", {}).get("sqlite_owner_cut_committed") is True,
             "native_gui_owner_cut_completion_not_observed")
     require(result.get("native_source_cycle", {}).get("native_source_import_committed") is True
@@ -1868,11 +1873,15 @@ def require_original_firstparty_model(preview: dict) -> None:
 
 def save_initial_firstparty_project(first, capsule: Path, records,
                                     initial: Path, received: Path,
-                                    manifest_sha: str) -> tuple[str, str]:
+                                    manifest_sha: str, *,
+                                    firstparty_audio: bool = False) -> tuple[str, str]:
     # A real resize and restoration refresh the last imported cut's playlist
     # interval. Each effect has its own intent and observation; no replay or
     # compensating action follows an uncertain effect.
+    require(type(firstparty_audio) is bool, "native_gui_audio_profile_invalid")
     first.ui.refresh_third_clip_playlist()
+    if firstparty_audio:
+        first.ui.refresh_third_clip_playlist(track_kind="Audio")
     first.ui.export_otio("import.export", received)
     received_sha = digest(received, MAX_OTIO)
     first.guard()
@@ -1903,7 +1912,11 @@ def save_initial_firstparty_project(first, capsule: Path, records,
 def run_route(appdir: Path, binary: Path, binary_sha: str,
               capsule: Path, records: Recorder, profile: Path,
               source_database: Path | None = None, *, retained_alab=None,
-              alab_source_input: dict | None = None) -> dict:
+              alab_source_input: dict | None = None,
+              firstparty_audio: bool = False) -> dict:
+    require(type(firstparty_audio) is bool
+            and (not firstparty_audio or retained_alab is None),
+            "native_gui_audio_profile_invalid")
     require((retained_alab is None) == (alab_source_input is None),
             "alab_route_requires_original_source_and_retained_media_together")
     require(retained_alab is None or source_database is not None,
@@ -1922,8 +1935,9 @@ def run_route(appdir: Path, binary: Path, binary_sha: str,
     first.ui.menu("import.otio-menu", "File", "OpenTimelineIO Import...")
     first.ui.file_dialog("import.otio", ("OpenTimelineIO Import",), original, "Open")
     if retained_alab is None:
+        audio_options = {"firstparty_audio": True} if firstparty_audio else {}
         initial_sha, received_sha = save_initial_firstparty_project(
-            first, capsule, records, initial, received, manifest_sha)
+            first, capsule, records, initial, received, manifest_sha, **audio_options)
     else:
         first.ui.save_as("import.save", initial)
         first.ui.export_otio("import.export", received)
@@ -1943,6 +1957,8 @@ def run_route(appdir: Path, binary: Path, binary_sha: str,
                            "reopen", reopen_input=initial)
     if retained_alab is None:
         second.ui.edit_third_clip()
+        if firstparty_audio:
+            second.ui.edit_third_clip(track_kind="Audio")
     else:
         edit_alab_second_clip(second.ui)
     second.ui.save_as("reopen.save", edited)

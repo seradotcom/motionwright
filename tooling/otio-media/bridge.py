@@ -22,6 +22,7 @@ import threading
 import time
 from urllib.parse import unquote, urlsplit
 import zipfile
+import kdenlive_firstparty_audio_track as firstparty_audio_track
 
 # The existing shared custodian owns the sole held-FD read implementation.
 # Resolve the trusted module location, never a source-data pathname.
@@ -309,11 +310,16 @@ def validate_existing_otio(project:dict,source:dict)->list[dict]:
 
 def export_portable(root:Path,request:dict,output:Path,
                     *,retained_alab:_RetainedAlabObservation|None=None,
-                    source_notices:dict|None=None)->dict:
+                    source_notices:dict|None=None,
+                    firstparty_audio:dict|None=None)->dict:
     root=root.resolve(strict=True)
     insist(root.is_dir() and not output.exists() and output.parent.is_dir() and
            not output.parent.is_symlink(),"Export requires an existing owner root and a new destination")
     notice_bytes=_validate_alab_source_notices(source_notices,retained_alab)
+    insist(firstparty_audio is None or retained_alab is None,
+           "First-party source audio cannot select the retained ALab profile")
+    if firstparty_audio is not None:
+        firstparty_audio_track.source_profile(firstparty_audio)
     entry=exact(request,{"schema","project","otio","bindings","owner_review"},"Portable export request")
     insist(entry["schema"]==SCHEMA,"Unknown portable OTIO export contract")
     input_originals={}
@@ -498,6 +504,18 @@ def export_portable(root:Path,request:dict,output:Path,
         original["metadata"]["motionwright"]["retained_source_binding"]=_retained_source_binding(retained_alab)
         manifest["original_source_notices"]=_alab_source_notice_records()
         original["metadata"]["motionwright"]["original_source_notices"]=_alab_source_notice_records()
+    if firstparty_audio is not None:
+        ordered_bindings = [
+            {"scene_id": scene["id"], "asset_id": verified[scene["id"]]["asset_id"],
+             "sha256": verified[scene["id"]]["source_sha256"],
+             "source_start_frame": verified[scene["id"]]["source_start_frame"]}
+            for scene in project["scenes"] if scene["id"] in verified
+        ]
+        descriptor = firstparty_audio_track.attach_firstparty_audio(
+            original, ordered_bindings, firstparty_audio)
+        manifest["firstparty_audio_track"] = descriptor
+        original["metadata"]["motionwright"]["firstparty_audio_track"] = descriptor
+        loss.append("The selected first-party AAC companion track represents the same three source intervals as video. This does not round-trip project voice/music cues or establish native audio fidelity.")
     archive_data=json.dumps(original,sort_keys=True,ensure_ascii=False,indent=2).encode()+b"\n"
     manifest["otio_sha256"]=sha_bytes(archive_data)
     with tempfile.TemporaryDirectory(prefix=".mw-portable-cut-",dir=output.parent)as scratch:
@@ -596,6 +614,42 @@ def _native_cut_commands(original_ids:list[str],observed_order:list[str],
            "Too many source revision updates for bounded OTIO cut")
     return commands
 
+def _require_firstparty_audio_track(timeline:dict,manifest:dict,*,allow_bounded_edit:bool=False)->bool:
+    descriptor = manifest.get("firstparty_audio_track")
+    metadata = timeline.get("metadata", {})
+    inherited = metadata.get("motionwright", {}) if type(metadata) is dict else {}
+    insist(type(inherited) is dict
+           and firstparty_audio_track.same_json(
+               inherited.get("firstparty_audio_track"), descriptor),
+           "First-party audio source descriptor changed from the original capsule")
+    if descriptor is None:
+        return False
+    rows, order = manifest.get("bound_media"), manifest.get("scene_order")
+    insist(type(rows) is list and len(rows) == 3
+           and all(type(row) is dict for row in rows)
+           and type(order) is list and len(order) == 3
+           and all(type(scene) is str for scene in order)
+           and len(set(order)) == 3,
+           "First-party audio source bindings are incomplete")
+    by_scene = {row.get("scene_id"): row for row in rows
+                if type(row.get("scene_id")) is str}
+    insist(len(by_scene) == 3 and set(by_scene) == set(order),
+           "First-party audio source scenes differ from the original capsule")
+    bindings = [
+        {"scene_id": scene, "asset_id": by_scene[scene].get("asset_id"),
+         "sha256": by_scene[scene].get("source_sha256"),
+         "source_start_frame": by_scene[scene].get("source_start_frame")}
+        for scene in order
+    ]
+    try:
+        validate = (firstparty_audio_track.require_edited_audio_track if allow_bounded_edit
+                    else firstparty_audio_track.require_original_audio_track)
+        validate(timeline,descriptor,bindings)
+    except firstparty_audio_track.AudioTrackRejected as error:
+        raise BridgeRefused(str(error)) from error
+    return True
+
+
 def import_preview(bundle:Path,edit_name:str,current_project:Path,
                    *,retained_alab:_RetainedAlabObservation|None=None)->dict:
     insist(current_project.is_file() and not current_project.is_symlink(),
@@ -667,8 +721,17 @@ def import_preview(bundle:Path,edit_name:str,current_project:Path,
            and len(manifest["property_fidelity"])==12 and
            inherited.get("property_fidelity")==manifest["property_fidelity"],
            "NLE cut removed or rewrote the explicit per-property fidelity/loss declarations")
+    if manifest.get("firstparty_audio_track") is not None and edit_name != "timeline.otio":
+        original_path, original_raw, original_observed = capture_owner_original(root,"timeline.otio",MAX_JSON)
+        insist(original_observed["sha256"] == manifest.get("otio_sha256"),
+               "Original audio timeline changed from its manifest-bound bytes")
+        _require_firstparty_audio_track(strict_json(original_raw,"original audio timeline"),manifest)
+    source_audio = _require_firstparty_audio_track(
+        edited,manifest,allow_bounded_edit=edit_name != "timeline.otio")
+    insist(not source_audio or retained_alab is None,
+           "First-party audio cannot widen the retained ALab contract")
     all_tracks=edited.get("tracks",{}).get("children",[])
-    insist(isinstance(all_tracks,list) and len(all_tracks)==1 and
+    insist(isinstance(all_tracks,list) and len(all_tracks)==(2 if source_audio else 1) and
            all_tracks[0].get("OTIO_SCHEMA")=="Track.1" and
            all_tracks[0].get("kind")=="Video" and
            not all_tracks[0].get("effects") and not all_tracks[0].get("markers"),
@@ -796,7 +859,7 @@ def _nle_name(value:object)->str:
                  "native_name_unavailable","Native clip name must be observed and bounded")
     return value
 
-def _nle_clips(timeline:dict)->list[dict]:
+def _nle_clips(timeline:dict,*,expected_kind:str="Video")->list[dict]:
     """Read a closed Clip.1 / single-reference Clip.2 data profile, never rewrite RAW."""
     _nle_fields(timeline,{"OTIO_SCHEMA","tracks"},
                 {"name","metadata","global_start_time"},"NLE Timeline")
@@ -811,7 +874,8 @@ def _nle_clips(timeline:dict)->list[dict]:
     _nle_require(isinstance(tracks,list) and len(tracks)==1,"track_set_changed",
                  "Bounded return needs exactly one video track, without audio or subtitle tracks")
     track=_nle_fields(tracks[0],{"OTIO_SCHEMA","kind","children"},common,"NLE Track")
-    _nle_require(track["OTIO_SCHEMA"]=="Track.1" and track["kind"]=="Video",
+    _nle_require(expected_kind in ("Video","Audio")
+                 and track["OTIO_SCHEMA"]=="Track.1" and track["kind"]==expected_kind,
                  "track_set_changed","Bounded return needs an admitted video track")
     _nle_clean(track,"NLE Track")
     clips=track["children"]
@@ -878,6 +942,34 @@ def _nle_clips(timeline:dict)->list[dict]:
                      "timeline_interval_changed",
                      "Native global clock is shifted or has a different rate")
     return observations
+
+def _nle_audio_video_clips(timeline:dict)->list[dict]:
+    """Read two original native tracks without rewriting either RAW document."""
+    _nle_require(type(timeline) is dict and type(timeline.get("tracks")) is dict,
+                 "track_set_changed","Native AV timeline has no original stack")
+    stack=timeline["tracks"]
+    tracks=stack.get("children")
+    _nle_require(type(tracks) is list and len(tracks)==2
+                 and all(type(track) is dict for track in tracks)
+                 and sorted(str(track.get("kind")) for track in tracks)==["Audio","Video"],
+                 "track_set_changed","Native AV return requires one audio and one video track")
+    observations={}
+    for track in tracks:
+        kind=track["kind"]
+        # This bounded view selects an original track; references, metadata and
+        # clocks remain untouched and are checked by the same native parser.
+        view={**timeline,"tracks":{**stack,"children":[track]}}
+        observations[kind]=_nle_clips(view,expected_kind=kind)
+    video,audio=observations["Video"],observations["Audio"]
+    _nle_require(len(video)==len(audio),"source_audio_intervals_changed",
+                 "Native audio omitted or added a video source interval")
+    fields=("target","start","duration","fps","available_frames")
+    _nle_require(all(all(v[field]==a[field] for field in fields)
+                     for v,a in zip(video,audio)),
+                 "source_audio_intervals_changed",
+                 "Native audio source or timing differs from its video companion")
+    return video
+
 
 def _nle_resolve_plain_path(path:Path,message:str,*,directory:bool=False)->Path:
     try:
@@ -1045,8 +1137,12 @@ def preview_kdenlive_cut(bundle:Path,raw_root:Path,request:dict,current_project:
             _nle_require(key not in keys,"ambiguous_source_identity",
                          "Repeated media with the same original inpoint cannot identify a scene uniquely")
             keys[key]=row
-        first=_nle_clips(received)
-        last=_nle_clips(edited)
+        source_audio = manifest.get("firstparty_audio_track") is not None
+        native_clips = _nle_audio_video_clips if source_audio else _nle_clips
+        first=native_clips(received)
+        last=native_clips(edited)
+        if source_audio:
+            result["loss_report"].append("Native OTIO audio and video source intervals agree in both originals. This structural readback does not establish decoded PCM fidelity or human acceptance.")
         result["received_clip_count"]=len(first)
         result["edited_clip_count"]=len(last)
         _nle_require(not result["original_missing_scene_ids"] and len(keys)==len(original_ids),

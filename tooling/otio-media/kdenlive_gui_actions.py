@@ -1220,8 +1220,19 @@ class AtspiSession:
         self.journal.wait(step + ".readback", lambda: any(
             r["key"] == row["key"] and r["text"] == value for r in self.tree()))
 
-    def key(self, step: str, symbol: int, *, expected_window: int | None = None) -> None:
+    def key(self, step: str, symbol: int, *, expected_window: int | None = None,
+            audio_track: bool = False) -> None:
+        require(type(audio_track) is bool, "native_gui_audio_track_selection_invalid")
         keys = {0xFF0D: "Return", 0x0031: "1"}
+        if audio_track:
+            require(symbol == 0x0031 and expected_window is None and step in (
+                "import.audio-playlist-refresh.select-audio-track1",
+                "edit.audio.select-audio-track1",
+            ), "native_gui_audio_track_key_not_in_closed_route")
+            # Pinned Kdenlive's Select Audio Track 1 uses Alt+1. The owned
+            # X11 window and the subsequent native interval readback still
+            # bind the effect; a shortcut return is not selection evidence.
+            keys[0x0031] = "alt+1"
         if symbol == 0xFF53:
             # Only the owner-bound 26.08.3 Render presets tree permits a
             # Right expansion after a separate AT-SPI category focus readback.
@@ -1813,7 +1824,7 @@ class AtspiSession:
         # including edit_third_clip; neither caller may act on a partial tree.
         return self.journal.wait(step, observed)
 
-    def refresh_third_clip_playlist(self) -> dict:
+    def refresh_third_clip_playlist(self, *, track_kind: str = "Video") -> dict:
         """Apply two observed end trims before a separately verified Export/Save.
 
         Kdenlive's slip changes a cut; its playlist can retain older in/out
@@ -1821,16 +1832,21 @@ class AtspiSession:
         proves that edit. The second opening must observe the applied 29-frame
         duration before a distinct restoration request is permitted.
         """
-        prefix = "import.playlist-refresh"
+        require(track_kind in ("Video", "Audio"), "native_gui_refresh_track_not_admitted")
+        prefix = ("import.playlist-refresh" if track_kind == "Video"
+                  else "import.audio-playlist-refresh")
+        started = ("_playlist_refresh_started" if track_kind == "Video"
+                   else "_audio_playlist_refresh_started")
         require(not self.journal.blocked, "native_gui_previous_action_uncertain")
-        if getattr(self, "_playlist_refresh_started", False):
+        if getattr(self, started, False):
             original = GuiRejected("native_gui_playlist_refresh_replay_refused")
             self.journal._record_failure(prefix + ".replay", "OBSERVATION_ERROR_OR_UNKNOWN", original)
             raise original
-        self._playlist_refresh_started = True
+        setattr(self, started, True)
         state = {"phase": "STARTED", "accept_attempts": 0,
                  "shortened_duration_reobserved": False}
-        self._playlist_refresh_state = state
+        setattr(self, "_playlist_refresh_state" if track_kind == "Video"
+                else "_audio_playlist_refresh_state", state)
 
         def complete(step):
             return self.journal.wait(step, self._complete_modal_tree)
@@ -1898,7 +1914,10 @@ class AtspiSession:
             position = self._project_monitor_timecode(prefix + ".selection-snapshot")
             self.text(prefix + ".seek75", position, "00:00:02:15")
             self.key(prefix + ".commit-seek", 0xFF0D)
-            self.key(prefix + ".select-video-track1", 0x0031)
+            if track_kind == "Video":
+                self.key(prefix + ".select-video-track1", 0x0031)
+            else:
+                self.key(prefix + ".select-audio-track1", 0x0031, audio_track=True)
             self.menu(prefix + ".select-clip", "Sequence", "Selection", "Select Clip")
 
             state["phase"] = "SHORTEN"
@@ -1952,15 +1971,20 @@ class AtspiSession:
                                              "OBSERVATION_ERROR_OR_UNKNOWN", original)
             raise
 
-    def edit_third_clip(self) -> None:
-        position = self._project_monitor_timecode("edit.selection-snapshot")
-        self.text("edit.seek75", position, "00:00:02:15")
-        self.key("edit.commit-seek", 0xFF0D)
+    def edit_third_clip(self, *, track_kind: str = "Video") -> None:
+        require(track_kind in ("Video", "Audio"), "native_gui_edit_track_not_admitted")
+        prefix = "edit" if track_kind == "Video" else "edit.audio"
+        position = self._project_monitor_timecode(prefix + ".selection-snapshot")
+        self.text(prefix + ".seek75", position, "00:00:02:15")
+        self.key(prefix + ".commit-seek", 0xFF0D)
         # The version-pinned native action maps the '1' key to Video Track 1.
-        self.key("edit.select-video-track1", 0x0031)
-        self.menu("edit.select-clip", "Sequence", "Selection", "Select Clip")
-        self.menu("edit.duration", "Sequence", "Current Item", "Edit Duration")
-        dialog = self.dialog("edit.duration-dialog", ("Duration",))
+        if track_kind == "Video":
+            self.key(prefix + ".select-video-track1", 0x0031)
+        else:
+            self.key(prefix + ".select-audio-track1", 0x0031, audio_track=True)
+        self.menu(prefix + ".select-clip", "Sequence", "Selection", "Select Clip")
+        self.menu(prefix + ".duration", "Sequence", "Current Item", "Edit Duration")
+        dialog = self.dialog(prefix + ".duration-dialog", ("Duration",))
         rows = self.descendants(dialog)
         fields = [labeled_field(rows, (label,)) for label in
                   ("Position:", "Crop start:", "Duration:")]
@@ -1968,27 +1992,27 @@ class AtspiSession:
         require(not any(r["visible"] and normalized(r["name"]) ==
                         "Apply duration to all items" for r in rows),
                 "native_gui_multiple_clip_duration_refused")
-        self.journal.emit({"step": "edit.duration-precondition",
+        self.journal.emit({"step": prefix + ".duration-precondition",
                            "state": "OBSERVED", "fields": fields})
-        self.text("edit.duration15", fields[2], "00:00:00:15")
-        self.key("edit.commit-duration-field", 0xFF0D)
-        dialog = self.dialog("edit.duration-before-accept", ("Duration",))
+        self.text(prefix + ".duration15", fields[2], "00:00:00:15")
+        self.key(prefix + ".commit-duration-field", 0xFF0D)
+        dialog = self.dialog(prefix + ".duration-before-accept", ("Duration",))
         rows = self.descendants(dialog)
         actual = tuple(timecode_frames(labeled_field(rows, (label,))["text"])
                        for label in ("Position:", "Crop start:", "Duration:"))
         require(actual == (60, 60, 15), "native_gui_duration_field_readback_changed")
-        okay = self.journal.wait("edit.accept-discover", lambda: self.find(
+        okay = self.journal.wait(prefix + ".accept-discover", lambda: self.find(
             ("OK",), ("push button",), scope=dialog["key"]))
-        self.action("edit.accept-once", okay)
+        self.action(prefix + ".accept-once", okay)
         # The accepted duration can rebuild the timeline descendants. Closure
         # needs the already observed dialog and two complete owned root rosters,
         # not a traversal of that unrelated tree or a larger child budget.
         closed = self.journal.wait(
-            "edit.dialog-closed",
+            prefix + ".dialog-closed",
             lambda: self._observed_file_dialog_closed(dialog, ("Duration",)))
         self.journal.blocked = True
         self.journal.emit({
-            "step": "edit.dialog-closed-root-readback",
+            "step": prefix + ".dialog-closed-root-readback",
             "state": "ORIGINAL_DIALOG_CLOSED_OBSERVED",
             "observed": closed, "native_operation_retried": False,
             "native_edit_verified": False, "native_save_verified": False,
