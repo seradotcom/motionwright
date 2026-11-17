@@ -25,8 +25,6 @@ import time
 import tomllib
 from pathlib import Path
 
-from native_blender_foreground import ForegroundDaemonTerminal
-
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_LOCK = json.loads((ROOT / "SOURCE_LOCK.json").read_text(encoding="utf-8"))
 PIN = SOURCE_LOCK["dependencies"]["semwright"]["revision"]
@@ -842,6 +840,11 @@ def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
         )
         if operator_console:
             if phase_foreground:
+                # Existing source-only loaders do not need the Linux phase helper.
+                if __package__:
+                    from .native_blender_foreground import ForegroundDaemonTerminal
+                else:
+                    from native_blender_foreground import ForegroundDaemonTerminal
                 phase_terminal = ForegroundDaemonTerminal(
                     daemon, acquire_foreground_daemon_terminal, restore_foreground_daemon_terminal)
                 state["foreground_terminal_transitions"] = phase_terminal.transitions
