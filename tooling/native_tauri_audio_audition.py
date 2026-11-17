@@ -279,6 +279,38 @@ def read_only_text_provider(states, interfaces):
             and "EditableText" not in interfaces)
 
 
+def exact_text_offsets(text, value):
+    need(type(text) is str and len(text) <= 4096, "UI_TEXT_PROVIDER_BOUND")
+    need(type(value) is str and 0 < len(value) <= 256, "UI_TEXT_TARGET_BOUND")
+    token = lambda char: char.isalnum() or char in "_-"
+    result, start = [], 0
+    while True:
+        at = text.find(value, start)
+        if at < 0:
+            return result
+        end = at + len(value)
+        if ((at == 0 or not token(value[0]) or not token(text[at - 1]))
+                and (end == len(text) or not token(value[-1]) or not token(text[end]))):
+            result.append((at, end))
+            need(len(result) <= 8, "UI_TEXT_RANGE_AMBIGUITY")
+        start = at + 1
+
+
+def screen_rect(value):
+    rectangle = tuple(getattr(value, key) for key in ("x", "y", "width", "height"))
+    need(all(type(item) is int and abs(item) <= 32768 for item in rectangle)
+         and rectangle[2] > 0 and rectangle[3] > 0, "UI_TEXT_RECT_INVALID")
+    return rectangle
+
+
+def rect_contains(outer, inner):
+    x, y, width, height = outer
+    left, top, inner_width, inner_height = inner
+    return (x <= left and y <= top
+            and left + inner_width <= x + width
+            and top + inner_height <= y + height)
+
+
 def private_transport_paths(root):
     paths = {"XDG_RUNTIME_DIR": root / "r", "TMPDIR": root / "t"}
     need(all(len(os.fsencode(path)) <= 70 for path in paths.values()),
@@ -291,6 +323,8 @@ class AudioBridge(accessible.AtspiBridge):
         super().__init__(api, glib=glib, deadline=deadline)
         self.expected_texts = frozenset()
         self.role_counts = {}
+        self.text_ranges = []
+        self.text_candidates = []
         for key, label in (("CHECK_BOX", "checkbox"), ("TOGGLE_BUTTON", "toggle"),
                            ("COMBO_BOX", "combo"), ("MENU", "menu"), ("MENU_ITEM", "option"),
                            ("RADIO_MENU_ITEM", "option"), ("LIST_ITEM", "option"),
@@ -322,16 +356,30 @@ class AudioBridge(accessible.AtspiBridge):
         name = self.call(item.get_name)
         need(type(name) is str and len(name) <= 4096, "ACCESSIBLE_NAME_BOUND")
         interfaces = frozenset(self.call(item.get_interfaces))
-        # WebKit may expose a span's contents on a generic container's Text
-        # interface instead of a static-label role. Read the actual value only
-        # for an exact bounded target; never infer it from the requested text.
+        # WebKit may combine inline spans in a container's Text interface.
+        # Keep original character offsets and bytes; never manufacture a
+        # target name from an expected UUID or accept an editable provider.
         if self.expected_texts and read_only_text_provider(states, interfaces):
             count = self.call(self.api.Text.get_character_count, item)
             need(type(count) is int and count >= 0, "ACCESSIBLE_TEXT_BOUND")
-            if count in {len(value) for value in self.expected_texts}:
-                value = self.read_text(item)
-                if value in self.expected_texts:
-                    name = value
+            if 0 < count <= 4096:
+                content = self.call(self.api.Text.get_text, item, 0, count)
+                need(type(content) is str and len(content) == count,
+                     "ACCESSIBLE_TEXT_LENGTH_CHANGED")
+                content_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                if len(self.text_candidates) < 64:
+                    self.text_candidates.append({"role": role_name, "characters": count,
+                        "text_prefix": content[:512], "sha256": content_sha,
+                        "prefix_truncated": count > 512})
+                for value in self.expected_texts:
+                    for start, end in exact_text_offsets(content, value):
+                        need(len(self.text_ranges) < 32, "UI_TEXT_PROVIDER_AMBIGUITY")
+                        self.text_ranges.append({"node": item, "role": role_name,
+                            "interfaces": interfaces, "start": start, "end": end,
+                            "characters": count, "provider_text_sha256": content_sha,
+                            "text": content[start:end]})
+                if content in self.expected_texts:
+                    name = content
                     if role == "other":
                         role = "readonly_text"
         return accessible.View(item, role, name, states, interfaces)
@@ -357,6 +405,8 @@ class AudioUI:
         app = accessible.unique([item for item in applications
                                  if self.bridge.pid(item) == self.binding["pid"]], "APPLICATION")
         self.bridge.role_counts = {}
+        self.bridge.text_ranges = []
+        self.bridge.text_candidates = []
         views = accessible.walk(self.bridge, app)
         self.last_views = views
         self.identity()
@@ -432,13 +482,57 @@ class AudioUI:
                  and item.role in {"static", "label", "heading", "status", "paragraph", "text", "readonly_text"}
                  and "editable" not in item.states and "EditableText" not in item.interfaces]
         if not found:
-            raise accessible.NotReady("EXACT_UI_TEXT_NOT_OBSERVED")
+            return self.observed_text_ranges(value, observed)
         need(len(found) <= 8, "UI_TEXT_AMBIGUITY")
         for item in found:
             need(self.bridge.owner_pid(item.node) == self.binding["pid"], "UI_TEXT_OWNER_CHANGED")
             if "Text" in item.interfaces:
                 need(self.bridge.read_text(item.node) == value, "UI_NAME_TEXT_DISAGREE")
         return {"text": value, "matches": len(found)}
+
+    def observed_text_ranges(self, value, observed):
+        candidates = [item for item in self.bridge.text_ranges if item["text"] == value]
+        if not candidates:
+            raise accessible.NotReady("EXACT_UI_TEXT_NOT_OBSERVED")
+        frames = [item for item in observed if item.role == "frame"
+                  and accessible.VISIBLE <= item.states and "defunct" not in item.states
+                  and "Component" in item.interfaces]
+        frame = accessible.unique(frames, "TEXT_OWNER_WINDOW")
+        need(self.bridge.owner_pid(frame.node) == self.binding["pid"], "UI_TEXT_WINDOW_OWNER_CHANGED")
+        api = self.bridge.api
+        window = screen_rect(self.bridge.call(
+            api.Component.get_extents, frame.node, api.CoordType.SCREEN))
+        witnesses = []
+        for candidate in candidates:
+            node = candidate["node"]
+            need(self.bridge.owner_pid(node) == self.binding["pid"], "UI_TEXT_OWNER_CHANGED")
+            state = self.bridge.call(node.get_state_set)
+            states = frozenset(name for name, flag in self.bridge.states.items() if state.contains(flag))
+            interfaces = frozenset(self.bridge.call(node.get_interfaces))
+            need(read_only_text_provider(states, interfaces), "UI_TEXT_PROVIDER_NOT_READONLY")
+            if "Component" not in interfaces:
+                continue
+            count = self.bridge.call(api.Text.get_character_count, node)
+            if count != candidate["characters"]:
+                raise accessible.NotReady("UI_TEXT_PROVIDER_CHANGED")
+            actual = self.bridge.call(api.Text.get_text, node, candidate["start"], candidate["end"])
+            need(type(actual) is str and actual == value, "UI_TEXT_RANGE_DISAGREE")
+            provider = screen_rect(self.bridge.call(
+                api.Component.get_extents, node, api.CoordType.SCREEN))
+            rectangle = screen_rect(self.bridge.call(api.Text.get_range_extents, node,
+                candidate["start"], candidate["end"], api.CoordType.SCREEN))
+            if not (rect_contains(window, provider) and rect_contains(provider, rectangle)
+                    and rect_contains(window, rectangle)):
+                continue
+            witnesses.append({key: candidate[key] for key in (
+                "role", "start", "end", "characters", "provider_text_sha256", "text")})
+            witnesses[-1].update(screen_rectangle=list(rectangle),
+                                provider_rectangle=list(provider), window_rectangle=list(window))
+        if not witnesses:
+            raise accessible.NotReady("EXACT_UI_TEXT_RANGE_NOT_VISIBLE")
+        need(len(witnesses) <= 8, "UI_TEXT_AMBIGUITY")
+        self.identity()
+        return {"text": value, "matches": len(witnesses), "original_text_ranges": witnesses}
 
     def selection(self, combo):
         # Closed HTML select shapes: direct options, or one menu child. The
@@ -616,7 +710,8 @@ class AudioUI:
         return {"last_condition": self.last_condition, "actions": self.events,
                 "visible_controls": rows[:64], "truncated": len(rows) > 64,
                 "text_observations": texts[:128], "text_truncated": len(texts) > 128,
-                "role_counts": self.bridge.role_counts}
+                "role_counts": self.bridge.role_counts,
+                "readonly_text_candidates": self.bridge.text_candidates}
 
 def validate_before(before, context, root, database, original_sources):
     need(before.get("schema") == "motionwright.tauri-audio-fixture-before/1"

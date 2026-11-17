@@ -23,7 +23,7 @@ def pure_module():
     functions = {"need", "equal_json", "exact_json", "validate_ui_observation",
                  "validate_native_records", "validate_saved_readback", "validate_process_closure",
                  "validate_pcm_projection", "validate_before", "read_only_text_provider",
-                 "private_transport_paths"}
+                 "private_transport_paths", "exact_text_offsets", "screen_rect", "rect_contains"}
     classes = {"AudioError", "AudioUI"}
     constants = {"PREVIEW", "AUDITION", "REQUIRED_ACTIONS", "SCROLL_ACTIONS", "SHA256"}
     selected = [node for node in tree.body if
@@ -38,7 +38,8 @@ def pure_module():
     namespace = {"uuid": uuid, "re": re, "json": json, "time": time, "os": os,
                  "pcm": SimpleNamespace(WAV_BYTES=384044, FRAMES=96000),
                  "accessible": SimpleNamespace(VISIBLE=frozenset(("visible", "showing")),
-                                                NotReady=RuntimeError)}
+                                                NotReady=RuntimeError,
+                                                unique=lambda items, _: items[0] if len(items) == 1 else None)}
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(PATH), "exec"), namespace)
     return SimpleNamespace(**namespace)
 
@@ -144,7 +145,7 @@ class AudioJoinTests(unittest.TestCase):
 
     def test_readonly_text_still_verifies_original_value_and_process(self):
         value = "original-project-identity"
-        bridge = SimpleNamespace(owner_pid=lambda _: 7, read_text=lambda _: value)
+        bridge = SimpleNamespace(owner_pid=lambda _: 7, read_text=lambda _: value, text_ranges=[])
         ui = GUARDS.AudioUI(bridge, None, {"pid": 7}, {}, None, time.monotonic() + 5)
         item = SimpleNamespace(node=object(), role="readonly_text", name=value,
                                states=frozenset(("visible", "showing")),
@@ -169,6 +170,93 @@ class AudioJoinTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "EXACT_UI_TEXT_NOT_OBSERVED"):
             ui.text(value)
         self.assertEqual(bridge.expected_texts, frozenset())
+
+    def test_inline_text_offsets_preserve_exact_characters_and_token_boundaries(self):
+        value = "01a1e973-9421-72e5-bfeb-a5e9c4fedf44"
+        text = "Native render E2E\nRevision 13 · today\n" + value + "\nOpen"
+        start = text.index(value)
+        self.assertEqual(GUARDS.exact_text_offsets(text, value), [(start, start + len(value))])
+        for changed in ("x" + value, value + "f", value + "-copy", value.upper()):
+            self.assertEqual(GUARDS.exact_text_offsets(changed, value), [])
+        self.assertEqual(GUARDS.exact_text_offsets("r130 r13x xr13", "r13"), [])
+        self.assertEqual(GUARDS.exact_text_offsets("Version r13 · saved", "r13"), [(8, 11)])
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_TEXT_PROVIDER_BOUND"):
+            GUARDS.exact_text_offsets("a" * 4097, "a")
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_TEXT_RANGE_AMBIGUITY"):
+            GUARDS.exact_text_offsets("r13 " * 9, "r13")
+
+    def inline_text_model(self):
+        value = "original-project-identity"
+        content = "Stored project\n" + value + "\nOpen"
+        start = content.index(value)
+        rectangle = lambda x,y,w,h: SimpleNamespace(x=x,y=y,width=w,height=h)
+        node = SimpleNamespace(owner=7, content=content, actual=value,
+            states={"visible","showing"}, interfaces={"Text","Component"},
+            bounds=rectangle(20,20,500,200), text_bounds=rectangle(40,80,230,18))
+        node.get_state_set = lambda: SimpleNamespace(contains=lambda key: key in node.states)
+        node.get_interfaces = lambda: node.interfaces
+        frame_node = SimpleNamespace(owner=7, bounds=rectangle(0,0,1280,900))
+        frame = SimpleNamespace(node=frame_node, role="frame", name="Motionwright",
+            states=frozenset(("visible","showing")), interfaces=frozenset(("Component",)))
+        api = SimpleNamespace(CoordType=SimpleNamespace(SCREEN=0),
+            Component=SimpleNamespace(get_extents=lambda item, _: item.bounds),
+            Text=SimpleNamespace(get_character_count=lambda item: len(item.content),
+                get_text=lambda item, begin, end: item.actual,
+                get_range_extents=lambda item, begin, end, _: item.text_bounds))
+        witness = {"node":node,"role":"list-item","interfaces":frozenset(node.interfaces),
+            "start":start,"end":start+len(value),"characters":len(content),
+            "provider_text_sha256":"a"*64,"text":value}
+        bridge = SimpleNamespace(api=api, owner_pid=lambda item:item.owner,
+            states={key:key for key in ("visible","showing","editable","defunct")},
+            call=lambda function,*args:function(*args), text_ranges=[witness])
+        ui = GUARDS.AudioUI(bridge,None,{"pid":7},{},None,time.monotonic()+5)
+        identities = []
+        ui.identity = lambda: identities.append(True)
+        return ui, node, frame, value, identities
+
+    def test_inline_text_range_keeps_original_offsets_and_visible_owner(self):
+        ui,node,frame,value,identities = self.inline_text_model()
+        result = ui.observed_text_ranges(value,[frame])
+        self.assertEqual(result["text"],value)
+        self.assertEqual(result["matches"],1)
+        proof = result["original_text_ranges"][0]
+        self.assertEqual(node.content[proof["start"]:proof["end"]],value)
+        self.assertEqual(proof["screen_rectangle"],[40,80,230,18])
+        self.assertEqual(identities,[True])
+
+    def test_inline_text_range_rechecks_actual_text_pid_and_readonly_state(self):
+        changes = (
+            ("owner",8,"UI_TEXT_OWNER_CHANGED"),
+            ("actual","another project","UI_TEXT_RANGE_DISAGREE"),
+            ("content","changed","UI_TEXT_PROVIDER_CHANGED"),
+            ("states",{"visible"},"UI_TEXT_PROVIDER_NOT_READONLY"),
+            ("states",{"visible","showing","editable"},"UI_TEXT_PROVIDER_NOT_READONLY"),
+            ("states",{"visible","showing","defunct"},"UI_TEXT_PROVIDER_NOT_READONLY"),
+            ("interfaces",{"Text","Component","EditableText"},"UI_TEXT_PROVIDER_NOT_READONLY"),
+        )
+        for attribute,changed,reason in changes:
+            with self.subTest(reason=reason,attribute=attribute):
+                ui,node,frame,value,_ = self.inline_text_model()
+                setattr(node,attribute,changed)
+                with self.assertRaisesRegex((GUARDS.AudioError,RuntimeError),reason):
+                    ui.observed_text_ranges(value,[frame])
+        ui,node,frame,value,_ = self.inline_text_model()
+        frame.node.owner = 8
+        with self.assertRaisesRegex(GUARDS.AudioError,"UI_TEXT_WINDOW_OWNER_CHANGED"):
+            ui.observed_text_ranges(value,[frame])
+
+    def test_inline_text_range_rejects_clipped_offscreen_and_invalid_rectangles(self):
+        for attribute,rectangle in (
+            ("text_bounds",(40,800,230,18)),
+            ("bounds",(-10,20,500,200)),
+            ("text_bounds",(40,80,0,18)),
+            ("text_bounds",(40,80,True,18)),
+        ):
+            with self.subTest(attribute=attribute,rectangle=rectangle):
+                ui,node,frame,value,_ = self.inline_text_model()
+                setattr(node,attribute,SimpleNamespace(**dict(zip(("x","y","width","height"),rectangle))))
+                with self.assertRaisesRegex((GUARDS.AudioError,RuntimeError),"UI_TEXT_RECT_INVALID|NOT_VISIBLE"):
+                    ui.observed_text_ranges(value,[frame])
 
     def test_actual_empty_recipe_serialization_is_admitted_but_saved_recipe_is_not(self):
         root = Path("/private")
