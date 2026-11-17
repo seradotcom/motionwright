@@ -333,6 +333,76 @@ class SavedAudioCompanionReadbackTests(unittest.TestCase):
         self.assertEqual(len(comparison["bounded_native_end_trims_observed"]), 1)
         self.assertEqual(comparison["bounded_native_end_trims_observed"][0]["reopened_duration_frames"], 15)
 
+    def single_source_xml(self, *, trimmed=False, split=False):
+        import xml.etree.ElementTree as ET
+        tree = ET.fromstring(self.xml(trimmed=trimmed))
+        for chain in tree.findall("chain")[1:]:
+            tree.remove(chain)
+        for entry in tree.findall(".//playlist/entry"):
+            entry.set("producer", "source0")
+        if split:
+            clone = copy.deepcopy(tree.find("./chain[@id='source0']"))
+            clone.set("id", "video_source")
+            for key, value in (("set.test_audio", "1"), ("set.test_image", "0")):
+                ET.SubElement(clone, "property", {"name": key}).text = value
+            tree.insert(2, clone)
+            for entry in tree.findall(".//playlist[@id='video_clips']/entry"):
+                entry.set("producer", "video_source")
+        return ET.tostring(tree)
+
+    def test_realistic_same_source_chain_split_preserves_paired_trim_identity(self):
+        import kdenlive_readback
+        self.export()
+        original = self.readback(self.single_source_xml())
+        edited = self.readback(self.single_source_xml(trimmed=True, split=True),
+                               "split-edited.kdenlive")
+        self.assertEqual(original["distinct_native_MLT_ID_count"], 11)
+        self.assertEqual(edited["distinct_native_MLT_ID_count"], 12)
+        self.assertEqual(edited["bound_audio_video_source_components"],
+                         {"audio": ["source0"], "video": ["video_source"]})
+        result = kdenlive_readback.compare_two_native_custody_snapshots(original, edited)
+        self.assertTrue(result["observed_same_source_audio_video_component_split"])
+        self.assertEqual(result["bounded_native_end_trims_observed"], [{
+            "scene_id": original_fixture.ID(12),
+            "initial_duration_frames": 30, "reopened_duration_frames": 15,
+        }])
+        self.assertFalse(result["external_editor_or_human_acceptance"])
+        self.assertFalse(edited["audio_fidelity_accepted"])
+
+    def test_audio_split_does_not_explain_an_unaccounted_extra_component(self):
+        import xml.etree.ElementTree as ET
+        import kdenlive_readback
+        self.export()
+        original = self.readback(self.single_source_xml())
+        for split in (False, True):
+            with self.subTest(source_split=split):
+                tree = ET.fromstring(self.single_source_xml(trimmed=True, split=split))
+                ET.SubElement(tree, "playlist", {"id": "unrelated_extra_component"})
+                edited = self.readback(ET.tostring(tree), "extra-component.kdenlive")
+                with self.assertRaisesRegex(kdenlive_readback.KdenliveReadbackRejected,
+                                            "unaccounted_MLT_component_count_change"):
+                    kdenlive_readback.compare_two_native_custody_snapshots(original, edited)
+
+    def test_audio_split_does_not_accept_changed_project_geometry(self):
+        import xml.etree.ElementTree as ET
+        import kdenlive_readback
+        self.export()
+        original = self.readback(self.single_source_xml())
+        tree = ET.fromstring(self.single_source_xml(trimmed=True, split=True))
+        tree.find("profile").set("width", "640")
+        edited = self.readback(ET.tostring(tree), "changed-geometry.kdenlive")
+        with self.assertRaisesRegex(kdenlive_readback.KdenliveReadbackRejected,
+                                    "lost_source_or_frame_clock"):
+            kdenlive_readback.compare_two_native_custody_snapshots(original, edited)
+
+    def test_split_video_chain_still_requires_the_original_media_bytes(self):
+        self.export()
+        (self.case.out / "foreign.mp4").write_bytes(b"foreign non-original source")
+        def substitute(tree):
+            tree.find("./chain[@id='video_source']/property[@name='resource']").text = "foreign.mp4"
+        self.rejected_variant(self.single_source_xml(trimmed=True, split=True),
+                              substitute, "playback_media_not_immutable_original_SHA")
+
     def test_audio_companion_cannot_be_admitted_by_a_video_only_capsule(self):
         import kdenlive_readback
         self.export(audio=False)
