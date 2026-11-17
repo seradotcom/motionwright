@@ -297,6 +297,15 @@ def accessible_action_index(names, role, states):
     return choices[0]
 
 
+def source_key_sequence(index, count):
+    # This physical fixture binds exactly two distinct source options.
+    # A keyboard transaction, not AT-SPI Selection.select_child, triggers
+    # React's actual input/change handling on the controlled HTML select.
+    need(type(index) is int and type(count) is int and count == 3
+         and index in (1, 2), "UI_SOURCE_KEYBOARD_OPTION_BUDGET")
+    return ("Home",) + ("Down",) * index + ("Return",)
+
+
 def exact_text_offsets(text, value):
     need(type(text) is str and len(text) <= 4096, "UI_TEXT_PROVIDER_BOUND")
     need(type(value) is str and 0 < len(value) <= 256, "UI_TEXT_TARGET_BOUND")
@@ -611,6 +620,60 @@ class AudioUI:
              "UI_SELECTED_OPTION_OWNER_CHANGED")
         return self.bridge.view(item).name
 
+    def dispatch_source_keyboard(self, combo, sequence, label):
+        # Focus and real key events are restricted to the owned X11 window.
+        # A Selection.select_child ACK is not a React input/change event.
+        need(combo.role == "combo" and "Component" in combo.interfaces
+             and self.bridge.owner_pid(combo.node) == self.binding["pid"],
+             "UI_SOURCE_KEYBOARD_OWNER")
+        need(self.bridge.focus_title(combo.node) is True, "UI_SOURCE_FOCUS_UNCONFIRMED")
+        self.identity()
+        active = subprocess.run(["xprop", "-root", "_NET_ACTIVE_WINDOW"], capture_output=True,
+                                text=True, timeout=min(3, max(0.1, self.deadline - time.monotonic())),
+                                check=False)
+        match = re.fullmatch(r"_NET_ACTIVE_WINDOW\(WINDOW\): window id # (0x[0-9a-fA-F]+)\s*", active.stdout)
+        need(active.returncode == 0 and match
+             and int(match.group(1), 16) == int(self.binding["window"], 16),
+             "UI_SOURCE_KEYBOARD_WRONG_WINDOW")
+        keymap = self.gdk.Keymap.get_for_display(self.gdk.Display.get_default())
+        need(keymap is not None, "UI_SOURCE_KEYMAP_MISSING")
+        modifiers = (self.gdk.ModifierType.SHIFT_MASK | self.gdk.ModifierType.CONTROL_MASK
+                     | self.gdk.ModifierType.MOD1_MASK | self.gdk.ModifierType.SUPER_MASK)
+        need(not keymap.get_modifier_state() & modifiers, "UI_SOURCE_KEYBOARD_MODIFIERS")
+        keys = {}
+        for name in set(sequence):
+            present, entries = keymap.get_entries_for_keyval(self.gdk.keyval_from_name(name))
+            need(present and 1 <= len(entries) <= 16, "UI_SOURCE_HARDWARE_KEY_MISSING")
+            codes = {entry.keycode for entry in entries if entry.group == 0 and entry.level == 0}
+            need(len(codes) == 1, "UI_SOURCE_HARDWARE_KEY_AMBIGUOUS")
+            keys[name] = codes.pop()
+        for index, name in enumerate(sequence):
+            self.journal.put(label + "-key-" + str(index) + "-intent",
+                {"key": name, "hardware_keycode": keys[name], "automatic_retry": False})
+            primary, held = None, False
+            try:
+                held = True  # Even a missing ACK leaves this press uncertain.
+                need(self.bridge.call(self.bridge.api.generate_keyboard_event,
+                    keys[name], None, self.bridge.api.KeySynthType.PRESS) is True,
+                    "UI_SOURCE_KEY_PRESS_UNCONFIRMED")
+            except BaseException as error:
+                primary = error
+            finally:
+                if held:
+                    try:
+                        need(self.bridge.call(self.bridge.api.generate_keyboard_event,
+                            keys[name], None, self.bridge.api.KeySynthType.RELEASE) is True,
+                            "UI_SOURCE_KEY_RELEASE_UNCONFIRMED")
+                    except BaseException as error:
+                        if primary is None:
+                            primary = error
+            if primary is not None:
+                raise primary
+            self.journal.put(label + "-key-" + str(index) + "-return",
+                             {"hardware_press_and_release_acknowledged": True})
+        self.identity()
+        return True
+
     def choose_source(self, name, placeholder, selected, source_labels, label):
         combo = self.visible(name, {"combo"}, label)
         need(accessible.USABLE <= combo.states, "UI_SOURCE_SELECT_DISABLED")
@@ -619,8 +682,8 @@ class AudioUI:
              "UI_SOURCE_OPTION_IDENTITY_OR_ORDER")
         need(self.selected_name(container) == placeholder, "UI_SOURCE_NOT_ORIGINALLY_UNSELECTED")
         index = next(index for index, item in enumerate(options) if item.name == selected)
-        self.effect(label, combo, lambda: self.bridge.call(
-            self.bridge.api.Selection.select_child, container, index))
+        self.effect(label, combo, lambda: self.dispatch_source_keyboard(
+            combo, source_key_sequence(index, len(options)), label))
         def observed():
             current = self.control(name, {"combo"})
             need(current.node == combo.node, "UI_SOURCE_SELECT_REPLACED")
@@ -723,6 +786,9 @@ class AudioUI:
             self.choose_source("Original SFX asset", "No imported base; use authored cues in this cut",
                                labels[1], labels, "select-sfx"),
         ]
+        draft_label = ("Draft source bindings: music " + mix["music_asset_id"]
+                       + "; SFX " + mix["sfx_asset_id"] + ".")
+        draft_sources = self.wait(lambda: self.text(draft_label))
         for label, expected in NUMBERS.items():
             entry = self.visible(label, {"entry", "text"}, "read-" + label.split()[0].lower())
             need("Text" in entry.interfaces and self.bridge.read_text(entry.node) == expected,
@@ -741,7 +807,8 @@ class AudioUI:
         return {"status": "PASS", "binding": self.binding, "project_id": self.before["project_id"],
                 "generation": self.before["generation"], "revision_before": revision,
                 "revision_after": revision + 1, "opened": opened, "sources": selected,
-                "saved": saved, "preview": preview, "actions": self.events,
+                "draft_source_bindings": draft_sources, "saved": saved, "preview": preview,
+                "actions": self.events,
                 "normal_close_requested": True, "playback_or_human_listening_claimed": False,
                 "formal_G2": False, "formal_G3": False, "automatic_retry": False}
 
@@ -1010,8 +1077,13 @@ def validate_ui_observation(ui, before, binding):
          and ui["revision_before"] == before["revision_before"]
          and ui["revision_after"] == before["revision_before"] + 1
          and ui.get("normal_close_requested") is True, "REAL_UI_RESPONSE_NOT_OBSERVED")
+    mix = before["expected_change"]["recipe"]["original_mix"]
+    need(type(mix.get("music_asset_id")) is str and type(mix.get("sfx_asset_id")) is str,
+         "FIXTURE_SOURCE_BINDINGS_REQUIRED")
     for field, expected in (
         ("opened", "r" + str(before["revision_before"])),
+        ("draft_source_bindings", "Draft source bindings: music " + mix["music_asset_id"]
+         + "; SFX " + mix["sfx_asset_id"] + "."),
         ("saved", "Showing saved recipe values at revision r" + str(before["revision_before"] + 1) + "."),
         ("preview", PREVIEW),
     ):

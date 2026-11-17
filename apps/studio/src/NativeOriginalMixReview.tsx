@@ -203,6 +203,9 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
         {selectableSources.map(asset => <option key={asset.id} value={asset.id}>{asset.name} · sha256:{asset.content_sha256?.slice(0, 10)}</option>)}
       </select>
     </label>)}
+    <p className="production-help" role="status">
+      Draft source bindings: music {mixDraft.values.music_asset_id || "none"}; SFX {mixDraft.values.sfx_asset_id || "none"}.
+    </p>
     {selectedProfile && <p className="production-help">Authored SFX cues in this cut: {(() => {
       try { return selectedOriginalMixCues(project, selectedProfile.id).length; }
       catch { return "unavailable"; }

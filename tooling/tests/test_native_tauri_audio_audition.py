@@ -25,7 +25,7 @@ def pure_module():
                  "validate_native_records", "validate_saved_readback", "validate_process_closure",
                  "validate_pcm_projection", "validate_before", "read_only_text_provider",
                  "private_transport_paths", "exact_text_offsets", "screen_rect", "rect_contains",
-                 "unmapped_action_provider", "accessible_action_index"}
+                 "unmapped_action_provider", "accessible_action_index", "source_key_sequence"}
     classes = {"AudioError", "AudioUI"}
     constants = {"PREVIEW", "AUDITION", "REQUIRED_ACTIONS", "SCROLL_ACTIONS", "SHA256"}
     selected = [node for node in tree.body if
@@ -58,7 +58,7 @@ def data():
         "cas_root": {"path": "/private/profile/data/app/blobs",
                      "identity": {"device": 10, "inode": 21, "mode": 16832, "uid": 1000, "gid": 1000}},
         "expected_change": {"type": "set_delivery_recipe", "deliverable_profile_id": ids[2],
-                            "recipe": {"original_mix": {"music_asset_id": "music", "sfx_gain_db": -8.0}}},
+                            "recipe": {"original_mix": {"music_asset_id": "music", "sfx_asset_id": "sfx", "sfx_gain_db": -8.0}}},
         "assets": [{"bus": name, "asset_id": name, "sha256": str(index) * 64}
                    for index, name in enumerate(("voice", "music", "sfx"), 1)],
         "history": [{"revision": 1, "change": {"type": "prior_event"}}],
@@ -69,6 +69,7 @@ def data():
     ui = {"status": "PASS", "binding": deepcopy(binding),
           "project_id": ids[0], "generation": ids[1], "revision_before": 1, "revision_after": 2,
           "opened": {"text": "r1", "matches": 1},
+          "draft_source_bindings": {"text": "Draft source bindings: music music; SFX sfx.", "matches": 1},
           "saved": {"text": "Showing saved recipe values at revision r2.", "matches": 1},
           "preview": {"text": GUARDS.PREVIEW, "matches": 1},
           "actions": list(GUARDS.REQUIRED_ACTIONS), "normal_close_requested": True,
@@ -157,6 +158,37 @@ class AudioJoinTests(unittest.TestCase):
         for invalid in (interfaces - {"Action"}, interfaces - {"Component"},
                         interfaces | {"EditableText"}):
             self.assertFalse(GUARDS.unmapped_action_provider(states, invalid))
+
+    def test_source_keyboard_plans_are_bounded_to_original_two_assets(self):
+        self.assertEqual(GUARDS.source_key_sequence(1, 3), ("Home", "Down", "Return"))
+        self.assertEqual(GUARDS.source_key_sequence(2, 3),
+                         ("Home", "Down", "Down", "Return"))
+        for index, count in ((0, 3), (3, 3), (1, 4), (1, 2), (True, 3), (2, 3.0)):
+            with self.subTest(index=index, count=count), self.assertRaisesRegex(
+                    GUARDS.AudioError, "SOURCE_KEYBOARD_OPTION_BUDGET"):
+                GUARDS.source_key_sequence(index, count)
+
+    def test_keyboard_source_selection_rejects_foreign_process_before_focus(self):
+        owner_queries = []
+        bridge = SimpleNamespace(owner_pid=lambda _: owner_queries.append(True) or 7002)
+        ui = GUARDS.AudioUI(bridge, None, {"pid": 7001}, {}, None, time.monotonic() + 2)
+        combo = SimpleNamespace(role="combo", node=object(),
+                                interfaces=frozenset(("Component",)))
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_SOURCE_KEYBOARD_OWNER"):
+            ui.dispatch_source_keyboard(combo, ("Home", "Down", "Return"), "select-music")
+        self.assertEqual(owner_queries, [True])
+
+    def test_source_binding_witness_cannot_be_omitted_or_substituted(self):
+        before, binding, _, _, _, ui, _, _ = data()
+        self.assertIsNone(GUARDS.validate_ui_observation(ui, before, binding))
+        altered = deepcopy(ui)
+        altered["draft_source_bindings"]["text"] = "Draft source bindings: music music; SFX none."
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_TEXT_OBSERVATION_MISSING"):
+            GUARDS.validate_ui_observation(altered, before, binding)
+        altered = deepcopy(ui)
+        altered.pop("draft_source_bindings")
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_TEXT_OBSERVATION_MISSING"):
+            GUARDS.validate_ui_observation(altered, before, binding)
 
     def test_scroll_ack_refreshes_only_the_owned_control_without_resending(self):
         calls, fresh = [], []
