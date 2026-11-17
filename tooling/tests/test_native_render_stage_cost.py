@@ -213,7 +213,7 @@ class NativeRenderPollingTests(unittest.TestCase):
     @contextmanager
     def polling_fixture(self, statuses, ticks, result=None):
         statuses = iter(statuses)
-        context = {"jobs": []}
+        context = {"selection": "editable-source-cycle", "jobs": []}
         calls = []
         clock = mock.Mock()
         clock.monotonic.side_effect = ticks

@@ -49,15 +49,71 @@ first mediated by Motionwright via Native SDK, second direct. Both
 runs have distinct job identities, and all 60 decoded RGBA frames must
 match exactly across runs.
 
-Independent FFmpeg region inspection of the original native PNG output
-on frames 0/2/8/30 for position and 0/15/30 for opacity additionally
-checks that the new animation is neither static nor linear/jumped.
-The test records actual observed distances and the original source
-SHA; synthetically generated pixels cannot count as native evidence.
+The historical original 43310829074/1 moved X from 1410 to 1510 while
+Y remained 750. Its original position label is retained, but those
+pixels establish X motion only; they cannot establish nonconstant Y.
 
-The 10 extra pure pixel-validator tests, Rust domain/SQLite/SDK tests,
-Studio unit tests and Chromium tests check failure boundaries without
-asserting that pixels alone are a human aesthetic approval.
+The current fixture starts at (1410, 620) and ends at (1510, 750).
+Independent inspection uses one RGB24 crop per sampled position frame,
+at (1370, 580) with dimensions 320 by 300. The solid source rectangle is
+140 by 90 and RGB (119, 198, 250). The same original byte buffer supplies
+both axis measurements, with pixel centers at column+0.5, row+0.5.
+A dense solid-color mask must match the original box, both centroids
+must follow 1-(1-f/30)^3, and all four edges must agree within 1.5 output
+pixels at frames 0/2/8/30. The color-channel tolerance is two levels.
+The area and density bounds account for fractional antialiased edges
+while rejecting a hollow shape or dispersed pixels with a misleading
+centroid. The original FadeIn controls at 0/15/30 remain in place.
+
+Run [44096761232/1](https://github.com/seradotcom/motionwright/actions/runs/44096761232)
+completed this physical X/Y case with Motionwright source
+3586d08552096573dbdcb3f1893ff401709cddde and Semwright
+e60e789035b1afe02df127e510b6be533371f567. Two distinct Native jobs
+produced the 120 original PNGs, all 60 direct/mediated RGBA pairs matched,
+and Host PID 13600 closed with exit code 0 and a quiescent process group.
+Both axes passed at frames 0/2/8/30; the largest observed centroid error
+was 0.2318518518518431 output pixels, within the 1.5-pixel bound.
+
+The independent local metadata read authenticated all 460 snapshot
+members and rechecked 130 original references after closure: eight
+source/result documents, two manifests and 120 PNGs. It preserved
+project 01a1e9ca-403c-7791-80a9-c2b67526dca3, generation
+01a1e9ca-403c-7791-80a9-c2b7dc80c0e9 and revision 7. Its original report
+SHA-256 is d3a0a20b05f8aa6e2001e4decb7589c0a46bf2bbbc1bc9df408036ce8091df63,
+retained under knowledge/runtime/A4/20261117-motioncanvas-cubic-xy/
+physical-run-44096761232/independent-mc-original-review.original.json.
+This read performed no Native operation or additional media decode and
+does not grant formal G2/G3, human visual acceptance or release authority.
+The evidence belongs to the exact source above, including after later
+documentation or integration commits.
+
+The historical frames were not rendered or decoded again for this
+coverage. The original direct/mediated comparison has its separate
+60-pair RGBA decode; only the X/Y oracle shares one crop for both axes.
+
+The existing native-render-e2e workflow also has a closed out-cubic-xy
+development selection. It requires a manual first attempt, the exact
+published source SHA, the SDK pin in SOURCE_LOCK, and an admitted public
+RSA recovery recipient. This selection permits only the original stage,
+two distinct render jobs and one Host: 60 full frames per leg, 120 total.
+The editable-source-cycle selection retains its separate four stages;
+out-cubic-xy cannot enter its edit or reopen commands.
+
+Before Host closure, a private witness binds the original source project,
+Film, selected-SDK binding receipt, manifests and all 120 PNG files by
+size and SHA-256. After closure, the read-only finalizer checks these same
+originals, both axis measurements, complete frame parity and process
+identity. It performs no additional render or media decode. Owner,
+evidence and preflight originals remain in one authenticated encrypted
+capture; only the ciphertext and its closed public manifest are uploaded.
+This development case grants no formal or human acceptance and makes no
+new edit/reopen claim.
+
+The 12 focused pure pixel-validator tests include individually frozen
+and linear axes, instantaneous jumps, swapped displacements, incorrect
+endpoints and misleading shape/color data. They exercise the validator
+only. Synthetic control bytes cannot count as Native evidence or human
+aesthetic approval.
 
 MW05-E01-01 remains PARTIAL: general multi-key curves, shape scale,
 rotation, masking, 3D camera/perspective, text rendering and complete

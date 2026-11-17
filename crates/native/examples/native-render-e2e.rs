@@ -220,7 +220,8 @@ fn real_out_cubic_motion_tile() -> CanvasNode {
     node.z_index = 4;
     node.style.fill = Some("#77C6FA".into());
     node.keyframes[0].value = 1410.0;
-    node.keyframes[1].value = node.y;
+    // Both axes move: the native pixel oracle must detect either axis freezing.
+    node.keyframes[1].value = 620.0;
     node.keyframes[2].value = node.x;
     node.keyframes[3].value = node.y;
     node.keyframes[2].interpolation = MotionInterpolation::EaseOutCubic;
@@ -615,6 +616,28 @@ fn require_cycle_selection() -> Result<(), Box<dyn std::error::Error>> {
         || std::env::var("MOTIONWRIGHT_NATIVE_SCOPE").as_deref() != Ok("editable-source-cycle")
     {
         return Err("editable source cycle requires its explicit disposable CI selection".into());
+    }
+    Ok(())
+}
+
+/// The single-pair X/Y selection may snapshot the original Store, but it
+/// cannot enter either of the edited-source mutation commands.
+fn require_cycle_snapshot_selection() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var("MOTIONWRIGHT_NATIVE_SCOPE").as_deref() != Ok("out-cubic-xy") {
+        return require_cycle_selection();
+    }
+    let source = std::env::var("GITHUB_SHA")?;
+    if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true")
+        || std::env::var("GITHUB_EVENT_NAME").as_deref() != Ok("workflow_dispatch")
+        || std::env::var("GITHUB_RUN_ATTEMPT").as_deref() != Ok("1")
+        || std::env::var("GITHUB_REPOSITORY").as_deref() != Ok("seradotcom/motionwright")
+        || std::env::var("MW_NATIVE_EXPECTED_SOURCE_SHA").as_deref() != Ok(source.as_str())
+        || source.len() != 40
+        || !source
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("cubic X/Y snapshot requires its exact manual development context".into());
     }
     Ok(())
 }
@@ -1500,7 +1523,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cycle_verify_binding(&film, &inspection)
         }
         "cycle-snapshot" => {
-            require_cycle_selection()?;
+            require_cycle_snapshot_selection()?;
             let database = path_arg(&mut args);
             let directory = path_arg(&mut args);
             if args.next().is_some() {
