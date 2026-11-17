@@ -252,5 +252,194 @@ class SourceAudioGuiBoundaryTests(unittest.TestCase):
         first.ui.save_as.assert_not_called()
 
 
+
+
+class SavedAudioCompanionReadbackTests(unittest.TestCase):
+    """Synthetic native-XML controls, not editor/process or audio-fidelity evidence."""
+    setUp = SourceAudioRoundtripTests.setUp
+    export = SourceAudioRoundtripTests.export
+
+    def xml(self, *, trimmed=False):
+        import xml.etree.ElementTree as ET
+        root = ET.Element("mlt", {"producer": "main_bin"})
+        ET.SubElement(root, "profile", {"width": "320", "height": "180",
+                                       "frame_rate_num": "30", "frame_rate_den": "1"})
+        def prop(node, name, value):
+            ET.SubElement(node, "property", {"name": name}).text = value
+        for index, row in enumerate(self.manifest["bound_media"]):
+            chain = ET.SubElement(root, "chain", {"id": f"source{index}"})
+            prop(chain, "resource", row["path"])
+            prop(chain, "mlt_service", "avformat-novalidate")
+        black = ET.SubElement(root, "producer", {"id": "black", "in": "0", "out": "9090"})
+        for key, value in {
+            "length": "2147483647", "eof": "continue", "resource": "black",
+            "aspect_ratio": "1", "mlt_service": "color", "kdenlive:playlistid": "black_track",
+            "mlt_image_format": "rgba", "set.test_audio": "0",
+        }.items():
+            prop(black, key, value)
+        total = 75 if trimmed else 90
+        for kind, hide in (("audio", "video"), ("video", "audio")):
+            playlist = ET.SubElement(root, "playlist", {"id": kind + "_clips"})
+            for index, row in enumerate(self.manifest["bound_media"]):
+                start = row["source_start_frame"]
+                duration = 15 if trimmed and index == 2 else 30
+                ET.SubElement(playlist, "entry", {
+                    "producer": f"source{index}", "in": str(start), "out": str(start+duration-1)})
+            ET.SubElement(root, "playlist", {"id": kind + "_empty"})
+            tractor = ET.SubElement(root, "tractor", {
+                "id": kind, "in": "0", "out": str(total-1)})
+            if kind == "audio":
+                prop(tractor, "kdenlive:audio_track", "1")
+            for suffix in ("_clips", "_empty"):
+                ET.SubElement(tractor, "track", {"producer": kind+suffix, "hide": hide})
+        wrapper = ET.SubElement(root, "tractor", {"id": "wrapper", "in": "0", "out": str(total-1)})
+        for producer in ("black", "audio", "video"):
+            ET.SubElement(wrapper, "track", {"producer": producer})
+        ET.SubElement(root, "playlist", {"id": "main_bin"})
+        master = ET.SubElement(root, "tractor", {"id": "master", "in": "0", "out": str(total-1)})
+        prop(master, "kdenlive:projectTractor", "1")
+        ET.SubElement(master, "track", {"producer": "wrapper", "in": "0", "out": str(total-1)})
+        return ET.tostring(root)
+
+    def readback(self, raw, name="audio-native.kdenlive"):
+        import kdenlive_readback
+        path = self.case.out / name
+        path.write_bytes(raw)
+        manifest_raw = (self.case.out / "bridge-manifest.json").read_bytes()
+        try:
+            return kdenlive_readback.inspect_saved_kdenlive(
+                path, hashlib.sha256(raw).hexdigest(), self.case.out,
+                hashlib.sha256(manifest_raw).hexdigest())
+        finally:
+            self.assertEqual(path.read_bytes(), raw)
+
+    def rejected_variant(self, raw, mutate, reason):
+        import xml.etree.ElementTree as ET
+        import kdenlive_readback
+        tree = ET.fromstring(raw)
+        mutate(tree)
+        with self.assertRaisesRegex(kdenlive_readback.KdenliveReadbackRejected, reason):
+            self.readback(ET.tostring(tree))
+
+    def test_saved_three_track_wrapper_binds_audio_and_video_through_reopen_trim(self):
+        import kdenlive_readback
+        self.export()
+        original = self.readback(self.xml())
+        edited = self.readback(self.xml(trimmed=True), "audio-edited.kdenlive")
+        self.assertEqual(original["observed_bound_audio_clip_count"], 3)
+        self.assertTrue(original["native_audio_source_intervals_match_video"])
+        self.assertFalse(original["audio_fidelity_accepted"])
+        comparison = kdenlive_readback.compare_two_native_custody_snapshots(original, edited)
+        self.assertEqual(len(comparison["bounded_native_end_trims_observed"]), 1)
+        self.assertEqual(comparison["bounded_native_end_trims_observed"][0]["reopened_duration_frames"], 15)
+
+    def test_audio_companion_cannot_be_admitted_by_a_video_only_capsule(self):
+        import kdenlive_readback
+        self.export(audio=False)
+        with self.assertRaisesRegex(kdenlive_readback.KdenliveReadbackRejected, "unbound_visible_track"):
+            self.readback(self.xml())
+
+    def test_selected_audio_companion_cannot_disappear_from_saved_project(self):
+        self.export()
+        def remove_audio(tree):
+            wrapper = tree.find(".//tractor[@id='wrapper']")
+            wrapper.remove(wrapper.findall("track")[1])
+        self.rejected_variant(self.xml(), remove_audio, "selected_audio_companion_missing")
+
+    def test_native_audio_clip_sha_inpoint_duration_or_count_cannot_drift(self):
+        self.export()
+        for label, update in (
+            ("source", {"producer": "black"}),
+            ("inpoint", {"in": "1"}),
+            ("duration", {"out": "28"}),
+        ):
+            with self.subTest(label=label):
+                def mutate(tree, update=update):
+                    tree.find(".//playlist[@id='audio_clips']/entry").attrib.update(update)
+                reason = ("multiple_or_reused_black_background" if label == "source"
+                          else "audio_video_source_or_interval")
+                self.rejected_variant(self.xml(), mutate, reason)
+        def remove_clip(tree):
+            playlist = tree.find(".//playlist[@id='audio_clips']")
+            playlist.remove(playlist.findall("entry")[-1])
+        self.rejected_variant(self.xml(), remove_clip, "audio_companion_clip_or_lane_count")
+        def false_originalurl(tree):
+            import xml.etree.ElementTree as ET
+            source = tree.find(".//chain[@id='source0']")
+            resource = source.find("./property[@name='resource']")
+            ET.SubElement(source, "property", {"name": "kdenlive:originalurl"}).text = resource.text
+            resource.text = "black"
+            source.find("./property[@name='mlt_service']").text = "color"
+        self.rejected_variant(self.xml(), false_originalurl, "audio_profile_media_service_or_resource_changed")
+
+    def test_extra_visible_track_and_extra_audio_lane_are_rejected(self):
+        import xml.etree.ElementTree as ET
+        self.export()
+        def extra_video(tree):
+            ET.SubElement(tree.find(".//tractor[@id='wrapper']"), "track", {"producer": "video"})
+        self.rejected_variant(self.xml(), extra_video, "unbound_visible_track")
+        def extra_audio_lane(tree):
+            ET.SubElement(tree.find(".//tractor[@id='audio']"), "track",
+                          {"producer": "audio_empty", "hide": "video"})
+        self.rejected_variant(self.xml(), extra_audio_lane, "audio_companion_two_lane_profile")
+        def duplicate_companion(tree):
+            wrapper = tree.find(".//tractor[@id='wrapper']")
+            wrapper.findall("track")[0].set("producer", "audio")
+        self.rejected_variant(self.xml(), duplicate_companion, "audio_wrapper_shape_not_admitted")
+        def foreign_hidden_first(tree):
+            wrapper = tree.find(".//tractor[@id='wrapper']")
+            wrapper.findall("track")[0].set("producer", "source0")
+            wrapper.findall("track")[0].set("hide", "video")
+        self.rejected_variant(self.xml(), foreign_hidden_first, "audio_wrapper_shape_not_admitted")
+        def foreign_master_audio(tree):
+            ET.SubElement(tree.find(".//tractor[@id='master']"), "track",
+                          {"producer": "source0", "hide": "video"})
+        self.rejected_variant(self.xml(), foreign_master_audio, "audio_profile_master_wrapper_not_unique")
+
+    def test_audio_visibility_gap_and_container_interval_controls_are_rejected(self):
+        import xml.etree.ElementTree as ET
+        self.export()
+        def visible_audio(tree):
+            tree.find(".//tractor[@id='audio']/track").set("hide", "audio")
+        self.rejected_variant(self.xml(), visible_audio, "audio_companion_visibility_or_playlist")
+        def sounding_video_lane(tree):
+            tree.find(".//tractor[@id='video']/track").attrib.pop("hide")
+        self.rejected_variant(self.xml(), sounding_video_lane, "audio_profile_video_lanes_not_silent")
+        def foreign_video_audio(tree):
+            ET.SubElement(tree.find(".//tractor[@id='video']"), "track",
+                          {"producer": "source0", "hide": "video"})
+        self.rejected_variant(self.xml(), foreign_video_audio, "audio_profile_video_lanes_not_silent")
+        def gap(tree):
+            ET.SubElement(tree.find(".//playlist[@id='audio_clips']"), "blank", {"length": "1"})
+        self.rejected_variant(self.xml(), gap, "audio_companion_visibility_or_playlist")
+        def shifted_container(tree):
+            tree.find(".//tractor[@id='audio']").set("in", "1")
+        self.rejected_variant(self.xml(), shifted_container, "container_interval_not_full_editorial_span")
+        def property_override(tree):
+            ET.SubElement(tree.find(".//tractor[@id='audio']"), "property", {"name": "out"}).text = "88"
+        self.rejected_variant(self.xml(), property_override, "playback_property_override")
+
+    def test_audio_descriptor_and_original_timeline_cannot_be_coordinately_forged(self):
+        import kdenlive_readback
+        self.export()
+        forged = copy.deepcopy(self.manifest["firstparty_audio_track"])
+        forged["actual_output_audio_pcm_verified"] = True
+        self.timeline["metadata"]["motionwright"]["firstparty_audio_track"] = forged
+        raw = json.dumps(self.timeline).encode()
+        (self.case.out / "timeline.otio").write_bytes(raw)
+        self.manifest["otio_sha256"] = hashlib.sha256(raw).hexdigest()
+        self.manifest["firstparty_audio_track"] = forged
+        (self.case.out / "bridge-manifest.json").write_bytes(json.dumps(self.manifest).encode())
+        with self.assertRaisesRegex(kdenlive_readback.KdenliveReadbackRejected, "firstparty_audio_original_binding_changed"):
+            self.readback(self.xml())
+
+    def test_changed_original_audio_timeline_fails_before_native_graph_admission(self):
+        import kdenlive_readback
+        self.export()
+        path = self.case.out / "timeline.otio"
+        path.write_bytes(path.read_bytes()+b" ")
+        with self.assertRaisesRegex(kdenlive_readback.KdenliveReadbackRejected, "content_changed_from_expected_SHA"):
+            self.readback(self.xml())
+
 if __name__ == "__main__":
     unittest.main()

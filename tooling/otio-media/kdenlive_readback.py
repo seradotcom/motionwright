@@ -28,7 +28,7 @@ import xml.etree.ElementTree as ET
 
 from bridge import (
     BridgeRefused, HEX, MAX_JSON, MAX_MEDIA, SCHEMA, _nle_local_media,
-    capture_original, fingerprint, strict_json,
+    _require_firstparty_audio_track, capture_original, fingerprint, strict_json,
 )
 
 MAX_XML_BYTES = 5 * 1024 * 1024
@@ -88,6 +88,17 @@ def read_capsule(bundle: Path, manifest_sha: str, *, retained_alab=None) -> tupl
                 and preview.get("media_refs_verified") == 2
                 and read_closed_bytes(root / "bridge-manifest.json", manifest_sha, MAX_JSON),
                 "readback_ALab_original_capsule_no_longer_matches_its_admitted_source")
+    if manifest.get("firstparty_audio_track") is not None:
+        require(retained_alab is None, "readback_firstparty_audio_profile_conflict")
+        try:
+            timeline = strict_json(read_closed_bytes(
+                root / "timeline.otio", manifest.get("otio_sha256"), MAX_JSON),
+                "Kdenlive-original-audio-timeline")
+            require(_require_firstparty_audio_track(timeline, manifest),
+                    "readback_firstparty_audio_descriptor_missing")
+        except BridgeRefused as error:
+            raise KdenliveReadbackRejected(
+                "readback_firstparty_audio_original_binding_changed") from error
     rows = manifest["bound_media"]
     require(1 <= len(rows) <= 32
             and not manifest["missing_scene_ids"]
@@ -255,6 +266,9 @@ def inspect_saved_kdenlive(
     interval_guards = []
     background_guards = []
     native_black_generators = []
+    audio_companions = []
+    audio_interval_guards = []
+    source_audio = manifest.get("firstparty_audio_track") is not None
     master_id = master_tractors[0].attrib["id"]
 
     def require_plain_playback_controls(node: ET.Element) -> None:
@@ -343,6 +357,70 @@ def inspect_saved_kdenlive(
             return None
         return source
 
+    def pinned_audio_companion(wrapper: ET.Element):
+        """Read the selected source's two-playlist audio tractor, not a video layer."""
+        tracks = wrapper.findall("track")
+        if not source_audio or len(tracks) != 3:
+            return None
+        first_id, audio_id, video_id = (reference(track) for track in tracks)
+        require(len({first_id, audio_id, video_id}) == 3
+                and all(track.attrib.get("hide") is None for track in tracks)
+                and pinned_nested_black_generator(first_id) is not None
+                and objects[video_id].tag == "tractor",
+                "native_Kdenlive_audio_wrapper_shape_not_admitted")
+        video = objects[video_id]
+        video_lanes = video.findall("track")
+        require(len(video_lanes) == 2
+                and all(lane.attrib.get("hide") == "audio" for lane in video_lanes),
+                "native_Kdenlive_audio_profile_video_lanes_not_silent")
+        video_playlists = [objects[reference(lane)] for lane in video_lanes]
+        require(len({node.attrib["id"] for node in video_playlists}) == 2
+                and all(node.tag == "playlist" for node in video_playlists)
+                and len(video_playlists[0].findall("entry")) == len(manifest["scene_order"])
+                and not video_playlists[1].findall("entry"),
+                "native_Kdenlive_audio_profile_video_lane_shape_changed")
+        track = tracks[1]
+        identifier = audio_id
+        audio = objects[identifier]
+        require(track.attrib.get("hide") is None and audio.tag == "tractor",
+                "native_Kdenlive_audio_companion_tractor_not_admitted")
+        require_plain_playback_controls(audio)
+        markers = [prop.text for prop in audio.findall("property")
+                   if prop.attrib.get("name") == "kdenlive:audio_track"]
+        lanes = audio.findall("track")
+        require(markers == ["1"] and len(lanes) == 2,
+                "native_Kdenlive_audio_companion_two_lane_profile_changed")
+        containers, groups = [], []
+        for lane in lanes:
+            producer = reference(lane)
+            playlist = objects[producer]
+            require(lane.attrib.get("hide") == "video" and playlist.tag == "playlist"
+                    and producer != "main_bin"
+                    and all(child.tag in ("property", "entry") for child in playlist),
+                    "native_Kdenlive_audio_companion_visibility_or_playlist_changed")
+            require_plain_playback_controls(playlist)
+            entries = playlist.findall("entry")
+            for entry in entries:
+                source = reference(entry)
+                require(objects[source].tag in ("producer", "chain"),
+                        "native_Kdenlive_audio_companion_source_not_bound")
+                reachable.add(source)
+            containers.append(producer)
+            groups.append(entries)
+            audio_interval_guards.extend((lane, playlist))
+        require(len(set(containers)) == 2 and len(groups[0]) == len(manifest["scene_order"])
+                and not groups[1] and not audio_companions,
+                "native_Kdenlive_audio_companion_clip_or_lane_count_changed")
+        require(all(node not in visible_containers
+                    for node in (identifier, *containers)),
+                "native_Kdenlive_audio_companion_container_reused")
+        visible_containers.update((identifier, *containers))
+        reachable.update((identifier, *containers))
+        hidden_video_track_refs.extend(containers)
+        audio_interval_guards.extend((track, audio))
+        audio_companions.append(groups[0])
+        return track
+
     def walk(identifier: str, ancestors: frozenset[str]) -> list[ET.Element]:
         require(identifier in objects,
                 "native_Kdenlive_playback_graph_has_dangling_producer")
@@ -369,6 +447,9 @@ def inspect_saved_kdenlive(
                 entries.append(child)
                 walk(referenced, parent_ids)
         else:
+            companion = (pinned_audio_companion(current)
+                         if identifier != master_id
+                         and ancestors == frozenset((master_id,)) else None)
             visible_track_index = 0
             for child in current.findall("track"):
                 referenced = reference(child)
@@ -376,6 +457,8 @@ def inspect_saved_kdenlive(
                 require(hide in (None, "audio", "video", "both"),
                         "native_Kdenlive_track_visibility_not_supported")
                 if hide in ("video", "both"):
+                    require(not source_audio,
+                            "native_Kdenlive_unbound_audio_track_not_supported")
                     # Companion audio is not another visible video occurrence.
                     hidden_video_track_refs.append(referenced)
                     continue
@@ -385,6 +468,10 @@ def inspect_saved_kdenlive(
                     else None
                 )
                 visible_track_index += 1
+                if child is companion:
+                    # Its original intervals are compared to the video cut below.
+                    # Do not interpret the audio tractor as an empty video cut.
+                    continue
                 if background is not None:
                     container, source, boundary = background
                     require(referenced != "main_bin"
@@ -395,14 +482,14 @@ def inspect_saved_kdenlive(
                     background_guards.extend((child, container, boundary))
                     continue
                 # Kdenlive 26.08.3 may wrap the real editorial tractor in a
-                # two-track compositor with one pinned, resource-free black
-                # base. Admit exactly that nested first slot, never a second
-                # visible video source or arbitrary MLT producer.
+                # compositor with one pinned, resource-free black base. The
+                # opt-in source may add its separately bound audio companion.
+                # Neither admits another visible video source or producer.
                 nested_black = (
                     pinned_nested_black_generator(referenced)
                     if identifier != master_id
                     and ancestors == frozenset((master_id,))
-                    and len(current.findall("track")) == 2
+                    and (len(current.findall("track")) == 2 or companion is not None)
                     and visible_track_index == 1
                     and hide is None
                     else None
@@ -433,7 +520,14 @@ def inspect_saved_kdenlive(
         interval_guards.append((current, entries))
         return entries
 
+    if source_audio:
+        master_tracks = objects[master_id].findall("track")
+        require(len(master_tracks) == 1 and master_tracks[0].attrib.get("hide") is None
+                and objects[reference(master_tracks[0])].tag == "tractor",
+                "native_Kdenlive_audio_profile_master_wrapper_not_unique")
     timeline_entries = walk(master_id, frozenset())
+    require(len(audio_companions) == int(source_audio),
+            "native_Kdenlive_selected_audio_companion_missing")
     require(len(timeline_entries) >= len(manifest["scene_order"]),
             "native_Kdenlive_editable_timeline_lost_original_clip_instances")
 
@@ -441,10 +535,21 @@ def inspect_saved_kdenlive(
     matched = set()
     observations = []
     component_sha = {}
+    source_components = {entry.attrib["producer"] for entry in timeline_entries}
+    for group in audio_companions:
+        source_components.update(entry.attrib["producer"] for entry in group)
     for identifier in sorted(reachable):
         source_node = objects[identifier]
         if source_node.tag not in ("producer", "chain"):
             continue
+        if source_audio and identifier in source_components:
+            resources = [(prop.text or "").strip() for prop in source_node.findall("property")
+                         if prop.attrib.get("name") == "resource"]
+            services = [(prop.text or "").strip() for prop in source_node.findall("property")
+                        if prop.attrib.get("name") == "mlt_service"]
+            require(len(resources) == 1 and resources[0].lower().endswith(".mp4")
+                    and services == ["avformat-novalidate"],
+                    "native_Kdenlive_audio_profile_media_service_or_resource_changed")
         for element in source_node.findall("property"):
             if element.attrib.get("name") not in (
                 "resource", "kdenlive:originalurl",
@@ -524,6 +629,19 @@ def inspect_saved_kdenlive(
     require(used_scenes == set(manifest["scene_order"])
             and len(played) == len(manifest["scene_order"]),
             "native_Kdenlive_edited_timeline_scene_set_or_instances_changed")
+    if source_audio:
+        audio_entries = audio_companions[0]
+        require(len(audio_entries) == len(played),
+                "native_Kdenlive_audio_video_clip_count_changed")
+        for entry, video in zip(audio_entries, played):
+            component = entry.attrib["producer"]
+            frame_in = original_mlt_frame(entry.attrib.get("in"), rate_num // rate_den)
+            frame_out = original_mlt_frame(entry.attrib.get("out"), rate_num // rate_den)
+            require(component in component_sha
+                    and component_sha[component] == video["original_media_sha256"]
+                    and frame_in == video["original_inpoint_frame"]
+                    and frame_out - frame_in + 1 == video["duration_frames"],
+                    "native_Kdenlive_audio_video_source_or_interval_changed")
     # Container intervals are not additional edit operations in this bounded
     # profile. An exact full-span interval is harmless; all other container
     # trims/offsets require an interpreter that has not been attested here.
@@ -545,7 +663,7 @@ def inspect_saved_kdenlive(
     for node, entries in interval_guards:
         require_full_span(node, sum(durations[entry] for entry in entries))
     editorial_duration = sum(durations.values())
-    for node in background_guards:
+    for node in (*background_guards, *audio_interval_guards):
         require_full_span(node, editorial_duration)
     # A finite nested wrapper clips its fixed black generator to the exact
     # editorial duration. The source may be longer, but not shorter or
@@ -568,6 +686,10 @@ def inspect_saved_kdenlive(
         "video_hidden_MLT_track_count_excluded": len(hidden_video_track_refs),
         "authorized_black_background_track_count": int(bool(background_guards)),
         "native_video_graph_profile": "single-contiguous-editorial-track/1",
+        "native_audio_graph_profile": "same-source-two-lane-companion/1" if source_audio else None,
+        "observed_bound_audio_clip_count": len(played) if source_audio else 0,
+        "native_audio_source_intervals_match_video": source_audio,
+        "audio_fidelity_accepted": False,
         "unexpected_video_timeline_gaps_accepted": False,
         "observed_bound_clip_count": len(played),
         "observed_bound_editorial_clip_semantics": played,
@@ -601,6 +723,10 @@ def compare_two_native_custody_snapshots(
     ):
         require(original[field] == reopened[field],
                 "native_Kdenlive_reopened_project_lost_source_or_frame_clock")
+    require(original.get("native_audio_graph_profile") == reopened.get("native_audio_graph_profile")
+            and original.get("observed_bound_audio_clip_count", 0) ==
+                reopened.get("observed_bound_audio_clip_count", 0),
+            "native_Kdenlive_reopened_source_audio_companion_changed")
     require({v["original_media_sha256"] for v in original["observed_source_media"]} ==
             {v["original_media_sha256"] for v in reopened["observed_source_media"]},
             "native_Kdenlive_reopened_project_missing_source_media")
