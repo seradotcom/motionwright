@@ -700,6 +700,10 @@ def inspect_saved_kdenlive(
         "native_saved_frame_rate": f"{rate_num}/{rate_den}",
         "saved_source_MLT_element_count": len(nodes),
         "distinct_native_MLT_ID_count": len(ids),
+        "bound_audio_video_source_components": ({
+            "audio": sorted({entry.attrib["producer"] for entry in audio_companions[0]}),
+            "video": sorted({entry.attrib["producer"] for entry in timeline_entries}),
+        } if source_audio else None),
         "observed_source_media": observations,
         "exact_original_source_SHA_set_conserved": True,
         "kdenlive_namespace_shim_in_memory_only": shimmed,
@@ -718,11 +722,42 @@ def compare_two_native_custody_snapshots(
             "native_Kdenlive_saved_and_reopened_receipts_not_comparable")
     for field in (
         "source_capsule_manifest_sha256", "native_saved_profile_size",
-        "native_saved_frame_rate", "distinct_native_MLT_ID_count",
-        "exact_original_source_SHA_set_conserved",
+        "native_saved_frame_rate", "exact_original_source_SHA_set_conserved",
     ):
         require(original[field] == reopened[field],
                 "native_Kdenlive_reopened_project_lost_source_or_frame_clock")
+    # Kdenlive can split one imported AV chain into an audio chain and a
+    # video chain on save. Only that observed, single-source clone may add
+    # an ID; every other component-count change remains a rejection.
+    source_split = False
+    if original["distinct_native_MLT_ID_count"] != reopened["distinct_native_MLT_ID_count"]:
+        def one_source_lanes(receipt: dict):
+            lanes = receipt.get("bound_audio_video_source_components")
+            if (receipt.get("native_audio_graph_profile") != "same-source-two-lane-companion/1"
+                    or not isinstance(lanes, dict) or set(lanes) != {"audio", "video"}):
+                return None
+            if any(type(lanes[kind]) is not list or len(lanes[kind]) != 1
+                   or type(lanes[kind][0]) is not str or not lanes[kind][0]
+                   for kind in ("audio", "video")):
+                return None
+            components = {lanes["audio"][0], lanes["video"][0]}
+            sources = receipt["observed_source_media"]
+            if {row["source_MLT_component_id"] for row in sources} != components:
+                return None
+            hashes = {row["original_media_sha256"] for row in sources}
+            if len(hashes) != 1:
+                return None
+            return components, hashes
+        first_lanes, last_lanes = one_source_lanes(original), one_source_lanes(reopened)
+        source_split = (
+            first_lanes is not None and last_lanes is not None
+            and len(first_lanes[0]) == 1 and len(last_lanes[0]) == 2
+            and first_lanes[1] == last_lanes[1]
+            and reopened["distinct_native_MLT_ID_count"] ==
+                original["distinct_native_MLT_ID_count"] + 1
+        )
+        require(source_split,
+                "native_Kdenlive_reopened_unaccounted_MLT_component_count_change")
     require(original.get("native_audio_graph_profile") == reopened.get("native_audio_graph_profile")
             and original.get("observed_bound_audio_clip_count", 0) ==
                 reopened.get("observed_bound_audio_clip_count", 0),
@@ -769,6 +804,9 @@ def compare_two_native_custody_snapshots(
         "original_authored_scene_order": [x["scene_id"] for x in original_clips],
         "reopened_native_scene_order": [x["scene_id"] for x in reopened_clips],
         "bounded_native_end_trims_observed": trimmed,
+        "observed_same_source_audio_video_component_split": source_split,
+        "original_MLT_component_count": original["distinct_native_MLT_ID_count"],
+        "reopened_MLT_component_count": reopened["distinct_native_MLT_ID_count"],
         "native_edit_proposed_not_committed": True,
         "source_inpoint_and_SHA_consistency": True,
         "native_saved_project_byte_identical":
