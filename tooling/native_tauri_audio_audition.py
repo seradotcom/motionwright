@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import time
+import traceback
 import uuid
 
 import linux_first_use_accessible as accessible
@@ -67,6 +68,8 @@ SOURCE_PATHS = (
     "crates/native/examples/native_saved_mix_e2e/mod.rs",
     "crates/native/examples/native_saved_mix_e2e/tauri_audio.rs",
     "crates/service/src/read_only.rs", "crates/storage/src/read_only.rs",
+    "crates/domain/src/lib.rs", "crates/domain/src/production_design.rs",
+    "crates/domain/src/delivery_recipe.rs",
 )
 SDK_PATHS = ("Cargo.toml", "Cargo.lock", "crates/native-sdk/src/lib.rs")
 
@@ -591,7 +594,7 @@ def validate_before(before, context, root, database, original_sources):
     project = before["project"]
     need(project["id"] == before["project_id"] and project["generation"] == before["generation"]
          and project["revision"] == revision
-         and project["production_design"]["delivery_recipes"] == {}
+         and project["production_design"].get("delivery_recipes", {}) == {}
          and len(before["history"]) == revision, "FIXTURE_PREPARATION_ALREADY_SAVED")
     change = before["expected_change"]
     need(set(change) == {"type", "deliverable_profile_id", "recipe"}
@@ -1248,7 +1251,8 @@ def scenario(args):
             validate_process_closure(closure, os.getpid(), natural=True)
         except BaseException as error:
             primary = error
-            result.update(status="FAIL", failure_type=type(error).__name__, failure_code=code(error))
+            result.update(status="FAIL", failure_type=type(error).__name__, failure_code=code(error),
+                          failure_traceback="".join(traceback.format_exception(error))[-8192:])
         finally:
             # All failures stop effects. A signal may clean a failed attempt,
             # but never change it to a successful UI, owner or audio result.

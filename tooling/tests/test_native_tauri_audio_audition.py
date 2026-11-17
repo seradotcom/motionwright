@@ -21,7 +21,7 @@ def pure_module():
     tree = ast.parse(PATH.read_text(encoding="utf-8"))
     functions = {"need", "equal_json", "exact_json", "validate_ui_observation",
                  "validate_native_records", "validate_saved_readback", "validate_process_closure",
-                 "validate_pcm_projection"}
+                 "validate_pcm_projection", "validate_before"}
     classes = {"AudioError", "AudioUI"}
     constants = {"PREVIEW", "AUDITION", "REQUIRED_ACTIONS", "SCROLL_ACTIONS", "SHA256"}
     selected = [node for node in tree.body if
@@ -117,6 +117,42 @@ class AudioJoinTests(unittest.TestCase):
     def native(self, values):
         before, binding, context, before_id, manifest_id, ui, records, _ = values
         return GUARDS.validate_native_records(records, context, before, before_id, manifest_id, binding, ui)
+
+    def test_actual_empty_recipe_serialization_is_admitted_but_saved_recipe_is_not(self):
+        root = Path("/private")
+        database = root / "profile/data/app/motionwright.sqlite3"
+        before, binding, context, before_id, manifest_id, ui, records, readback = data()
+        before.update(schema="motionwright.tauri-audio-fixture-before/1", private_root=str(root),
+                      database_path=str(database),
+                      revision=1, expected_revision=2,
+                      project={"id": before["project_id"], "generation": before["generation"],
+                               "revision": 1, "production_design": {}, "assets": [{}, {}, {}]},
+                      preparation_tauri_owner_invocation="NOT_EXERCISED",
+                      expected_save_authority="REAL_TAURI_UI_NOT_ATTESTED_BY_FIXTURE",
+                      writer_handoff_verified=True, source_classification="SYNTHETIC_TONES_NOT_SPEECH",
+                      formal_G2=False, formal_G3=False, human_approval=False,
+                      release_authorized=False, automatic_retry=False)
+        before["expected_change"]["recipe"]["original_mix"].update(
+            duck_attenuation_db=14, duck_attack_samples=2400, duck_release_samples=4800)
+        sources = {}
+        before["assets"] = []
+        for index, bus in enumerate(("voice", "music", "sfx"), 1):
+            name = "saved-mix-" + bus + ".wav"
+            witness = {"path": str(root / "sources" / name), "sha256": str(index) * 64,
+                       "bytes": 384044}
+            sources[name] = witness
+            before["assets"].append({"bus": bus, "source": deepcopy(witness),
+                                     "cas": {"sha256": witness["sha256"]}})
+        # ProductionDesign skips an empty delivery_recipes map during serde.
+        # This is the original pre-Save shape, not a prepared saved recipe.
+        GUARDS.validate_before(before, context, root, database, sources)
+        before["project"]["production_design"]["delivery_recipes"] = {}
+        GUARDS.validate_before(before, context, root, database, sources)
+        for invalid in ({before["deliverable_profile_id"]: before["expected_change"]["recipe"]},
+                        None, [], True):
+            before["project"]["production_design"]["delivery_recipes"] = invalid
+            with self.subTest(value=invalid), self.assertRaises(GUARDS.AudioError):
+                GUARDS.validate_before(before, context, root, database, sources)
 
     def test_exact_pre_save_startup_and_post_save_join(self):
         values = data()
