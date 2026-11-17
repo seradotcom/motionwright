@@ -719,7 +719,12 @@ class AudioUI:
                 "visible_controls": rows[:64], "truncated": len(rows) > 64,
                 "text_observations": texts[:128], "text_truncated": len(texts) > 128,
                 "role_counts": self.bridge.role_counts,
-                "readonly_text_candidates": self.bridge.text_candidates}
+                "readonly_text_candidates": self.bridge.text_candidates,
+                "disclosure_controls": [
+                    {"name": item.name[:256], "states": sorted(item.states),
+                     "interfaces": sorted(item.interfaces)}
+                    for item in self.last_views if item.role == "toggle"
+                ][:8]}
 
 def validate_before(before, context, root, database, original_sources):
     need(before.get("schema") == "motionwright.tauri-audio-fixture-before/1"

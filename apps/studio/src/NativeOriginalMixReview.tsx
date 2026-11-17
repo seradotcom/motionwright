@@ -172,7 +172,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
   };
 
   return <details className="audio-editor-section" aria-label="Original three-bus native PCM audition" onKeyDown={containRecipeKeyboard}>
-    <summary><AudioWaveform size={15} /> Voice / music / SFX · original source mix</summary>
+    <summary aria-label="Voice / music / SFX · original source mix"><AudioWaveform size={15} aria-hidden="true" /> Voice / music / SFX · original source mix</summary>
     <p className="production-help">Save an original mix recipe for each delivery profile, then request a local PCM audition of its exact saved sources and automation. The mixer decodes the imported voice and music, an optional imported SFX base, and the authored SFX cues in this delivery cut. Whole-source stems use stereo at 48 kHz with the same measured duration; the native service validates cue timing and source bytes.</p>
     <label className="production-field"><span>Delivery language / profile</span>
       <select value={selectedProfile?.id ?? ""} disabled={project.deliverables.length === 0}
