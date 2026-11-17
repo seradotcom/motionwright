@@ -26,7 +26,7 @@ def pure_module():
                  "validate_pcm_projection", "validate_before", "read_only_text_provider",
                  "private_transport_paths", "exact_text_offsets", "screen_rect", "rect_contains",
                  "unmapped_action_provider", "accessible_action_index", "source_key_sequence",
-                 "source_key_receipt_name"}
+                 "source_key_receipt_name", "source_key_journal_plan", "journal_readback"}
     classes = {"AudioError", "AudioUI"}
     constants = {"PREVIEW", "AUDITION", "REQUIRED_ACTIONS", "SCROLL_ACTIONS", "SHA256"}
     selected = [node for node in tree.body if
@@ -187,6 +187,74 @@ class AudioJoinTests(unittest.TestCase):
                                     ("select-sfx", 2, "unknown")):
             with self.assertRaisesRegex(GUARDS.AudioError, "UI_SOURCE_JOURNAL_NAME_BOUND"):
                 GUARDS.source_key_receipt_name(label, index, phase)
+
+    def test_original_key_journal_plan_has_seven_bounded_actual_events(self):
+        plan = GUARDS.source_key_journal_plan()
+        self.assertEqual([label for label, _, _ in plan],
+                         ["select-music"] * 3 + ["select-sfx"] * 4)
+        self.assertEqual([key for _, _, key in plan],
+                         ["Home", "Down", "Return", "Home", "Down", "Down", "Return"])
+        names = [GUARDS.source_key_receipt_name(label, i, phase)
+                 for label, i, _ in plan for phase in ("intent", "return")]
+        self.assertEqual(len(names), 14)
+        self.assertEqual(len(set(names)), 14)
+
+    def test_complete_original_journal_roster_accepts_only_bound_key_receipts(self):
+        _, binding, _, _, _, ui, _, _ = data()
+        records = {}
+        for label in ui["actions"]:
+            intent = {"binding": deepcopy(binding), "automatic_retry": False}
+            if label == "window-close":
+                intent["method"] = "AT_SPI_HARDWARE_ALT_F4"
+                returned = {"keyboard_dispatch_acknowledged": True,
+                            "writer_handoff_not_inferred": True,
+                            "process_exit_not_inferred": True}
+            else:
+                returned = {"accepted": True}
+            records[label + "-intent.json"] = intent
+            records[label + "-return.json"] = returned
+        for label, index, key in GUARDS.source_key_journal_plan():
+            number = {"Home": 110, "Down": 116, "Return": 36}[key]
+            records[GUARDS.source_key_receipt_name(label, index, "intent") + ".json"] = {
+                "key": key, "hardware_keycode": number, "automatic_retry": False}
+            records[GUARDS.source_key_receipt_name(label, index, "return") + ".json"] = {
+                "hardware_press_and_release_acknowledged": True}
+        for name, number in (("close-alt", 64), ("close-f", 70)):
+            for phase in ("press", "release"):
+                records[name + "-" + phase + "-intent.json"] = {"hardware_keycode": number}
+
+        class VirtualPath:
+            def __init__(self, relative=""):
+                self.relative = relative
+            def __truediv__(self, part):
+                return VirtualPath(self.relative + "/" + part)
+            @property
+            def name(self):
+                return self.relative.split("/")[-1]
+            def iterdir(self):
+                return [VirtualPath("/" + name) for name in records]
+
+        namespace = GUARDS.journal_readback.__globals__
+        previous = namespace.get("read_json")
+        namespace["read_json"] = lambda path, maximum, root: (
+            deepcopy(records[path.name]), {"archive_path": path.name, "bytes": 1,
+                                          "sha256": "a" * 64})
+        try:
+            witnesses = GUARDS.journal_readback(VirtualPath(), ui, binding)
+            self.assertEqual(len(witnesses), len(records))
+            chosen = GUARDS.source_key_receipt_name("select-sfx", 2, "intent") + ".json"
+            records[chosen]["key"] = "Home"
+            with self.assertRaisesRegex(GUARDS.AudioError, "SOURCE_HARDWARE_KEY_JOURNAL"):
+                GUARDS.journal_readback(VirtualPath(), ui, binding)
+            records[chosen]["key"] = "Down"
+            records.pop(chosen)
+            with self.assertRaisesRegex(GUARDS.AudioError, "UI_ORIGINAL_JOURNAL_ROSTER"):
+                GUARDS.journal_readback(VirtualPath(), ui, binding)
+        finally:
+            if previous is None:
+                namespace.pop("read_json", None)
+            else:
+                namespace["read_json"] = previous
 
     def test_keyboard_source_selection_rejects_foreign_process_before_focus(self):
         owner_queries = []

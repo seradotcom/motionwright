@@ -316,6 +316,14 @@ def source_key_receipt_name(label, index, phase):
     return label + "-key-" + ordinals[index] + "-" + phase
 
 
+def source_key_journal_plan():
+    # The actual original UI has exactly three options in each source combobox:
+    # placeholder, imported music, imported SFX. Keep the two closed plans.
+    return tuple((label, key_index, key)
+                 for label, option_index in (("select-music", 1), ("select-sfx", 2))
+                 for key_index, key in enumerate(source_key_sequence(option_index, 3)))
+
+
 def exact_text_offsets(text, value):
     need(type(text) is str and len(text) <= 4096, "UI_TEXT_PROVIDER_BOUND")
     need(type(value) is str and 0 < len(value) <= 256, "UI_TEXT_TARGET_BOUND")
@@ -1221,6 +1229,10 @@ def journal_readback(root, ui, binding):
     names.update(name + ".json" for name in (
         "close-alt-press-intent", "close-alt-release-intent",
         "close-f-press-intent", "close-f-release-intent"))
+    key_plan = source_key_journal_plan()
+    for label, index, _ in key_plan:
+        for phase in ("intent", "return"):
+            names.add(source_key_receipt_name(label, index, phase) + ".json")
     need({path.name for path in directory.iterdir()} == names, "UI_ORIGINAL_JOURNAL_ROSTER")
     witnesses = {}
     for label in ui["actions"]:
@@ -1235,6 +1247,26 @@ def journal_readback(root, ui, binding):
                  and returned.get("process_exit_not_inferred") is True, "UI_WINDOW_CLOSE_JOURNAL")
         else:
             need(returned.get("accepted") is True, "UI_ORIGINAL_ACTION_UNACKNOWLEDGED")
+    key_codes = {}
+    for label, index, key in key_plan:
+        intent_name = source_key_receipt_name(label, index, "intent")
+        returned_name = source_key_receipt_name(label, index, "return")
+        intent, witnesses[intent_name] = read_json(
+            directory / (intent_name + ".json"), 16384, root)
+        returned, witnesses[returned_name] = read_json(
+            directory / (returned_name + ".json"), 16384, root)
+        number = intent.get("hardware_keycode")
+        need(set(intent) == {"key", "hardware_keycode", "automatic_retry"}
+             and intent["key"] == key and type(number) is int and 8 <= number <= 255
+             and intent["automatic_retry"] is False
+             and returned == {"hardware_press_and_release_acknowledged": True},
+             "UI_SOURCE_HARDWARE_KEY_JOURNAL")
+        prior = key_codes.setdefault(label, {})
+        if key in prior:
+            need(prior[key] == number, "UI_SOURCE_REUSED_KEYCODE_CHANGED")
+        else:
+            need(number not in prior.values(), "UI_SOURCE_DISTINCT_KEYCODE_REQUIRED")
+            prior[key] = number
     codes = []
     for key in ("alt", "f"):
         values = []
