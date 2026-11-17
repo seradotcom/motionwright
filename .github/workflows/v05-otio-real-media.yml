@@ -294,7 +294,7 @@ jobs:
               "test_kdenlive_modal_readback": 44, "test_kdenlive_x11_modal": 27,
               "test_kdenlive_playlist_refresh": 17, "test_kdenlive_project_monitor": 9,
               "test_kdenlive_initial_save": 6,
-              "test_kdenlive_firstparty_audio_track": 12, "test_kdenlive_audio_roundtrip": 12,
+              "test_kdenlive_firstparty_audio_track": 12, "test_kdenlive_audio_roundtrip": 20,
               "test_kdenlive_owner_cut": 31, "test_kdenlive_accessibility_preflight": 9,
           }
           contract_groups = {name: [case for case in discovered if case.startswith(name + ".")]
