@@ -100,6 +100,7 @@ struct AppState {
     av_delivery: NativeMasterDeliveryRegistry,
     runtime_connections: RuntimeConnectionRegistry,
     graph_exchange_custody: GraphExchangeJournal,
+    development_audition_custody: motionwright_native::original_mix::DevelopmentAuditionCustody,
 }
 
 #[derive(Debug, Serialize)]
@@ -3227,6 +3228,17 @@ fn main() {
                 .map_err(|error| format!("Native SDK contract invalid: {error}"))?;
 
             let workspace_session = Uuid::now_v7();
+            // A diagnostic build marker alone grants nothing. The optional
+            // startup manifest admits custody only; all commands still require
+            // the existing DesktopOwner and their ordinary effect authority.
+            let development_audition_custody =
+                motionwright_native::original_mix::DevelopmentAuditionCustody::from_startup(
+                    option_env!("MOTIONWRIGHT_DEVELOPMENT_AUDITION_BUILD_SOURCE_SHA"),
+                    SEMWRIGHT_REVISION,
+                    &data_dir,
+                    workspace_session,
+                    &service,
+                )?;
             app.manage(AppState {
                 service,
                 workspace_session,
@@ -3237,6 +3249,7 @@ fn main() {
                 av_delivery: NativeMasterDeliveryRegistry::default(),
                 runtime_connections: RuntimeConnectionRegistry::new(&data_dir)?,
                 graph_exchange_custody: GraphExchangeJournal::new(&data_dir, workspace_session)?,
+                development_audition_custody,
             });
             desktop_owner::install_owner_window(app, &owner)?;
             Ok(())
@@ -3307,8 +3320,27 @@ fn main() {
             generation_journal::native_paid_generation_reserve_preflight,
             apply_change
         ])
-        .run(tauri::generate_context!())
-        .expect("Motionwright desktop runtime failed");
+        .build(tauri::generate_context!())
+        .expect("Motionwright desktop runtime failed")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                // Repeat the existing idempotent retirement before cleanup;
+                // do not depend on plugin callback ordering for the handoff.
+                if let Some(owner) = app.try_state::<desktop_owner::DesktopOwner>() {
+                    owner.close();
+                }
+                // Only an admitted, completed diagnostic audition prepares a
+                // read-only Store handoff. An unmarked production build is inert.
+                if let Some(state) = app.try_state::<AppState>() {
+                    if let Err(error) = state
+                        .development_audition_custody
+                        .prepare_exit_handoff(&state.service)
+                    {
+                        eprintln!("{error}");
+                    }
+                }
+            }
+        });
 }
 
 #[cfg(test)]

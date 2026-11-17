@@ -152,6 +152,12 @@ pub async fn native_original_mix_audition(
         request.revision,
     )?;
     validate_saved_audition_request(&project, &request)?;
+    let original_custody = state.development_audition_custody.reserve(
+        &state.service,
+        &project,
+        request.deliverable_profile_id,
+        state.workspace_session,
+    )?;
     let mix = saved_mix_with_budget(
         owner.worker_owner(),
         &state.service,
@@ -169,12 +175,20 @@ pub async fn native_original_mix_audition(
         return Err("Unmastered local audition exceeded its source/authority budget.".into());
     }
     owner.begin_phase()?;
-    current(
+    let current_project = current(
         &state,
         request.project_id,
         request.generation,
         request.revision,
     )?;
+    if let Some(custody) = original_custody {
+        custody.publish(
+            &state.service,
+            &current_project,
+            &mix,
+            state.workspace_session,
+        )?;
+    }
     Ok(tauri::ipc::Response::new(mix.wav_bytes().to_vec()))
 }
 
