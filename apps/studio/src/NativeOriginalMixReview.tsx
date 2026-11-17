@@ -181,7 +181,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
     <div id={panelId} hidden={!expanded}>
     <p className="production-help">Save an original mix recipe for each delivery profile, then request a local PCM audition of its exact saved sources and automation. The mixer decodes the imported voice and music, an optional imported SFX base, and the authored SFX cues in this delivery cut. Whole-source stems use stereo at 48 kHz with the same measured duration; the native service validates cue timing and source bytes.</p>
     <label className="production-field"><span>Delivery language / profile</span>
-      <select value={selectedProfile?.id ?? ""} disabled={project.deliverables.length === 0}
+      <select aria-label="Delivery language / profile" value={selectedProfile?.id ?? ""} disabled={project.deliverables.length === 0}
         onChange={event => { setProfileId(event.target.value); invalidateAudition(); }}>
         {project.deliverables.length === 0 && <option value="">No delivery profile</option>}
         {project.deliverables.map(profile => <option key={profile.id} value={profile.id}>{profile.name} · {profile.language}</option>)}
