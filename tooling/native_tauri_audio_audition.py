@@ -273,9 +273,24 @@ NUMBERS = {"SFX gain dB": "-8", "Music duck attenuation dB": "14",
            "Attack (samples at 48 kHz)": "2400", "Release (samples at 48 kHz)": "4800"}
 
 
+def read_only_text_provider(states, interfaces):
+    return ({"visible", "showing"} <= states and "defunct" not in states
+            and "editable" not in states and "Text" in interfaces
+            and "EditableText" not in interfaces)
+
+
+def private_transport_paths(root):
+    paths = {"XDG_RUNTIME_DIR": root / "r", "TMPDIR": root / "t"}
+    need(all(len(os.fsencode(path)) <= 70 for path in paths.values()),
+         "PRIVATE_TRANSPORT_PATH_TOO_LONG")
+    return paths
+
+
 class AudioBridge(accessible.AtspiBridge):
     def __init__(self, api, glib, deadline):
         super().__init__(api, glib=glib, deadline=deadline)
+        self.expected_texts = frozenset()
+        self.role_counts = {}
         for key, label in (("CHECK_BOX", "checkbox"), ("TOGGLE_BUTTON", "toggle"),
                            ("COMBO_BOX", "combo"), ("MENU", "menu"), ("MENU_ITEM", "option"),
                            ("RADIO_MENU_ITEM", "option"), ("LIST_ITEM", "option"),
@@ -295,19 +310,30 @@ class AudioBridge(accessible.AtspiBridge):
             self.call(context.iteration, False)
 
     def view(self, item):
-        role = self.roles.get(self.call(item.get_role), "other")
+        raw_role = self.call(item.get_role)
+        role = self.roles.get(raw_role, "other")
+        role_name = str(getattr(raw_role, "value_nick", raw_role))[:80]
+        self.role_counts[role_name] = self.role_counts.get(role_name, 0) + 1
         state = self.call(item.get_state_set)
         states = frozenset(name for name, value in self.states.items() if state.contains(value))
-        if role == "other" or "defunct" in states:
+        if "defunct" in states or (role == "other" and (
+                not self.expected_texts or not accessible.VISIBLE <= states)):
             return accessible.View(item, role, "", states, frozenset())
         name = self.call(item.get_name)
         need(type(name) is str and len(name) <= 4096, "ACCESSIBLE_NAME_BOUND")
         interfaces = frozenset(self.call(item.get_interfaces))
-        if not name and role in ("static", "label", "heading", "status", "paragraph", "text") and "Text" in interfaces:
+        # WebKit may expose a span's contents on a generic container's Text
+        # interface instead of a static-label role. Read the actual value only
+        # for an exact bounded target; never infer it from the requested text.
+        if self.expected_texts and read_only_text_provider(states, interfaces):
             count = self.call(self.api.Text.get_character_count, item)
-            need(type(count) is int and 0 <= count <= 4096, "ACCESSIBLE_TEXT_BOUND")
-            if count <= 256:
-                name = self.read_text(item)
+            need(type(count) is int and count >= 0, "ACCESSIBLE_TEXT_BOUND")
+            if count in {len(value) for value in self.expected_texts}:
+                value = self.read_text(item)
+                if value in self.expected_texts:
+                    name = value
+                    if role == "other":
+                        role = "readonly_text"
         return accessible.View(item, role, name, states, interfaces)
 
 
@@ -330,6 +356,7 @@ class AudioUI:
         need(len(applications) <= 128, "UI_APPLICATION_BOUND")
         app = accessible.unique([item for item in applications
                                  if self.bridge.pid(item) == self.binding["pid"]], "APPLICATION")
+        self.bridge.role_counts = {}
         views = accessible.walk(self.bridge, app)
         self.last_views = views
         self.identity()
@@ -394,10 +421,16 @@ class AudioUI:
         return item
 
     def text(self, value):
-        found = [item for item in self.views()
+        need(type(value) is str and 0 < len(value) <= 256, "UI_TEXT_TARGET_BOUND")
+        self.bridge.expected_texts = frozenset((value,))
+        try:
+            observed = self.views()
+        finally:
+            self.bridge.expected_texts = frozenset()
+        found = [item for item in observed
                  if item.name == value and accessible.VISIBLE <= item.states
-                 and item.role in {"static", "label", "heading", "status", "paragraph", "text"}
-                 and "editable" not in item.states]
+                 and item.role in {"static", "label", "heading", "status", "paragraph", "text", "readonly_text"}
+                 and "editable" not in item.states and "EditableText" not in item.interfaces]
         if not found:
             raise accessible.NotReady("EXACT_UI_TEXT_NOT_OBSERVED")
         need(len(found) <= 8, "UI_TEXT_AMBIGUITY")
@@ -576,8 +609,14 @@ class AudioUI:
         rows = [{"role": item.role, "name": item.name[:256], "states": sorted(item.states)}
                 for item in self.last_views
                 if item.name and item.role in {"button", "checkbox", "combo", "entry", "alert", "dialog"}]
+        texts = [{"role": item.role, "name": item.name[:256],
+                  "states": sorted(item.states), "interfaces": sorted(item.interfaces)}
+                 for item in self.last_views if item.name and item.role in {
+                     "static", "label", "heading", "status", "paragraph", "text", "readonly_text"}]
         return {"last_condition": self.last_condition, "actions": self.events,
-                "visible_controls": rows[:64], "truncated": len(rows) > 64}
+                "visible_controls": rows[:64], "truncated": len(rows) > 64,
+                "text_observations": texts[:128], "text_truncated": len(texts) > 128,
+                "role_counts": self.bridge.role_counts}
 
 def validate_before(before, context, root, database, original_sources):
     need(before.get("schema") == "motionwright.tauri-audio-fixture-before/1"
@@ -629,9 +668,14 @@ def private_environment(root):
     profile.mkdir(mode=0o700)
     env = dict(os.environ)
     for key, name in (("HOME", "home"), ("XDG_CONFIG_HOME", "config"),
-                      ("XDG_DATA_HOME", "data"), ("XDG_CACHE_HOME", "cache"),
-                      ("XDG_RUNTIME_DIR", "runtime"), ("TMPDIR", "tmp")):
+                      ("XDG_DATA_HOME", "data"), ("XDG_CACHE_HOME", "cache")):
         path = profile / name
+        path.mkdir(mode=0o700)
+        env[key] = str(path)
+    # Keep GTK's additional peer socket suffixes within AF_UNIX's path bound.
+    # These short directories remain exclusive children of the same private
+    # owner. The actual Tauri data directory and SQLite/CAS paths are unchanged.
+    for key, path in private_transport_paths(root).items():
         path.mkdir(mode=0o700)
         env[key] = str(path)
     env.update(TMP=env["TMPDIR"], TEMP=env["TMPDIR"], GDK_BACKEND="x11",
@@ -776,7 +820,8 @@ def worker(args):
         attempt = AudioUI(bridge, Gdk, request["binding"], before, journal, args.deadline)
         result = attempt.run()
     except BaseException as error:
-        result.update(failure_type=type(error).__name__, failure_code=code(error))
+        result.update(failure_type=type(error).__name__, failure_code=code(error),
+                      failure_traceback="".join(traceback.format_exception(error))[-8192:])
         if attempt is not None:
             result["diagnostic"] = attempt.diagnostic()
     finally:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import re
 import time
@@ -21,7 +22,8 @@ def pure_module():
     tree = ast.parse(PATH.read_text(encoding="utf-8"))
     functions = {"need", "equal_json", "exact_json", "validate_ui_observation",
                  "validate_native_records", "validate_saved_readback", "validate_process_closure",
-                 "validate_pcm_projection", "validate_before"}
+                 "validate_pcm_projection", "validate_before", "read_only_text_provider",
+                 "private_transport_paths"}
     classes = {"AudioError", "AudioUI"}
     constants = {"PREVIEW", "AUDITION", "REQUIRED_ACTIONS", "SCROLL_ACTIONS", "SHA256"}
     selected = [node for node in tree.body if
@@ -33,8 +35,10 @@ def pure_module():
     observed = {node.name for node in selected if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
     if observed != functions | classes:
         raise AssertionError("pure guard extraction is incomplete")
-    namespace = {"uuid": uuid, "re": re, "json": json, "time": time,
-                 "pcm": SimpleNamespace(WAV_BYTES=384044, FRAMES=96000)}
+    namespace = {"uuid": uuid, "re": re, "json": json, "time": time, "os": os,
+                 "pcm": SimpleNamespace(WAV_BYTES=384044, FRAMES=96000),
+                 "accessible": SimpleNamespace(VISIBLE=frozenset(("visible", "showing")),
+                                                NotReady=RuntimeError)}
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(PATH), "exec"), namespace)
     return SimpleNamespace(**namespace)
 
@@ -117,6 +121,54 @@ class AudioJoinTests(unittest.TestCase):
     def native(self, values):
         before, binding, context, before_id, manifest_id, ui, records, _ = values
         return GUARDS.validate_native_records(records, context, before, before_id, manifest_id, binding, ui)
+
+    def test_private_socket_directories_fit_and_remain_in_the_same_owner(self):
+        root = Path("/home/runner/work/_temp/motionwright-tauri-audition-44081392672-1")
+        paths = GUARDS.private_transport_paths(root)
+        self.assertEqual(set(paths), {"XDG_RUNTIME_DIR", "TMPDIR"})
+        self.assertTrue(all(path.parent == root for path in paths.values()))
+        self.assertTrue(all(len(os.fsencode(path)) <= 70 for path in paths.values()))
+        self.assertGreater(len(os.fsencode(root / "profile" / "runtime")), 70)
+        with self.assertRaisesRegex(GUARDS.AudioError, "PRIVATE_TRANSPORT_PATH_TOO_LONG"):
+            GUARDS.private_transport_paths(root / ("extra" * 8))
+
+    def test_readonly_text_provider_cannot_be_hidden_editable_or_defunct(self):
+        states = frozenset(("visible", "showing"))
+        interfaces = frozenset(("Text", "Component"))
+        self.assertTrue(GUARDS.read_only_text_provider(states, interfaces))
+        for invalid in (states - {"showing"}, states - {"visible"},
+                        states | {"editable"}, states | {"defunct"}):
+            self.assertFalse(GUARDS.read_only_text_provider(invalid, interfaces))
+        self.assertFalse(GUARDS.read_only_text_provider(states, interfaces | {"EditableText"}))
+        self.assertFalse(GUARDS.read_only_text_provider(states, interfaces - {"Text"}))
+
+    def test_readonly_text_still_verifies_original_value_and_process(self):
+        value = "original-project-identity"
+        bridge = SimpleNamespace(owner_pid=lambda _: 7, read_text=lambda _: value)
+        ui = GUARDS.AudioUI(bridge, None, {"pid": 7}, {}, None, time.monotonic() + 5)
+        item = SimpleNamespace(node=object(), role="readonly_text", name=value,
+                               states=frozenset(("visible", "showing")),
+                               interfaces=frozenset(("Text",)))
+        observed_targets = []
+        def views():
+            observed_targets.append(bridge.expected_texts)
+            return [item]
+        ui.views = views
+        self.assertEqual(ui.text(value), {"text": value, "matches": 1})
+        self.assertEqual(observed_targets, [frozenset((value,))])
+        self.assertEqual(bridge.expected_texts, frozenset())
+        bridge.read_text = lambda _: "a different actual Text value"
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_NAME_TEXT_DISAGREE"):
+            ui.text(value)
+        bridge.read_text = lambda _: value
+        bridge.owner_pid = lambda _: 8
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_TEXT_OWNER_CHANGED"):
+            ui.text(value)
+        bridge.owner_pid = lambda _: 7
+        item.interfaces = frozenset(("Text", "EditableText"))
+        with self.assertRaisesRegex(RuntimeError, "EXACT_UI_TEXT_NOT_OBSERVED"):
+            ui.text(value)
+        self.assertEqual(bridge.expected_texts, frozenset())
 
     def test_actual_empty_recipe_serialization_is_admitted_but_saved_recipe_is_not(self):
         root = Path("/private")
