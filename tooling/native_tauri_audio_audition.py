@@ -285,6 +285,18 @@ def unmapped_action_provider(states, interfaces):
             and {"Action", "Component"} <= interfaces and "EditableText" not in interfaces)
 
 
+def accessible_action_index(names, role, states):
+    need(type(names) is list and len(names) <= 16
+         and all(type(value) is str and len(value) <= 128 for value in names),
+         "UI_ACTION_OBSERVATION_BOUND")
+    allowed = {"click", "press", "activate", "toggle", "expand or contract"}
+    if role == "checkbox":
+        allowed.add("uncheck" if "checked" in states else "check")
+    choices = [index for index, action in enumerate(names) if action.lower() in allowed]
+    need(len(choices) == 1, "UI_ACTION_AMBIGUOUS_OR_UNSUPPORTED")
+    return choices[0]
+
+
 def exact_text_offsets(text, value):
     need(type(text) is str and len(text) <= 4096, "UI_TEXT_PROVIDER_BOUND")
     need(type(value) is str and 0 < len(value) <= 256, "UI_TEXT_TARGET_BOUND")
@@ -484,13 +496,13 @@ class AudioUI:
              and len(self.action_observations) < 16, "UI_ACTION_OBSERVATION_BOUND")
         self.action_observations.append({"label": label, "role": item.role,
                                          "name": item.name, "actions": names})
-        allowed = {"click", "press", "activate", "toggle", "expand or contract"}
-        choices = [index for index, action in enumerate(names) if action.lower() in allowed]
-        need(len(choices) == 1, "UI_ACTION_AMBIGUOUS_OR_UNSUPPORTED")
-        self.effect(label, item, lambda: self.bridge.invoke(item.node, choices[0]))
+        index = accessible_action_index(names, item.role, item.states)
+        self.effect(label, item, lambda: self.bridge.invoke(item.node, index))
         return item
 
     def checked(self, name, value):
+        item = self.control(name, {"checkbox"})
+        self.bridge.call(item.node.clear_cache_single)
         item = self.control(name, {"checkbox"})
         if ("checked" in item.states) != value:
             raise accessible.NotReady("CHECKBOX_STATE_NOT_OBSERVED")

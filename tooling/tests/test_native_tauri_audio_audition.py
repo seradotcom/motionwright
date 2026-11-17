@@ -25,7 +25,7 @@ def pure_module():
                  "validate_native_records", "validate_saved_readback", "validate_process_closure",
                  "validate_pcm_projection", "validate_before", "read_only_text_provider",
                  "private_transport_paths", "exact_text_offsets", "screen_rect", "rect_contains",
-                 "unmapped_action_provider"}
+                 "unmapped_action_provider", "accessible_action_index"}
     classes = {"AudioError", "AudioUI"}
     constants = {"PREVIEW", "AUDITION", "REQUIRED_ACTIONS", "SCROLL_ACTIONS", "SHA256"}
     selected = [node for node in tree.body if
@@ -183,6 +183,40 @@ class AudioJoinTests(unittest.TestCase):
         self.assertIs(ui.visible("original disclosure", {"native_action"}, "open-original-mix"), item)
         self.assertEqual(calls, [("intent", "open-original-mix-scroll"), ("scroll", 7)])
         self.assertEqual(fresh, [True])
+
+    def test_checkbox_action_uses_the_observed_state_only(self):
+        self.assertEqual(GUARDS.accessible_action_index(["check"], "checkbox", set()), 0)
+        self.assertEqual(GUARDS.accessible_action_index(["uncheck"], "checkbox", {"checked"}), 0)
+        for name, states in (("uncheck", set()), ("check", {"checked"})):
+            with self.assertRaisesRegex(GUARDS.AudioError, "AMBIGUOUS_OR_UNSUPPORTED"):
+                GUARDS.accessible_action_index([name], "checkbox", states)
+
+    def test_checkbox_verbs_cannot_activate_other_roles(self):
+        for role in ("button", "toggle", "native_action", "entry"):
+            for name in ("check", "uncheck"):
+                with self.subTest(role=role, name=name), self.assertRaises(GUARDS.AudioError):
+                    GUARDS.accessible_action_index([name], role, set())
+        self.assertEqual(GUARDS.accessible_action_index(["press"], "button", set()), 0)
+
+    def test_ambiguous_actions_and_unbounded_observation_still_fail(self):
+        for names in ([], ["check", "toggle"], ["check", "check"], ["delete"]):
+            with self.assertRaisesRegex(GUARDS.AudioError, "AMBIGUOUS_OR_UNSUPPORTED"):
+                GUARDS.accessible_action_index(names, "checkbox", set())
+        for names in (["check"] * 17, ["x" * 129], [None], ("check",)):
+            with self.assertRaisesRegex(GUARDS.AudioError, "OBSERVATION_BOUND"):
+                GUARDS.accessible_action_index(names, "checkbox", set())
+
+    def test_checked_readback_refreshes_only_its_owned_control(self):
+        refreshed = []
+        node = SimpleNamespace(clear_cache_single=lambda: refreshed.append(True))
+        bridge = SimpleNamespace(call=lambda operation, *args: operation(*args))
+        ui = GUARDS.AudioUI(bridge, None, {"pid": 7}, {}, None, time.monotonic() + 2)
+        def control(name, roles):
+            self.assertEqual((name, roles), ("fixture checkbox", {"checkbox"}))
+            return SimpleNamespace(node=node, states={"checked"} if refreshed else set())
+        ui.control = control
+        self.assertIn("checked", ui.checked("fixture checkbox", True).states)
+        self.assertEqual(refreshed, [True])
 
     def test_readonly_text_still_verifies_original_value_and_process(self):
         value = "original-project-identity"
