@@ -71,6 +71,7 @@ on:
       - 'tooling/native_fixedtxt_postseal_custody.py'
       - '.github/actions/fixedtxt-session-case/action.yml'
       - 'tooling/fixedtxt_source_kit.py'
+      - 'tooling/fixedtxt_readback/**'
       - 'tooling/fixedtxt/prepare_fixedtxt_managed_project.rs'
       - 'tooling/tests/test_native_fixedtxt_workflow.py'
       - 'tooling/tests/test_native_fixedtxt_external_g2.py'
@@ -290,6 +291,35 @@ jobs:
             assert counts['tests_run']==counts['passed']==expected[step['entry_point']]
             assert all(counts[key]==0 for key in ('errors','failures','skipped','expected_failures','unexpected_successes'))
         PY_CONTROLS
+    - name: Verify bounded FixedTxt stable-file reader without Native effects
+      env:
+        CUSTODY_PYTHON: ${{ steps.custody_python.outputs.python }}
+      run: |
+        set -euo pipefail
+        umask 077
+        root="$RUNNER_TEMP/mw-fixedtxt-stable-file-reader-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        test ! -e "$root"
+        mkdir -m 700 "$root"
+        "$CUSTODY_PYTHON" -B -E -s tooling/ci_test_runner.py \
+          --repo "$GITHUB_WORKSPACE" --test-directory tooling/fixedtxt_readback \
+          --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+          --pattern test_stable_file_read.py --report "$root/contracts.json" \
+          > "$root/runner.stdout" 2> "$root/runner.stderr"
+        "$CUSTODY_PYTHON" -B -E -s - "$root/contracts.json" <<'PY_STABLE_READ'
+        import json,os,sys
+        from pathlib import Path
+        value=json.loads(Path(sys.argv[1]).read_bytes())
+        assert value['status']=='PASS' and value['exit_code']==0
+        assert value['executed_source_sha']==os.environ['GITHUB_SHA']
+        assert 'source_postcheck_error' not in value and len(value['steps'])==1
+        case=value['steps'][0]
+        assert case['entry_point']=='discovery:test_stable_file_read.py'
+        counts=case['counts']
+        assert case['status']=='PASS' and case['exit_code']==0 and counts['terminal_status']=='OK'
+        assert counts['tests_run']==counts['passed']==16
+        assert all(counts[k]==0 for k in ('errors','failures','skipped','expected_failures','unexpected_successes'))
+        print('fixedtxt-stable-reader-source=PASS controls=16 Native=NOT_RUN G2=NOT_GRANTED')
+        PY_STABLE_READ
     - name: Verify preflight custody infrastructure controls
       id: g2_workflow_contracts
       env:
@@ -2037,6 +2067,7 @@ jobs:
           ${{ runner.temp }}/mw-fixedtxt-owner-admission-contracts-${{ github.run_id }}-${{ github.run_attempt }}
           ${{ runner.temp }}/mw-fixedtxt-owner-close-contracts-${{ github.run_id }}-${{ github.run_attempt }}
           ${{ runner.temp }}/mw-fixedtxt-workflow-contracts-${{ github.run_id }}-${{ github.run_attempt }}
+          ${{ runner.temp }}/mw-fixedtxt-stable-file-reader-${{ github.run_id }}-${{ github.run_attempt }}
           ${{ runner.temp }}/mw-aac-inspector-discovery-${{ github.run_id }}-${{ github.run_attempt }}
           ${{ runner.temp }}/mw-aac-remaining-discovery-${{ github.run_id }}-${{ github.run_attempt }}
         if-no-files-found: error
