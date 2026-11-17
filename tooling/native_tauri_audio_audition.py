@@ -406,6 +406,7 @@ class AudioUI:
         self.last_condition = "NOT_OBSERVED"
         self.last_views = []
         self.events = []
+        self.action_observations = []
 
     def identity(self):
         need(time.monotonic() < self.deadline, "UI_DEADLINE")
@@ -478,6 +479,11 @@ class AudioUI:
         need(accessible.USABLE <= item.states and "Action" in item.interfaces,
              "UI_ACTION_NOT_USABLE")
         names = self.bridge.actions(item.node)
+        need(type(names) is list and len(names) <= 16
+             and all(type(value) is str and len(value) <= 128 for value in names)
+             and len(self.action_observations) < 16, "UI_ACTION_OBSERVATION_BOUND")
+        self.action_observations.append({"label": label, "role": item.role,
+                                         "name": item.name, "actions": names})
         allowed = {"click", "press", "activate", "toggle", "expand or contract"}
         choices = [index for index, action in enumerate(names) if action.lower() in allowed]
         need(len(choices) == 1, "UI_ACTION_AMBIGUOUS_OR_UNSUPPORTED")
@@ -736,6 +742,7 @@ class AudioUI:
                  for item in self.last_views if item.name and item.role in {
                      "static", "label", "heading", "status", "paragraph", "text", "readonly_text"}]
         return {"last_condition": self.last_condition, "actions": self.events,
+                "action_observations": self.action_observations,
                 "visible_controls": rows[:64], "truncated": len(rows) > 64,
                 "text_observations": texts[:128], "text_truncated": len(texts) > 128,
                 "role_counts": self.bridge.role_counts,

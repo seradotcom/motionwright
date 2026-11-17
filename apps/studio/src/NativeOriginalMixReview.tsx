@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { AudioWaveform, ShieldCheck } from "lucide-react";
 import { nativeOriginalMixAudition } from "./api";
 import { originalMixEnvelopeKeys, requireOriginalMixSfx, selectedOriginalMixCues } from "./audioRecipeContract";
@@ -32,6 +32,8 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
   desktopMode: boolean;
   commit: (change: Change) => Promise<Project>;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const panelId = useId();
   const [profileId, setProfileId] = useState(() => project.deliverables.find(profile =>
     savedDeliveryRecipe(project, profile.id)?.original_mix)?.id ?? project.deliverables[0]?.id ?? "");
   const selectedProfile = project.deliverables.find(profile => profile.id === profileId) ?? project.deliverables[0] ?? null;
@@ -171,8 +173,12 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
     }
   };
 
-  return <details className="audio-editor-section" aria-label="Original three-bus native PCM audition" onKeyDown={containRecipeKeyboard}>
-    <summary aria-label="Voice / music / SFX · original source mix"><AudioWaveform size={15} aria-hidden="true" /> Voice / music / SFX · original source mix</summary>
+  return <section className="audio-editor-section" aria-label="Original three-bus native PCM audition" onKeyDown={containRecipeKeyboard}>
+    <button type="button" className="button button-secondary" aria-expanded={expanded}
+      aria-controls={panelId} onClick={() => setExpanded(value => !value)}>
+      <AudioWaveform size={15} aria-hidden="true" /> Voice / music / SFX · original source mix
+    </button>
+    <div id={panelId} hidden={!expanded}>
     <p className="production-help">Save an original mix recipe for each delivery profile, then request a local PCM audition of its exact saved sources and automation. The mixer decodes the imported voice and music, an optional imported SFX base, and the authored SFX cues in this delivery cut. Whole-source stems use stereo at 48 kHz with the same measured duration; the native service validates cue timing and source bytes.</p>
     <label className="production-field"><span>Delivery language / profile</span>
       <select value={selectedProfile?.id ?? ""} disabled={project.deliverables.length === 0}
@@ -258,5 +264,6 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
       <audio controls preload="metadata" src={currentAudition.url} />
       <p>Source, clock and sample-peak guards passed for this PCM. Integrated LUFS, true peak, listening intelligibility and editorial approval require separate measurement and review. No timeline event or mastered deliverable was created.</p>
     </div>}
-  </details>;
+    </div>
+  </section>;
 }
