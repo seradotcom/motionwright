@@ -89,10 +89,10 @@ pub use blender_original::{
     BlenderOriginalJournal, BlenderOriginalPhase, BlenderOriginalRequest,
     BlenderProductAnnotationEdit, BlenderProductAssetBinding, BlenderProductAttemptProjection,
     BlenderProductAttemptRequest, BlenderProductAttemptState, BlenderProductAttemptSummary,
-    BlenderProductCycleJournal, BlenderProductCycleRequest, BlenderProductLineageSnapshot,
-    BlenderProductNativeBinding, BlenderProductSourceScope, BlenderProductSourceSnapshot,
-    decode_blender_product_recipe, read_blender_product_attempt, read_blender_product_source,
-    realize_blender_product_cycle_with_connections,
+    BlenderProductCycleHook, BlenderProductCycleJournal, BlenderProductCycleRequest,
+    BlenderProductLineageSnapshot, BlenderProductNativeBinding, BlenderProductSourceScope,
+    BlenderProductSourceSnapshot, decode_blender_product_recipe, read_blender_product_attempt,
+    read_blender_product_source, realize_blender_product_cycle_with_connections,
 };
 pub use blender_render::{
     BLENDER_LIT_REQUIRED_ADDITIONS, BlenderLitArtifact, BlenderLitProjectProjection,

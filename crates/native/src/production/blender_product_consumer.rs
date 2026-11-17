@@ -12,8 +12,8 @@ use crate::blender_product_scene::{
     SHELL_SEGMENTS, SemanticStep,
 };
 pub use cycle::{
-    BLENDER_PRODUCT_RECIPE_MEDIA_TYPE, BlenderProductCycleJournal, BlenderProductCycleRequest,
-    decode_blender_product_recipe,
+    BLENDER_PRODUCT_RECIPE_MEDIA_TYPE, BlenderProductCycleHook, BlenderProductCycleJournal,
+    BlenderProductCycleRequest, decode_blender_product_recipe,
 };
 pub use lineage::{
     BlenderProductAnnotationEdit, BlenderProductAssetBinding, BlenderProductAttemptProjection,

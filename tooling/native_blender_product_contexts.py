@@ -14,6 +14,7 @@ from typing import Any
 from mlt_official_runtime_intake import capture_regular
 from native_mlt_loaded_module import _verified_binary
 from native_blender_product_pixels import observe_product_surface_pixels
+from native_blender_foreground import ForegroundPhaseCoordinator
 from native_blender_original_evidence import (
     COMMANDS, HEX, MAX_JSON, LiveBlenderObserver, _plain_owned_directory,
     _require_empty_private_append_custody,
@@ -67,6 +68,8 @@ def run_product_contexts(
     original = None
     try:
         record["preflight"] = app.exact_inputs()
+        operator_console = app.foreground_operator_requested(set(PRODUCT_COMMANDS))
+        record["foreground_operator_console_selected"] = operator_console
         require(isinstance(ffmpeg, Path) and ffmpeg.is_absolute()
                 and ffmpeg.resolve(strict=True) == ffmpeg
                 and not any(path.is_symlink() for path in (ffmpeg, *ffmpeg.parents)),
@@ -123,7 +126,8 @@ def run_product_contexts(
                 phase_record = {"phase": phase, "observer": None, "context_cleanup": None}
                 phase_records.append(phase_record)
                 context = native_stack.enter_context(
-                    app.blender_context(paths, env, evidence, seeded, required=set(PRODUCT_COMMANDS)))
+                    app.blender_context(paths, env, evidence, seeded, required=set(PRODUCT_COMMANDS),
+                                        phase_foreground=operator_console))
                 contexts.append(context)
                 phase_record["runtime_bindings"] = context["runtime_bindings"]
                 phase_record["capabilities_checked"] = context["capabilities_checked"]
@@ -137,12 +141,24 @@ def run_product_contexts(
                     )
                     finishers.append(observer_stack.enter_context(
                         live_observation_scope(observer, phase_record, observer_custody, phase)))
+                coordination = None
+                if operator_console:
+                    attempt_raw, attempt_binding = capture_regular(attempt, MAX_JSON)
+                    require(unique_json(attempt_raw) == request,
+                            "product_foreground_attempt_changed")
+                    record["foreground_attempt_binding"] = attempt_binding
+                    record["foreground_coordination"] = {}
+                    coordination = ForegroundPhaseCoordinator(
+                        {phase: context["foreground_phase_terminal"]
+                         for phase, context in zip(phases, contexts, strict=True)},
+                        hashlib.sha256(attempt_raw).hexdigest(), record["foreground_coordination"])
                 returned = captured_json(
                     [str(app.MW_BIN), "product-cycle", str(database),
                      *(str(context["connection"]) for context in contexts),
                      str(attempt), str(evidence_path)],
                     env=seed_env, prefix=owner / "native-cycle",
                     record=record["cycle_command"], timeout=2700,
+                    phase_coordination=coordination,
                 )
                 record["native_returned"] = returned
                 observations = [finish() for finish in finishers]
@@ -194,6 +210,7 @@ def run_product_contexts(
             phase_record["context_cleanup"] = {
                 "errors": list(context["cleanup_errors"]),
                 "daemon_returncode": context.get("daemon_returncode"),
+                "foreground_terminal_transitions": context.get("foreground_terminal_transitions", []),
             }
         if original is not None:
             # Preserve errors in memory even when writing private files failed.

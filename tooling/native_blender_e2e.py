@@ -693,12 +693,14 @@ def broker_socket_path(runtime: Path) -> Path:
 @contextmanager
 def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
                     seeded: dict, *, required: set[str] | None = None,
-                    bounded_static: bool = False):
+                    bounded_static: bool = False, phase_foreground: bool = False):
     socket = broker_socket_path(paths["runtime"])
     if socket.exists() or socket.is_symlink():
         raise FileExistsError("Existing Blender broker socket path cannot be adopted")
     required = set(BLENDER_DEFAULT_COMMANDS if required is None else required)
     operator_console = foreground_operator_requested(required)
+    if type(phase_foreground) is not bool or (phase_foreground and not operator_console):
+        raise ValueError("Phase foreground requires the genuine operator console")
     if operator_console and bounded_static:
         raise ValueError("Static Blender CI cannot request foreground operator consent")
     require_headless_blender_source_authorization(
@@ -811,6 +813,7 @@ def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
     daemon = None
     static_log = None
     foreground_terminal: tuple[int, int] | None = None
+    phase_terminal = None
     state = {"cleanup_errors": []}
     try:
         if bounded_static:
@@ -836,7 +839,18 @@ def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
             **daemon_group,
         )
         if operator_console:
-            foreground_terminal = acquire_foreground_daemon_terminal(daemon.pid)
+            if phase_foreground:
+                # Existing source-only loaders do not need the Linux phase helper.
+                if __package__:
+                    from .native_blender_foreground import ForegroundDaemonTerminal
+                else:
+                    from native_blender_foreground import ForegroundDaemonTerminal
+                phase_terminal = ForegroundDaemonTerminal(
+                    daemon, acquire_foreground_daemon_terminal, restore_foreground_daemon_terminal)
+                state["foreground_terminal_transitions"] = phase_terminal.transitions
+                phase_terminal.enter()
+            else:
+                foreground_terminal = acquire_foreground_daemon_terminal(daemon.pid)
         if bounded_static:
             static_log = start_static_daemon_log(daemon, log_stream)
         wait_for_socket(daemon, socket, daemon_log)
@@ -910,10 +924,20 @@ def blender_context(paths: dict[str, Path], env: dict[str, str], evidence: Path,
                 "semwrightd_sha256": digest(SW_BINS / "semwrightd"),
             },
         })
+        if phase_terminal is not None:
+            # Return setup ownership before preparing the next distinct owner.
+            # The same live daemon gets the TTY back only for its Native phase.
+            phase_terminal.leave()
+            state["foreground_phase_terminal"] = phase_terminal
         yield state
     finally:
         original = sys.exc_info()[1]
         failures = state["cleanup_errors"]
+        if phase_terminal is not None:
+            try:
+                phase_terminal.close()
+            except BaseException as error:
+                failures.append("phase-foreground:" + type(error).__name__ + ":" + str(error))
         if daemon is not None:
             try:
                 if daemon.poll() is None:
