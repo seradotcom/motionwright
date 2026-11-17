@@ -49,6 +49,57 @@ pub struct BlenderProductCycleJournal {
     verify: BlenderProductJournal,
 }
 
+/// Owner-only phase coordination. A hook cannot approve a Broker operation.
+/// Implementations must bound their own I/O and must not retry an invocation.
+pub trait BlenderProductCycleHook: Send {
+    fn enter(&mut self, phase: BlenderOriginalPhase) -> NativeResult<()>;
+    fn leave(&mut self, phase: BlenderOriginalPhase) -> NativeResult<()>;
+}
+
+struct NoProductCycleHook;
+
+impl BlenderProductCycleHook for NoProductCycleHook {
+    fn enter(&mut self, _phase: BlenderOriginalPhase) -> NativeResult<()> {
+        Ok(())
+    }
+
+    fn leave(&mut self, _phase: BlenderOriginalPhase) -> NativeResult<()> {
+        Ok(())
+    }
+}
+
+fn finish_product_phase(
+    phase: BlenderOriginalPhase,
+    native: NativeResult<Value>,
+    leave: NativeResult<()>,
+    journal: &mut BlenderProductJournal,
+) -> NativeResult<Value> {
+    if let Err(leave_error) = &leave {
+        // The phase's fresh-journal precondition has already been checked.
+        // Retain both originals without replacing the Native error's certainty,
+        // progress, candidates or diagnostic with a coordination failure.
+        let native_terminal = match &native {
+            Ok(value) => json!({"status": "ok", "value": value}),
+            Err(error) => json!({"status": "error", "error": error}),
+        };
+        journal.record_product_evidence(
+            "owner_foreground_leave_failure",
+            json!({
+                "phase": phase,
+                "native_terminal": native_terminal,
+                "leave_error": leave_error,
+                "secondary_to_native_error": native.is_err(),
+                "coordination_only": true,
+            }),
+        );
+    }
+    match (native, leave) {
+        (Err(original), _) => Err(original),
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(error)) => Err(error.uncertain()),
+    }
+}
+
 fn cycle_create_request(request: &BlenderProductCycleRequest) -> BlenderProductCreateRequest {
     BlenderProductCreateRequest {
         project_id: request.project_id,
@@ -401,6 +452,21 @@ impl ProductionCoordinator {
         request: &BlenderProductCycleRequest,
         journal: &mut BlenderProductCycleJournal,
     ) -> NativeResult<Value> {
+        let mut hook = NoProductCycleHook;
+        self.realize_blender_product_cycle_with_hook(editor, verifier, request, journal, &mut hook)
+            .await
+    }
+
+    /// Coordinate the three existing phases without acquiring Native authority.
+    /// The original claim, Store, owner connections and terminal remain shared.
+    pub async fn realize_blender_product_cycle_with_hook(
+        &self,
+        editor: &ProductionCoordinator,
+        verifier: &ProductionCoordinator,
+        request: &BlenderProductCycleRequest,
+        journal: &mut BlenderProductCycleJournal,
+        hook: &mut dyn BlenderProductCycleHook,
+    ) -> NativeResult<Value> {
         let create_request = cycle_create_request(request);
         product_request_valid(&create_request)?;
         if !cycle_journal_is_empty(journal) {
@@ -430,6 +496,7 @@ impl ProductionCoordinator {
         journal.root_intent = Some(claim.journal_intent());
         let result = async {
             let mut original = None;
+            hook.enter(BlenderOriginalPhase::CreateOriginal)?;
             let created = self
                 .realize_saved_blender_product_source(
                     &create_request,
@@ -437,7 +504,13 @@ impl ProductionCoordinator {
                     &mut journal.create,
                     &mut original,
                 )
-                .await?;
+                .await;
+            let created = finish_product_phase(
+                BlenderOriginalPhase::CreateOriginal,
+                created,
+                hook.leave(BlenderOriginalPhase::CreateOriginal),
+                &mut journal.create,
+            )?;
             let original = original.ok_or_else(|| {
                 backend("Completed product creation did not retain its native source witness")
                     .uncertain()
@@ -471,6 +544,7 @@ impl ProductionCoordinator {
                 &mut journal.source_actions,
             )?;
             let mut edited = None;
+            hook.enter(BlenderOriginalPhase::EditOriginal)?;
             let edit_result = editor
                 .reopen_saved_blender_product_source(
                     &edit_request,
@@ -479,7 +553,13 @@ impl ProductionCoordinator {
                     &mut journal.edit,
                     &mut edited,
                 )
-                .await?;
+                .await;
+            let edit_result = finish_product_phase(
+                BlenderOriginalPhase::EditOriginal,
+                edit_result,
+                hook.leave(BlenderOriginalPhase::EditOriginal),
+                &mut journal.edit,
+            )?;
             let edited = edited.ok_or_else(|| {
                 backend("Completed product edit did not retain its native source witness")
                     .uncertain()
@@ -509,6 +589,7 @@ impl ProductionCoordinator {
                 &mut journal.source_actions,
             )?;
             let mut unused_continuation = None;
+            hook.enter(BlenderOriginalPhase::VerifyEdited)?;
             let verified = verifier
                 .reopen_saved_blender_product_source(
                     &verify_request,
@@ -517,7 +598,13 @@ impl ProductionCoordinator {
                     &mut journal.verify,
                     &mut unused_continuation,
                 )
-                .await?;
+                .await;
+            let verified = finish_product_phase(
+                BlenderOriginalPhase::VerifyEdited,
+                verified,
+                hook.leave(BlenderOriginalPhase::VerifyEdited),
+                &mut journal.verify,
+            )?;
             if unused_continuation.is_some()
                 || self
                     .service
@@ -643,6 +730,99 @@ mod tests {
             malicious[key] = json!("untrusted");
             assert!(serde_json::from_value::<BlenderProductCycleRequest>(malicious).is_err());
         }
+    }
+
+    #[test]
+    fn product_phase_leave_failure_preserves_the_complete_native_error() {
+        for known in [true, false] {
+            let mut original = Error::new(ErrorCode::BackendFailed, "original native failure")
+                .recipe_progress(2, "original-step");
+            original.candidates = vec!["original-candidate".into()];
+            if !known {
+                original = original.uncertain();
+            }
+            let expected = json!(&original);
+            let leave = Error::new(ErrorCode::Timeout, "owner phase ACK timeout");
+            let expected_leave = json!(&leave);
+            let mut journal = BlenderProductJournal::default();
+            let returned = finish_product_phase(
+                BlenderOriginalPhase::EditOriginal,
+                Err(original),
+                Err(leave),
+                &mut journal,
+            )
+            .unwrap_err();
+            assert_eq!(json!(returned), expected);
+            assert_eq!(journal.evidence.len(), 1);
+            let retained = &journal.evidence[0];
+            assert_eq!(retained["stage"], "owner_foreground_leave_failure");
+            assert_eq!(retained["evidence"]["native_terminal"]["error"], expected);
+            assert_eq!(retained["evidence"]["leave_error"], expected_leave);
+            assert_eq!(retained["evidence"]["secondary_to_native_error"], true);
+            assert!(journal.calls.is_empty() && journal.source_binding.is_none());
+        }
+    }
+
+    #[test]
+    fn product_phase_leave_only_failure_retains_success_without_claiming_completion() {
+        let native = json!({"original_phase": "completed", "formal_acceptance": false});
+        let leave = Error::new(ErrorCode::Unavailable, "owner phase channel closed");
+        let expected_leave = json!(&leave);
+        let mut journal = BlenderProductJournal::default();
+        let returned = finish_product_phase(
+            BlenderOriginalPhase::CreateOriginal,
+            Ok(native.clone()),
+            Err(leave),
+            &mut journal,
+        )
+        .unwrap_err();
+        assert!(!returned.outcome_known);
+        assert_eq!(returned.code, ErrorCode::Unavailable);
+        assert_eq!(
+            journal.evidence[0]["evidence"]["native_terminal"]["value"],
+            native
+        );
+        assert_eq!(
+            journal.evidence[0]["evidence"]["leave_error"],
+            expected_leave
+        );
+        assert_eq!(
+            journal.evidence[0]["evidence"]["secondary_to_native_error"],
+            false
+        );
+    }
+
+    #[test]
+    fn product_phase_success_and_native_failure_keep_prior_journal_shape() {
+        let value = json!({"original": "value"});
+        let mut journal = BlenderProductJournal::default();
+        assert_eq!(
+            finish_product_phase(
+                BlenderOriginalPhase::VerifyEdited,
+                Ok(value.clone()),
+                Ok(()),
+                &mut journal,
+            )
+            .unwrap(),
+            value
+        );
+        let original = Error::new(ErrorCode::ConsentRequired, "original Broker challenge");
+        let expected = json!(&original);
+        assert_eq!(
+            json!(
+                finish_product_phase(
+                    BlenderOriginalPhase::CreateOriginal,
+                    Err(original),
+                    Ok(()),
+                    &mut journal,
+                )
+                .unwrap_err()
+            ),
+            expected
+        );
+        assert!(journal.evidence.is_empty());
+        fn require_send<T: Send>() {}
+        require_send::<NoProductCycleHook>();
     }
 
     #[test]

@@ -13,10 +13,11 @@ mod product;
 pub use product::{
     BLENDER_PRODUCT_RECIPE_MEDIA_TYPE, BlenderProductAnnotationEdit, BlenderProductAssetBinding,
     BlenderProductAttemptProjection, BlenderProductAttemptRequest, BlenderProductAttemptState,
-    BlenderProductAttemptSummary, BlenderProductCycleJournal, BlenderProductCycleRequest,
-    BlenderProductLineageSnapshot, BlenderProductNativeBinding, BlenderProductSourceScope,
-    BlenderProductSourceSnapshot, decode_blender_product_recipe, read_blender_product_attempt,
-    read_blender_product_source, realize_blender_product_cycle_with_connections,
+    BlenderProductAttemptSummary, BlenderProductCycleHook, BlenderProductCycleJournal,
+    BlenderProductCycleRequest, BlenderProductLineageSnapshot, BlenderProductNativeBinding,
+    BlenderProductSourceScope, BlenderProductSourceSnapshot, decode_blender_product_recipe,
+    read_blender_product_attempt, read_blender_product_source,
+    realize_blender_product_cycle_with_connections,
 };
 
 const ORIGINAL_SCHEMA: &str = "motionwright.blender.original-scene-attempt/1";

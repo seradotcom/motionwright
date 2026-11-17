@@ -157,7 +157,7 @@ def _read_stable_command_stdout(path: Path, limit: int) -> bytes:
 
 def _bounded_original_command(argv: list[str], *, env: dict[str, str],
                               stdout, stderr, timeout: float,
-                              record: dict) -> subprocess.CompletedProcess:
+                              record: dict, phase_coordination=None) -> subprocess.CompletedProcess:
     """One original producer, two concurrently drained, finite private pipes.
 
     Direct stdout/stderr file redirection with subprocess.run only checks
@@ -170,11 +170,23 @@ def _bounded_original_command(argv: list[str], *, env: dict[str, str],
     eof, overflow = [False, False], [False, False]
     errors: list[str | None] = [None, None]
     changed = threading.Event()
-    child = subprocess.Popen(
-        argv, env=env, stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        shell=False, start_new_session=True,
-    )
+    spawn_env, spawn_options = env, {}
+    try:
+        if phase_coordination is not None:
+            spawn_env, inherited = phase_coordination.prepare(env)
+            spawn_options["pass_fds"] = inherited
+        child = subprocess.Popen(
+            argv, env=spawn_env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            shell=False, start_new_session=True, **spawn_options,
+        )
+    except BaseException:
+        if phase_coordination is not None:
+            try:
+                phase_coordination.close()
+            except BaseException as error:
+                record["foreground_spawn_cleanup_error"] = str(error)[:256]
+        raise
 
     def kill_original() -> None:
         try:
@@ -236,14 +248,59 @@ def _bounded_original_command(argv: list[str], *, env: dict[str, str],
     deadline = time.monotonic() + timeout
     child_exit_observed_at = None
     timed_out = False
+    coordination_error = None
+    coordination_failure_at = None
+
+    def close_phase_channel():
+        nonlocal coordination_error, coordination_failure_at
+        if phase_coordination is None:
+            return
+        try:
+            phase_coordination.close(returncode=child.poll())
+        except BaseException as error:
+            record.setdefault("foreground_cleanup_errors", []).append({
+                "type": type(error).__name__, "message": str(error)[:256]})
+            if coordination_error is None:
+                coordination_error = error
+                coordination_failure_at = time.monotonic()
+
+    def failed_phase_channel(error):
+        nonlocal coordination_error, coordination_failure_at
+        coordination_error = error
+        coordination_failure_at = time.monotonic()
+        record["foreground_coordination_error"] = {
+            "type": type(error).__name__, "message": str(error)[:256],
+            "automatic_retry": False}
+        # EOF lets Rust retain its original Native error and Leave secondary.
+        # Give that one producer a bounded publication grace; never replay it.
+        close_phase_channel()
+
     try:
+        if phase_coordination is not None:
+            try:
+                phase_coordination.bind(child)
+            except BaseException as error:
+                failed_phase_channel(error)
         while True:
+            if phase_coordination is not None and coordination_error is None:
+                try:
+                    phase_coordination.service()
+                except BaseException as error:
+                    failed_phase_channel(error)
             if any(overflow) or any(errors):
                 break
             exited = child.poll() is not None
             if exited and all(not reader.is_alive() for reader in readers):
+                if phase_coordination is not None and coordination_error is None:
+                    try:
+                        phase_coordination.service()  # Observe original channel EOF.
+                    except BaseException as error:
+                        failed_phase_channel(error)
                 break
             now = time.monotonic()
+            if (coordination_failure_at is not None
+                    and now - coordination_failure_at >= 5.0):
+                break
             if exited and child_exit_observed_at is None:
                 child_exit_observed_at = now
             if now >= deadline:
@@ -260,6 +317,7 @@ def _bounded_original_command(argv: list[str], *, env: dict[str, str],
             changed.wait(min(0.05, deadline - now))
             changed.clear()
     finally:
+        close_phase_channel()
         # Capture the need for intervention BEFORE group cleanup. Killing an
         # inherited pipe writer may produce EOF, but that post-kill EOF does
         # not authenticate the original producer's natural completion.
@@ -298,12 +356,14 @@ def _bounded_original_command(argv: list[str], *, env: dict[str, str],
         raise OriginalSceneUnverified("original_scene_command_stream_unbounded")
     require(complete and child.returncode is not None,
             "original_scene_command_stream_incomplete")
+    if coordination_error is not None and child.returncode == 0:
+        raise OriginalSceneUnverified("original_scene_foreground_coordination_incomplete") from coordination_error
     return subprocess.CompletedProcess(argv, child.returncode)
 
 
 def captured_json(
     argv: list[str], *, env: dict[str, str], prefix: Path,
-    record: dict, timeout: int = 900,
+    record: dict, timeout: int = 900, phase_coordination=None,
 ) -> dict:
     """One process invocation; retain its terminal before flushing its streams."""
     require("invocation_reserved" not in record, "original_scene_command_already_attempted")
@@ -320,7 +380,7 @@ def captured_json(
         try:
             result = _bounded_original_command(
                 argv, env=env, stdout=stdout, stderr=stderr,
-                timeout=timeout, record=record)
+                timeout=timeout, record=record, phase_coordination=phase_coordination)
         except subprocess.TimeoutExpired:
             record["terminal"] = {"status": "PROCESS_TIMEOUT", "outcome_known": False}
             raise
@@ -1365,6 +1425,8 @@ PRODUCT_PUBLIC_KEYS = frozenset({
 PRODUCT_SOURCE_PATHS = (
     "SOURCE_LOCK.json", "Cargo.lock", "Cargo.toml",
     "crates/native/Cargo.toml", "crates/native/examples/native-blender-e2e.rs",
+    "crates/native/examples/native_blender_e2e/foreground.rs",
+    "crates/native/src/production/blender_original.rs",
     "crates/native/src/blender_product_scene.rs",
     "crates/native/src/production.rs",
     "crates/native/src/production/blender_product_cycle.rs",
@@ -1372,6 +1434,8 @@ PRODUCT_SOURCE_PATHS = (
     "crates/native/src/production/blender_product_lineage.rs",
     "crates/native/src/production/receipt_custody.rs",
     "tooling/native_blender_e2e.py",
+    "tooling/native_blender_foreground.py",
+    "tooling/tests/test_native_blender_foreground.py",
     "tooling/native_blender_original_evidence.py",
     "tooling/native_blender_product_contexts.py",
     "tooling/native_blender_product_pixels.py",

@@ -1,3 +1,6 @@
+#[path = "native_blender_e2e/foreground.rs"]
+mod foreground;
+
 use motionwright_domain::{
     BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle, RendererKind, RevisionStamp,
 };
@@ -832,8 +835,19 @@ fn product_destination_absent(path: &Path) -> EvidenceResult<()> {
     }
 }
 
+fn read_product_request_with_digest(
+    path: &Path,
+) -> EvidenceResult<(BlenderProductCycleRequest, String)> {
+    use sha2::{Digest, Sha256};
+    let bytes = read_product_input(path, 16_384)?;
+    let request = serde_json::from_slice(&bytes)?;
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    Ok((request, digest))
+}
+
+#[cfg(test)]
 fn read_product_request(path: &Path) -> EvidenceResult<BlenderProductCycleRequest> {
-    Ok(serde_json::from_slice(&read_product_input(path, 16_384)?)?)
+    Ok(read_product_request_with_digest(path)?.0)
 }
 
 fn seed_product(
@@ -1180,7 +1194,8 @@ async fn product_cycle_phase(
     evidence_path: &Path,
 ) -> EvidenceResult<serde_json::Value> {
     product_destination_absent(evidence_path)?;
-    let request = read_product_request(attempt_path)?;
+    let (request, attempt_sha256) = read_product_request_with_digest(attempt_path)?;
+    let mut phase_channel = foreground::from_environment(&attempt_sha256)?;
     let metadata = std::fs::symlink_metadata(database)?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Err("product cycle requires its existing regular SQLite source".into());
@@ -1197,9 +1212,24 @@ async fn product_cycle_phase(
     let edit = ProductionCoordinator::new(service.clone(), edit_connection)?;
     let verify = ProductionCoordinator::new(service.clone(), verify_connection)?;
     let mut journal = BlenderProductCycleJournal::default();
-    let terminal = create
-        .realize_blender_product_cycle(&edit, &verify, &request, &mut journal)
-        .await;
+    let terminal = match phase_channel.as_mut() {
+        Some(hook) => {
+            create
+                .realize_blender_product_cycle_with_hook(
+                    &edit,
+                    &verify,
+                    &request,
+                    &mut journal,
+                    hook,
+                )
+                .await
+        }
+        None => {
+            create
+                .realize_blender_product_cycle(&edit, &verify, &request, &mut journal)
+                .await
+        }
+    };
     let append_custody = json!({
         "create": create.private_receipt_custody_snapshot(),
         "edit": edit.private_receipt_custody_snapshot(),
@@ -1252,6 +1282,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .next()
         .and_then(|value| value.into_string().ok())
         .unwrap_or_else(|| usage());
+    foreground::check_command(&command)?;
 
     match command.as_str() {
         "seed" => {
@@ -1355,6 +1386,34 @@ mod original_tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Err(std::io::Error::other("synthetic diagnostic flush failure"))
         }
+    }
+
+    #[test]
+    fn original_product_phase_digest_binds_the_exact_bounded_parsed_request_bytes() {
+        use sha2::{Digest, Sha256};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("attempt.json");
+        let project = motionwright_domain::Project::new("phase digest fixture").unwrap();
+        let request = BlenderProductCycleRequest {
+            project_id: project.id,
+            expected: project.stamp(),
+            scene_id: Uuid::from_u128(1),
+            capsule_id: Uuid::from_u128(2),
+            request_id: "phase-digest-fixture".into(),
+            annotation_body: "AFTER".into(),
+        };
+        let compact = serde_json::to_vec(&request).unwrap();
+        let pretty = serde_json::to_vec_pretty(&request).unwrap();
+        assert_ne!(compact, pretty);
+        let mut digests = Vec::new();
+        for raw in [compact, pretty] {
+            std::fs::write(&path, &raw).unwrap();
+            let (parsed, digest) = read_product_request_with_digest(&path).unwrap();
+            assert_eq!(json!(parsed), json!(&request));
+            assert_eq!(digest, format!("{:x}", Sha256::digest(&raw)));
+            digests.push(digest);
+        }
+        assert_ne!(digests[0], digests[1]);
     }
 
     #[test]
