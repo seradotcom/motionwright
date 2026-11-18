@@ -792,10 +792,16 @@ def preparation_commands(request, current):
     import native_mlt_g2_custody as custody
     bootstrap = custody.runtime_preparation_dispatch(
         (owned_layout(current)["control_root"] / "runtime-bootstrap.original.json").read_bytes(), current, scenario=SCOPE)
+    # A stalled package download must return within the original preparation
+    # budget. Do not inherit image-level retries or pipeline a stalled mirror.
+    # Repository authentication, package pins and the 15-stage route stay intact.
+    apt = ["sudo", "-n", "apt-get", "-o", "Acquire::Retries=0",
+           "-o", "Acquire::http::Timeout=30", "-o", "Acquire::https::Timeout=30",
+           "-o", "Acquire::http::Pipeline-Depth=0", "-o", "Acquire::https::Pipeline-Depth=0"]
     return [
         [python, "-B", "-E", "-s", str(scripts / "native_fixedtxt_workflow.py"), "--prepare-source-inputs"],
-        ["sudo", "-n", "apt-get", "update"],
-        ["sudo", "-n", "apt-get", "install", "--no-install-recommends", "-y", "bubblewrap",
+        [*apt, "update"],
+        [*apt, "install", "--no-install-recommends", "-y", "bubblewrap",
          "apparmor-profiles", "apparmor-utils", "libmlt7=7.22.0-1build6", "melt=7.22.0-1build6",
          "ffmpeg", "libpipewire-0.3-dev", "pkg-config", "clang"],
         ["bash", str(sdk / "scripts/dev/ci-driver-bwrap-profile.sh"),
