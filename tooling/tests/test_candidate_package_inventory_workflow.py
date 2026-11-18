@@ -27,7 +27,8 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
 
     def test_source_filters_cover_every_new_owner_reader_and_control(self):
         paths = ("tooling/candidate_package_inventory.py", "tooling/linux_package_parity.py",
-                 "tooling/tests/test_linux_package_parity.py", "tooling/candidate_package_extraction.py",
+                 "tooling/tests/test_linux_package_parity.py", "tooling/linux_deb_archive_audit.py",
+                 "tooling/tests/test_linux_deb_archive_audit.py", "tooling/candidate_package_extraction.py",
                  "tooling/startup_capture_core.py", "tooling/tests/test_candidate_package_inventory.py",
                  "tooling/tests/test_candidate_package_extraction.py",
                  "tooling/tests/test_candidate_package_inventory_workflow.py")
@@ -51,6 +52,15 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
         self.assertIn('"skipped","expected_failures","unexpected_successes"', source)
         self.assertIn("extraction_effects=0 full_inventory=NOT_VERIFIED G3=STOP", source)
         self.assertNotIn("|| true", source)
+        original = step(policy, "Authenticate original Debian ar and control source contracts")
+        self.assertIn("--pattern test_linux_deb_archive_audit.py", original)
+        self.assertIn("--mode discovery --require-complete --expected-source", original)
+        self.assertIn("counts[\x27tests_run\x27]==counts[\x27passed\x27]==17", original)
+        self.assertIn("Native=NOT_RUN G3=STOP", original)
+        self.assertIn("set -euo pipefail", original)
+        self.assertNotIn("|| true", original)
+        archive = step(policy, "Retain original package inventory source control records")
+        self.assertIn("deb-original-archive-source-${{ github.run_id }}-${{ github.run_attempt }}/*", archive)
         for body in (self.installed, self.linux):
             self.assertIn("receipt-policy", body.split("    steps:\n", 1)[0])
 
@@ -112,6 +122,7 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
             expected.update((prefix + ".producer.json", prefix + ".consumer.json"))
             expected.update(prefix + "/" + name for name in suffixes)
         expected.add("ci-evidence/linux-package-parity.json")
+        expected.add("ci-evidence/linux-deb-original-archive-audit.json")
         for body, title in (
                 (self.installed, "Preserve original installed Linux package inventories"),
                 (self.linux, "Preserve original isolated Linux package inventories")):
@@ -143,6 +154,33 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
                     self.assertIn(value, check)
                 self.assertIn("set -euo pipefail", check)
                 self.assertNotIn("|| true", check)
+        for body, title, producer in (
+                (self.installed, "Authenticate original installed Debian archive control and data",
+                 "first_use_package_inventory"),
+                (self.linux, "Authenticate original isolated Debian archive control and data",
+                 "linux_package_inventory")):
+            with self.subTest(audit=title):
+                audit = step(body, title)
+                preceding = ("Reject divergent DEB and AppImage installed application payloads"
+                             if body is self.installed
+                             else "Require exact shared payload bytes in isolated Linux bundles")
+                upload = ("Preserve original installed Linux package inventories"
+                          if body is self.installed
+                          else "Preserve original isolated Linux package inventories")
+                self.assertLess(body.index(preceding), body.index(title))
+                self.assertLess(body.index(title), body.index(upload))
+                self.assertIn("steps." + producer + ".outputs.deb_inventory_sha256", audit)
+                for value in (
+                        "tooling/linux_deb_archive_audit.py",
+                        '--deb "${debs[0]}"',
+                        "--inventory ci-evidence/linux-deb-package-inventory/inventory.json",
+                        '--expected-source "$GITHUB_SHA"',
+                        '--expected-inventory-sha256 "$MW_DEB_PACKAGE_INVENTORY_SHA256"',
+                        "--output ci-evidence/linux-deb-original-archive-audit.json",
+                        'test "${#debs[@]}" -eq 1',
+                        "set -euo pipefail"):
+                    self.assertIn(value, audit)
+                self.assertNotIn("|| true", audit)
         attestation_source = ast.parse(
             (ROOT / "tooling/candidate_attestation_input.py").read_text(encoding="utf-8")
         )

@@ -34,6 +34,8 @@ on:
       - "tooling/candidate_package_inventory.py"
       - "tooling/linux_package_parity.py"
       - "tooling/tests/test_linux_package_parity.py"
+      - "tooling/linux_deb_archive_audit.py"
+      - "tooling/tests/test_linux_deb_archive_audit.py"
       - "tooling/candidate_package_extraction.py"
       - "tooling/startup_capture_core.py"
       - "tooling/tests/test_candidate_package_inventory.py"
@@ -155,6 +157,8 @@ on:
       - "tooling/candidate_package_inventory.py"
       - "tooling/linux_package_parity.py"
       - "tooling/tests/test_linux_package_parity.py"
+      - "tooling/linux_deb_archive_audit.py"
+      - "tooling/tests/test_linux_deb_archive_audit.py"
       - "tooling/candidate_package_extraction.py"
       - "tooling/startup_capture_core.py"
       - "tooling/tests/test_candidate_package_inventory.py"
@@ -371,6 +375,36 @@ jobs:
               assert all(counts[key]==0 for key in ("failures","errors","skipped","expected_failures","unexpected_successes"))
           print("package-inventory-source=PASS extraction_effects=0 full_inventory=NOT_VERIFIED G3=STOP")
           PY_PACKAGE_G1
+      - name: Authenticate original Debian ar and control source contracts
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          root="$RUNNER_TEMP/deb-original-archive-source-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$root"
+          mkdir -m 700 "$root"
+          python3 -B -E -s tooling/ci_test_runner.py \
+            --repo "$GITHUB_WORKSPACE" --test-directory tooling/tests \
+            --pattern test_linux_deb_archive_audit.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$root/receipt.json" \
+            > "$root/runner.stdout" 2> "$root/runner.stderr"
+          python3 -B -E -s - "$root/receipt.json" "$GITHUB_SHA" <<'PY_DEB_ORIGINAL_G1'
+          import json,sys
+          from pathlib import Path
+          report=json.loads(Path(sys.argv[1]).read_bytes())
+          assert report['status']=='PASS' and report['executed_source_sha']==sys.argv[2]
+          assert len(report['steps'])==1
+          step=report['steps'][0]
+          counts=step['counts']
+          assert step['entry_point']=='discovery:test_linux_deb_archive_audit.py'
+          assert step['status']=='PASS' and step['exit_code']==0
+          assert counts['tests_run']==counts['passed']==17
+          assert counts['terminal_status']=='OK'
+          assert all(counts[key]==0 for key in ('errors','failures','skipped','expected_failures','unexpected_successes'))
+          print('deb-original-archive-source=PASS controls=17 Native=NOT_RUN G3=STOP')
+          PY_DEB_ORIGINAL_G1
       - name: Retain original package inventory source control records
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -379,6 +413,7 @@ jobs:
           path: |
             ${{ runner.temp }}/package-inventory-source/*.json
             ${{ runner.temp }}/package-inventory-source/*.log
+            ${{ runner.temp }}/deb-original-archive-source-${{ github.run_id }}-${{ github.run_attempt }}/*
           if-no-files-found: warn
           retention-days: 30
       - name: Captured SQLite native output contracts
@@ -1079,6 +1114,20 @@ jobs:
             --expected-deb-sha256 "$MW_DEB_PACKAGE_INVENTORY_SHA256" \
             --expected-appimage-sha256 "$MW_APPIMAGE_PACKAGE_INVENTORY_SHA256" \
             --output ci-evidence/linux-package-parity.json
+      - name: Authenticate original installed Debian archive control and data
+        shell: bash
+        env:
+          MW_DEB_PACKAGE_INVENTORY_SHA256: ${{ steps.first_use_package_inventory.outputs.deb_inventory_sha256 }}
+        run: |
+          set -euo pipefail
+          mapfile -t debs < <(find "$MW_LINUX_BUNDLE_ROOT/bundle/deb" -maxdepth 1 -type f -name "*.deb")
+          test "${#debs[@]}" -eq 1
+          python3 -B -E -s tooling/linux_deb_archive_audit.py \
+            --deb "${debs[0]}" \
+            --inventory ci-evidence/linux-deb-package-inventory/inventory.json \
+            --expected-source "$GITHUB_SHA" \
+            --expected-inventory-sha256 "$MW_DEB_PACKAGE_INVENTORY_SHA256" \
+            --output ci-evidence/linux-deb-original-archive-audit.json
       - name: Preserve original installed Linux package inventories
         if: ${{ always() && steps.first_use_package_inventory.outcome != 'skipped' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -1108,6 +1157,7 @@ jobs:
             ci-evidence/linux-appimage-package-inventory/extract.binding.json
             ci-evidence/linux-appimage-package-inventory/extract.closure.json
             ci-evidence/linux-package-parity.json
+            ci-evidence/linux-deb-original-archive-audit.json
           if-no-files-found: warn
           retention-days: 30
       - name: Retain bounded first-use originals without following application data links
@@ -1558,6 +1608,21 @@ jobs:
             --expected-deb-sha256 "$MW_DEB_PACKAGE_INVENTORY_SHA256" \
             --expected-appimage-sha256 "$MW_APPIMAGE_PACKAGE_INVENTORY_SHA256" \
             --output ci-evidence/linux-package-parity.json
+      - name: Authenticate original isolated Debian archive control and data
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle'
+        shell: bash
+        env:
+          MW_DEB_PACKAGE_INVENTORY_SHA256: ${{ steps.linux_package_inventory.outputs.deb_inventory_sha256 }}
+        run: |
+          set -euo pipefail
+          mapfile -t debs < <(find "$MW_LINUX_BUNDLE_ROOT/bundle/deb" -maxdepth 1 -type f -name "*.deb")
+          test "${#debs[@]}" -eq 1
+          python3 -B -E -s tooling/linux_deb_archive_audit.py \
+            --deb "${debs[0]}" \
+            --inventory ci-evidence/linux-deb-package-inventory/inventory.json \
+            --expected-source "$GITHUB_SHA" \
+            --expected-inventory-sha256 "$MW_DEB_PACKAGE_INVENTORY_SHA256" \
+            --output ci-evidence/linux-deb-original-archive-audit.json
       - name: Preserve original isolated Linux package inventories
         if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle' && steps.linux_package_inventory.outcome != 'skipped' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -1587,6 +1652,7 @@ jobs:
             ci-evidence/linux-appimage-package-inventory/extract.binding.json
             ci-evidence/linux-appimage-package-inventory/extract.closure.json
             ci-evidence/linux-package-parity.json
+            ci-evidence/linux-deb-original-archive-audit.json
           if-no-files-found: warn
           retention-days: 30
       - name: Retain isolated GUI launch diagnostics if smoke fails
