@@ -943,9 +943,18 @@ jobs:
           assert data["status"]=="PASS" and data["executed_source_sha"]==sys.argv[2]
           assert len(data["steps"])==1
           counts=data["steps"][0]["counts"]
-          assert counts["tests_run"]==counts["passed"]==61
+          assert counts["tests_run"]==counts["passed"]==62
           assert all(counts[key]==0 for key in ("failures","errors","skipped","expected_failures","unexpected_successes"))
-          print("native-profile-original-source-g1=PASS tests=61 native_effects=0")
+          import hashlib
+          original=Path(sys.argv[1]).parent
+          witness=data["steps"][0]["stderr"]
+          assert witness["file"]=="native-controls.original-00-stderr.log"
+          raw=(original/witness["file"]).read_bytes()
+          assert hashlib.sha256(raw).hexdigest()==witness["sha256"]
+          assert (b"test_parent_transport_error_stops_read_without_retry_or_diagnostic_census "
+                  b"(test_native_host_installed_shared_state.EditorReadDiagnosticTests."
+                  b"test_parent_transport_error_stops_read_without_retry_or_diagnostic_census) ... ok") in raw
+          print("native-profile-original-source-g1=PASS tests=62 owner_error_case=PASS native_effects=0")
           PY_NATIVE_G1
       - name: Preserve authenticated Native installed source-only originals
         if: always()
