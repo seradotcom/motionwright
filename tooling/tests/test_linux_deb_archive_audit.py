@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import redirect_stdout
 import hashlib
 import io
 import os
@@ -10,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import candidate_package_inventory as inventory
@@ -122,7 +124,7 @@ class DebOriginalArchiveTests(unittest.TestCase):
         self.work = tempfile.TemporaryDirectory(
             prefix="mw-original-deb-inert-", dir=os.environ.get("TEMP"))
         self.addCleanup(self.work.cleanup)
-        self.root = Path(self.work.name)
+        self.root = Path(self.work.name).resolve(strict=True)
         self.payload = self.root / "payload"
         self.payload.mkdir()
         self.current_files = dict(FILES)
@@ -262,6 +264,149 @@ class DebOriginalArchiveTests(unittest.TestCase):
         altered["roots"][0]["members"].append(new_member)
         with self.assertRaises(inventory.InventoryError):
             auditor.audit_deb_bytes(data, altered, SOURCE)
+
+
+    def test_runtime_package_name_substrings_do_not_satisfy_dependencies(self):
+        for before, after in (
+            (b"libwebkit2gtk-4.1-0", b"not-libwebkit2gtk-4.1-0"),
+            (b"libwebkit2gtk-4.1-0", b"libwebkit2gtk-4.1-0-fake"),
+            (b"libgtk-3-0", b"libgtk-3-0-fake"),
+        ):
+            with self.subTest(after=after):
+                control = STANDARD_CONTROL.replace(before, after)
+                data = package(control=control)
+                with self.assertRaisesRegex(ValueError, "required_runtime_relations"):
+                    auditor.audit_deb_bytes(data, self.report(data, control=control), SOURCE)
+
+    def test_runtime_alternative_cannot_make_required_package_optional(self):
+        for alternative in (
+            b"libwebkit2gtk-4.1-0 | unrelated",
+            b"unrelated | libwebkit2gtk-4.1-0",
+            b"libwebkit2gtk-4.1-0:any",
+            b"libwebkit2gtk-4.1-0:arm64",
+        ):
+            with self.subTest(alternative=alternative):
+                control = STANDARD_CONTROL.replace(b"libwebkit2gtk-4.1-0", alternative)
+                with self.assertRaisesRegex(ValueError, "required_runtime_relations"):
+                    auditor.control_fields(control, FILENAME)
+
+    def test_versioned_exact_runtime_relations_and_unrelated_alternatives_pass(self):
+        value = (
+            b"libwebkit2gtk-4.1-0:amd64 (>= 2.40.0), "
+            b"libgtk-3-0 (>= 1:3.24.0-1ubuntu2), optional-one | optional-two"
+        )
+        control = STANDARD_CONTROL.replace(b"libwebkit2gtk-4.1-0, libgtk-3-0", value)
+        result = auditor.control_fields(control, FILENAME)
+        self.assertEqual(result["Depends"], value.decode())
+
+    def test_malformed_runtime_relation_and_source_only_restrictions_refuse(self):
+        for replacement in (
+            b"libwebkit2gtk-4.1-0 (>=)",
+            b"libwebkit2gtk-4.1-0 (> 1.0)",
+            b"libwebkit2gtk-4.1-0 (>= 1:)",
+            b"libwebkit2gtk-4.1-0 (>= 1-)",
+            b"libwebkit2gtk-4.1-0 [amd64]",
+            b"libwebkit2gtk-4.1-0 <stage1>",
+            b"libwebkit2gtk-4.1-0 |",
+        ):
+            with self.subTest(replacement=replacement):
+                control = STANDARD_CONTROL.replace(b"libwebkit2gtk-4.1-0", replacement)
+                with self.assertRaisesRegex(ValueError, "runtime_relation"):
+                    auditor.control_fields(control, FILENAME)
+
+    def cli_inputs(self):
+        data = package()
+        original = self.root / "original.deb"
+        report = self.root / "inventory.json"
+        output = self.root / "audit.json"
+        original.write_bytes(data)
+        raw = inventory.capture.encoded(self.report(data))
+        report.write_bytes(raw)
+        args = [
+            "linux_deb_archive_audit.py", "--deb", str(original),
+            "--inventory", str(report), "--expected-source", SOURCE,
+            "--expected-inventory-sha256", auditor.checksum(raw),
+            "--output", str(output),
+        ]
+        return original, report, output, args
+
+    def run_cli(self, args):
+        with mock.patch.object(sys, "argv", args), redirect_stdout(io.StringIO()):
+            auditor.main()
+
+    def test_cli_authenticates_original_regular_files(self):
+        _, _, output, args = self.cli_inputs()
+        self.run_cli(args)
+        result = inventory.capture.parse_json(output.read_bytes())
+        self.assertEqual(result["context"]["source"], SOURCE)
+        self.assertEqual(result["data_tar"]["regular_files"], 2)
+
+    def test_cli_rejects_oversize_inventory_before_opening_it(self):
+        _, report, output, args = self.cli_inputs()
+        original_open = Path.open
+
+        def refuse_content_read(path, *open_args, **kwargs):
+            if path == report:
+                raise AssertionError("oversize inventory was opened")
+            return original_open(path, *open_args, **kwargs)
+
+        with mock.patch.object(inventory, "MAX_REPORT", report.stat().st_size - 1):
+            with mock.patch.object(Path, "open", refuse_content_read):
+                with self.assertRaisesRegex(inventory.capture.CaptureError, "file_budget"):
+                    self.run_cli(args)
+        self.assertFalse(output.exists())
+
+    def test_cli_rejects_oversize_archive_before_opening_it(self):
+        original, _, output, args = self.cli_inputs()
+        original_open = Path.open
+
+        def refuse_content_read(path, *open_args, **kwargs):
+            if path == original:
+                raise AssertionError("oversize archive was opened")
+            return original_open(path, *open_args, **kwargs)
+
+        with mock.patch.object(auditor, "MAX_ARCHIVE", original.stat().st_size - 1):
+            with mock.patch.object(Path, "open", refuse_content_read):
+                with self.assertRaisesRegex(inventory.capture.CaptureError, "file_budget"):
+                    self.run_cli(args)
+        self.assertFalse(output.exists())
+
+    def test_cli_rejects_original_replacement_between_admission_and_open(self):
+        for selected in ("inventory", "deb"):
+            with self.subTest(selected=selected):
+                original, report, output, args = self.cli_inputs()
+                target = report if selected == "inventory" else original
+                replacement = self.root / ("replacement-" + selected)
+                replacement.write_bytes(target.read_bytes())
+                original_open = Path.open
+                replaced = False
+
+                def replace_before_open(path, *open_args, **kwargs):
+                    nonlocal replaced
+                    if path == target and not replaced:
+                        replaced = True
+                        target.rename(self.root / ("prior-" + selected))
+                        replacement.rename(target)
+                    return original_open(path, *open_args, **kwargs)
+
+                with mock.patch.object(Path, "open", replace_before_open):
+                    with self.assertRaisesRegex(inventory.capture.CaptureError,
+                                                "file_changed_during_read"):
+                        self.run_cli(args)
+                self.assertTrue(replaced)
+                self.assertFalse(output.exists())
+
+    def test_cli_rejects_symlinked_inventory(self):
+        _, report, output, args = self.cli_inputs()
+        real_report = self.root / "real-inventory.json"
+        report.rename(real_report)
+        try:
+            report.symlink_to(real_report)
+        except OSError as error:
+            self.skipTest("symlink creation unavailable: " + str(error))
+        with self.assertRaisesRegex(inventory.capture.CaptureError, "redirected_path"):
+            self.run_cli(args)
+        self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

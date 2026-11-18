@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import copy
+from contextlib import redirect_stdout
+import io
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 TOOLING = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLING))
@@ -48,7 +51,7 @@ class LinuxPackageParityTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="mw-parity-inert-")
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve(strict=True)
         self.app = self.root / "app"
         self.deb = self.root / "deb"
         self.app.mkdir()
@@ -125,6 +128,70 @@ class LinuxPackageParityTests(unittest.TestCase):
         old["sha256"] = "0" * 64
         with self.assertRaises(inventory.InventoryError):
             parity.verify_common_payload(altered, self.report("deb"))
+
+
+    def cli_inputs(self):
+        paths = []
+        args = ["linux_package_parity.py", "--expected-source", "1" * 40]
+        for kind, flag in (("appimage", "--appimage"), ("deb", "--deb")):
+            path = self.root / (kind + ".json")
+            raw = inventory.capture.encoded(self.report(kind))
+            path.write_bytes(raw)
+            paths.append(path)
+            args.extend([flag, str(path), "--expected-" + kind + "-sha256",
+                         inventory.capture.sha(raw)])
+        output = self.root / "parity.json"
+        args.extend(["--output", str(output)])
+        return paths, output, args
+
+    def run_cli(self, args):
+        with mock.patch.object(sys, "argv", args), redirect_stdout(io.StringIO()):
+            parity.main()
+
+    def test_cli_authenticates_both_original_inventory_files(self):
+        _, output, args = self.cli_inputs()
+        self.run_cli(args)
+        self.assertEqual(inventory.capture.parse_json(output.read_bytes())
+                         ["shared_regular_files"], 2)
+
+    def test_cli_rejects_oversize_inventory_before_opening_it(self):
+        paths, output, args = self.cli_inputs()
+        target = paths[0]
+        original_open = Path.open
+
+        def refuse_content_read(path, *open_args, **kwargs):
+            if path == target:
+                raise AssertionError("oversize inventory was opened")
+            return original_open(path, *open_args, **kwargs)
+
+        with mock.patch.object(inventory, "MAX_REPORT", target.stat().st_size - 1):
+            with mock.patch.object(Path, "open", refuse_content_read):
+                with self.assertRaisesRegex(inventory.capture.CaptureError, "file_budget"):
+                    self.run_cli(args)
+        self.assertFalse(output.exists())
+
+    def test_cli_rejects_inventory_replacement_even_with_same_bytes(self):
+        paths, output, args = self.cli_inputs()
+        target = paths[1]
+        replacement = self.root / "replacement.json"
+        replacement.write_bytes(target.read_bytes())
+        original_open = Path.open
+        replaced = False
+
+        def replace_before_open(path, *open_args, **kwargs):
+            nonlocal replaced
+            if path == target and not replaced:
+                replaced = True
+                target.rename(self.root / "prior-deb.json")
+                replacement.rename(target)
+            return original_open(path, *open_args, **kwargs)
+
+        with mock.patch.object(Path, "open", replace_before_open):
+            with self.assertRaisesRegex(inventory.capture.CaptureError,
+                                        "file_changed_during_read"):
+                self.run_cli(args)
+        self.assertTrue(replaced)
+        self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

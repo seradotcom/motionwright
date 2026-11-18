@@ -135,7 +135,9 @@ def main():
                            (args.deb, args.expected_deb_sha256)):
         require(re.fullmatch(r"[0-9a-f]{64}", expected) is not None,
                 "linux_parity_expected_report_sha256")
-        raw = path.read_bytes()
+        original_path = path.absolute()
+        raw = inventory.capture.stable_read(
+            Path(original_path.anchor), original_path, inventory.MAX_REPORT)
         require(len(raw) <= inventory.MAX_REPORT
                 and inventory.capture.sha(raw) == expected,
                 "linux_parity_original_report_changed")
@@ -146,7 +148,10 @@ def main():
     require(not args.output.exists() and args.output.parent.is_dir(),
             "linux_parity_output_already_exists_or_parent_missing")
     inventory.capture.write_new(args.output, inventory.capture.encoded(result))
-    require(inventory.capture.parse_json(args.output.read_bytes()) == result,
+    output_path = args.output.absolute()
+    readback = inventory.capture.stable_read(
+        Path(output_path.anchor), output_path, inventory.MAX_REPORT)
+    require(inventory.capture.parse_json(readback) == result,
             "linux_parity_readback_changed")
     print("linux-package-parity=PASS shared_files=" +
           str(result["shared_regular_files"]) + " appimage_extra=" +

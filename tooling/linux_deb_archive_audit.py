@@ -27,6 +27,13 @@ AR_MEMBERS = ("debian-binary", "control.tar.gz", "data.tar.gz")
 MD5 = re.compile(r"[0-9a-f]{32}")
 DEB_FILENAME = re.compile(r"Motionwright_([0-9][A-Za-z0-9.+~:-]*)_amd64[.]deb")
 PACKAGE_FIELDS = ("Package", "Version", "Architecture", "Description")
+REQUIRED_RUNTIME = frozenset({"libwebkit2gtk-4.1-0", "libgtk-3-0"})
+RUNTIME_RELATION = re.compile(
+    r"(?P<package>[a-z0-9][a-z0-9+.-]+)"
+    r"(?::(?P<arch>[a-z0-9][a-z0-9-]*))?"
+    r"(?:[ \t]*\([ \t]*(?:<<|<=|=|>=|>>)[ \t]*"
+    r"(?P<version>[0-9][A-Za-z0-9.+:~\-]*)[ \t]*\))?"
+)
 
 
 def need(condition, code):
@@ -113,6 +120,48 @@ def control_parts(blob):
     return result
 
 
+def required_runtime_relations(value):
+    """Require both runtime packages in every alternative of a mandatory group.
+
+    This is the emitted amd64 binary-control profile, not a general source
+    control parser or proof of linkage. Architecture/build restrictions and
+    folded source-only relationships are not admitted.
+    """
+    need(isinstance(value, str) and 0 < len(value) <= MAX_CONTROL_FILE
+         and "\n" not in value and "\r" not in value,
+         "deb_control_runtime_relation_format")
+    groups = value.split(",")
+    need(0 < len(groups) <= 256, "deb_control_runtime_relation_budget")
+    mandatory = set()
+    for group in groups:
+        alternatives = group.split("|")
+        need(0 < len(alternatives) <= 32, "deb_control_runtime_relation_budget")
+        packages = set()
+        for alternative in alternatives:
+            match = RUNTIME_RELATION.fullmatch(alternative.strip(" \t"))
+            need(match is not None, "deb_control_runtime_relation_format")
+            version = match["version"]
+            if version is not None:
+                if ":" in version:
+                    epoch, version = version.split(":", 1)
+                    need(re.fullmatch(r"[0-9]+", epoch) is not None,
+                         "deb_control_runtime_relation_version")
+                upstream, separator, revision = version.rpartition("-")
+                if separator:
+                    need(re.fullmatch(r"[A-Za-z0-9+.~]+", revision) is not None,
+                         "deb_control_runtime_relation_version")
+                else:
+                    upstream = version
+                need(re.fullmatch(r"[0-9][A-Za-z0-9.+:~\-]*", upstream) is not None,
+                     "deb_control_runtime_relation_version")
+            packages.add((match["package"], match["arch"] or "amd64"))
+        if len(packages) == 1:
+            package, arch = next(iter(packages))
+            if arch == "amd64":
+                mandatory.add(package)
+    need(REQUIRED_RUNTIME <= mandatory, "deb_control_required_runtime_relations")
+
+
 def control_fields(raw, package_filename):
     need(type(raw) is bytes and 0 < len(raw) <= MAX_CONTROL_FILE
          and raw.endswith(b"\n") and b"\r" not in raw and b"\x00" not in raw,
@@ -140,9 +189,8 @@ def control_fields(raw, package_filename):
     need(match is not None, "deb_filename_profile")
     need(result["Package"] == "motionwright" and result["Version"] == match[1]
          and result["Architecture"] == "amd64", "deb_control_candidate_identity")
-    need("Depends" in result and result["Depends"].strip()
-         and "libwebkit2gtk-4.1-0" in result["Depends"]
-         and "libgtk-3-0" in result["Depends"], "deb_control_required_runtime_relations")
+    need("Depends" in result, "deb_control_required_runtime_relations")
+    required_runtime_relations(result["Depends"])
     return result
 
 
@@ -303,19 +351,24 @@ def main():
          "deb_expected_source_format")
     need(re.fullmatch(r"[0-9a-f]{64}", args.expected_inventory_sha256) is not None,
          "deb_expected_inventory_sha")
-    raw_inventory = args.inventory.read_bytes()
+    inventory_path = args.inventory.absolute()
+    raw_inventory = inventory.capture.stable_read(
+        Path(inventory_path.anchor), inventory_path, inventory.MAX_REPORT)
     need(0 < len(raw_inventory) <= inventory.MAX_REPORT
          and checksum(raw_inventory) == args.expected_inventory_sha256,
          "deb_inventory_original_sha_changed")
     parsed = inventory.capture.parse_json(raw_inventory)
-    need(0 < args.deb.stat().st_size <= MAX_ARCHIVE, "deb_source_file_budget")
-    raw_deb = args.deb.read_bytes()
+    deb_path = args.deb.absolute()
+    raw_deb = inventory.capture.stable_read(
+        Path(deb_path.anchor), deb_path, MAX_ARCHIVE)
     result = audit_deb_bytes(raw_deb, parsed, args.expected_source)
     need(args.output.parent.is_dir() and not args.output.exists(),
          "deb_output_preexisting_or_missing_parent")
     inventory.capture.write_new(args.output, inventory.capture.encoded(result))
-    need(inventory.capture.parse_json(args.output.read_bytes()) == result,
-         "deb_output_readback_failed")
+    output_path = args.output.absolute()
+    readback = inventory.capture.stable_read(
+        Path(output_path.anchor), output_path, inventory.MAX_REPORT)
+    need(inventory.capture.parse_json(readback) == result, "deb_output_readback_failed")
     print("deb-original-control-audit=PASS files=" +
           str(result["data_tar"]["regular_files"]) +
           " md5sums=" + str(result["md5sums"]["recorded_entries"]) +
