@@ -29,7 +29,7 @@ class DefinitionAndSelectionTests(unittest.TestCase):
             self.assertEqual(windows["not_applicable"], [])
             for platform in ("linux", "win32"):
                 lock = gate.selection_contract("test_source_lock_admission", mode, platform)
-                self.assertEqual((lock["required_total"], lock["required_selected"]), (45, 45))
+                self.assertEqual((lock["required_total"], lock["required_selected"]), (50, 50))
                 self.assertEqual(lock["not_applicable"], [])
 
     def test_same_count_wrong_name_duplicate_shadow_and_dynamic_definitions_rejected(self):
@@ -145,7 +145,7 @@ class OriginalReceiptTests(unittest.TestCase):
             self.admit()
 
     def test_exact_originals_admitted_for_both_platforms_without_inventing_linux_credit(self):
-        for platform, invocations, unique in (("linux", 160, 80), ("win32", 164, 82)):
+        for platform, invocations, unique in (("linux", 170, 85), ("win32", 174, 87)):
             self.make(platform)
             value = self.admit()
             self.assertEqual((value["status"], value["invocations"], value["unique_applicable_controls"]), ("PASS", invocations, unique))
@@ -260,7 +260,7 @@ class OriginalReceiptTests(unittest.TestCase):
                 self.assertEqual(raw.count(original), 1)
                 self.log(index, "stderr", raw.replace(original, retained, 1))
             admitted = self.admit()
-            self.assertEqual(admitted["invocations"], 160 if platform == "linux" else 164)
+            self.assertEqual(admitted["invocations"], 170 if platform == "linux" else 174)
 
     def test_interleaved_diagnostic_cannot_supply_a_missing_foreign_or_failed_result(self):
         suffix = "DistributionOwnedFilesTests.test_admitted_main_capture_mutation_cannot_publish_an_include"

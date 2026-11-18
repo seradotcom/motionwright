@@ -60,6 +60,11 @@ NSIS_IDS = tuple([
     "DistributionOwnedFilesTests.test_admitted_main_capture_mutation_cannot_publish_an_include"
 ])
 SOURCE_LOCK_IDS = tuple([
+    "SourceLockAdmissionTests.test_ancestor_device_inode_type_and_attributes_remain_identity_fields",
+    "SourceLockAdmissionTests.test_real_ancestor_content_changes_preserve_full_source_admission",
+    "SourceLockAdmissionTests.test_real_leaf_mutation_during_held_descriptor_is_rejected",
+    "SourceLockAdmissionTests.test_replaced_ancestor_is_rejected_even_when_leaf_identity_is_preserved",
+    "SourceLockAdmissionTests.test_replaced_leaf_with_identical_bytes_is_still_rejected",
     "SourceLockAdmissionTests.test_windows_path_and_descriptor_clock_difference_preserves_stable_admission",
     "SourceLockAdmissionTests.test_windows_descriptor_change_time_still_detects_mutation_during_read",
     "SourceLockAdmissionTests.test_windows_path_change_time_still_detects_mutation_during_read",
@@ -108,7 +113,7 @@ SOURCE_LOCK_IDS = tuple([
 ])
 ROSTERS = {
     "test_nsis_owned_files": (37, NSIS_IDS, "nsis_source_suite"),
-    "test_source_lock_admission": (45, SOURCE_LOCK_IDS, "source_lock_suite"),
+    "test_source_lock_admission": (50, SOURCE_LOCK_IDS, "source_lock_suite"),
 }
 WINDOWS_ONLY = frozenset({
     "PublicationIntegrityTests.test_windows_guards_block_writes_and_capture_deletion_through_publication",
