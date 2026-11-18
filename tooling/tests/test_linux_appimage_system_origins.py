@@ -121,6 +121,46 @@ class AppImageInstalledOriginTests(unittest.TestCase):
     def test_dpkg_root_directory_placeholder_is_supported(self):
         self.assertEqual(origin.list_paths(b"/.\n/usr\n/usr/lib\n"), {"/usr", "/usr/lib"})
 
+    def test_oversize_package_list_is_explicitly_unobserved_without_read(self):
+        from unittest import mock
+        info = self.root / "dpkg-info-large"
+        info.mkdir()
+        small = b"/usr/lib/libexample.so\n"
+        (info / "small.list").write_bytes(small)
+        oversized = info / "large.list"
+        oversized.write_bytes(b"x" * 128)
+        with mock.patch.object(origin, "MAX_MANIFEST", 64):
+            with mock.patch.object(origin.inventory.capture, "stable_read",
+                                   wraps=origin.inventory.capture.stable_read) as reader:
+                observed, skipped = origin.captured_manifests(
+                    info, {"small": "1.0", "large": "2.0"})
+        self.assertEqual(observed, {"small": small})
+        self.assertEqual(skipped, [{
+            "package": "large", "observed_stat_bytes": 128,
+            "reason": "PER_MANIFEST_BUDGET", "provenance": "NOT_OBSERVED",
+        }])
+        self.assertEqual(reader.call_count, 1)
+        self.assertEqual(reader.call_args.args[1].name, "small.list")
+
+    def test_total_manifest_budget_does_not_admit_unread_package(self):
+        from unittest import mock
+        info = self.root / "dpkg-info-total"
+        info.mkdir()
+        raw_a = b"/usr/share/doc/a/copyright\n"
+        raw_b = b"/usr/share/doc/b/copyright\n"
+        (info / "a.list").write_bytes(raw_a)
+        (info / "b.list").write_bytes(raw_b)
+        with mock.patch.object(origin, "MAX_MANIFEST_TOTAL", len(raw_a)):
+            observed, skipped = origin.captured_manifests(
+                info, {"a": "1.0", "b": "2.0"})
+        self.assertEqual(observed, {"a": raw_a})
+        self.assertEqual(skipped, [{
+            "package": "b", "observed_stat_bytes": len(raw_b),
+            "reason": "TOTAL_MANIFEST_BUDGET", "provenance": "NOT_OBSERVED",
+        }])
+        self.assertEqual(origin.candidate_index(observed, {"a": "1.0", "b": "2.0"},
+                         {"/usr/share/doc/b/copyright"}), {})
+
     def test_malformed_status_and_duplicate_packages_refused(self):
         for raw in (b"libexample:amd64\t1.0\n",
                     b"libexample:amd64\t1.0\tinstall ok installed\n"

@@ -20,7 +20,7 @@ import candidate_package_inventory as inventory
 
 SCHEMA = "motionwright.linux-appimage-installed-origin-observation/1"
 MAX_STATUS = 4 * 1024 * 1024
-MAX_MANIFEST = 512 * 1024
+MAX_MANIFEST = 2 * 1024 * 1024
 MAX_MANIFEST_TOTAL = 64 * 1024 * 1024
 MAX_PACKAGES = 10000
 MAX_FILE_READ = 64 * 1024 * 1024
@@ -244,20 +244,39 @@ def captured_status():
 
 
 def captured_manifests(info, installed):
+    """Observe bounded originals; never treat unexamined .list files as evidence.
+
+    An oversized regular installed package list is explicitly UNOBSERVED.
+    Its paths cannot supply a match and its absence never grants closure.
+    Redirected/nonregular lists still fail closed; source changes still fail.
+    """
     root = Path(info).resolve(strict=True)
     need(root.is_dir(), "origin_dpkg_info_directory")
-    manifests, total = {}, 0
+    manifests, skipped, total = {}, [], 0
     rows = sorted(root.iterdir(), key=lambda p: p.name)
     need(len(rows) <= MAX_PACKAGES * 5, "origin_dpkg_info_roster")
     for path in rows:
         if path.suffix != ".list" or path.name[:-5] not in installed:
             continue
         name = path.name[:-5]
+        meta = path.lstat()
+        need(stat.S_ISREG(meta.st_mode) and
+             not getattr(meta, "st_file_attributes", 0) & 0x400,
+             "origin_dpkg_manifest_nonregular")
+        need(meta.st_size >= 0, "origin_dpkg_manifest_size")
+        if meta.st_size > MAX_MANIFEST or total + meta.st_size > MAX_MANIFEST_TOTAL:
+            skipped.append({
+                "package": name, "observed_stat_bytes": meta.st_size,
+                "reason": ("PER_MANIFEST_BUDGET" if meta.st_size > MAX_MANIFEST
+                           else "TOTAL_MANIFEST_BUDGET"),
+                "provenance": "NOT_OBSERVED",
+            })
+            continue
         raw = inventory.capture.stable_read(root, path, MAX_MANIFEST)
         total += len(raw)
         need(total <= MAX_MANIFEST_TOTAL, "origin_dpkg_list_budget")
         manifests[name] = raw
-    return manifests
+    return manifests, skipped
 
 
 def regular_host_bytes(root, path, limit):
@@ -331,8 +350,12 @@ def main(argv=None):
          "origin_live_payload_changed")
     status_raw, status_receipt = captured_status()
     installed = installed_versions(status_raw)
-    manifests = captured_manifests("/var/lib/dpkg/info", installed)
+    manifests, skipped_manifests = captured_manifests("/var/lib/dpkg/info", installed)
     matched, unresolved = join_origins(pending, installed, manifests, Path("/"))
+    if skipped_manifests:
+        for row in unresolved:
+            if row["reason"] == "NO_EXACT_REGULAR_INSTALLED_SOURCE":
+                row["reason"] = "NO_EXACT_OBSERVED_SOURCE_IN_INCOMPLETE_CATALOG"
     packages, package_originals = original_package_records(matched, manifests, Path("/"))
     result = {
         "schema": SCHEMA, "source": source,
@@ -342,6 +365,9 @@ def main(argv=None):
                                  "deb_sha256": args.deb_sha256},
         "installed_status": status_receipt,
         "installed_package_manifests_scanned": len(manifests),
+        "installed_package_catalog_complete": not skipped_manifests,
+        "unobserved_package_manifests": skipped_manifests,
+        "unobserved_manifest_count": len(skipped_manifests),
         "original_scope": scope,
         "host_byte_matches": len(matched),
         "unresolved_count": len(unresolved),
@@ -350,6 +376,8 @@ def main(argv=None):
         "matches": matched, "unresolved": unresolved,
         "claims": {
             "original_package_file_equal_to_installed_host_file": "SCOPED_OBSERVATION",
+            "absence_of_matching_origin_is_proven": False,
+            "unread_package_list_is_never_match_credit": True,
             "packager_copy_causality": "NOT_ATTESTED",
             "native_linker_closure": "NOT_VERIFIED",
             "native_license_review": "NOT_PERFORMED",

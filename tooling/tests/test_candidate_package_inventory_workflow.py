@@ -63,7 +63,7 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
         origin_source = step(policy, "Require original AppImage system-origin matching source controls")
         self.assertIn("--pattern test_linux_appimage_system_origins.py", origin_source)
         self.assertIn("--mode discovery --require-complete --expected-source", origin_source)
-        self.assertIn("counts['tests_run']==counts['passed']==19", origin_source)
+        self.assertIn("counts['tests_run']==counts['passed']==21", origin_source)
         self.assertIn("counts[k]==0", origin_source)
         self.assertIn("G3=STOP", origin_source)
         physical = step(self.linux, "Observe exact system-origin bytes in unresolved AppImage members")
