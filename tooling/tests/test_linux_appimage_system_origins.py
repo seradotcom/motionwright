@@ -1,0 +1,232 @@
+"""Synthetic negative and byte-identity tests for isolated Linux AppImage origin reader.
+
+No dpkg queries, application execution, installation or Native effects.
+"""
+from __future__ import annotations
+
+import hashlib
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import linux_appimage_system_origins as origin
+
+
+def member(name, data, kind="ELF"):
+    return {"path": name, "kind": "file", "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(), "native_format": kind}
+
+
+class AppImageInstalledOriginTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="mw-origin-inert-", dir=os.environ.get("TEMP"))
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve(strict=True)
+        self.original = b"\x7fELF source bytes -- inert fixture\n"
+        self.current = member("usr/lib/libexample.so.1", self.original)
+        self.pkg = "libexample:amd64"
+        self.installed = {self.pkg: "1.2.3-1"}
+        self.system_path = "/usr/lib/x86_64-linux-gnu/libexample.so.1"
+        self.manifests = {self.pkg: (
+            "/.\n/usr\n/usr/lib\n/usr/lib/x86_64-linux-gnu\n"
+            + self.system_path + "\n/usr/share/doc/libexample/copyright\n").encode()}
+        self.make(self.system_path, self.original)
+
+    def make(self, path, data):
+        target = self.root / path.lstrip("/")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        return target
+
+    def match(self, items=None, *, installed=None, manifests=None):
+        return origin.join_origins(
+            [self.current] if items is None else items,
+            self.installed if installed is None else installed,
+            self.manifests if manifests is None else manifests,
+            self.root,
+        )
+
+    def test_exact_installed_package_file_is_scoped_match(self):
+        matched, missing = self.match()
+        self.assertEqual(missing, [])
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["origin"]["system_path"], self.system_path)
+        self.assertEqual(matched[0]["origin"]["package"], self.pkg)
+        self.assertEqual(matched[0]["status"], "INSTALLED_HOST_BYTES_EXACT")
+
+    def test_same_basename_elsewhere_does_not_claim_origin(self):
+        self.make("/usr/local/lib/libexample.so.1", self.original)
+        matched, missing = self.match(manifests={self.pkg: b"/usr/local/lib/libexample.so.1\n"})
+        self.assertEqual(matched, [])
+        self.assertEqual(missing[0]["reason"], "NO_EXACT_REGULAR_INSTALLED_SOURCE")
+
+    def test_changed_system_file_is_not_a_match(self):
+        self.make(self.system_path, self.original + b"altered")
+        matched, missing = self.match()
+        self.assertEqual(matched, [])
+        self.assertEqual(len(missing), 1)
+
+    def test_same_size_wrong_bytes_are_not_a_match(self):
+        changed = b"Z" + self.original[1:]
+        self.make(self.system_path, changed)
+        matched, missing = self.match()
+        self.assertEqual(matched, [])
+        self.assertEqual(len(missing), 1)
+
+    def test_missing_real_file_is_unresolved(self):
+        (self.root / self.system_path.lstrip("/")).unlink()
+        matched, missing = self.match()
+        self.assertEqual(matched, [])
+        self.assertEqual(len(missing), 1)
+
+    def test_shared_source_file_claims_are_ambiguous(self):
+        second = "other-package:amd64"
+        matched, unresolved = self.match(
+            installed={**self.installed, second: "3.0.0"},
+            manifests={**self.manifests, second: (self.system_path + "\n").encode()},
+        )
+        self.assertEqual(matched, [])
+        self.assertEqual(unresolved[0]["reason"], "MULTIPLE_EXACT_CLAIMS")
+
+    def test_uninstalled_manifest_cannot_be_used(self):
+        with self.assertRaisesRegex(ValueError, "uninstalled_package_manifest"):
+            self.match(installed={})
+
+    def test_symlinked_system_source_is_not_treated_as_regular(self):
+        direct = self.root / self.system_path.lstrip("/")
+        renamed = direct.with_name("libexample.so.1.real")
+        direct.rename(renamed)
+        try:
+            direct.symlink_to(renamed)
+        except OSError as error:
+            self.skipTest("symlink permission unavailable: " + str(error))
+        matched, missing = self.match()
+        self.assertEqual(matched, [])
+        self.assertEqual(len(missing), 1)
+
+    def test_duplicate_manifest_line_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "manifest_duplicate"):
+            origin.list_paths((self.system_path + "\n" + self.system_path + "\n").encode())
+
+    def test_manifest_escape_is_refused(self):
+        for payload in (b"/usr/lib/../lib/libexample.so\n", b"relative/path\n",
+                        b"//etc/passwd\n", b"/usr/./lib\n"):
+            with self.subTest(payload=payload):
+                with self.assertRaisesRegex(ValueError, "manifest_path"):
+                    origin.list_paths(payload)
+
+    def test_dpkg_root_directory_placeholder_is_supported(self):
+        self.assertEqual(origin.list_paths(b"/.\n/usr\n/usr/lib\n"), {"/usr", "/usr/lib"})
+
+    def test_malformed_status_and_duplicate_packages_refused(self):
+        for raw in (b"libexample:amd64\t1.0\n",
+                    b"libexample:amd64\t1.0\tinstall ok installed\n"
+                    b"libexample:amd64\t1.0\tinstall ok installed\n",
+                    b"../evil\t1.0\tinstall ok installed\n"):
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(ValueError, "dpkg_"):
+                    origin.installed_versions(raw)
+
+    def test_only_installed_packages_admitted(self):
+        raw = (b"libexample:amd64\t1.2\tinstall ok installed\n"
+               b"unused\t1.0\tdeinstall ok config-files\n")
+        self.assertEqual(origin.installed_versions(raw), {"libexample:amd64": "1.2"})
+
+    def test_non_usr_generated_bootstrap_stays_unresolved(self):
+        generated = member("AppRun", b"#!/bin/sh\n", kind="NOT_IDENTIFIED")
+        matched, unresolved = self.match(items=[generated])
+        self.assertEqual(matched, [])
+        self.assertEqual(len(unresolved), 1)
+
+    def test_explicit_byte_budget_does_not_promote_missing_proof(self):
+        matched, unresolved = self.match()
+        self.assertEqual(len(matched), 1)
+        constrained, missing = origin.join_origins(
+            [self.current], self.installed, self.manifests, self.root, budget=1)
+        self.assertEqual(constrained, [])
+        self.assertEqual(len(missing), 1)
+
+    def test_path_rebasing_is_bounded_to_known_multiarch_directories(self):
+        selected = origin.host_candidates("usr/lib/libexample.so.1")
+        self.assertEqual(set(selected), {
+            "/usr/lib/libexample.so.1",
+            "/usr/lib/x86_64-linux-gnu/libexample.so.1",
+            "/lib/x86_64-linux-gnu/libexample.so.1",
+        })
+        self.assertEqual(origin.host_candidates("AppRun.wrapped"), ())
+        self.assertEqual(origin.host_candidates("usr/share/doc/example/copyright"),
+                         ("/usr/share/doc/example/copyright",))
+
+
+    def test_listed_copyright_original_bytes_retained_without_legal_approval(self):
+        license_path = "/usr/share/doc/libexample/copyright"
+        copyright_raw = b"Example package license notice retained, not reviewed\n"
+        self.make(license_path, copyright_raw)
+        matched, missing = self.match()
+        self.assertEqual(missing, [])
+        details, original_bytes = origin.original_package_records(
+            matched, self.manifests, self.root)
+        self.assertEqual(set(details), {self.pkg})
+        self.assertEqual(details[self.pkg]["copyright"]["status"],
+                         "LISTED_REGULAR_COPYRIGHT_BYTES_OBSERVED")
+        self.assertEqual(details[self.pkg]["copyright"]["license_review"],
+                         "NOT_PERFORMED")
+        self.assertIn(copyright_raw, original_bytes.values())
+        self.assertIn(self.manifests[self.pkg], original_bytes.values())
+
+    def test_unlisted_copyright_never_counts_as_attested_notice(self):
+        license_path = "/usr/share/doc/libexample/copyright"
+        self.make(license_path, b"Not declared as an installed package file\n")
+        reduced = {self.pkg: (self.system_path + "\n").encode()}
+        matched, missing = self.match(manifests=reduced)
+        self.assertEqual(missing, [])
+        details, originals = origin.original_package_records(
+            matched, reduced, self.root)
+        self.assertEqual(details[self.pkg]["copyright"]["status"], "NOT_OBSERVED")
+        self.assertFalse(details[self.pkg]["copyright"]["listed_in_package_manifest"])
+        self.assertEqual(len(originals), 1)
+
+
+    def test_unknown_roster_is_not_assumed_equal_to_appimage_exclusive_files(self):
+        shared = member("usr/share/applications/Motionwright.desktop", b"desktop", "NOT_IDENTIFIED")
+        origin_known = member("Motionwright.png", b"tracked png", "NOT_IDENTIFIED")
+        base = {
+            "platform": "linux", "arch": "x86_64", "source": "1" * 40,
+            "source_tree": "2" * 40, "run_id": "42", "run_attempt": 1,
+            "candidate_receipt": {"bytes": 2, "sha256": "3" * 64},
+            "cargo_index": {"bytes": 2, "sha256": "4" * 64},
+            "artifact_identities_sha256": "5" * 64,
+            "generated_metadata_sha256": "6" * 64,
+        }
+        claims = {"formal_g2": "NOT_GRANTED", "formal_g3": "NOT_GRANTED",
+                  "redistribution_permission": "NOT_INFERRED"}
+        app = {
+            "context": {**base, "kind": "appimage"},
+            "custody": {"status": "DIRECT_CAPTURED_EXTRACTION"},
+            "claims": claims,
+            "roots": [{"role": "payload", "members":
+                       [self.current, shared, origin_known]}],
+            "gaps": [{"code": "MEMBER_ORIGIN_UNRESOLVED",
+                      "members": ["payload:" + self.current["path"],
+                                  "payload:" + shared["path"]]}],
+        }
+        deb = {
+            "context": {**base, "kind": "deb"},
+            "custody": {"status": "DIRECT_CAPTURED_EXTRACTION"},
+            "claims": claims,
+            "roots": [{"role": "payload", "members": [shared]}],
+        }
+        pending, scope = origin.unresolved_members(app, deb, base["source"])
+        self.assertEqual({r["path"] for r in pending},
+                         {self.current["path"], shared["path"]})
+        self.assertEqual(scope["appimage_exclusive_regular"], 2)
+        self.assertEqual(scope["original_unresolved_regular"], 2)
+        self.assertEqual(scope["exclusive_already_related"], 1)
+        self.assertEqual(scope["shared_with_deb_unresolved"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -28,7 +28,8 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
     def test_source_filters_cover_every_new_owner_reader_and_control(self):
         paths = ("tooling/candidate_package_inventory.py", "tooling/linux_package_parity.py",
                  "tooling/tests/test_linux_package_parity.py", "tooling/linux_deb_archive_audit.py",
-                 "tooling/tests/test_linux_deb_archive_audit.py", "tooling/candidate_package_extraction.py",
+                 "tooling/tests/test_linux_deb_archive_audit.py", "tooling/linux_appimage_system_origins.py",
+                 "tooling/tests/test_linux_appimage_system_origins.py", "tooling/candidate_package_extraction.py",
                  "tooling/startup_capture_core.py", "tooling/tests/test_candidate_package_inventory.py",
                  "tooling/tests/test_candidate_package_extraction.py",
                  "tooling/tests/test_candidate_package_inventory_workflow.py")
@@ -59,6 +60,22 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
         self.assertIn("Native=NOT_RUN G3=STOP", original)
         self.assertIn("set -euo pipefail", original)
         self.assertNotIn("|| true", original)
+        origin_source = step(policy, "Require original AppImage system-origin matching source controls")
+        self.assertIn("--pattern test_linux_appimage_system_origins.py", origin_source)
+        self.assertIn("--mode discovery --require-complete --expected-source", origin_source)
+        self.assertIn("counts['tests_run']==counts['passed']==19", origin_source)
+        self.assertIn("counts[k]==0", origin_source)
+        self.assertIn("G3=STOP", origin_source)
+        physical = step(self.linux, "Observe exact system-origin bytes in unresolved AppImage members")
+        self.assertIn("inputs.verification_scope == 'linux_bundle'", physical)
+        self.assertIn("--appimage-sha256", physical)
+        self.assertIn("--deb-sha256", physical)
+        self.assertIn("--expected-source \"$GITHUB_SHA\"", physical)
+        self.assertIn('appimage-inventory/squashfs-root', physical)
+        self.assertIn("tooling/linux_appimage_system_origins.py", physical)
+        upload = step(self.linux, "Preserve original isolated Linux package inventories")
+        self.assertIn("ci-evidence/linux-appimage-system-origin", upload)
+        self.assertNotIn("ci-evidence/linux-appimage-system-origin/*", upload)
         archive = step(policy, "Retain original package inventory source control records")
         self.assertIn("deb-original-archive-source-${{ github.run_id }}-${{ github.run_attempt }}/*", archive)
         for body in (self.installed, self.linux):
@@ -129,7 +146,12 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
             upload = step(body, title)
             selected = upload.split("          path: |\n", 1)[1].split("          if-no-files-found:", 1)[0]
             actual = {line.strip() for line in selected.splitlines() if line.strip()}
-            self.assertEqual(actual, expected)
+            expected_for_scope = set(expected)
+            if body is self.linux:
+                expected_for_scope.update({
+                    "ci-evidence/linux-appimage-system-origin",
+                })
+            self.assertEqual(actual, expected_for_scope)
             self.assertNotIn("*", selected)
             self.assertIn("always()", upload)
         for body, consumer, parity in (
