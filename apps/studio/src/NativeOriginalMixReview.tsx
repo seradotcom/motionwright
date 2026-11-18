@@ -173,6 +173,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
     }
   };
 
+  const draftSourceStatus = `Draft source bindings: music ${mixDraft.values.music_asset_id || "none"}; SFX ${mixDraft.values.sfx_asset_id || "none"}.`;
   return <section className="audio-editor-section" aria-label="Original three-bus native PCM audition" onKeyDown={containRecipeKeyboard}>
     <button type="button" className="button button-secondary" aria-expanded={expanded}
       aria-controls={panelId} onClick={() => setExpanded(value => !value)}>
@@ -203,8 +204,8 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
         {selectableSources.map(asset => <option key={asset.id} value={asset.id}>{asset.name} · sha256:{asset.content_sha256?.slice(0, 10)}</option>)}
       </select>
     </label>)}
-    <p className="production-help" role="status">
-      Draft source bindings: music {mixDraft.values.music_asset_id || "none"}; SFX {mixDraft.values.sfx_asset_id || "none"}.
+    <p className="production-help" role="status" aria-label={draftSourceStatus}>
+      {draftSourceStatus}
     </p>
     {selectedProfile && <p className="production-help">Authored SFX cues in this cut: {(() => {
       try { return selectedOriginalMixCues(project, selectedProfile.id).length; }

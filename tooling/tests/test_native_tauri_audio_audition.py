@@ -278,6 +278,16 @@ class AudioJoinTests(unittest.TestCase):
         with self.assertRaisesRegex(GUARDS.AudioError, "UI_TEXT_OBSERVATION_MISSING"):
             GUARDS.validate_ui_observation(altered, before, binding)
 
+    def test_source_draft_status_may_scroll_but_must_retain_exact_live_text(self):
+        before, binding, _, _, _, ui, _, _ = data()
+        expected = ui["draft_source_bindings"]["text"]
+        scroll = "source-draft-status-scroll"
+        ui["actions"].insert(ui["actions"].index("save-recipe"), scroll)
+        self.assertIsNone(GUARDS.validate_ui_observation(ui, before, binding))
+        ui["draft_source_bindings"]["text"] = expected + "stale"
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_TEXT_OBSERVATION_MISSING"):
+            GUARDS.validate_ui_observation(ui, before, binding)
+
     def test_scroll_ack_refreshes_only_the_owned_control_without_resending(self):
         calls, fresh = [], []
         node = SimpleNamespace(clear_cache_single=lambda: fresh.append(True))

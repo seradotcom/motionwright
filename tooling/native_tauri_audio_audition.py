@@ -806,6 +806,7 @@ class AudioUI:
         ]
         draft_label = ("Draft source bindings: music " + mix["music_asset_id"]
                        + "; SFX " + mix["sfx_asset_id"] + ".")
+        self.visible(draft_label, {"status"}, "source-draft-status")
         draft_sources = self.wait(lambda: self.text(draft_label))
         for label, expected in NUMBERS.items():
             entry = self.visible(label, {"entry", "text"}, "read-" + label.split()[0].lower())
@@ -1070,7 +1071,7 @@ REQUIRED_ACTIONS = (
 SCROLL_ACTIONS = frozenset(name + "-scroll" for name in (
     "open-project", "open-audio", "open-original-mix", "enable-mix", "profile",
     "select-music", "select-sfx", "read-sfx", "read-music", "read-attack",
-    "read-release", "save-recipe", "rights", "confirm-fixture-rights",
+    "read-release", "source-draft-status", "save-recipe", "rights", "confirm-fixture-rights",
     "original-audition", "close-focus",
 ))
 
