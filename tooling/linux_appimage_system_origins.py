@@ -134,6 +134,10 @@ def host_candidates(member):
         elif tail:
             result.add("/usr/lib/x86_64-linux-gnu/" + tail)
             result.add("/lib/x86_64-linux-gnu/" + tail)
+    if member == "usr/lib/libpxbackend-1.0.so":
+        # Exact libproxy1v5:amd64 package .list original from physical Linux
+        # run 44251587423; not a wildcard filename or basename search.
+        result.add("/usr/lib/x86_64-linux-gnu/libproxy/libpxbackend-1.0.so")
     return tuple(sorted(result))
 
 

@@ -215,6 +215,51 @@ class AppImageInstalledOriginTests(unittest.TestCase):
                          ("/usr/share/doc/example/copyright",))
 
 
+    def test_original_libproxy_manifest_subdirectory_has_exact_member_path(self):
+        target_path = "/usr/lib/x86_64-linux-gnu/libproxy/libpxbackend-1.0.so"
+        self.assertIn(target_path,
+                      origin.host_candidates("usr/lib/libpxbackend-1.0.so"))
+        self.assertNotIn(target_path,
+                         origin.host_candidates("usr/lib/libpxbackend-2.0.so"))
+        self.assertNotIn(target_path,
+                         origin.host_candidates("usr/lib/some-other.so"))
+        source = self.make(target_path, self.original)
+        package = "libproxy1v5:amd64"
+        installed = {package: "0.5.4-4build1"}
+        manifests = {package: (target_path + "\n").encode()}
+        row = member("usr/lib/libpxbackend-1.0.so", self.original)
+        matches, pending = origin.join_origins(
+            [row], installed, manifests, self.root)
+        self.assertEqual(pending, [])
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0]["origin"]["system_path"], target_path)
+        self.assertEqual(matches[0]["origin"]["package"], package)
+
+    def test_original_libproxy_subdirectory_supports_scoped_elf_build_id(self):
+        image_bytes = elf_fixture() + b"AppImage transformed bytes"
+        host_bytes = elf_fixture()
+        root = self.root / "system"
+        payload = self.root / "payload"
+        host_path = "/usr/lib/x86_64-linux-gnu/libproxy/libpxbackend-1.0.so"
+        host = root / host_path.lstrip("/")
+        image = payload / "usr/lib/libpxbackend-1.0.so"
+        host.parent.mkdir(parents=True, exist_ok=True)
+        image.parent.mkdir(parents=True, exist_ok=True)
+        host.write_bytes(host_bytes)
+        image.write_bytes(image_bytes)
+        pkg = "libproxy1v5:amd64"
+        row = member("usr/lib/libpxbackend-1.0.so", image_bytes)
+        result = origin.observe_elf_build_id_relations(
+            [row], {"roots": [{"members": [row]}]},
+            {pkg: "0.5.4-4build1"}, {pkg: (host_path + "\n").encode()},
+            payload, system_root=root)
+        self.assertEqual((result["same_gnu_build_id"], result["no_match"]),
+                         (1, 0))
+        self.assertEqual(result["matches"][0]["origin"]["package"], pkg)
+        self.assertEqual(result["matches"][0]["status"],
+                         "SAME_GNU_BUILD_ID_NOT_PROOF_OF_SOURCE_BYTES")
+        self.assertEqual(result["claims"]["G3"], "STOP")
+
     def test_listed_copyright_original_bytes_retained_without_legal_approval(self):
         license_path = "/usr/share/doc/libexample/copyright"
         copyright_raw = b"Example package license notice retained, not reviewed\n"
