@@ -652,9 +652,34 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
         self.assertEqual(custody.runtime_preparation_dispatch(route.canonical(base),self.current,scenario=route.SCOPE),base)
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {
                 'RUNNER_TEMP':directory, 'GITHUB_WORKSPACE':directory, 'SEMWRIGHT_CHECKOUT':directory}):
-            control = route.owned_layout(self.current)['control_root']; control.mkdir(mode=0o700)
+            # This unit exercises the argv constructor, without a POSIX owner
+            # or privileged installation on the machine running the test.
+            control = Path(directory) / 'control'; control.mkdir(mode=0o700)
             (control / 'runtime-bootstrap.original.json').write_bytes(route.canonical(base))
-            commands = route.preparation_commands(source_request(self.current, fixed.strict(self.p,512*1024)), self.current)
+            with mock.patch.object(route, 'owned_layout', return_value={'control_root': control}), \
+                    mock.patch.object(route.os, 'getuid', return_value=1001, create=True), \
+                    mock.patch.object(route.os, 'getgid', return_value=1001, create=True):
+                commands = route.preparation_commands(source_request(self.current, fixed.strict(self.p,512*1024)), self.current)
+            self.assertEqual(len(commands), 15)
+            expected_options = {
+                'Acquire::Retries': '0',
+                'Acquire::http::Timeout': '30',
+                'Acquire::https::Timeout': '30',
+                'Acquire::http::Pipeline-Depth': '0',
+                'Acquire::https::Pipeline-Depth': '0',
+            }
+            for command, operation in ((commands[1], 'update'), (commands[2], 'install')):
+                self.assertEqual(command[:3], ['sudo', '-n', 'apt-get'])
+                options = command[3:command.index(operation)]
+                self.assertEqual(options[::2], ['-o'] * len(expected_options))
+                self.assertEqual(len(options), 2 * len(expected_options))
+                self.assertEqual(dict(value.split('=', 1) for value in options[1::2]), expected_options)
+            self.assertEqual(commands[1][-1], 'update')
+            self.assertEqual(commands[2][commands[2].index('install') + 1:], [
+                '--no-install-recommends', '-y', 'bubblewrap', 'apparmor-profiles',
+                'apparmor-utils', 'libmlt7=7.22.0-1build6', 'melt=7.22.0-1build6',
+                'ffmpeg', 'libpipewire-0.3-dev', 'pkg-config', 'clang'])
+            self.assertEqual(commands[13][-4:], ['--uid', '1001', '--gid', '1001'])
             daemon = [command for command in commands if 'semwright-daemon' in command]
             self.assertEqual(len(daemon), 1)
             self.assertIn('--locked', daemon[0])

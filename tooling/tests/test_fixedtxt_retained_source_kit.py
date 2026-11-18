@@ -192,6 +192,26 @@ class RetainedSourceTransportTests(unittest.TestCase):
                         "ref": self.environment["GITHUB_REF_NAME"], "inputs": original["inputs"]})))
                     self.assertEqual(kit.sha(self.event_path.read_bytes()), kit.sha(raw))
 
+    def test_shared_session_selector_is_admitted_only_when_disabled(self):
+        for present, value in ((False, None), (True, None), (True, "")):
+            event = copy.deepcopy(self.event)
+            if present:
+                event["inputs"]["fixedtxt_session_cases"] = value
+            before = copy.deepcopy(event)
+            with self.subTest(present=present, value=value):
+                current = kit.retained_context(event, self.environment)
+                self.assertEqual(current["source_sha"], "1" * 40)
+                self.assertEqual(event, before)
+        for value in ("all-twelve-originals", "flow-text-control", " ", "null",
+                      False, True, 0, 1, [], {}):
+            event = copy.deepcopy(self.event)
+            event["inputs"]["fixedtxt_session_cases"] = value
+            before = copy.deepcopy(event)
+            with self.subTest(rejected=value), self.assertRaisesRegex(
+                    ValueError, "^retained source input roster: optional-authority-nonempty$"):
+                kit.retained_context(event, self.environment)
+            self.assertEqual(event, before)
+
     def test_required_inputs_cannot_be_missing_null_or_coerced(self):
         required = ("verification_scope", "expected_source_sha", "fixedtxt_mode",
                     "fixedtxt_request", kit.RETAINED_INPUT)
