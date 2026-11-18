@@ -768,23 +768,39 @@ class AudioUI:
         need(original_button.role == "button" and original_button.name == AUDITION
              and self.bridge.owner_pid(original_button.node) == self.binding["pid"],
              "UI_PCM_PREVIEW_ANCHOR_NOT_OWNED")
-        self.bridge.call(original_button.node.clear_cache_single)
-        self._refreshed_close_button(original_button)
+        # The WAV response can be committed before React's separate
+        # finally{setWorking(false)} reenables the audition button. The
+        # read-only PCM witness must not require an enabled action.
+        self._refreshed_close_button(original_button, require_usable=False)
         self.identity()
         return {"text": PREVIEW, "matches": 1}
 
-    def _refreshed_close_button(self, original_button):
+    def _refreshed_close_button(self, original_button, *, require_usable=True):
         self.identity()
+        need(self.bridge.owner_pid(original_button.node) == self.binding["pid"],
+             "UI_CLOSE_BUTTON_ANCHOR_OWNER_CHANGED")
+        # WebKit can cache the disabled state across React's setWorking(false).
+        # Refresh only this authenticated node on each bounded observation;
+        # never rescan its parents, children or the media component.
+        self.bridge.call(original_button.node.clear_cache_single)
         item = self.bridge.view(original_button.node)
         if item.name != AUDITION_PCM_READY:
             raise accessible.NotReady("UI_ORIGINAL_PCM_RESPONSE_NOT_YET_IN_REACT")
-        need(item.node == original_button.node and item.role == "button"
-             and {"visible", "showing", "enabled", "sensitive"} <= item.states
-             and "Action" in item.interfaces
-             and "Component" in item.interfaces
-             and "EditableText" not in item.interfaces
-             and self.bridge.owner_pid(item.node) == self.binding["pid"],
-             "UI_CLOSE_BUTTON_CHANGED")
+        # Identity, role, owner and noneditable action interface are permanent
+        # requirements. Only enabled/sensitive state may lag the committed
+        # PCM response while the original React promise is settling.
+        need(item.node == original_button.node, "UI_CLOSE_BUTTON_NODE_CHANGED")
+        need(item.role == "button", "UI_CLOSE_BUTTON_ROLE_CHANGED")
+        need({"visible", "showing"} <= item.states
+             and "defunct" not in item.states and "editable" not in item.states,
+             "UI_CLOSE_BUTTON_VISIBILITY_CHANGED")
+        need({"Action", "Component"} <= item.interfaces
+             and "EditableText" not in item.interfaces,
+             "UI_CLOSE_BUTTON_INTERFACES_CHANGED")
+        need(self.bridge.owner_pid(item.node) == self.binding["pid"],
+             "UI_CLOSE_BUTTON_OWNER_CHANGED")
+        if require_usable and not {"enabled", "sensitive"} <= item.states:
+            raise accessible.NotReady("UI_CLOSE_BUTTON_STILL_WORKING")
         return item
 
     def close_window(self, original_button):
@@ -794,7 +810,6 @@ class AudioUI:
         need(original_button.role == "button" and original_button.name == AUDITION
              and self.bridge.owner_pid(original_button.node) == self.binding["pid"],
              "UI_CLOSE_BUTTON_ANCHOR_CHANGED")
-        self.bridge.call(original_button.node.clear_cache_single)
         target = self.wait(lambda: self._refreshed_close_button(original_button))
         # GNOME's API defines PRESS/RELEASE as hardware keycodes. Resolve them
         # from this live GDK keymap; no fixed keycode, xdotool or direct XTest.

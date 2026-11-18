@@ -352,17 +352,32 @@ class AudioJoinTests(unittest.TestCase):
         self.assertEqual(ui.observe_original_pcm_near_owned_button(original),
                          {"text": GUARDS.PREVIEW, "matches": 1})
         self.assertIs(ui._refreshed_close_button(original).node, node)
-        self.assertEqual(events, ["refresh", "refresh"])
+        self.assertEqual(events, ["refresh", "refresh", "refresh"])
         state["owner"] = 7002
         with self.assertRaisesRegex(GUARDS.AudioError, "UI_PCM_PREVIEW_ANCHOR_NOT_OWNED"):
             ui.observe_original_pcm_near_owned_button(original)
         state["owner"] = 7001
         state["role"] = "status"
-        with self.assertRaisesRegex(GUARDS.AudioError, "UI_CLOSE_BUTTON_CHANGED"):
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_CLOSE_BUTTON_ROLE_CHANGED"):
             ui.observe_original_pcm_near_owned_button(original)
         state["role"] = "button"
         state["states"] = frozenset(("visible", "showing"))
-        with self.assertRaisesRegex(GUARDS.AudioError, "UI_CLOSE_BUTTON_CHANGED"):
+        # React can commit currentAudition before setWorking(false). Read-only
+        # PCM acknowledgement is valid while its action remains disabled.
+        self.assertEqual(ui.observe_original_pcm_near_owned_button(original),
+                         {"text": GUARDS.PREVIEW, "matches": 1})
+        with self.assertRaisesRegex(RuntimeError, "UI_CLOSE_BUTTON_STILL_WORKING"):
+            ui._refreshed_close_button(original)
+        state["states"] = frozenset(("visible", "showing", "enabled", "sensitive"))
+        self.assertIs(ui._refreshed_close_button(original).node, node)
+        state["states"] = frozenset(("visible", "showing", "enabled"))
+        with self.assertRaisesRegex(RuntimeError, "UI_CLOSE_BUTTON_STILL_WORKING"):
+            ui._refreshed_close_button(original)
+        state["states"] = frozenset(("enabled", "sensitive"))
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_CLOSE_BUTTON_VISIBILITY_CHANGED"):
+            ui.observe_original_pcm_near_owned_button(original)
+        state["states"] = frozenset(("visible", "showing", "enabled", "sensitive", "defunct"))
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_CLOSE_BUTTON_VISIBILITY_CHANGED"):
             ui.observe_original_pcm_near_owned_button(original)
 
     def test_pcm_ready_label_depends_on_real_current_audition_and_proven_close(self):
@@ -382,10 +397,15 @@ class AudioJoinTests(unittest.TestCase):
         self.assertNotIn('preview-result-scroll', harness)
         read_segment=harness.split('    def observe_original_pcm_near_owned_button(', 1)[1].split(
             '    def _refreshed_close_button(', 1)[0]
-        self.assertIn('original_button.node.clear_cache_single', read_segment)
+        self.assertIn('self._refreshed_close_button(original_button, require_usable=False)', read_segment)
+        refresh_segment=harness.split('    def _refreshed_close_button(', 1)[1].split(
+            '    def close_window(', 1)[0]
+        self.assertIn('original_button.node.clear_cache_single', refresh_segment)
+        self.assertIn('UI_CLOSE_BUTTON_STILL_WORKING', refresh_segment)
         for forbidden in ("self.bridge.children(", "self.views(", "accessible.walk(",
                           "self.bridge.applications(", "self.effect("):
             self.assertNotIn(forbidden, read_segment)
+            self.assertNotIn(forbidden, refresh_segment)
         before,binding,_,_,_,observed,_,_=data()
         self.assertIsNone(GUARDS.validate_ui_observation(observed, before, binding))
         invalid=deepcopy(observed)
