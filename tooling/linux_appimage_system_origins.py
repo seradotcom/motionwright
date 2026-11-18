@@ -328,6 +328,104 @@ def original_package_records(matched, manifests, root):
     return result, originals
 
 
+def observe_elf_build_id_relations(pending, app, installed, manifests,
+                                   payload_root, *, system_root=Path("/"),
+                                   budget=MAX_SOURCE_READ_TOTAL):
+    """Only build-id equivalence to the *current* installed host is observed.
+
+    Every candidate requires a package's original .list entry, stable host
+    bytes and exact original extracted ELF bytes. Matching GNU build-id is not
+    byte equality, pre-bundle custody, loader closure or legal clearance.
+    """
+    import linux_elf_build_id as elf
+
+    need(type(budget) is int and 0 < budget <= MAX_SOURCE_READ_TOTAL,
+         "origin_elf_budget")
+    original_files = {row["path"]: row for row in app["roots"][0]["members"]
+                      if row["kind"] == "file"}
+    chosen = [row for row in pending if row["native_format"] == "ELF"]
+    wanted = {path for row in chosen for path in host_candidates(row["path"])}
+    owned = candidate_index(manifests, installed, wanted)
+    source_cache, matches, unresolved = {}, [], []
+    spent = 0
+    payload_root = Path(payload_root).resolve(strict=True)
+    for row in sorted(chosen, key=lambda item: item["path"]):
+        path = row["path"]
+        if not path.startswith("usr/"):
+            unresolved.append({"member": path, "reason": "NO_DECLARED_SYSTEM_LIBRARY_PATH"})
+            continue
+        original = original_files[path]
+        if original["bytes"] > elf.MAX_BINARY or spent + original["bytes"] > budget:
+            unresolved.append({"member": path, "reason": "ORIGINAL_ELF_BUDGET"})
+            continue
+        raw = inventory.capture.stable_read(payload_root, payload_root / path,
+                                            elf.MAX_BINARY)
+        need(digest(raw) == {key: original[key] for key in ("bytes", "sha256")},
+             "origin_live_elf_bytes_changed")
+        spent += len(raw)
+        try:
+            target_build_id = elf.gnu_build_id(raw)
+        except ValueError:
+            target_build_id = None
+        if target_build_id is None:
+            unresolved.append({"member": path, "reason": "NO_VALID_TARGET_GNU_BUILD_ID"})
+            continue
+        candidates = {}
+        for host in host_candidates(path):
+            for package in owned.get(host, ()):
+                if host not in source_cache:
+                    try:
+                        source = elf.observed_library(
+                            system_root, host, limit=min(
+                                elf.MAX_BINARY, budget - spent))
+                    except ValueError:
+                        source = None
+                    source_cache[host] = source
+                    spent += (source or {}).get("bytes", 0)
+                source = source_cache[host]
+                if source is None or source["gnu_build_id"] != target_build_id:
+                    continue
+                key = (package["package"], source["resolved_path"],
+                       source["sha256"])
+                candidates[key] = {"origin": package, "host": source}
+        if len(candidates) == 1:
+            record = next(iter(candidates.values()))
+            matches.append({
+                "member": path,
+                "gnu_build_id": target_build_id,
+                "appimage_elf_bytes": original["bytes"],
+                "appimage_elf_sha256": original["sha256"],
+                "origin": record["origin"],
+                "installed_host": record["host"],
+                "status": "SAME_GNU_BUILD_ID_NOT_PROOF_OF_SOURCE_BYTES",
+            })
+        else:
+            unresolved.append({
+                "member": path,
+                "reason": "AMBIGUOUS_GNU_BUILD_ID_OR_PACKAGE"
+                          if candidates else "NO_DECLARED_HOST_GNU_BUILD_ID_MATCH",
+            })
+    need(len(chosen) == len(matches) + len(unresolved),
+         "origin_elf_member_accounting")
+    return {
+        "scanned_elf": len(chosen),
+        "same_gnu_build_id": len(matches),
+        "no_match": len(unresolved),
+        "host_source_and_target_bytes_read_budget": budget,
+        "host_and_appimage_bytes_read": spent,
+        "matches": matches,
+        "unresolved": unresolved,
+        "claims": {
+            "build_id_proves_byte_equality": False,
+            "prebundle_host_source_capture": "NOT_PERFORMED",
+            "packager_transform_chain_custody": "NOT_ATTESTED",
+            "redistribution_permission": "NOT_INFERRED",
+            "native_linker_closure": "NOT_VERIFIED",
+            "G3": "STOP",
+        },
+    }
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for flag in ("appimage-inventory", "deb-inventory", "live-payload", "output-directory"):
@@ -357,6 +455,10 @@ def main(argv=None):
             if row["reason"] == "NO_EXACT_REGULAR_INSTALLED_SOURCE":
                 row["reason"] = "NO_EXACT_OBSERVED_SOURCE_IN_INCOMPLETE_CATALOG"
     packages, package_originals = original_package_records(matched, manifests, Path("/"))
+    elf_relations = observe_elf_build_id_relations(
+        pending, app, installed, manifests, args.live_payload)
+    elf_packages, elf_originals = original_package_records(
+        elf_relations["matches"], manifests, Path("/"))
     result = {
         "schema": SCHEMA, "source": source,
         "source_tree": app["context"]["source_tree"],
@@ -374,6 +476,9 @@ def main(argv=None):
         "matched_installed_packages": len(packages),
         "package_originals": packages,
         "matches": matched, "unresolved": unresolved,
+        "elf_host_build_id_witness": elf_relations,
+        "elf_host_package_originals": elf_packages,
+        "elf_host_package_original_folder": "elf-sources",
         "claims": {
             "original_package_file_equal_to_installed_host_file": "SCOPED_OBSERVATION",
             "absence_of_matching_origin_is_proven": False,
@@ -395,12 +500,20 @@ def main(argv=None):
     folder.mkdir(mode=0o700)
     (folder / "package-lists").mkdir(mode=0o700)
     (folder / "copyright").mkdir(mode=0o700)
+    (folder / "elf-sources").mkdir(mode=0o700)
+    (folder / "elf-sources/package-lists").mkdir(mode=0o700)
+    (folder / "elf-sources/copyright").mkdir(mode=0o700)
     inventory.capture.write_new(folder / "status.original", status_raw)
     for name, raw in sorted(package_originals.items()):
         limit = MAX_MANIFEST if name.startswith("package-lists/") else MAX_COPYRIGHT
         inventory.capture.write_new(folder / name, raw)
         need(inventory.capture.stable_read(folder, name, limit) == raw,
              "origin_package_original_readback")
+    for name, raw in sorted(elf_originals.items()):
+        limit = MAX_MANIFEST if name.startswith("package-lists/") else MAX_COPYRIGHT
+        inventory.capture.write_new(folder / "elf-sources" / name, raw)
+        need(inventory.capture.stable_read(folder, "elf-sources/" + name, limit) == raw,
+             "origin_elf_package_original_readback")
     inventory.capture.write_new(folder / "report.json", output)
     need(inventory.capture.stable_read(folder, "report.json", MAX_REPORT) == output,
          "origin_report_readback")

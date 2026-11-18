@@ -29,7 +29,9 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
         paths = ("tooling/candidate_package_inventory.py", "tooling/linux_package_parity.py",
                  "tooling/tests/test_linux_package_parity.py", "tooling/linux_deb_archive_audit.py",
                  "tooling/tests/test_linux_deb_archive_audit.py", "tooling/linux_appimage_system_origins.py",
-                 "tooling/tests/test_linux_appimage_system_origins.py", "tooling/candidate_package_extraction.py",
+                 "tooling/tests/test_linux_appimage_system_origins.py",
+                 "tooling/linux_elf_build_id.py", "tooling/tests/test_linux_elf_build_id.py",
+                 "tooling/candidate_package_extraction.py",
                  "tooling/startup_capture_core.py", "tooling/tests/test_candidate_package_inventory.py",
                  "tooling/tests/test_candidate_package_extraction.py",
                  "tooling/tests/test_candidate_package_inventory_workflow.py")
@@ -63,9 +65,15 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
         origin_source = step(policy, "Require original AppImage system-origin matching source controls")
         self.assertIn("--pattern test_linux_appimage_system_origins.py", origin_source)
         self.assertIn("--mode discovery --require-complete --expected-source", origin_source)
-        self.assertIn("counts['tests_run']==counts['passed']==21", origin_source)
+        self.assertIn("counts['tests_run']==counts['passed']==25", origin_source)
         self.assertIn("counts[k]==0", origin_source)
         self.assertIn("G3=STOP", origin_source)
+        elf_source = step(policy, "Authenticate bounded GNU ELF build-id source controls")
+        self.assertIn("--pattern test_linux_elf_build_id.py", elf_source)
+        self.assertIn("--mode discovery --require-complete --expected-source", elf_source)
+        self.assertIn("counts['tests_run']==counts['passed']==15", elf_source)
+        self.assertIn("counts[k]==0", elf_source)
+        self.assertIn("native_execution=NOT_RUN G3=STOP", elf_source)
         physical = step(self.linux, "Observe exact system-origin bytes in unresolved AppImage members")
         self.assertIn("inputs.verification_scope == 'linux_bundle'", physical)
         self.assertIn("--appimage-sha256", physical)
@@ -78,6 +86,7 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
         self.assertNotIn("ci-evidence/linux-appimage-system-origin/*", upload)
         archive = step(policy, "Retain original package inventory source control records")
         self.assertIn("deb-original-archive-source-${{ github.run_id }}-${{ github.run_attempt }}/*", archive)
+        self.assertIn("elf-build-id-source-${{ github.run_id }}-${{ github.run_attempt }}/*", archive)
         for body in (self.installed, self.linux):
             self.assertIn("receipt-policy", body.split("    steps:\n", 1)[0])
 

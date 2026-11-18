@@ -20,6 +20,20 @@ def member(name, data, kind="ELF"):
             "sha256": hashlib.sha256(data).hexdigest(), "native_format": kind}
 
 
+def elf_fixture(build_id=b"\x13" * 20):
+    """Single inert ELF64 PT_NOTE fixture; no host native execution."""
+    import struct
+    header = bytearray(64)
+    header[:7] = b"\x7fELF\x02\x01\x01"
+    struct.pack_into("<HHI", header, 16, 3, 62, 1)
+    struct.pack_into("<Q", header, 32, 64)
+    struct.pack_into("<HHH", header, 52, 64, 56, 1)
+    offset = 64 + 56
+    note = struct.pack("<III", 4, len(build_id), 3) + b"GNU\x00" + build_id
+    return bytes(header) + struct.pack(
+        "<IIQQQQQQ", 4, 4, offset, 0, 0, len(note), len(note), 4) + note
+
+
 class AppImageInstalledOriginTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="mw-origin-inert-", dir=os.environ.get("TEMP"))
@@ -266,6 +280,62 @@ class AppImageInstalledOriginTests(unittest.TestCase):
         self.assertEqual(scope["original_unresolved_regular"], 2)
         self.assertEqual(scope["exclusive_already_related"], 1)
         self.assertEqual(scope["shared_with_deb_unresolved"], 1)
+
+
+    def _observed_elf_fixture(self, host_bytes, image_bytes, *, changed_image=False,
+                              budget=origin.MAX_SOURCE_READ_TOTAL):
+        fixture = elf_fixture
+        host = self.root / "host"
+        payload = self.root / "payload"
+        target = host / self.system_path.lstrip("/")
+        image = payload / "usr/lib/libexample.so.1"
+        for path in (target, image):
+            path.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(host_bytes)
+        image.write_bytes(image_bytes)
+        item = member("usr/lib/libexample.so.1", image_bytes)
+        if changed_image:
+            image.write_bytes(image_bytes + b"x")
+        app = {"roots": [{"members": [item]}]}
+        result = origin.observe_elf_build_id_relations(
+            [item], app, self.installed, self.manifests,
+            payload, system_root=host, budget=budget)
+        return result, fixture
+
+    def test_original_elf_gnu_id_matches_stable_declared_package_without_byte_equality(self):
+        fixture = elf_fixture
+        a, b = fixture(), fixture() + b"only the AppImage payload differs"
+        self.assertNotEqual(hashlib.sha256(a).hexdigest(),
+                            hashlib.sha256(b).hexdigest())
+        result, _ = self._observed_elf_fixture(a, b)
+        self.assertEqual((result["scanned_elf"], result["same_gnu_build_id"],
+                          result["no_match"]), (1, 1, 0))
+        self.assertEqual(result["matches"][0]["status"],
+                         "SAME_GNU_BUILD_ID_NOT_PROOF_OF_SOURCE_BYTES")
+        self.assertEqual(result["matches"][0]["origin"]["package"], self.pkg)
+        self.assertEqual(result["matches"][0]["gnu_build_id"], "13" * 20)
+        self.assertEqual(result["claims"]["G3"], "STOP")
+        self.assertFalse(result["claims"]["build_id_proves_byte_equality"])
+
+    def test_different_elf_gnu_id_refuses_relation(self):
+        fixture = elf_fixture
+        result, _ = self._observed_elf_fixture(
+            fixture(build_id=b"\x22" * 20), fixture())
+        self.assertEqual(result["same_gnu_build_id"], 0)
+        self.assertEqual(result["unresolved"][0]["reason"],
+                         "NO_DECLARED_HOST_GNU_BUILD_ID_MATCH")
+
+    def test_changed_original_extracted_elf_refuses_relation(self):
+        fixture = elf_fixture
+        with self.assertRaisesRegex(ValueError, "origin_live_elf_bytes_changed"):
+            self._observed_elf_fixture(fixture(), fixture(), changed_image=True)
+
+    def test_bounded_elf_byte_budget_is_not_false_match(self):
+        fixture = elf_fixture
+        result, _ = self._observed_elf_fixture(
+            fixture(), fixture(), budget=64)
+        self.assertEqual(result["matches"], [])
+        self.assertEqual(result["unresolved"][0]["reason"], "ORIGINAL_ELF_BUDGET")
 
 
 if __name__ == "__main__":
