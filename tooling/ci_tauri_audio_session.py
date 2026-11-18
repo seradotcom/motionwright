@@ -38,6 +38,11 @@ def main(argv=None):
     current = gate.context(args.repo, os.environ.get("MW_TAURI_AUDIO_EXPECTED_SOURCE", ""))
     gate.need(args.repo == ROOT and os.environ.get("DISPLAY")
               and os.environ.get("DBUS_SESSION_BUS_ADDRESS"), "OWNED_X11_DBUS_SESSION_REQUIRED")
+    # Avoid capturing 100+ rebuildable Mesa cache entries in the otherwise
+    # complete bounded original SQLite/CAS/receipt snapshot. This controls
+    # disk cache only; the real app/renderer and consent remain unchanged.
+    gate.need(os.environ.get("MESA_SHADER_CACHE_DISABLE") == "true",
+              "TAURI_MESA_DISK_SHADER_CACHE_MUST_BE_DISABLED")
     output, _ = gate.locations(os.environ)
     admission = gate.strict(gate.regular(output / "admission.original.json", 65536))
     gate.need(admission["context"] == current, "WINDOW_MANAGER_SOURCE_CONTEXT_CHANGED")

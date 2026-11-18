@@ -93,6 +93,38 @@ class DevelopmentAdmission(unittest.TestCase):
         concurrency = text.split("concurrency:\n", 1)[1].split("jobs:", 1)[0]
         self.assertIn("inputs.verification != 'tauri-audition'", concurrency)
 
+    def test_original_tauri_owner_disables_only_nonsemantic_mesa_disk_cache(self):
+        workflow = (ROOT / ".github/workflows/v05-original-native-mix.yml").read_text(encoding="utf-8")
+        physical = workflow.split(
+            "      - name: Execute one genuine Tauri save audition and closed Store readback\n", 1)
+        self.assertEqual(len(physical), 2)
+        block = physical[1].split(
+            "      - name: Seal original development evidence once\n", 1)[0]
+        self.assertIn("env:\n          MESA_SHADER_CACHE_DISABLE: 'true'\n", block)
+        self.assertIn("xvfb-run --auto-servernum", block)
+        self.assertIn("dbus-run-session -- /usr/bin/python3", block)
+        self.assertNotIn("MESA_SHADER_CACHE_DIR:", block)
+        self.assertNotIn("MESA_GL_VERSION_OVERRIDE", block)
+        source = (ROOT / "tooling/ci_tauri_audio_session.py").read_text(encoding="utf-8")
+        guard = 'gate.need(os.environ.get("MESA_SHADER_CACHE_DISABLE") == "true",'
+        self.assertIn(guard, source)
+        self.assertLess(source.index(guard), source.index('directory = output / "window-manager"'))
+        self.assertIn("environment = dict(os.environ)", source)
+        self.assertIn("env=environment", source)
+        self.assertIn("subprocess.run(command, cwd=ROOT", source)
+        original = (ROOT / "tooling/native_tauri_audio_audition.py").read_text(encoding="utf-8")
+        self.assertIn("env = dict(os.environ)", original)
+        self.assertIn("desktop_env = dict(env,", original)
+        self.assertIn("env=desktop_env", original)
+        custody = (ROOT / "tooling/ci_tauri_audio_audition.py").read_text(encoding="utf-8")
+        for bound in ("MAX_MEMBER = 8 * 1024 * 1024", "MAX_TOTAL = 48 * 1024 * 1024",
+                      "MAX_ARCHIVE = 64 * 1024 * 1024", "MAX_FILES = 256"):
+            self.assertIn(bound, custody)
+        self.assertIn('"COMBINED_SNAPSHOT_SELECTION_BOUND"', custody)
+        self.assertIn('"root_file_counts": [item[0] for item in counts]', custody)
+        self.assertIn("preserve_partial=True, max_archive_bytes=MAX_ARCHIVE", custody)
+        self.assertNotIn("MESA_SHADER_CACHE_DISABLE", custody)
+
     def test_tauri_apt_prefers_signed_ubuntu_fallback_without_mandating_mirror_file(self):
         text = (ROOT / ".github/workflows/v05-original-native-mix.yml").read_text(encoding="utf-8")
         selected = text.split("      - name: Install existing Tauri and accessible desktop prerequisites\n", 1)

@@ -409,6 +409,12 @@ jobs:
             > "$RUNNER_TEMP/tauri-audition-ci/build.original.jsonl" \
             2> "$RUNNER_TEMP/tauri-audition-ci/build.original.stderr"
       - name: Execute one genuine Tauri save audition and closed Store readback
+        # Mesa's on-disk shader cache was 125 of 243 prior original members.
+        # It is rebuildable GPU cache, not the Store/CAS, original WAV or UI
+        # receipt. Disable only this disk cache during this physical scenario
+        # to keep the exact original-selection bounds unchanged.
+        env:
+          MESA_SHADER_CACHE_DISABLE: 'true'
         shell: bash
         run: |
           set -euo pipefail

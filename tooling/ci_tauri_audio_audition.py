@@ -254,7 +254,19 @@ def seal(repo, expected_source):
             result = strict(regular(private_root / "result.private.json"))
     counts = [inventory(root, owner_metadata=(label == "owner"))
               for label, root in roots.items()]
-    need(sum(item[0] for item in counts) <= MAX_FILES and sum(item[1] for item in counts) <= MAX_TOTAL,
+    # Safe bounded diagnostic even when the original inventory cannot be
+    # sealed. Exposes no names, media, private paths, sources or key material.
+    # It does not increase either selected-file or selected-byte budgets.
+    totals = (sum(item[0] for item in counts), sum(item[1] for item in counts))
+    print(json.dumps({"schema": "motionwright.tauri-audio-seal-budget/1",
+                      "status": "WITHIN_LIMITS" if totals[0] <= MAX_FILES
+                      and totals[1] <= MAX_TOTAL else "REJECTED",
+                      "root_file_counts": [item[0] for item in counts],
+                      "selected_files": totals[0], "selected_bytes": totals[1],
+                      "maximum_files": MAX_FILES, "maximum_bytes": MAX_TOTAL,
+                      "automatic_retry": False, "formal_G2": False, "formal_G3": False},
+                     sort_keys=True), flush=True)
+    need(totals[0] <= MAX_FILES and totals[1] <= MAX_TOTAL,
          "COMBINED_SNAPSHOT_SELECTION_BOUND")
     import ci_private_evidence as custody
     raw, selected_complete = custody.gather_snapshot(
