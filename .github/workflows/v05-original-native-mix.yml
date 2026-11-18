@@ -317,19 +317,38 @@ jobs:
           test "$GITHUB_SHA" = "$MW_TAURI_AUDIO_EXPECTED_SOURCE"
           test "$GITHUB_REPOSITORY" = seradotcom/motionwright
           test "$MW_AUDIO_DIAGNOSTIC_SELECTION" = tauri-audition
-          # Ubuntu 24.04 GitHub runners list both official mirrors here.
-          # A live but extremely slow Azure mirror never trips apt's idle
-          # timeout. Keep the original signed Ubuntu repositories and select
-          # their already-provided non-Azure fallback before downloads.
+          # Ubuntu 24.04 runners can expose either the signed deb822 archive
+          # or a mirror+file list. Prefer the existing official fallback if
+          # present, but never reject a valid signed runner for a missing file.
+          sources=/etc/apt/sources.list.d/ubuntu.sources
           mirrors=/etc/apt/apt-mirrors.txt
-          test -f "$mirrors" && test ! -L "$mirrors"
-          grep -Eq '^https?://azure[.]archive[.]ubuntu[.]com/ubuntu/?$' "$mirrors"
-          grep -Eq '^https?://archive[.]ubuntu[.]com/ubuntu/?$' "$mirrors"
-          sudo sed -i '/azure[.]archive[.]ubuntu[.]com/d' "$mirrors"
-          grep -Eq '^https?://archive[.]ubuntu[.]com/ubuntu/?$' "$mirrors"
-          ! grep -Eq 'azure[.]archive[.]ubuntu[.]com' "$mirrors"
-          timeout --signal=TERM --kill-after=30s 240s sudo apt-get update
-          timeout --signal=TERM --kill-after=30s 1080s sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev python3-gi python3-cryptography gir1.2-atspi-2.0 gir1.2-gtk-3.0 at-spi2-core xvfb x11-utils dbus-x11 openbox
+          if test -f "$sources" && test ! -L "$sources" &&
+             grep -Fqx 'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' "$sources"; then
+            if grep -Eq '^URIs: mirror[+]file:/etc/apt/apt-mirrors[.]txt$' "$sources"; then
+              if test -f "$mirrors" && test ! -L "$mirrors" &&
+                 grep -Eq '^https?://archive[.]ubuntu[.]com/ubuntu/?[[:space:]]*$' "$mirrors"; then
+                sudo sed -i '/azure[.]archive[.]ubuntu[.]com/d' "$mirrors"
+                grep -Eq '^https?://archive[.]ubuntu[.]com/ubuntu/?[[:space:]]*$' "$mirrors"
+                echo 'APT_OFFICIAL_UBUNTU_MIRROR=existing-list-fallback'
+              else
+                sudo sed -i 's|^URIs: mirror+file:/etc/apt/apt-mirrors[.]txt$|URIs: https://archive.ubuntu.com/ubuntu/|' "$sources"
+                grep -Fqx 'URIs: https://archive.ubuntu.com/ubuntu/' "$sources"
+                echo 'APT_OFFICIAL_UBUNTU_MIRROR=signed-deb822-fallback'
+              fi
+            elif grep -Eq '^URIs: https?://azure[.]archive[.]ubuntu[.]com/ubuntu/?$' "$sources"; then
+              sudo sed -i -E 's|^URIs: https?://azure[.]archive[.]ubuntu[.]com/ubuntu/?$|URIs: https://archive.ubuntu.com/ubuntu/|' "$sources"
+              grep -Fqx 'URIs: https://archive.ubuntu.com/ubuntu/' "$sources"
+              echo 'APT_OFFICIAL_UBUNTU_MIRROR=signed-deb822-replacement'
+            else
+              echo 'APT_OFFICIAL_UBUNTU_MIRROR=runner-default'
+            fi
+          else
+            echo 'APT_OFFICIAL_UBUNTU_MIRROR=runner-default'
+          fi
+          # Same signed packages as before; bounds apply to downloads, not
+          # acceptance, authority, or release policy.
+          timeout --signal=TERM --kill-after=30s 240s sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
+          timeout --signal=TERM --kill-after=30s 1080s sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev python3-gi python3-cryptography gir1.2-atspi-2.0 gir1.2-gtk-3.0 at-spi2-core xvfb x11-utils dbus-x11 openbox
       - name: Admit exact source and public recipient before Native
         id: admission
         shell: bash
