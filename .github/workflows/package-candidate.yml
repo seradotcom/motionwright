@@ -40,6 +40,8 @@ on:
       - "tooling/tests/test_linux_appimage_system_origins.py"
       - "tooling/linux_elf_build_id.py"
       - "tooling/tests/test_linux_elf_build_id.py"
+      - "tooling/linux_apprun_release_identity.py"
+      - "tooling/tests/test_linux_apprun_release_identity.py"
       - "tooling/candidate_package_extraction.py"
       - "tooling/startup_capture_core.py"
       - "tooling/tests/test_candidate_package_inventory.py"
@@ -167,6 +169,8 @@ on:
       - "tooling/tests/test_linux_appimage_system_origins.py"
       - "tooling/linux_elf_build_id.py"
       - "tooling/tests/test_linux_elf_build_id.py"
+      - "tooling/linux_apprun_release_identity.py"
+      - "tooling/tests/test_linux_apprun_release_identity.py"
       - "tooling/candidate_package_extraction.py"
       - "tooling/startup_capture_core.py"
       - "tooling/tests/test_candidate_package_inventory.py"
@@ -473,6 +477,36 @@ jobs:
           assert all(counts[k]==0 for k in ('failures','errors','skipped','expected_failures','unexpected_successes'))
           print('elf-original-source=PASS controls=16 native_execution=NOT_RUN G3=STOP')
           PY_ELF_SOURCE_G1
+      - name: Require pinned upstream AppRun release-byte source controls
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          root="$RUNNER_TEMP/apprun-pin-source-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$root"
+          mkdir -m 700 "$root"
+          python3 -B -E -s tooling/ci_test_runner.py \
+            --repo "$GITHUB_WORKSPACE" --test-directory tooling/tests \
+            --pattern test_linux_apprun_release_identity.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$root/receipt.json" \
+            > "$root/runner.stdout" 2> "$root/runner.stderr"
+          python3 -B -E -s - "$root/receipt.json" "$GITHUB_SHA" <<'PY_APPRUN_SOURCE_G1'
+          import json,sys
+          from pathlib import Path
+          receipt=json.loads(Path(sys.argv[1]).read_bytes())
+          assert receipt['status']=='PASS' and receipt['executed_source_sha']==sys.argv[2]
+          assert len(receipt['steps'])==1
+          step=receipt['steps'][0]
+          counts=step['counts']
+          assert step['entry_point']=='discovery:test_linux_apprun_release_identity.py'
+          assert step['status']=='PASS' and step['exit_code']==0
+          assert counts['tests_run']==counts['passed']==12
+          assert counts['terminal_status']=='OK'
+          assert all(counts[k]==0 for k in ('failures','errors','skipped','expected_failures','unexpected_successes'))
+          print('pinned-apprun-release-source=PASS controls=12 native_execution=NOT_RUN G3=STOP')
+          PY_APPRUN_SOURCE_G1
       - name: Retain original package inventory source control records
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -484,6 +518,7 @@ jobs:
             ${{ runner.temp }}/deb-original-archive-source-${{ github.run_id }}-${{ github.run_attempt }}/*
             ${{ runner.temp }}/appimage-system-origin-source-${{ github.run_id }}-${{ github.run_attempt }}/*
             ${{ runner.temp }}/elf-build-id-source-${{ github.run_id }}-${{ github.run_attempt }}/*
+            ${{ runner.temp }}/apprun-pin-source-${{ github.run_id }}-${{ github.run_attempt }}/*
           if-no-files-found: warn
           retention-days: 30
       - name: Captured SQLite native output contracts
@@ -1561,6 +1596,16 @@ jobs:
             fi
             extracted="$work/appimage/squashfs-root"
           fi
+          if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' && "$MW_LINUX_CANDIDATE_SCOPE" == 'linux_bundle' ]]; then
+            # Before any extracted AppRun or GUI process is executed, refuse a
+            # changed upstream executable, including same-size replacements.
+            python3 -B -E -s tooling/linux_apprun_release_identity.py \
+              --appimage-inventory ci-evidence/linux-appimage-package-inventory/inventory.json \
+              --producer-seal ci-evidence/linux-appimage-package-inventory.producer.json \
+              --live-payload "$extracted" \
+              --expected-source "$GITHUB_SHA" \
+              --output ci-evidence/linux-apprun-release-pin.json
+          fi
           if ! test -x "$extracted/AppRun"; then
             echo "::error::AppImage extraction contains no executable AppRun"
             find "$extracted" -maxdepth 2 -name 'AppRun' -o -name '*.desktop'
@@ -1741,6 +1786,7 @@ jobs:
             ci-evidence/linux-appimage-package-inventory/extract.closure.json
             ci-evidence/linux-package-parity.json
             ci-evidence/linux-deb-original-archive-audit.json
+            ci-evidence/linux-apprun-release-pin.json
             ci-evidence/linux-appimage-system-origin
           if-no-files-found: warn
           retention-days: 30

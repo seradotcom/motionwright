@@ -31,6 +31,8 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
                  "tooling/tests/test_linux_deb_archive_audit.py", "tooling/linux_appimage_system_origins.py",
                  "tooling/tests/test_linux_appimage_system_origins.py",
                  "tooling/linux_elf_build_id.py", "tooling/tests/test_linux_elf_build_id.py",
+                 "tooling/linux_apprun_release_identity.py",
+                 "tooling/tests/test_linux_apprun_release_identity.py",
                  "tooling/candidate_package_extraction.py",
                  "tooling/startup_capture_core.py", "tooling/tests/test_candidate_package_inventory.py",
                  "tooling/tests/test_candidate_package_extraction.py",
@@ -74,6 +76,12 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
         self.assertIn("counts['tests_run']==counts['passed']==16", elf_source)
         self.assertIn("counts[k]==0", elf_source)
         self.assertIn("native_execution=NOT_RUN G3=STOP", elf_source)
+        bootstrap_source = step(policy, "Require pinned upstream AppRun release-byte source controls")
+        self.assertIn("--pattern test_linux_apprun_release_identity.py", bootstrap_source)
+        self.assertIn("--mode discovery --require-complete --expected-source", bootstrap_source)
+        self.assertIn("counts['tests_run']==counts['passed']==12", bootstrap_source)
+        self.assertIn("counts[k]==0", bootstrap_source)
+        self.assertIn("G3=STOP", bootstrap_source)
         physical = step(self.linux, "Observe exact system-origin bytes in unresolved AppImage members")
         self.assertIn("inputs.verification_scope == 'linux_bundle'", physical)
         self.assertIn("--appimage-sha256", physical)
@@ -106,7 +114,7 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
     def test_generic_linux_keeps_legacy_flow_outside_its_existing_admitted_scope(self):
         body = step(self.linux, "Inspect extracted Linux packages and launch a rootless AppImage window")
         admission = 'if [[ "$GITHUB_EVENT_NAME" == \'workflow_dispatch\' && "$MW_LINUX_CANDIDATE_SCOPE" == \'linux_bundle\' ]]; then'
-        self.assertEqual(body.count(admission), 2)
+        self.assertEqual(body.count(admission), 3)
         deb = body.split(admission, 1)[1].split("          fi\n", 1)[0]
         admitted, legacy = deb.split("          else\n", 1)
         self.assertEqual(admitted.count('package_inventory deb "$deb"'), 1)
@@ -117,6 +125,16 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
         self.assertEqual(admitted.count('package_inventory appimage "$appimage"'), 1)
         self.assertNotIn("--appimage-extract", admitted)
         self.assertEqual(legacy.count("--appimage-extract"), 1)
+        self.assertIn("tooling/linux_apprun_release_identity.py", body)
+        self.assertIn("--producer-seal ci-evidence/linux-appimage-package-inventory.producer.json", body)
+        self.assertIn("--appimage-inventory ci-evidence/linux-appimage-package-inventory/inventory.json", body)
+        self.assertIn('--live-payload "$extracted"', body)
+        self.assertIn("--expected-source \"$GITHUB_SHA\"", body)
+        self.assertIn("--output ci-evidence/linux-apprun-release-pin.json", body)
+        self.assertLess(body.index("tooling/linux_apprun_release_identity.py"),
+                        body.index('if ! test -x "$extracted/AppRun"'))
+        self.assertLess(body.index("tooling/linux_apprun_release_identity.py"),
+                        body.index("xvfb-run"))
 
     def test_consumer_uses_original_producer_seal_and_live_roots_without_resealing(self):
         for body, producer, consumer in (
@@ -159,6 +177,7 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
             if body is self.linux:
                 expected_for_scope.update({
                     "ci-evidence/linux-appimage-system-origin",
+                    "ci-evidence/linux-apprun-release-pin.json",
                 })
             self.assertEqual(actual, expected_for_scope)
             self.assertNotIn("*", selected)
