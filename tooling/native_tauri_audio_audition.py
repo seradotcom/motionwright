@@ -368,6 +368,85 @@ def atspi_read_no_reply(error):
             and error.message.startswith("Did not receive a reply."))
 
 
+
+# A separate read-only process isolates Xlib's fatal BadWindow handler and
+# blocking replies from the parent's held-key release finally. The parent
+# kills and waits this child within its unchanged original deadline.
+X11_INPUT_FOCUS_PROBE = r"""
+import ctypes, json, re, sys
+if len(sys.argv) != 2 or re.fullmatch(r"0x[0-9a-f]+", sys.argv[1]) is None:
+    raise SystemExit(2)
+target=int(sys.argv[1],16)
+if target <= 1:
+    raise SystemExit(2)
+api=ctypes.CDLL("libX11.so.6")
+window=ctypes.c_ulong
+pointer=ctypes.POINTER
+api.XOpenDisplay.argtypes=[ctypes.c_char_p]
+api.XOpenDisplay.restype=ctypes.c_void_p
+api.XGetInputFocus.argtypes=[ctypes.c_void_p,pointer(window),pointer(ctypes.c_int)]
+api.XGetInputFocus.restype=ctypes.c_int
+api.XQueryTree.argtypes=[ctypes.c_void_p,window,pointer(window),pointer(window),
+                         pointer(pointer(window)),pointer(ctypes.c_uint)]
+api.XQueryTree.restype=ctypes.c_int
+api.XFree.argtypes=[ctypes.c_void_p]
+api.XFree.restype=ctypes.c_int
+api.XCloseDisplay.argtypes=[ctypes.c_void_p]
+api.XCloseDisplay.restype=ctypes.c_int
+display=api.XOpenDisplay(None)
+if not display:
+    raise SystemExit(3)
+try:
+    focus,revert=window(),ctypes.c_int()
+    if api.XGetInputFocus(display,ctypes.byref(focus),ctypes.byref(revert)) != 1:
+        raise SystemExit(4)
+    current=focus.value
+    chain=[]
+    for _ in range(16):
+        if current <= 1 or current in chain:
+            raise SystemExit(5)
+        chain.append(current)
+        if current == target:
+            confirm=window()
+            if api.XGetInputFocus(display,ctypes.byref(confirm),ctypes.byref(revert)) != 1 or confirm.value != focus.value:
+                raise SystemExit(8)
+            print(json.dumps({"input_focus_ancestry":[hex(value) for value in chain]}))
+            break
+        root,parent=window(),window()
+        children=pointer(window)()
+        count=ctypes.c_uint()
+        try:
+            status=api.XQueryTree(display,current,ctypes.byref(root),ctypes.byref(parent),
+                                  ctypes.byref(children),ctypes.byref(count))
+        finally:
+            if children:
+                api.XFree(children)
+        if status != 1 or count.value > 2048 or parent.value == root.value:
+            raise SystemExit(6)
+        current=parent.value
+    else:
+        raise SystemExit(7)
+finally:
+    api.XCloseDisplay(display)
+"""
+
+
+def validate_close_keyboard_target(record, binding):
+    need(type(record) is dict and set(record) == {"active_window", "input_focus_ancestry"},
+         "UI_CLOSE_TARGET_SHAPE")
+    active, chain = record["active_window"], record["input_focus_ancestry"]
+    need(type(active) is str and re.fullmatch(r"0x[0-9a-f]+", active)
+         and int(active, 16) == int(binding["window"], 16),
+         "OWNED_WINDOW_NOT_ACTIVE_FOR_CLOSE")
+    need(type(chain) is list and 1 <= len(chain) <= 16
+         and all(type(value) is str and re.fullmatch(r"0x[0-9a-f]+", value)
+                 and int(value, 16) > 1 for value in chain),
+         "UI_CLOSE_INPUT_FOCUS_UNAVAILABLE")
+    values = [int(value, 16) for value in chain]
+    need(len(values) == len(set(values)) and values[-1] == int(binding["window"], 16),
+         "UI_CLOSE_INPUT_FOCUS_NOT_OWNED")
+
+
 def private_transport_paths(root):
     paths = {"XDG_RUNTIME_DIR": root / "r", "TMPDIR": root / "t"}
     need(all(len(os.fsencode(path)) <= 70 for path in paths.values()),
@@ -459,6 +538,8 @@ class AudioUI:
         self.events = []
         self.action_observations = []
         self.pcm_read_timeouts = []
+        self.pcm_preview = None
+        self.close_keyboard_target = None
 
     def identity(self):
         need(time.monotonic() < self.deadline, "UI_DEADLINE")
@@ -770,6 +851,7 @@ class AudioUI:
         return self.wait(observed)
 
     def observe_original_pcm_near_owned_button(self, original_button):
+        self.pcm_preview = None
         # The original accessible audition button survives Native PCM output.
         # React changes only its ARIA label after currentAudition is real.
         # Observe that exact already-authenticated node; WebKit media children
@@ -783,7 +865,9 @@ class AudioUI:
         # read-only PCM witness must not require an enabled action.
         self._refreshed_close_button(original_button, require_usable=False)
         self.identity()
-        return {"text": PREVIEW, "matches": 1}
+        preview = {"text": PREVIEW, "matches": 1}
+        self.pcm_preview = {**preview, "binding": dict(self.binding)}
+        return preview
 
     def _refreshed_close_button(self, original_button, *, require_usable=True):
         self.identity()
@@ -837,24 +921,42 @@ class AudioUI:
             raise accessible.NotReady("UI_CLOSE_BUTTON_STILL_WORKING")
         return item
 
-    def close_window(self, original_button):
-        # The same original button remains the close-focus anchor. A fresh
-        # global traversal after native <audio> construction would exceed the
-        # bounded AT-SPI tree and is neither needed nor permitted.
-        need(original_button.role == "button" and original_button.name == AUDITION
-             and self.bridge.owner_pid(original_button.node) == self.binding["pid"],
-             "UI_CLOSE_BUTTON_ANCHOR_CHANGED")
-        target = self.wait(lambda: self._refreshed_close_button(original_button))
-        # GNOME's API defines PRESS/RELEASE as hardware keycodes. Resolve them
-        # from this live GDK keymap; no fixed keycode, xdotool or direct XTest.
-        # https://docs.gtk.org/atspi2/func.generate_keyboard_event.html
-        # https://docs.gtk.org/gdk3/method.Keymap.get_entries_for_keyval.html
-        self.effect("close-focus", target, lambda: self.bridge.focus_title(target.node))
+    def owned_close_keyboard_target(self):
+        # Window close is directed at the original desktop, not a second
+        # action on a React button whose media subtree may have changed.
+        # Read both WM activation and actual keyboard focus; never refocus.
+        self.identity()
         active = subprocess.run(["xprop", "-root", "_NET_ACTIVE_WINDOW"], capture_output=True,
                                 text=True, timeout=min(3, self.deadline - time.monotonic()), check=False)
         match = re.fullmatch(r"_NET_ACTIVE_WINDOW\(WINDOW\): window id # (0x[0-9a-fA-F]+)\s*", active.stdout)
         need(active.returncode == 0 and match and int(match.group(1), 16) == int(self.binding["window"], 16),
              "OWNED_WINDOW_NOT_ACTIVE_FOR_CLOSE")
+        self.identity()
+        focus = subprocess.run(
+            [sys.executable, "-B", "-E", "-s", "-c", X11_INPUT_FOCUS_PROBE, self.binding["window"]],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=min(3, self.deadline - time.monotonic()), check=False)
+        need(focus.returncode == 0 and not focus.stderr and 0 < len(focus.stdout) <= 4096,
+             "UI_CLOSE_INPUT_FOCUS_UNAVAILABLE")
+        observed = exact_json(focus.stdout)
+        need(type(observed) is dict and set(observed) == {"input_focus_ancestry"},
+             "UI_CLOSE_INPUT_FOCUS_UNAVAILABLE")
+        record = {"active_window": match.group(1).lower(),
+                  "input_focus_ancestry": observed["input_focus_ancestry"]}
+        validate_close_keyboard_target(record, self.binding)
+        self.identity()
+        return record
+
+    def close_window(self):
+        # A completed real PCM observation is required before this once-only
+        # close. No accessibility owner error authorizes a new focus target.
+        need(equal_json(self.pcm_preview,
+                        {"text": PREVIEW, "matches": 1, "binding": self.binding}),
+             "UI_CLOSE_REQUIRES_BOUND_PCM_RESPONSE")
+        need(self.events and self.events[-1] == "original-audition",
+             "UI_CLOSE_REQUIRES_ORIGINAL_AUDITION")
+        self.close_keyboard_target = self.owned_close_keyboard_target()
+        # Resolve real hardware keycodes from this live GDK keymap.
         keymap = self.gdk.Keymap.get_for_display(self.gdk.Display.get_default())
         need(keymap is not None, "LIVE_GDK_KEYMAP_REQUIRED")
         modifiers = (self.gdk.ModifierType.SHIFT_MASK | self.gdk.ModifierType.CONTROL_MASK
@@ -870,13 +972,17 @@ class AudioUI:
         self.identity()
         self.arm_action("window-close")
         self.journal.put("window-close-intent", {"binding": self.binding,
-            "method": "AT_SPI_HARDWARE_ALT_F4", "automatic_retry": False})
+            "method": "AT_SPI_HARDWARE_ALT_F4", "automatic_retry": False,
+            "preview_binding": self.pcm_preview["binding"],
+            "keyboard_target": self.close_keyboard_target})
         held = set()
         primary = None
         try:
             for name in ("Alt_L", "F4"):
+                target = self.owned_close_keyboard_target()
                 self.journal.put(("close-alt" if name == "Alt_L" else "close-f") + "-press-intent",
-                                 {"hardware_keycode": keys[name]})
+                                 {"hardware_keycode": keys[name], "binding": self.binding,
+                                  "keyboard_target": target})
                 held.add(name)  # A missing return is already an uncertain press.
                 need(self.bridge.call(self.bridge.api.generate_keyboard_event,
                     keys[name], None, self.bridge.api.KeySynthType.PRESS) is True,
@@ -955,11 +1061,13 @@ class AudioUI:
         # The saved r(N+1) is already independently witnessed before audition.
         # Following the new native media subtree must not trigger another
         # global application scan; external post-close readback verifies r(N+1).
-        self.close_window(audition_button)
+        self.close_window()
         return {"status": "PASS", "binding": self.binding, "project_id": self.before["project_id"],
                 "generation": self.before["generation"], "revision_before": revision,
                 "revision_after": revision + 1, "opened": opened, "sources": selected,
                 "draft_source_bindings": draft_sources, "saved": saved, "preview": preview,
+                "preview_binding": self.pcm_preview["binding"],
+                "keyboard_target": self.close_keyboard_target,
                 "actions": self.events,
                 "read_only_pcm_timeouts": self.pcm_read_timeouts,
                 "normal_close_requested": True, "playback_or_human_listening_claimed": False,
@@ -974,6 +1082,8 @@ class AudioUI:
                  for item in self.last_views if item.name and item.role in {
                      "static", "label", "heading", "status", "paragraph", "text", "readonly_text"}]
         return {"last_condition": self.last_condition, "actions": self.events,
+                "pcm_preview": self.pcm_preview,
+                "keyboard_target": self.close_keyboard_target,
                 "read_only_pcm_timeouts": self.pcm_read_timeouts,
                 "action_observations": self.action_observations,
                 "visible_controls": rows[:64], "truncated": len(rows) > 64,
@@ -1201,13 +1311,13 @@ def worker(args):
 REQUIRED_ACTIONS = (
     "open-project", "open-audio", "open-original-mix", "enable-mix",
     "select-music", "select-sfx", "save-recipe", "confirm-fixture-rights",
-    "original-audition", "close-focus", "window-close",
+    "original-audition", "window-close",
 )
 SCROLL_ACTIONS = frozenset(name + "-scroll" for name in (
     "open-project", "open-audio", "open-original-mix", "enable-mix", "profile",
     "select-music", "select-sfx", "read-sfx", "read-music", "read-attack",
     "read-release", "source-draft-status", "save-recipe", "rights", "confirm-fixture-rights",
-    "original-audition", "close-focus",
+    "original-audition",
 ))
 
 
@@ -1245,6 +1355,8 @@ def validate_ui_observation(ui, before, binding):
         need(type(item) is dict and item.get("text") == expected
              and type(item.get("matches")) is int and 1 <= item["matches"] <= 8,
              "UI_TEXT_OBSERVATION_MISSING")
+    need(equal_json(ui.get("preview_binding"), binding), "UI_PCM_RESPONSE_OWNER_CHANGED")
+    validate_close_keyboard_target(ui.get("keyboard_target"), binding)
     actions = ui.get("actions")
     need(type(actions) is list and all(type(item) is str for item in actions)
          and len(actions) == len(set(actions))
@@ -1377,7 +1489,10 @@ def journal_readback(root, ui, binding):
         need(equal_json(intent.get("binding"), binding) and intent.get("automatic_retry") is False,
              "UI_ORIGINAL_JOURNAL_BINDING")
         if label == "window-close":
-            need(intent.get("method") == "AT_SPI_HARDWARE_ALT_F4"
+            validate_close_keyboard_target(intent.get("keyboard_target"), binding)
+            need(equal_json(intent.get("keyboard_target"), ui.get("keyboard_target"))
+                 and equal_json(intent.get("preview_binding"), binding)
+                 and intent.get("method") == "AT_SPI_HARDWARE_ALT_F4"
                  and returned.get("keyboard_dispatch_acknowledged") is True
                  and returned.get("writer_handoff_not_inferred") is True
                  and returned.get("process_exit_not_inferred") is True, "UI_WINDOW_CLOSE_JOURNAL")
@@ -1411,6 +1526,9 @@ def journal_readback(root, ui, binding):
             value, witnesses[name] = read_json(directory / (name + ".json"), 16384, root)
             number = value.get("hardware_keycode")
             need(type(number) is int and 8 <= number <= 255, "UI_CLOSE_KEYCODE")
+            if action == "press":
+                need(equal_json(value.get("binding"), binding), "UI_CLOSE_PRESS_OWNER_CHANGED")
+                validate_close_keyboard_target(value.get("keyboard_target"), binding)
             values.append(number)
         need(values[0] == values[1], "UI_CLOSE_RELEASE_KEY_CHANGED")
         codes.append(values[0])

@@ -8,6 +8,8 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
+import subprocess
 import time
 from types import SimpleNamespace
 import unittest
@@ -25,12 +27,12 @@ def pure_module():
                  "validate_native_records", "validate_saved_readback", "validate_process_closure",
                  "validate_pcm_projection", "validate_before", "read_only_text_provider",
                  "private_transport_paths", "exact_text_offsets", "screen_rect", "rect_contains",
-                 "atspi_read_no_reply",
+                 "atspi_read_no_reply", "validate_close_keyboard_target",
                  "unmapped_action_provider", "accessible_action_index", "source_key_sequence",
                  "source_key_receipt_name", "source_key_journal_plan", "journal_readback"}
     classes = {"AudioError", "AudioUI"}
     constants = {"PREVIEW", "AUDITION", "AUDITION_PCM_READY",
-                 "REQUIRED_ACTIONS", "SCROLL_ACTIONS", "SHA256"}
+                 "REQUIRED_ACTIONS", "SCROLL_ACTIONS", "SHA256", "X11_INPUT_FOCUS_PROBE"}
     selected = [node for node in tree.body if
                 isinstance(node, ast.FunctionDef) and node.name in functions
                 or isinstance(node, ast.ClassDef) and node.name in classes
@@ -40,7 +42,7 @@ def pure_module():
     observed = {node.name for node in selected if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
     if observed != functions | classes:
         raise AssertionError("pure guard extraction is incomplete")
-    namespace = {"uuid": uuid, "re": re, "json": json, "time": time, "os": os, "hashlib": hashlib,
+    namespace = {"uuid": uuid, "re": re, "json": json, "time": time, "os": os, "hashlib": hashlib, "sys": sys,
                  "pcm": SimpleNamespace(WAV_BYTES=384044, FRAMES=96000),
                  "accessible": SimpleNamespace(VISIBLE=frozenset(("visible", "showing")),
                                                 NotReady=type("NotReady", (RuntimeError,), {}),
@@ -75,6 +77,8 @@ def data():
           "draft_source_bindings": {"text": "Draft source bindings: music music; SFX sfx.", "matches": 1},
           "saved": {"text": "Saved recipe at revision r2.", "matches": 1},
           "preview": {"text": GUARDS.PREVIEW, "matches": 1},
+          "preview_binding": deepcopy(binding),
+          "keyboard_target": {"active_window": binding["window"], "input_focus_ancestry": [binding["window"]]},
           "actions": list(GUARDS.REQUIRED_ACTIONS), "normal_close_requested": True,
           "playback_or_human_listening_claimed": False,
           "formal_G2": False, "formal_G3": False, "automatic_retry": False}
@@ -208,6 +212,8 @@ class AudioJoinTests(unittest.TestCase):
             intent = {"binding": deepcopy(binding), "automatic_retry": False}
             if label == "window-close":
                 intent["method"] = "AT_SPI_HARDWARE_ALT_F4"
+                intent["preview_binding"] = deepcopy(binding)
+                intent["keyboard_target"] = deepcopy(ui["keyboard_target"])
                 returned = {"keyboard_dispatch_acknowledged": True,
                             "writer_handoff_not_inferred": True,
                             "process_exit_not_inferred": True}
@@ -224,6 +230,9 @@ class AudioJoinTests(unittest.TestCase):
         for name, number in (("close-alt", 64), ("close-f", 70)):
             for phase in ("press", "release"):
                 records[name + "-" + phase + "-intent.json"] = {"hardware_keycode": number}
+                if phase == "press":
+                    records[name + "-" + phase + "-intent.json"].update(
+                        binding=deepcopy(binding), keyboard_target=deepcopy(ui["keyboard_target"]))
 
         class VirtualPath:
             def __init__(self, relative=""):
@@ -249,6 +258,10 @@ class AudioJoinTests(unittest.TestCase):
             with self.assertRaisesRegex(GUARDS.AudioError, "SOURCE_HARDWARE_KEY_JOURNAL"):
                 GUARDS.journal_readback(VirtualPath(), ui, binding)
             records[chosen]["key"] = "Down"
+            records["close-f-press-intent.json"]["keyboard_target"]["input_focus_ancestry"] = ["0xb00"]
+            with self.assertRaisesRegex(GUARDS.AudioError, "UI_CLOSE_INPUT_FOCUS_NOT_OWNED"):
+                GUARDS.journal_readback(VirtualPath(), ui, binding)
+            records["close-f-press-intent.json"]["keyboard_target"] = deepcopy(ui["keyboard_target"])
             records.pop(chosen)
             with self.assertRaisesRegex(GUARDS.AudioError, "UI_ORIGINAL_JOURNAL_ROSTER"):
                 GUARDS.journal_readback(VirtualPath(), ui, binding)
@@ -479,10 +492,10 @@ class AudioJoinTests(unittest.TestCase):
         harness=PATH.read_text(encoding="utf-8")
         self.assertIn('audition_button = self.click(AUDITION, {"button"}, "original-audition")', harness)
         self.assertIn('self.observe_original_pcm_near_owned_button(audition_button)', harness)
-        self.assertIn('self.close_window(audition_button)', harness)
+        self.assertIn('self.close_window()', harness)
         self.assertIn('if item.name != AUDITION_PCM_READY:', harness)
         self.assertNotIn('preview = self.wait(lambda: self.text(PREVIEW))', harness)
-        self.assertNotIn('self.close_window()', harness)
+        self.assertNotIn('self.close_window(audition_button)', harness)
         self.assertNotIn('preview-result-scroll', harness)
         read_segment=harness.split('    def observe_original_pcm_near_owned_button(', 1)[1].split(
             '    def _refreshed_close_button(', 1)[0]
@@ -498,7 +511,7 @@ class AudioJoinTests(unittest.TestCase):
         before,binding,_,_,_,observed,_,_=data()
         self.assertIsNone(GUARDS.validate_ui_observation(observed, before, binding))
         invalid=deepcopy(observed)
-        invalid["actions"].insert(invalid["actions"].index("close-focus"),"preview-result-scroll")
+        invalid["actions"].insert(invalid["actions"].index("window-close"),"preview-result-scroll")
         with self.assertRaises(GUARDS.AudioError):
             GUARDS.validate_ui_observation(invalid, before, binding)
     def test_source_draft_status_may_scroll_but_must_retain_exact_live_text(self):
@@ -991,9 +1004,76 @@ class OnceDispatcherTests(unittest.TestCase):
         self.assertEqual(entries, [])
         self.assertEqual(effects, [])
 
-    def test_close_releases_uncertain_keys_even_if_release_journal_fails(self):
+
+    def test_close_focus_record_rejects_foreign_root_cycle_and_overlong_ancestry(self):
+        binding = {"window": "0xa00"}
+        GUARDS.validate_close_keyboard_target(
+            {"active_window": "0xa00", "input_focus_ancestry": ["0xa05", "0xa00"]}, binding)
+        for record in (
+            {"active_window": "0xb00", "input_focus_ancestry": ["0xa00"]},
+            {"active_window": "0xa00", "input_focus_ancestry": ["0xb00"]},
+            {"active_window": "0xa00", "input_focus_ancestry": ["0x0", "0xa00"]},
+            {"active_window": "0xa00", "input_focus_ancestry": ["0x1", "0xa00"]},
+            {"active_window": "0xa00", "input_focus_ancestry": ["0xa05", "0xa05", "0xa00"]},
+            {"active_window": "0xa00", "input_focus_ancestry": [hex(n) for n in range(10,27)]+["0xa00"]},
+            {"active_window": "0xa00", "input_focus_ancestry": ["0xa00"], "fallback": True},
+        ):
+            with self.subTest(record=record), self.assertRaises(GUARDS.AudioError):
+                GUARDS.validate_close_keyboard_target(record,binding)
+
+    def test_close_cannot_start_without_original_bound_pcm_observation(self):
+        ui, _, _, entries, effects = self.subject()
+        ui.binding["window"] = "0xa00"
+        ui.events = ["original-audition"]
+        ui.owned_close_keyboard_target = lambda: self.fail("No window access before PCM witness")
+        for preview in (None, {"text": GUARDS.PREVIEW, "matches": 1, "binding": {"pid":99}}):
+            ui.pcm_preview = preview
+            with self.assertRaisesRegex(GUARDS.AudioError, "UI_CLOSE_REQUIRES_BOUND_PCM_RESPONSE"):
+                ui.close_window()
+        self.assertEqual(entries, [])
+        self.assertEqual(effects, [])
+
+    def test_close_focus_probe_failure_and_changed_identity_cannot_dispatch(self):
+        ui, _, _, entries, effects = self.subject()
+        ui.binding["window"] = "0xa00"
+        globals_ = GUARDS.AudioUI.close_window.__globals__
+        previous = globals_.get("subprocess")
+        seen = []
+        def run(args, **kwargs):
+            seen.append(args[0])
+            self.assertGreater(kwargs["timeout"],0)
+            self.assertLessEqual(kwargs["timeout"],3)
+            if args[0]=="xprop":
+                return SimpleNamespace(returncode=0, stdout="_NET_ACTIVE_WINDOW(WINDOW): window id # 0xa00\n")
+            raise subprocess.TimeoutExpired(args,kwargs["timeout"])
+        globals_["subprocess"]=SimpleNamespace(DEVNULL=-1,run=run)
+        try:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                ui.owned_close_keyboard_target()
+            self.assertEqual(seen,["xprop",sys.executable])
+            self.assertEqual(entries,[])
+            self.assertEqual(effects,[])
+            globals_["subprocess"].run=lambda args,**kwargs: SimpleNamespace(
+                returncode=0, stderr="", stdout=("_NET_ACTIVE_WINDOW(WINDOW): window id # 0xa00\n"
+                    if args[0]=="xprop" else '{"input_focus_ancestry":["0xa00"]}'))
+            checks=[]
+            def identity():
+                checks.append(True)
+                GUARDS.need(len(checks)<3,"UI_PROCESS_CHANGED")
+            ui.identity=identity
+            with self.assertRaisesRegex(GUARDS.AudioError,"UI_PROCESS_CHANGED"):
+                ui.owned_close_keyboard_target()
+        finally:
+            if previous is None:
+                globals_.pop("subprocess",None)
+            else:
+                globals_["subprocess"]=previous
+
+    def close_case(self):
         ui, item, _, _, _ = self.subject()
         ui.binding["window"] = "0xa00"
+        ui.pcm_preview = {"text": GUARDS.PREVIEW, "matches": 1, "binding": deepcopy(ui.binding)}
+        ui.events = ["original-audition"]
         item.name = GUARDS.AUDITION
         item.node = SimpleNamespace(clear_cache_single=lambda: None)
         item.states = frozenset(("visible", "showing", "enabled", "sensitive"))
@@ -1021,17 +1101,22 @@ class OnceDispatcherTests(unittest.TestCase):
             Display=SimpleNamespace(get_default=lambda: object()),
             ModifierType=SimpleNamespace(SHIFT_MASK=1, CONTROL_MASK=2, MOD1_MASK=4, SUPER_MASK=8),
             keyval_from_name=lambda name: name)
+        return ui, pressed
+
+    def test_close_releases_uncertain_keys_even_if_release_journal_fails(self):
+        ui, pressed = self.close_case()
         def journal(label, value):
             if label.endswith("-release-intent"):
                 raise OSError("unit disk failure during release")
         ui.journal.put = journal
         globals_ = GUARDS.AudioUI.close_window.__globals__
         previous = globals_.get("subprocess")
-        globals_["subprocess"] = SimpleNamespace(run=lambda *args, **kwargs: SimpleNamespace(
-            returncode=0, stdout="_NET_ACTIVE_WINDOW(WINDOW): window id # 0xa00\n"))
+        globals_["subprocess"] = SimpleNamespace(DEVNULL=-1, run=lambda args, **kwargs: SimpleNamespace(
+            returncode=0, stderr="", stdout=("_NET_ACTIVE_WINDOW(WINDOW): window id # 0xa00\n"
+                if args[0] == "xprop" else '{"input_focus_ancestry":["0xa00"]}')))
         try:
             with self.assertRaises(OSError):
-                ui.close_window(item)
+                ui.close_window()
         finally:
             if previous is None:
                 globals_.pop("subprocess", None)
@@ -1039,6 +1124,76 @@ class OnceDispatcherTests(unittest.TestCase):
                 globals_["subprocess"] = previous
         self.assertEqual(pressed, [(64, "press"), (70, "press"), (70, "release"), (64, "release")])
         self.assertEqual(ui.events.count("window-close"), 1)
+
+    def test_focus_lost_after_alt_releases_only_the_owned_held_key(self):
+        ui, pressed = self.close_case()
+        checks=[]
+        def target():
+            checks.append(True)
+            if len(checks)==3:
+                raise GUARDS.AudioError("UI_CLOSE_INPUT_FOCUS_NOT_OWNED")
+            return {"active_window":"0xa00","input_focus_ancestry":["0xa00"]}
+        ui.owned_close_keyboard_target=target
+        ui.journal.put=lambda label,value: None
+        with self.assertRaisesRegex(GUARDS.AudioError,"UI_CLOSE_INPUT_FOCUS_NOT_OWNED"):
+            ui.close_window()
+        self.assertEqual(pressed,[(64,"press"),(64,"release")])
+        self.assertEqual(ui.events.count("window-close"),1)
+        with self.assertRaises(GUARDS.AudioError):
+            ui.close_window()
+        self.assertEqual(pressed,[(64,"press"),(64,"release")])
+
+    def test_xlib_read_probe_checks_focus_consistency_and_closes_its_connection(self):
+        import contextlib
+        import ctypes
+        import io
+        from unittest.mock import patch
+        cases=(
+            (0xa00,0xa00,{},0),
+            (0xa05,0xa05,{0xa05:0xa00},0),
+            (0xa05,0xb00,{0xa05:0xa00},8),
+            (0xa05,0xa05,{0xa05:0xa05},5),
+            (0xb00,0xb00,{0xb00:0x100},6),
+            (0,0,{},5),(1,1,{},5),
+        )
+        for focus,confirm,parents,expected in cases:
+            with self.subTest(focus=focus,confirm=confirm,parents=parents):
+                calls=[]
+                allocations=[]
+                def get_focus(display,pointer,revert):
+                    count=sum(item=="focus" for item in calls)
+                    calls.append("focus")
+                    pointer._obj.value=focus if count==0 else confirm
+                    revert._obj.value=0  # RevertToNone is legal with a real focus.
+                    return 1
+                def query(display,window,root,parent,children,count):
+                    calls.append("tree")
+                    root._obj.value=0x100
+                    parent._obj.value=parents[window]
+                    allocated=(ctypes.c_ulong*1)(0xaaa)
+                    allocations.append(allocated)
+                    ctypes.cast(children,ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)))[0]=ctypes.cast(
+                        allocated,ctypes.POINTER(ctypes.c_ulong))
+                    count._obj.value=1
+                    return 1
+                api=SimpleNamespace(XOpenDisplay=lambda _:42,XGetInputFocus=get_focus,XQueryTree=query,
+                    XFree=lambda _:calls.append("free"),XCloseDisplay=lambda _:calls.append("close"))
+                output=io.StringIO()
+                code=0
+                with patch.object(ctypes,"CDLL",return_value=api), patch.object(sys,"argv",["probe","0xa00"]), contextlib.redirect_stdout(output):
+                    try:
+                        exec(compile(GUARDS.X11_INPUT_FOCUS_PROBE,"read-only-x11-focus","exec"),{})
+                    except SystemExit as error:
+                        code=error.code
+                self.assertEqual(code,expected)
+                self.assertEqual(calls[-1],"close")
+                self.assertEqual(calls.count("free"),calls.count("tree"))
+                if expected==0:
+                    value=json.loads(output.getvalue())
+                    self.assertEqual(value["input_focus_ancestry"][-1],"0xa00")
+                    self.assertEqual(calls.count("focus"),2)
+                else:
+                    self.assertEqual(output.getvalue(),"")
 
 
 if __name__ == "__main__":
