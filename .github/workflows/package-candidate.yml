@@ -42,6 +42,8 @@ on:
       - "tooling/tests/test_linux_elf_build_id.py"
       - "tooling/linux_apprun_release_identity.py"
       - "tooling/tests/test_linux_apprun_release_identity.py"
+      - "tooling/linux_tauri_bundle_tool_pins.py"
+      - "tooling/tests/test_linux_tauri_bundle_tool_pins.py"
       - "tooling/candidate_package_extraction.py"
       - "tooling/startup_capture_core.py"
       - "tooling/tests/test_candidate_package_inventory.py"
@@ -171,6 +173,8 @@ on:
       - "tooling/tests/test_linux_elf_build_id.py"
       - "tooling/linux_apprun_release_identity.py"
       - "tooling/tests/test_linux_apprun_release_identity.py"
+      - "tooling/linux_tauri_bundle_tool_pins.py"
+      - "tooling/tests/test_linux_tauri_bundle_tool_pins.py"
       - "tooling/candidate_package_extraction.py"
       - "tooling/startup_capture_core.py"
       - "tooling/tests/test_candidate_package_inventory.py"
@@ -507,6 +511,36 @@ jobs:
           assert all(counts[k]==0 for k in ('failures','errors','skipped','expected_failures','unexpected_successes'))
           print('pinned-apprun-release-source=PASS controls=12 native_execution=NOT_RUN G3=STOP')
           PY_APPRUN_SOURCE_G1
+      - name: Require bounded pinned Tauri linuxdeploy source controls
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          root="$RUNNER_TEMP/tauri-tool-pin-source-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$root"
+          mkdir -m 700 "$root"
+          python3 -B -E -s tooling/ci_test_runner.py \
+            --repo "$GITHUB_WORKSPACE" --test-directory tooling/tests \
+            --pattern test_linux_tauri_bundle_tool_pins.py \
+            --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+            --report "$root/receipt.json" \
+            > "$root/runner.stdout" 2> "$root/runner.stderr"
+          python3 -B -E -s - "$root/receipt.json" "$GITHUB_SHA" <<'PY_TAURI_PIN_G1'
+          import json,sys
+          from pathlib import Path
+          receipt=json.loads(Path(sys.argv[1]).read_bytes())
+          assert receipt['status']=='PASS' and receipt['executed_source_sha']==sys.argv[2]
+          assert len(receipt['steps'])==1
+          step=receipt['steps'][0]
+          counts=step['counts']
+          assert step['entry_point']=='discovery:test_linux_tauri_bundle_tool_pins.py'
+          assert step['status']=='PASS' and step['exit_code']==0
+          assert counts['tests_run']==counts['passed']==15
+          assert counts['terminal_status']=='OK'
+          assert all(counts[k]==0 for k in ('failures','errors','skipped','expected_failures','unexpected_successes'))
+          print('tauri-pinned-tool-source=PASS controls=15 package_effects=NOT_RUN G3=STOP')
+          PY_TAURI_PIN_G1
       - name: Retain original package inventory source control records
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -519,6 +553,7 @@ jobs:
             ${{ runner.temp }}/appimage-system-origin-source-${{ github.run_id }}-${{ github.run_attempt }}/*
             ${{ runner.temp }}/elf-build-id-source-${{ github.run_id }}-${{ github.run_attempt }}/*
             ${{ runner.temp }}/apprun-pin-source-${{ github.run_id }}-${{ github.run_attempt }}/*
+            ${{ runner.temp }}/tauri-tool-pin-source-${{ github.run_id }}-${{ github.run_attempt }}/*
           if-no-files-found: warn
           retention-days: 30
       - name: Captured SQLite native output contracts
@@ -1820,6 +1855,8 @@ jobs:
           name: motionwright-linux-cargo-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ci-evidence/linux-cargo/tauri-resources.json
+            ci-evidence/linux-cargo/tauri-tool-pins.pre.json
+            ci-evidence/linux-cargo/tauri-tool-pins.post.json
             ci-evidence/linux-cargo/bundle.request.json
             ci-evidence/linux-cargo/bundle.completion.json
             ci-evidence/linux-cargo/bundle.stdout

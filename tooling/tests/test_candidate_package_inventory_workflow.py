@@ -33,6 +33,8 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
                  "tooling/linux_elf_build_id.py", "tooling/tests/test_linux_elf_build_id.py",
                  "tooling/linux_apprun_release_identity.py",
                  "tooling/tests/test_linux_apprun_release_identity.py",
+                 "tooling/linux_tauri_bundle_tool_pins.py",
+                 "tooling/tests/test_linux_tauri_bundle_tool_pins.py",
                  "tooling/candidate_package_extraction.py",
                  "tooling/startup_capture_core.py", "tooling/tests/test_candidate_package_inventory.py",
                  "tooling/tests/test_candidate_package_extraction.py",
@@ -82,6 +84,12 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
         self.assertIn("counts['tests_run']==counts['passed']==12", bootstrap_source)
         self.assertIn("counts[k]==0", bootstrap_source)
         self.assertIn("G3=STOP", bootstrap_source)
+        tools_source = step(policy, "Require bounded pinned Tauri linuxdeploy source controls")
+        self.assertIn("--pattern test_linux_tauri_bundle_tool_pins.py", tools_source)
+        self.assertIn("--mode discovery --require-complete --expected-source", tools_source)
+        self.assertIn("counts['tests_run']==counts['passed']==15", tools_source)
+        self.assertIn("counts[k]==0", tools_source)
+        self.assertIn("package_effects=NOT_RUN G3=STOP", tools_source)
         physical = step(self.linux, "Observe exact system-origin bytes in unresolved AppImage members")
         self.assertIn("inputs.verification_scope == 'linux_bundle'", physical)
         self.assertIn("--appimage-sha256", physical)
@@ -95,6 +103,17 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
         archive = step(policy, "Retain original package inventory source control records")
         self.assertIn("deb-original-archive-source-${{ github.run_id }}-${{ github.run_attempt }}/*", archive)
         self.assertIn("elf-build-id-source-${{ github.run_id }}-${{ github.run_attempt }}/*", archive)
+        self.assertIn("tauri-tool-pin-source-${{ github.run_id }}-${{ github.run_attempt }}/*", archive)
+        retained = step(self.linux, "Preserve original isolated Linux dependency records")
+        self.assertIn("ci-evidence/linux-cargo/tauri-tool-pins.pre.json", retained)
+        self.assertIn("ci-evidence/linux-cargo/tauri-tool-pins.post.json", retained)
+        bundler = (ROOT / "tooling/ci_linux_dependency_capture.py").read_text(encoding="utf-8")
+        scoped = bundler.split("def bundle_packages(", 1)[1].split("\ndef verify_packages(", 1)[0]
+        self.assertIn("toolpins.stage(cache_home)", scoped)
+        self.assertLess(scoped.index("toolpins.verify_cached(cache_home, pinned)"),
+                        scoped.index('capture.run_captured(command, repo / "apps/desktop"'))
+        self.assertGreater(scoped.index("toolpins.verify_cached(cache_home, pinned, post=True)"),
+                           scoped.index('capture.run_captured(command, repo / "apps/desktop"'))
         for body in (self.installed, self.linux):
             self.assertIn("receipt-policy", body.split("    steps:\n", 1)[0])
 

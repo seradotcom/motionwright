@@ -487,9 +487,36 @@ class TauriInputObservationTests(unittest.TestCase):
 
     def invoke(self, *, callback=None, failure=None, collect=None):
         binding = ({"tree": self.tree}, {}, {}, {})
+        # The new bundle-tool cache has a source-bound real runner parent; the
+        # fake runner never fetches or executes a vendor binary in these tests.
+        runner = self.root / "runner-temp"
+        runner.mkdir(exist_ok=True)
+        bundle_environment = {
+            **self.environment, "RUNNER_TEMP": str(runner),
+            "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+        }
+        expected_home = runner / "motionwright-pinned-tauri-123-1"
+        expected_environment = {**bundle_environment, "XDG_CACHE_HOME": str(expected_home)}
+        fake_pins = {
+            "schema": gate.toolpins.SCHEMA,
+            "status": "PINNED_VENDOR_TOOLS_STAGED_BEFORE_TAURI_BUNDLE",
+            "tools": [
+                {"name": asset["name"], "cache": asset["cache"],
+                 "asset_id": asset["asset_id"],
+                 "original": {"bytes": asset["bytes"], "sha256": asset["sha256"]},
+                 "allowed_post_sha256": asset["sha256"], "post_rule": "INERT_FIXTURE"}
+                for asset in gate.toolpins.ASSETS
+            ],
+            "total_bytes": 0, "claims": {"G3": "STOP"},
+        }
+        def verified(cache, record, *, post=False):
+            self.assertEqual(Path(cache), expected_home)
+            self.assertEqual(record["schema"], fake_pins["schema"])
+            return {"status": "POST_FIXTURE" if post else "PRE_FIXTURE",
+                    "tools": [], "claims": {"G3": "STOP"}}
         def run(command, cwd, directory, label, **kwargs):
             self.assertEqual(label, "bundle")
-            self.assertEqual(kwargs, {"env": self.environment, "timeout": 900})
+            self.assertEqual(kwargs, {"env": expected_environment, "timeout": 900})
             complete = self.bundle_originals(command, cwd, directory, code=23 if failure else 0)
             if callback:
                 callback()
@@ -500,9 +527,11 @@ class TauriInputObservationTests(unittest.TestCase):
         with mock.patch.object(gate, "cargo_binding", return_value=binding), \
              mock.patch.object(gate.shared, "resource_mapping", return_value={}), \
              mock.patch.object(gate._CliInputObservation, "collect", side_effect=chosen, autospec=True), \
+             mock.patch.object(gate.toolpins, "stage", return_value=fake_pins), \
+             mock.patch.object(gate.toolpins, "verify_cached", side_effect=verified), \
              mock.patch.object(gate.capture, "run_captured", side_effect=run) as process:
             try:
-                return gate.bundle_packages(self.root, self.source, self.environment)
+                return gate.bundle_packages(self.root, self.source, bundle_environment)
             finally:
                 self.process_calls = process.call_args_list
 
@@ -828,6 +857,21 @@ class TauriInputObservationTests(unittest.TestCase):
              "--config", "../../ci-evidence/linux-cargo/tauri-resources.json",
              "--no-binary-patching", "--no-sign", "--ci"],
             self.root / "apps/desktop"))
+        pinned_pre = json.loads(
+            (self.root / gate.BASE / "tauri-tool-pins.pre.json").read_bytes())
+        pinned_post = json.loads(
+            (self.root / gate.BASE / "tauri-tool-pins.post.json").read_bytes())
+        self.assertEqual(pinned_pre["source"], self.source)
+        self.assertEqual(pinned_pre["source_tree"], self.tree)
+        self.assertEqual((pinned_pre["run_id"], pinned_pre["run_attempt"]), ("123", "1"))
+        self.assertEqual(pinned_pre["pre_bundle"]["status"], "PRE_FIXTURE")
+        self.assertEqual(pinned_pre["claims"]["G3"], "STOP")
+        self.assertEqual(pinned_post["source"], self.source)
+        self.assertEqual(pinned_post["status"], "POST_FIXTURE")
+        self.assertEqual(pinned_post["claims"]["G3"], "STOP")
+        self.assertEqual(pinned_post["pre_receipt_sha256"],
+                         gate.capture.sha((self.root / gate.BASE /
+                                          "tauri-tool-pins.pre.json").read_bytes()))
         comparison = self.sidecar("comparison.json")
         self.assertTrue(comparison["observations_match"])
         self.assertTrue(comparison["bundle_binding_complete"])

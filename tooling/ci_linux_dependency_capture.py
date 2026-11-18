@@ -14,6 +14,7 @@ import stat
 import sys
 
 import ci_windows_dependency_capture as shared
+import linux_tauri_bundle_tool_pins as toolpins
 
 ROOT = Path(__file__).resolve().parents[1]
 capture = shared.capture
@@ -733,6 +734,32 @@ def bundle_packages(repo, source, environment):
         except FileNotFoundError:
             continue
         raise ValueError("tauri_input_bundle_replay_refused")
+    # Tauri's default cache is mutable and unverified. Use one fresh private
+    # cache only for this real packaging invocation, without changing the
+    # parent environment or a previously built candidate.
+    runner = Path(environment["RUNNER_TEMP"]).resolve(strict=True)
+    cache_home = capture.new_directory(
+        runner, runner / ("motionwright-pinned-tauri-" +
+                          environment["GITHUB_RUN_ID"] + "-" +
+                          environment["GITHUB_RUN_ATTEMPT"]))
+    environment = dict(environment)
+    environment["XDG_CACHE_HOME"] = str(cache_home)
+    pinned = toolpins.stage(cache_home)
+    before_tool_cache = toolpins.verify_cached(cache_home, pinned)
+    pinned.update({
+        "source": source, "source_tree": before[0]["tree"],
+        "run_id": environment["GITHUB_RUN_ID"],
+        "run_attempt": environment["GITHUB_RUN_ATTEMPT"],
+        "cache_root": str(cache_home),
+        "pre_bundle": before_tool_cache,
+    })
+    pinned_raw = capture.encoded(pinned)
+    require(len(pinned_raw) <= toolpins.MAX_REPORT,
+            "linux_pinned_tools_pre_receipt_budget")
+    capture.write_new(repo / BASE / "tauri-tool-pins.pre.json", pinned_raw)
+    require(capture.stable_read(repo, BASE / "tauri-tool-pins.pre.json",
+                                toolpins.MAX_REPORT) == pinned_raw,
+            "linux_pinned_tools_pre_receipt_changed")
     directory = capture.new_directory(repo, repo / CLI_INPUTS)
     owner = _cli_owner(directory)
     intent = {
@@ -764,8 +791,29 @@ def bundle_packages(repo, source, environment):
         if pre.get("_collection_exception") is not None:
             raise pre["_collection_exception"]
         require(pre["collection_complete"], "tauri_input_pre_observation_incomplete")
+        # Directly before spawning tauri, validate pinned original bytes:
+        # there is no accepted unverified fallback.
+        require(toolpins.verify_cached(cache_home, pinned) == before_tool_cache,
+                "linux_tool_cache_changed_before_bundler_spawn")
         capture.run_captured(command, repo / "apps/desktop", repo / BASE, "bundle",
                              env=environment, timeout=900)
+        after_tool_cache = toolpins.verify_cached(cache_home, pinned, post=True)
+        after_tool_cache.update({
+            "schema": "motionwright.tauri-appimage-pinned-tool-cache-post/1",
+            "source": source, "source_tree": before[0]["tree"],
+            "run_id": environment["GITHUB_RUN_ID"],
+            "run_attempt": environment["GITHUB_RUN_ATTEMPT"],
+            "pre_receipt_sha256": capture.sha(pinned_raw),
+            "bundler_completion_sha256": capture.sha(capture.stable_read(
+                repo, BASE / "bundle.completion.json", 64 * 1024)),
+        })
+        after_raw = capture.encoded(after_tool_cache)
+        require(len(after_raw) <= toolpins.MAX_REPORT,
+                "linux_pinned_tools_post_receipt_budget")
+        capture.write_new(repo / BASE / "tauri-tool-pins.post.json", after_raw)
+        require(capture.stable_read(repo, BASE / "tauri-tool-pins.post.json",
+                                    toolpins.MAX_REPORT) == after_raw,
+                "linux_pinned_tools_post_receipt_changed")
         require(cargo_binding(repo, source) == before
                 and capture.stable_read(repo, BASE / "tauri-resources.json", 2 * 1024 * 1024)
                     == overlay, "linux_captured_bundle_input_changed")
