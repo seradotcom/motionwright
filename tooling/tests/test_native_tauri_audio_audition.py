@@ -568,7 +568,11 @@ class AudioJoinTests(unittest.TestCase):
         self.assertIn('? "'+GUARDS.AUDITION_PCM_READY+'"', source)
         self.assertIn(': "'+GUARDS.AUDITION+'"}', source)
         self.assertIn('{currentAudition && <div aria-label="Unmastered original PCM preview"', source)
-        self.assertIn('<audio controls preload="metadata" src={currentAudition.url}', source)
+        self.assertIn('const [playbackEnabled, setPlaybackEnabled] = useState(false);', source)
+        self.assertIn('{playbackEnabled', source)
+        self.assertIn('<audio controls preload="none" src={currentAudition.url}', source)
+        self.assertIn('aria-label="Enable local original PCM playback controls"', source)
+        self.assertNotIn('<audio controls preload="metadata" src={currentAudition.url}', source)
         harness=PATH.read_text(encoding="utf-8")
         self.assertIn('audition_button = self.click(AUDITION, {"button"}, "original-audition")', harness)
         self.assertIn('self.observe_original_pcm_near_owned_button(audition_button)', harness)
@@ -594,6 +598,21 @@ class AudioJoinTests(unittest.TestCase):
         invalid["actions"].insert(invalid["actions"].index("window-close"),"preview-result-scroll")
         with self.assertRaises(GUARDS.AudioError):
             GUARDS.validate_ui_observation(invalid, before, binding)
+    def test_original_pcm_ui_cannot_create_media_before_user_playback_request(self):
+        source=(ROOT/"apps/studio/src/NativeOriginalMixReview.tsx").read_text(encoding="utf-8")
+        production=source.split('{currentAudition && <div aria-label="Unmastered original PCM preview"', 1)[1]
+        self.assertIn('{playbackEnabled', production)
+        self.assertIn('onClick={() => setPlaybackEnabled(true)}', production)
+        self.assertIn('preload="none"', production)
+        self.assertNotIn('preload="metadata"', production)
+        self.assertEqual(source.count("setPlaybackEnabled(false);"), 4)
+        self.assertIn('aria-label={currentAudition', source)
+        self.assertIn('URL.createObjectURL(new Blob([owned.buffer]', source)
+        playwright=(ROOT/"apps/studio/tests/native-original-mix.spec.ts").read_text(encoding="utf-8")
+        self.assertIn("await expect(desk.locator('audio[controls]')).toHaveCount(0);", playwright)
+        self.assertIn("await playback.click();", playwright)
+        self.assertIn("audio[controls][preload=", playwright)
+
     def test_source_draft_status_may_scroll_but_must_retain_exact_live_text(self):
         before, binding, _, _, _, ui, _, _ = data()
         expected = ui["draft_source_bindings"]["text"]

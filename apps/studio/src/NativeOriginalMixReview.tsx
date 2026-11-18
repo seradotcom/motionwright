@@ -48,6 +48,9 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
   const [attestedScope, setAttestedScope] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
   const [audition, setAudition] = useState<{ scope: string; url: string } | null>(null);
+  // A real decoded PCM is available before WebKit builds media controls.
+  // Defer their subtree until the user actually asks to listen.
+  const [playbackEnabled, setPlaybackEnabled] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const serial = useRef(0);
   const inFlight = useRef(false);
@@ -76,6 +79,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
   useEffect(() => {
     serial.current++;
     setAudition(null);
+    setPlaybackEnabled(false);
     setError(null);
     setAttestedScope(null);
   }, [scope]);
@@ -83,6 +87,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
   const invalidateAudition = () => {
     serial.current++;
     setAudition(null);
+    setPlaybackEnabled(false);
     setError(null);
     setAttestedScope(null);
   };
@@ -158,6 +163,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
     inFlight.current = true;
     setWorking(true);
     setError(null);
+    setPlaybackEnabled(false);
     setAudition(null);
     try {
       const wav = await nativeOriginalMixAudition(project, options);
@@ -252,6 +258,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
         onChange={event => {
           serial.current++;
           setAudition(null);
+          setPlaybackEnabled(false);
           setError(null);
           setAttestedScope(event.target.checked ? scope : null);
         }} />
@@ -268,7 +275,13 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
     </button>
     {currentAudition && <div aria-label="Unmastered original PCM preview" className="audio-narration-source-evidence">
       <strong>Local source PCM only · 48 kHz · not a mastered deliverable</strong>
-      <audio controls preload="metadata" src={currentAudition.url} />
+      {playbackEnabled
+        ? <audio controls preload="none" src={currentAudition.url} />
+        : <button type="button" className="button button-secondary"
+            aria-label="Enable local original PCM playback controls"
+            onClick={() => setPlaybackEnabled(true)}>
+            Enable playback controls
+          </button>}
       <p>Source, clock and sample-peak guards passed for this PCM. Integrated LUFS, true peak, listening intelligibility and editorial approval require separate measurement and review. No timeline event or mastered deliverable was created.</p>
     </div>}
     </div>

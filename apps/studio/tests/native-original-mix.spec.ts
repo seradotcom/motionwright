@@ -137,8 +137,14 @@ test("explicit desktop audition reads a saved recipe and leaves that project rev
   await desk.getByLabel(/I confirm I have permission to use these exact original sources/).check();
   await expect(request).toBeEnabled();
   await request.click();
-  await expect(desk.locator('audio[controls]')).toBeVisible();
+  // Native IPC returned a real WAV, but WebKit must not eagerly construct
+  // its media subtree before an explicit user request to hear the result.
+  const playback = desk.getByRole("button",{name:"Enable local original PCM playback controls"});
+  await expect(playback).toBeVisible();
+  await expect(desk.locator('audio[controls]')).toHaveCount(0);
   await expect(desk).toContainText("not a mastered deliverable");
+  await playback.click();
+  await expect(desk.locator('audio[controls][preload="none"]')).toBeVisible();
   await expect(page.locator(".revision-chip")).toHaveText(before);
   const calls=await page.evaluate(()=>(window as unknown as {
     __MIX_TEST_CALLS__:Array<{name:string;request?:Record<string,unknown>}>
@@ -150,5 +156,6 @@ test("explicit desktop audition reads a saved recipe and leaves that project rev
   await desk.getByLabel("Original music asset").selectOption("");
   await expect(desk.getByLabel(/I confirm I have permission to use these exact original sources/)).not.toBeChecked();
   await expect(desk.locator("audio")).toHaveCount(0);
+  await expect(desk.getByRole("button",{name:"Enable local original PCM playback controls"})).toHaveCount(0);
   await expect(request).toBeDisabled();
 });
