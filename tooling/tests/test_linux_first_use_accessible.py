@@ -888,6 +888,149 @@ class WorkerBudgetTests(unittest.TestCase):
                     self.run_worker(parent_deadline=deadline)
 
 
+class ApplicationOwnerTests(unittest.TestCase):
+    """Counterexamples for owner attribution; no GUI or Native execution."""
+
+    class Accessible:
+        def __init__(self, role, parent=None, pid=7001):
+            self.role, self.parent, self.pid = role, parent, pid
+            self.reads = []
+            self.errors = {}
+
+        def read(self, field):
+            self.reads.append(field)
+            if field in self.errors:
+                raise self.errors[field]
+            return getattr(self, field)
+
+        def get_role(self):
+            return self.read("role")
+
+        def get_parent(self):
+            return self.read("parent")
+
+        def get_process_id(self):
+            return self.read("pid")
+
+        def get_application(self):
+            raise AssertionError("The error-suppressing fallback must not run")
+
+    def chain(self):
+        desktop = self.Accessible("desktop")
+        application = self.Accessible("application", desktop, 7001)
+        embedded = self.Accessible("filler", application, 7002)
+        button = self.Accessible("button", embedded, 7002)
+        bridge = object.__new__(probe.AtspiBridge)
+        bridge.api = SimpleNamespace(Role=SimpleNamespace(
+            APPLICATION="application", DESKTOP_FRAME="desktop"))
+        bridge.desktop, bridge.deadline = desktop, None
+        return bridge, button, embedded, application, desktop
+
+    def test_cross_process_node_resolves_containing_application_not_exporter(self):
+        bridge, button, embedded, application, desktop = self.chain()
+        self.assertEqual(bridge.owner_pid(button), 7001)
+        self.assertNotIn("pid", button.reads)
+        self.assertNotIn("pid", embedded.reads)
+        self.assertEqual(application.reads, ["role", "parent", "pid"])
+        self.assertEqual(desktop.reads, [])
+
+    def test_application_role_inside_embedding_is_not_a_terminal_owner(self):
+        bridge, button, embedded, application, _ = self.chain()
+        embedded.role = "application"
+        self.assertEqual(bridge.owner_pid(button), 7001)
+        self.assertNotIn("pid", embedded.reads)
+
+    def test_reported_other_application_is_never_replaced_by_expected_pid(self):
+        bridge, button, _, application, _ = self.chain()
+        application.pid = 7999
+        self.assertEqual(bridge.owner_pid(button), 7999)
+
+    def test_original_parent_and_role_errors_propagate_without_pid_lookup(self):
+        for field in ("parent", "role"):
+            with self.subTest(field=field):
+                bridge, button, embedded, application, _ = self.chain()
+                error = RuntimeError("original transport failure")
+                embedded.errors[field] = error
+                with self.assertRaises(RuntimeError) as caught:
+                    bridge.owner_pid(button)
+                self.assertIs(caught.exception, error)
+                self.assertEqual(application.reads, [])
+                self.assertNotIn("pid", embedded.reads)
+
+    def test_missing_parent_never_falls_back_to_exporter_or_detached_app(self):
+        for role in ("filler", "application"):
+            with self.subTest(role=role):
+                bridge, button, embedded, application, _ = self.chain()
+                embedded.role, embedded.parent = role, None
+                with self.assertRaisesRegex(probe.ProbeError, "ATSPI_APPLICATION_UNAVAILABLE"):
+                    bridge.owner_pid(button)
+                self.assertEqual(application.reads, [])
+
+    def test_same_desktop_role_does_not_substitute_another_desktop_identity(self):
+        bridge, button, _, application, _ = self.chain()
+        application.parent = self.Accessible("desktop")
+        with self.assertRaisesRegex(probe.ProbeError, "ATSPI_APPLICATION_DESKTOP_CHANGED"):
+            bridge.owner_pid(button)
+        self.assertNotIn("pid", application.reads)
+
+    def test_registry_child_must_be_application_before_its_pid_is_read(self):
+        bridge, button, _, application, _ = self.chain()
+        application.role = "filler"
+        with self.assertRaisesRegex(probe.ProbeError, "ATSPI_APPLICATION_ROLE_INVALID"):
+            bridge.owner_pid(button)
+        self.assertNotIn("pid", application.reads)
+
+    def test_parent_cycle_fails_with_bounded_reads(self):
+        bridge, button, embedded, _, _ = self.chain()
+        embedded.parent = button
+        with self.assertRaisesRegex(probe.ProbeError, "ATSPI_APPLICATION_PARENT_CYCLE"):
+            bridge.owner_pid(button)
+        self.assertEqual(button.reads, ["role", "parent"])
+        self.assertEqual(embedded.reads, ["role", "parent"])
+
+    def test_ancestry_limit_matches_existing_tree_depth_and_never_reads_late_pid(self):
+        bridge, _, _, application, _ = self.chain()
+        node = application
+        for _ in range(probe.MAX_DEPTH):
+            node = self.Accessible("filler", node, 7002)
+        self.assertEqual(bridge.owner_pid(node), 7001)
+        application.reads.clear()
+        node = self.Accessible("button", node, 7002)
+        with self.assertRaisesRegex(probe.ProbeError, "ATSPI_APPLICATION_PARENT_LIMIT"):
+            bridge.owner_pid(node)
+        self.assertEqual(application.reads, [])
+
+    def test_expired_budget_after_parent_read_prevents_terminal_pid_read(self):
+        bridge, button, _, application, desktop = self.chain()
+        clock = [100.0]
+        bridge.deadline = 101.0
+        def parent():
+            clock[0] = 101.0
+            return desktop
+        application.get_parent = parent
+        with patch.object(probe.time, "monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(probe.ProbeError, "DEADLINE"):
+                bridge.owner_pid(button)
+        self.assertNotIn("pid", application.reads)
+
+    def test_invalid_linux_pid_and_unsigned_error_sentinel_are_rejected(self):
+        bridge, _, _, application, _ = self.chain()
+        for value in (None, False, True, 0, -1, "7001", 7001.0, 0x80000000, 0xffffffff):
+            with self.subTest(value=value):
+                application.pid = value
+                with self.assertRaisesRegex(probe.ProbeError, "ATSPI_PROCESS_ID_UNAVAILABLE"):
+                    bridge.owner_pid(application)
+        application.pid = 7001
+        self.assertEqual(bridge.owner_pid(application), 7001)
+
+    def test_desktop_itself_and_missing_target_cannot_be_application_owner(self):
+        bridge, _, _, _, desktop = self.chain()
+        for target in (desktop, None):
+            with self.subTest(target=target):
+                with self.assertRaisesRegex(probe.ProbeError, "ATSPI_APPLICATION_UNAVAILABLE"):
+                    bridge.owner_pid(target)
+
+
 class BridgeBudgetTests(unittest.TestCase):
     """Remote reads may consume the budget; later calls must stop."""
     def bridge(self, api, deadline):

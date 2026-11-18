@@ -1013,6 +1013,7 @@ class EditorReadbackTests(unittest.TestCase):
             self.states = {"VISIBLE", "SHOWING", "ENABLED", "SENSITIVE"}
             self.interfaces = {"Text"} if role in ("STATIC", "LABEL", "TEXT", "HEADING", "STATUS_BAR") else set()
             self.nodes, self.owner, self.cache_mask = [], self, None
+            self.parent = None
 
         def get_role(self):
             return self.role
@@ -1041,18 +1042,22 @@ class EditorReadbackTests(unittest.TestCase):
         def get_application(self):
             return self.owner
 
+        def get_parent(self):
+            return self.parent
+
         def set_cache_mask(self, mask):
             self.cache_mask = mask
 
     def fixture(self):
-        desktop, app = self.Node("DESKTOP"), self.Node("APPLICATION")
+        desktop, app = self.Node("DESKTOP_FRAME"), self.Node("APPLICATION")
         desktop.nodes = [app]
+        app.parent = desktop
         nodes = [self.Node("STATIC", installed.TITLE), self.Node("LABEL", "r0"),
                  self.Node("PUSH_BUTTON", "Open project library"),
                  self.Node("PUSH_BUTTON", "Timeline")]
         app.nodes = nodes
         for node in nodes:
-            node.owner = app
+            node.owner = node.parent = app
         context = SimpleNamespace(actions=[], iterations=0)
 
         def iterate(blocking):
@@ -1062,7 +1067,8 @@ class EditorReadbackTests(unittest.TestCase):
 
         context.pending = lambda: bool(context.actions)
         context.iteration = iterate
-        roles = ("DIALOG", "ENTRY", "TEXT", "PUSH_BUTTON", "STATIC", "LABEL", "HEADING", "STATUS_BAR")
+        roles = ("DIALOG", "ENTRY", "TEXT", "PUSH_BUTTON", "STATIC", "LABEL", "HEADING",
+                 "STATUS_BAR", "APPLICATION", "DESKTOP_FRAME")
         states = ("VISIBLE", "SHOWING", "ENABLED", "SENSITIVE", "EDITABLE", "DEFUNCT")
         api = SimpleNamespace(
             Role=SimpleNamespace(**{k: k for k in roles}),
@@ -1124,7 +1130,8 @@ class EditorReadbackTests(unittest.TestCase):
                     elif condition == "editable-interface":
                         node.interfaces.add("EditableText")
                     elif condition == "owner":
-                        node.owner = self.Node("APPLICATION", pid=701)
+                        node.owner = node.parent = self.Node("APPLICATION", pid=701)
+                        node.owner.parent = bridge.desktop
                         expected = "UI_WITNESS_OWNER_CHANGED"
                     else:
                         node.text = "different retained text"
@@ -1166,7 +1173,8 @@ class EditorReadbackTests(unittest.TestCase):
             with self.subTest(condition=condition):
                 bridge, desktop, app, nodes, _ = self.fixture()
                 if condition == "owner":
-                    nodes[0].owner = self.Node("APPLICATION", pid=701)
+                    nodes[0].owner = nodes[0].parent = self.Node("APPLICATION", pid=701)
+                    nodes[0].owner.parent = bridge.desktop
                     expected = "UI_WITNESS_OWNER_CHANGED"
                 elif condition == "text":
                     nodes[0].text = "different original text"
@@ -1177,12 +1185,12 @@ class EditorReadbackTests(unittest.TestCase):
                 elif condition == "duplicate-title":
                     for _ in range(8):
                         extra = self.Node("STATIC", installed.TITLE)
-                        extra.owner = app
+                        extra.owner = extra.parent = app
                         app.nodes.append(extra)
                     expected = "REOPENED_TEXT_AMBIGUITY_LIMIT"
                 elif condition == "library":
                     dialog = self.Node("DIALOG", "Project library")
-                    dialog.owner = app
+                    dialog.owner = dialog.parent = app
                     app.nodes.append(dialog)
                     expected = "EDITOR_STILL_IN_LIBRARY"
                 else:
@@ -1207,7 +1215,7 @@ class EditorReadbackTests(unittest.TestCase):
                 installed.select_reopened_view(bridge, 700, 0)
         bridge, _, app, _, _ = self.fixture()
         unrelated = self.Node("STATIC", "", text="x" * 4096)
-        unrelated.owner = app
+        unrelated.owner = unrelated.parent = app
         app.nodes.insert(0, unrelated)
         self.assertEqual(installed.select_reopened_view(bridge, 700, 0)["title"]["name"],
                          installed.TITLE)
@@ -1280,7 +1288,7 @@ class EditorReadDiagnosticTests(unittest.TestCase):
     def test_all_four_counts_do_not_verify_later_witnesses_before_missing_title(self):
         bridge, _, _, nodes, _ = self.fixture()
         nodes[0].name = nodes[0].text = "private unrelated name"
-        with patch.object(nodes[1], "get_application", side_effect=AssertionError("later owner read")):
+        with patch.object(nodes[1], "get_parent", side_effect=AssertionError("later owner read")):
             self.missing(bridge)
         summary = bridge.read_diagnostics.export()
         self.assertEqual(summary["last"]["candidates"],
@@ -1292,7 +1300,7 @@ class EditorReadDiagnosticTests(unittest.TestCase):
         bridge, _, app, nodes, _ = self.fixture()
         nodes[0].name = nodes[0].text = "not the title"
         dialog = self.Node("DIALOG", "Project library")
-        dialog.owner = app
+        dialog.owner = dialog.parent = app
         app.nodes.append(dialog)
         diagnostics = self.exhausted(bridge)
         self.assertEqual(diagnostics["last_condition"], "EDITOR_STILL_IN_LIBRARY")
@@ -1320,7 +1328,7 @@ class EditorReadDiagnosticTests(unittest.TestCase):
         self.missing(bridge)
         original = bridge.read_diagnostics.export()["first"]
         extra = self.Node("PUSH_BUTTON", "Timeline")
-        extra.owner = app
+        extra.owner = extra.parent = app
         app.nodes.append(extra)
         self.missing(bridge)
         summary = bridge.read_diagnostics.export()
@@ -1377,12 +1385,27 @@ class EditorReadDiagnosticTests(unittest.TestCase):
         census.assert_not_called()
         self.assertEqual(diagnostics["read_diagnostics"]["census"]["calls"], 0)
 
+    def test_parent_transport_error_stops_read_without_retry_or_diagnostic_census(self):
+        bridge, _, _, nodes, _ = self.fixture()
+        error = RuntimeError("original parent transport error")
+        diagnostics = {}
+        with self.clock(bridge), patch.object(nodes[0], "get_parent", side_effect=error) as parent:
+            with patch.object(bridge.read_diagnostics, "census_once") as census:
+                with self.assertRaises(RuntimeError) as caught:
+                    installed.observe_editor_until(bridge, self.binding, 0, installed.TITLE, 0.3,
+                                                   diagnostics=diagnostics)
+        self.assertIs(caught.exception, error)
+        self.assertEqual(parent.call_count, 1)
+        self.assertEqual(diagnostics["read_attempts"], 1)
+        census.assert_not_called()
+
     def test_owner_and_x11_failures_keep_their_codes_and_do_not_run_a_census(self):
         for cause in ("owner", "x11"):
             with self.subTest(cause=cause):
                 bridge, _, _, nodes, _ = self.fixture()
                 if cause == "owner":
-                    nodes[0].owner = self.Node("APPLICATION", pid=701)
+                    nodes[0].owner = nodes[0].parent = self.Node("APPLICATION", pid=701)
+                    nodes[0].owner.parent = bridge.desktop
                 diagnostics = {}
                 expected = "UI_WITNESS_OWNER_CHANGED" if cause == "owner" else "UI_PROCESS_CHANGED"
                 with self.clock(bridge), patch.object(bridge.read_diagnostics, "census_once") as census:
@@ -1417,7 +1440,7 @@ class EditorReadDiagnosticTests(unittest.TestCase):
         bridge, _, app, nodes, _ = self.fixture()
         discarded = [self.Node("UNACCEPTED_ROLE", "private unrelated name") for _ in range(25)]
         for node in discarded:
-            node.owner = app
+            node.owner = node.parent = app
         app.nodes = discarded + nodes[1:]
         diagnostics = self.exhausted(bridge)
         self.assertGreater(diagnostics["read_attempts"], 1)
@@ -1477,7 +1500,7 @@ class EditorReadDiagnosticTests(unittest.TestCase):
         nodes[0].name = nodes[0].text = "pending"
         for index in range(64):
             extra = self.Node(1000 + index, "PRIVATE CONTENT")
-            extra.owner = app
+            extra.owner = extra.parent = app
             app.nodes.append(extra)
         self.missing(bridge)
         summary = bridge.read_diagnostics.export()

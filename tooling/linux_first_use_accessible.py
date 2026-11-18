@@ -445,15 +445,39 @@ class AtspiBridge:
 
     def pid(self, node):
         pid = self.call(node.get_process_id)
-        if not isinstance(pid, int) or pid <= 0:
+        # libatspi returns guint, including UINT_MAX for an unavailable PID.
+        # A cached error sentinel and bool are never Linux process identities.
+        if type(pid) is not int or not 0 < pid <= 0x7fffffff:
             raise ProbeError("ATSPI_PROCESS_ID_UNAVAILABLE")
         return pid
 
     def owner_pid(self, node):
-        app = self.call(node.get_application)
-        if app is None:
-            raise ProbeError("ATSPI_APPLICATION_UNAVAILABLE")
-        return self.pid(app)
+        # get_application() discards GError from parent/role reads and can
+        # substitute a WebKit exporter root for the containing GTK app.
+        # Preserve the original errors instead of reporting another owner.
+        # Keep the existing structural cache policy; target and X11 identity
+        # checks at the caller still govern every effect.
+        current, seen = node, []
+        for _ in range(MAX_DEPTH + 1):
+            if current is None or current == self.desktop:
+                raise ProbeError("ATSPI_APPLICATION_UNAVAILABLE")
+            if current in seen:
+                raise ProbeError("ATSPI_APPLICATION_PARENT_CYCLE")
+            seen.append(current)
+            role = self.call(current.get_role)
+            if role == self.api.Role.DESKTOP_FRAME:
+                raise ProbeError("ATSPI_APPLICATION_DESKTOP_CHANGED")
+            parent = self.call(current.get_parent)
+            if parent == self.desktop:
+                if role != self.api.Role.APPLICATION:
+                    raise ProbeError("ATSPI_APPLICATION_ROLE_INVALID")
+                return self.pid(current)
+            # GTK's admitted application root reports the registry desktop.
+            # An incomplete embedded link must not authorize a fallback root.
+            if parent is None:
+                raise ProbeError("ATSPI_APPLICATION_UNAVAILABLE")
+            current = parent
+        raise ProbeError("ATSPI_APPLICATION_PARENT_LIMIT")
 
     def view(self, node):
         # Every node still receives a fresh role and state read: a defunct
