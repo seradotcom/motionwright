@@ -37,7 +37,7 @@ def verbose(module, cases=None, suffix="ok", repeated_method=True):
         target = module + "." + cls + ("." + method if repeated_method else "")
         rows.append(f"{method} ({target}) ... {suffix}")
     return ("\n".join(rows) + "\n\n----------------------------------------------------------------------\n"
-            "Ran 62 tests in 0.010s\n\nOK\n").encode()
+            "Ran 74 tests in 0.010s\n\nOK\n").encode()
 
 
 def execution(folder):
@@ -128,15 +128,33 @@ class ClosedSourceResultsTests(unittest.TestCase):
     def admit(self):
         return gate.admit_execution(self.root, self.record, state(), GITHUB)
 
-    def test_two_original_entrypoints_admit_exact_124_cases(self):
+    def test_two_original_entrypoints_admit_exact_148_cases(self):
         result = self.admit()
-        self.assertEqual([len(v) for v in result.values()], [62, 62])
+        self.assertEqual([len(v) for v in result.values()], [74, 74])
         self.assertIn("JournalFilesystemTests.test_exclusive_entries_keep_original_bytes", next(iter(result.values())))
 
     def test_both_supported_verbose_id_formats_are_nominal(self):
         for repeated in (False, True):
             with self.subTest(repeated=repeated):
-                self.assertEqual(len(gate.nominal_results(verbose(gate.TEST_MODULE, repeated_method=repeated), gate.TEST_MODULE)), 62)
+                self.assertEqual(len(gate.nominal_results(verbose(gate.TEST_MODULE, repeated_method=repeated), gate.TEST_MODULE)), 74)
+
+    def test_new_owner_cases_are_closed_and_previous_sixty_two_cannot_pass(self):
+        owner = sorted(case for case in gate.EXPECTED_CASES
+                       if case.startswith("ApplicationOwnerTests."))
+        self.assertEqual(len(owner), 12)
+        self.assertIn(
+            "ApplicationOwnerTests.test_invalid_linux_pid_and_unsigned_error_sentinel_are_rejected",
+            owner)
+        original = sorted(set(gate.EXPECTED_CASES) - set(owner))
+        self.assertEqual(len(original), 62)
+        for raw in (
+            verbose(gate.TEST_MODULE, cases=original),
+            verbose(gate.TEST_MODULE, cases=original).replace(
+                b"Ran 74 tests", b"Ran 62 tests", 1),
+        ):
+            with self.subTest(summary=raw[-45:]), self.assertRaisesRegex(
+                    gate.GateError, "expected_74_nominal_terminal_results"):
+                gate.nominal_results(raw, gate.TEST_MODULE)
 
     def test_unchanged_count_cannot_hide_duplicate_and_omitted_case(self):
         cases = sorted(gate.EXPECTED_CASES)
@@ -152,10 +170,10 @@ class ClosedSourceResultsTests(unittest.TestCase):
 
     def test_prior_fifty_six_cases_cannot_certify_current_deadline_contract(self):
         historical = sorted(case for case in gate.EXPECTED_CASES if not case.startswith(
-            ("X11InheritedDeadlineTests.", "WorkerProgressCustodyTests.")))
+            ("X11InheritedDeadlineTests.", "WorkerProgressCustodyTests.", "ApplicationOwnerTests.")))
         self.assertEqual(len(historical), 56)
         claimed_current = verbose(gate.TEST_MODULE, cases=historical)
-        original_count = claimed_current.replace(b"Ran 62 tests", b"Ran 56 tests", 1)
+        original_count = claimed_current.replace(b"Ran 74 tests", b"Ran 56 tests", 1)
         for raw in (original_count, claimed_current):
             with self.subTest(raw=raw[-45:]), self.assertRaises(gate.GateError):
                 gate.nominal_results(raw, gate.TEST_MODULE)
@@ -169,13 +187,13 @@ class ClosedSourceResultsTests(unittest.TestCase):
         legacy_cases = sorted(case for case in gate.EXPECTED_CASES
                               if case.startswith(legacy_classes))
         self.assertEqual(len(legacy_cases), 42)
-        legacy_claiming_62 = verbose(gate.TEST_MODULE, cases=legacy_cases)
-        legacy_claiming_42 = legacy_claiming_62.replace(b"Ran 62 tests", b"Ran 42 tests", 1)
+        legacy_claiming_74 = verbose(gate.TEST_MODULE, cases=legacy_cases)
+        legacy_claiming_42 = legacy_claiming_74.replace(b"Ran 74 tests", b"Ran 42 tests", 1)
         controls = (
-            ("summary_without_nominals", b"Ran 62 tests in 0s\nOK\n"),
+            ("summary_without_nominals", b"Ran 74 tests in 0s\nOK\n"),
             ("empty_nominals", verbose(gate.TEST_MODULE, cases=[])),
             ("legacy_42_with_original_summary", legacy_claiming_42),
-            ("legacy_42_with_forged_62_summary", legacy_claiming_62),
+            ("legacy_42_with_forged_74_summary", legacy_claiming_74),
         )
         for label, raw in controls:
             with self.subTest(control=label), self.assertRaises(gate.GateError):
@@ -200,8 +218,8 @@ class ClosedSourceResultsTests(unittest.TestCase):
         path.write_bytes(raw)
         step["stderr"]["sha256"] = hashlib.sha256(raw).hexdigest()
         step["counts"] = gate.runner.parse_unittest_summary(raw.decode())
-        self.assertEqual(step["counts"]["tests_run"], 62)
-        self.assertEqual(step["counts"]["passed"], 61)
+        self.assertEqual(step["counts"]["tests_run"], 74)
+        self.assertEqual(step["counts"]["passed"], 73)
         self.assertEqual(step["counts"]["skipped"], 1)
         with self.assertRaisesRegex(gate.GateError, "source_counts_incomplete_or_changed"):
             self.admit()
@@ -258,7 +276,7 @@ class ClosedSourceResultsTests(unittest.TestCase):
         source_state = state()
         g0 = g0_execution(self.root)
         source_gate = {
-            "schema": gate.SOURCE_SCHEMA, "status": "PASS", "invocations": 124,
+            "schema": gate.SOURCE_SCHEMA, "status": "PASS", "invocations": 148,
             "system_python": "/usr/bin/python3", "github": copy.deepcopy(GITHUB),
             "claims": copy.deepcopy(gate.CLAIMS),
             "source_before": source_state, "source_after": source_state,
@@ -727,7 +745,7 @@ class FirstUseG0ClosureTests(unittest.TestCase):
         altered["source"]["files"]["tooling/tests/test_runtime_first_use_atomic_receipt.py"]["checkout"]["sha256"] = "f" * 64
         execution_record = execution(self.root)
         gate_record = {
-            "schema": gate.SOURCE_SCHEMA, "status": "PASS", "invocations": 124,
+            "schema": gate.SOURCE_SCHEMA, "status": "PASS", "invocations": 148,
             "system_python": "/usr/bin/python3", "github": copy.deepcopy(GITHUB),
             "claims": copy.deepcopy(gate.CLAIMS), "source_before": source_state,
             "source_after": altered,

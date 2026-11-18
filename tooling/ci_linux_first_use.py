@@ -172,6 +172,18 @@ EXPECTED_CASES = frozenset((
     "X11InheritedDeadlineTests.test_identity_command_timeout_has_a_closed_deadline_result",
     "WorkerProgressCustodyTests.test_worker_records_first_identity_and_loop_progress_once",
     "WorkerProgressCustodyTests.test_registration_deadline_keeps_its_marker_and_sends_no_action",
+    "ApplicationOwnerTests.test_cross_process_node_resolves_containing_application_not_exporter",
+    "ApplicationOwnerTests.test_application_role_inside_embedding_is_not_a_terminal_owner",
+    "ApplicationOwnerTests.test_reported_other_application_is_never_replaced_by_expected_pid",
+    "ApplicationOwnerTests.test_original_parent_and_role_errors_propagate_without_pid_lookup",
+    "ApplicationOwnerTests.test_missing_parent_never_falls_back_to_exporter_or_detached_app",
+    "ApplicationOwnerTests.test_same_desktop_role_does_not_substitute_another_desktop_identity",
+    "ApplicationOwnerTests.test_registry_child_must_be_application_before_its_pid_is_read",
+    "ApplicationOwnerTests.test_parent_cycle_fails_with_bounded_reads",
+    "ApplicationOwnerTests.test_ancestry_limit_matches_existing_tree_depth_and_never_reads_late_pid",
+    "ApplicationOwnerTests.test_expired_budget_after_parent_read_prevents_terminal_pid_read",
+    "ApplicationOwnerTests.test_invalid_linux_pid_and_unsigned_error_sentinel_are_rejected",
+    "ApplicationOwnerTests.test_desktop_itself_and_missing_target_cannot_be_application_owner",
 ))
 CLAIMS = {
     "semwright_production_runtime": "NOT_CONFIGURED",
@@ -305,7 +317,7 @@ def nominal_results(raw, module):
     text = raw.decode("utf-8", "strict").replace("\r\n", "\n")
     # Accept Python 3.12 and 3.13 verbose IDs, with or without the repeated method.
     rows = re.findall(r"(?m)^(test_[A-Za-z0-9_]+) \(([A-Za-z0-9_.]+)\) \.\.\. (.+)$", text)
-    require(len(rows) == 62, "expected_62_nominal_terminal_results")
+    require(len(rows) == 74, "expected_74_nominal_terminal_results")
     ids = []
     for method, name, status in rows:
         require(status == "ok", "nominal_result_not_ok")
@@ -361,8 +373,8 @@ def admit_execution(folder, receipt, state, github):
         require(isinstance(stated, dict) and stated == counts
                 and all(type(stated[key]) is int for key in counts if key != "terminal_status")
                 and counts["terminal_status"] == "OK"
-                and type(counts["tests_run"]) is int and counts["tests_run"] == 62
-                and counts["passed"] == 62
+                and type(counts["tests_run"]) is int and counts["tests_run"] == 74
+                and counts["passed"] == 74
                 and all(type(counts[key]) is int and counts[key] == 0 for key in (
                     "failures", "errors", "skipped", "expected_failures", "unexpected_successes")),
                 "source_counts_incomplete_or_changed")
@@ -475,7 +487,7 @@ def run_source(repo, source, output):
     publish(output / "intent.json", {"schema": SOURCE_SCHEMA, "status": "STARTED",
             "github": github, "before": before, "started_at_utc": timestamp()})
     record = {"schema": SOURCE_SCHEMA, "status": "FAIL", "github": github,
-              "source_before": before, "scope": "62 first-use source cases twice plus separately counted G0; no installed window",
+              "source_before": before, "scope": "74 first-use source cases twice plus separately counted G0; no installed window",
               "claims": CLAIMS, "system_python": "/usr/bin/python3",
               "physical_source_case": "JournalFilesystemTests.test_exclusive_entries_keep_original_bytes",
               "fixture_boundary": "Controller/X11 are synthetic; SQLite fixtures use real SQLite; dirfd journal uses Linux filesystem"}
@@ -492,7 +504,7 @@ def run_source(repo, source, output):
         require_same(before, after)
         require(code == 0, "canonical_source_runner_failed")
         record["test_ids"] = admit_execution(output, execution, before, github)
-        record["invocations"] = 124
+        record["invocations"] = 148
         record["status"] = "PASS"
         code = 0
     except Exception as error:
@@ -510,7 +522,7 @@ def run_source(repo, source, output):
 def admit_source_gate(folder, state, github):
     gate, gate_identity = read_json(folder / "source-gate.json")
     require(gate.get("schema") == SOURCE_SCHEMA and gate.get("status") == "PASS"
-            and type(gate.get("invocations")) is int and gate["invocations"] == 124
+            and type(gate.get("invocations")) is int and gate["invocations"] == 148
             and gate.get("system_python") == "/usr/bin/python3"
             and gate.get("github") == github and gate.get("claims") == CLAIMS,
             "source_gate_not_admitted_for_this_run")
