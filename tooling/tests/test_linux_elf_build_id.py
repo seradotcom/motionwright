@@ -46,6 +46,11 @@ class ElfBuildIdTest(unittest.TestCase):
         self.raw = fixture()
         self.destination.write_bytes(self.raw)
 
+    def test_single_elf_ceiling_covers_original_webkit_size_without_unbounded_reads(self):
+        self.assertEqual(elf.MAX_BINARY, 128 * 1024 * 1024)
+        self.assertGreater(elf.MAX_BINARY, 95_202_521)
+        self.assertLessEqual(elf.MAX_BINARY, 128 * 1024 * 1024)
+
     def test_gnu_build_id_for_genuine_elf_note(self):
         self.assertEqual(elf.gnu_build_id(fixture()), "13" * 20)
 

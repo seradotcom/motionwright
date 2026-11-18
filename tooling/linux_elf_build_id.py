@@ -14,7 +14,7 @@ import struct
 
 import candidate_package_inventory as inventory
 
-MAX_BINARY = 64 * 1024 * 1024
+MAX_BINARY = 128 * 1024 * 1024
 MAX_NOTE_SEGMENT = 1024 * 1024
 MAX_PROGRAM_HEADERS = 256
 ELF64_HEADER = struct.Struct("<16sHHIQQQIHHHHHH")

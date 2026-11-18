@@ -244,6 +244,45 @@ class AppImageInstalledOriginTests(unittest.TestCase):
         self.assertEqual(len(originals), 1)
 
 
+    def test_listed_copyright_symlink_inside_doc_tree_keeps_original_bytes(self):
+        alias = self.root / "usr/share/doc/libexample/copyright"
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        content = b"Original shared copyright notice (not a legal review)\n"
+        target = self.make("/usr/share/doc/other-package/copyright", content)
+        try:
+            alias.symlink_to(target)
+        except OSError as exc:
+            self.skipTest("symlink permission unavailable: " + str(exc))
+        matched, unresolved = self.match()
+        self.assertEqual(unresolved, [])
+        records, originals = origin.original_package_records(
+            matched, self.manifests, self.root)
+        self.assertEqual(records[self.pkg]["copyright"]["status"],
+                         "LISTED_REGULAR_COPYRIGHT_BYTES_OBSERVED")
+        self.assertIn(content, originals.values())
+        self.assertEqual(records[self.pkg]["copyright"]["license_review"],
+                         "NOT_PERFORMED")
+
+    def test_listed_copyright_symlink_outside_doc_tree_never_counts_as_notice(self):
+        alias = self.root / "usr/share/doc/libexample/copyright"
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        outside = self.make("/usr/lib/other-copyright", b"Not a permitted notice\n")
+        try:
+            alias.symlink_to(outside)
+        except OSError as exc:
+            self.skipTest("symlink permission unavailable: " + str(exc))
+        matched, unresolved = self.match()
+        self.assertEqual(unresolved, [])
+        records, originals = origin.original_package_records(
+            matched, self.manifests, self.root)
+        self.assertEqual(records[self.pkg]["copyright"]["status"], "NOT_OBSERVED")
+        self.assertEqual(len(originals), 1)
+
+    def test_notices_outside_documentation_root_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "origin_notice_path"):
+            origin.regular_host_bytes(self.root, "/usr/lib/private/copyright",
+                                      origin.MAX_COPYRIGHT)
+
     def test_unknown_roster_is_not_assumed_equal_to_appimage_exclusive_files(self):
         shared = member("usr/share/applications/Motionwright.desktop", b"desktop", "NOT_IDENTIFIED")
         origin_known = member("Motionwright.png", b"tracked png", "NOT_IDENTIFIED")

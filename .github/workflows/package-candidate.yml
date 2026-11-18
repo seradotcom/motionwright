@@ -438,10 +438,10 @@ jobs:
           counts=step['counts']
           assert step['entry_point']=='discovery:test_linux_appimage_system_origins.py'
           assert step['exit_code']==0 and step['status']=='PASS'
-          assert counts['tests_run']==counts['passed']==25
+          assert counts['tests_run']==counts['passed']==28
           assert counts['terminal_status']=='OK'
           assert all(counts[k]==0 for k in ('failures','errors','skipped','expected_failures','unexpected_successes'))
-          print('appimage-system-origin-source=PASS controls=25 packaging=NOT_RUN G3=STOP')
+          print('appimage-system-origin-source=PASS controls=28 packaging=NOT_RUN G3=STOP')
           PY_APP_ORIGIN_G1
       - name: Authenticate bounded GNU ELF build-id source controls
         timeout-minutes: 3
@@ -468,10 +468,10 @@ jobs:
           counts=step['counts']
           assert step['entry_point']=='discovery:test_linux_elf_build_id.py'
           assert step['status']=='PASS' and step['exit_code']==0
-          assert counts['tests_run']==counts['passed']==15
+          assert counts['tests_run']==counts['passed']==16
           assert counts['terminal_status']=='OK'
           assert all(counts[k]==0 for k in ('failures','errors','skipped','expected_failures','unexpected_successes'))
-          print('elf-original-source=PASS controls=15 native_execution=NOT_RUN G3=STOP')
+          print('elf-original-source=PASS controls=16 native_execution=NOT_RUN G3=STOP')
           PY_ELF_SOURCE_G1
       - name: Retain original package inventory source control records
         if: always()

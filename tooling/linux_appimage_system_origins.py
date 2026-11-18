@@ -280,22 +280,36 @@ def captured_manifests(info, installed):
 
 
 def regular_host_bytes(root, path, limit):
-    """A license witness must itself be a stable, unlinked regular original."""
-    need(path.startswith("/") and not path.startswith("//"), "origin_notice_path")
+    """Observe listed copyright bytes, including doc-tree-local symlink aliases.
+
+    The declared package alias remains bound by path/stat before and after.
+    A resolved target outside /usr/share/doc, missing, nonregular, or above
+    budget produces no license evidence. No notice is treated as legal approval.
+    """
+    need(path.startswith("/usr/share/doc/") and not path.startswith("//"),
+         "origin_notice_path")
     root = Path(root).resolve(strict=True)
     parts = path.lstrip("/").split("/")
     need(parts and all(p not in ("", ".", "..") for p in parts),
          "origin_notice_path")
-    current = root
+    alias = root.joinpath(*parts)
+    docs = root / "usr/share/doc"
     try:
-        for part in parts:
-            current /= part
-            if stat.S_ISLNK(current.lstat().st_mode):
-                return None
-        info = current.lstat()
+        before = alias.lstat()
+        target = alias.resolve(strict=True)
+        if not target.is_relative_to(docs):
+            return None
+        info = target.lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
             return None
-        return inventory.capture.stable_read(root, current, limit)
+        raw = inventory.capture.stable_read(root, target, limit)
+        after = alias.lstat()
+        identity = lambda i: (i.st_dev, i.st_ino, i.st_mode,
+                              i.st_size, i.st_mtime_ns, i.st_ctime_ns)
+        need(identity(before) == identity(after)
+             and target == alias.resolve(strict=True),
+             "origin_copyright_alias_changed")
+        return raw
     except (FileNotFoundError, NotADirectoryError):
         return None
 
