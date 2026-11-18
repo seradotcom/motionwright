@@ -161,9 +161,9 @@ class AudioJoinTests(unittest.TestCase):
             self.assertFalse(GUARDS.unmapped_action_provider(states, invalid))
 
     def test_source_keyboard_plans_are_bounded_to_original_two_assets(self):
-        self.assertEqual(GUARDS.source_key_sequence(1, 3), ("Home", "Down", "Return"))
+        self.assertEqual(GUARDS.source_key_sequence(1, 3), ("Home", "Down", "Tab"))
         self.assertEqual(GUARDS.source_key_sequence(2, 3),
-                         ("Home", "Down", "Down", "Return"))
+                         ("Home", "Down", "Down", "Tab"))
         for index, count in ((0, 3), (3, 3), (1, 4), (1, 2), (True, 3), (2, 3.0)):
             with self.subTest(index=index, count=count), self.assertRaisesRegex(
                     GUARDS.AudioError, "SOURCE_KEYBOARD_OPTION_BUDGET"):
@@ -193,7 +193,7 @@ class AudioJoinTests(unittest.TestCase):
         self.assertEqual([label for label, _, _ in plan],
                          ["select-music"] * 3 + ["select-sfx"] * 4)
         self.assertEqual([key for _, _, key in plan],
-                         ["Home", "Down", "Return", "Home", "Down", "Down", "Return"])
+                         ["Home", "Down", "Tab", "Home", "Down", "Down", "Tab"])
         names = [GUARDS.source_key_receipt_name(label, i, phase)
                  for label, i, _ in plan for phase in ("intent", "return")]
         self.assertEqual(len(names), 14)
@@ -214,7 +214,7 @@ class AudioJoinTests(unittest.TestCase):
             records[label + "-intent.json"] = intent
             records[label + "-return.json"] = returned
         for label, index, key in GUARDS.source_key_journal_plan():
-            number = {"Home": 110, "Down": 116, "Return": 36}[key]
+            number = {"Home": 110, "Down": 116, "Tab": 23}[key]
             records[GUARDS.source_key_receipt_name(label, index, "intent") + ".json"] = {
                 "key": key, "hardware_keycode": number, "automatic_retry": False}
             records[GUARDS.source_key_receipt_name(label, index, "return") + ".json"] = {
@@ -263,7 +263,7 @@ class AudioJoinTests(unittest.TestCase):
         combo = SimpleNamespace(role="combo", node=object(),
                                 interfaces=frozenset(("Component",)))
         with self.assertRaisesRegex(GUARDS.AudioError, "UI_SOURCE_KEYBOARD_OWNER"):
-            ui.dispatch_source_keyboard(combo, ("Home", "Down", "Return"), "select-music")
+            ui.dispatch_source_keyboard(combo, ("Home", "Down", "Tab"), "select-music")
         self.assertEqual(owner_queries, [True])
 
     def test_source_binding_witness_cannot_be_omitted_or_substituted(self):
@@ -277,6 +277,31 @@ class AudioJoinTests(unittest.TestCase):
         altered.pop("draft_source_bindings")
         with self.assertRaisesRegex(GUARDS.AudioError, "UI_TEXT_OBSERVATION_MISSING"):
             GUARDS.validate_ui_observation(altered, before, binding)
+
+    def test_react_draft_status_refreshes_owned_cached_node_before_matching_ids(self):
+        expected = "Draft source bindings: music music; SFX sfx."
+        observations = []
+        node = SimpleNamespace(clear_cache_single=lambda: observations.append("fresh"))
+        old = SimpleNamespace(node=node, role="status",
+                              name="Draft source bindings: music none; SFX none.",
+                              states=frozenset(("visible",)),
+                              interfaces=frozenset(("Component",)))
+        new = SimpleNamespace(node=node, role="status", name=expected,
+                              states=frozenset(("visible", "showing")),
+                              interfaces=frozenset(("Component",)))
+        bridge = SimpleNamespace(owner_pid=lambda _: 7,
+            call=lambda operation, *args: operation(*args),
+            view=lambda _: new)
+        ui = GUARDS.AudioUI(bridge, None, {"pid": 7}, {}, None, time.monotonic() + 2)
+        ui.views = lambda: [old]
+        self.assertIs(ui.refreshed_source_status(expected), new)
+        bridge.view = lambda _: old
+        with self.assertRaisesRegex(RuntimeError, "UI_REACT_SOURCE_BINDINGS_NOT_COMMITTED"):
+            ui.refreshed_source_status(expected)
+        bridge.owner_pid = lambda _: 8
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_SOURCE_STATUS_OWNER_CHANGED"):
+            ui.refreshed_source_status(expected)
+        self.assertEqual(observations, ["fresh", "fresh"])
 
     def test_source_draft_status_may_scroll_but_must_retain_exact_live_text(self):
         before, binding, _, _, _, ui, _, _ = data()

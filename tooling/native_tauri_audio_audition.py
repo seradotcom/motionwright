@@ -303,7 +303,9 @@ def source_key_sequence(index, count):
     # React's actual input/change handling on the controlled HTML select.
     need(type(index) is int and type(count) is int and count == 3
          and index in (1, 2), "UI_SOURCE_KEYBOARD_OPTION_BUDGET")
-    return ("Home",) + ("Down",) * index + ("Return",)
+    # Tab commits the native HTML select and blurs it; Return can ACK the
+    # popup selection without delivering React's change event on WebKit.
+    return ("Home",) + ("Down",) * index + ("Tab",)
 
 
 def source_key_receipt_name(label, index, phase):
@@ -497,6 +499,51 @@ class AudioUI:
                 return self.control(name, roles)
             item = self.wait(scrolled)
         return item
+
+    def refreshed_source_status(self, expected):
+        # WebKit's structural cache can retain the pre-change status text even
+        # after the owned native select reports its new option. Refresh exactly
+        # that existing status node, not the full application or another tab.
+        need(type(expected) is str and expected.startswith("Draft source bindings: music ")
+             and 0 < len(expected) <= 256, "UI_SOURCE_STATUS_EXPECTED_INVALID")
+        candidates = [item for item in self.views()
+                      if item.role == "status"
+                      and item.name.startswith("Draft source bindings: music ")
+                      and "visible" in item.states and "defunct" not in item.states]
+        item = accessible.unique(candidates, "SOURCE_DRAFT_STATUS")
+        need(self.bridge.owner_pid(item.node) == self.binding["pid"],
+             "UI_SOURCE_STATUS_OWNER_CHANGED")
+        self.bridge.call(item.node.clear_cache_single)
+        current = self.bridge.view(item.node)
+        need(current.node == item.node and current.role == "status"
+             and "visible" in current.states and "defunct" not in current.states
+             and "editable" not in current.states
+             and "EditableText" not in current.interfaces
+             and self.bridge.owner_pid(current.node) == self.binding["pid"],
+             "UI_SOURCE_STATUS_INVALID_AFTER_REFRESH")
+        if current.name != expected:
+            raise accessible.NotReady("UI_REACT_SOURCE_BINDINGS_NOT_COMMITTED")
+        return current
+
+    def observe_source_status(self, expected):
+        # The two hardware selections are one-time effects. Only the original
+        # read may be sampled for a short bounded period; never replay keys.
+        deadline = min(self.deadline, time.monotonic() + 5.0)
+        while True:
+            try:
+                item = self.refreshed_source_status(expected)
+                break
+            except accessible.NotReady as error:
+                self.last_condition = str(error)
+                if time.monotonic() >= deadline:
+                    raise AudioError("UI_REACT_SOURCE_BINDINGS_NOT_COMMITTED") from error
+                time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+        if "showing" not in item.states:
+            need("Component" in item.interfaces, "UI_SOURCE_STATUS_SCROLL_REQUIRED")
+            self.effect("source-draft-status-scroll", item, lambda: self.bridge.call(
+                self.bridge.api.Component.scroll_to, item.node,
+                self.bridge.api.ScrollType.ANYWHERE))
+        return self.wait(lambda: self.text(expected))
 
     def arm_action(self, label):
         need(type(label) is str and label not in self.events, "UI_ACTION_ALREADY_ATTEMPTED")
@@ -806,8 +853,7 @@ class AudioUI:
         ]
         draft_label = ("Draft source bindings: music " + mix["music_asset_id"]
                        + "; SFX " + mix["sfx_asset_id"] + ".")
-        self.visible(draft_label, {"status"}, "source-draft-status")
-        draft_sources = self.wait(lambda: self.text(draft_label))
+        draft_sources = self.observe_source_status(draft_label)
         for label, expected in NUMBERS.items():
             entry = self.visible(label, {"entry", "text"}, "read-" + label.split()[0].lower())
             need("Text" in entry.interfaces and self.bridge.read_text(entry.node) == expected,
