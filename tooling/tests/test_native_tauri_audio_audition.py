@@ -27,7 +27,7 @@ def pure_module():
                  "validate_native_records", "validate_saved_readback", "validate_process_closure",
                  "validate_pcm_projection", "validate_before", "read_only_text_provider",
                  "private_transport_paths", "exact_text_offsets", "screen_rect", "rect_contains",
-                 "atspi_read_no_reply", "validate_close_keyboard_target",
+                 "atspi_read_no_reply", "validate_close_keyboard_target", "parse_closure_process_status",
                  "unmapped_action_provider", "accessible_action_index", "source_key_sequence",
                  "source_key_receipt_name", "source_key_journal_plan", "journal_readback"}
     classes = {"AudioError", "AudioUI"}
@@ -1004,6 +1004,28 @@ class OnceDispatcherTests(unittest.TestCase):
         self.assertEqual(entries, [])
         self.assertEqual(effects, [])
 
+
+
+    def test_closure_status_preserves_webkit_crash_distinction_without_private_fields(self):
+        raw=b"Name:\tWebKitWebProces\nPPid:\t7001\nUid:\t1000\t1000\t1000\t1000\nState:\tI (idle)\nCoreDumping:\t1\nThreads:\t3\nPrivate:\tnever retain this\n"
+        record=GUARDS.parse_closure_process_status(raw,7001,1000)
+        self.assertEqual(record,{"role":"WebKitWebProces","state":"I","core_dumping":True,"threads":3})
+        other=GUARDS.parse_closure_process_status(raw.replace(b"WebKitWebProces",b"private-process-title"),7001,1000)
+        self.assertEqual(other["role"],"other")
+        self.assertNotIn("private",json.dumps(other))
+        self.assertFalse(GUARDS.parse_closure_process_status(raw.replace(b"CoreDumping:\t1",b"CoreDumping:\t0"),7001,1000)["core_dumping"])
+
+    def test_closure_status_denies_reparenting_uid_substitution_and_unbounded_input(self):
+        raw=b"Name:\tWebKitWebProces\nPPid:\t7001\nUid:\t1000\t1000\t1000\t1000\nState:\tI\nCoreDumping:\t0\nThreads:\t3\n"
+        for changed,parent,uid in (
+            (raw,7002,1000),(raw,7001,1001),
+            (raw.replace(b"1000\t1000\t1000\t1000",b"1000\t0\t1000\t1000"),7001,1000),
+            (raw+b"PPid:\t7002\n",7001,1000),
+            (raw.replace(b"CoreDumping:\t0",b"CoreDumping:\tunknown"),7001,1000),
+            (raw+b"x"*16385,7001,1000),
+        ):
+            with self.subTest(parent=parent,uid=uid), self.assertRaises(GUARDS.AudioError):
+                GUARDS.parse_closure_process_status(changed,parent,uid)
 
     def test_close_focus_record_rejects_foreign_root_cycle_and_overlong_ancestry(self):
         binding = {"window": "0xa00"}

@@ -1246,6 +1246,39 @@ def run_command(argv, label, root, env, timeout, *, poll=None):
     return directory
 
 
+
+def parse_closure_process_status(raw, expected_parent, expected_uid):
+    # Diagnostic only: preserve no argv, environment, file descriptors or
+    # arbitrary process name. A status read cannot grant closure or authority.
+    need(type(raw) is bytes and 0 < len(raw) <= 16384, "CLOSURE_STATUS_BOUND")
+    fields = {}
+    selected = {"Name", "PPid", "Uid", "State", "CoreDumping", "Threads"}
+    for line in raw.decode("ascii", "replace").splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        if key in selected:
+            need(key not in fields, "CLOSURE_STATUS_DUPLICATE")
+            fields[key] = value.strip()
+    need(fields.get("PPid") == str(expected_parent), "CLOSURE_STATUS_PARENT_CHANGED")
+    need(fields.get("Uid", "").split() == [str(expected_uid)] * 4,
+         "CLOSURE_STATUS_UID_CHANGED")
+    roles = {"WebKitWebProces", "WebKitNetworkPr", "WebKitGPUProces",
+             "WebKitWebProcess", "WebKitNetworkProcess", "WebKitGPUProcess",
+             "bwrap", "semwrightd", "python3"}
+    role = fields.get("Name")
+    state = fields.get("State", "?")[:1]
+    core = fields.get("CoreDumping")
+    threads = fields.get("Threads")
+    need(core in (None, "0", "1"), "CLOSURE_STATUS_CORE_INVALID")
+    need(threads is None or (threads.isdecimal() and 0 < int(threads) <= 65536),
+         "CLOSURE_STATUS_THREADS_INVALID")
+    return {"role": role if role in roles else "other",
+            "state": state if state and state in "RSDTZIX" else "?",
+            "core_dumping": None if core is None else core == "1",
+            "threads": None if threads is None else int(threads)}
+
+
 def empty_natural_tree(root, seconds):
     samples, reaped = [], []
     deadline = time.monotonic() + seconds
@@ -1270,6 +1303,26 @@ def empty_natural_tree(root, seconds):
                     pass
         bounded_resources(root)
         time.sleep(0.1)
+    details = []
+    for child in samples[-1]["processes"] if samples else []:
+        if child["pid"] == os.getpid():
+            continue
+        row = {"pid": child["pid"], "expected_parent": child["ppid"]}
+        try:
+            status_path = Path("/proc") / str(child["pid"]) / "status"
+            need(status_path.stat().st_uid == os.getuid(), "CLOSURE_STATUS_UID_CHANGED")
+            with status_path.open("rb") as stream:
+                raw = stream.read(16385)
+            row.update(status="OBSERVED", **parse_closure_process_status(raw, child["ppid"], os.getuid()))
+        except BaseException as error:
+            row.update(status="UNAVAILABLE", failure_code=code(error))
+        details.append(row)
+    publish(root / "natural-process-closure-failure.original.json", {
+        "schema": "motionwright.natural-process-closure-failure/1",
+        "status": "FAIL", "supervisor_pid": os.getpid(), "seconds": seconds,
+        "last_samples": samples, "reaped": reaped, "status_details": details,
+        "signals": [], "acceptance_granted": False, "automatic_retry": False,
+    }, root)
     raise AudioError("NORMAL_WINDOW_CLOSE_DID_NOT_CLOSE_DESCENDANTS")
 
 

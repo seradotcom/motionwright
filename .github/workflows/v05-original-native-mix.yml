@@ -345,10 +345,10 @@ jobs:
           else
             echo 'APT_OFFICIAL_UBUNTU_MIRROR=runner-default'
           fi
-          # Same signed packages as before; bounds apply to downloads, not
+          # Use signed Ubuntu packages; bounds apply to downloads, not
           # acceptance, authority, or release policy.
           timeout --signal=TERM --kill-after=30s 240s sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
-          timeout --signal=TERM --kill-after=30s 1080s sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev python3-gi python3-cryptography gir1.2-atspi-2.0 gir1.2-gtk-3.0 at-spi2-core xvfb x11-utils dbus-x11 openbox
+          timeout --signal=TERM --kill-after=30s 1080s sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev python3-gi python3-cryptography gir1.2-atspi-2.0 gir1.2-gtk-3.0 at-spi2-core xvfb x11-utils dbus-x11 openbox gstreamer1.0-plugins-bad gstreamer1.0-tools
       - name: Admit exact source and public recipient before Native
         id: admission
         shell: bash
@@ -358,6 +358,15 @@ jobs:
           /usr/bin/python3 -B -E -s tooling/ci_tauri_audio_audition.py admit \
             --repo "$GITHUB_WORKSPACE" --expected-source "$MW_TAURI_AUDIO_EXPECTED_SOURCE"
           printf 'CARGO_TARGET_DIR=%s/tauri-audition-target\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          # The actual WebKit audio path requires these installed factories.
+          # Keep the runtime inventory and inspection originals before Native.
+          dpkg-query -W -f='${Package} ${Version}\n' libwebkit2gtk-4.1-0 \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+            gstreamer1.0-tools > "$RUNNER_TEMP/tauri-audition-ci/multimedia-packages.original.log"
+          timeout --signal=TERM --kill-after=2s 15s gst-inspect-1.0 fakevideosink \
+            > "$RUNNER_TEMP/tauri-audition-ci/fakevideosink.original.log" 2>&1
+          timeout --signal=TERM --kill-after=2s 15s gst-inspect-1.0 webvttenc \
+            > "$RUNNER_TEMP/tauri-audition-ci/webvttenc.original.log" 2>&1
       - name: Verify changed development admission and routing
         shell: bash
         run: |
