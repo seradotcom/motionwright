@@ -325,6 +325,88 @@ class AudioJoinTests(unittest.TestCase):
         with self.assertRaisesRegex(GUARDS.AudioError, "UI_TEXT_OBSERVATION_MISSING"):
             GUARDS.validate_ui_observation(altered, before, binding)
 
+    def test_original_pcm_preview_is_read_only_from_owned_audition_button(self):
+        # The real 44251373520 original contained a mixed WAV but its global
+        # AT-SPI traversal reached ACCESSIBLE_CHILD_LIMIT inside WebKit media.
+        # A local named preview must not enumerate that media control's tree.
+        class Node:
+            def __init__(self, name="", parent=None):
+                self.name, self.parent, self.children = name, parent, []
+            def get_name(self):
+                return self.name
+            def get_parent(self):
+                return self.parent
+            def clear_cache_single(self):
+                pass
+        parent = Node("Original three-bus native PCM audition")
+        button = Node(GUARDS.AUDITION, parent)
+        group = Node("Unmastered original PCM preview", parent)
+        status = Node(GUARDS.PREVIEW, group)
+        media = Node("actual browser audio controls", group)
+        parent.children = [button, group]
+        group.children = [status, media]
+        observations = []
+        def children(node):
+            if node is media:
+                raise AssertionError("would traverse native audio media subtree")
+            observations.append(node.name)
+            return node.children
+        def view(node):
+            if node is button:
+                return SimpleNamespace(node=node, name=GUARDS.AUDITION, role="button",
+                    states=frozenset(("visible","showing","enabled","sensitive")),
+                    interfaces=frozenset(("Action","Component")))
+            if node is status:
+                return SimpleNamespace(node=node, name=GUARDS.PREVIEW, role="status",
+                    states=frozenset(("visible","showing")),
+                    interfaces=frozenset(("Text","Component")))
+            return SimpleNamespace(node=node, name="", role="other",
+                states=frozenset(("visible","showing")), interfaces=frozenset(("Component",)))
+        bridge = SimpleNamespace(call=lambda f,*args: f(*args), owner_pid=lambda _: 7001,
+                                 children=children, view=view,
+                                 read_text=lambda node: node.name)
+        ui = GUARDS.AudioUI(bridge,None,{"pid":7001}, {}, None, time.monotonic()+3)
+        ui.identity = lambda: None
+        anchor=view(button)
+        result=ui.observe_original_pcm_near_owned_button(anchor)
+        self.assertEqual(result, {"text":GUARDS.PREVIEW,"matches":1})
+        self.assertEqual(observations,[parent.name,group.name])
+        self.assertIs(ui._refreshed_close_button(anchor).node,button)
+        group.children.remove(status)
+        with self.assertRaisesRegex(RuntimeError,"UI_PCM_PREVIEW_STATUS_NOT_READY"):
+            ui.observe_original_pcm_near_owned_button(anchor)
+        group.children.insert(0,status)
+        group.children.insert(1, Node(GUARDS.PREVIEW,group))
+        with self.assertRaisesRegex(GUARDS.AudioError,"UI_PCM_PREVIEW_TEXT_AMBIGUOUS"):
+            ui.observe_original_pcm_near_owned_button(anchor)
+        group.children.remove(group.children[1])
+        bridge.owner_pid=lambda item: 8000 if item is status else 7001
+        with self.assertRaisesRegex(GUARDS.AudioError,"UI_PCM_PREVIEW_STATUS_NOT_ORIGINAL"):
+            ui.observe_original_pcm_near_owned_button(anchor)
+        bridge.owner_pid=lambda _: 7001
+        bridge.read_text=lambda _: "simulated preview without real PCM"
+        with self.assertRaisesRegex(GUARDS.AudioError,"UI_PCM_PREVIEW_NAME_TEXT_DISAGREE"):
+            ui.observe_original_pcm_near_owned_button(anchor)
+
+    def test_pcm_preview_status_exists_only_after_real_native_audition(self):
+        source=(ROOT/"apps/studio/src/NativeOriginalMixReview.tsx").read_text(encoding="utf-8")
+        self.assertIn('currentAudition && <div role="group" aria-label="Unmastered original PCM preview"',source)
+        self.assertIn('<strong role="status" aria-label="'+GUARDS.PREVIEW+'">',source)
+        self.assertLess(source.index('currentAudition && <div role="group" aria-label='),
+                        source.index('<strong role="status" aria-label="'+GUARDS.PREVIEW+'">'))
+        harness=PATH.read_text(encoding="utf-8")
+        self.assertIn('audition_button = self.click(AUDITION, {"button"}, "original-audition")',harness)
+        self.assertIn('self.observe_original_pcm_near_owned_button(audition_button)',harness)
+        self.assertIn('self.close_window(audition_button)',harness)
+        self.assertNotIn('preview = self.wait(lambda: self.text(PREVIEW))',harness)
+        self.assertNotIn('self.close_window()',harness)
+        self.assertIn('preview-result", "close-focus"',harness)
+        before,binding,_,_,_,observed,_,_=data()
+        self.assertNotIn("preview-result-scroll",observed["actions"])
+        scroll=deepcopy(observed)
+        scroll["actions"].insert(scroll["actions"].index("close-focus"),"preview-result-scroll")
+        self.assertIsNone(GUARDS.validate_ui_observation(scroll,before,binding))
+
     def test_source_draft_status_may_scroll_but_must_retain_exact_live_text(self):
         before, binding, _, _, _, ui, _, _ = data()
         expected = ui["draft_source_bindings"]["text"]
@@ -818,7 +900,11 @@ class OnceDispatcherTests(unittest.TestCase):
     def test_close_releases_uncertain_keys_even_if_release_journal_fails(self):
         ui, item, _, _, _ = self.subject()
         ui.binding["window"] = "0xa00"
-        ui.visible = lambda *_: item
+        item.name = GUARDS.AUDITION
+        item.node = SimpleNamespace(clear_cache_single=lambda: None)
+        item.states = frozenset(("visible", "showing", "enabled", "sensitive"))
+        item.interfaces = frozenset(("Action", "Component"))
+        ui.bridge.view = lambda _: item
         ui.bridge.focus_title = lambda _: True
         ui.bridge.call = lambda function, *args: function(*args)
         pressed = []
@@ -847,7 +933,7 @@ class OnceDispatcherTests(unittest.TestCase):
             returncode=0, stdout="_NET_ACTIVE_WINDOW(WINDOW): window id # 0xa00\n"))
         try:
             with self.assertRaises(OSError):
-                ui.close_window()
+                ui.close_window(item)
         finally:
             if previous is None:
                 globals_.pop("subprocess", None)
