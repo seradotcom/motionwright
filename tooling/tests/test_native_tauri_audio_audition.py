@@ -482,6 +482,62 @@ class AudioJoinTests(unittest.TestCase):
                 self.assertEqual(ui.pcm_read_timeouts, [])
         self.assertFalse(GUARDS.atspi_read_no_reply(RuntimeError("Did not receive a reply.")))
 
+    def test_pcm_owner_refresh_accepts_only_the_same_original_node_back_in_owner(self):
+        ui, original, events, state, _ = self._pcm_read_case([])
+        owners = iter((7002, 7001))
+        ui.bridge.owner_pid = lambda node: next(owners)
+        self.assertIsNone(ui.original_pcm_owner(original, "preview"))
+        self.assertEqual(len(ui.pcm_owner_observations), 1)
+        receipt = ui.pcm_owner_observations[0]
+        self.assertEqual(receipt["stale_pid"], 7002)
+        self.assertEqual(receipt["refreshed_pid"], 7001)
+        self.assertEqual(receipt["expected_pid"], 7001)
+        self.assertEqual(receipt["extra_effects"], 0)
+        self.assertEqual(events, ["refresh"])
+
+    def test_pcm_owner_refresh_rejects_foreign_owner_even_after_cache_refresh(self):
+        ui, original, events, state, _ = self._pcm_read_case([])
+        ui.bridge.owner_pid = lambda _: 7002
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_PCM_PREVIEW_ANCHOR_NOT_OWNED"):
+            ui.original_pcm_owner(original, "preview")
+        self.assertEqual(events, ["refresh"])
+        self.assertEqual(len(ui.pcm_owner_observations), 1)
+        self.assertEqual(ui.events, [])
+
+    def test_pcm_owner_refresh_rechecks_x11_and_limits_all_further_reads(self):
+        ui, original, events, state, _ = self._pcm_read_case([])
+        owners = iter((7002, 7001))
+        ui.bridge.owner_pid = lambda _: next(owners)
+        calls = []
+        def identity():
+            calls.append(True)
+            if len(calls) == 2:
+                raise GUARDS.AudioError("UI_PROCESS_CHANGED")
+        ui.identity = identity
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_PROCESS_CHANGED"):
+            ui.original_pcm_owner(original, "preview")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(events, ["refresh"])
+        self.assertEqual(ui.events, [])
+        ui, original, events, state, _ = self._pcm_read_case([])
+        ui.bridge.owner_pid = lambda _: 7002
+        with self.assertRaises(GUARDS.AudioError):
+            ui.original_pcm_owner(original, "preview")
+        with self.assertRaises(GUARDS.AudioError):
+            ui.original_pcm_owner(original, "preview")
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_PCM_OWNER_REFRESH_LIMIT"):
+            ui.original_pcm_owner(original, "preview")
+        self.assertEqual(events, ["refresh", "refresh"])
+
+    def test_pcm_owner_invalid_pid_is_not_refreshable(self):
+        for owner in (0, -1, None, "7001", True):
+            ui, original, events, state, _ = self._pcm_read_case([])
+            ui.bridge.owner_pid = lambda _: owner
+            with self.subTest(owner=owner), self.assertRaises(GUARDS.AudioError):
+                ui.original_pcm_owner(original, "preview")
+            self.assertEqual(events, [])
+            self.assertEqual(ui.events, [])
+
     def test_pcm_ready_label_depends_on_real_current_audition_and_proven_close(self):
         source=(ROOT/"apps/studio/src/NativeOriginalMixReview.tsx").read_text(encoding="utf-8")
         self.assertIn('aria-label={currentAudition', source)

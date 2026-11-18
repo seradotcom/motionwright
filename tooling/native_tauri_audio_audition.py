@@ -538,6 +538,7 @@ class AudioUI:
         self.events = []
         self.action_observations = []
         self.pcm_read_timeouts = []
+        self.pcm_owner_observations = []
         self.pcm_preview = None
         self.close_keyboard_target = None
 
@@ -850,6 +851,31 @@ class AudioUI:
             return {"control": name, "selected": selected}
         return self.wait(observed)
 
+    def original_pcm_owner(self, original_button, context):
+        # The original node was admitted and invoked exactly once. A stale
+        # AT-SPI application owner cache is never enough to grant a new owner:
+        # check the same node after one read-only cache refresh, with live X11
+        # identity on both sides. A persisting foreign owner is a hard stop.
+        need(context in {"preview", "refresh"}, "UI_PCM_OWNER_CONTEXT")
+        self.identity()
+        observed = self.bridge.owner_pid(original_button.node)
+        if observed == self.binding["pid"]:
+            return
+        need(type(observed) is int and observed > 0, "UI_PCM_OWNER_INVALID")
+        need(len(self.pcm_owner_observations) < 2, "UI_PCM_OWNER_REFRESH_LIMIT")
+        self.bridge.call(original_button.node.clear_cache_single)
+        self.identity()
+        fresh = self.bridge.owner_pid(original_button.node)
+        self.pcm_owner_observations.append({
+            "context": context, "stale_pid": observed,
+            "refreshed_pid": fresh, "expected_pid": self.binding["pid"],
+            "original_control_role": original_button.role,
+            "original_control_name": original_button.name[:128],
+            "cache_refresh_only": True, "extra_effects": 0,
+        })
+        need(type(fresh) is int and fresh == self.binding["pid"],
+             "UI_PCM_PREVIEW_ANCHOR_NOT_OWNED")
+
     def observe_original_pcm_near_owned_button(self, original_button):
         self.pcm_preview = None
         # The original accessible audition button survives Native PCM output.
@@ -857,9 +883,9 @@ class AudioUI:
         # Observe that exact already-authenticated node; WebKit media children
         # can expose >2048 descendants and must never be enumerated here.
         self.identity()
-        need(original_button.role == "button" and original_button.name == AUDITION
-             and self.bridge.owner_pid(original_button.node) == self.binding["pid"],
-             "UI_PCM_PREVIEW_ANCHOR_NOT_OWNED")
+        need(original_button.role == "button" and original_button.name == AUDITION,
+             "UI_PCM_PREVIEW_ANCHOR_CHANGED")
+        self.original_pcm_owner(original_button, "preview")
         # The WAV response can be committed before React's separate
         # finally{setWorking(false)} reenables the audition button. The
         # read-only PCM witness must not require an enabled action.
@@ -871,8 +897,7 @@ class AudioUI:
 
     def _refreshed_close_button(self, original_button, *, require_usable=True):
         self.identity()
-        need(self.bridge.owner_pid(original_button.node) == self.binding["pid"],
-             "UI_CLOSE_BUTTON_ANCHOR_OWNER_CHANGED")
+        self.original_pcm_owner(original_button, "refresh")
         # WebKit can cache the disabled state across React's setWorking(false).
         # Refresh only this authenticated node on each bounded observation;
         # never rescan its parents, children or the media component.
@@ -1070,6 +1095,7 @@ class AudioUI:
                 "keyboard_target": self.close_keyboard_target,
                 "actions": self.events,
                 "read_only_pcm_timeouts": self.pcm_read_timeouts,
+                "pcm_owner_observations": self.pcm_owner_observations,
                 "normal_close_requested": True, "playback_or_human_listening_claimed": False,
                 "formal_G2": False, "formal_G3": False, "automatic_retry": False}
 
@@ -1085,6 +1111,7 @@ class AudioUI:
                 "pcm_preview": self.pcm_preview,
                 "keyboard_target": self.close_keyboard_target,
                 "read_only_pcm_timeouts": self.pcm_read_timeouts,
+                "pcm_owner_observations": self.pcm_owner_observations,
                 "action_observations": self.action_observations,
                 "visible_controls": rows[:64], "truncated": len(rows) > 64,
                 "text_observations": texts[:128], "text_truncated": len(texts) > 128,
