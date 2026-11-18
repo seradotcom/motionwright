@@ -269,6 +269,7 @@ RIGHTS = ("I confirm I have permission to use these exact original sources for l
 SUMMARY = "Voice / music / SFX · original source mix"
 AUDITION = "Create local original PCM audition"
 PREVIEW = "Local source PCM only · 48 kHz · not a mastered deliverable"
+AUDITION_PCM_READY = AUDITION + " · " + PREVIEW
 NUMBERS = {"SFX gain dB": "-8", "Music duck attenuation dB": "14",
            "Attack (samples at 48 kHz)": "2400", "Release (samples at 48 kHz)": "4800"}
 
@@ -759,88 +760,24 @@ class AudioUI:
         return self.wait(observed)
 
     def observe_original_pcm_near_owned_button(self, original_button):
-        # WebKit's native <audio> controls can expose an enormous internal
-        # subtree after the real PCM response. Never walk that subtree or
-        # expand the global 2048-node guard. Start from the exact button that
-        # dispatched the one native audition, then inspect bounded siblings.
+        # The original accessible audition button survives Native PCM output.
+        # React changes only its ARIA label after currentAudition is real.
+        # Observe that exact already-authenticated node; WebKit media children
+        # can expose >2048 descendants and must never be enumerated here.
         self.identity()
         need(original_button.role == "button" and original_button.name == AUDITION
              and self.bridge.owner_pid(original_button.node) == self.binding["pid"],
              "UI_PCM_PREVIEW_ANCHOR_NOT_OWNED")
-        node = original_button.node
-        for _ in range(6):
-            parent = self.bridge.call(node.get_parent)
-            if parent is None:
-                raise accessible.NotReady("UI_PCM_PREVIEW_PARENT_NOT_READY")
-            need(parent != node and self.bridge.owner_pid(parent) == self.binding["pid"],
-                 "UI_PCM_PREVIEW_PARENT_CHANGED")
-            siblings = self.bridge.children(parent)
-            need(1 <= len(siblings) <= 96, "UI_PCM_PREVIEW_LOCAL_CHILD_BOUND")
-            groups = []
-            for sibling in siblings:
-                name = self.bridge.call(sibling.get_name)
-                need(type(name) is str and len(name) <= 4096, "UI_PCM_PREVIEW_NAME_BOUND")
-                if name == "Unmastered original PCM preview":
-                    groups.append(sibling)
-            need(len(groups) <= 1, "UI_PCM_PREVIEW_GROUP_AMBIGUOUS")
-            if groups:
-                group = groups[0]
-                need(self.bridge.owner_pid(group) == self.binding["pid"],
-                     "UI_PCM_PREVIEW_GROUP_OWNER_CHANGED")
-                container = self.bridge.view(group)
-                need("visible" in container.states and "defunct" not in container.states
-                     and "editable" not in container.states,
-                     "UI_PCM_PREVIEW_GROUP_NOT_VISIBLE")
-                # The actual text/status precedes <audio controls> in Studio.
-                # Read direct children only: never descend into the media
-                # control subtree, which can exceed the entire AT-SPI budget.
-                leaves = self.bridge.children(group)
-                need(1 <= len(leaves) <= 16, "UI_PCM_PREVIEW_CHILD_BOUND")
-                matching = []
-                for leaf in leaves:
-                    name = self.bridge.call(leaf.get_name)
-                    need(type(name) is str and len(name) <= 4096,
-                         "UI_PCM_PREVIEW_TEXT_NAME_BOUND")
-                    if name == PREVIEW:
-                        matching.append(leaf)
-                need(len(matching) <= 1, "UI_PCM_PREVIEW_TEXT_AMBIGUOUS")
-                if not matching:
-                    raise accessible.NotReady("UI_PCM_PREVIEW_STATUS_NOT_READY")
-                item = self.bridge.view(matching[0])
-                need(item.role == "status" and item.name == PREVIEW
-                     and "visible" in item.states and "defunct" not in item.states
-                     and "editable" not in item.states and "EditableText" not in item.interfaces
-                     and self.bridge.owner_pid(item.node) == self.binding["pid"],
-                     "UI_PCM_PREVIEW_STATUS_NOT_ORIGINAL")
-                if "showing" not in item.states:
-                    if "preview-result-scroll" in self.events:
-                        raise accessible.NotReady("UI_PCM_PREVIEW_NOT_SHOWING")
-                    need("Component" in item.interfaces, "UI_PCM_PREVIEW_SCROLL_UNAVAILABLE")
-                    self.effect("preview-result-scroll", item, lambda: self.bridge.call(
-                        self.bridge.api.Component.scroll_to, item.node,
-                        self.bridge.api.ScrollType.ANYWHERE))
-                    self.bridge.call(item.node.clear_cache_single)
-                    item = self.bridge.view(item.node)
-                    if "showing" not in item.states:
-                        raise accessible.NotReady("UI_PCM_PREVIEW_NOT_SHOWING")
-                need(item.role == "status" and item.name == PREVIEW
-                     and accessible.VISIBLE <= item.states and "defunct" not in item.states
-                     and "editable" not in item.states and "EditableText" not in item.interfaces
-                     and self.bridge.owner_pid(item.node) == self.binding["pid"],
-                     "UI_PCM_PREVIEW_STATUS_CHANGED")
-                if "Text" in item.interfaces:
-                    need(self.bridge.read_text(item.node) == PREVIEW,
-                         "UI_PCM_PREVIEW_NAME_TEXT_DISAGREE")
-                self.identity()
-                return {"text": PREVIEW, "matches": 1}
-            node = parent
-        raise accessible.NotReady("UI_PCM_PREVIEW_NOT_IN_OWNED_COMPONENT")
+        self.bridge.call(original_button.node.clear_cache_single)
+        self._refreshed_close_button(original_button)
+        self.identity()
+        return {"text": PREVIEW, "matches": 1}
 
     def _refreshed_close_button(self, original_button):
         self.identity()
         item = self.bridge.view(original_button.node)
-        if item.name != AUDITION:
-            raise accessible.NotReady("UI_CLOSE_BUTTON_NOT_READY")
+        if item.name != AUDITION_PCM_READY:
+            raise accessible.NotReady("UI_ORIGINAL_PCM_RESPONSE_NOT_YET_IN_REACT")
         need(item.node == original_button.node and item.role == "button"
              and {"visible", "showing", "enabled", "sensitive"} <= item.states
              and "Action" in item.interfaces
@@ -1219,7 +1156,7 @@ SCROLL_ACTIONS = frozenset(name + "-scroll" for name in (
     "open-project", "open-audio", "open-original-mix", "enable-mix", "profile",
     "select-music", "select-sfx", "read-sfx", "read-music", "read-attack",
     "read-release", "source-draft-status", "save-recipe", "rights", "confirm-fixture-rights",
-    "original-audition", "preview-result", "close-focus",
+    "original-audition", "close-focus",
 ))
 
 

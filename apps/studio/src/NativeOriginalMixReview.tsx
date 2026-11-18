@@ -260,11 +260,14 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
     <p className="production-help">This confirmation is required again after an input, source, profile or saved revision changes, and when reopening the workspace. It is never stored in the recipe or a recovery copy.</p>
     {error && <p className="portable-message error" role="alert">{error}</p>}
     <button type="button" className="button button-primary" disabled={!eligible}
+      aria-label={currentAudition
+        ? "Create local original PCM audition · Local source PCM only · 48 kHz · not a mastered deliverable"
+        : "Create local original PCM audition"}
       onClick={() => void preview()}><ShieldCheck size={14} aria-hidden="true" />
       {working ? "Mixing verified sources…" : "Create local original PCM audition"}
     </button>
-    {currentAudition && <div role="group" aria-label="Unmastered original PCM preview" className="audio-narration-source-evidence">
-      <strong role="status" aria-label="Local source PCM only · 48 kHz · not a mastered deliverable">Local source PCM only · 48 kHz · not a mastered deliverable</strong>
+    {currentAudition && <div aria-label="Unmastered original PCM preview" className="audio-narration-source-evidence">
+      <strong>Local source PCM only · 48 kHz · not a mastered deliverable</strong>
       <audio controls preload="metadata" src={currentAudition.url} />
       <p>Source, clock and sample-peak guards passed for this PCM. Integrated LUFS, true peak, listening intelligibility and editorial approval require separate measurement and review. No timeline event or mastered deliverable was created.</p>
     </div>}
