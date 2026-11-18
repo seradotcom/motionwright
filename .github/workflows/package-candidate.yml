@@ -400,10 +400,10 @@ jobs:
           counts=step['counts']
           assert step['entry_point']=='discovery:test_linux_deb_archive_audit.py'
           assert step['status']=='PASS' and step['exit_code']==0
-          assert counts['tests_run']==counts['passed']==17
+          assert counts['tests_run']==counts['passed']==26
           assert counts['terminal_status']=='OK'
           assert all(counts[key]==0 for key in ('errors','failures','skipped','expected_failures','unexpected_successes'))
-          print('deb-original-archive-source=PASS controls=17 Native=NOT_RUN G3=STOP')
+          print('deb-original-archive-source=PASS controls=26 Native=NOT_RUN G3=STOP')
           PY_DEB_ORIGINAL_G1
       - name: Retain original package inventory source control records
         if: always()

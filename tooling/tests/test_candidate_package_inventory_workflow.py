@@ -55,7 +55,7 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
         original = step(policy, "Authenticate original Debian ar and control source contracts")
         self.assertIn("--pattern test_linux_deb_archive_audit.py", original)
         self.assertIn("--mode discovery --require-complete --expected-source", original)
-        self.assertIn("counts[\x27tests_run\x27]==counts[\x27passed\x27]==17", original)
+        self.assertIn("counts[\x27tests_run\x27]==counts[\x27passed\x27]==26", original)
         self.assertIn("Native=NOT_RUN G3=STOP", original)
         self.assertIn("set -euo pipefail", original)
         self.assertNotIn("|| true", original)
