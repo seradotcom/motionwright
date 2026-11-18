@@ -359,6 +359,15 @@ def rect_contains(outer, inner):
             and top + inner_height <= y + height)
 
 
+def atspi_read_no_reply(error):
+    # ATSPI_ERROR_IPC also represents permanent failures. Admit only the
+    # observed D-Bus NoReply message, never a denial or a defunct provider.
+    return (getattr(error, "domain", None) == "atspi_error"
+            and type(getattr(error, "code", None)) is int and error.code == 1
+            and type(getattr(error, "message", None)) is str
+            and error.message.startswith("Did not receive a reply."))
+
+
 def private_transport_paths(root):
     paths = {"XDG_RUNTIME_DIR": root / "r", "TMPDIR": root / "t"}
     need(all(len(os.fsencode(path)) <= 70 for path in paths.values()),
@@ -449,6 +458,7 @@ class AudioUI:
         self.last_views = []
         self.events = []
         self.action_observations = []
+        self.pcm_read_timeouts = []
 
     def identity(self):
         need(time.monotonic() < self.deadline, "UI_DEADLINE")
@@ -782,8 +792,32 @@ class AudioUI:
         # WebKit can cache the disabled state across React's setWorking(false).
         # Refresh only this authenticated node on each bounded observation;
         # never rescan its parents, children or the media component.
-        self.bridge.call(original_button.node.clear_cache_single)
-        item = self.bridge.view(original_button.node)
+        started = time.monotonic()
+        stage = "pending_accessibility_events"
+        try:
+            # Process queued cache updates before reading this same node.
+            # Never traverse the native media subtree or repeat an effect.
+            self.bridge.drain()
+            stage = "owned_button_cache"
+            self.bridge.call(original_button.node.clear_cache_single)
+            stage = "owned_button_view"
+            item = self.bridge.view(original_button.node)
+        except self.bridge.glib.Error as error:
+            if not atspi_read_no_reply(error):
+                raise
+            # Discard the incomplete view. Both identity checks remain live;
+            # a NoReply cannot authorize another owner or extend the deadline.
+            self.pcm_read_timeouts.append({
+                "observation": len(self.pcm_read_timeouts) + 1, "stage": stage,
+                "domain": error.domain, "code": error.code,
+                "message": error.message[:512],
+                "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+            })
+            self.identity()
+            need(self.bridge.owner_pid(original_button.node) == self.binding["pid"],
+                 "UI_CLOSE_BUTTON_OWNER_CHANGED")
+            need(len(self.pcm_read_timeouts) <= 2, "UI_PCM_READ_TIMEOUT_LIMIT")
+            raise accessible.NotReady("UI_PCM_READ_NO_REPLY") from error
         if item.name != AUDITION_PCM_READY:
             raise accessible.NotReady("UI_ORIGINAL_PCM_RESPONSE_NOT_YET_IN_REACT")
         # Identity, role, owner and noneditable action interface are permanent
@@ -927,6 +961,7 @@ class AudioUI:
                 "revision_after": revision + 1, "opened": opened, "sources": selected,
                 "draft_source_bindings": draft_sources, "saved": saved, "preview": preview,
                 "actions": self.events,
+                "read_only_pcm_timeouts": self.pcm_read_timeouts,
                 "normal_close_requested": True, "playback_or_human_listening_claimed": False,
                 "formal_G2": False, "formal_G3": False, "automatic_retry": False}
 
@@ -939,6 +974,7 @@ class AudioUI:
                  for item in self.last_views if item.name and item.role in {
                      "static", "label", "heading", "status", "paragraph", "text", "readonly_text"}]
         return {"last_condition": self.last_condition, "actions": self.events,
+                "read_only_pcm_timeouts": self.pcm_read_timeouts,
                 "action_observations": self.action_observations,
                 "visible_controls": rows[:64], "truncated": len(rows) > 64,
                 "text_observations": texts[:128], "text_truncated": len(texts) > 128,

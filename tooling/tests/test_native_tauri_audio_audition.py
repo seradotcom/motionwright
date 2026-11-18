@@ -25,6 +25,7 @@ def pure_module():
                  "validate_native_records", "validate_saved_readback", "validate_process_closure",
                  "validate_pcm_projection", "validate_before", "read_only_text_provider",
                  "private_transport_paths", "exact_text_offsets", "screen_rect", "rect_contains",
+                 "atspi_read_no_reply",
                  "unmapped_action_provider", "accessible_action_index", "source_key_sequence",
                  "source_key_receipt_name", "source_key_journal_plan", "journal_readback"}
     classes = {"AudioError", "AudioUI"}
@@ -42,7 +43,7 @@ def pure_module():
     namespace = {"uuid": uuid, "re": re, "json": json, "time": time, "os": os, "hashlib": hashlib,
                  "pcm": SimpleNamespace(WAV_BYTES=384044, FRAMES=96000),
                  "accessible": SimpleNamespace(VISIBLE=frozenset(("visible", "showing")),
-                                                NotReady=RuntimeError,
+                                                NotReady=type("NotReady", (RuntimeError,), {}),
                                                 unique=lambda items, _: items[0] if len(items) == 1 else None)}
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(PATH), "exec"), namespace)
     return SimpleNamespace(**namespace)
@@ -340,6 +341,7 @@ class AudioJoinTests(unittest.TestCase):
             return SimpleNamespace(node=node, name=state["name"], role=state["role"],
                  states=state["states"], interfaces=frozenset(("Action", "Component")))
         bridge = SimpleNamespace(call=lambda f,*args: f(*args),
+            drain=lambda: None, glib=SimpleNamespace(Error=OSError),
             owner_pid=lambda _: state["owner"], view=view,
             children=lambda _: self.fail("Native audio child traversal forbidden"),
             applications=lambda: self.fail("Whole app traversal forbidden"))
@@ -379,6 +381,93 @@ class AudioJoinTests(unittest.TestCase):
         state["states"] = frozenset(("visible", "showing", "enabled", "sensitive", "defunct"))
         with self.assertRaisesRegex(GUARDS.AudioError, "UI_CLOSE_BUTTON_VISIBILITY_CHANGED"):
             ui.observe_original_pcm_near_owned_button(original)
+
+    def _pcm_read_case(self, failures):
+        class AtspiError(Exception):
+            domain = "atspi_error"
+            code = 1
+            message = "Did not receive a reply. The reply timeout expired."
+        events = []
+        state = {"owner": 7001, "role": "button"}
+        node = SimpleNamespace(clear_cache_single=lambda: events.append("refresh"))
+        pending = iter(failures)
+        def view(target):
+            self.assertIs(target, node)
+            events.append("view")
+            outcome = next(pending, None)
+            if outcome == "timeout":
+                raise AtspiError()
+            if isinstance(outcome, BaseException):
+                raise outcome
+            if outcome == "foreign":
+                state["owner"] = 7002
+                raise AtspiError()
+            return SimpleNamespace(node=node, name=GUARDS.AUDITION_PCM_READY,
+                role=state["role"], states=frozenset(("visible", "showing", "enabled", "sensitive")),
+                interfaces=frozenset(("Action", "Component")))
+        bridge = SimpleNamespace(call=lambda f,*args: f(*args),
+            glib=SimpleNamespace(Error=AtspiError),
+            drain=lambda: events.append("drain"),
+            owner_pid=lambda _: state["owner"], view=view)
+        ui = GUARDS.AudioUI(bridge, None, {"pid": 7001}, {}, None, time.monotonic()+3)
+        ui.identity = lambda: GUARDS.need(time.monotonic() < ui.deadline, "UI_DEADLINE")
+        ui.effect = lambda *args: self.fail("Read-only recovery must not dispatch an effect")
+        original = SimpleNamespace(node=node, role="button", name=GUARDS.AUDITION)
+        return ui, original, events, state, AtspiError
+
+    def test_pcm_no_reply_recovers_only_a_complete_same_node_read(self):
+        ui, original, events, _, _ = self._pcm_read_case(["timeout"])
+        deadline = ui.deadline
+        result = ui.wait(lambda: ui.observe_original_pcm_near_owned_button(original))
+        self.assertEqual(result, {"text": GUARDS.PREVIEW, "matches": 1})
+        self.assertEqual(ui.deadline, deadline)
+        self.assertEqual(events, ["drain", "refresh", "view"] * 2)
+        self.assertEqual(ui.events, [])
+        self.assertEqual(len(ui.pcm_read_timeouts), 1)
+        self.assertEqual(ui.pcm_read_timeouts[0]["stage"], "owned_button_view")
+        self.assertEqual(ui.pcm_read_timeouts[0]["code"], 1)
+
+    def test_pcm_no_reply_cannot_hide_persistent_timeout_or_owner_change(self):
+        ui, original, events, _, _ = self._pcm_read_case(["timeout"] * 3)
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_PCM_READ_TIMEOUT_LIMIT"):
+            ui.wait(lambda: ui.observe_original_pcm_near_owned_button(original))
+        self.assertEqual(events.count("view"), 3)
+        self.assertEqual(len(ui.pcm_read_timeouts), 3)
+        self.assertEqual(ui.events, [])
+        ui, original, events, _, _ = self._pcm_read_case(["foreign"])
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_CLOSE_BUTTON_OWNER_CHANGED"):
+            ui.wait(lambda: ui.observe_original_pcm_near_owned_button(original))
+        self.assertEqual(events.count("view"), 1)
+
+    def test_pcm_read_retry_cannot_accept_wrong_role_or_renew_deadline(self):
+        ui, original, events, state, _ = self._pcm_read_case(["timeout"])
+        with self.assertRaisesRegex(RuntimeError, "UI_PCM_READ_NO_REPLY"):
+            ui.observe_original_pcm_near_owned_button(original)
+        state["role"] = "status"
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_CLOSE_BUTTON_ROLE_CHANGED"):
+            ui.observe_original_pcm_near_owned_button(original)
+        ui, original, events, _, _ = self._pcm_read_case(["timeout"])
+        with self.assertRaisesRegex(RuntimeError, "UI_PCM_READ_NO_REPLY"):
+            ui.observe_original_pcm_near_owned_button(original)
+        ui.deadline = time.monotonic()-1
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_DEADLINE"):
+            ui.observe_original_pcm_near_owned_button(original)
+        self.assertEqual(events.count("view"), 1)
+
+    def test_pcm_no_reply_classifier_rejects_denial_defunct_and_unknown_errors(self):
+        for field, value in (("domain", "g-dbus-error-quark"), ("code", 0),
+                             ("code", True), ("message", "Access denied"),
+                             ("message", "Process is defunct"),
+                             ("message", "The process appears to be hung.")):
+            with self.subTest(field=field, value=value):
+                ui, original, events, _, error_type = self._pcm_read_case([])
+                error = error_type()
+                setattr(error, field, value)
+                ui.bridge.view = lambda _: (_ for _ in ()).throw(error)
+                with self.assertRaises(error_type):
+                    ui.observe_original_pcm_near_owned_button(original)
+                self.assertEqual(ui.pcm_read_timeouts, [])
+        self.assertFalse(GUARDS.atspi_read_no_reply(RuntimeError("Did not receive a reply.")))
 
     def test_pcm_ready_label_depends_on_real_current_audition_and_proven_close(self):
         source=(ROOT/"apps/studio/src/NativeOriginalMixReview.tsx").read_text(encoding="utf-8")
@@ -914,6 +1003,8 @@ class OnceDispatcherTests(unittest.TestCase):
             states=item.states, interfaces=item.interfaces)
         ui.bridge.focus_title = lambda _: True
         ui.bridge.call = lambda function, *args: function(*args)
+        ui.bridge.drain = lambda: None
+        ui.bridge.glib = SimpleNamespace(Error=OSError)
         pressed = []
         def keyboard(number, _, kind):
             pressed.append((number, kind))
