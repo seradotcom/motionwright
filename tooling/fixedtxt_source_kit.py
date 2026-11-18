@@ -473,7 +473,10 @@ def retained_context(event, environment):
     inputs = event.get("inputs")
     required = {"verification_scope", "expected_source_sha", "fixedtxt_mode",
                 "fixedtxt_request", RETAINED_INPUT}
-    optional_empty = {"g2_admission", "fixedtxt_delivery", "retained_reference_zip_base64"}
+    # A disabled session selector may be present in the shared workflow event.
+    # Only absent/null/empty is admitted; it never grants a session or Native call.
+    optional_empty = {"g2_admission", "fixedtxt_delivery", "retained_reference_zip_base64",
+                      "fixedtxt_session_cases"}
     need(type(inputs) is dict, "retained source input roster: not-object")
     need(required <= set(inputs), "retained source input roster: missing-required")
     need(set(inputs) <= required | optional_empty, "retained source input roster: unknown-key")
