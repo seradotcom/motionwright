@@ -71,7 +71,7 @@ def data():
           "project_id": ids[0], "generation": ids[1], "revision_before": 1, "revision_after": 2,
           "opened": {"text": "r1", "matches": 1},
           "draft_source_bindings": {"text": "Draft source bindings: music music; SFX sfx.", "matches": 1},
-          "saved": {"text": "Showing saved recipe values at revision r2.", "matches": 1},
+          "saved": {"text": "Saved recipe at revision r2.", "matches": 1},
           "preview": {"text": GUARDS.PREVIEW, "matches": 1},
           "actions": list(GUARDS.REQUIRED_ACTIONS), "normal_close_requested": True,
           "playback_or_human_listening_claimed": False,
@@ -302,6 +302,28 @@ class AudioJoinTests(unittest.TestCase):
         with self.assertRaisesRegex(GUARDS.AudioError, "UI_SOURCE_STATUS_OWNER_CHANGED"):
             ui.refreshed_source_status(expected)
         self.assertEqual(observations, ["fresh", "fresh"])
+
+    def test_original_save_ack_uses_real_reaction_not_stale_form_projection(self):
+        # The physical original 44232653680 showed "Saved recipe at revision r14."
+        # after the writer committed r14. The generic form's "Showing saved"
+        # condition is not the original ACK and may remain hidden while dirty.
+        draft = (ROOT / "apps/studio/src/deliveryRecipeDraft.ts").read_text(encoding="utf-8")
+        receipt = draft.index("const receipt = await commit(change);")
+        acknowledged = draft.index("const acknowledged = acknowledgeRecipeOriginal(", receipt)
+        original_ack = draft.index('session.message = "Saved recipe at revision r"', acknowledged)
+        self.assertLess(receipt, acknowledged)
+        self.assertLess(acknowledged, original_ack)
+        view = (ROOT / "apps/studio/src/DeliveryProfiles.tsx").read_text(encoding="utf-8")
+        self.assertIn('{controller.message && <p className="production-help" role="status">', view)
+        before, binding, _, _, _, ui, _, _ = data()
+        self.assertIsNone(GUARDS.validate_ui_observation(ui, before, binding))
+        altered = deepcopy(ui)
+        altered["saved"]["text"] = "Showing saved recipe values at revision r2."
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_TEXT_OBSERVATION_MISSING"):
+            GUARDS.validate_ui_observation(altered, before, binding)
+        altered["saved"]["text"] = "The recipe save result is unconfirmed."
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_TEXT_OBSERVATION_MISSING"):
+            GUARDS.validate_ui_observation(altered, before, binding)
 
     def test_source_draft_status_may_scroll_but_must_retain_exact_live_text(self):
         before, binding, _, _, _, ui, _, _ = data()
@@ -623,7 +645,7 @@ class AudioJoinTests(unittest.TestCase):
         for field, value in (("status", "FAIL"), ("revision_before", True),
                              ("revision_after", 3), ("normal_close_requested", 1),
                              ("preview", {"text": "prepared natively only", "matches": 1}),
-                             ("saved", {"text": "Showing saved recipe values at revision r2.", "matches": True}),
+                             ("saved", {"text": "Saved recipe at revision r2.", "matches": True}),
                              ("binding", {"pid": 7002, "window": "0xa00", "start_time": "23456"}),
                              ("playback_or_human_listening_claimed", True)):
             values = data()

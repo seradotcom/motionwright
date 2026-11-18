@@ -859,7 +859,7 @@ class AudioUI:
             need("Text" in entry.interfaces and self.bridge.read_text(entry.node) == expected,
                  "UI_NUMERIC_RECIPE_CHANGED")
         self.click("Save original mix recipe", {"button"}, "save-recipe")
-        saved = self.wait(lambda: self.text("Showing saved recipe values at revision r" + str(revision + 1) + "."))
+        saved = self.wait(lambda: self.text("Saved recipe at revision r" + str(revision + 1) + "."))
         self.wait(lambda: self.text("r" + str(revision + 1)))
         self.visible(RIGHTS, {"checkbox"}, "rights")
         self.wait(lambda: self.checked(RIGHTS, False))
@@ -1149,7 +1149,7 @@ def validate_ui_observation(ui, before, binding):
         ("opened", "r" + str(before["revision_before"])),
         ("draft_source_bindings", "Draft source bindings: music " + mix["music_asset_id"]
          + "; SFX " + mix["sfx_asset_id"] + "."),
-        ("saved", "Showing saved recipe values at revision r" + str(before["revision_before"] + 1) + "."),
+        ("saved", "Saved recipe at revision r" + str(before["revision_before"] + 1) + "."),
         ("preview", PREVIEW),
     ):
         item = ui.get(field, {})
