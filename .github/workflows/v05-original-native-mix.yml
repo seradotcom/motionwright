@@ -308,6 +308,7 @@ jobs:
           cache: npm
           cache-dependency-path: apps/studio/package-lock.json
       - name: Install existing Tauri and accessible desktop prerequisites
+        timeout-minutes: 25
         shell: bash
         run: |
           set -euo pipefail
@@ -316,8 +317,19 @@ jobs:
           test "$GITHUB_SHA" = "$MW_TAURI_AUDIO_EXPECTED_SOURCE"
           test "$GITHUB_REPOSITORY" = seradotcom/motionwright
           test "$MW_AUDIO_DIAGNOSTIC_SELECTION" = tauri-audition
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev python3-gi python3-cryptography gir1.2-atspi-2.0 gir1.2-gtk-3.0 at-spi2-core xvfb x11-utils dbus-x11 openbox
+          # Ubuntu 24.04 GitHub runners list both official mirrors here.
+          # A live but extremely slow Azure mirror never trips apt's idle
+          # timeout. Keep the original signed Ubuntu repositories and select
+          # their already-provided non-Azure fallback before downloads.
+          mirrors=/etc/apt/apt-mirrors.txt
+          test -f "$mirrors" && test ! -L "$mirrors"
+          grep -Eq '^https?://azure[.]archive[.]ubuntu[.]com/ubuntu/?$' "$mirrors"
+          grep -Eq '^https?://archive[.]ubuntu[.]com/ubuntu/?$' "$mirrors"
+          sudo sed -i '/azure[.]archive[.]ubuntu[.]com/d' "$mirrors"
+          grep -Eq '^https?://archive[.]ubuntu[.]com/ubuntu/?$' "$mirrors"
+          ! grep -Eq 'azure[.]archive[.]ubuntu[.]com' "$mirrors"
+          timeout --signal=TERM --kill-after=30s 240s sudo apt-get update
+          timeout --signal=TERM --kill-after=30s 1080s sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev python3-gi python3-cryptography gir1.2-atspi-2.0 gir1.2-gtk-3.0 at-spi2-core xvfb x11-utils dbus-x11 openbox
       - name: Admit exact source and public recipient before Native
         id: admission
         shell: bash

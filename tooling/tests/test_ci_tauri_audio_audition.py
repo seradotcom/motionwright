@@ -93,6 +93,39 @@ class DevelopmentAdmission(unittest.TestCase):
         concurrency = text.split("concurrency:\n", 1)[1].split("jobs:", 1)[0]
         self.assertIn("inputs.verification != 'tauri-audition'", concurrency)
 
+    def test_tauri_apt_is_bounded_to_existing_signed_ubuntu_fallback(self):
+        text = (ROOT / ".github/workflows/v05-original-native-mix.yml").read_text(encoding="utf-8")
+        selected = text.split("      - name: Install existing Tauri and accessible desktop prerequisites\n", 1)
+        self.assertEqual(len(selected), 2)
+        step = selected[1].split("      - name: Admit exact source and public recipient before Native\n", 1)[0]
+        self.assertIn("timeout-minutes: 25", step)
+        self.assertIn('test "$GITHUB_SHA" = "$MW_TAURI_AUDIO_EXPECTED_SOURCE"', step)
+        self.assertIn('test "$GITHUB_RUN_ATTEMPT" = 1', step)
+        self.assertIn("mirrors=/etc/apt/apt-mirrors.txt", step)
+        self.assertIn('test -f "$mirrors" && test ! -L "$mirrors"', step)
+        azure = "grep -Eq '^https?://azure[.]archive[.]ubuntu[.]com/ubuntu/?$' "
+        fallback = "grep -Eq '^https?://archive[.]ubuntu[.]com/ubuntu/?$' "
+        remove = "sudo sed -i '/azure[.]archive[.]ubuntu[.]com/d' "
+        self.assertIn(azure, step)
+        self.assertIn(fallback, step)
+        self.assertIn(remove, step)
+        self.assertIn("! grep -Eq 'azure[.]archive[.]ubuntu[.]com' ", step)
+        self.assertLess(step.index(azure), step.index(fallback))
+        self.assertLess(step.index(fallback), step.index(remove))
+        update = "timeout --signal=TERM --kill-after=30s 240s sudo apt-get update"
+        install = "timeout --signal=TERM --kill-after=30s 1080s sudo apt-get install -y --no-install-recommends "
+        self.assertIn(update, step)
+        self.assertIn(install, step)
+        self.assertLess(step.index(remove), step.index(update))
+        self.assertLess(step.index(update), step.index(install))
+        for requirement in ("libwebkit2gtk-4.1-dev", "libappindicator3-dev", "librsvg2-dev",
+                            "python3-gi", "gir1.2-atspi-2.0", "at-spi2-core", "xvfb",
+                            "x11-utils", "dbus-x11", "openbox"):
+            self.assertIn(requirement, step.split(install, 1)[1])
+        for unsafe in ("--allow-unauthenticated", "--allow-insecure-repositories",
+                       "trusted=yes", "curl ", "wget ", "github.com/actions/cache"):
+            self.assertNotIn(unsafe, step)
+
     @unittest.skipUnless(os.name == "posix", "Private FD policy is Linux-only")
     def test_exclusive_private_output_retains_first_and_rejects_link(self):
         with tempfile.TemporaryDirectory() as value:
