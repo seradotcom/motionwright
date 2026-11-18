@@ -923,8 +923,10 @@ class AudioUI:
                 "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
             })
             self.identity()
-            need(self.bridge.owner_pid(original_button.node) == self.binding["pid"],
-                 "UI_CLOSE_BUTTON_OWNER_CHANGED")
+            # A NoReply can leave the AT-SPI application-owner cache stale.
+            # Refresh this same original node once, then require its actual
+            # owner to match again; foreign/defunct owners still fail closed.
+            self.original_pcm_owner(original_button, "refresh")
             need(len(self.pcm_read_timeouts) <= 2, "UI_PCM_READ_TIMEOUT_LIMIT")
             raise accessible.NotReady("UI_PCM_READ_NO_REPLY") from error
         if item.name != AUDITION_PCM_READY:
@@ -940,8 +942,9 @@ class AudioUI:
         need({"Action", "Component"} <= item.interfaces
              and "EditableText" not in item.interfaces,
              "UI_CLOSE_BUTTON_INTERFACES_CHANGED")
-        need(self.bridge.owner_pid(item.node) == self.binding["pid"],
-             "UI_CLOSE_BUTTON_OWNER_CHANGED")
+        # A second live owner read is required even when the button's label,
+        # state and interfaces are correct. Revalidate this exact node only.
+        self.original_pcm_owner(original_button, "refresh")
         if require_usable and not {"enabled", "sensitive"} <= item.states:
             raise accessible.NotReady("UI_CLOSE_BUTTON_STILL_WORKING")
         return item

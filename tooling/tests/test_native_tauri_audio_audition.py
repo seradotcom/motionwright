@@ -448,7 +448,7 @@ class AudioJoinTests(unittest.TestCase):
         self.assertEqual(len(ui.pcm_read_timeouts), 3)
         self.assertEqual(ui.events, [])
         ui, original, events, _, _ = self._pcm_read_case(["foreign"])
-        with self.assertRaisesRegex(GUARDS.AudioError, "UI_CLOSE_BUTTON_OWNER_CHANGED"):
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_PCM_PREVIEW_ANCHOR_NOT_OWNED"):
             ui.wait(lambda: ui.observe_original_pcm_near_owned_button(original))
         self.assertEqual(events.count("view"), 1)
 
@@ -466,6 +466,30 @@ class AudioJoinTests(unittest.TestCase):
         with self.assertRaisesRegex(GUARDS.AudioError, "UI_DEADLINE"):
             ui.observe_original_pcm_near_owned_button(original)
         self.assertEqual(events.count("view"), 1)
+
+    def test_pcm_no_reply_owner_cache_mismatch_recovers_same_node_only(self):
+        ui, original, events, state, _ = self._pcm_read_case(["timeout"])
+        sequence = iter((7001, 7001, 7002, 7001, 7001, 7001, 7001))
+        ui.bridge.owner_pid = lambda _: next(sequence)
+        result = ui.wait(lambda: ui.observe_original_pcm_near_owned_button(original))
+        self.assertEqual(result, {"text": GUARDS.PREVIEW, "matches": 1})
+        self.assertEqual(len(ui.pcm_read_timeouts), 1)
+        self.assertEqual(len(ui.pcm_owner_observations), 1)
+        self.assertEqual(ui.pcm_owner_observations[0]["stale_pid"], 7002)
+        self.assertEqual(ui.pcm_owner_observations[0]["refreshed_pid"], 7001)
+        self.assertEqual(ui.events, [])
+        self.assertEqual(events.count("view"), 2)
+
+    def test_pcm_final_view_owner_guard_denies_persistent_foreign_owner(self):
+        ui, original, events, _, _ = self._pcm_read_case([])
+        sequence = iter((7001, 7001, 7002, 7002))
+        ui.bridge.owner_pid = lambda _: next(sequence)
+        with self.assertRaisesRegex(GUARDS.AudioError, "UI_PCM_PREVIEW_ANCHOR_NOT_OWNED"):
+            ui.observe_original_pcm_near_owned_button(original)
+        self.assertEqual(len(ui.pcm_owner_observations), 1)
+        self.assertEqual(ui.pcm_owner_observations[0]["refreshed_pid"], 7002)
+        self.assertIsNone(ui.pcm_preview)
+        self.assertEqual(ui.events, [])
 
     def test_pcm_no_reply_classifier_rejects_denial_defunct_and_unknown_errors(self):
         for field, value in (("domain", "g-dbus-error-quark"), ("code", 0),
