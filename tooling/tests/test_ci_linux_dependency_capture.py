@@ -67,6 +67,18 @@ class LinuxDependencyCaptureTests(unittest.TestCase):
         self.complete_path = self.root / gate.BASE / "state/capture-complete.json"
         gate.capture.write_new(self.complete_path, gate.capture.encoded(self.complete))
         self.output = self.root / "ci-evidence/linux-cargo-binding.json"
+        # Existing inert Cargo tests retain seven deterministic source paths;
+        # the real Linux witness and fail-closed byte checks are covered by
+        # test_linux_native_notice_resources on synthetic dpkg originals.
+        self.fake_native_mapping = {
+            (self.root / gate.native_notices.ROOT / pkg / "copyright").as_posix():
+            "licenses/linux-system-notices/" + pkg + "/copyright"
+            for pkg, _, _ in gate.native_notices.SPEC
+        }
+        self.enterContext(mock.patch.object(
+            gate.native_notices, "stage", return_value={"claims": {"G3": "STOP"}}))
+        self.enterContext(mock.patch.object(
+            gate.native_notices, "mapping", return_value=self.fake_native_mapping))
 
     save_cargo_index = fixtures.CandidateCargoProducerTests.save_cargo_index
 
@@ -128,7 +140,11 @@ class LinuxDependencyCaptureTests(unittest.TestCase):
         self.assertEqual(defaults, (gate.shared.BASE, gate.shared.TARGET, gate.shared.BINARY))
         self.assertFalse((self.root / gate.shared.BASE / "tauri-resources.json").exists())
         mapped = json.loads((self.root / gate.BASE / "tauri-resources.json").read_bytes())
-        self.assertEqual(len(mapped["bundle"]["resources"]), 6)
+        self.assertEqual(len(mapped["bundle"]["resources"]), 13)
+        self.assertEqual(
+            {value for value in mapped["bundle"]["resources"].values()
+             if value.startswith("licenses/linux-system-notices/")},
+            set(self.fake_native_mapping.values()))
         self.assertIn("licenses/cargo/index.json", mapped["bundle"]["resources"].values())
 
 
@@ -526,6 +542,7 @@ class TauriInputObservationTests(unittest.TestCase):
         chosen = collect if collect is not None else self.minimal_collect
         with mock.patch.object(gate, "cargo_binding", return_value=binding), \
              mock.patch.object(gate.shared, "resource_mapping", return_value={}), \
+             mock.patch.object(gate.native_notices, "mapping", return_value={}), \
              mock.patch.object(gate._CliInputObservation, "collect", side_effect=chosen, autospec=True), \
              mock.patch.object(gate.toolpins, "stage", return_value=fake_pins), \
              mock.patch.object(gate.toolpins, "verify_cached", side_effect=verified), \

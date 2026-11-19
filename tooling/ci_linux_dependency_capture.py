@@ -15,6 +15,7 @@ import sys
 
 import ci_windows_dependency_capture as shared
 import linux_tauri_bundle_tool_pins as toolpins
+import linux_native_notice_resources as native_notices
 
 ROOT = Path(__file__).resolve().parents[1]
 capture = shared.capture
@@ -656,8 +657,30 @@ def cargo_binding(repo, source):
     return shared.cargo_binding(repo, source, **LAYOUT)
 
 
+def resource_mapping(repo, raw, source):
+    """Preserve the closed Cargo resources and append 7 pinned Linux notices."""
+    baseline = shared.resource_mapping(repo, raw, base=BASE)
+    extras = native_notices.mapping(repo, source)
+    require(not (baseline.keys() & extras.keys())
+            and not (set(baseline.values()) & set(extras.values())),
+            "linux_native_notice_resource_collision")
+    return {**baseline, **extras}
+
+
 def stage_resources(repo, source):
-    return shared.stage_resources(repo, source, **LAYOUT)
+    """Stage seven source/manifest-locked system notices before overlay sealing."""
+    snapshot, _, raw, binding = cargo_binding(repo, source)
+    baseline = shared.resource_mapping(repo, raw, base=BASE)
+    native_notices.stage(repo, source)
+    extras = native_notices.mapping(repo, source)
+    require(len(extras) == 7 and not (baseline.keys() & extras.keys())
+            and not (set(baseline.values()) & set(extras.values())),
+            "linux_native_notice_staging_collision")
+    require(capture.source_snapshot(repo, source) == snapshot,
+            "linux_source_changed_during_notice_staging")
+    capture.write_new(repo / BASE / "tauri-resources.json",
+                      capture.encoded({"bundle": {"resources": {**baseline, **extras}}}))
+    return binding
 
 
 def observe_link_layout(repo, source, runner_temp, environment):
@@ -713,7 +736,7 @@ def bundle_packages(repo, source, environment):
     """Package the verified captured executable without another Cargo build."""
     link_environment(environment)
     before = cargo_binding(repo, source)
-    mapped = shared.resource_mapping(repo, before[2], base=BASE)
+    mapped = resource_mapping(repo, before[2], source)
     overlay = capture.stable_read(repo, BASE / "tauri-resources.json", 2 * 1024 * 1024)
     require(capture.parse_json(overlay) == {"bundle": {"resources": mapped}},
             "linux_cargo_overlay_changed")
@@ -831,7 +854,7 @@ def verify_packages(repo, source):
 
     original_binding = cargo_binding(repo, source)
     snapshot, complete, raw, observed = original_binding
-    mapped = shared.resource_mapping(repo, raw, base=BASE)
+    mapped = resource_mapping(repo, raw, source)
     overlay = capture.stable_read(repo, BASE / "tauri-resources.json", 2 * 1024 * 1024)
     require(capture.parse_json(overlay) == {"bundle": {"resources": mapped}},
             "linux_cargo_overlay_changed")
