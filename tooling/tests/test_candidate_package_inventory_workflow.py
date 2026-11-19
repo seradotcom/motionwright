@@ -31,6 +31,8 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
                  "tooling/tests/test_linux_deb_archive_audit.py", "tooling/linux_appimage_system_origins.py",
                  "tooling/tests/test_linux_appimage_system_origins.py",
                  "tooling/linux_elf_build_id.py", "tooling/tests/test_linux_elf_build_id.py",
+                 "tooling/linux_elf_dynamic_needed.py",
+                 "tooling/tests/test_linux_elf_dynamic_needed.py",
                  "tooling/linux_apprun_release_identity.py",
                  "tooling/tests/test_linux_apprun_release_identity.py",
                  "tooling/linux_tauri_bundle_tool_pins.py",
@@ -80,6 +82,12 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
         self.assertIn("counts['tests_run']==counts['passed']==16", elf_source)
         self.assertIn("counts[k]==0", elf_source)
         self.assertIn("native_execution=NOT_RUN G3=STOP", elf_source)
+        needed_source = step(policy, "Require bounded ELF dynamic dependency source controls")
+        self.assertIn("--pattern test_linux_elf_dynamic_needed.py", needed_source)
+        self.assertIn("--mode discovery --require-complete --expected-source", needed_source)
+        self.assertIn("counts['tests_run']==counts['passed']==20", needed_source)
+        self.assertIn("counts[k]==0", needed_source)
+        self.assertIn("linker_closure=NOT_VERIFIED G3=STOP", needed_source)
         bootstrap_source = step(policy, "Require pinned upstream AppRun release-byte source controls")
         self.assertIn("--pattern test_linux_apprun_release_identity.py", bootstrap_source)
         self.assertIn("--mode discovery --require-complete --expected-source", bootstrap_source)
@@ -108,15 +116,22 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
         upload = step(self.linux, "Preserve original isolated Linux package inventories")
         self.assertIn("ci-evidence/linux-appimage-system-origin", upload)
         self.assertIn("ci-evidence/linux-native-notice-bundle.json", upload)
+        self.assertIn("ci-evidence/linux-elf-needed.json", upload)
         self.assertNotIn("ci-evidence/linux-appimage-system-origin/*", upload)
         included = step(self.linux, "Verify seven original native notice bytes in extracted Linux bundles")
         self.assertIn("--appimage-inventory ci-evidence/linux-appimage-package-inventory/inventory.json", included)
         self.assertIn("--deb-inventory ci-evidence/linux-deb-package-inventory/inventory.json", included)
         self.assertIn("--expected-source \"$GITHUB_SHA\"", included)
         self.assertIn("--output ci-evidence/linux-native-notice-bundle.json", included)
+        elf_scan = step(self.linux, "Observe bounded dynamic ELF dependencies from original AppImage bytes")
+        self.assertIn("--appimage-inventory ci-evidence/linux-appimage-package-inventory/inventory.json", elf_scan)
+        self.assertIn('--live-payload "$RUNNER_TEMP/motionwright-smoke/appimage-inventory/squashfs-root"', elf_scan)
+        self.assertIn("--expected-source \"$GITHUB_SHA\"", elf_scan)
+        self.assertIn("--output ci-evidence/linux-elf-needed.json", elf_scan)
         archive = step(policy, "Retain original package inventory source control records")
         self.assertIn("deb-original-archive-source-${{ github.run_id }}-${{ github.run_attempt }}/*", archive)
         self.assertIn("elf-build-id-source-${{ github.run_id }}-${{ github.run_attempt }}/*", archive)
+        self.assertIn("elf-needed-source-${{ github.run_id }}-${{ github.run_attempt }}/*", archive)
         self.assertIn("tauri-tool-pin-source-${{ github.run_id }}-${{ github.run_attempt }}/*", archive)
         self.assertIn("native-notice-source-${{ github.run_id }}-${{ github.run_attempt }}/*", archive)
         retained = step(self.linux, "Preserve original isolated Linux dependency records")
@@ -220,6 +235,7 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
                     "ci-evidence/linux-appimage-system-origin",
                     "ci-evidence/linux-apprun-release-pin.json",
                     "ci-evidence/linux-native-notice-bundle.json",
+                    "ci-evidence/linux-elf-needed.json",
                 })
             self.assertEqual(actual, expected_for_scope)
             self.assertNotIn("*", selected)
