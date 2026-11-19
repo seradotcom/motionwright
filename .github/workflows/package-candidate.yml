@@ -570,10 +570,10 @@ jobs:
           counts=step['counts']
           assert step['entry_point']=='discovery:test_linux_native_notice_resources.py'
           assert step['status']=='PASS' and step['exit_code']==0
-          assert counts['tests_run']==counts['passed']==12
+          assert counts['tests_run']==counts['passed']==15
           assert counts['terminal_status']=='OK'
           assert all(counts[k]==0 for k in ('failures','errors','skipped','expected_failures','unexpected_successes'))
-          print('linux-native-seven-notice-source=PASS controls=12 native_effects=NOT_RUN G3=STOP')
+          print('linux-native-seven-notice-source=PASS controls=15 native_effects=NOT_RUN G3=STOP')
           PY_NATIVE_NOTICE_G1
       - name: Retain original package inventory source control records
         if: always()
@@ -1839,7 +1839,7 @@ jobs:
             --expected-source "$GITHUB_SHA" \
             --live-payload "$RUNNER_TEMP/motionwright-smoke/appimage-inventory/squashfs-root" \
             --output-directory "$GITHUB_WORKSPACE/ci-evidence/linux-appimage-system-origin"
-      - name: Verify seven original native notice bytes in extracted AppImage
+      - name: Verify seven original native notice bytes in extracted Linux bundles
         if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle'
         timeout-minutes: 3
         shell: bash
@@ -1847,6 +1847,7 @@ jobs:
           set -euo pipefail
           python3 -B -E -s tooling/linux_native_notice_resources.py \
             --appimage-inventory ci-evidence/linux-appimage-package-inventory/inventory.json \
+            --deb-inventory ci-evidence/linux-deb-package-inventory/inventory.json \
             --expected-source "$GITHUB_SHA" \
             --output ci-evidence/linux-native-notice-bundle.json
       - name: Preserve original isolated Linux package inventories

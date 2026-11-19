@@ -198,13 +198,18 @@ def mapping(repo, source, *, spec=SPEC):
     return result
 
 
-def verify_extracted(original_inventory, receipt, *, spec=SPEC):
-    """Read extracted same-run member identities; never execute the AppImage."""
+def verify_extracted(original_inventory, receipt, *, kind="appimage", spec=SPEC):
+    """Read an original DEB or AppImage member inventory; never execute code."""
     validate_spec(spec)
     inventory.validate(original_inventory)
-    need(original_inventory["context"]["kind"] == "appimage"
+    need(kind in ("appimage", "deb")
+         and original_inventory["context"]["kind"] == kind
          and original_inventory["context"]["source"] == receipt["source"]
-         and receipt["claims"]["G3"] == "STOP",
+         and original_inventory["custody"]["status"] == "DIRECT_CAPTURED_EXTRACTION"
+         and len(original_inventory["roots"]) == 1
+         and original_inventory["roots"][0]["role"] == "payload"
+         and receipt["claims"]["G3"] == "STOP"
+         and receipt["claims"]["legal_review"] == "NOT_PERFORMED",
          "native_notice_extracted_original_context")
     members = {item["path"]: item for item in
                original_inventory["roots"][0]["members"]}
@@ -224,7 +229,7 @@ def verify_extracted(original_inventory, receipt, *, spec=SPEC):
                         "sha256": member["sha256"], "status": "EXACT_BUNDLED_NOTICE_BYTES"})
     return {
         "schema": "motionwright.linux-seven-bundled-native-notices/1",
-        "source": receipt["source"],
+        "source": receipt["source"], "kind": kind,
         "count": len(results), "notices": results,
         "status": "SEVEN_ORIGINAL_NOTICES_EXTRACTED_BYTES_VERIFIED",
         "G2": "NOT_GRANTED", "G3": "STOP",
@@ -240,6 +245,7 @@ def main(argv=None):
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--appimage-inventory", type=Path, required=True)
+    parser.add_argument("--deb-inventory", type=Path, required=True)
     parser.add_argument("--expected-source", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -254,19 +260,43 @@ def main(argv=None):
     mapping(repo, args.expected_source)  # Rehash every sealed staged original.
     receipt_raw = inventory.capture.stable_read(repo, repo / RECEIPT, MAX_RECEIPT)
     receipt = inventory.capture.parse_json(receipt_raw)
-    source_path = args.appimage_inventory.absolute()
-    need(source_path.is_relative_to(repo), "native_notice_image_original_outside_repo")
-    image_raw = inventory.capture.stable_read(repo, source_path, inventory.MAX_REPORT)
-    app = inventory.capture.parse_json(image_raw)
-    need(str(app["context"]["run_id"]) == os.environ["GITHUB_RUN_ID"]
-         and app["context"]["run_attempt"] == 1,
-         "native_notice_image_run_not_current")
-    result = verify_extracted(app, receipt)
-    result.update({
+    original_inventories, originals = {}, {}
+    for kind, source_path in (
+        ("deb", args.deb_inventory.absolute()),
+        ("appimage", args.appimage_inventory.absolute()),
+    ):
+        need(source_path.is_relative_to(repo),
+             "native_notice_image_original_outside_repo")
+        raw = inventory.capture.stable_read(repo, source_path, inventory.MAX_REPORT)
+        original = inventory.capture.parse_json(raw)
+        need(original["context"]["source"] == args.expected_source
+             and str(original["context"]["run_id"]) == os.environ["GITHUB_RUN_ID"]
+             and original["context"]["run_attempt"] == 1
+             and original["context"]["kind"] == kind,
+             "native_notice_image_run_not_current")
+        original_inventories[kind] = original
+        originals[kind] = digest(raw)
+    app = original_inventories["appimage"]
+    deb = original_inventories["deb"]
+    for key in ("source_tree", "candidate_receipt", "cargo_index",
+                "artifact_identities_sha256", "generated_metadata_sha256"):
+        need(app["context"][key] == deb["context"][key],
+             "native_notice_cross_bundle_source:" + key)
+    app_result = verify_extracted(app, receipt, kind="appimage")
+    deb_result = verify_extracted(deb, receipt, kind="deb")
+    need(app_result["notices"] == deb_result["notices"],
+         "native_notice_cross_bundle_members_not_identical")
+    result = {
+        "schema": "motionwright.linux-seven-original-notices-pair/1",
+        "source": args.expected_source,
         "run_id": app["context"]["run_id"], "run_attempt": 1,
-        "appimage_inventory_original": digest(image_raw),
+        "appimage": app_result, "deb": deb_result,
+        "original_inventories": originals,
         "seven_original_notice_receipt": digest(receipt_raw),
-    })
+        "status": "SEVEN_ORIGINAL_NOTICES_IN_BOTH_LINUX_BUNDLES",
+        "G2": "NOT_GRANTED", "G3": "STOP",
+        "legal_review": "NOT_PERFORMED", "release_authorized": False,
+    }
     output = inventory.capture.encoded(result)
     need(len(output) <= MAX_RECEIPT, "native_notice_extracted_report_budget")
     path = args.output.absolute()

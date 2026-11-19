@@ -148,7 +148,8 @@ class SevenPinnedNativeNoticeTests(unittest.TestCase):
         receipt = self.stage()
         inventory = {
             "context": {"kind": "appimage", "source": SOURCE},
-            "roots": [{"members": [
+            "custody": {"status": "DIRECT_CAPTURED_EXTRACTION"},
+            "roots": [{"role": "payload", "members": [
                 {"path": row["extracted_appimage_member"], "kind": "file",
                  **row["original"]} for row in receipt["notices"]]}],
         }
@@ -161,6 +162,50 @@ class SevenPinnedNativeNoticeTests(unittest.TestCase):
             inventory["roots"][0]["members"] = inventory["roots"][0]["members"][:-1]
             with self.assertRaisesRegex(ValueError, "member_not_original"):
                 notices.verify_extracted(inventory, receipt, spec=self.pins)
+
+    def sample_inventory(self, kind, receipt):
+        return {
+            "context": {"kind": kind, "source": SOURCE},
+            "custody": {"status": "DIRECT_CAPTURED_EXTRACTION"},
+            "roots": [{"role": "payload", "members": [
+                {"path": row["extracted_appimage_member"], "kind": "file",
+                 **row["original"]} for row in receipt["notices"]]}],
+        }
+
+    def test_deb_and_appimage_have_identical_seven_original_notice_members(self):
+        receipt = self.stage()
+        with mock.patch.object(notices.inventory, "validate", return_value=None):
+            app = notices.verify_extracted(
+                self.sample_inventory("appimage", receipt),
+                receipt, kind="appimage", spec=self.pins)
+            deb = notices.verify_extracted(
+                self.sample_inventory("deb", receipt),
+                receipt, kind="deb", spec=self.pins)
+        self.assertEqual(app["notices"], deb["notices"])
+        self.assertEqual({app["kind"], deb["kind"]}, {"appimage", "deb"})
+        self.assertEqual((app["G3"], deb["G3"]), ("STOP", "STOP"))
+
+    def test_deb_member_with_same_length_wrong_sha_is_refused(self):
+        receipt = self.stage()
+        original = self.sample_inventory("deb", receipt)
+        original["roots"][0]["members"][0]["sha256"] = "f" * 64
+        with mock.patch.object(notices.inventory, "validate", return_value=None):
+            with self.assertRaisesRegex(ValueError, "member_not_original"):
+                notices.verify_extracted(original, receipt, kind="deb", spec=self.pins)
+
+    def test_deb_source_or_kind_substitution_refused_without_credit(self):
+        receipt = self.stage()
+        original = self.sample_inventory("deb", receipt)
+        with mock.patch.object(notices.inventory, "validate", return_value=None):
+            with self.assertRaisesRegex(ValueError, "original_context"):
+                notices.verify_extracted(original, receipt, kind="appimage", spec=self.pins)
+            original["context"]["source"] = "2" * 40
+            with self.assertRaisesRegex(ValueError, "original_context"):
+                notices.verify_extracted(original, receipt, kind="deb", spec=self.pins)
+            original["context"]["source"] = SOURCE
+            original["custody"]["status"] = "HISTORICAL_COPY"
+            with self.assertRaisesRegex(ValueError, "original_context"):
+                notices.verify_extracted(original, receipt, kind="deb", spec=self.pins)
 
 
 if __name__ == "__main__":
