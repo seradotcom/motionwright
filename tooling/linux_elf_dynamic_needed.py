@@ -18,7 +18,7 @@ import sys
 
 import candidate_package_inventory as inventory
 
-SCHEMA = "motionwright.linux-appimage-elf-needed-survey/1"
+SCHEMA = "motionwright.linux-appimage-elf-needed-survey/2"
 MAX_BINARY = 128 * 1024 * 1024
 MAX_ALL_BYTES = 384 * 1024 * 1024
 MAX_ELF_MEMBERS = 500
@@ -195,6 +195,72 @@ def scan_original(root, doc, *, max_bytes=MAX_ALL_BYTES):
     return {"scanned": len(records), "total_bytes": total, "entries": records}
 
 
+DESKTOP_MEMBER = "usr/bin/motionwright-desktop"
+SAME_SOURCE_KEYS = (
+    "source", "source_tree", "run_id", "run_attempt", "platform", "arch",
+    "candidate_receipt", "cargo_index", "artifact_identities_sha256",
+    "generated_metadata_sha256",
+)
+
+
+def verify_cross_bundle_desktop(app, deb, scan, deb_payload):
+    """Bind the one installed desktop ELF to identical DEB and AppImage bytes.
+
+    This observes only the original files and dynamic declarations. It is not
+    an assertion about transitive loader resolution, dlopen or host packages.
+    """
+    inventory.validate(deb)
+    ac, dc = app["context"], deb["context"]
+    require(ac["kind"] == "appimage" and dc["kind"] == "deb"
+            and all(ac[k] == dc[k] for k in SAME_SOURCE_KEYS)
+            and dc["platform"] == "linux" and dc["arch"] == "x86_64"
+            and deb["custody"]["status"] == "DIRECT_CAPTURED_EXTRACTION"
+            and len(deb["roots"]) == 1
+            and deb["roots"][0]["role"] == "payload",
+            "elf_needed_deb_appimage_source_mismatch")
+    app_members = [
+        member for member in app["roots"][0]["members"]
+        if member["path"] == DESKTOP_MEMBER]
+    deb_members = [
+        member for member in deb["roots"][0]["members"]
+        if member["path"] == DESKTOP_MEMBER]
+    scanned = [
+        item for item in scan["entries"]
+        if item["member"] == DESKTOP_MEMBER]
+    require(len(app_members) == len(deb_members) == len(scanned) == 1,
+            "elf_needed_desktop_member_not_unique")
+    a, d, observed = app_members[0], deb_members[0], scanned[0]
+    require(a["kind"] == d["kind"] == "file"
+            and a["native_format"] == d["native_format"] == "ELF"
+            and type(a["bytes"]) is int
+            and 0 < a["bytes"] <= MAX_BINARY
+            and {"bytes": a["bytes"], "sha256": a["sha256"]} ==
+                {"bytes": d["bytes"], "sha256": d["sha256"]} ==
+                observed["identity"],
+            "elf_needed_cross_bundle_desktop_bytes_differ")
+    root = Path(deb_payload).resolve(strict=True)
+    file = root / DESKTOP_MEMBER
+    info = file.lstat()
+    require(stat.S_ISREG(info.st_mode), "elf_needed_deb_desktop_nonregular")
+    raw = inventory.capture.stable_read(root, file, MAX_BINARY)
+    require(digest(raw) == observed["identity"],
+            "elf_needed_deb_live_original_different")
+    dynamic = dynamic_needed(raw)
+    require(dynamic == observed["dynamic"],
+            "elf_needed_cross_bundle_dynamic_different")
+    return {
+        "status": "SAME_ORIGINAL_DESKTOP_ELF_BYTES_AND_DYNAMIC_DECLARATIONS",
+        "member": DESKTOP_MEMBER, "original": digest(raw),
+        "dynamic": dynamic,
+        "claims": {
+            "desktop_elf_source_bytes": "EXACT_IN_DEB_AND_APPIMAGE",
+            "external_system_libraries_resolved": False,
+            "runtime_loader_execution": "NOT_RUN",
+            "G2": "NOT_GRANTED", "G3": "STOP",
+        },
+    }
+
+
 def candidate_edges(scan):
     """Identify *candidates*, never claim loader resolution or full closure."""
     index = {}
@@ -232,6 +298,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--appimage-inventory", type=Path, required=True)
     parser.add_argument("--live-payload", type=Path, required=True)
+    parser.add_argument("--deb-inventory", type=Path, required=True)
+    parser.add_argument("--deb-live-payload", type=Path, required=True)
     parser.add_argument("--expected-source", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -258,12 +326,30 @@ def main(argv=None):
     require(payload.is_relative_to(runner),
             "elf_needed_payload_outside_runner")
     scan = scan_original(payload, original)
+    deb_inventory_path = args.deb_inventory.absolute()
+    require(deb_inventory_path.is_relative_to(repo),
+            "elf_needed_deb_inventory_outside_checkout")
+    deb_raw = inventory.capture.stable_read(
+        repo, deb_inventory_path, inventory.MAX_REPORT)
+    deb_original = inventory.capture.parse_json(deb_raw)
+    require(deb_original["context"]["source"] == source
+            and str(deb_original["context"]["run_id"]) ==
+                os.environ["GITHUB_RUN_ID"]
+            and deb_original["context"]["run_attempt"] == 1,
+            "elf_needed_original_deb_source_binding")
+    deb_payload = args.deb_live_payload.resolve(strict=True)
+    require(deb_payload.is_relative_to(runner),
+            "elf_needed_deb_payload_outside_runner")
+    desktop_pair = verify_cross_bundle_desktop(
+        original, deb_original, scan, deb_payload)
     audit = candidate_edges(scan)
     result = {
         "schema": SCHEMA,
         "source": source, "source_tree": original["context"]["source_tree"],
         "run_id": original["context"]["run_id"], "run_attempt": 1,
         "original_appimage_inventory": digest(raw),
+        "original_deb_inventory": digest(deb_raw),
+        "same_desktop_elf_in_both_bundles": desktop_pair,
         "scanned_elf": scan["scanned"], "original_elf_bytes": scan["total_bytes"],
         "members": scan["entries"], "candidate_linkage": audit,
         "claims": {"system_library_host_resolution": "NOT_OBSERVED",

@@ -604,10 +604,10 @@ jobs:
           counts=step['counts']
           assert step['entry_point']=='discovery:test_linux_elf_dynamic_needed.py'
           assert step['status']=='PASS' and step['exit_code']==0
-          assert counts['tests_run']==counts['passed']==20
+          assert counts['tests_run']==counts['passed']==25
           assert counts['terminal_status']=='OK'
           assert all(counts[k]==0 for k in ('failures','errors','skipped','expected_failures','unexpected_successes'))
-          print('elf-needed-source=PASS controls=20 execution=NOT_RUN linker_closure=NOT_VERIFIED G3=STOP')
+          print('elf-needed-source=PASS controls=25 execution=NOT_RUN linker_closure=NOT_VERIFIED G3=STOP')
           PY_ELF_NEEDED_G1
       - name: Retain original package inventory source control records
         if: always()
@@ -1894,6 +1894,8 @@ jobs:
           python3 -B -E -s tooling/linux_elf_dynamic_needed.py \
             --appimage-inventory ci-evidence/linux-appimage-package-inventory/inventory.json \
             --live-payload "$RUNNER_TEMP/motionwright-smoke/appimage-inventory/squashfs-root" \
+            --deb-inventory ci-evidence/linux-deb-package-inventory/inventory.json \
+            --deb-live-payload "$RUNNER_TEMP/motionwright-smoke/deb-inventory/payload" \
             --expected-source "$GITHUB_SHA" \
             --output ci-evidence/linux-elf-needed.json
       - name: Preserve original isolated Linux package inventories

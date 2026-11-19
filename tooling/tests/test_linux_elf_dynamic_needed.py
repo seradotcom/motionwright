@@ -1,6 +1,7 @@
 """Inert, no-execution DT_NEEDED, SONAME, RPATH and graph candidate tests."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import os
 from pathlib import Path
@@ -232,9 +233,83 @@ class DynamicNeededSourceTests(unittest.TestCase):
         ambiguity = needed.candidate_edges(payload)
         self.assertEqual(ambiguity["counts"]["AMBIGUOUS_DIFFERENT_BYTES"], 1)
 
+    def desktop_pair(self):
+        """A tiny original-shaped DEB/AppImage pair; no package execution."""
+        ctx = {
+            "source": "1" * 40, "source_tree": "2" * 40,
+            "run_id": "17", "run_attempt": 1,
+            "platform": "linux", "arch": "x86_64",
+            "candidate_receipt": {"sha256": "3" * 64, "bytes": 100},
+            "cargo_index": {"sha256": "4" * 64, "bytes": 200},
+            "artifact_identities_sha256": "5" * 64,
+            "generated_metadata_sha256": "6" * 64,
+        }
+        entry = descriptor(self.raw, path=needed.DESKTOP_MEMBER)
+        app = {
+            "context": {**copy.deepcopy(ctx), "kind": "appimage"},
+            "custody": {"status": "DIRECT_CAPTURED_EXTRACTION"},
+            "roots": [{"role": "payload", "members": [entry]}],
+        }
+        deb = {
+            "context": {**copy.deepcopy(ctx), "kind": "deb"},
+            "custody": {"status": "DIRECT_CAPTURED_EXTRACTION"},
+            "roots": [{"role": "payload", "members": [entry.copy()]}],
+        }
+        path = self.root / "deb-payload" / needed.DESKTOP_MEMBER
+        path.parent.mkdir(parents=True)
+        path.write_bytes(self.raw)
+        scan = {"entries": [{
+            "member": needed.DESKTOP_MEMBER,
+            "identity": needed.digest(self.raw),
+            "dynamic": needed.dynamic_needed(self.raw),
+        }]}
+        return app, deb, scan, path.parent.parent.parent
+
+    def test_original_deb_appimage_desktop_bytes_and_needed_match(self):
+        app, deb, scan, root = self.desktop_pair()
+        with mock.patch.object(needed.inventory, "validate", return_value=None):
+            pair = needed.verify_cross_bundle_desktop(app, deb, scan, root)
+        self.assertEqual(
+            pair["status"], "SAME_ORIGINAL_DESKTOP_ELF_BYTES_AND_DYNAMIC_DECLARATIONS")
+        self.assertEqual(pair["original"], needed.digest(self.raw))
+        self.assertEqual(pair["dynamic"]["needed"], ["libexample.so.1"])
+        self.assertFalse(pair["claims"]["external_system_libraries_resolved"])
+        self.assertEqual(pair["claims"]["G3"], "STOP")
+
+    def test_deb_different_cargo_original_context_refused(self):
+        app, deb, scan, root = self.desktop_pair()
+        deb["context"]["cargo_index"]["sha256"] = "f" * 64
+        with mock.patch.object(needed.inventory, "validate", return_value=None):
+            with self.assertRaisesRegex(ValueError, "source_mismatch"):
+                needed.verify_cross_bundle_desktop(app, deb, scan, root)
+
+    def test_deb_inventory_different_desktop_hash_refused(self):
+        app, deb, scan, root = self.desktop_pair()
+        deb["roots"][0]["members"][0]["sha256"] = "f" * 64
+        with mock.patch.object(needed.inventory, "validate", return_value=None):
+            with self.assertRaisesRegex(ValueError, "bytes_differ"):
+                needed.verify_cross_bundle_desktop(app, deb, scan, root)
+
+    def test_deb_live_same_size_mutation_refused(self):
+        app, deb, scan, root = self.desktop_pair()
+        location = root / needed.DESKTOP_MEMBER
+        damaged = bytearray(self.raw)
+        damaged[-1] ^= 0x01
+        location.write_bytes(damaged)
+        with mock.patch.object(needed.inventory, "validate", return_value=None):
+            with self.assertRaisesRegex(ValueError, "live_original_different"):
+                needed.verify_cross_bundle_desktop(app, deb, scan, root)
+
+    def test_deb_duplicate_desktop_member_refused(self):
+        app, deb, scan, root = self.desktop_pair()
+        deb["roots"][0]["members"].append(deb["roots"][0]["members"][0].copy())
+        with mock.patch.object(needed.inventory, "validate", return_value=None):
+            with self.assertRaisesRegex(ValueError, "member_not_unique"):
+                needed.verify_cross_bundle_desktop(app, deb, scan, root)
+
     def test_no_exec_and_no_license_authority_in_source(self):
         self.assertEqual(needed.SCHEMA,
-                         "motionwright.linux-appimage-elf-needed-survey/1")
+                         "motionwright.linux-appimage-elf-needed-survey/2")
         record = needed.candidate_edges(self.scan())
         self.assertFalse(record["assertions"][
             "dynamic_dlopen_and_plugins_observed"])
