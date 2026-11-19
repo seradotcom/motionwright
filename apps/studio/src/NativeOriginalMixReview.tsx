@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { AudioWaveform, ShieldCheck } from "lucide-react";
 import { nativeOriginalMixAudition } from "./api";
 import { originalMixEnvelopeKeys, requireOriginalMixSfx, selectedOriginalMixCues } from "./audioRecipeContract";
@@ -32,6 +32,8 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
   desktopMode: boolean;
   commit: (change: Change) => Promise<Project>;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const panelId = useId();
   const [profileId, setProfileId] = useState(() => project.deliverables.find(profile =>
     savedDeliveryRecipe(project, profile.id)?.original_mix)?.id ?? project.deliverables[0]?.id ?? "");
   const selectedProfile = project.deliverables.find(profile => profile.id === profileId) ?? project.deliverables[0] ?? null;
@@ -46,6 +48,9 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
   const [attestedScope, setAttestedScope] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
   const [audition, setAudition] = useState<{ scope: string; url: string } | null>(null);
+  // A real decoded PCM is available before WebKit builds media controls.
+  // Defer their subtree until the user actually asks to listen.
+  const [playbackEnabled, setPlaybackEnabled] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const serial = useRef(0);
   const inFlight = useRef(false);
@@ -74,6 +79,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
   useEffect(() => {
     serial.current++;
     setAudition(null);
+    setPlaybackEnabled(false);
     setError(null);
     setAttestedScope(null);
   }, [scope]);
@@ -81,6 +87,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
   const invalidateAudition = () => {
     serial.current++;
     setAudition(null);
+    setPlaybackEnabled(false);
     setError(null);
     setAttestedScope(null);
   };
@@ -156,6 +163,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
     inFlight.current = true;
     setWorking(true);
     setError(null);
+    setPlaybackEnabled(false);
     setAudition(null);
     try {
       const wav = await nativeOriginalMixAudition(project, options);
@@ -171,11 +179,16 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
     }
   };
 
-  return <details className="audio-editor-section" aria-label="Original three-bus native PCM audition" onKeyDown={containRecipeKeyboard}>
-    <summary><AudioWaveform size={15} /> Voice / music / SFX · original source mix</summary>
+  const draftSourceStatus = `Draft source bindings: music ${mixDraft.values.music_asset_id || "none"}; SFX ${mixDraft.values.sfx_asset_id || "none"}.`;
+  return <section className="audio-editor-section" aria-label="Original three-bus native PCM audition" onKeyDown={containRecipeKeyboard}>
+    <button type="button" className="button button-secondary" aria-expanded={expanded}
+      aria-controls={panelId} onClick={() => setExpanded(value => !value)}>
+      <AudioWaveform size={15} aria-hidden="true" /> Voice / music / SFX · original source mix
+    </button>
+    <div id={panelId} hidden={!expanded}>
     <p className="production-help">Save an original mix recipe for each delivery profile, then request a local PCM audition of its exact saved sources and automation. The mixer decodes the imported voice and music, an optional imported SFX base, and the authored SFX cues in this delivery cut. Whole-source stems use stereo at 48 kHz with the same measured duration; the native service validates cue timing and source bytes.</p>
     <label className="production-field"><span>Delivery language / profile</span>
-      <select value={selectedProfile?.id ?? ""} disabled={project.deliverables.length === 0}
+      <select aria-label="Delivery language / profile" value={selectedProfile?.id ?? ""} disabled={project.deliverables.length === 0}
         onChange={event => { setProfileId(event.target.value); invalidateAudition(); }}>
         {project.deliverables.length === 0 && <option value="">No delivery profile</option>}
         {project.deliverables.map(profile => <option key={profile.id} value={profile.id}>{profile.name} · {profile.language}</option>)}
@@ -197,6 +210,9 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
         {selectableSources.map(asset => <option key={asset.id} value={asset.id}>{asset.name} · sha256:{asset.content_sha256?.slice(0, 10)}</option>)}
       </select>
     </label>)}
+    <p className="production-help" role="status" aria-label={draftSourceStatus}>
+      {draftSourceStatus}
+    </p>
     {selectedProfile && <p className="production-help">Authored SFX cues in this cut: {(() => {
       try { return selectedOriginalMixCues(project, selectedProfile.id).length; }
       catch { return "unavailable"; }
@@ -242,6 +258,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
         onChange={event => {
           serial.current++;
           setAudition(null);
+          setPlaybackEnabled(false);
           setError(null);
           setAttestedScope(event.target.checked ? scope : null);
         }} />
@@ -250,13 +267,23 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
     <p className="production-help">This confirmation is required again after an input, source, profile or saved revision changes, and when reopening the workspace. It is never stored in the recipe or a recovery copy.</p>
     {error && <p className="portable-message error" role="alert">{error}</p>}
     <button type="button" className="button button-primary" disabled={!eligible}
+      aria-label={currentAudition
+        ? "Create local original PCM audition · Local source PCM only · 48 kHz · not a mastered deliverable"
+        : "Create local original PCM audition"}
       onClick={() => void preview()}><ShieldCheck size={14} aria-hidden="true" />
       {working ? "Mixing verified sources…" : "Create local original PCM audition"}
     </button>
     {currentAudition && <div aria-label="Unmastered original PCM preview" className="audio-narration-source-evidence">
       <strong>Local source PCM only · 48 kHz · not a mastered deliverable</strong>
-      <audio controls preload="metadata" src={currentAudition.url} />
+      {playbackEnabled
+        ? <audio controls preload="none" src={currentAudition.url} />
+        : <button type="button" className="button button-secondary"
+            aria-label="Enable local original PCM playback controls"
+            onClick={() => setPlaybackEnabled(true)}>
+            Enable playback controls
+          </button>}
       <p>Source, clock and sample-peak guards passed for this PCM. Integrated LUFS, true peak, listening intelligibility and editorial approval require separate measurement and review. No timeline event or mastered deliverable was created.</p>
     </div>}
-  </details>;
+    </div>
+  </section>;
 }

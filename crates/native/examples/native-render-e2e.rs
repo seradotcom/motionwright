@@ -36,7 +36,7 @@ enum CombinedMaster<'a> {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: native-render-e2e <seed DATABASE | film DATABASE FILM_JSON | render DATABASE CONNECTION EVIDENCE_JSON | seed-saved-mix DATABASE SOURCES EVIDENCE | render-master-saved-mix DATABASE CONNECTION RENDER_EVIDENCE MASTER_EVIDENCE | saved-mix-readback DATABASE EVIDENCE | cycle-snapshot DATABASE DIRECTORY | cycle-edit DATABASE BEFORE_PROJECT DIRECTORY | cycle-render-edited DATABASE CONNECTION EVIDENCE_JSON | cycle-verify-binding FILM_JSON INSPECTION_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
+        "usage: native-render-e2e <seed DATABASE | film DATABASE FILM_JSON | render DATABASE CONNECTION EVIDENCE_JSON | seed-saved-mix DATABASE SOURCES EVIDENCE | seed-tauri-audio DATABASE PRIVATE_ROOT | tauri-audio-readback DATABASE PRIVATE_ROOT | render-master-saved-mix DATABASE CONNECTION RENDER_EVIDENCE MASTER_EVIDENCE | saved-mix-readback DATABASE EVIDENCE | cycle-snapshot DATABASE DIRECTORY | cycle-edit DATABASE BEFORE_PROJECT DIRECTORY | cycle-render-edited DATABASE CONNECTION EVIDENCE_JSON | cycle-verify-binding FILM_JSON INSPECTION_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
     );
     std::process::exit(2);
 }
@@ -1625,6 +1625,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 usage();
             }
             render(&database, &connection, &evidence).await
+        }
+        "seed-tauri-audio" => {
+            let database = path_arg(&mut args);
+            let private_root = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            native_saved_mix_e2e::seed_tauri_audio(&database, &private_root)
+        }
+        "tauri-audio-readback" => {
+            let database = path_arg(&mut args);
+            let private_root = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            native_saved_mix_e2e::tauri_audio_readback(&database, &private_root)
         }
         "seed-saved-mix" => {
             let database = path_arg(&mut args);

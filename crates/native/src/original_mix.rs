@@ -14,6 +14,8 @@ use motionwright_service::{OriginalMixDecodeBudget, StudioService};
 
 mod semantic_bus;
 pub use semantic_bus::{OriginalSfxSource, SemanticSfxBusReceipt};
+mod development_audition_custody;
+pub use development_audition_custody::{DevelopmentAuditionCustody, DevelopmentAuditionTicket};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Write;

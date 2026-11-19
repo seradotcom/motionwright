@@ -26,6 +26,33 @@ const MAX_WITNESS_BYTES: usize = 512 * 1024;
 const BEFORE: &str = "saved-mix-before.private.json";
 const SOURCE: &str = "saved-mix-source.private.json";
 
+#[cfg(target_os = "linux")]
+mod tauri_audio;
+
+pub(super) fn seed_tauri_audio(database: &Path, private_root: &Path) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        tauri_audio::seed(database, private_root)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (database, private_root);
+        Err("Tauri audio fixture requires the admitted Linux private namespace".into())
+    }
+}
+
+pub(super) fn tauri_audio_readback(database: &Path, private_root: &Path) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        tauri_audio::readback(database, private_root)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (database, private_root);
+        Err("Tauri audio reader requires the admitted Linux private namespace".into())
+    }
+}
+
 fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
@@ -78,7 +105,12 @@ fn source_witness(service: &StudioService, project: &Project) -> Result<Value> {
     }))
 }
 
-pub(super) fn seed(database: &Path, source_dir: &Path, evidence: &Path) -> Result<()> {
+// Both consumers use the exact original imports and authoring sequence. The
+// Tauri fixture stops at this boundary; only its real UI may save the recipe.
+fn seed_inputs(
+    database: &Path,
+    source_dir: &Path,
+) -> Result<(StudioService, Project, Uuid, OriginalMixRecipe)> {
     let (service, mut project) = super::seed_project(database)?;
     for bus in ["voice", "music", "sfx"] {
         let name = format!("saved-mix-{bus}.wav");
@@ -124,7 +156,6 @@ pub(super) fn seed(database: &Path, source_dir: &Path, evidence: &Path) -> Resul
     let mut profile = project.deliverables[0].clone();
     profile.voice_track_id = Some(voice_id);
     profile.language = "en".into();
-    let profile_id = profile.id;
     apply(
         &service,
         &mut project,
@@ -147,6 +178,16 @@ pub(super) fn seed(database: &Path, source_dir: &Path, evidence: &Path) -> Resul
             },
         },
     )?;
+    let (profile_id, recipe) = fixture_recipe(&project)?;
+    Ok((service, project, profile_id, recipe))
+}
+
+fn fixture_recipe(project: &Project) -> Result<(Uuid, OriginalMixRecipe)> {
+    let profile_id = project
+        .deliverables
+        .first()
+        .ok_or("SavedMix profile is absent")?
+        .id;
     let asset = |name: &str| {
         project
             .assets
@@ -172,6 +213,11 @@ pub(super) fn seed(database: &Path, source_dir: &Path, evidence: &Path) -> Resul
     {
         return Err("SavedMix fixed source assets or explicit default gains changed".into());
     }
+    Ok((profile_id, recipe))
+}
+
+pub(super) fn seed(database: &Path, source_dir: &Path, evidence: &Path) -> Result<()> {
+    let (service, mut project, profile_id, recipe) = seed_inputs(database, source_dir)?;
     apply(
         &service,
         &mut project,
@@ -330,7 +376,7 @@ pub(super) fn readback(database: &Path, evidence: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn source_wav(left: i16, right: i16) -> Vec<u8> {
+    pub(super) fn source_wav(left: i16, right: i16) -> Vec<u8> {
         let size = 96_000_u32 * 4;
         let mut out = Vec::with_capacity(WAV_BYTES);
         out.extend_from_slice(b"RIFF");

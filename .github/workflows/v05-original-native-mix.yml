@@ -63,13 +63,29 @@ on:
         options:
           - original
           - saved-mix
+          - tauri-audition
+      tauri_expected_source:
+        description: "Exact source SHA for the isolated Tauri development case"
+        type: string
+        required: false
+        default: ''
+      tauri_public_recipient_json:
+        description: "Public RSA recipient JSON only; never a private key"
+        type: string
+        required: false
+        default: ''
+      tauri_recipient_sha256:
+        description: "Expected public recipient SPKI SHA-256"
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
   group: v05-original-native-mix-${{ github.ref }}-${{ inputs.verification || 'original' }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || inputs.verification != 'saved-mix' }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || (inputs.verification != 'saved-mix' && inputs.verification != 'tauri-audition') }}
 
 jobs:
   original-mix-rust-source-impact:
@@ -141,7 +157,7 @@ jobs:
           retention-days: 7
 
   native-source-and-independent-meter:
-    if: ${{ github.event_name != 'push' && (github.event_name != 'workflow_dispatch' || inputs.verification != 'saved-mix') }}
+    if: ${{ github.event_name != 'push' && (github.event_name != 'workflow_dispatch' || (inputs.verification != 'saved-mix' && inputs.verification != 'tauri-audition')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
@@ -187,7 +203,7 @@ jobs:
           retention-days: 7
 
   studio-audition:
-    if: ${{ github.event_name != 'push' && (github.event_name != 'workflow_dispatch' || inputs.verification != 'saved-mix') }}
+    if: ${{ github.event_name != 'push' && (github.event_name != 'workflow_dispatch' || (inputs.verification != 'saved-mix' && inputs.verification != 'tauri-audition')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     defaults:
@@ -209,7 +225,7 @@ jobs:
       - run: npx playwright test tests/native-original-mix.spec.ts --project=chromium
 
   saved-mix-g0:
-    if: ${{ github.event_name != 'push' }}
+    if: ${{ github.event_name != 'push' && (github.event_name != 'workflow_dispatch' || inputs.verification != 'tauri-audition') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     steps:
@@ -264,3 +280,179 @@ jobs:
           path: ${{ runner.temp }}/saved-mix-evidence/
           if-no-files-found: error
           retention-days: 7
+
+  tauri-audition:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.verification == 'tauri-audition' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      MW_AUDIO_DIAGNOSTIC_SELECTION: ${{ inputs.verification }}
+      MW_TAURI_AUDIO_EXPECTED_SOURCE: ${{ inputs.tauri_expected_source }}
+      MW_TAURI_AUDIO_PUBLIC_RECIPIENT_JSON: ${{ inputs.tauri_public_recipient_json }}
+      MW_TAURI_AUDIO_RECIPIENT_SHA256: ${{ inputs.tauri_recipient_sha256 }}
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: '1.98.1'
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - name: Install existing Tauri and accessible desktop prerequisites
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_SHA" = "$MW_TAURI_AUDIO_EXPECTED_SOURCE"
+          test "$GITHUB_REPOSITORY" = seradotcom/motionwright
+          test "$MW_AUDIO_DIAGNOSTIC_SELECTION" = tauri-audition
+          # Ubuntu 24.04 runners can expose either the signed deb822 archive
+          # or a mirror+file list. Prefer the existing official fallback if
+          # present, but never reject a valid signed runner for a missing file.
+          sources=/etc/apt/sources.list.d/ubuntu.sources
+          mirrors=/etc/apt/apt-mirrors.txt
+          if test -f "$sources" && test ! -L "$sources" &&
+             grep -Fqx 'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' "$sources"; then
+            if grep -Eq '^URIs: mirror[+]file:/etc/apt/apt-mirrors[.]txt$' "$sources"; then
+              if test -f "$mirrors" && test ! -L "$mirrors" &&
+                 grep -Eq '^https?://archive[.]ubuntu[.]com/ubuntu/?[[:space:]]*$' "$mirrors"; then
+                sudo sed -i '/azure[.]archive[.]ubuntu[.]com/d' "$mirrors"
+                grep -Eq '^https?://archive[.]ubuntu[.]com/ubuntu/?[[:space:]]*$' "$mirrors"
+                echo 'APT_OFFICIAL_UBUNTU_MIRROR=existing-list-fallback'
+              else
+                sudo sed -i 's|^URIs: mirror+file:/etc/apt/apt-mirrors[.]txt$|URIs: https://archive.ubuntu.com/ubuntu/|' "$sources"
+                grep -Fqx 'URIs: https://archive.ubuntu.com/ubuntu/' "$sources"
+                echo 'APT_OFFICIAL_UBUNTU_MIRROR=signed-deb822-fallback'
+              fi
+            elif grep -Eq '^URIs: https?://azure[.]archive[.]ubuntu[.]com/ubuntu/?$' "$sources"; then
+              sudo sed -i -E 's|^URIs: https?://azure[.]archive[.]ubuntu[.]com/ubuntu/?$|URIs: https://archive.ubuntu.com/ubuntu/|' "$sources"
+              grep -Fqx 'URIs: https://archive.ubuntu.com/ubuntu/' "$sources"
+              echo 'APT_OFFICIAL_UBUNTU_MIRROR=signed-deb822-replacement'
+            else
+              echo 'APT_OFFICIAL_UBUNTU_MIRROR=runner-default'
+            fi
+          else
+            echo 'APT_OFFICIAL_UBUNTU_MIRROR=runner-default'
+          fi
+          # Use signed Ubuntu packages; bounds apply to downloads, not
+          # acceptance, authority, or release policy.
+          timeout --signal=TERM --kill-after=30s 240s sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
+          timeout --signal=TERM --kill-after=30s 1080s sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev python3-gi python3-cryptography gir1.2-atspi-2.0 gir1.2-gtk-3.0 at-spi2-core xvfb x11-utils dbus-x11 openbox gstreamer1.0-plugins-bad gstreamer1.0-tools
+      - name: Admit exact source and public recipient before Native
+        id: admission
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          /usr/bin/python3 -B -E -s tooling/ci_tauri_audio_audition.py admit \
+            --repo "$GITHUB_WORKSPACE" --expected-source "$MW_TAURI_AUDIO_EXPECTED_SOURCE"
+          printf 'CARGO_TARGET_DIR=%s/tauri-audition-target\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          # The actual WebKit audio path requires these installed factories.
+          # Keep the runtime inventory and inspection originals before Native.
+          dpkg-query -W -f='${Package} ${Version}\n' libwebkit2gtk-4.1-0 \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+            gstreamer1.0-tools > "$RUNNER_TEMP/tauri-audition-ci/multimedia-packages.original.log"
+          timeout --signal=TERM --kill-after=2s 15s gst-inspect-1.0 fakevideosink \
+            > "$RUNNER_TEMP/tauri-audition-ci/fakevideosink.original.log" 2>&1
+          timeout --signal=TERM --kill-after=2s 15s gst-inspect-1.0 webvttenc \
+            > "$RUNNER_TEMP/tauri-audition-ci/webvttenc.original.log" 2>&1
+      - name: Verify changed development admission and routing
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          /usr/bin/python3 -B -E -s tooling/ci_test_runner.py --repo "$GITHUB_WORKSPACE" \
+            --mode both --pattern test_ci_tauri_audio_audition.py \
+            --pattern test_ci_v05_original_mix_impact_route.py \
+            --pattern test_native_tauri_audio_audition.py --require-complete \
+            --expected-source "$GITHUB_SHA" --report "$RUNNER_TEMP/tauri-audition-ci/source-tests.original.json"
+          /usr/bin/python3 -B -E -s tooling/source_policy.py
+      - name: Build the unchanged real Studio frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          npm --prefix apps/studio ci --no-audit --no-fund > "$RUNNER_TEMP/tauri-audition-ci/npm-ci.original.log" 2>&1
+          npm --prefix apps/studio run build > "$RUNNER_TEMP/tauri-audition-ci/frontend-build.original.log" 2>&1
+      - name: Run only affected Native custody fixture and audition contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          cargo test --locked -p motionwright-native --lib original_mix::development_audition_custody::linux::tests:: \
+            > "$RUNNER_TEMP/tauri-audition-ci/native-custody-tests.original.log" 2>&1
+          cargo test --locked -p motionwright-native --example native-render-e2e native_saved_mix_e2e::tauri_audio::tests:: \
+            > "$RUNNER_TEMP/tauri-audition-ci/native-fixture-tests.original.log" 2>&1
+          cargo test --locked -p motionwright-desktop --bin motionwright-desktop original_mix_native::tests:: \
+            > "$RUNNER_TEMP/tauri-audition-ci/desktop-audition-tests.original.log" 2>&1
+          /usr/bin/python3 -B -E -s - <<'PY'
+          import os, pathlib, re
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "tauri-audition-ci"
+          for name, count in (("native-custody", 5), ("native-fixture", 6), ("desktop-audition", None)):
+              text = (root / (name + "-tests.original.log")).read_text()
+              found = re.findall(r"(?m)^test result: ok\. ([1-9][0-9]*) passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9.]+s$", text)
+              if len(found) != 1 or (count is not None and int(found[0]) != count):
+                  raise SystemExit("Selected Rust roster missing or changed: " + name)
+          PY
+      - name: Build exact real desktop and independent fixture executables
+        env:
+          MOTIONWRIGHT_DEVELOPMENT_AUDITION_BUILD_SOURCE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          cargo build --locked -p motionwright-desktop -p motionwright-native \
+            --bin motionwright-desktop --example native-render-e2e --features tauri/custom-protocol \
+            --message-format=json-render-diagnostics \
+            > "$RUNNER_TEMP/tauri-audition-ci/build.original.jsonl" \
+            2> "$RUNNER_TEMP/tauri-audition-ci/build.original.stderr"
+      - name: Execute one genuine Tauri save audition and closed Store readback
+        # Mesa's on-disk shader cache was 125 of 243 prior original members.
+        # It is rebuildable GPU cache, not the Store/CAS, original WAV or UI
+        # receipt. Disable only this disk cache during this physical scenario
+        # to keep the exact original-selection bounds unchanged.
+        env:
+          MESA_SHADER_CACHE_DISABLE: 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          xvfb-run --auto-servernum --server-args="-screen 0 1600x1000x24" \
+            dbus-run-session -- /usr/bin/python3 -B -E -s tooling/ci_tauri_audio_session.py \
+            --repo "$GITHUB_WORKSPACE" \
+            --desktop "$CARGO_TARGET_DIR/debug/motionwright-desktop" \
+            --fixture "$CARGO_TARGET_DIR/debug/examples/native-render-e2e" \
+            --build-original "$RUNNER_TEMP/tauri-audition-ci/build.original.jsonl" --seconds 120 \
+            > "$RUNNER_TEMP/tauri-audition-ci/harness.original.stdout" \
+            2> "$RUNNER_TEMP/tauri-audition-ci/harness.original.stderr"
+      - name: Seal original development evidence once
+        if: always() && steps.admission.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          /usr/bin/python3 -B -E -s tooling/ci_tauri_audio_audition.py seal \
+            --repo "$GITHUB_WORKSPACE" --expected-source "$MW_TAURI_AUDIO_EXPECTED_SOURCE"
+      - name: Upload only sealed development originals
+        if: always() && steps.admission.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: tauri-audition-development-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/tauri-audition-ci/sealed-originals.bin
+            ${{ runner.temp }}/tauri-audition-ci/public-evidence.json
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          retention-days: 14
