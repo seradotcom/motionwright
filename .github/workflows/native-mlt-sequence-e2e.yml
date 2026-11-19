@@ -102,6 +102,7 @@ on:
       - 'tooling/requirements/mlt-g2-custody.txt'
       - 'tooling/tests/test_native_mlt_owner_workspace.py'
       - 'tooling/tests/test_native_mlt_g2_custody.py'
+      - 'tooling/tests/test_native_mlt_prepare_diagnostic.py'
       - 'tooling/tests/test_native_mlt_g2_observation.py'
       - 'tooling/tests/test_native_mlt_live_observer_diagnostics.py'
       - 'tooling/tests/test_native_mlt_host_tool_observation.py'
@@ -261,6 +262,45 @@ jobs:
           --only-binary=:all: --require-hashes -r tooling/requirements/mlt-g2-custody.txt
         "$venv/bin/python" -m pip check
         echo "python=$venv/bin/python" >> "$GITHUB_OUTPUT"
+    - name: Verify secret-safe G2 prepare failure source telemetry
+      env:
+        CUSTODY_PYTHON: ${{ steps.custody_python.outputs.python }}
+      run: |
+        set -euo pipefail
+        umask 077
+        root="$RUNNER_TEMP/mw-g2-prepare-telemetry-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        test ! -e "$root"
+        mkdir -m 700 "$root"
+        "$CUSTODY_PYTHON" -B -E -s tooling/ci_test_runner.py \
+          --repo "$GITHUB_WORKSPACE" --test-directory tooling/tests \
+          --pattern test_native_mlt_prepare_diagnostic.py \
+          --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+          --report "$root/receipt.json" \
+          > "$root/runner.stdout" 2> "$root/runner.stderr"
+        "$CUSTODY_PYTHON" -B -E -s - "$root/receipt.json" "$GITHUB_SHA" <<'PY_G2_PREPARE_TELEMETRY'
+        import json,sys
+        from pathlib import Path
+        receipt=json.loads(Path(sys.argv[1]).read_bytes())
+        assert receipt['status']=='PASS' and receipt['executed_source_sha']==sys.argv[2]
+        assert receipt['exit_code']==0 and len(receipt['steps'])==1
+        step=receipt['steps'][0]
+        counts=step['counts']
+        assert step['entry_point']=='discovery:test_native_mlt_prepare_diagnostic.py'
+        assert step['status']=='PASS' and step['exit_code']==0
+        assert counts['terminal_status']=='OK'
+        assert counts['tests_run']==counts['passed']==6
+        assert all(counts[k]==0 for k in ('errors','failures','skipped','expected_failures','unexpected_successes'))
+        print('G2 prepare-safe-telemetry=PASS six=6 Native=NOT_RUN G2=NOT_GRANTED')
+        PY_G2_PREPARE_TELEMETRY
+    - name: Retain original G2 prepare telemetry source results
+      if: always() && steps.custody_python.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: motionwright-g2-prepare-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/mw-g2-prepare-telemetry-${{ github.run_id }}-${{ github.run_attempt }}/
+        if-no-files-found: warn
+        overwrite: false
+        retention-days: 14
     - name: Verify original FixedTxt admission and delivery source controls
       env:
         CUSTODY_PYTHON: ${{ steps.custody_python.outputs.python }}
