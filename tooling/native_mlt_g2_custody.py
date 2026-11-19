@@ -67,6 +67,51 @@ PUBLIC_KEYS = {
 }
 
 
+# Stable, source-defined failure observations only. Never put raw exception
+# strings, paths, artifact bytes, tokens or private-key material in CI logs.
+# The original process returns exactly the same nonzero status on rejection.
+_PREPARE_PHASES = frozenset({
+    "before_context", "external_dispatch", "original_scope", "original_source_guard",
+    "runtime_artifact", "runtime_receipt", "compiler_artifact", "compiler_members",
+    "compiler_source_reconstruction", "compiler_source_closure",
+    "preparation_finished",
+})
+_PREPARE_PHASE = "before_context"
+_PREPARE_SAFE_CODES = frozenset({
+    "prepare_requires_normal_Linux_runner", "closed_manual_selection_required",
+    "execution_identity_invalid", "source_HEAD_changed", "tracked_source_changed",
+    "source_blob_changed", "source_lock_changed",
+    "original_effect_directory_preexists", "artifact_original_run_changed",
+    "artifact_API_failed_no_retry", "artifact_original_metadata_changed",
+    "artifact_original_zip_changed", "artifact_selected_digest_changed",
+    "official_runtime_pins_required", "compiler_contract",
+    "upstream_response_identity", "upstream_content_encoding",
+    "upstream_download_budget", "upstream_archive_digest",
+})
+
+
+def _mark_prepare_phase(phase):
+    global _PREPARE_PHASE
+    require(phase in _PREPARE_PHASES, "prepare_phase_unregistered")
+    _PREPARE_PHASE = phase
+
+
+def _safe_failure_diagnostic(error, action):
+    # Only literal enum members may escape; arbitrary exception text is withheld.
+    phase = _PREPARE_PHASE if action == "prepare" and _PREPARE_PHASE in _PREPARE_PHASES else "not_applicable"
+    kind = type(error).__name__
+    if kind not in {"CustodyRejected", "TimeoutExpired", "CalledProcessError",
+                    "HTTPError", "URLError", "ConnectionError", "FileNotFoundError",
+                    "PermissionError", "OSError", "ValueError", "KeyError",
+                    "JSONDecodeError", "RuntimeError"}:
+        kind = "OTHER"
+    code = (error.args[0] if type(error) is CustodyRejected and len(error.args) == 1
+            and type(error.args[0]) is str and error.args[0] in _PREPARE_SAFE_CODES
+            else "WITHHELD")
+    return {"phase": phase, "error_class": kind, "error_code": code,
+            "automatic_retry": False, "originals_disclosed": False}
+
+
 def context(env):
     require(env.get("GITHUB_ACTIONS") == "true" and env.get("CI") == "true"
             and env.get("RUNNER_OS") == "Linux"
@@ -359,14 +404,17 @@ def reconstruct_sources(raw, repo, directory):
 
 def intake_compiler(dispatch, repo, directory):
     raw = download_artifact(dispatch["compiler"]["artifact"], "compiler", directory)
+    _mark_prepare_phase("compiler_members")
     pins = {"original_c_source": admission.ORIGINAL_SHA, "repaired_c_source": admission.REPAIRED_SHA,
             "compiled_module": g2.REPAIRED_MODULE_SHA256, "compiler_receipt_path": g2.COMPILER_RECEIPT_SHA256}
     for name, member in dispatch["compiler"]["members"].items():
         data = zip_member(raw, member, pins[name], admission.MAX_ELF_BYTES)
         new_bytes(directory / name, data)
     if dispatch["compiler"].get("source_mode") == SOURCE_MODE:
+        _mark_prepare_phase("compiler_source_reconstruction")
         upstream = retrieve_upstream(directory)
         reconstruct_sources(upstream, repo, directory)
+    _mark_prepare_phase("compiler_source_closure")
     admission.source_compiler_closure(
         directory / "original_c_source", directory / "repaired_c_source",
         directory / "compiled_module", g2.REPAIRED_MODULE_SHA256,
@@ -442,11 +490,14 @@ def reference_archive(directory, encoded, current):
 
 
 def prepare(env):
+    _mark_prepare_phase("before_context")
     require(sys.platform == "linux" and os.geteuid() != 0, "prepare_requires_normal_Linux_runner")
     current = context(env)
+    _mark_prepare_phase("external_dispatch")
     dispatch = runtime_preparation_dispatch(env.get("MW_MLT_G2_ADMISSION", "").encode(), current,
                                  scenario=env.get("MW_MLT_SCOPE", "repaired-g2"))
     encoded_reference = retained_reference_input(env)
+    _mark_prepare_phase("original_scope")
     control, installed, session = names(env)
     require(not installed.exists() and not session.exists(), "original_effect_directory_preexists")
     control.mkdir(mode=0o700, exist_ok=False)
@@ -454,6 +505,7 @@ def prepare(env):
         (control / name).mkdir(mode=0o700)
     new_json(control / "records/dispatch.json", dispatch)
     new_json(control / "records/context.json", current)
+    _mark_prepare_phase("original_source_guard")
     new_json(control / "records/source-before.json", source_guard(Path(env["GITHUB_WORKSPACE"]), current,
                  scenario=env.get("MW_MLT_SCOPE", "repaired-g2")))
     if env.get("MW_MLT_SCOPE", "repaired-g2") not in {FILM_SCOPE, "fixedtxt-v4-one-fixture"}:
@@ -475,14 +527,18 @@ def prepare(env):
             "historical_reference_WAV_reused": False, "native_effect_started": False,
         })
     official = dispatch["official_runtime"]
+    _mark_prepare_phase("runtime_artifact")
     raw = download_artifact(official["artifact"], "official", control / "intake")
+    _mark_prepare_phase("runtime_receipt")
     receipt = zip_member(raw, "distribution/official-runtime-receipt.json",
                          official["receipt_sha256"], MAX_JSON)
     proof = strict(receipt)
     g2.verify_official_runtime_bindings(
         proof, official["known_original_module_sha256"], official["known_melt_sha256"])
     new_bytes(control / "intake/official-runtime-receipt.json", receipt)
+    _mark_prepare_phase("compiler_artifact")
     intake_compiler(dispatch, Path(env["GITHUB_WORKSPACE"]), control / "intake")
+    _mark_prepare_phase("preparation_finished")
     new_json(control / "records/intake-complete.json",
              {"context": current, "source_inputs": "ADMITTED_BYTES_MATCHED",
               "module_installed": False, "native_execution": "NOT_RUN"})
@@ -1726,8 +1782,11 @@ def verify_fixedtxt_artifact(original_zip, private_key, *, current, expected_pla
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except Exception:
-        # The original raw evidence remains private. No exception payload,
-        # owner path, input envelope or recovery key is printed to CI logs.
-        print("MLT G2 custody gate failed; no automatic retry.", file=sys.stderr)
+    except Exception as error:
+        # Only source-defined literal enums reach CI. This does not recover or
+        # expose exception payloads, original paths, tokens or a private key.
+        action = sys.argv[1] if len(sys.argv) > 1 else None
+        projection = _safe_failure_diagnostic(error, action)
+        print("MLT G2 custody gate failed; no automatic retry. "
+              + json.dumps(projection, sort_keys=True), file=sys.stderr)
         raise SystemExit(2)
