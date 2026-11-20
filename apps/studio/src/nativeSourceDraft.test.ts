@@ -93,7 +93,7 @@ describe("native source authored input custody", () => {
   it("keeps a successful import's exact input and identity rather than resetting the new form", () => {
     const s = state(); author(s.session); const input = structuredClone(s.session.draft.fields), identity = s.session.draft.capsuleId;
     expect(s.session.assertReady()).toBe(true); const next = committed(s.session, s.value);
-    s.session.acknowledge(s.session.draft.sequence, next);
+    expect(s.session.acknowledge(s.session.draft.sequence, next)).toBe(true);
     expect(s.session.draft.fields).toEqual(input); expect(s.session.draft.capsuleId).toBe(identity);
     expect(s.session.draft.dirty).toBe(false); expect(s.session.draft.baseRevision).toBe(next.revision);
     expect(state(next, 200, s.storage, s.pointers).session.draft).toEqual(s.session.draft);
@@ -132,7 +132,8 @@ describe("native source authored input custody", () => {
     latest.revision++;
     latest.production_design!.capsules[0].source_asset_id = id(999);
     latest.production_design!.capsules[0].source_sha256 = "b".repeat(64);
-    s.session.updateProject(latest); s.session.acknowledge(before.sequence, latest);
+    s.session.updateProject(latest);
+    expect(s.session.acknowledge(before.sequence, latest)).toBe(false);
     expect(s.session.draft).toEqual(before); expect(s.session.conflict).toBe(true);
     expect(s.session.notice).toMatch(/superseded/);
   });
@@ -141,7 +142,7 @@ describe("native source authored input custody", () => {
     it(`an acknowledgement from another ${key} cannot clear or rebase this input`, () => {
       const s = state(); author(s.session); expect(s.session.assertReady()).toBe(true);
       const before = structuredClone(s.session.draft), other = committed(s.session, s.value); other[key] = id(990);
-      s.session.acknowledge(before.sequence, other);
+      expect(s.session.acknowledge(before.sequence, other)).toBe(false);
       expect(s.session.draft).toEqual(before);
       expect(() => s.session.updateProject(other)).toThrow(/parked/);
     });

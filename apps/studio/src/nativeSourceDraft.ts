@@ -330,7 +330,7 @@ export class NativeSourceDraftSession {
   }
   /** The App calls this only after FileImportRetention verified the original
    * receipt and published the current Project. This method grants no authority. */
-  acknowledge(sequence: number, project: Project): void {
+  acknowledge(sequence: number, project: Project): boolean {
     try {
       const submitted = this.submitted.get(sequence);
       if (!submitted) throw new Error("This native source acknowledgement has no verified authored checkpoint.");
@@ -346,8 +346,8 @@ export class NativeSourceDraftSession {
         dirty: this.draft.sequence !== sequence };
       this.project = project; this.submitted.delete(sequence);
       this.notice = this.draft.dirty ? "The earlier import was acknowledged; later native source input remains editable." : "The imported native source is acknowledged. Its exact authored input remains available.";
-      this.backup(); this.changed();
-    } catch (reason) { this.notice = message(reason); this.changed(); }
+      this.backup(); this.changed(); return true;
+    } catch (reason) { this.notice = message(reason); this.changed(); return false; }
   }
   /** Caller MUST first assertNoFileImport(project.id). An outstanding retained
    * import is owned by FileImportRetention, never interpreted by this module. */

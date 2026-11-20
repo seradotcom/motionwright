@@ -73,7 +73,10 @@ function SourceEditor({ project, scene, target, busy, saveSource, refreshProject
       setSending(true);
       const current = await saveSource(request);
       // Later keystrokes belong to the author, even when this earlier save succeeds.
-      editor.acknowledge(sequence, current);
+      if (!editor.acknowledge(sequence, current)) {
+        setError("The original save returned, but this editor could not confirm the matching authored capsule. Read the saved project to reconcile this result; do not submit the same operation again automatically.");
+        return;
+      }
       setNotice("The original source save is confirmed and the latest project is open. Earlier source versions remain available; realization and fidelity need new evidence.");
     } catch (reason) { setError(message(reason)); }
     finally { setSending(false); setImports(readFileImports(project.id)); }
