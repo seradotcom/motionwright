@@ -152,5 +152,120 @@ class NativeWindowAndBootstrapTests(unittest.TestCase):
         sleeper.assert_not_called()
 
 
+    def test_loader_observation_is_sampled_once_at_window_readiness(self):
+        contexts = self.mock_launch(
+            clock=[0.0, 0.1, 0.2],
+            stdout='0x00400004 "Motionwright": ("motionwright")',
+        )
+        env, popen, xwin, clock, sleep, kill, proc = contexts
+        observer = Mock(return_value={
+            "status": "NOT_OBSERVED", "claims": {"G3": "STOP"},
+        })
+        with env, popen, xwin, clock, sleep, kill:
+            report = gui.run_probe(
+                self.app, self.root / "isolated", seconds=2,
+                loader_observer=observer,
+            )
+        observer.assert_called_once_with(4242, self.app.parent.resolve())
+        self.assertEqual(report["loader_observation"]["status"], "NOT_OBSERVED")
+
+    def test_observer_cannot_promote_g3_or_replay_a_gui_action(self):
+        contexts = self.mock_launch(
+            clock=[0.0, 0.1, 0.2],
+            stdout='0x00400004 "Motionwright": ("motionwright")',
+        )
+        env, popen, xwin, clock, sleep, kill, proc = contexts
+        observer = Mock(return_value={"claims": {"G3": "PASS"}})
+        with env, popen, xwin, clock, sleep, kill:
+            with self.assertRaisesRegex(RuntimeError, "cannot grant G3"):
+                gui.run_probe(self.app, self.root / "isolated", seconds=2,
+                              loader_observer=observer)
+        observer.assert_called_once()
+
+
+class LiveLoaderScopeTests(unittest.TestCase):
+    """Synthetic proc fixtures, never a fabricated real installed observation."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(
+            prefix="mw-live-loader-", dir=os.environ.get("TEMP"))
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.app = self.root / "squashfs-root"
+        self.bin = self.app / "usr/bin/motionwright-desktop"
+        self.bin.parent.mkdir(parents=True)
+        self.bin.write_bytes(b"inert fixture, not an ELF")
+        self.proc = self.root / "proc"
+        self.proc.mkdir()
+        self.launcher = 3214
+        self.pid = 3215
+        self.child = self.proc / str(self.pid)
+        self.child.mkdir()
+        self.stat(group=self.launcher)
+        self.maps()
+
+    def stat(self, *, group):
+        # Linux /proc/stat starts fields after "(comm)" with state and ppid.
+        fields = ["S", "1", str(group), *(["0"] * 16), "123456", "0"]
+        (self.child / "stat").write_text(
+            f"{self.pid} (motionwright-desktop) " + " ".join(fields) + "\n")
+
+    def maps(self, extra=""):
+        (self.child / "maps").write_text(
+            f"0000-1000 r-xp 00000000 08:01 31 {self.bin}\n"
+            "1000-2000 r-xp 00000000 08:01 39 "
+            "/usr/lib/x86_64-linux-gnu/libgtk-3.so.0\n"
+            "2000-3000 rw-p 00000000 00:00 0 [heap]\n"
+            + extra)
+
+    def observe(self, link=None):
+        return gui.observe_runtime_loader(
+            self.launcher, self.app, proc_root=self.proc,
+            link_reader=(link or (lambda _: str(self.bin))),
+        )
+
+    def test_installed_executable_and_system_library_maps_are_scoped(self):
+        report = self.observe()
+        self.assertEqual(report["status"], "LIVE_EXECUTABLE_MAPPINGS_OBSERVED")
+        self.assertEqual(report["process_starttime_ticks"], 123456)
+        self.assertEqual(len(report["mapped_files"]), 2)
+        self.assertIn("usr/bin/motionwright-desktop",
+                      [m["path"] for m in report["mapped_files"]])
+        self.assertIn("/usr/lib/x86_64-linux-gnu/libgtk-3.so.0",
+                      [m["path"] for m in report["mapped_files"]])
+        self.assertEqual(report["claims"]["G3"], "STOP")
+        self.assertEqual(report["claims"]["mapped_file_bytes"], "NOT_AUTHENTICATED")
+        self.assertEqual(report["claims"]["host_package_ownership"], "NOT_ATTESTED")
+
+    def test_foreign_executable_cannot_supply_loader_evidence(self):
+        result = self.observe(link=lambda _: "/usr/bin/foreign-editor")
+        self.assertEqual(result["status"], "NOT_OBSERVED")
+        self.assertEqual(result["reason"], "AUTHENTICATED_PROCESS_ABSENT_OR_AMBIGUOUS")
+
+    def test_foreign_process_group_cannot_supply_loader_evidence(self):
+        self.stat(group=self.launcher + 99)
+        self.assertEqual(self.observe()["status"], "NOT_OBSERVED")
+
+    def test_unclassified_private_paths_are_never_exposed(self):
+        secret = "/home/runner/user-session-secret/private.so"
+        self.maps(extra=f"3000-4000 r-xp 00000000 08:01 55 {secret}\n")
+        report = self.observe()
+        self.assertEqual(report["status"], "LIVE_EXECUTABLE_MAPPINGS_OBSERVED")
+        self.assertNotIn(secret, str(report))
+        self.assertEqual(report["unclassified_executable_segments"], 1)
+
+    def test_missing_expected_binary_cannot_be_claimed(self):
+        self.bin.unlink()
+        report = self.observe()
+        self.assertEqual(report["reason"], "INSTALLED_EXECUTABLE_MISSING")
+        self.assertEqual(report["claims"]["G3"], "STOP")
+
+    def test_malformed_stat_never_promotes_loader(self):
+        (self.child / "stat").write_bytes(b"bad proc stat")
+        report = self.observe()
+        self.assertEqual(report["status"], "NOT_OBSERVED")
+        self.assertEqual(report["claims"]["G3"], "STOP")
+
+
 if __name__ == "__main__":
     unittest.main()

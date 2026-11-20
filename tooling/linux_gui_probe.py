@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import signal
 import subprocess
+import sys
 import time
 from typing import Callable
 
@@ -32,10 +33,136 @@ def check_window_output(output: str) -> bool:
     return len(matches) == 1
 
 
+def _proc_group_and_start(raw: bytes, pid: int) -> tuple[int, int]:
+    """Bind a PID to its kernel process group and non-reused start time."""
+    if not 0 < len(raw) <= 4096:
+        raise ValueError("proc_stat_byte_budget")
+    end = raw.rfind(b") ")
+    if end < 0 or raw.split(b" (", 1)[0] != str(pid).encode("ascii"):
+        raise ValueError("proc_stat_identity")
+    fields = raw[end + 2:].split()
+    if len(fields) < 20:
+        raise ValueError("proc_stat_fields")
+    group, started = int(fields[2]), int(fields[19])
+    if group <= 0 or started <= 0:
+        raise ValueError("proc_stat_invalid")
+    return group, started
+
+
+def observe_runtime_loader(
+    launcher_pid: int, app_dir: Path, *, proc_root: Path = Path("/proc"),
+    link_reader: Callable[[Path], str] | None = None,
+) -> dict:
+    """Sample one real installed executable's mapped files while its window lives.
+
+    A single /proc/maps snapshot is neither a full dlopen lifetime nor a file
+    content hash, license grant, package-ownership proof or G3 acceptance.
+    Outside a Linux production call, only synthetic source tests use proc_root.
+    """
+    report = {
+        "schema": "motionwright.linux-installed-loader-path-snapshot/1",
+        "status": "NOT_OBSERVED",
+        "source": "WINDOW_SCOPED_PROC_MAPS",
+        "claims": {
+            "G3": "STOP", "host_package_ownership": "NOT_ATTESTED",
+            "mapped_file_bytes": "NOT_AUTHENTICATED",
+            "all_dlopen_events": "NOT_OBSERVED",
+            "human_acceptance": False,
+        },
+    }
+    def unavailable(reason: str) -> dict:
+        return {**report, "reason": reason}
+
+    if type(launcher_pid) is not int or launcher_pid <= 1 or launcher_pid > 2**31:
+        return unavailable("INVALID_LAUNCHER_PID")
+    if proc_root == Path("/proc") and sys.platform != "linux":
+        return unavailable("LINUX_ONLY")
+    try:
+        root = app_dir.resolve(strict=True)
+        expected = root / "usr/bin/motionwright-desktop"
+        if not expected.is_file() or expected.is_symlink():
+            return unavailable("INSTALLED_EXECUTABLE_MISSING")
+        expected = expected.resolve(strict=True)
+        readlink = os.readlink if link_reader is None else link_reader
+        matched = []
+        inspected = 0
+        for child in proc_root.iterdir():
+            if not child.name.isdecimal():
+                continue
+            inspected += 1
+            if inspected > 4096:
+                return unavailable("PROC_ROSTER_BUDGET")
+            pid = int(child.name)
+            if pid <= 1:
+                continue
+            try:
+                with (child / "stat").open("rb") as stream:
+                    before = _proc_group_and_start(stream.read(4097), pid)
+                if before[0] != launcher_pid or readlink(child / "exe") != str(expected):
+                    continue
+                with (child / "maps").open("rb") as stream:
+                    raw = stream.read(4 * 1024 * 1024 + 1)
+                if len(raw) > 4 * 1024 * 1024:
+                    return unavailable("PROC_MAPS_BYTE_BUDGET")
+                with (child / "stat").open("rb") as stream:
+                    after = _proc_group_and_start(stream.read(4097), pid)
+                if before != after or readlink(child / "exe") != str(expected):
+                    return unavailable("PROC_IDENTITY_CHANGED")
+                matched.append((pid, before[1], raw))
+            except (OSError, ValueError):
+                # A disappearing process or restricted proc entry is not proof.
+                continue
+        if len(matched) != 1:
+            return unavailable("AUTHENTICATED_PROCESS_ABSENT_OR_AMBIGUOUS")
+        pid, start, raw = matched[0]
+        paths = {}
+        unclassified = 0
+        lines = raw.decode("utf-8", "strict").splitlines()
+        if len(lines) > 8192:
+            return unavailable("PROC_MAPS_ROW_BUDGET")
+        for line in lines:
+            fields = line.split(maxsplit=5)
+            if len(fields) != 6 or "x" not in fields[1]:
+                continue
+            _, perms, _, device, inode_text, mapped = fields
+            if not re.fullmatch(r"[0-9a-fA-F]+:[0-9a-fA-F]+", device) or not inode_text.isdecimal():
+                continue
+            inode = int(inode_text)
+            if inode <= 0 or mapped.endswith(" (deleted)"):
+                unclassified += 1
+                continue
+            if mapped.startswith(("/usr/lib/", "/lib/")):
+                kind, safe_path = "HOST_SYSTEM", mapped
+            else:
+                path = Path(mapped)
+                if not path.is_relative_to(root):
+                    unclassified += 1
+                    continue
+                kind, safe_path = "BUNDLED", path.relative_to(root).as_posix()
+            key = (kind, safe_path, device.lower(), inode)
+            paths[key] = {"origin_class": kind, "path": safe_path,
+                          "mapped_device": device.lower(), "mapped_inode": inode}
+            if len(paths) > 512:
+                return unavailable("PROC_MAPS_FILE_BUDGET")
+        if not any(row["origin_class"] == "BUNDLED"
+                   and row["path"] == "usr/bin/motionwright-desktop"
+                   for row in paths.values()):
+            return unavailable("EXECUTABLE_MAP_NOT_WITNESSED")
+        return {
+            **report, "status": "LIVE_EXECUTABLE_MAPPINGS_OBSERVED",
+            "process_pid": pid, "process_starttime_ticks": start,
+            "mapped_files": [paths[key] for key in sorted(paths)],
+            "unclassified_executable_segments": unclassified,
+        }
+    except (OSError, ValueError, UnicodeDecodeError):
+        return unavailable("PROC_OR_INSTALLED_NAMESPACE_UNAVAILABLE")
+
+
 def run_probe(
     app_run: Path, scratch: Path, *, seconds: int,
     ready_check: Callable[[Path], bool] | None = None,
     window_interaction: Callable[[Path], bool] | None = None,
+    loader_observer: Callable[[int, Path], dict] | None = None,
 ) -> dict:
     app_dir = app_run.parent.resolve(strict=True)
     resolved = app_run.resolve(strict=True)
@@ -101,6 +228,12 @@ def run_probe(
                         "window_title": "Motionwright",
                         "elapsed_seconds": round(time.monotonic() - start, 2),
                     }
+                    if loader_observer is not None:
+                        loader = loader_observer(child.pid, app_dir)
+                        if (not isinstance(loader, dict) or
+                                loader.get("claims", {}).get("G3") != "STOP"):
+                            raise RuntimeError("Installed loader observation cannot grant G3")
+                        result["loader_observation"] = loader
                     break
                 time.sleep(0.6)
         finally:

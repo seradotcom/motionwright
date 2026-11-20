@@ -126,7 +126,9 @@ class InstalledColdStartEvidenceTests(unittest.TestCase):
 
     def test_second_launch_on_identical_persisted_project_is_accepted(self):
         calls = []
-        def fake_native_gui(app_run, scratch, *, seconds, ready_check, window_interaction=None):
+        def fake_native_gui(app_run, scratch, *, seconds, ready_check,
+                            window_interaction=None, loader_observer=None):
+            self.assertIs(loader_observer, probe.observe_runtime_loader)
             calls.append((app_run, scratch, seconds))
             scratch.mkdir(exist_ok=True)
             if len(calls) == 1:

@@ -26,7 +26,7 @@ import sqlite3
 from urllib.parse import quote
 import uuid
 
-from linux_gui_probe import run_probe
+from linux_gui_probe import observe_runtime_loader, run_probe
 import storage_schema_contract as storage
 
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -353,6 +353,7 @@ def probe_cold_relaunch(
         interaction = partial(_first_project_window_interaction, **options)
     first_gui = run_probe(
         app_run, scratch, seconds=seconds, ready_check=ready,
+        loader_observer=observe_runtime_loader,
         window_interaction=interaction,
     )
     if first_gui.get("status") != "WINDOW_OBSERVED":
@@ -364,6 +365,7 @@ def probe_cold_relaunch(
 
     second_gui = run_probe(
         app_run, scratch, seconds=seconds, ready_check=ready,
+        loader_observer=observe_runtime_loader,
     )
     if second_gui.get("status") != "WINDOW_OBSERVED":
         raise ColdStartError("Reopened installed run created no observed desktop window")
