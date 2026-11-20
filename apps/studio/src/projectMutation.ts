@@ -181,13 +181,18 @@ export class ProjectMutationGate {
     publish: (next: P) => void,
     pending: (value: boolean) => void = () => {},
     mode: "update" | "replace" = "update",
+    expectedActiveBranch?: string,
   ): Promise<P> {
     if (this.active || this.reading) {
       throw new Error("Finish the current project change or import before starting another.");
     }
     const base = { id: source.id, generation: source.generation, revision: source.revision,
       active_branch: source.active_branch };
-    if (!Number.isSafeInteger(base.revision) || base.revision < 0
+    // Ordinary mutations must retain the authored branch. A checkout may
+    // select only the explicit target supplied by the initiating UI command.
+    const returnedBranch = expectedActiveBranch ?? base.active_branch;
+    if (typeof returnedBranch !== "string" || returnedBranch.length === 0
+        || !Number.isSafeInteger(base.revision) || base.revision < 0
         || !sameProjectRevision(current(), base)) {
       throw new Error("The visible project changed before this request. Review its current state.");
     }
@@ -197,6 +202,7 @@ export class ProjectMutationGate {
       pending(true);
       const next = await operation(source);
       const updateMatches = next.id === base.id && next.generation === base.generation
+        && next.active_branch === returnedBranch
         && Number.isSafeInteger(next.revision) && next.revision >= base.revision;
       const replacementMatches = typeof next.id === "string" && next.id.length > 0
         && next.id !== base.id && typeof next.generation === "string"

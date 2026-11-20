@@ -2096,7 +2096,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [stepFrame, paletteOpen, libraryOpen, project]);
 
-  const transactProject = useCallback(async (operation: (source: Project) => Promise<Project>) => {
+  const transactProject = useCallback(async (operation: (source: Project) => Promise<Project>, expectedActiveBranch?: string) => {
     // Bind intent to the rendered snapshot; do not silently rebase an old UI callback.
     const source = boot?.project;
     if (!source) throw new Error("Project is not ready.");
@@ -2114,6 +2114,7 @@ export default function App() {
           ? selected : next.scenes[0]?.id ?? null);
       },
       setBusy,
+      "update", expectedActiveBranch,
     );
   }, [boot]);
 
@@ -2121,7 +2122,8 @@ export default function App() {
   // selecting newly authored profiles. Other editor controls retain their
   // globally reported, nonthrowing commit contract.
   const commitRequired = useCallback(async (change: Change): Promise<void> => {
-    await transactProject(source => applyChange(source, change));
+    await transactProject(source => applyChange(source, change),
+      change.type === "checkout_branch" ? change.branch_id : undefined);
   }, [transactProject]);
 
   // Camera keeps an uncertain attempt until this original mutation returns.

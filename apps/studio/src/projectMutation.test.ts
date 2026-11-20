@@ -94,12 +94,29 @@ describe("one source-bound Studio mutation path", () => {
     expect(pending).not.toHaveBeenCalled();
   });
 
+  it("does not publish an unsolicited branch switch from an ordinary save reply", async () => {
+    const source=base(), publish=vi.fn();
+    const operation=vi.fn(async () => ({...source, active_branch:"branch-b",revision:source.revision+1}));
+    await expect(new ProjectMutationGate().run(source,()=>source,operation,publish))
+      .rejects.toThrow("response does not match");
+    expect(operation).toHaveBeenCalledOnce();
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("does not publish a different branch even during an explicitly scoped checkout", async () => {
+    const source=base(), publish=vi.fn();
+    const unexpected={...source,active_branch:"branch-c",revision:source.revision+1};
+    await expect(new ProjectMutationGate().run(source,()=>source,async()=>unexpected,
+      publish,undefined,"update","branch-b")).rejects.toThrow("response does not match");
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   it("allows a canonical branch checkout and uses that observed branch for the following edit", async () => {
     const gate = new ProjectMutationGate();
     let visible = base();
     const checkout = { ...visible, active_branch: "branch-b", revision: visible.revision + 1 };
-    await expect(gate.run(visible, () => visible, async () => checkout, next => { visible = next; }))
-      .resolves.toEqual(checkout);
+    await expect(gate.run(visible, () => visible, async () => checkout, next => { visible = next; },
+      undefined, "update", "branch-b")).resolves.toEqual(checkout);
     const edit = vi.fn(async (source: ProjectRevision) => ({ ...source, revision: source.revision + 1 }));
     await gate.run(visible, () => visible, edit, next => { visible = next; });
     expect(edit).toHaveBeenCalledExactlyOnceWith(checkout);
