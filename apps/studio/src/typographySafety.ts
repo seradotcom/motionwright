@@ -86,6 +86,50 @@ function projectedBounds(node: CanvasNode, scene: Scene, at: number):
     top:Math.min(...ycoords),bottom:Math.max(...ycoords)};
 }
 
+/** Bound every intermediate pose of the supported monotone keyframe grammar.
+ * Sampled corners alone can miss the worst AABB of a rotating text rectangle.
+ * This conservative envelope never replaces native glyph/raster review.
+ */
+function animatedTextFitsSafeArea(
+  node: CanvasNode, scene: Scene,
+  inner: {left:number;right:number;top:number;bottom:number},
+): boolean {
+  if (node.keyframes.length === 0) return true;
+  if (node.keyframes.some(key =>
+    !["linear","hold","ease_in_out","ease_out_cubic"].includes(key.interpolation))) return false;
+
+  const range=(property:"x"|"y"|"width"|"height"|"rotation_deg")=>{
+    const values=[node[property],...node.keyframes
+      .filter(key=>key.property===property).map(key=>key.value)];
+    if (values.some(value=>!Number.isFinite(value))) return null;
+    return {min:Math.min(...values),max:Math.max(...values)};
+  };
+  const x=range("x"),y=range("y"),w=range("width"),h=range("height"),
+    rotation=range("rotation_deg");
+  if (!x || !y || !w || !h || !rotation || w.min<=0 || h.min<=0) return false;
+  const centersX=[x.min+w.min/2,x.max+w.max/2];
+  const centersY=[y.min+h.min/2,y.max+h.max/2];
+  const projected=centersX.flatMap(cx=>centersY.map(cy=>
+    projectWorldPoint(scene.camera,cx,cy)));
+  if (projected.some(point=>point===null)) return false;
+
+  const angle=(rotation.min-scene.camera.rotation_deg)*Math.PI/180;
+  const c=Math.abs(Math.cos(angle)),s=Math.abs(Math.sin(angle));
+  const zoom=scene.camera.zoom;
+  // If the authored angle changes, a circumscribed disk covers every
+  // intermediate angle (including easing or a hold jump).
+  const rotating=rotation.max!==rotation.min;
+  const disk=zoom*Math.hypot(w.max,h.max)/2;
+  const halfX=rotating?disk:zoom*(c*w.max+s*h.max)/2;
+  const halfY=rotating?disk:zoom*(s*w.max+c*h.max)/2;
+  if (![halfX,halfY].every(Number.isFinite)) return false;
+  const points=projected as Array<{x:number;y:number}>;
+  return Math.min(...points.map(point=>point.x))-halfX>=inner.left-EPS &&
+    Math.max(...points.map(point=>point.x))+halfX<=inner.right+EPS &&
+    Math.min(...points.map(point=>point.y))-halfY>=inner.top-EPS &&
+    Math.max(...points.map(point=>point.y))+halfY<=inner.bottom+EPS;
+}
+
 export function evaluateTypeSafety(
   project: Project, scene: Scene, profile: DeliverableProfile | null,
   editorTime: number,
@@ -158,6 +202,9 @@ export function evaluateTypeSafety(
     const lineHeight=node.style.font_size*node.style.line_height*lines;
     if (lineHeight > minimumDeclaredBoxHeight+EPS) return {...base,status:"declared_lines",
       reason:"Declared line box exceeds object height; native font shaping still needs review.",
+      firstRiskTime:null};
+    if (!animatedTextFitsSafeArea(node,scene,inner)) return {...base,status:"unresolved",
+      reason:"Animated text may cross the safe area between sampled times; native frame review is required.",
       firstRiskTime:null};
     return {...base,status:"sampled_inside",
       reason:"Sampled geometric bounds fit. Font shaping, safe captions and native pixels remain unverified.",

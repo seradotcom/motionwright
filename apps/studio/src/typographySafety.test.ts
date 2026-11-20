@@ -58,6 +58,32 @@ describe("source-bound typography framing preflight",()=>{
     expect(finding.sampledTimes).toBeGreaterThan(3);
     expect(finding.firstRiskTime).toBeGreaterThan(0);
   });
+  it("does not mark a between-sample rotation sweep safe without a geometric bound",()=>{
+    const {project,scene,profile,node}=setup();
+    node.x=1223;node.y=450;node.width=600;node.height=80;
+    node.rotation_deg=0;node.style.font_size=48;node.style.line_height=1.1;
+    node.keyframes=[{
+      at:{num:"4",den:"1"},property:"rotation_deg",value:90,interpolation:"linear",
+    }];
+    // Keyframe and midpoint poses are within the margin. A wide rectangle
+    // crosses the right safe edge near 8 degrees, between those samples.
+    const unwitnessed=evaluateTypeSafety(project,scene,profile,0).findings[0];
+    expect(unwitnessed.status).toBe("unresolved");
+    expect(unwitnessed.reason).toContain("between sampled");
+    const witnessed=evaluateTypeSafety(project,scene,profile,0.35).findings[0];
+    expect(witnessed.status).toBe("safe_area");
+  });
+  it("keeps safely bounded animated text inspectable without a native PASS",()=>{
+    const {project,scene,profile,node}=setup();
+    node.x=600;node.y=450;node.width=600;node.height=80;
+    node.rotation_deg=0;node.style.font_size=48;node.style.line_height=1.1;
+    node.keyframes=[{
+      at:{num:"4",den:"1"},property:"rotation_deg",value:90,interpolation:"ease_in_out",
+    }];
+    const finding=evaluateTypeSafety(project,scene,profile,0).findings[0];
+    expect(finding.status).toBe("sampled_inside");
+    expect(finding.reason).toContain("unverified");
+  });
   it("projects the actual semantic camera instead of ignoring zoom",()=>{
     const {project,scene,profile}=setup();
     scene.camera.zoom=3;
