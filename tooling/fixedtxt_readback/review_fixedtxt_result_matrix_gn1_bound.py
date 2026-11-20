@@ -28,7 +28,7 @@ PURPOSE = 'candidate24'
 SPEC_SHA = '6c8edaa4d082c9f980ec6b91a1c99e31481fdd2b4b6d29643f7117a251502946'
 NUMERIC_SHA = '6bf3027594f978ffa338fb823be49749bb506374530052b77037bd60c2b3347a'
 BOUNDED_SHA = 'eca6aaf897a2845894f73ae3bac1483dd840b41a6c2b6ab2c2bbfd1e13dc639c'
-OUTER_SHA = 'fff9ec63ff2d10a80090d756138880fa38510a6ab92c0362c13b6ecf5dd0de35'
+OUTER_SHA = '7c8f1d29a087a889cb62bf8c5155c204daf3cdd124b489cb67109dadc19121a4'
 TYPED_PROBE_SHA = '5db186321c1b2864468a8c38fe62ca87703819f12e99848b038dfbcb2e65f162'
 
 
@@ -657,6 +657,7 @@ def main(*, configure_private_paths=None):
              'retained_public_or_dispatch_digest')
         dispatch = fixed.validate_dispatch(dispatch_raw, context)
         need(dispatch['recipient']['sha256'] == RECIPIENT, 'same_technical_recipient')
+        phase = 'envelope_and_memory_admission'
         envelope = base.absolute_e(args.envelope, private=True)
         reference = base.envelope_reference(envelope, args.envelope_sha256)
         need(reference['bytes'] <= dispatch['fixedtxt']['limits']['capsule_bytes'] <= 256 * MIB,
@@ -664,6 +665,7 @@ def main(*, configure_private_paths=None):
         prefix = base.read_stable(envelope, base.MAX_ENVELOPE, prefix=len(base.MAGIC) + 4 + 8192)
         header = base.header_from_prefix(prefix, seal, context, RECIPIENT)
         memory = bounded.memory_plan(header['plaintext_bytes'], bounded.available_memory())
+        state['memory_preflight'] = memory
         need(memory['admitted'], 'physical_reader_memory_not_admitted')
         ffmpeg = base.absolute_e(args.ffmpeg)
         decoder_reference(bounded, base, ffmpeg, args.ffmpeg_sha256, state['decoder_namespace_observations'])
@@ -737,8 +739,13 @@ def main(*, configure_private_paths=None):
                 output.write('readback.terminal.json', state)
             except BaseException:
                 pass
-        print(json.dumps({'status': state['status'], 'phase': phase, 'error_code': code,
-                          'native_calls': 0, 'automatic_retry': False}, sort_keys=True))
+        summary = {'status': state['status'], 'phase': phase, 'error_code': code,
+                   'native_calls': 0, 'automatic_retry': False}
+        if 'memory_preflight' in state:
+            summary['memory_preflight'] = {field: state['memory_preflight'][field] for field in (
+                'available_physical_bytes', 'estimated_working_bytes', 'maximum_working_bytes',
+                'reserved_physical_bytes', 'admitted')}
+        print(json.dumps(summary, sort_keys=True))
         return 2
     finally:
         if snapshot is not None:

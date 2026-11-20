@@ -865,8 +865,8 @@ def main(*, configure_private_paths=None):
         prefix = base.read_stable(envelope, base.MAX_ENVELOPE, prefix=len(base.MAGIC) + 4 + 8192)
         header = base.header_from_prefix(prefix, seal, context, RECIPIENT)
         plan = bounded.memory_plan(header["plaintext_bytes"], bounded.available_memory())
-        need(plan["admitted"], "bounded_memory_not_admitted")
         state.update(memory_preflight=plan, envelope=reference, original_clock=deadline)
+        need(plan["admitted"], "bounded_memory_not_admitted")
         phase = "authenticated_original_decryption"
         key_raw = base.read_stable(key, 65536)
         private_key = seal.serialization.load_pem_private_key(key_raw, password=None)
@@ -952,8 +952,13 @@ def main(*, configure_private_paths=None):
                 output.write("review.terminal.json", state)
             except BaseException:
                 pass
-        print(json.dumps({"status": state["status"], "phase": phase, "code": state["error_code"], "R28_issued": state["R28_issued"],
-                          "native_calls": 0, "automatic_retry": False}, sort_keys=True))
+        summary = {"status": state["status"], "phase": phase, "code": state["error_code"],
+                   "R28_issued": state["R28_issued"], "native_calls": 0, "automatic_retry": False}
+        if "memory_preflight" in state:
+            summary["memory_preflight"] = {field: state["memory_preflight"][field] for field in (
+                "available_physical_bytes", "estimated_working_bytes", "maximum_working_bytes",
+                "reserved_physical_bytes", "admitted")}
+        print(json.dumps(summary, sort_keys=True))
         return 2
     finally:
         if snapshot is not None:
