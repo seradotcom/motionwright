@@ -148,6 +148,22 @@ describe("native source authored input custody", () => {
     });
   }
 
+  for (const defect of ["missing_asset", "wrong_hash", "wrong_media_type", "wrong_name"] as const) {
+    it("refuses a published native capsule with an inconsistent saved asset: " + defect, () => {
+      const s = state(); author(s.session); expect(s.session.assertReady()).toBe(true);
+      const before = structuredClone(s.session.draft), result = committed(s.session, s.value);
+      const current = result.production_design!.capsules[0];
+      const asset = result.assets.find(item => item.id === current.source_asset_id)!;
+      if (defect === "missing_asset") result.assets = result.assets.filter(item => item.id !== current.source_asset_id);
+      if (defect === "wrong_hash") asset.content_sha256 = "b".repeat(64);
+      if (defect === "wrong_media_type") asset.media_type = "application/other";
+      if (defect === "wrong_name") asset.name = "An unrelated source";
+      expect(s.session.acknowledge(before.sequence, result)).toBe(false);
+      expect(s.session.draft).toEqual(before);
+      expect(s.session.notice).toContain("asset");
+    });
+  }
+
   it("parks each scene/target separately and requires an explicit rebase without replacing raw fields", () => {
     const a = state(); author(a.session); a.session.setField("parameters", '["unfinished"');
     const b = new NativeSourceDraftSession(a.value, a.value.scenes[1].id, "new", a.storage, a.pointers, ids(200));

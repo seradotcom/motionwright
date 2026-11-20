@@ -342,6 +342,10 @@ export class NativeSourceDraftSession {
       if (current.label !== spec.label || current.native_editor_hint !== spec.native_editor_hint
           || !sameValue(current.editable_parameters, spec.editable_parameters))
         throw new Error("The published native capsule has different authored metadata. Preserve this input for explicit review.");
+      const linkedAssets = project.assets.filter(asset => asset.id === current.source_asset_id);
+      if (linkedAssets.length !== 1 || linkedAssets[0].content_sha256 !== current.source_sha256
+          || linkedAssets[0].name !== spec.name || linkedAssets[0].media_type !== spec.media_type)
+        throw new Error("The published native capsule and saved asset do not match. Preserve the original authored input and review the saved project.");
       this.draft = { ...this.draft, baseRevision: project.revision, baseCapsule: clone(current),
         dirty: this.draft.sequence !== sequence };
       this.project = project; this.submitted.delete(sequence);
