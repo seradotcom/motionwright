@@ -454,10 +454,10 @@ jobs:
           counts=step['counts']
           assert step['entry_point']=='discovery:test_linux_appimage_system_origins.py'
           assert step['exit_code']==0 and step['status']=='PASS'
-          assert counts['tests_run']==counts['passed']==30
+          assert counts['tests_run']==counts['passed']==38
           assert counts['terminal_status']=='OK'
           assert all(counts[k]==0 for k in ('failures','errors','skipped','expected_failures','unexpected_successes'))
-          print('appimage-system-origin-source=PASS controls=30 packaging=NOT_RUN G3=STOP')
+          print('appimage-system-origin-source=PASS controls=38 packaging=NOT_RUN G3=STOP')
           PY_APP_ORIGIN_G1
       - name: Authenticate bounded GNU ELF build-id source controls
         timeout-minutes: 3

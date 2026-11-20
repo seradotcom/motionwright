@@ -276,6 +276,140 @@ class AppImageInstalledOriginTests(unittest.TestCase):
         self.assertIn(copyright_raw, original_bytes.values())
         self.assertIn(self.manifests[self.pkg], original_bytes.values())
 
+    def test_large_webkit_sized_notice_is_retained_within_explicit_limit(self):
+        content = b"L" * 273584
+        self.make("/usr/share/doc/libexample/copyright", content)
+        matched, missing = self.match()
+        self.assertEqual(missing, [])
+        records, originals = origin.original_package_records(
+            matched, self.manifests, self.root)
+        notice = records[self.pkg]["copyright"]
+        self.assertEqual(notice["status"], "LISTED_REGULAR_COPYRIGHT_BYTES_OBSERVED")
+        self.assertEqual(notice["bytes"], len(content))
+        self.assertEqual(notice["sha256"], hashlib.sha256(content).hexdigest())
+        self.assertIn(content, originals.values())
+
+    def test_notice_above_per_file_limit_is_not_read_or_attested(self):
+        from unittest import mock
+        self.make("/usr/share/doc/libexample/copyright",
+                  b"L" * (origin.MAX_COPYRIGHT + 1))
+        matched, _ = self.match()
+        with mock.patch.object(origin.inventory.capture, "stable_read",
+                               side_effect=AssertionError("oversized notice read")):
+            records, originals = origin.original_package_records(
+                matched, self.manifests, self.root)
+        self.assertEqual(records[self.pkg]["copyright"]["status"], "NOT_OBSERVED")
+        self.assertEqual(list(originals.values()), [self.manifests[self.pkg]])
+
+    def test_notice_aggregate_budget_bounds_all_originals_and_remaining_pass(self):
+        names = ("a-notice", "b-notice")
+        contents = (b"A" * 32, b"B" * 48)
+        manifests, matched = {}, []
+        for name, content in zip(names, contents):
+            path = "/usr/share/doc/" + name + "/copyright"
+            self.make(path, content)
+            manifests[name] = (path + "\n").encode()
+            matched.append({"origin": {"package": name}})
+        records, originals = origin.original_package_records(
+            matched, manifests, self.root, copyright_budget=64)
+        self.assertEqual(records[names[0]]["copyright"]["bytes"], 32)
+        self.assertEqual(records[names[1]]["copyright"]["status"], "NOT_OBSERVED")
+        self.assertNotIn(contents[1], originals.values())
+        empty, retained = origin.original_package_records(
+            matched, manifests, self.root, copyright_budget=0)
+        self.assertTrue(all(row["copyright"]["status"] == "NOT_OBSERVED"
+                            for row in empty.values()))
+        self.assertEqual(set(retained.values()), set(manifests.values()))
+        with self.assertRaisesRegex(ValueError, "origin_copyright_total_budget"):
+            origin.original_package_records(matched, manifests, self.root,
+                                            copyright_budget=-1)
+
+    def doc_alias_fixture(self, target_directory="/usr/share/doc/shared-doc"):
+        content = b"Original documentation shared by declared installed packages\n"
+        target = self.make(target_directory + "/copyright", content)
+        alias = self.root / "usr/share/doc/libexample"
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            alias.symlink_to(os.path.relpath(target.parent, alias.parent),
+                             target_is_directory=True)
+        except OSError as exc:
+            self.skipTest("symlink permission unavailable: " + str(exc))
+        manifests = {
+            self.pkg: (self.system_path + "\n/usr/share/doc/libexample\n").encode(),
+            "shared-doc": (target_directory + "/copyright\n").encode(),
+        }
+        matched, missing = self.match(
+            manifests=manifests, installed={**self.installed, "shared-doc": "1.0"})
+        self.assertEqual(missing, [])
+        return matched, manifests, alias, content
+
+    def test_declared_doc_directory_alias_retains_exact_target_owner_manifest(self):
+        matched, manifests, alias, content = self.doc_alias_fixture()
+        records, originals = origin.original_package_records(
+            matched, manifests, self.root)
+        notice = records[self.pkg]["copyright"]
+        self.assertEqual(notice["status"], "DECLARED_DOC_ALIAS_COPYRIGHT_BYTES_OBSERVED")
+        self.assertFalse(notice["listed_in_package_manifest"])
+        self.assertEqual(notice["license_review"], "NOT_PERFORMED")
+        lineage = notice["documentation_alias"]
+        self.assertEqual(lineage["target_owner"], "shared-doc")
+        self.assertEqual(lineage["resolved_copyright"],
+                         "/usr/share/doc/shared-doc/copyright")
+        reference = lineage["target_manifest"]
+        self.assertEqual(originals[reference["file"]], manifests["shared-doc"])
+        self.assertEqual(reference["sha256"],
+                         hashlib.sha256(manifests["shared-doc"]).hexdigest())
+        self.assertIn(content, originals.values())
+
+    def test_unlisted_or_regular_doc_directory_cannot_supply_unlisted_notice(self):
+        matched, manifests, alias, content = self.doc_alias_fixture()
+        undeclared = {**manifests, self.pkg: (self.system_path + "\n").encode()}
+        records, _ = origin.original_package_records(matched, undeclared, self.root)
+        self.assertEqual(records[self.pkg]["copyright"]["status"], "NOT_OBSERVED")
+        alias.unlink()
+        alias.mkdir()
+        (alias / "copyright").write_bytes(content)
+        records, _ = origin.original_package_records(matched, manifests, self.root)
+        self.assertEqual(records[self.pkg]["copyright"]["status"], "NOT_OBSERVED")
+
+    def test_doc_alias_missing_or_ambiguous_target_owner_stays_unobserved(self):
+        matched, manifests, alias, content = self.doc_alias_fixture()
+        missing = {self.pkg: manifests[self.pkg]}
+        ambiguous = {**manifests, "other-doc": manifests["shared-doc"]}
+        for declarations in (missing, ambiguous):
+            with self.subTest(owners=len(declarations)):
+                records, originals = origin.original_package_records(
+                    matched, declarations, self.root)
+                self.assertEqual(records[self.pkg]["copyright"]["status"], "NOT_OBSERVED")
+                self.assertNotIn(content, originals.values())
+
+    def test_declared_doc_alias_outside_documentation_tree_is_not_read(self):
+        from unittest import mock
+        matched, manifests, alias, content = self.doc_alias_fixture("/usr/lib/shared-doc")
+        with mock.patch.object(origin, "regular_host_bytes",
+                               side_effect=AssertionError("escaped notice read")):
+            records, originals = origin.original_package_records(
+                matched, manifests, self.root)
+        self.assertEqual(records[self.pkg]["copyright"]["status"], "NOT_OBSERVED")
+        self.assertNotIn(content, originals.values())
+
+    def test_doc_alias_changed_during_read_does_not_promote_copyright(self):
+        from unittest import mock
+        matched, manifests, alias, content = self.doc_alias_fixture()
+        other = self.make("/usr/share/doc/other-doc/copyright", content)
+        reader = origin.regular_host_bytes
+
+        def change_alias(root, path, limit):
+            raw = reader(root, path, limit)
+            alias.unlink()
+            alias.symlink_to(os.path.relpath(other.parent, alias.parent),
+                             target_is_directory=True)
+            return raw
+
+        with mock.patch.object(origin, "regular_host_bytes", side_effect=change_alias):
+            with self.assertRaisesRegex(ValueError, "origin_doc_alias_changed"):
+                origin.original_package_records(matched, manifests, self.root)
+
     def test_unlisted_copyright_never_counts_as_attested_notice(self):
         license_path = "/usr/share/doc/libexample/copyright"
         self.make(license_path, b"Not declared as an installed package file\n")

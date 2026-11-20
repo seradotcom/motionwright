@@ -25,7 +25,9 @@ MAX_MANIFEST_TOTAL = 64 * 1024 * 1024
 MAX_PACKAGES = 10000
 MAX_FILE_READ = 64 * 1024 * 1024
 MAX_SOURCE_READ_TOTAL = 512 * 1024 * 1024
-MAX_COPYRIGHT = 256 * 1024
+# WebKit's original notice is 273584 bytes; retain it within explicit bounds.
+MAX_COPYRIGHT = 512 * 1024
+MAX_COPYRIGHT_TOTAL = 16 * 1024 * 1024
 MAX_REPORT = 16 * 1024 * 1024
 PACKAGE = re.compile(r"[a-z0-9][a-z0-9+.-]*(?::[a-z0-9-]+)?\Z")
 VERSION = re.compile(r"[0-9][A-Za-z0-9.+:~\-]*\Z")
@@ -318,24 +320,99 @@ def regular_host_bytes(root, path, limit):
         return None
 
 
-def original_package_records(matched, manifests, root):
-    """Retain apt file lists and observed copyright text, not legal decisions."""
-    result, originals = {}, {}
+def _documentation_alias_notice(root, path, manifests, limit, owner_cache):
+    """Read a declared doc-directory link only with one original target owner."""
+    root = Path(root).resolve(strict=True)
+    docs = root / "usr/share/doc"
+    alias = root / path.lstrip("/")
+    directory = alias.parent
+    try:
+        before = directory.lstat()
+        if not stat.S_ISLNK(before.st_mode):
+            return None
+        literal = os.readlink(directory)
+        need(0 < len(literal) <= 4096, "origin_doc_alias_target_budget")
+        target = alias.resolve(strict=True)
+        if not target.is_relative_to(docs):
+            return None
+        host_path = "/" + target.relative_to(root).as_posix()
+        if host_path not in owner_cache:
+            owners, consumed = [], 0
+            need(len(manifests) <= MAX_PACKAGES, "origin_doc_alias_package_budget")
+            for package, raw in sorted(manifests.items()):
+                consumed += len(raw)
+                need(consumed <= MAX_MANIFEST_TOTAL and PACKAGE.fullmatch(package),
+                     "origin_doc_alias_manifest_budget")
+                if host_path in list_paths(raw):
+                    owners.append(package)
+            owner_cache[host_path] = owners
+        owners = owner_cache[host_path]
+        if len(owners) != 1:
+            return None
+        data = regular_host_bytes(root, host_path, limit)
+        identity = lambda info: (info.st_dev, info.st_ino, info.st_mode,
+                                 info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        need(identity(before) == identity(directory.lstat())
+             and os.readlink(directory) == literal
+             and alias.resolve(strict=True) == target,
+             "origin_doc_alias_changed")
+        if data is None:
+            return None
+        owner = owners[0]
+        original = manifests[owner]
+        filename = "package-lists/" + hashlib.sha256(owner.encode("utf-8")).hexdigest() + ".original"
+        return data, {
+            "directory": "/" + directory.relative_to(root).as_posix(),
+            "target_literal": literal,
+            "resolved_copyright": host_path,
+            "target_owner": owner,
+            "target_manifest": {"file": filename, **digest(original)},
+        }, filename, original
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+def original_package_records(matched, manifests, root, *, copyright_budget=MAX_COPYRIGHT_TOTAL):
+    """Retain declared notice originals within per-file and aggregate bounds."""
+    need(type(copyright_budget) is int and 0 <= copyright_budget <= MAX_COPYRIGHT_TOTAL,
+         "origin_copyright_total_budget")
+    result, originals, owner_cache = {}, {}, {}
+    consumed = 0
     for package in sorted({m["origin"]["package"] for m in matched}):
         need(package in manifests, "origin_package_manifest_missing")
         raw = manifests[package]
         name = hashlib.sha256(package.encode("utf-8")).hexdigest()
         copyright_path = "/usr/share/doc/" + package.split(":", 1)[0] + "/copyright"
-        listed = copyright_path in list_paths(raw)
-        copyright_raw = regular_host_bytes(root, copyright_path, MAX_COPYRIGHT) if listed else None
-        notice = ({
-            "status": "LISTED_REGULAR_COPYRIGHT_BYTES_OBSERVED",
-            "path": copyright_path, **digest(copyright_raw),
-            "license_review": "NOT_PERFORMED",
-        } if copyright_raw is not None else {
-            "status": "NOT_OBSERVED", "listed_in_package_manifest": listed,
-            "license_review": "NOT_PERFORMED",
-        })
+        declared = list_paths(raw)
+        listed = copyright_path in declared
+        limit = min(MAX_COPYRIGHT, copyright_budget - consumed)
+        copyright_raw, lineage = None, None
+        if limit > 0:
+            if listed:
+                copyright_raw = regular_host_bytes(root, copyright_path, limit)
+            elif copyright_path.rsplit("/", 1)[0] in declared:
+                observed = _documentation_alias_notice(
+                    root, copyright_path, manifests, limit, owner_cache)
+                if observed is not None:
+                    copyright_raw, lineage, filename, original = observed
+                    originals[filename] = original
+        if copyright_raw is not None:
+            consumed += len(copyright_raw)
+            need(consumed <= copyright_budget, "origin_copyright_total_budget")
+            notice = {
+                "status": ("DECLARED_DOC_ALIAS_COPYRIGHT_BYTES_OBSERVED" if lineage
+                           else "LISTED_REGULAR_COPYRIGHT_BYTES_OBSERVED"),
+                "path": copyright_path, **digest(copyright_raw),
+                "listed_in_package_manifest": listed,
+                "license_review": "NOT_PERFORMED",
+            }
+            if lineage:
+                notice["documentation_alias"] = lineage
+        else:
+            notice = {
+                "status": "NOT_OBSERVED", "listed_in_package_manifest": listed,
+                "license_review": "NOT_PERFORMED",
+            }
         result[package] = {
             "manifest": {"file": "package-lists/" + name + ".original", **digest(raw)},
             "copyright": notice,
@@ -475,8 +552,11 @@ def main(argv=None):
     packages, package_originals = original_package_records(matched, manifests, Path("/"))
     elf_relations = observe_elf_build_id_relations(
         pending, app, installed, manifests, args.live_payload)
+    retained_copyright_bytes = sum(
+        item["copyright"].get("bytes", 0) for item in packages.values())
     elf_packages, elf_originals = original_package_records(
-        elf_relations["matches"], manifests, Path("/"))
+        elf_relations["matches"], manifests, Path("/"),
+        copyright_budget=MAX_COPYRIGHT_TOTAL - retained_copyright_bytes)
     result = {
         "schema": SCHEMA, "source": source,
         "source_tree": app["context"]["source_tree"],
