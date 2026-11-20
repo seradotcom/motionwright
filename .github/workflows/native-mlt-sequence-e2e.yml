@@ -288,9 +288,9 @@ jobs:
         assert step['entry_point']=='discovery:test_native_mlt_prepare_diagnostic.py'
         assert step['status']=='PASS' and step['exit_code']==0
         assert counts['terminal_status']=='OK'
-        assert counts['tests_run']==counts['passed']==6
+        assert counts['tests_run']==counts['passed']==7
         assert all(counts[k]==0 for k in ('errors','failures','skipped','expected_failures','unexpected_successes'))
-        print('G2 prepare-safe-telemetry=PASS six=6 Native=NOT_RUN G2=NOT_GRANTED')
+        print('G2 prepare-safe-telemetry=PASS seven=7 Native=NOT_RUN G2=NOT_GRANTED')
         PY_G2_PREPARE_TELEMETRY
     - name: Retain original G2 prepare telemetry source results
       if: always() && steps.custody_python.outcome == 'success'

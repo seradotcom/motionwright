@@ -1,7 +1,9 @@
 """No-secret, fail-closed preparation error telemetry; no physical Native effect."""
 import inspect
+import ast
 import json
 import pathlib
+import re
 import sys
 import unittest
 
@@ -84,6 +86,31 @@ class PrepareFailureDiagnostics(unittest.TestCase):
                       compiler_source)
         self.assertIn('_mark_prepare_phase("compiler_source_closure")',
                       compiler_source)
+
+    def test_allowlisted_failure_codes_are_actual_pinned_source_literals(self):
+        root = pathlib.Path(custody.__file__).resolve().parent
+        modules = (
+            "native_mlt_g2_custody.py",
+            "native_mlt_g2_observation.py",
+            "native_mlt_runtime_admission.py",
+            "native_evidence_projection.py",
+            "native_fixedtxt_g2_admission.py",
+            "ci_private_evidence.py",
+        )
+        literals = set()
+        for module in modules:
+            parsed = ast.parse((root / module).read_bytes())
+            literals.update(node.value for node in ast.walk(parsed)
+                            if isinstance(node, ast.Constant)
+                            and type(node.value) is str)
+        self.assertTrue(custody._PREPARE_SAFE_CODES)
+        self.assertTrue(custody._PREPARE_SAFE_CODES <= literals)
+        for code in custody._PREPARE_SAFE_CODES:
+            self.assertRegex(code, r"^[A-Za-z0-9_-]{3,110}$")
+        # A legitimate category must not authorize leaking any arbitrary text.
+        hidden = custody._safe_failure_diagnostic(
+            custody.CustodyRejected("private-data-not-an-enum"), "prepare")
+        self.assertEqual(hidden["error_code"], "WITHHELD")
 
     def test_reporter_retains_exit_two_and_safe_projection_only(self):
         main_guard = inspect.getsource(custody)
