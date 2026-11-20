@@ -91,6 +91,8 @@ on:
       - 'tooling/tests/test_native_film180_media_readback.py'
       - 'tooling/ci_private_evidence.py'
       - 'tooling/native_mlt_g2_custody.py'
+      - 'tooling/native_fixedtxt_prepare_failure_projection.py'
+      - 'tooling/tests/test_native_fixedtxt_prepare_failure_projection.py'
       - 'tooling/mlt-audio-diagnostic/repair_planar_source.py'
       - 'tooling/tests/test_native_mlt_compiler_intake.py'
       - 'tooling/native_mlt_g2_observation.py'
@@ -292,12 +294,51 @@ jobs:
         assert all(counts[k]==0 for k in ('errors','failures','skipped','expected_failures','unexpected_successes'))
         print('G2 prepare-safe-telemetry=PASS seven=7 Native=NOT_RUN G2=NOT_GRANTED')
         PY_G2_PREPARE_TELEMETRY
+    - name: Require fail-closed FixedTxt prepare-10 stderr projection controls
+      env:
+        CUSTODY_PYTHON: ${{ steps.custody_python.outputs.python }}
+      run: |
+        set -euo pipefail
+        umask 077
+        root="$RUNNER_TEMP/mw-fixedtxt-safe-stderr-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        test ! -e "$root"
+        mkdir -m 700 "$root"
+        "$CUSTODY_PYTHON" -B -E -s tooling/ci_test_runner.py \
+          --repo "$GITHUB_WORKSPACE" --test-directory tooling/tests \
+          --pattern test_native_fixedtxt_prepare_failure_projection.py \
+          --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+          --report "$root/receipt.json" \
+          > "$root/runner.stdout" 2> "$root/runner.stderr"
+        "$CUSTODY_PYTHON" -B -E -s - "$root/receipt.json" "$GITHUB_SHA" <<'PY_SAFE_STDERR'
+        import json,sys
+        from pathlib import Path
+        value=json.loads(Path(sys.argv[1]).read_bytes())
+        assert value['status']=='PASS' and value['executed_source_sha']==sys.argv[2]
+        assert value['exit_code']==0 and len(value['steps'])==1
+        step=value['steps'][0]
+        counts=step['counts']
+        assert step['entry_point']=='discovery:test_native_fixedtxt_prepare_failure_projection.py'
+        assert step['status']=='PASS' and step['exit_code']==0
+        assert counts['tests_run']==counts['passed']==13
+        assert counts['terminal_status']=='OK'
+        assert all(counts[k]==0 for k in ('errors','failures','skipped','expected_failures','unexpected_successes'))
+        print('G2 original-stderr-projection-source=PASS cases=13 Native=NOT_RUN G2=NOT_GRANTED')
+        PY_SAFE_STDERR
     - name: Retain original G2 prepare telemetry source results
       if: always() && steps.custody_python.outcome == 'success'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: motionwright-g2-prepare-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         path: ${{ runner.temp }}/mw-g2-prepare-telemetry-${{ github.run_id }}-${{ github.run_attempt }}/
+        if-no-files-found: warn
+        overwrite: false
+        retention-days: 14
+    - name: Retain original secret-safe FixedTxt stderr projection source controls
+      if: always() && steps.custody_python.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: motionwright-g2-safe-stderr-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/mw-fixedtxt-safe-stderr-${{ github.run_id }}-${{ github.run_attempt }}/
         if-no-files-found: warn
         overwrite: false
         retention-days: 14
@@ -4396,6 +4437,13 @@ jobs:
           if [ "$owner_resource_status" -ne 0 ]; then exit "$owner_resource_status"; fi
           test "$owner_resource_return_status" -eq 0
 
+      - name: Project only allowlisted failed prepare-10 diagnostics from private original stderr
+        if: always() && steps.fixedtxt_prepare.outcome == 'failure' && steps.fixedtxt_python.outcome == 'success'
+        run: |
+          set -euo pipefail
+          umask 077
+          /usr/bin/python3.12 -B -E -s tooling/native_fixedtxt_prepare_failure_projection.py \
+            --failed-prepare-ten
       - name: Upload original encrypted P R Q for independent owner review
         id: fixedtxt_review
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
