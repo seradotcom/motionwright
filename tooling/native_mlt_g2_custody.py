@@ -46,6 +46,10 @@ RUNTIME_INPUT_KEYS = g2.RUNTIME_INPUT_KEYS
 UPSTREAM_URL = "https://archive.ubuntu.com/ubuntu/pool/universe/m/mlt/mlt_7.22.0.orig.tar.gz"
 UPSTREAM_ARCHIVE_SHA256 = "7cf4d9573a061d76902c6e12a2f09f5f461e7c697635233df82a63a3fe4d6da6"
 UPSTREAM_MEMBER = "mlt-7.22.0/src/modules/avformat/consumer_avformat.c"
+# Exact upstream archive, retained from the original authenticated Ubuntu
+# source. FixedTxt intake reads this committed source, not a live HTTP mirror.
+PINNED_UPSTREAM_SOURCE = "tooling/mlt-audio-diagnostic/upstream/mlt_7.22.0.orig.tar.gz"
+PINNED_UPSTREAM_ORIGIN = "COMMITTED_ORIGINAL_UPSTREAM_ARCHIVE"
 REPAIR_GENERATOR = "tooling/mlt-audio-diagnostic/repair_planar_source.py"
 REPAIR_GENERATOR_SHA256 = "76c4c00139483c44f47c56c297392f20764568fbbed9f15be7e34235c4858084"
 MAX_UPSTREAM_ARCHIVE = 16 * 1024 * 1024
@@ -318,6 +322,44 @@ class NoUpstreamRedirect(urllib.request.HTTPRedirectHandler):
         raise CustodyRejected("upstream_redirect_refused")
 
 
+def committed_upstream_original(repo, directory):
+    """Use one exact, source-bound upstream tarball for FixedTxt admission.
+
+    The same SHA-256 and original_from_upstream() parser apply as for HTTP.
+    This is a selected committed source original, not a compiler artifact,
+    downloaded response, fallback, simulated approval, or host permission.
+    """
+    require(isinstance(repo, Path) and repo.is_absolute() and repo.is_dir()
+            and not repo.is_symlink(), "committed_upstream_source_root")
+    original_path = repo / PINNED_UPSTREAM_SOURCE
+    new_json(directory / "upstream-download.intent.json", {
+        "origin": PINNED_UPSTREAM_ORIGIN,
+        "original_url": UPSTREAM_URL, "sha256": UPSTREAM_ARCHIVE_SHA256,
+        "git_source_path": PINNED_UPSTREAM_SOURCE, "http_request_performed": False,
+        "compiler_artifact_member": False, "automatic_retry": False,
+    })
+    raw, observation = regular(original_path, MAX_UPSTREAM_ARCHIVE)
+    require(raw and sha(raw) == UPSTREAM_ARCHIVE_SHA256,
+            "committed_upstream_source_digest")
+    new_json(directory / "upstream-download.response.json", {
+        "transport": "SOURCE_BOUND_COMMITTED_ORIGINAL",
+        "git_source_path": PINNED_UPSTREAM_SOURCE, "bytes": len(raw),
+        "sha256": sha(raw), "http_response_received": False,
+    })
+    new_bytes(directory / "upstream-source.tar.gz", raw)
+    # Verify against the same anchored, regular original after retaining bytes.
+    require(regular(original_path, MAX_UPSTREAM_ARCHIVE)[0] == raw,
+            "committed_upstream_source_changed")
+    new_json(directory / "upstream-download.terminal.json", {
+        "status": "VERIFIED_COMMITTED_PINNED_BYTES",
+        "sha256": sha(raw), "bytes": len(raw),
+        "original_url": UPSTREAM_URL, "git_source_path": PINNED_UPSTREAM_SOURCE,
+        "origin": PINNED_UPSTREAM_ORIGIN, "http_request_performed": False,
+        "automatic_retry": False, "compiler_artifact_member": False,
+    })
+    return raw
+
+
 def retrieve_upstream(directory):
     """Retain one bounded response; no retry or fallback after a partial transfer."""
     new_json(directory / "upstream-download.intent.json", {
@@ -401,7 +443,9 @@ def original_from_upstream(raw):
     return original
 
 
-def reconstruct_sources(raw, repo, directory):
+def reconstruct_sources(raw, repo, directory, *, origin="RETRIEVED_PINNED_UPSTREAM"):
+    require(origin in {"RETRIEVED_PINNED_UPSTREAM", PINNED_UPSTREAM_ORIGIN},
+            "upstream_source_provenance")
     original = original_from_upstream(raw)
     generator_path = repo / REPAIR_GENERATOR
     generator = regular(generator_path, 256 * 1024)[0]
@@ -421,8 +465,12 @@ def reconstruct_sources(raw, repo, directory):
         "schema": "motionwright.native.mlt-source-reconstruction/1",
         "upstream_url": UPSTREAM_URL, "upstream_archive_sha256": sha(raw),
         "upstream_member": UPSTREAM_MEMBER,
+        "original_upstream_transport": origin,
+        "upstream_http_download_performed": origin == "RETRIEVED_PINNED_UPSTREAM",
+        "source_checkout_original": (PINNED_UPSTREAM_SOURCE
+                                     if origin == PINNED_UPSTREAM_ORIGIN else None),
         "original_c_source": {"sha256": sha(original), "bytes": len(original),
-                              "origin": "RETRIEVED_PINNED_UPSTREAM"},
+                              "origin": origin},
         "repaired_c_source": {"sha256": sha(repaired), "bytes": len(repaired),
                               "origin": "DETERMINISTIC_SOURCE_RECONSTRUCTION"},
         "generator_path": REPAIR_GENERATOR, "generator_sha256": sha(generator),
@@ -433,7 +481,9 @@ def reconstruct_sources(raw, repo, directory):
     })
 
 
-def intake_compiler(dispatch, repo, directory):
+def intake_compiler(dispatch, repo, directory, *, scenario="repaired-g2"):
+    require(scenario in {"repaired-g2", FILM_SCOPE, "fixedtxt-v4-one-fixture"},
+            "compiler_intake_source_scope")
     raw = download_artifact(dispatch["compiler"]["artifact"], "compiler", directory)
     _mark_prepare_phase("compiler_members")
     pins = {"original_c_source": admission.ORIGINAL_SHA, "repaired_c_source": admission.REPAIRED_SHA,
@@ -443,8 +493,15 @@ def intake_compiler(dispatch, repo, directory):
         new_bytes(directory / name, data)
     if dispatch["compiler"].get("source_mode") == SOURCE_MODE:
         _mark_prepare_phase("compiler_source_reconstruction")
-        upstream = retrieve_upstream(directory)
-        reconstruct_sources(upstream, repo, directory)
+        if scenario == "fixedtxt-v4-one-fixture":
+            # Select before the first side effect; a rejected committed source
+            # never falls back to HTTP, another archive, or the compiler ZIP.
+            upstream = committed_upstream_original(repo, directory)
+            reconstruct_sources(upstream, repo, directory,
+                                origin=PINNED_UPSTREAM_ORIGIN)
+        else:
+            upstream = retrieve_upstream(directory)
+            reconstruct_sources(upstream, repo, directory)
     _mark_prepare_phase("compiler_source_closure")
     admission.source_compiler_closure(
         directory / "original_c_source", directory / "repaired_c_source",
@@ -568,7 +625,8 @@ def prepare(env):
         proof, official["known_original_module_sha256"], official["known_melt_sha256"])
     new_bytes(control / "intake/official-runtime-receipt.json", receipt)
     _mark_prepare_phase("compiler_artifact")
-    intake_compiler(dispatch, Path(env["GITHUB_WORKSPACE"]), control / "intake")
+    intake_compiler(dispatch, Path(env["GITHUB_WORKSPACE"]), control / "intake",
+                    scenario=env.get("MW_MLT_SCOPE", "repaired-g2"))
     _mark_prepare_phase("preparation_finished")
     new_json(control / "records/intake-complete.json",
              {"context": current, "source_inputs": "ADMITTED_BYTES_MATCHED",

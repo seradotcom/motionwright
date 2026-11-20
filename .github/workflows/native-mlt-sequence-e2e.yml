@@ -91,6 +91,8 @@ on:
       - 'tooling/tests/test_native_film180_media_readback.py'
       - 'tooling/ci_private_evidence.py'
       - 'tooling/native_mlt_g2_custody.py'
+      - 'tooling/mlt-audio-diagnostic/upstream/**'
+      - 'tooling/tests/test_native_mlt_committed_upstream.py'
       - 'tooling/native_fixedtxt_prepare_failure_projection.py'
       - 'tooling/tests/test_native_fixedtxt_prepare_failure_projection.py'
       - 'tooling/mlt-audio-diagnostic/repair_planar_source.py'
@@ -333,12 +335,52 @@ jobs:
         if-no-files-found: warn
         overwrite: false
         retention-days: 14
+    - name: Verify original committed MLT upstream bypasses failed HTTP preparation
+      env:
+        CUSTODY_PYTHON: ${{ steps.custody_python.outputs.python }}
+        TEMP: ${{ runner.temp }}
+      run: |
+        set -euo pipefail
+        umask 077
+        root="$RUNNER_TEMP/mw-mlt-committed-upstream-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        test ! -e "$root"
+        mkdir -m 700 "$root"
+        "$CUSTODY_PYTHON" -B -E -s tooling/ci_test_runner.py \
+          --repo "$GITHUB_WORKSPACE" --test-directory tooling/tests \
+          --pattern test_native_mlt_committed_upstream.py \
+          --mode discovery --require-complete --expected-source "$GITHUB_SHA" \
+          --report "$root/receipt.json" \
+          > "$root/runner.stdout" 2> "$root/runner.stderr"
+        "$CUSTODY_PYTHON" -B -E -s - "$root/receipt.json" "$GITHUB_SHA" <<'PY_COMMITTED_UPSTREAM'
+        import json,sys
+        from pathlib import Path
+        value=json.loads(Path(sys.argv[1]).read_bytes())
+        assert value['status']=='PASS' and value['executed_source_sha']==sys.argv[2]
+        assert value['exit_code']==0 and len(value['steps'])==1
+        step=value['steps'][0]
+        counts=step['counts']
+        assert step['entry_point']=='discovery:test_native_mlt_committed_upstream.py'
+        assert step['status']=='PASS' and step['exit_code']==0
+        assert counts['tests_run']==counts['passed']==7
+        assert counts['terminal_status']=='OK'
+        assert all(counts[k]==0 for k in ('errors','failures','skipped','expected_failures','unexpected_successes'))
+        print('G2 upstream-source=PASS original_archive=PINNED HTTP=NOT_USED Native=NOT_RUN')
+        PY_COMMITTED_UPSTREAM
     - name: Retain original secret-safe FixedTxt stderr projection source controls
       if: always() && steps.custody_python.outcome == 'success'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: motionwright-g2-safe-stderr-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         path: ${{ runner.temp }}/mw-fixedtxt-safe-stderr-${{ github.run_id }}-${{ github.run_attempt }}/
+        if-no-files-found: warn
+        overwrite: false
+        retention-days: 14
+    - name: Retain original committed-upstream source gate results
+      if: always() && steps.custody_python.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: motionwright-g2-committed-upstream-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/mw-mlt-committed-upstream-${{ github.run_id }}-${{ github.run_attempt }}/
         if-no-files-found: warn
         overwrite: false
         retention-days: 14
