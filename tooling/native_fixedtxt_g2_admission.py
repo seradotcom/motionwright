@@ -24,6 +24,9 @@ SELECTOR = "original-fixedtxt-host-joined-artifact-directory/1"
 # This is an ARCHIVE SLOT, never a physical output path or reserved job name.
 NATIVE_SLOT = "output/__original_host_artifact__"
 HELPER_PATHS = (
+    # Full original 7.22.0 upstream source archive, SHA-pinned by Native intake
+    # and bound as an actual committed source before the first Native effect.
+    "tooling/mlt-audio-diagnostic/upstream/mlt_7.22.0.orig.tar.gz",
     "tooling/native_owner_resources.py",
     "tooling/source_policy.py",
     "tooling/native_fixedtxt_g2_admission.py",
