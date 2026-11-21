@@ -47,11 +47,19 @@ function SourceEditor({ project, scene, target, busy, saveSource, refreshProject
   const exportInFlight = useRef(false);
   const [exportPath, setExportPath] = useState("");
   const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [lastExport, setLastExport] = useState<{ path: string; sourceKey: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const desktop = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
   const capsule = project.production_design?.capsules.find(value => value.id === editor.capsuleId);
   const sourceAsset = project.assets.find(value => value.id === capsule?.source_asset_id);
+  // The last confirmed file can be reused as draft input only for exactly the
+  // same saved source authority; a new branch/revision/source cannot inherit it.
+  const sourceKey = JSON.stringify([
+    project.id, project.generation, project.active_branch, project.revision,
+    scene.id, capsule?.id, capsule?.source_asset_id, capsule?.source_sha256,
+  ]);
+  const reusableExport = lastExport?.sourceKey === sourceKey ? lastExport : null;
   const pendingImport = imports.error !== null || imports.limited || imports.copies.length !== 0;
   const pending = busy || sending || reading || exporting;
   const unavailable = target !== "new" && (!capsule || capsule.scene_id !== scene.id);
@@ -97,7 +105,7 @@ function SourceEditor({ project, scene, target, busy, saveSource, refreshProject
   };
   const exportOriginal = async () => {
     if (exportInFlight.current || pending || pendingImport || !desktop || !capsule || !sourceAsset || unavailable || !exportPath.trim()) return;
-    setError(null); setExportStatus(null);
+    setError(null); setExportStatus(null); setLastExport(null);
     if (sourceAsset.content_sha256 !== capsule.source_sha256 || capsule.scene_id !== scene.id) {
       setError("The saved capsule and original asset do not match. Read the saved project before exporting.");
       return;
@@ -118,10 +126,29 @@ function SourceEditor({ project, scene, target, busy, saveSource, refreshProject
           || !/^[1-9][0-9]*$/.test(result.size_bytes)) {
         throw new Error("The export response does not match the selected saved source. Inspect the destination; no operation is retried.");
       }
+      setLastExport({ path: result.path, sourceKey });
       setExportStatus("Original source exported to " + result.path
         + ". Open that exact file manually in its trusted native editor. No editor or source code was launched.");
     } catch (reason) { setError(message(reason)); }
     finally { exportInFlight.current = false; setExporting(false); }
+  };
+  const useExportedSourceAsNextInput = () => {
+    if (!reusableExport || pending || pendingImport || !desktop || unavailable
+        || editor.conflict || editor.recoveryProblem || editor.backupError) return;
+    setError(null); setNotice(null);
+    try {
+      assertNoFileImport(project.id);
+      if (editor.baseRevision !== project.revision) {
+        throw new Error("The native source draft is based on an earlier revision. Review and rebase it before choosing this exported file.");
+      }
+      // This changes authored, retained input only. It never opens an editor,
+      // reads the exported file, issues a grant or replays a source import.
+      editor.setField("path", reusableExport.path);
+      if (!editor.retryBackup()) {
+        throw new Error("The exported path is visible as unsaved input but could not be retained safely. Recover your source input before attempting another Save.");
+      }
+      setNotice("The exported file path is retained as unsaved next-version input. Edit it in your trusted native editor, then explicitly choose Save source and capsule. No source was imported or executed here.");
+    } catch (reason) { setError(message(reason)); }
   };
   const readCurrent = async () => {
     if (pending || !desktop) return;
@@ -167,7 +194,7 @@ function SourceEditor({ project, scene, target, busy, saveSource, refreshProject
         <input aria-label="Native source export destination" value={exportPath} maxLength={1700}
           disabled={pending || !desktop} autoComplete="off" spellCheck={false}
           placeholder="Absolute destination with original filename and extension"
-          onChange={event => { setExportPath(event.target.value); setExportStatus(null); setError(null); }}/>
+          onChange={event => { setExportPath(event.target.value); setExportStatus(null); setLastExport(null); setError(null); }}/>
       </label>
       {!sourceAsset || sourceAsset.content_sha256 !== capsule.source_sha256
         ? <p className="production-error" role="status">The saved original asset needs reconciliation before export.</p> : null}
@@ -177,6 +204,10 @@ function SourceEditor({ project, scene, target, busy, saveSource, refreshProject
         <Download size={14} aria-hidden="true"/>{exporting ? "Exporting original…" : "Export saved original source"}
       </button>
       {exportStatus && <p className="production-help" role="status">{exportStatus}</p>}
+      {reusableExport && <button type="button" className="secondary-button"
+        disabled={!desktop || pending || pendingImport || unavailable || editor.conflict
+          || !!editor.recoveryProblem || !!editor.backupError || editor.baseRevision !== project.revision}
+        onClick={useExportedSourceAsNextInput}>Use exported file as next version input</button>}
     </section>}
     {unavailable && <p role="alert" className="production-error">This capsule is no longer available in the selected scene. Its authored input has been kept.</p>}
     <label className="production-field"><span>Source file path</span>
