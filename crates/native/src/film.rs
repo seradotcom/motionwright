@@ -494,13 +494,26 @@ fn native_linear_geometry_motion(
     scene: &Scene,
     frame_rate: Rate,
 ) -> NativeResult<Option<NativeGeometryKeyMotion>> {
-    let has_geometry = node.keyframes.iter().any(|key| {
-        matches!(
-            key.property,
-            MotionProperty::Width | MotionProperty::Height | MotionProperty::RotationDeg
-        ) || (key.interpolation == MotionInterpolation::Hold
-            && matches!(key.property, MotionProperty::X | MotionProperty::Y))
-    });
+    // A single authored X *or* Y curve is exactly expressible as one
+    // Position Vector tween/Set, with the untouched axis held at its saved
+    // value. The paired X/Y route remains the existing Settle projection.
+    let single_axis_motion = node.keyframes.len() == 2
+        && (node
+            .keyframes
+            .iter()
+            .all(|key| key.property == MotionProperty::X)
+            || node
+                .keyframes
+                .iter()
+                .all(|key| key.property == MotionProperty::Y));
+    let has_geometry = single_axis_motion
+        || node.keyframes.iter().any(|key| {
+            matches!(
+                key.property,
+                MotionProperty::Width | MotionProperty::Height | MotionProperty::RotationDeg
+            ) || (key.interpolation == MotionInterpolation::Hold
+                && matches!(key.property, MotionProperty::X | MotionProperty::Y))
+        });
     if !has_geometry {
         return Ok(None);
     }
@@ -3395,6 +3408,125 @@ mod tests {
             project.scenes[0].nodes[0].rotation_deg,
             saved_baseline.rotation_deg
         );
+    }
+
+    #[test]
+    fn single_axis_native_shape_tween_preserves_unanimated_axis_and_exact_easing() {
+        use semwright_motion_authoring::NativeOp;
+        for (property, authored_start, interpolation) in [
+            (MotionProperty::X, 700.0, MotionInterpolation::EaseOutCubic),
+            (MotionProperty::Y, 440.0, MotionInterpolation::Linear),
+        ] {
+            let mut project = fixture_project();
+            let mut shape = node("rectangle", None);
+            shape.x = 720.0;
+            shape.y = 460.0;
+            shape.width = 480.0;
+            shape.height = 160.0;
+            let terminal = match property {
+                MotionProperty::X => shape.x,
+                MotionProperty::Y => shape.y,
+                _ => unreachable!("exact single axis only"),
+            };
+            shape.keyframes = vec![
+                CanvasKeyframe {
+                    at: RationalTime::ZERO,
+                    property,
+                    value: authored_start,
+                    interpolation: MotionInterpolation::Linear,
+                },
+                CanvasKeyframe {
+                    at: RationalTime::new(1, 1).unwrap(),
+                    property,
+                    value: terminal,
+                    interpolation,
+                },
+            ];
+            let saved = shape.clone();
+            let id = shape.id;
+            project.scenes[0].nodes[0] = shape;
+            let opts = fixture_options(&project);
+            let segments =
+                build_motion_canvas_segments(&project, project.deliverables[0].id, &opts)
+                    .expect("single authored shape axis must be a Native geometry vector");
+            let realized = realize(&segments[0].film).unwrap();
+            let target = subject_id(id, None);
+            let selected = realized
+                .instructions
+                .iter()
+                .filter(|instruction| {
+                    matches!(
+                        &instruction.operation,
+                        NativeOp::Tween {
+                            target: actual,
+                            channel: Channel::Position,
+                            ..
+                        } if actual == &target
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(selected.len(), 1, "{property:?}");
+            assert_eq!(selected[0].start, RationalTime::ZERO);
+            assert_eq!(selected[0].duration, RationalTime::new(1, 1).unwrap());
+            assert_eq!(
+                selected[0].easing,
+                match interpolation {
+                    MotionInterpolation::EaseOutCubic => MotionEasing::OutCubic,
+                    MotionInterpolation::Linear => MotionEasing::Linear,
+                    _ => unreachable!(),
+                },
+            );
+            let expected = match property {
+                MotionProperty::X => Point { x: -20.0, y: 0.0 },
+                MotionProperty::Y => Point { x: 0.0, y: -20.0 },
+                _ => unreachable!(),
+            };
+            match &selected[0].operation {
+                NativeOp::Tween { from, to, .. } => {
+                    assert_eq!(from, &Some(Operand::Vector(expected)));
+                    assert_eq!(to, &Operand::Vector(Point { x: 0.0, y: 0.0 }));
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(project.scenes[0].nodes[0], saved);
+        }
+    }
+
+    #[test]
+    fn single_axis_shape_tween_rejects_off_frame_or_unmatched_saved_end() {
+        for invalid in 0..3 {
+            let mut project = fixture_project();
+            let mut shape = node("rectangle", None);
+            shape.x = 720.0;
+            shape.y = 460.0;
+            shape.width = 480.0;
+            shape.height = 160.0;
+            shape.keyframes = vec![
+                CanvasKeyframe {
+                    at: RationalTime::ZERO,
+                    property: MotionProperty::Y,
+                    value: 440.0,
+                    interpolation: MotionInterpolation::Linear,
+                },
+                CanvasKeyframe {
+                    at: RationalTime::new(1, 1).unwrap(),
+                    property: MotionProperty::Y,
+                    value: shape.y,
+                    interpolation: MotionInterpolation::EaseOutCubic,
+                },
+            ];
+            match invalid {
+                0 => shape.keyframes[1].at = RationalTime::new(1, 7).unwrap(),
+                1 => shape.keyframes[1].value += 1.0,
+                2 => shape.keyframes[1].interpolation = MotionInterpolation::EaseInOut,
+                _ => unreachable!(),
+            }
+            project.scenes[0].nodes[0] = shape;
+            let opts = fixture_options(&project);
+            let error = build_motion_canvas_segments(&project, project.deliverables[0].id, &opts)
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unsupported, "{invalid}");
+        }
     }
 
     #[test]
