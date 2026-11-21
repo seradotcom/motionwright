@@ -309,6 +309,96 @@ test("authored native source saves its asset and full capsule in one canonical r
   observations.behaviorAssertionsCompleted = true;
 });
 
+test("the exported original returns to the native source editor as a new version with both CAS revisions durable", async ({ page, sources }, info) => {
+  const { service, project, observations } = sources;
+  const scene = project.scenes[0];
+  const original = await ownSource(info, "original-native-export-input.json", 1);
+  const fields = authoredFields(original);
+  await page.goto("/"); await sourcesUi(page, scene.id); await fillSource(page, fields);
+  const id = (await nativeDraft(page, project, scene.id)).draft.capsuleId;
+
+  await button(page, "Save source and capsule").click(); await revision(page, project.revision + 1);
+  const first = await service.project(project.id), originalCapsule = capsule(first, id);
+  expect(originalCapsule.source_sha256).toBe(original.sha256);
+  await expectCas(service, original);
+
+  const exported = info.outputPath("owned-native-export-recovered.json");
+  await field(page, "Native source export destination").fill(exported);
+  await button(page, "Export saved original source").click();
+  await expect(editor(page).getByRole("status").filter({ hasText: "Original source exported to " + exported })).toBeVisible();
+  expect(await readFile(exported)).toEqual(original.bytes);
+  const exportedCalls = requests(service, "export_native_capsule_source");
+  expect(exportedCalls).toHaveLength(1);
+  const exportGrants = requests(service, "issue_effect_grant")
+    .filter(row => (row.args?.request as { effect?: string } | undefined)?.effect === "deliver_local");
+  expect(exportGrants).toHaveLength(1);
+  const nativeExport = exportedCalls[0].args?.request as Record<string, unknown>;
+  expect(nativeExport).toMatchObject({
+    project_id: first.id, generation: first.generation, revision: first.revision,
+    scene_id: scene.id, capsule_id: id, expected_active_branch: first.active_branch,
+    expected_source_asset_id: originalCapsule.source_asset_id,
+    expected_source_sha256: original.sha256, path: exported,
+  });
+  expect((exportGrants[0].args?.request as { subject: string }).subject).toBe([
+    "native-source", first.active_branch, scene.id, id, originalCapsule.source_asset_id,
+    original.sha256, exported,
+  ].join("|"));
+  const savedBeforeHandoff = await nativeDraft(page, project, scene.id);
+  await button(page, "Use exported file as next version input").click();
+  await expect(field(page, "Source file path")).toHaveValue(exported);
+  const nextInput = await nativeDraft(page, project, scene.id);
+  expect(nextInput.draft.dirty).toBe(true);
+  expect(nextInput.draft.fields.path).toBe(exported);
+  expect(nextInput.draft.baseRevision).toBe(first.revision);
+  expect(nextInput.draft.sequence).toBe(savedBeforeHandoff.draft.sequence + 1);
+  // Handoff must not issue a second effect or mutate the Store.
+  expect(requests(service, "export_native_capsule_source")).toHaveLength(1);
+  expect(requests(service, IMPORT)).toHaveLength(1);
+  expect(await service.project(project.id)).toEqual(first);
+
+  // The native-editor gesture is deliberately test-owned local file editing.
+  // This fixture never launches Blender/Kdenlive or certifies installed Tauri.
+  const revisedBytes = Buffer.from(JSON.stringify({
+    schema: "motionwright.test.owned-native-source/1",
+    author: "Test-authored source", version: 2, title: "Changed local native input",
+    camera: { focalLength: 61, x: 24 }, accent: "#6ed0dd",
+  }, null, 2) + "\n");
+  await writeFile(exported, revisedBytes);
+  const revisedSha = createHash("sha256").update(revisedBytes).digest("hex");
+  expect(await readFile(original.path)).toEqual(original.bytes);
+  await page.reload(); await sourcesUi(page, scene.id);
+  await expect(field(page, "Source file path")).toHaveValue(exported);
+  await button(page, "Save source and capsule").click(); await revision(page, first.revision + 1);
+  const second = await service.project(project.id), secondCapsule = capsule(second, id);
+  expect(second.id).toBe(first.id); expect(second.generation).toBe(first.generation);
+  expect(second.revision).toBe(first.revision + 1);
+  expect(capsules(second)).toHaveLength(capsules(first).length);
+  expect(second.assets).toHaveLength(first.assets.length + 1);
+  expect(secondCapsule.source_asset_id).not.toBe(originalCapsule.source_asset_id);
+  expect(secondCapsule.source_sha256).toBe(revisedSha);
+  const originalBlob = join(service.directory, "blobs", "sha256", original.sha256.slice(0, 2), original.sha256);
+  const revisedBlob = join(service.directory, "blobs", "sha256", revisedSha.slice(0, 2), revisedSha);
+  expect(await readFile(originalBlob)).toEqual(original.bytes);
+  expect(await readFile(revisedBlob)).toEqual(revisedBytes);
+  expect(requests(service, IMPORT)).toHaveLength(2);
+  expect(requests(service, "export_native_capsule_source")).toHaveLength(1);
+
+  await service.close(); await service.start();
+  expect(await service.project(project.id)).toEqual(second);
+  expect(await readFile(originalBlob)).toEqual(original.bytes);
+  expect(await readFile(revisedBlob)).toEqual(revisedBytes);
+  await page.reload(); await sourcesUi(page, scene.id);
+  await expect(field(page, "Source file path")).toHaveValue(exported);
+  await page.screenshot({ path: info.outputPath("native-source-export-reimport-saved.png"), fullPage: true });
+  observations.original = sourceEvidence(original);
+  observations.first = first;
+  observations.exported = { path: exported, sha256: original.sha256, originalDigestVerified: true };
+  observations.handoffDraft = nextInput;
+  observations.revised = { path: exported, sha256: revisedSha, sizeBytes: revisedBytes.length };
+  observations.second = second;
+  observations.behaviorAssertionsCompleted = true;
+});
+
 test("replacement keeps capsule identity and the previous asset while resetting prior unverified fidelity metadata", async ({ page, sources }, info) => {
   const { service, project, observations } = sources; const scene = project.scenes[0];
   const sourceA = await ownSource(info, "owned-native-source-version-a.json", 1); const fieldsA = authoredFields(sourceA);

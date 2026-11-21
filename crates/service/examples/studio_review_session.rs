@@ -38,6 +38,14 @@ mod caption_export;
 #[allow(dead_code)] // The exact desktop import/recovery module, without Tauri transport.
 mod file_import;
 
+#[path = "../../../apps/desktop/src-tauri/src/local_error.rs"]
+#[allow(dead_code)] // Shared public Desktop error projection; no source diagnostics leak.
+mod local_error;
+
+#[path = "../../../apps/desktop/src-tauri/src/project_export.rs"]
+#[allow(dead_code)] // Exact Desktop local export authority, not an installed-Tauri claim.
+mod project_export;
+
 use effect_grants::{EffectGrantRegistry, EffectKind, EffectScope};
 use motionwright_domain::{
     AlignmentEvidence, CanvasNode, Change, CreativePatch, CueEvidence, GraphAuthoringContext,
@@ -782,6 +790,16 @@ impl Session {
                 file_import::recover_native_capsule_source_file(&self.service, request(args)?)
                     .map_err(|error| error.to_string())?,
             ),
+            // Browser test-transport uses the actual Desktop source exporter
+            // with the same Store and one-use grant registry. This is *not*
+            // an installed Tauri command or permission to launch an editor.
+            "export_native_capsule_source" => {
+                encoded(project_export::export_native_capsule_source(
+                    &self.service,
+                    &self.grants,
+                    request(args)?,
+                )?)
+            }
             "waveform_page" => {
                 let request: WaveformPageRequest = request(args)?;
                 encoded(
