@@ -156,6 +156,27 @@ class AppImageInstalledOriginTests(unittest.TestCase):
         self.assertEqual(reader.call_count, 1)
         self.assertEqual(reader.call_args.args[1].name, "small.list")
 
+        # The original 44832240777 runner left two otherwise regular cloud
+        # manifests unobserved at 3,018,872 and 3,487,802 bytes. A bounded
+        # 4 MiB capture now admits both sizes without claiming packages whose
+        # real bytes were not read or raising the 64 MiB aggregate budget.
+        self.assertEqual(origin.MAX_MANIFEST, 4 * 1024 * 1024)
+        self.assertEqual(origin.MAX_MANIFEST_TOTAL, 64 * 1024 * 1024)
+        info_large = self.root / "dpkg-info-cloud"
+        info_large.mkdir()
+        valid_lines = b"".join(
+            f"/usr/lib/large-cloud/{number:06d}.dat\n".encode("ascii")
+            for number in range(110_000)
+        )
+        self.assertGreater(len(valid_lines), 3_487_802)
+        self.assertLessEqual(len(valid_lines), origin.MAX_MANIFEST)
+        (info_large / "google-cloud-cli.list").write_bytes(valid_lines)
+        admitted, skipped = origin.captured_manifests(
+            info_large, {"google-cloud-cli": "1.0"})
+        self.assertEqual(skipped, [])
+        self.assertEqual(admitted, {"google-cloud-cli": valid_lines})
+        self.assertEqual(len(origin.list_paths(admitted["google-cloud-cli"])), 110_000)
+
     def test_total_manifest_budget_does_not_admit_unread_package(self):
         from unittest import mock
         info = self.root / "dpkg-info-total"

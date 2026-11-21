@@ -20,7 +20,10 @@ import candidate_package_inventory as inventory
 
 SCHEMA = "motionwright.linux-appimage-installed-origin-observation/1"
 MAX_STATUS = 4 * 1024 * 1024
-MAX_MANIFEST = 2 * 1024 * 1024
+# Original Ubuntu package lists for azure-cli (3,018,872 bytes) and
+# google-cloud-cli (3,487,802 bytes) exceeded the former 2 MiB per-file cap.
+# Keep a strict 4 MiB per-file limit and the unchanged 64 MiB aggregate bound.
+MAX_MANIFEST = 4 * 1024 * 1024
 MAX_MANIFEST_TOTAL = 64 * 1024 * 1024
 MAX_PACKAGES = 10000
 MAX_FILE_READ = 64 * 1024 * 1024
