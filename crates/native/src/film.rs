@@ -154,14 +154,33 @@ fn flush_run(runs: &mut Vec<Vec<Scene>>, current: &mut Vec<Scene>) {
 }
 
 fn scene_span_cost(scene: &Scene) -> usize {
-    // One additional bounded temporal span per admitted motion node. Count
-    // conservatively even for unsupported curves, which fail separately.
+    // Native Hold requires two anchored one-frame spans (Set at t0, Set at tN)
+    // instead of a tween's single span. Budget before provider realization,
+    // retaining at least the original one-span bound for unsupported keys.
     1 + scene.beats.len().max(1)
         + scene
             .nodes
             .iter()
-            .filter(|node| !node.keyframes.is_empty())
-            .count()
+            .map(|node| {
+                if node.keyframes.is_empty() {
+                    0
+                } else if node.keyframes.iter().any(|key| {
+                    key.interpolation == MotionInterpolation::Hold
+                        && matches!(
+                            key.property,
+                            MotionProperty::X
+                                | MotionProperty::Y
+                                | MotionProperty::Width
+                                | MotionProperty::Height
+                                | MotionProperty::RotationDeg
+                        )
+                }) {
+                    2
+                } else {
+                    1
+                }
+            })
+            .sum::<usize>()
 }
 
 fn motion_canvas_runs(
@@ -457,6 +476,9 @@ fn native_linear_position_motion(
 struct NativeGeometryKeyMotion {
     duration: RationalTime,
     easing: MotionEasing,
+    // A held destination is an instantaneous GeometrySet at an exact
+    // output-frame boundary, never a one-frame GeometryTween approximation.
+    held: bool,
     start: CanvasNode,
     width_keyed: bool,
     height_keyed: bool,
@@ -476,7 +498,8 @@ fn native_linear_geometry_motion(
         matches!(
             key.property,
             MotionProperty::Width | MotionProperty::Height | MotionProperty::RotationDeg
-        )
+        ) || (key.interpolation == MotionInterpolation::Hold
+            && matches!(key.property, MotionProperty::X | MotionProperty::Y))
     });
     if !has_geometry {
         return Ok(None);
@@ -502,6 +525,7 @@ fn native_linear_geometry_motion(
     let mut start = node.clone();
     let mut duration: Option<RationalTime> = None;
     let mut easing: Option<MotionEasing> = None;
+    let mut held: Option<bool> = None;
     let mut admitted_count = 0;
     let mut width_keyed = false;
     let mut height_keyed = false;
@@ -542,14 +566,21 @@ fn native_linear_geometry_motion(
         {
             return Err(fail());
         }
-        let native_easing = exact_native_easing(keys[1].interpolation).ok_or_else(&fail)?;
+        let destination_held = keys[1].interpolation == MotionInterpolation::Hold;
+        let native_easing = if destination_held {
+            MotionEasing::Linear // GeometrySet has zero duration; no interpolation.
+        } else {
+            exact_native_easing(keys[1].interpolation).ok_or_else(&fail)?
+        };
         if duration.is_some_and(|previous| previous != keys[1].at)
             || easing.is_some_and(|previous| previous != native_easing)
+            || held.is_some_and(|previous| previous != destination_held)
         {
             return Err(fail());
         }
         duration = Some(keys[1].at);
         easing = Some(native_easing);
+        held = Some(destination_held);
         match property {
             MotionProperty::X => start.x = keys[0].value,
             MotionProperty::Y => start.y = keys[0].value,
@@ -593,6 +624,7 @@ fn native_linear_geometry_motion(
     Ok(Some(NativeGeometryKeyMotion {
         duration,
         easing: easing.ok_or_else(&fail)?,
+        held: held.ok_or_else(&fail)?,
         start,
         width_keyed,
         height_keyed,
@@ -1629,6 +1661,117 @@ fn build_segment(
                         source_projection,
                         &output,
                     )?;
+                    if motion.held {
+                        // Studio's Hold property keeps the first authored pose
+                        // until *exactly* the next keyframe, then jumps. The
+                        // pinned Semwright grammar emits zero-duration Set at
+                        // each explicit span start. A one-frame Tween would
+                        // silently change the author's interpolation.
+                        let frame = RationalTime::new(
+                            i64::from(options.frame_rate.den),
+                            i64::from(options.frame_rate.num),
+                        )
+                        .map_err(|error| contract("Native Hold frame duration", error))?;
+                        if add(motion.duration, frame, "Hold final span overflow")? > scene.duration
+                        {
+                            return Err(unsupported(
+                                "Native held shape key must leave one complete output frame in the scene",
+                            ));
+                        }
+                        let start_span = format!("geometry-hold-start-{}", node.id.simple());
+                        let end_span = format!("geometry-hold-end-{}", node.id.simple());
+                        for (label, span_id, when) in [
+                            ("start", &start_span, local_start),
+                            (
+                                "end",
+                                &end_span,
+                                add(local_start, motion.duration, "Hold anchor overflow")?,
+                            ),
+                        ] {
+                            spans.push(TemporalSpan {
+                                id: span_id.clone(),
+                                minimum: frame,
+                                preferred: frame,
+                                maximum: frame,
+                                anchor: StartAnchor::Absolute { time: when },
+                                preference_priority: 0,
+                            });
+                            constraints.push(TemporalConstraint::Contains {
+                                id: format!("geometry-hold-contains-{label}-{}", node.id.simple()),
+                                parent: shot_span.clone(),
+                                child: span_id.clone(),
+                            });
+                        }
+                        let (from_center, to_center) = projected_geometry_centers(
+                            node,
+                            &motion.start,
+                            source_projection,
+                            &output,
+                        );
+                        let target = subject_id(node.id, None);
+                        let mut writes = Vec::new();
+                        if from_center != to_center {
+                            writes.push((
+                                "position",
+                                Channel::Position,
+                                Operand::Vector(from_center),
+                                Operand::Vector(to_center),
+                            ));
+                        }
+                        for (keyed, name, channel, initial, final_value) in [
+                            (
+                                motion.width_keyed,
+                                "width",
+                                Channel::Width,
+                                motion.start.width * source_projection.object_scale,
+                                node.width * source_projection.object_scale,
+                            ),
+                            (
+                                motion.height_keyed,
+                                "height",
+                                Channel::Height,
+                                motion.start.height * source_projection.object_scale,
+                                node.height * source_projection.object_scale,
+                            ),
+                            (
+                                motion.rotation_keyed,
+                                "rotation",
+                                Channel::Rotation,
+                                motion.start.rotation_deg,
+                                node.rotation_deg,
+                            ),
+                        ] {
+                            if keyed {
+                                writes.push((
+                                    name,
+                                    channel,
+                                    Operand::Number(initial),
+                                    Operand::Number(final_value),
+                                ));
+                            }
+                        }
+                        for (name, channel, initial, final_value) in writes {
+                            for (phase, span_id, value) in [
+                                ("start", &start_span, initial),
+                                ("end", &end_span, final_value),
+                            ] {
+                                shot.motion.push(Invocation {
+                                    id: format!(
+                                        "geometry-hold-{phase}-{name}-{}",
+                                        node.id.simple()
+                                    ),
+                                    span_id: span_id.clone(),
+                                    easing: MotionEasing::Linear,
+                                    primitive: Primitive::GeometrySet {
+                                        target: target.clone(),
+                                        channel,
+                                        value,
+                                    },
+                                });
+                            }
+                        }
+                        continue;
+                    }
                     let span_id = format!("geometry-span-{}", node.id.simple());
                     spans.push(TemporalSpan {
                         id: span_id.clone(),
@@ -3251,6 +3394,166 @@ mod tests {
         assert_eq!(
             project.scenes[0].nodes[0].rotation_deg,
             saved_baseline.rotation_deg
+        );
+    }
+
+    #[test]
+    fn authored_hold_shape_geometry_emits_two_exact_frame_sets_not_a_tween() {
+        use semwright_motion_authoring::NativeOp;
+        let mut project = fixture_project();
+        let mut rectangle = node("rectangle", None);
+        rectangle.x = 720.0;
+        rectangle.y = 460.0;
+        rectangle.width = 480.0;
+        rectangle.height = 160.0;
+        set_exact_geometry_keys(&mut rectangle);
+        for key in rectangle
+            .keyframes
+            .iter_mut()
+            .filter(|key| key.at > RationalTime::ZERO)
+        {
+            key.interpolation = MotionInterpolation::Hold;
+        }
+        let untouched = rectangle.clone();
+        let id = rectangle.id;
+        project.scenes[0].nodes[0] = rectangle;
+        assert_eq!(scene_span_cost(&project.scenes[0]), 4); // sequence + beat + two sets
+        let options = fixture_options(&project);
+        let segments = build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
+            .expect("source-bound held shape must become a real native Film");
+        let shot = &segments[0].film.sequences[0].beats[0].shots[0];
+        assert_eq!(shot.motion.len(), 8);
+        assert!(shot.motion.iter().all(|invocation| {
+            invocation.easing == MotionEasing::Linear
+                && matches!(invocation.primitive, Primitive::GeometrySet { .. })
+        }));
+        let compiled = realize(&segments[0].film)
+            .expect("pinned SDK must accept simultaneous disjoint Set channels");
+        let target = subject_id(id, None);
+        let selected = compiled
+            .instructions
+            .iter()
+            .filter(|instruction| match &instruction.operation {
+                NativeOp::Set { target: source, .. } => source == &target,
+                _ => false,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(selected.len(), 8);
+        let mut writes = BTreeSet::new();
+        for instruction in selected {
+            let NativeOp::Set {
+                target: actual_target,
+                channel,
+                value,
+            } = &instruction.operation
+            else {
+                unreachable!("Selected native set");
+            };
+            assert_eq!(actual_target, &target);
+            assert_eq!(instruction.duration, RationalTime::ZERO);
+            assert_eq!(instruction.easing, MotionEasing::Linear);
+            assert!(
+                instruction.start == RationalTime::ZERO
+                    || instruction.start == RationalTime::new(1, 1).unwrap()
+            );
+            assert!(writes.insert((instruction.start, *channel)));
+            if *channel == Channel::Rotation {
+                assert_eq!(
+                    value,
+                    &Operand::Number(if instruction.start == RationalTime::ZERO {
+                        -18.0
+                    } else {
+                        0.0
+                    },)
+                );
+            }
+        }
+        for channel in [
+            Channel::Position,
+            Channel::Width,
+            Channel::Height,
+            Channel::Rotation,
+        ] {
+            assert!(writes.contains(&(RationalTime::ZERO, channel)));
+            assert!(writes.contains(&(RationalTime::new(1, 1).unwrap(), channel)));
+        }
+        assert_eq!(project.scenes[0].nodes[0], untouched);
+    }
+
+    #[test]
+    fn single_axis_held_position_uses_instant_native_sets_without_a_size_tween() {
+        use semwright_motion_authoring::NativeOp;
+        let mut project = fixture_project();
+        let mut circle = node("circle", None);
+        circle.x = 720.0;
+        circle.y = 460.0;
+        circle.width = 480.0;
+        circle.height = 160.0;
+        circle.keyframes = vec![
+            CanvasKeyframe {
+                at: RationalTime::ZERO,
+                property: MotionProperty::X,
+                value: 700.0,
+                interpolation: MotionInterpolation::Linear,
+            },
+            CanvasKeyframe {
+                at: RationalTime::new(1, 1).unwrap(),
+                property: MotionProperty::X,
+                value: circle.x,
+                interpolation: MotionInterpolation::Hold,
+            },
+        ];
+        let id = circle.id;
+        project.scenes[0].nodes[0] = circle.clone();
+        let options = fixture_options(&project);
+        let result = build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
+            .expect("single-axis Hold must lower to exact Native Set");
+        let realized = realize(&result[0].film).unwrap();
+        let target = subject_id(id, None);
+        let mut sets = realized
+            .instructions
+            .iter()
+            .filter_map(|instruction| {
+                if let NativeOp::Set {
+                    target: source,
+                    channel: Channel::Position,
+                    value,
+                } = &instruction.operation
+                    && source == &target
+                {
+                    return Some((instruction.start, value));
+                }
+                None
+            })
+            .collect::<Vec<_>>();
+        sets.sort_by_key(|(at, _)| *at);
+        assert_eq!(sets.len(), 2);
+        assert_eq!(sets[0].0, RationalTime::ZERO);
+        assert_eq!(sets[1].0, RationalTime::new(1, 1).unwrap());
+        let first = Operand::Vector(Point { x: -20.0, y: 0.0 });
+        let second = Operand::Vector(Point { x: 0.0, y: 0.0 });
+        assert_eq!(sets[0].1, &first);
+        assert_eq!(sets[1].1, &second);
+        assert_eq!(project.scenes[0].nodes[0], circle);
+    }
+
+    #[test]
+    fn authored_hold_geometry_mixed_with_cubic_is_rejected_not_interpolated() {
+        let mut project = fixture_project();
+        let mut rectangle = node("shape", None);
+        rectangle.x = 720.0;
+        rectangle.y = 460.0;
+        rectangle.width = 480.0;
+        rectangle.height = 160.0;
+        set_exact_geometry_keys(&mut rectangle);
+        rectangle.keyframes[1].interpolation = MotionInterpolation::Hold;
+        project.scenes[0].nodes[0] = rectangle;
+        let options = fixture_options(&project);
+        assert_eq!(
+            build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported,
         );
     }
 
