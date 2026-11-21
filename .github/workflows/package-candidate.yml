@@ -37,6 +37,7 @@ on:
       - "tooling/linux_deb_archive_audit.py"
       - "tooling/tests/test_linux_deb_archive_audit.py"
       - "tooling/linux_appimage_system_origins.py"
+      - "tooling/linux_loader_host_provenance.py"
       - "tooling/tests/test_linux_appimage_system_origins.py"
       - "tooling/linux_elf_build_id.py"
       - "tooling/tests/test_linux_elf_build_id.py"
@@ -172,6 +173,7 @@ on:
       - "tooling/linux_deb_archive_audit.py"
       - "tooling/tests/test_linux_deb_archive_audit.py"
       - "tooling/linux_appimage_system_origins.py"
+      - "tooling/linux_loader_host_provenance.py"
       - "tooling/tests/test_linux_appimage_system_origins.py"
       - "tooling/linux_elf_build_id.py"
       - "tooling/tests/test_linux_elf_build_id.py"
@@ -454,10 +456,10 @@ jobs:
           counts=step['counts']
           assert step['entry_point']=='discovery:test_linux_appimage_system_origins.py'
           assert step['exit_code']==0 and step['status']=='PASS'
-          assert counts['tests_run']==counts['passed']==38
+          assert counts['tests_run']==counts['passed']==44
           assert counts['terminal_status']=='OK'
           assert all(counts[k]==0 for k in ('failures','errors','skipped','expected_failures','unexpected_successes'))
-          print('appimage-system-origin-source=PASS controls=38 packaging=NOT_RUN G3=STOP')
+          print('appimage-system-origin-source=PASS controls=44 packaging=NOT_RUN G3=STOP')
           PY_APP_ORIGIN_G1
       - name: Authenticate bounded GNU ELF build-id source controls
         timeout-minutes: 3
@@ -1874,6 +1876,17 @@ jobs:
             --expected-source "$GITHUB_SHA" \
             --live-payload "$RUNNER_TEMP/motionwright-smoke/appimage-inventory/squashfs-root" \
             --output-directory "$GITHUB_WORKSPACE/ci-evidence/linux-appimage-system-origin"
+      - name: Bind installed host-loader originals to exact dpkg manifests
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 -B -E -s tooling/linux_loader_host_provenance.py \
+            --window-original ci-evidence/linux-appimage-window.json \
+            --expected-source "$GITHUB_SHA" \
+            --output-directory "$GITHUB_WORKSPACE/ci-evidence/linux-loader-host-origins"
       - name: Verify seven original native notice bytes in extracted Linux bundles
         if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle'
         timeout-minutes: 3
@@ -1932,6 +1945,7 @@ jobs:
             ci-evidence/linux-native-notice-bundle.json
             ci-evidence/linux-elf-needed.json
             ci-evidence/linux-appimage-system-origin
+            ci-evidence/linux-loader-host-origins
           if-no-files-found: warn
           retention-days: 30
       - name: Retain isolated GUI launch diagnostics if smoke fails

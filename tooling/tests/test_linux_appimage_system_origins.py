@@ -13,6 +13,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import linux_appimage_system_origins as origin
+import linux_loader_host_provenance as host_loader
 
 
 def member(name, data, kind="ELF"):
@@ -575,6 +576,110 @@ class AppImageInstalledOriginTests(unittest.TestCase):
             fixture(), fixture(), budget=64)
         self.assertEqual(result["matches"], [])
         self.assertEqual(result["unresolved"][0]["reason"], "ORIGINAL_ELF_BUDGET")
+
+
+class LiveHostLoaderOriginTests(unittest.TestCase):
+    """Synthetic host files and proc-map receipts only; no real native launch."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(
+            prefix="mw-loader-host-", dir=os.environ.get("TEMP"))
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.source = "a" * 40
+        self.host = "/usr/lib/x86_64-linux-gnu/libexample.so.1"
+        self.raw = b"installed host ELF fixture, not executable"
+        self.make(self.host, self.raw)
+        self.make("/usr/share/doc/libexample/copyright", b"fixture notice")
+        self.pkg = "libexample:amd64"
+        self.manifests = {
+            self.pkg: (self.host + "\n/usr/share/doc/libexample/copyright\n").encode(),
+        }
+        row = {"origin_class": "HOST_SYSTEM", "path": self.host,
+               "mapped_device": "00:01", "mapped_inode": 41}
+        loader = {
+            "schema": "motionwright.linux-installed-loader-path-snapshot/1",
+            "status": "LIVE_EXECUTABLE_MAPPINGS_OBSERVED",
+            "process_pid": 123, "process_starttime_ticks": 400,
+            "claims": {"G3": "STOP"}, "mapped_files": [row],
+        }
+        self.window = {
+            "schema": "motionwright.ci.installed-cold-relaunch/2",
+            "motionwright_sha": self.source, "launch_count": 2,
+            "status": "WINDOW_OBSERVED", "persistence": {"status": "PASS"},
+            "first_launch": {"status": "WINDOW_OBSERVED", "loader_observation": loader},
+            "reopened_launch": {
+                "status": "WINDOW_OBSERVED",
+                "loader_observation": {**loader, "process_pid": 124},
+            },
+        }
+
+    def make(self, path, raw):
+        target = self.root / path.lstrip("/")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+
+    def observe(self, *, identity=lambda *_: True, budget=1024):
+        return host_loader.audit_original(
+            self.window, self.source, {self.pkg: "1.0"}, self.manifests,
+            self.root, host_budget=budget, identity_reader=identity)
+
+    def test_original_live_host_path_has_exact_manifest_and_file_identity(self):
+        report, originals = self.observe()
+        self.assertEqual(report["status"], "SCOPED_HOST_ORIGIN_OBSERVATION")
+        self.assertEqual(report["exact_host_manifest_matches"], 1)
+        self.assertEqual(report["unresolved_count"], 0)
+        self.assertEqual(report["host_bytes_read"], len(self.raw))
+        self.assertEqual(report["matches"][0]["origin"]["package"], self.pkg)
+        self.assertEqual(report["G3"], "STOP")
+        self.assertEqual(report["original_scope"]["native_license_review"],
+                         "NOT_PERFORMED")
+        self.assertEqual(len(report["matched_package_originals"]), 1)
+        self.assertEqual(len(originals), 2)
+
+    def test_changed_inode_between_launches_cannot_supply_host_origin(self):
+        row = self.window["reopened_launch"]["loader_observation"]["mapped_files"][0]
+        self.window["reopened_launch"]["loader_observation"]["mapped_files"] = [
+            {**row, "mapped_inode": 44}]
+        report, _ = self.observe()
+        self.assertEqual(report["exact_host_manifest_matches"], 0)
+        self.assertEqual(report["unresolved"][0]["reason"],
+                         "MAPPED_INODE_OR_DEVICE_CHANGED_BETWEEN_LAUNCHES")
+
+    def test_stale_disk_inode_or_unavailable_host_path_is_not_credited(self):
+        report, _ = self.observe(identity=lambda *_: False)
+        self.assertEqual(report["exact_host_manifest_matches"], 0)
+        self.assertEqual(report["unresolved"][0]["reason"],
+                         "MAPPED_DISK_IDENTITY_NOT_STABLE")
+
+    def test_unknown_or_ambiguous_original_manifest_cannot_claim_owner(self):
+        self.manifests = {}
+        report, _ = self.observe()
+        self.assertEqual(report["unresolved"][0]["reason"],
+                         "NO_EXACT_OBSERVED_MANIFEST")
+        self.manifests = {
+            self.pkg: (self.host + "\n").encode(),
+            "other:amd64": (self.host + "\n").encode(),
+        }
+        report, _ = host_loader.audit_original(
+            self.window, self.source, {self.pkg: "1.0", "other:amd64": "1.0"},
+            self.manifests, self.root, identity_reader=lambda *_: True)
+        self.assertEqual(report["unresolved"][0]["reason"],
+                         "MULTIPLE_DECLARED_MANIFESTS")
+
+    def test_budget_does_not_turn_unread_host_file_into_match(self):
+        report, _ = self.observe(budget=0)
+        self.assertEqual(report["exact_host_manifest_matches"], 0)
+        self.assertEqual(report["unresolved"][0]["reason"], "HOST_FILE_READ_BUDGET")
+
+    def test_changed_original_source_and_untrusted_paths_fail_closed(self):
+        with self.assertRaisesRegex(ValueError, "loader_original_source"):
+            host_loader.audit_original(self.window, "b" * 40, {}, {}, self.root)
+        row = self.window["first_launch"]["loader_observation"]["mapped_files"][0]
+        self.window["first_launch"]["loader_observation"]["mapped_files"] = [
+            {**row, "path": "/home/runner/private/key.so"}]
+        with self.assertRaisesRegex(ValueError, "loader_original_host_identity"):
+            self.observe()
 
 
 if __name__ == "__main__":

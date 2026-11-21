@@ -73,7 +73,7 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
         origin_source = step(policy, "Require original AppImage system-origin matching source controls")
         self.assertIn("--pattern test_linux_appimage_system_origins.py", origin_source)
         self.assertIn("--mode discovery --require-complete --expected-source", origin_source)
-        self.assertIn("counts['tests_run']==counts['passed']==38", origin_source)
+        self.assertIn("counts['tests_run']==counts['passed']==44", origin_source)
         self.assertIn("counts[k]==0", origin_source)
         self.assertIn("G3=STOP", origin_source)
         elf_source = step(policy, "Authenticate bounded GNU ELF build-id source controls")
@@ -235,6 +235,7 @@ class PackageInventoryWorkflowTests(unittest.TestCase):
             if body is self.linux:
                 expected_for_scope.update({
                     "ci-evidence/linux-appimage-system-origin",
+                    "ci-evidence/linux-loader-host-origins",
                     "ci-evidence/linux-apprun-release-pin.json",
                     "ci-evidence/linux-native-notice-bundle.json",
                     "ci-evidence/linux-elf-needed.json",
