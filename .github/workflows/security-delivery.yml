@@ -80,6 +80,7 @@ on:
           - storage-service-current
           - service-legacy-fixtures
           - native-source-export
+          - native-source-browser
 
 permissions:
   contents: read
@@ -90,7 +91,7 @@ env:
 
 jobs:
   source-boundary:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures' && inputs.verification_scope != 'native-source-export')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures' && inputs.verification_scope != 'native-source-export' && inputs.verification_scope != 'native-source-browser')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1233,5 +1234,145 @@ jobs:
         with:
           name: native-source-export-rust-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
           path: ${{ runner.temp }}/native-source-export-originals/
+          if-no-files-found: warn
+          retention-days: 14
+
+  native-source-service-browser:
+    name: Native source original export and reopen (one real-service Chromium case)
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'native-source-browser'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: \${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Install locked Studio browser test dependencies
+        working-directory: apps/studio
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Compile one exact Desktop-source service against real SQLite/CAS
+        shell: bash
+        env:
+          MW_BROWSER_ORIGINALS: \${{ runner.temp }}/native-source-browser-\${{ github.run_id }}-\${{ github.run_attempt }}
+          MW_BROWSER_STORES: \${{ runner.temp }}/native-source-browser-stores-\${{ github.run_id }}-\${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test ! -e "$MW_BROWSER_ORIGINALS"
+          test ! -e "$MW_BROWSER_STORES"
+          mkdir -m 700 "$MW_BROWSER_ORIGINALS" "$MW_BROWSER_STORES"
+          if ! cargo build --locked --jobs 1 -p motionwright-service \
+            --example studio_review_session --message-format=json \
+            > "$MW_BROWSER_ORIGINALS/cargo.original.jsonl" \
+            2> "$MW_BROWSER_ORIGINALS/cargo.stderr.original"; then
+            tail -n 35 "$MW_BROWSER_ORIGINALS/cargo.stderr.original"
+            exit 1
+          fi
+          python3 -B -E -s - <<'PY_NATIVE_BROWSER_SOURCE'
+          import hashlib, json, os
+          from pathlib import Path
+          import subprocess
+          def require(value, code):
+              if not value:
+                  raise SystemExit("NATIVE_SOURCE_BROWSER_BUILD_REJECTED:" + code)
+          repo=Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          folder=Path(os.environ["MW_BROWSER_ORIGINALS"]).resolve(strict=True)
+          sha=os.environ["GITHUB_SHA"]
+          require(subprocess.check_output(["git","rev-parse","HEAD"],cwd=repo,text=True).strip()==sha,"SHA")
+          for name in ("Cargo.lock","SOURCE_LOCK.json"):
+              require((repo/name).read_bytes()==subprocess.check_output(["git","show",sha+":"+name],cwd=repo),"LOCK")
+          raw=(folder/"cargo.original.jsonl").read_bytes()
+          require(0<len(raw)<=64*1024*1024,"CARGO_LOG_LIMIT")
+          records=[json.loads(line) for line in raw.splitlines() if line.strip()]
+          require(any(row.get("reason")=="build-finished" and row.get("success") is True for row in records),"BUILD_FINISHED")
+          matches=[row for row in records if row.get("reason")=="compiler-artifact"
+                   and row.get("target",{}).get("name")=="studio_review_session"
+                   and "example" in row.get("target",{}).get("kind",[])
+                   and row.get("executable")]
+          require(len(matches)==1,"ONE_EXAMPLE")
+          binary=Path(matches[0]["executable"]).resolve(strict=True)
+          require(binary==repo/"target/debug/examples/studio_review_session"
+                  and binary.is_file() and not binary.is_symlink(),"EXACT_BINARY")
+          require(0<binary.stat().st_size<=256*1024*1024,"BINARY_SIZE")
+          def digest(path):
+              data=path.read_bytes()
+              return {"bytes":len(data),"sha256":hashlib.sha256(data).hexdigest()}
+          result={"schema":"motionwright.ci.native-source-real-service-browser/1",
+                  "source_sha":sha,"run_id":os.environ["GITHUB_RUN_ID"],
+                  "attempt":os.environ["GITHUB_RUN_ATTEMPT"],"status":"SOURCE_BINARY_BOUND",
+                  "binary":digest(binary),"cargo_original":digest(folder/"cargo.original.jsonl"),
+                  "cargo_stderr_original":digest(folder/"cargo.stderr.original"),
+                  "G2":"NOT_GRANTED","G3":"STOP","native_editor_launched":False,
+                  "installed_tauri":False,"release_authorized":False}
+          (folder/"build-receipt.json").write_text(json.dumps(result,sort_keys=True,indent=2)+"\n")
+          with Path(os.environ["GITHUB_ENV"]).open("a") as env:
+              env.write("MOTIONWRIGHT_SERVICE_TEST_BIN="+str(binary)+"\n")
+              env.write("MOTIONWRIGHT_SERVICE_TEST_TMPDIR="+os.environ["MW_BROWSER_STORES"]+"\n")
+          print("native-source-browser-source-bound="+sha)
+          PY_NATIVE_BROWSER_SOURCE
+      - name: Execute one real-service Chromium native original export/reimport
+        working-directory: apps/studio
+        shell: bash
+        env:
+          MW_BROWSER_ORIGINALS: \${{ runner.temp }}/native-source-browser-\${{ github.run_id }}-\${{ github.run_attempt }}
+          PLAYWRIGHT_JSON_OUTPUT_FILE: \${{ runner.temp }}/native-source-browser-\${{ github.run_id }}-\${{ github.run_attempt }}/playwright.json
+        run: |
+          set -euo pipefail
+          npx playwright test tests/native-source-save-service.spec.ts \
+            --grep "the exported original returns to the native source editor as a new version with both CAS revisions durable" \
+            --project chromium --reporter=line,json \
+            2>&1 | tee "$MW_BROWSER_ORIGINALS/playwright.original.log"
+          python3 -B -E -s - <<'PY_NATIVE_BROWSER_PASS'
+          import hashlib, json, os
+          from pathlib import Path
+          root=Path(os.environ["MW_BROWSER_ORIGINALS"])
+          report=json.loads((root/"playwright.json").read_bytes())
+          stats=report["stats"]
+          assert stats.get("expected")==1 and all(stats.get(key,0)==0
+              for key in ("unexpected","flaky","skipped")), stats
+          screenshots=list(Path.cwd().glob("test-results/**/native-source-export-reimport-saved.png"))
+          assert len(screenshots)==1, screenshots
+          screenshot=screenshots[0].read_bytes()
+          assert 0<len(screenshot)<=16*1024*1024
+          record={"schema":"motionwright.ci.native-source-real-service-browser-result/1",
+                  "source_sha":os.environ["GITHUB_SHA"],"run_id":os.environ["GITHUB_RUN_ID"],
+                  "attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+                  "status":"ONE_REAL_SERVICE_CHROMIUM_ROUNDTRIP_PASS",
+                  "expected":1,"unexpected":0,"skipped":0,
+                  "screenshot_bytes":len(screenshot),
+                  "screenshot_sha256":hashlib.sha256(screenshot).hexdigest(),
+                  "playwright_original_sha256":hashlib.sha256((root/"playwright.original.log").read_bytes()).hexdigest(),
+                  "G2":"NOT_GRANTED","G3":"STOP","real_native_editor":"NOT_RUN",
+                  "installed_tauri":"NOT_RUN","release_authorized":False}
+          (root/"test-receipt.json").write_text(json.dumps(record,sort_keys=True,indent=2)+"\n")
+          print("native-source-browser=PASS one Chromium case, G2=NOT_GRANTED G3=STOP")
+          PY_NATIVE_BROWSER_PASS
+      - name: Retain original same-source browser and screenshot evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-source-browser-\${{ github.sha }}-\${{ github.run_id }}-\${{ github.run_attempt }}
+          path: |
+            \${{ runner.temp }}/native-source-browser-\${{ github.run_id }}-\${{ github.run_attempt }}/
+            apps/studio/test-results/
           if-no-files-found: warn
           retention-days: 14
