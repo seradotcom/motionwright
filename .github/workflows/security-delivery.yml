@@ -82,6 +82,7 @@ on:
           - native-source-export
           - native-source-browser
           - native-film-geometry
+          - native-film-hold
           - native-geometry-readback
 
 permissions:
@@ -93,7 +94,7 @@ env:
 
 jobs:
   source-boundary:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures' && inputs.verification_scope != 'native-source-export' && inputs.verification_scope != 'native-source-browser' && inputs.verification_scope != 'native-film-geometry' && inputs.verification_scope != 'native-geometry-readback')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures' && inputs.verification_scope != 'native-source-export' && inputs.verification_scope != 'native-source-browser' && inputs.verification_scope != 'native-film-geometry' && inputs.verification_scope != 'native-film-hold' && inputs.verification_scope != 'native-geometry-readback')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1482,3 +1483,94 @@ jobs:
     uses: ./.github/workflows/native-geometry-readback-source.yml
     with:
       expected_source_sha: ${{ github.sha }}
+
+  native-film-hold-compiled:
+    name: Native Film frame-exact Hold geometry (3 source tests)
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'native-film-hold'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Compile exactly three Hold geometry source and rejection contracts
+        shell: bash
+        env:
+          MW_HOLD_ORIGINALS: ${{ runner.temp }}/native-film-hold-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=normal)"
+          test ! -e "$MW_HOLD_ORIGINALS"
+          mkdir -m 700 "$MW_HOLD_ORIGINALS"
+          names=(
+            authored_hold_shape_geometry_emits_two_exact_frame_sets_not_a_tween
+            single_axis_held_position_uses_instant_native_sets_without_a_size_tween
+            authored_hold_geometry_mixed_with_cubic_is_rejected_not_interpolated
+          )
+          for name in "${names[@]}"; do
+            test_case="film::tests::$name"
+            cargo test --locked --jobs 2 -p motionwright-native --lib "$test_case" \
+              -- --exact --test-threads=1 \
+              2>&1 | tee "$MW_HOLD_ORIGINALS/$name.original.log"
+          done
+          python3 -B -E -s - <<'PY_FILM_HOLD'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          names = (
+              "authored_hold_shape_geometry_emits_two_exact_frame_sets_not_a_tween",
+              "single_axis_held_position_uses_instant_native_sets_without_a_size_tween",
+              "authored_hold_geometry_mixed_with_cubic_is_rejected_not_interpolated",
+          )
+          folder = Path(os.environ["MW_HOLD_ORIGINALS"])
+          observed = []
+          for name in names:
+              path = folder / (name + ".original.log")
+              raw = path.read_bytes()
+              assert 0 < len(raw) <= 32 * 1024 * 1024, name
+              text = re.sub(r"\x1b\[[0-9;]*m", "", raw.decode("utf-8", "strict"))
+              case = "film::tests::" + name
+              assert re.search(r"(?m)^test " + re.escape(case) + r" \.\.\. ok$", text), case
+              assert re.search(r"(?m)^test result: ok\. 1 passed; 0 failed; 0 ignored;", text), case
+              observed.append({"name": case, "bytes": len(raw),
+                               "sha256": hashlib.sha256(raw).hexdigest()})
+          assert len(observed) == 3
+          record = {
+              "schema": "motionwright.ci.native-film-hold-source/1",
+              "source_sha": os.environ["GITHUB_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "status": "THREE_COMPILED_HOLD_SOURCE_TESTS_PASS",
+              "cases": observed,
+              "real_native_hold_render": "NOT_RUN",
+              "hold_frame_0_29_30_oracle": "NOT_RUN",
+              "G2": "NOT_GRANTED",
+              "G3": "STOP",
+              "release_authorized": False,
+          }
+          (folder / "receipt.json").write_text(json.dumps(record, sort_keys=True, indent=2) + "\n")
+          print("native-film-hold=PASS cases=3 Host=NOT_RUN G2=NOT_GRANTED")
+          PY_FILM_HOLD
+          git diff --exit-code
+      - name: Retain only exact compiled Hold original logs and source receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-film-hold-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-film-hold-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: warn
+          retention-days: 14
