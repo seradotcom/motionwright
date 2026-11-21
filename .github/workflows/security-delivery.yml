@@ -82,6 +82,7 @@ on:
           - native-source-export
           - native-source-browser
           - native-film-geometry
+          - native-geometry-readback
 
 permissions:
   contents: read
@@ -92,7 +93,7 @@ env:
 
 jobs:
   source-boundary:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures' && inputs.verification_scope != 'native-source-export' && inputs.verification_scope != 'native-source-browser' && inputs.verification_scope != 'native-film-geometry')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures' && inputs.verification_scope != 'native-source-export' && inputs.verification_scope != 'native-source-browser' && inputs.verification_scope != 'native-film-geometry' && inputs.verification_scope != 'native-geometry-readback')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1474,3 +1475,10 @@ jobs:
           path: ${{ runner.temp }}/native-film-geometry-${{ github.run_id }}-${{ github.run_attempt }}/
           if-no-files-found: warn
           retention-days: 14
+
+  native-geometry-readback-source:
+    name: Two original SQLite/CAS readback Rust source regressions
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'native-geometry-readback'
+    uses: ./.github/workflows/native-geometry-readback-source.yml
+    with:
+      expected_source_sha: ${{ github.sha }}

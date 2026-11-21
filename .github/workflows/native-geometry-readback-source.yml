@@ -7,6 +7,12 @@ on:
         description: "Full immutable SHA of one source-only Native geometry handoff candidate"
         type: string
         required: true
+  workflow_call:
+    inputs:
+      expected_source_sha:
+        description: "Exact immutable source from the selected parent workflow"
+        type: string
+        required: true
 
 permissions:
   contents: read
