@@ -1374,5 +1374,8 @@ jobs:
           path: |
             ${{ runner.temp }}/native-source-browser-${{ github.run_id }}-${{ github.run_attempt }}/
             apps/studio/test-results/
+          # The one synthetic closed-Store snapshot includes hidden CAS catalog/root
+          # bytes. Excluding them makes the uploaded manifest impossible to reopen.
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
