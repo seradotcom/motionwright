@@ -3256,11 +3256,12 @@ mod tests {
 
     #[test]
     fn vertical_replan_shape_resize_keeps_native_top_left_across_asymmetric_scales() {
-        let project = fixture_project();
+        let mut project = fixture_project();
         let mut profile = project.deliverables[0].clone();
         profile.width = 1080;
         profile.height = 1920;
         profile.framing_strategy = FramingStrategy::Replan;
+        project.deliverables[0] = profile.clone();
         let rate = Rate::new(30, 1).unwrap();
         let (output, projection) =
             output_profile(&profile, rate, &[&project.scenes[0], &project.scenes[1]]).unwrap();
@@ -3282,6 +3283,61 @@ mod tests {
         // half-height delta, making exported 9:16 resize drift visibly.
         let naive = canonical_position(&start, projection, &output);
         assert!((naive.y - from.y).abs() > 1.0);
+
+        // Verify that the *real source-to-Film-to-Semwright grammar path*
+        // preserves the same center compensation on this 9:16 deliverable.
+        // A helper-only test could pass even if the Film never emits it.
+        let mut animated = end.clone();
+        set_exact_geometry_keys(&mut animated);
+        let subject = subject_id(animated.id, None);
+        project.scenes[0].nodes[0] = animated;
+        let options = fixture_options(&project);
+        let segments = build_motion_canvas_segments(&project, profile.id, &options).unwrap();
+        assert_eq!(segments.len(), 1);
+        let realized = realize(&segments[0].film).unwrap();
+        let position = realized
+            .instructions
+            .iter()
+            .filter(|instruction| {
+                matches!(
+                    &instruction.operation,
+                    semwright_motion_authoring::NativeOp::Tween {
+                        target, channel: Channel::Position, ..
+                    } if target == &subject
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(position.len(), 1);
+        assert_eq!(position[0].start, RationalTime::ZERO);
+        assert_eq!(position[0].duration, RationalTime::new(1, 1).unwrap());
+        assert_eq!(position[0].easing, MotionEasing::OutCubic);
+        match &position[0].operation {
+            semwright_motion_authoring::NativeOp::Tween {
+                from: native_from,
+                to: native_to,
+                ..
+            } => {
+                assert_eq!(native_from, &Some(Operand::Vector(from)));
+                assert_eq!(native_to, &Operand::Vector(to));
+            }
+            _ => unreachable!("matched the native position tween"),
+        }
+        let size_channels = realized
+            .instructions
+            .iter()
+            .filter_map(|instruction| match &instruction.operation {
+                semwright_motion_authoring::NativeOp::Tween {
+                    target, channel, ..
+                } if target == &subject && matches!(channel, Channel::Width | Channel::Height) => {
+                    Some(*channel)
+                }
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            size_channels,
+            BTreeSet::from([Channel::Width, Channel::Height])
+        );
     }
 
     #[test]
