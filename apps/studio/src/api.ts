@@ -449,6 +449,29 @@ export async function waveformPage(
   });
 }
 
+export interface NativeSourceExportReceipt {
+  path: string; capsule_id: string; source_asset_id: string;
+  source_sha256: string; size_bytes: string; editor_launched: false;
+}
+
+/** Export one retained native source as inert, digest-bound bytes.
+ * This obtains a one-time local deliver grant, not an editor-launch grant. */
+export async function exportNativeCapsuleSource(
+  project: Project, sceneId: string, capsuleId: string, destination: string,
+): Promise<NativeSourceExportReceipt> {
+  if (!isTauri()) throw new Error("Native source export requires Motionwright desktop.");
+  const path = destination.trim();
+  if (!path) throw new Error("Choose an absolute export destination before requesting permission.");
+  const subject = "native-source|" + capsuleId + "|" + path;
+  const grant = await issueEffectGrant("deliver_local", project, subject);
+  return invoke<NativeSourceExportReceipt>("export_native_capsule_source", {
+    request: {
+      project_id: project.id, generation: project.generation, revision: project.revision,
+      scene_id: sceneId, capsule_id: capsuleId, path, effect_grant: grant.token,
+    },
+  });
+}
+
 export async function exportProjectBundle(
   project: Project,
   destination: string,

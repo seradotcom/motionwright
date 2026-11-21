@@ -79,6 +79,7 @@ on:
           - storage-api-regressions
           - storage-service-current
           - service-legacy-fixtures
+          - native-source-export
 
 permissions:
   contents: read
@@ -89,7 +90,7 @@ env:
 
 jobs:
   source-boundary:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures' && inputs.verification_scope != 'native-source-export')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1151,4 +1152,83 @@ jobs:
           name: storage-service-current-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.MW_STORAGE_SERVICE_EVIDENCE }}
           if-no-files-found: error
+          retention-days: 14
+
+  native-source-export-rust:
+    name: Native original-source export (3 focused Rust tests)
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'native-source-export'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_BUILD_JOBS: '2'
+      MW_NATIVE_EXPORT_ORIGINALS: ${{ runner.temp }}/native-source-export-originals
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: 1.98.1
+      - name: Install Tauri Linux build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Run three exact original-source export regressions on the compiled desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test ! -e "$MW_NATIVE_EXPORT_ORIGINALS"
+          mkdir -m 700 "$MW_NATIVE_EXPORT_ORIGINALS"
+          cargo test --locked -p motionwright-desktop --bin motionwright-desktop \
+            project_export::tests::native_source_ -- --test-threads=1 \
+            2>&1 | tee "$MW_NATIVE_EXPORT_ORIGINALS/cargo.original.log"
+          /usr/bin/python3 -B -E -s - <<'PY_NATIVE_EXPORT'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          folder = Path(os.environ["MW_NATIVE_EXPORT_ORIGINALS"])
+          original = (folder / "cargo.original.log").read_bytes()
+          text = re.sub(r"\x1b\[[0-9;]*m", "", original.decode("utf-8", "strict"))
+          required = {
+              "project_export::tests::native_source_exports_exact_original_bytes_without_launch_or_replay",
+              "project_export::tests::native_source_export_cannot_overwrite_an_existing_file_or_switch_capsule",
+              "project_export::tests::native_source_export_rejects_a_peer_revision_before_creating_the_destination",
+          }
+          passed = re.findall(r"(?m)^test (project_export::tests::native_source_[A-Za-z0-9_]+) \.\.\. ok$", text)
+          assert len(passed) == len(required) == 3 and set(passed) == required, passed
+          assert re.search(r"(?m)^test result: ok\. 3 passed; 0 failed; 0 ignored;", text)
+          record = {
+              "schema": "motionwright.ci.native-source-export-rust/1",
+              "source_sha": os.environ["GITHUB_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "status": "SOURCE_REGRESSIONS_PASS",
+              "tests": sorted(passed),
+              "log_bytes": len(original),
+              "log_sha256": hashlib.sha256(original).hexdigest(),
+              "native_editor_launched": False,
+              "human_acceptance": False,
+              "G2": "NOT_GRANTED",
+              "G3": "STOP",
+          }
+          (folder / "receipt.json").write_text(json.dumps(record, sort_keys=True, indent=2) + "\n")
+          print("native-source-export-rust=PASS compiled_original_source_cases=3")
+          PY_NATIVE_EXPORT
+          git diff --exit-code
+      - name: Preserve exact Rust regression originals without converting to physical acceptance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-source-export-rust-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: ${{ runner.temp }}/native-source-export-originals/
+          if-no-files-found: warn
           retention-days: 14

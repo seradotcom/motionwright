@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Download, RefreshCw, Save } from "lucide-react";
 import type { Project, Scene } from "./types";
 import {
@@ -12,9 +12,18 @@ export interface NativeSourceSaveRequest {
   spec: NativeCapsuleSourceSpec7;
   source: { project_id: string; generation: string; revision: number; branch_id: string };
 }
+export interface NativeSourceExportRequest {
+  path: string; scene_id: string; capsule_id: string;
+  source: { project_id: string; generation: string; revision: number; branch_id: string };
+}
+export interface NativeSourceExportReceipt {
+  path: string; capsule_id: string; source_asset_id: string;
+  source_sha256: string; size_bytes: string; editor_launched: false;
+}
 export interface NativeSourceServices {
   saveSource: (request: NativeSourceSaveRequest) => Promise<Project>;
   refreshProject: () => Promise<Project>;
+  exportSource: (request: NativeSourceExportRequest) => Promise<NativeSourceExportReceipt>;
 }
 interface Props extends NativeSourceServices { project: Project; scene: Scene | null; busy: boolean; }
 const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
@@ -27,19 +36,23 @@ function download(content: string, filename: string) {
 }
 
 /** Authored local input only. The existing App coordinator publishes every save. */
-function SourceEditor({ project, scene, target, busy, saveSource, refreshProject }: Omit<Props, "scene"> & { scene: Scene; target: string }) {
+function SourceEditor({ project, scene, target, busy, saveSource, refreshProject, exportSource }: Omit<Props, "scene"> & { scene: Scene; target: string }) {
   const editor = useNativeSourceDraft(project, scene.id, target);
   const heading = useId();
   const [imports, setImports] = useState(() => readFileImports(project.id));
   const [sending, setSending] = useState(false);
   const [reading, setReading] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const exportInFlight = useRef(false);
+  const [exportPath, setExportPath] = useState("");
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const desktop = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
   const capsule = project.production_design?.capsules.find(value => value.id === editor.capsuleId);
   const sourceAsset = project.assets.find(value => value.id === capsule?.source_asset_id);
   const pendingImport = imports.error !== null || imports.limited || imports.copies.length !== 0;
-  const pending = busy || sending || reading;
+  const pending = busy || sending || reading || exporting;
   const unavailable = target !== "new" && (!capsule || capsule.scene_id !== scene.id);
   const edit = (field: NativeSourceField, value: string) => {
     setNotice(null); setError(null); editor.setField(field, value);
@@ -81,6 +94,31 @@ function SourceEditor({ project, scene, target, busy, saveSource, refreshProject
     } catch (reason) { setError(message(reason)); }
     finally { setSending(false); setImports(readFileImports(project.id)); }
   };
+  const exportOriginal = async () => {
+    if (exportInFlight.current || pending || pendingImport || !desktop || !capsule || !sourceAsset || unavailable || !exportPath.trim()) return;
+    setError(null); setExportStatus(null);
+    if (sourceAsset.content_sha256 !== capsule.source_sha256 || capsule.scene_id !== scene.id) {
+      setError("The saved capsule and original asset do not match. Read the saved project before exporting.");
+      return;
+    }
+    exportInFlight.current = true; setExporting(true);
+    try {
+      const result = await exportSource({
+        path: exportPath.trim(), scene_id: scene.id, capsule_id: capsule.id,
+        source: { project_id: project.id, generation: project.generation,
+          revision: project.revision, branch_id: project.active_branch },
+      });
+      if (result.capsule_id !== capsule.id || result.source_asset_id !== sourceAsset.id
+          || result.source_sha256 !== capsule.source_sha256 || result.editor_launched !== false
+          || result.path !== exportPath.trim()
+          || !/^[1-9][0-9]*$/.test(result.size_bytes)) {
+        throw new Error("The export response does not match the selected saved source. Inspect the destination; no operation is retried.");
+      }
+      setExportStatus("Original source exported to " + result.path
+        + ". Open that exact file manually in its trusted native editor. No editor or source code was launched.");
+    } catch (reason) { setError(message(reason)); }
+    finally { exportInFlight.current = false; setExporting(false); }
+  };
   const readCurrent = async () => {
     if (pending || !desktop) return;
     setError(null); setNotice(null); setReading(true);
@@ -118,6 +156,24 @@ function SourceEditor({ project, scene, target, busy, saveSource, refreshProject
       <span className="mono" style={{ overflowWrap: "anywhere" }}>sha256:{capsule.source_sha256}</span>
       <span>Replacing this source clears its previous realization and fidelity evidence.</span>
     </div>}
+    {capsule && <section className="production-notice" aria-label="Recover saved native source">
+      <strong>Export the editable original</strong>
+      <p className="production-help">Recover the saved source bytes without exporting the entire project. Choose a new absolute file path with the original extension. The export does not run an editor or execute imported content.</p>
+      <label className="production-field"><span>Original source export path</span>
+        <input aria-label="Native source export destination" value={exportPath} maxLength={1900}
+          disabled={pending || !desktop} autoComplete="off" spellCheck={false}
+          placeholder="Absolute destination with original filename and extension"
+          onChange={event => { setExportPath(event.target.value); setExportStatus(null); setError(null); }}/>
+      </label>
+      {!sourceAsset || sourceAsset.content_sha256 !== capsule.source_sha256
+        ? <p className="production-error" role="status">The saved original asset needs reconciliation before export.</p> : null}
+      <button type="button" className="secondary-button" onClick={() => void exportOriginal()}
+        disabled={!desktop || pending || pendingImport || unavailable || !exportPath.trim()
+          || !sourceAsset || sourceAsset.content_sha256 !== capsule.source_sha256}>
+        <Download size={14} aria-hidden="true"/>{exporting ? "Exporting original…" : "Export saved original source"}
+      </button>
+      {exportStatus && <p className="production-help" role="status">{exportStatus}</p>}
+    </section>}
     {unavailable && <p role="alert" className="production-error">This capsule is no longer available in the selected scene. Its authored input has been kept.</p>}
     <label className="production-field"><span>Source file path</span>
       <input value={editor.fields.path} onChange={event => edit("path", event.target.value)} autoComplete="off" spellCheck={false}/>

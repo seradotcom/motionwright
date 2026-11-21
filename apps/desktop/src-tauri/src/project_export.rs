@@ -5,6 +5,7 @@ use super::project_library::{OpenProjectRequest, open_project};
 use motionwright_domain::{Project, otio_interchange};
 use motionwright_service::StudioService;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     io::Write,
@@ -23,6 +24,27 @@ pub struct ProjectExportRequest {
 
 pub type ExportBundleRequest = ProjectExportRequest;
 pub type ExportOtioRequest = ProjectExportRequest;
+
+#[derive(Debug, Deserialize)]
+pub struct NativeSourceExportRequest {
+    pub project_id: Uuid,
+    pub generation: Uuid,
+    pub revision: u64,
+    pub scene_id: Uuid,
+    pub capsule_id: Uuid,
+    pub path: String,
+    pub effect_grant: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NativeSourceExportResponse {
+    pub path: String,
+    pub capsule_id: Uuid,
+    pub source_asset_id: Uuid,
+    pub source_sha256: String,
+    pub size_bytes: String,
+    pub editor_launched: bool,
+}
 
 #[derive(Debug, Serialize)]
 pub struct BundleExportResponse {
@@ -99,6 +121,135 @@ fn execute_bundle_export(
         destination: destination.display().to_string(),
         blob_count: manifest.blobs.len(),
         total_blob_bytes: total_blob_bytes.to_string(),
+    })
+}
+
+/// Export only the exact saved CAS source for one selected native capsule.
+/// The deliver grant binds project/revision, capsule UUID and destination path.
+/// This does not launch a native editor or treat imported bytes as executable.
+pub fn export_native_capsule_source(
+    service: &StudioService,
+    grants: &EffectGrantRegistry,
+    request: NativeSourceExportRequest,
+) -> Result<NativeSourceExportResponse, String> {
+    if request.scene_id.is_nil() || request.capsule_id.is_nil() {
+        return Err("Choose a saved native capsule and scene before exporting.".into());
+    }
+    let project = open_project(
+        service,
+        OpenProjectRequest {
+            project_id: request.project_id,
+        },
+    )
+    .map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err("Native source export is stale; inspect the current saved project.".into());
+    }
+    let candidates: Vec<_> = project
+        .production_design
+        .capsules
+        .iter()
+        .filter(|item| item.id == request.capsule_id)
+        .collect();
+    if candidates.len() != 1
+        || candidates[0].scene_id != request.scene_id
+        || !project
+            .scenes
+            .iter()
+            .any(|scene| scene.id == request.scene_id)
+    {
+        return Err("The selected saved native source is unavailable in this scene.".into());
+    }
+    let capsule = candidates[0];
+    let assets: Vec<_> = project
+        .assets
+        .iter()
+        .filter(|asset| asset.id == capsule.source_asset_id)
+        .collect();
+    if assets.len() != 1
+        || assets[0].content_sha256.as_deref() != Some(capsule.source_sha256.as_str())
+    {
+        return Err(
+            "The original native source asset is missing or has a different digest.".into(),
+        );
+    }
+    let asset = assets[0];
+    let destination = absolute_bundle_path(&request.path)?;
+    if destination.file_name().is_none()
+        || destination.parent().is_none_or(|parent| !parent.is_dir())
+    {
+        return Err(
+            "Select an absolute native source file path within an existing directory.".into(),
+        );
+    }
+    let source_extension = Path::new(asset.name.trim())
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    let destination_extension = destination
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if !source_extension.is_empty() && !source_extension.eq_ignore_ascii_case(destination_extension)
+    {
+        return Err(
+            "Preserve the native source file extension for reopening in its editor.".into(),
+        );
+    }
+    let subject = format!(
+        "native-source|{}|{}",
+        request.capsule_id,
+        request.path.trim()
+    );
+    grants.consume(
+        request.effect_grant,
+        EffectKind::DeliverLocal,
+        EffectScope::project(request.project_id, request.generation, request.revision),
+        &subject,
+    )?;
+    // A peer mutation after issue/consume cannot substitute a later source.
+    if service.project(project.id).map_err(sanitized)? != project {
+        return Err("The native source changed before export; no file was created.".into());
+    }
+    const MAX_NATIVE_SOURCE_EXPORT: u64 = 64 * 1024 * 1024;
+    let bytes = service
+        .store()
+        .lock()
+        .read_blob(&capsule.source_sha256, MAX_NATIVE_SOURCE_EXPORT)
+        .map_err(sanitized)?;
+    let observed = format!("{:x}", Sha256::digest(&bytes));
+    if bytes.is_empty() || observed != capsule.source_sha256 {
+        return Err("The retained native source bytes do not match the saved digest.".into());
+    }
+    let parent = destination
+        .parent()
+        .ok_or("Native source destination has no parent.")?;
+    let mut staging = tempfile::Builder::new()
+        .prefix(".motionwright-native-source-")
+        .tempfile_in(parent)
+        .map_err(|_| "Could not prepare the native source export file.".to_string())?;
+    staging
+        .as_file_mut()
+        .write_all(&bytes)
+        .map_err(|_| "Could not write the native source export.".to_string())?;
+    staging
+        .as_file_mut()
+        .sync_all()
+        .map_err(|_| "Could not finalize the native source export.".to_string())?;
+    staging.persist_noclobber(&destination).map_err(|error| {
+        if error.error.kind() == std::io::ErrorKind::AlreadyExists {
+            "Destination already exists; the original file was not overwritten.".to_string()
+        } else {
+            "Could not publish the native source export.".to_string()
+        }
+    })?;
+    Ok(NativeSourceExportResponse {
+        path: destination.display().to_string(),
+        capsule_id: capsule.id,
+        source_asset_id: asset.id,
+        source_sha256: observed,
+        size_bytes: bytes.len().to_string(),
+        editor_launched: false,
     })
 }
 
@@ -203,7 +354,7 @@ pub fn absolute_bundle_path(value: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use motionwright_domain::{Asset, Change};
+    use motionwright_domain::{Asset, Change, Fidelity, FidelityReport, NativeCapsule};
     use std::{collections::BTreeMap, fs, path::Path};
     use tempfile::{TempDir, tempdir};
 
@@ -247,6 +398,84 @@ mod tests {
             database,
             service,
             project,
+        }
+    }
+
+    fn native_source_fixture(f: &Fixture) -> (Project, Uuid, Uuid) {
+        let with_scene = f
+            .service
+            .apply(
+                f.project.id,
+                &f.project.stamp(),
+                "source-export-scene",
+                &Change::AddScene {
+                    name: "Native source roundtrip".into(),
+                    objective: "Recover exact original bytes".into(),
+                    duration_seconds: 3,
+                },
+            )
+            .unwrap()
+            .project;
+        let scene_id = with_scene.scenes.last().unwrap().id;
+        let source = &with_scene.assets[0];
+        let capsule = NativeCapsule {
+            id: Uuid::now_v7(),
+            scene_id,
+            source_asset_id: source.id,
+            source_sha256: source.content_sha256.clone().unwrap(),
+            label: "Source, not a rendered claim".into(),
+            native_editor_hint: "Open in the trusted native editor".into(),
+            fidelity: FidelityReport {
+                renderer: "unverified source".into(),
+                renderer_version: "unverified".into(),
+                visual: Fidelity::Unavailable,
+                temporal: Fidelity::Unavailable,
+                structural: Fidelity::Unavailable,
+                editable: Fidelity::Unavailable,
+                losses: vec!["No native realization or editor execution was verified.".into()],
+                evidence_sha256: None,
+            },
+            editable_parameters: vec![],
+            property_fidelity: vec![],
+        };
+        let capsule_id = capsule.id;
+        let saved = f
+            .service
+            .apply(
+                with_scene.id,
+                &with_scene.stamp(),
+                "source-export-capsule",
+                &Change::UpsertNativeCapsule { capsule },
+            )
+            .unwrap()
+            .project;
+        (saved, scene_id, capsule_id)
+    }
+
+    fn native_request(
+        project: &Project,
+        scene_id: Uuid,
+        capsule_id: Uuid,
+        grants: &EffectGrantRegistry,
+        path: &Path,
+    ) -> NativeSourceExportRequest {
+        let destination = path.to_str().unwrap().to_owned();
+        let subject = format!("native-source|{}|{}", capsule_id, destination);
+        let grant = grants
+            .issue(
+                EffectKind::DeliverLocal,
+                EffectScope::project(project.id, project.generation, project.revision),
+                &subject,
+            )
+            .unwrap();
+        NativeSourceExportRequest {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            scene_id,
+            capsule_id,
+            path: destination,
+            effect_grant: grant.token,
         }
     }
 
@@ -315,6 +544,92 @@ mod tests {
         let mut out = BTreeMap::new();
         visit(root, root, &mut out);
         out
+    }
+
+    #[test]
+    fn native_source_exports_exact_original_bytes_without_launch_or_replay() {
+        let f = fixture();
+        let grants = EffectGrantRegistry::default();
+        let (saved, scene_id, capsule_id) = native_source_fixture(&f);
+        let destination = f.root.path().join("exports/original-copy.bin");
+        let request = native_request(&saved, scene_id, capsule_id, &grants, &destination);
+        let token = request.effect_grant;
+        let result = export_native_capsule_source(&f.service, &grants, request).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), CONTENT);
+        assert_eq!(result.path, destination.to_str().unwrap());
+        assert_eq!(result.capsule_id, capsule_id);
+        assert_eq!(result.source_asset_id, saved.assets[0].id);
+        assert_eq!(
+            result.source_sha256,
+            saved.production_design.capsules[0].source_sha256
+        );
+        assert_eq!(result.size_bytes, CONTENT.len().to_string());
+        assert!(!result.editor_launched);
+        assert_eq!(files(&f.root.path().join("exports")).len(), 1);
+        assert_eq!(f.service.project(saved.id).unwrap(), saved);
+        let subject = format!("native-source|{}|{}", capsule_id, destination.display());
+        assert!(
+            grants
+                .consume(
+                    token,
+                    EffectKind::DeliverLocal,
+                    EffectScope::project(saved.id, saved.generation, saved.revision),
+                    &subject
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn native_source_export_cannot_overwrite_an_existing_file_or_switch_capsule() {
+        let f = fixture();
+        let grants = EffectGrantRegistry::default();
+        let (saved, scene_id, capsule_id) = native_source_fixture(&f);
+        let destination = f.root.path().join("exports/occupied.bin");
+        fs::write(&destination, b"private foreign original").unwrap();
+        let request = native_request(&saved, scene_id, capsule_id, &grants, &destination);
+        assert!(export_native_capsule_source(&f.service, &grants, request).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"private foreign original");
+        let elsewhere = f.root.path().join("exports/other.bin");
+        let mut swapped = native_request(&saved, scene_id, capsule_id, &grants, &elsewhere);
+        swapped.capsule_id = Uuid::new_v4();
+        assert!(export_native_capsule_source(&f.service, &grants, swapped).is_err());
+        assert!(!elsewhere.exists());
+        let authorized = f.root.path().join("exports/authorized.bin");
+        let changed_path = f.root.path().join("exports/ungranted.bin");
+        let mut swapped_path = native_request(&saved, scene_id, capsule_id, &grants, &authorized);
+        swapped_path.path = changed_path.to_str().unwrap().to_string();
+        assert!(export_native_capsule_source(&f.service, &grants, swapped_path).is_err());
+        assert!(!authorized.exists() && !changed_path.exists());
+        let wrong_extension = f.root.path().join("exports/not-a-source.txt");
+        let request = native_request(&saved, scene_id, capsule_id, &grants, &wrong_extension);
+        assert!(export_native_capsule_source(&f.service, &grants, request).is_err());
+        assert!(!wrong_extension.exists());
+        assert_eq!(f.service.project(saved.id).unwrap(), saved);
+    }
+
+    #[test]
+    fn native_source_export_rejects_a_peer_revision_before_creating_the_destination() {
+        let f = fixture();
+        let grants = EffectGrantRegistry::default();
+        let (saved, scene_id, capsule_id) = native_source_fixture(&f);
+        let destination = f.root.path().join("exports/stale.bin");
+        let request = native_request(&saved, scene_id, capsule_id, &grants, &destination);
+        let newer = f
+            .service
+            .apply(
+                saved.id,
+                &saved.stamp(),
+                "peer-native-source-export",
+                &Change::RenameProject {
+                    title: "Newer owner revision".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        assert!(export_native_capsule_source(&f.service, &grants, request).is_err());
+        assert!(!destination.exists());
+        assert_eq!(f.service.project(saved.id).unwrap(), newer);
     }
 
     #[test]

@@ -67,6 +67,7 @@ import {
   applyChange,
   bootstrap,
   projectHistory,
+  exportNativeCapsuleSource,
   exportProjectBundle,
   importAssetFile,
   importNativeCapsuleSourceFile,
@@ -2334,7 +2335,18 @@ export default function App() {
         return <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={selectScene} rate={timebaseRate} mode={displayMode} />;
       case "Production":
         return <ProductionDesignWorkspace project={project} scene={selectedScene} commit={commit} commitCamera={commitCamera}
-          sourceServices={{ saveSource: ingestNativeSource, refreshProject: refreshGraphProject }} graphServices={{
+          sourceServices={{
+            saveSource: ingestNativeSource,
+            refreshProject: refreshGraphProject,
+            exportSource: request => {
+              const stamp = request.source;
+              if (stamp.project_id !== project.id || stamp.generation !== project.generation
+                  || stamp.revision !== project.revision || stamp.branch_id !== project.active_branch) {
+                throw new Error("The native source export belongs to an earlier project view. Read the saved project before exporting.");
+              }
+              return exportNativeCapsuleSource(project, request.scene_id, request.capsule_id, request.path);
+            },
+          }} graphServices={{
           commit: commitGraph,
           readContext: readSemanticGraphContext,
           outcomeTransport: {

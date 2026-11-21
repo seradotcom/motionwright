@@ -66,8 +66,8 @@ use motionwright_service::{
 };
 use native_preview::{NativeFrameGrant, NativeFrameRequest, NativePreviewRegistry};
 use project_export::{
-    BundleExportResponse, ExportBundleRequest, ExportOtioRequest, OtioExportResponse,
-    absolute_bundle_path,
+    BundleExportResponse, ExportBundleRequest, ExportOtioRequest, NativeSourceExportRequest,
+    NativeSourceExportResponse, OtioExportResponse, absolute_bundle_path,
 };
 use project_library::{BootstrapProjectSelection, BootstrapRequest};
 use runtime_setup::RuntimeConnectionRegistry;
@@ -2966,6 +2966,15 @@ fn export_project_bundle(
 }
 
 #[tauri::command]
+fn export_native_capsule_source(
+    _owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: NativeSourceExportRequest,
+) -> Result<NativeSourceExportResponse, String> {
+    project_export::export_native_capsule_source(&state.service, &state.effect_grants, request)
+}
+
+#[tauri::command]
 fn export_caption_sidecar(
     _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
@@ -3308,6 +3317,7 @@ fn main() {
             recover_native_capsule_source_file,
             waveform_page,
             export_project_bundle,
+            export_native_capsule_source,
             export_caption_sidecar,
             export_otio,
             inspect_project_bundle,
