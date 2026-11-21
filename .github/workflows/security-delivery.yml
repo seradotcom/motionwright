@@ -1155,7 +1155,7 @@ jobs:
           retention-days: 14
 
   native-source-export-rust:
-    name: Native original-source export (3 focused Rust tests)
+    name: Native original-source export (5 focused Rust tests)
     if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'native-source-export'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -1178,7 +1178,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - name: Run three exact original-source export regressions on the compiled desktop
+      - name: Run five exact original-source export regressions on the compiled desktop
         shell: bash
         env:
           MW_NATIVE_EXPORT_ORIGINALS: ${{ runner.temp }}/native-source-export-originals
@@ -1203,10 +1203,12 @@ jobs:
               "project_export::tests::native_source_exports_exact_original_bytes_without_launch_or_replay",
               "project_export::tests::native_source_export_cannot_overwrite_an_existing_file_or_switch_capsule",
               "project_export::tests::native_source_export_rejects_a_peer_revision_before_creating_the_destination",
+              "project_export::tests::native_source_export_then_reimport_preserves_both_original_versions_and_reopens_store",
+              "project_export::tests::native_source_export_rejects_same_revision_branch_asset_and_digest_substitution_before_effect",
           }
           passed = re.findall(r"(?m)^test (project_export::tests::native_source_[A-Za-z0-9_]+) \.\.\. ok$", text)
-          assert len(passed) == len(required) == 3 and set(passed) == required, passed
-          assert re.search(r"(?m)^test result: ok\. 3 passed; 0 failed; 0 ignored;", text)
+          assert len(passed) == len(required) == 5 and set(passed) == required, passed
+          assert re.search(r"(?m)^test result: ok\. 5 passed; 0 failed; 0 ignored;", text)
           record = {
               "schema": "motionwright.ci.native-source-export-rust/1",
               "source_sha": os.environ["GITHUB_SHA"],
@@ -1222,7 +1224,7 @@ jobs:
               "G3": "STOP",
           }
           (folder / "receipt.json").write_text(json.dumps(record, sort_keys=True, indent=2) + "\n")
-          print("native-source-export-rust=PASS compiled_original_source_cases=3")
+          print("native-source-export-rust=PASS compiled_original_source_cases=5")
           PY_NATIVE_EXPORT
           git diff --exit-code
       - name: Preserve exact Rust regression originals without converting to physical acceptance
