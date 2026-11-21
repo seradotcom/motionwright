@@ -1250,7 +1250,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: \${{ github.sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -1271,8 +1271,8 @@ jobs:
       - name: Compile one exact Desktop-source service against real SQLite/CAS
         shell: bash
         env:
-          MW_BROWSER_ORIGINALS: \${{ runner.temp }}/native-source-browser-\${{ github.run_id }}-\${{ github.run_attempt }}
-          MW_BROWSER_STORES: \${{ runner.temp }}/native-source-browser-stores-\${{ github.run_id }}-\${{ github.run_attempt }}
+          MW_BROWSER_ORIGINALS: ${{ runner.temp }}/native-source-browser-${{ github.run_id }}-${{ github.run_attempt }}
+          MW_BROWSER_STORES: ${{ runner.temp }}/native-source-browser-stores-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           umask 077
@@ -1333,8 +1333,8 @@ jobs:
         working-directory: apps/studio
         shell: bash
         env:
-          MW_BROWSER_ORIGINALS: \${{ runner.temp }}/native-source-browser-\${{ github.run_id }}-\${{ github.run_attempt }}
-          PLAYWRIGHT_JSON_OUTPUT_FILE: \${{ runner.temp }}/native-source-browser-\${{ github.run_id }}-\${{ github.run_attempt }}/playwright.json
+          MW_BROWSER_ORIGINALS: ${{ runner.temp }}/native-source-browser-${{ github.run_id }}-${{ github.run_attempt }}
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ runner.temp }}/native-source-browser-${{ github.run_id }}-${{ github.run_attempt }}/playwright.json
         run: |
           set -euo pipefail
           npx playwright test tests/native-source-save-service.spec.ts \
@@ -1370,9 +1370,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: native-source-browser-\${{ github.sha }}-\${{ github.run_id }}-\${{ github.run_attempt }}
+          name: native-source-browser-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            \${{ runner.temp }}/native-source-browser-\${{ github.run_id }}-\${{ github.run_attempt }}/
+            ${{ runner.temp }}/native-source-browser-${{ github.run_id }}-${{ github.run_attempt }}/
             apps/studio/test-results/
           if-no-files-found: warn
           retention-days: 14
