@@ -267,4 +267,45 @@ mod tests {
             .is_err()
         );
     }
+
+    #[test]
+    fn independent_geometry_reader_requires_the_final_native_writer_handoff() {
+        // Reproduce the physical post-render boundary without starting a
+        // Semwright Host, mutating a native output, or repeating any effect.
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("post-native.sqlite3");
+        let receipt = dir.path().join("source.original.json");
+        seed(&database, &receipt).unwrap();
+        let expected = sha_of(&receipt).unwrap();
+
+        // A later Native coordinator opens a normal writer; that restores WAL
+        // even when it does not change the authored Project or its history.
+        let native_writer = StudioService::open(&database).unwrap();
+        assert_eq!(native_writer.projects(2).unwrap().len(), 1);
+        drop(native_writer);
+
+        let refused = dir.path().join("readback-before-handoff.json");
+        assert!(
+            readback(&database, &receipt, &expected, &refused).is_err(),
+            "the independent reader must not silently promote a WAL writer"
+        );
+        assert!(!refused.exists());
+
+        // The legitimate final writer explicitly completes the original
+        // SQLite/CAS handoff. The fresh read-only reader then accepts the same
+        // project, journal, database identity and untouched source receipt.
+        let writer = StudioService::open(&database).unwrap();
+        writer.prepare_read_only_handoff().unwrap();
+        drop(writer);
+        let recovered = dir.path().join("readback-after-handoff.json");
+        readback(&database, &receipt, &expected, &recovered).unwrap();
+        assert!(recovered.is_file());
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&recovered).unwrap()).unwrap();
+        assert_eq!(report["reader_authority"], "StudioServiceReader");
+        assert_eq!(report["source_receipt_sha256"], expected);
+        assert_eq!(report["same_physical_database"], true);
+        assert_eq!(report["source_history_unchanged"], true);
+        assert_eq!(report["formal_G2"], false);
+    }
 }

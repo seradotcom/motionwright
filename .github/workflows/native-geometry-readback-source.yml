@@ -1,0 +1,109 @@
+name: Native Geometry Readback Source Regression
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_source_sha:
+        description: "Full immutable SHA of one source-only Native geometry handoff candidate"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-geometry-readback-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  readback-source:
+    name: Two compiled geometry readback contracts (no Native effect)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Compile and verify two exact source-only SQLite handoff tests
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          GEOMETRY_SOURCE_LOG_ROOT: ${{ runner.temp }}/native-geometry-readback-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = seradotcom/motionwright
+          test "$GITHUB_REF" = refs/heads/integrate/phase1-final-composition-20261027
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          [[ "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_SOURCE_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=normal)"
+          root="$GEOMETRY_SOURCE_LOG_ROOT"
+          test ! -e "$root"
+          mkdir -m 700 "$root"
+          test_names=(
+            original_geometry_uses_sqlite_and_independent_reader
+            independent_geometry_reader_requires_the_final_native_writer_handoff
+          )
+          for name in "${test_names[@]}"; do
+            cargo test --locked --jobs 2 -p motionwright-native \
+              --example native-render-e2e \
+              "native_geometry_e2e::tests::$name" \
+              -- --exact --test-threads=1 \
+              > "$root/$name.original.log" 2>&1
+          done
+          python3 -B -E -s - <<'PY_SOURCE_ONLY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          sha = os.environ["GITHUB_SHA"]
+          folder = Path(os.environ["GEOMETRY_SOURCE_LOG_ROOT"])
+          names = (
+              "original_geometry_uses_sqlite_and_independent_reader",
+              "independent_geometry_reader_requires_the_final_native_writer_handoff",
+          )
+          records=[]
+          for name in names:
+              path=folder/(name+".original.log")
+              raw=path.read_bytes()
+              text=re.sub(r"\x1b\[[0-9;]*m","",raw.decode("utf-8","strict"))
+              full="native_geometry_e2e::tests::"+name
+              assert re.search(r"(?m)^test "+re.escape(full)+r" \.\.\. ok$",text), full
+              assert re.search(r"(?m)^test result: ok\. 1 passed; 0 failed; 0 ignored;",text),full
+              records.append({"test":full,"bytes":len(raw),"sha256":hashlib.sha256(raw).hexdigest()})
+          result={
+              "schema":"motionwright.ci.native-geometry-wal-readback-source/1",
+              "source_sha":sha,"run_id":os.environ["GITHUB_RUN_ID"],
+              "run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+              "result":"TWO_COMPILED_SOURCE_READBACK_TESTS_PASS",
+              "originals":records,
+              "actual_native_host":"NOT_RUN",
+              "sqlite_writer_handoff":"SOURCE_REGRESSION_ONLY",
+              "physical_ecd7_failure_rerun":"NOT_PERFORMED",
+              "G2":"NOT_GRANTED","G3":"STOP",
+              "release_authorized":False,
+          }
+          (folder/"receipt.json").write_text(json.dumps(result,sort_keys=True,indent=2)+"\n")
+          print("geometry-source-readback=PASS cases=2 Native=NOT_RUN G2=NOT_GRANTED")
+          PY_SOURCE_ONLY
+          git diff --exit-code
+      - name: Retain only compiled source original logs and receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-geometry-readback-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-geometry-readback-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: warn
+          retention-days: 14

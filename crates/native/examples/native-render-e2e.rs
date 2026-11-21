@@ -1350,6 +1350,14 @@ async fn render_requested(
             }))?
         );
     } else {
+        if std::env::var("MOTIONWRIGHT_NATIVE_GEOMETRY_E2E").as_deref() == Ok("1") {
+            // The real Host/Coordinator writer has finished its one effect.
+            // Its normal WAL reopen must be explicitly closed before a fresh,
+            // independent StudioServiceReader can admit the original Store.
+            // Do not weaken the reader or attempt any second Native effect.
+            drop(coordinator);
+            service.prepare_read_only_handoff()?;
+        }
         println!("{}", serde_json::to_string(&render_response)?);
     }
     Ok(())
