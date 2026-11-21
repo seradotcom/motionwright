@@ -2344,7 +2344,16 @@ export default function App() {
                   || stamp.revision !== project.revision || stamp.branch_id !== project.active_branch) {
                 throw new Error("The native source export belongs to an earlier project view. Read the saved project before exporting.");
               }
-              return exportNativeCapsuleSource(project, request.scene_id, request.capsule_id, request.path);
+              const selected = project.production_design?.capsules.filter(capsule =>
+                capsule.id === request.capsule_id && capsule.scene_id === request.scene_id) ?? [];
+              if (selected.length !== 1 || selected[0].source_asset_id !== request.expected_source_asset_id
+                  || selected[0].source_sha256 !== request.expected_source_sha256) {
+                throw new Error("The saved native source is no longer the one selected for export. Read the current project.");
+              }
+              return exportNativeCapsuleSource(
+                project, request.scene_id, request.capsule_id,
+                request.expected_source_asset_id, request.expected_source_sha256, request.path,
+              );
             },
           }} graphServices={{
           commit: commitGraph,

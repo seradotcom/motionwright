@@ -32,6 +32,9 @@ pub struct NativeSourceExportRequest {
     pub revision: u64,
     pub scene_id: Uuid,
     pub capsule_id: Uuid,
+    pub expected_active_branch: Uuid,
+    pub expected_source_asset_id: Uuid,
+    pub expected_source_sha256: String,
     pub path: String,
     pub effect_grant: Uuid,
 }
@@ -124,6 +127,18 @@ fn execute_bundle_export(
     })
 }
 
+fn native_source_subject(request: &NativeSourceExportRequest) -> String {
+    format!(
+        "native-source|{}|{}|{}|{}|{}|{}",
+        request.expected_active_branch,
+        request.scene_id,
+        request.capsule_id,
+        request.expected_source_asset_id,
+        request.expected_source_sha256,
+        request.path.trim()
+    )
+}
+
 /// Export only the exact saved CAS source for one selected native capsule.
 /// The deliver grant binds project/revision, capsule UUID and destination path.
 /// This does not launch a native editor or treat imported bytes as executable.
@@ -132,7 +147,16 @@ pub fn export_native_capsule_source(
     grants: &EffectGrantRegistry,
     request: NativeSourceExportRequest,
 ) -> Result<NativeSourceExportResponse, String> {
-    if request.scene_id.is_nil() || request.capsule_id.is_nil() {
+    if request.scene_id.is_nil()
+        || request.capsule_id.is_nil()
+        || request.expected_active_branch.is_nil()
+        || request.expected_source_asset_id.is_nil()
+        || request.expected_source_sha256.len() != 64
+        || !request
+            .expected_source_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
         return Err("Choose a saved native capsule and scene before exporting.".into());
     }
     let project = open_project(
@@ -142,8 +166,13 @@ pub fn export_native_capsule_source(
         },
     )
     .map_err(sanitized)?;
-    if project.generation != request.generation || project.revision != request.revision {
-        return Err("Native source export is stale; inspect the current saved project.".into());
+    if project.generation != request.generation
+        || project.revision != request.revision
+        || project.active_branch != request.expected_active_branch
+    {
+        return Err(
+            "Native source export is stale; inspect the current saved project and branch.".into(),
+        );
     }
     let candidates: Vec<_> = project
         .production_design
@@ -161,6 +190,14 @@ pub fn export_native_capsule_source(
         return Err("The selected saved native source is unavailable in this scene.".into());
     }
     let capsule = candidates[0];
+    if capsule.source_asset_id != request.expected_source_asset_id
+        || capsule.source_sha256 != request.expected_source_sha256
+    {
+        return Err(
+            "Saved native source identity changed; inspect the selected capsule before exporting."
+                .into(),
+        );
+    }
     let assets: Vec<_> = project
         .assets
         .iter()
@@ -196,11 +233,7 @@ pub fn export_native_capsule_source(
             "Preserve the native source file extension for reopening in its editor.".into(),
         );
     }
-    let subject = format!(
-        "native-source|{}|{}",
-        request.capsule_id,
-        request.path.trim()
-    );
+    let subject = native_source_subject(&request);
     grants.consume(
         request.effect_grant,
         EffectKind::DeliverLocal,
@@ -460,7 +493,25 @@ mod tests {
         path: &Path,
     ) -> NativeSourceExportRequest {
         let destination = path.to_str().unwrap().to_owned();
-        let subject = format!("native-source|{}|{}", capsule_id, destination);
+        let capsule = project
+            .production_design
+            .capsules
+            .iter()
+            .find(|value| value.id == capsule_id)
+            .unwrap();
+        let mut request = NativeSourceExportRequest {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            scene_id,
+            capsule_id,
+            expected_active_branch: project.active_branch,
+            expected_source_asset_id: capsule.source_asset_id,
+            expected_source_sha256: capsule.source_sha256.clone(),
+            path: destination,
+            effect_grant: Uuid::nil(),
+        };
+        let subject = native_source_subject(&request);
         let grant = grants
             .issue(
                 EffectKind::DeliverLocal,
@@ -468,15 +519,8 @@ mod tests {
                 &subject,
             )
             .unwrap();
-        NativeSourceExportRequest {
-            project_id: project.id,
-            generation: project.generation,
-            revision: project.revision,
-            scene_id,
-            capsule_id,
-            path: destination,
-            effect_grant: grant.token,
-        }
+        request.effect_grant = grant.token;
+        request
     }
 
     fn request(f: &Fixture, grants: &EffectGrantRegistry, path: &Path) -> ProjectExportRequest {
@@ -695,6 +739,7 @@ mod tests {
         let destination = f.root.path().join("exports/original-copy.bin");
         let request = native_request(&saved, scene_id, capsule_id, &grants, &destination);
         let token = request.effect_grant;
+        let subject = native_source_subject(&request);
         let result = export_native_capsule_source(&f.service, &grants, request).unwrap();
         assert_eq!(fs::read(&destination).unwrap(), CONTENT);
         assert_eq!(result.path, destination.to_str().unwrap());
@@ -708,7 +753,6 @@ mod tests {
         assert!(!result.editor_launched);
         assert_eq!(files(&f.root.path().join("exports")).len(), 1);
         assert_eq!(f.service.project(saved.id).unwrap(), saved);
-        let subject = format!("native-source|{}|{}", capsule_id, destination.display());
         assert!(
             grants
                 .consume(
@@ -719,6 +763,44 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn native_source_export_rejects_same_revision_branch_asset_and_digest_substitution_before_effect()
+     {
+        for mismatch in ["branch", "asset", "digest", "noncanonical_digest"] {
+            let f = fixture();
+            let grants = EffectGrantRegistry::default();
+            let (saved, scene_id, capsule_id) = native_source_fixture(&f);
+            let destination = f.root.path().join("exports/rejected-original.bin");
+            let mut request = native_request(&saved, scene_id, capsule_id, &grants, &destination);
+            let subject = native_source_subject(&request);
+            let token = request.effect_grant;
+            match mismatch {
+                "branch" => request.expected_active_branch = Uuid::new_v4(),
+                "asset" => request.expected_source_asset_id = Uuid::new_v4(),
+                "digest" => request.expected_source_sha256 = "b".repeat(64),
+                "noncanonical_digest" => request.expected_source_sha256 = "A".repeat(64),
+                _ => unreachable!(),
+            }
+            let result = export_native_capsule_source(&f.service, &grants, request);
+            assert!(
+                result.is_err(),
+                "same-revision {mismatch} substitution was admitted"
+            );
+            assert!(!destination.exists(), "rejected source wrote a file");
+            assert_eq!(f.service.project(saved.id).unwrap(), saved);
+            // A pre-effect identity failure does not spend a different original
+            // deliver grant. No retry of an uncertain export is attempted.
+            grants
+                .consume(
+                    token,
+                    EffectKind::DeliverLocal,
+                    EffectScope::project(saved.id, saved.generation, saved.revision),
+                    &subject,
+                )
+                .unwrap();
+        }
     }
 
     #[test]

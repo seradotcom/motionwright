@@ -14,6 +14,7 @@ export interface NativeSourceSaveRequest {
 }
 export interface NativeSourceExportRequest {
   path: string; scene_id: string; capsule_id: string;
+  expected_source_asset_id: string; expected_source_sha256: string;
   source: { project_id: string; generation: string; revision: number; branch_id: string };
 }
 export interface NativeSourceExportReceipt {
@@ -101,16 +102,19 @@ function SourceEditor({ project, scene, target, busy, saveSource, refreshProject
       setError("The saved capsule and original asset do not match. Read the saved project before exporting.");
       return;
     }
+    const submittedPath = exportPath.trim();
     exportInFlight.current = true; setExporting(true);
     try {
       const result = await exportSource({
-        path: exportPath.trim(), scene_id: scene.id, capsule_id: capsule.id,
+        path: submittedPath, scene_id: scene.id, capsule_id: capsule.id,
+        expected_source_asset_id: sourceAsset.id,
+        expected_source_sha256: capsule.source_sha256,
         source: { project_id: project.id, generation: project.generation,
           revision: project.revision, branch_id: project.active_branch },
       });
       if (result.capsule_id !== capsule.id || result.source_asset_id !== sourceAsset.id
           || result.source_sha256 !== capsule.source_sha256 || result.editor_launched !== false
-          || result.path !== exportPath.trim()
+          || result.path !== submittedPath
           || !/^[1-9][0-9]*$/.test(result.size_bytes)) {
         throw new Error("The export response does not match the selected saved source. Inspect the destination; no operation is retried.");
       }
@@ -160,7 +164,7 @@ function SourceEditor({ project, scene, target, busy, saveSource, refreshProject
       <strong>Export the editable original</strong>
       <p className="production-help">Recover the saved source bytes without exporting the entire project. Choose a new absolute file path with the original extension. The export does not run an editor or execute imported content.</p>
       <label className="production-field"><span>Original source export path</span>
-        <input aria-label="Native source export destination" value={exportPath} maxLength={1900}
+        <input aria-label="Native source export destination" value={exportPath} maxLength={1700}
           disabled={pending || !desktop} autoComplete="off" spellCheck={false}
           placeholder="Absolute destination with original filename and extension"
           onChange={event => { setExportPath(event.target.value); setExportStatus(null); setError(null); }}/>

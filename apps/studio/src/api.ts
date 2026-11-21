@@ -457,17 +457,34 @@ export interface NativeSourceExportReceipt {
 /** Export one retained native source as inert, digest-bound bytes.
  * This obtains a one-time local deliver grant, not an editor-launch grant. */
 export async function exportNativeCapsuleSource(
-  project: Project, sceneId: string, capsuleId: string, destination: string,
+  project: Project, sceneId: string, capsuleId: string,
+  expectedAssetId: string, expectedSha256: string, destination: string,
 ): Promise<NativeSourceExportReceipt> {
   if (!isTauri()) throw new Error("Native source export requires Motionwright desktop.");
   const path = destination.trim();
   if (!path) throw new Error("Choose an absolute export destination before requesting permission.");
-  const subject = "native-source|" + capsuleId + "|" + path;
+  const selected = project.production_design?.capsules.filter(capsule =>
+    capsule.id === capsuleId && capsule.scene_id === sceneId) ?? [];
+  const matchingAssets = project.assets.filter(asset =>
+    asset.id === expectedAssetId && asset.content_sha256 === expectedSha256);
+  if (selected.length !== 1 || selected[0].source_asset_id !== expectedAssetId
+      || selected[0].source_sha256 !== expectedSha256 || matchingAssets.length !== 1
+      || !/^[0-9a-f]{64}$/.test(expectedSha256)) {
+    throw new Error("The selected native capsule and source asset no longer match. Refresh the project before exporting.");
+  }
+  const subject = [
+    "native-source", project.active_branch, sceneId, capsuleId, expectedAssetId, expectedSha256, path,
+  ].join("|");
+  if (new TextEncoder().encode(subject).length > 2_048) {
+    throw new Error("The native source export destination is too long for one exact delivery grant.");
+  }
   const grant = await issueEffectGrant("deliver_local", project, subject);
   return invoke<NativeSourceExportReceipt>("export_native_capsule_source", {
     request: {
       project_id: project.id, generation: project.generation, revision: project.revision,
-      scene_id: sceneId, capsule_id: capsuleId, path, effect_grant: grant.token,
+      scene_id: sceneId, capsule_id: capsuleId, expected_active_branch: project.active_branch,
+      expected_source_asset_id: expectedAssetId, expected_source_sha256: expectedSha256,
+      path, effect_grant: grant.token,
     },
   });
 }
