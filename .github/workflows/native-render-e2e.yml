@@ -9,8 +9,13 @@ on:
         options: [standard, n83-preview, editable-source-cycle, out-cubic-xy]
         default: standard
         required: false
+      geometry_e2e:
+        description: "One exact-source Native shape geometry Host render; no repeat or formal G2 admission"
+        type: boolean
+        required: false
+        default: false
       expected_source_sha:
-        description: "Exact frozen Motionwright SHA; mandatory for n83-preview, editable-source-cycle or out-cubic-xy"
+        description: "Exact frozen Motionwright SHA; required for retained scopes and geometry E2E"
         type: string
         required: false
         default: ""
@@ -64,8 +69,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: native-motion-production-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}${{ inputs.native_scope == 'n83-preview' && '-n83-preview' || inputs.native_scope == 'editable-source-cycle' && '-editable-source-cycle' || inputs.native_scope == 'out-cubic-xy' && '-out-cubic-xy' || '' }}
-  cancel-in-progress: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' }}
+  group: native-motion-production-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}${{ inputs.native_scope == 'n83-preview' && '-n83-preview' || inputs.native_scope == 'editable-source-cycle' && '-editable-source-cycle' || inputs.native_scope == 'out-cubic-xy' && '-out-cubic-xy' || '' }}${{ inputs.geometry_e2e && '-one-geometry' || '' }}
+  cancel-in-progress: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e }}
 
 defaults:
   run:
@@ -73,6 +78,7 @@ defaults:
 
 env:
   MOTIONWRIGHT_NATIVE_SCOPE: ${{ (github.event_name == 'workflow_dispatch' && inputs.native_scope) || 'standard' }}
+  MOTIONWRIGHT_NATIVE_GEOMETRY_E2E: ${{ (github.event_name == 'workflow_dispatch' && inputs.geometry_e2e) && '1' || '0' }}
   MW_NATIVE_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
   MOTIONWRIGHT_N83_RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
   MOTIONWRIGHT_V01_PROVIDER_REPEAT: ${{ inputs.v01_provider_repeat && 'true' || 'false' }}
@@ -99,12 +105,14 @@ jobs:
           import os, re
           scope = os.environ["MOTIONWRIGHT_NATIVE_SCOPE"]
           assert scope in {"standard", "n83-preview", "editable-source-cycle", "out-cubic-xy"}, "unsupported native scope"
-          if scope in {"n83-preview", "editable-source-cycle", "out-cubic-xy"}:
+          if scope in {"n83-preview", "editable-source-cycle", "out-cubic-xy"} or os.environ["MOTIONWRIGHT_NATIVE_GEOMETRY_E2E"] == "1":
               assert os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
               assert os.environ["GITHUB_RUN_ATTEMPT"] == "1", "native rerun forbidden"
               sha = os.environ["MW_NATIVE_EXPECTED_SOURCE_SHA"]
               assert re.fullmatch("[0-9a-f]{40}", sha) and sha == os.environ["GITHUB_SHA"]
               assert os.environ["MOTIONWRIGHT_V01_PROVIDER_REPEAT"] == "false"
+              if os.environ["MOTIONWRIGHT_NATIVE_GEOMETRY_E2E"] == "1":
+                  assert scope == "standard", "geometry must use original standard Host only"
           PY
 
       - name: Install pinned custody and PNG verifier in a private runner venv
@@ -409,7 +417,7 @@ jobs:
         run: cargo build --locked -p motionwright-native --example native-incremental-e2e
 
       - name: Build Motionwright production acceptance
-        if: ${{ inputs.native_scope != 'n83-preview' }}
+        if: ${{ inputs.native_scope != 'n83-preview' && !inputs.geometry_e2e }}
         run: |
           cargo build --locked -p motionwright-native --example native-render-e2e
           cargo test --locked -p motionwright-native \
@@ -425,6 +433,81 @@ jobs:
             exact_cubic_out_ -- --nocapture
           cargo test --locked -p motionwright-native --lib \
             smoothstep_is_still_rejected_as_not_equivalent_to_native_inout_cubic -- --nocapture
+
+      - name: Build and verify exact Native geometry source before Host effect
+        if: ${{ inputs.geometry_e2e }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$MOTIONWRIGHT_NATIVE_GEOMETRY_E2E" = 1
+          test "$MOTIONWRIGHT_NATIVE_SCOPE" = standard
+          test "$MW_NATIVE_EXPECTED_SOURCE_SHA" = "$GITHUB_SHA"
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          root="$RUNNER_TEMP/native-geometry-source-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$root"
+          mkdir -m 700 "$root"
+          python3 -B -m unittest tooling.tests.test_native_geometry_pixel_oracle -q \
+            > "$root/oracle.original.log" 2>&1
+          cargo build --locked -p motionwright-native --example native-render-e2e \
+            > "$root/build.original.log" 2>&1
+          cargo test --locked -p motionwright-native --example native-render-e2e \
+            native_geometry_e2e::tests::original_geometry_uses_sqlite_and_independent_reader \
+            -- --exact --test-threads=1 > "$root/service-reader.original.log" 2>&1
+          cargo test --locked -p motionwright-native --lib \
+            film::tests::vertical_replan_shape_resize_keeps_native_top_left_across_asymmetric_scales \
+            -- --exact --test-threads=1 > "$root/portrait-film.original.log" 2>&1
+          MW_GEOMETRY_SOURCE_ROOT="$root" python3 -B -E -s - <<'PY_GEOMETRY_G1'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          def require(value, code):
+              if not value:
+                  raise SystemExit("GEOMETRY_G1_REFUSED:" + code)
+          folder = Path(os.environ["MW_GEOMETRY_SOURCE_ROOT"])
+          tests = {
+              "service-reader.original.log":
+                "native_geometry_e2e::tests::original_geometry_uses_sqlite_and_independent_reader",
+              "portrait-film.original.log":
+                "film::tests::vertical_replan_shape_resize_keeps_native_top_left_across_asymmetric_scales",
+          }
+          for name, case in tests.items():
+              log = (folder / name).read_text(encoding="utf-8")
+              require("test " + case + " ... ok" in log, "TEST_ORIGINAL:" + name)
+              require("test result: ok. 1 passed; 0 failed; 0 ignored;" in log,
+                      "TEST_COUNT:" + name)
+          raw_oracle = (folder / "oracle.original.log").read_text(encoding="utf-8")
+          require("Ran 5 tests" in raw_oracle and "OK" in raw_oracle,
+                  "PIXEL_ORACLE_SOURCE")
+          def original(name):
+              data = (folder / name).read_bytes()
+              require(0 < len(data) <= 32 * 1024 * 1024, "LOG_BUDGET:" + name)
+              return {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+          names = ("oracle.original.log","build.original.log",
+                   "service-reader.original.log","portrait-film.original.log")
+          report = {
+              "schema":"motionwright.ci.native-geometry-one-source/1",
+              "source_sha":os.environ["GITHUB_SHA"],"run_id":os.environ["GITHUB_RUN_ID"],
+              "run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+              "status":"SOURCE_COMPILED_AND_TWO_EXACT_RUST_TESTS_PASS",
+              "five_adversarial_pixel_tests":"PASS", "originals":{n:original(n) for n in names},
+              "native_host_effect":"NOT_RUN", "G2":"NOT_GRANTED", "G3":"STOP",
+              "release_authorized":False,
+          }
+          (folder / "receipt.json").write_text(json.dumps(report,sort_keys=True,indent=2)+"\n")
+          print("native-geometry-source=PASS compiled=2 tests=5 Host=NOT_RUN G2=NOT_GRANTED")
+          PY_GEOMETRY_G1
+
+      - name: Retain source-only geometry test originals
+        if: ${{ always() && inputs.geometry_e2e }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-geometry-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-geometry-source-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Verify actual editable source Service cycle before Native
         id: cycle_rust_controls
@@ -481,35 +564,188 @@ jobs:
         run: '"$RUNNER_TEMP/n83-custody-venv/bin/python" -B tooling/native_render_e2e.py --n83-seal-preflight-failure'
 
       - name: Verify direct-vs-mediated parity invariants before native rendering
+        if: ${{ !inputs.geometry_e2e }}
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_direct_mediated_parity.py' -v
 
       - name: Reject synthetic or incorrectly interpolated cubic ROI evidence
+        if: ${{ !inputs.geometry_e2e }}
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_out_cubic_pixels.py' -v
       - name: Reject invented render stage timing claims
+        if: ${{ !inputs.geometry_e2e }}
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_render_stage_cost.py' -v
 
       - name: Verify bounded provider lifecycle diagnostics
+        if: ${{ !inputs.geometry_e2e }}
         run: |
           python3 -m unittest discover -s tooling/tests -p 'test_native_provider_lifecycle.py' -v
           python3 -m unittest discover -s tooling/tests -p 'test_native_provider_live_watch.py' -v
 
       - name: Reject fabricated independent-run reliability evidence
+        if: ${{ !inputs.geometry_e2e }}
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_provider_repeat.py' -v
 
       - name: Render application-owned revision through real Broker and Driver Host
         env:
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
-          MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: ${{ (inputs.native_scope == 'n83-preview' || inputs.native_scope == 'editable-source-cycle' || inputs.native_scope == 'out-cubic-xy') && '0' || '1' }}
+          MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: ${{ (inputs.native_scope == 'n83-preview' || inputs.native_scope == 'editable-source-cycle' || inputs.native_scope == 'out-cubic-xy' || inputs.geometry_e2e) && '0' || '1' }}
           SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ env.SEMWRIGHT_CHECKOUT }}/target/debug/semwright-sandbox
         run: |
+          set -euo pipefail
           if [ "$MOTIONWRIGHT_NATIVE_SCOPE" = "n83-preview" ] || [ "$MOTIONWRIGHT_NATIVE_SCOPE" = "editable-source-cycle" ] || [ "$MOTIONWRIGHT_NATIVE_SCOPE" = "out-cubic-xy" ]; then
             "$RUNNER_TEMP/n83-custody-venv/bin/python" -B tooling/native_render_e2e.py
           else
             python3 tooling/native_render_e2e.py | tee verification/native-render-e2e/run.log
           fi
 
+      - name: Authenticate one real Native geometry Host render and stage only safe original frames
+        if: ${{ inputs.geometry_e2e }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 -B -E -s - <<'PY_GEOMETRY_HOST_EVIDENCE'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+          def require(condition, code):
+              if not condition:
+                  raise SystemExit("GEOMETRY_PUBLIC_REFUSED:" + code)
+          sha = os.environ["GITHUB_SHA"]
+          require(os.environ["MOTIONWRIGHT_NATIVE_GEOMETRY_E2E"] == "1"
+                  and os.environ["MOTIONWRIGHT_NATIVE_SCOPE"] == "standard"
+                  and os.environ["MW_NATIVE_EXPECTED_SOURCE_SHA"] == sha
+                  and os.environ["GITHUB_RUN_ATTEMPT"] == "1",
+                  "EXACT_SOURCE_OR_SCOPE")
+          root = Path("verification/native-geometry-e2e") / sha
+          published = Path("verification/native-geometry-public")
+          require(root.is_dir() and not root.is_symlink()
+                  and not published.exists(), "EVIDENCE_DIRECTORIES")
+          def read_file(path, maximum):
+              require(path.is_file() and not path.is_symlink()
+                      and 0 < path.stat().st_size <= maximum, "ORIGINAL_FILE:" + path.name)
+              return path.read_bytes()
+          def digest(data):
+              return hashlib.sha256(data).hexdigest()
+          sources = {
+              "source": root / "geometry-source.original.json",
+              "native": root / "geometry-render-result.original.json",
+              "reader": root / "geometry-independent-store-readback.original.json",
+              "pixels": root / "geometry-three-frame-pixel-review.json",
+          }
+          originals = {label: read_file(path,4*1024*1024)
+                       for label,path in sources.items()}
+          reviewed = json.loads(originals["pixels"])
+          readback = json.loads(originals["reader"])
+          source_receipt = json.loads(originals["source"])
+          require(reviewed.get("schema") == "motionwright.native-geometry-pixels/1"
+                  and reviewed.get("status") == "SOURCE_BOUND_ORIGINAL_PNG_GEOMETRY_OBSERVED"
+                  and reviewed.get("read_only_store_source_bound") is True
+                  and reviewed.get("sampled_frame_roster") == [0,15,30]
+                  and reviewed.get("formal_G2") is False
+                  and reviewed.get("formal_G3") is False
+                  and reviewed.get("release_authorized") is False,
+                  "PIXEL_REVIEW_CONTRACT")
+          require(readback.get("schema") == "motionwright.native-geometry-independent-store-readback/1"
+                  and readback.get("reader_authority") == "StudioServiceReader"
+                  and readback.get("source_project_unchanged") is True
+                  and readback.get("source_history_unchanged") is True
+                  and readback.get("same_physical_database") is True
+                  and readback.get("source_receipt_sha256") == digest(originals["source"])
+                  and reviewed.get("project",{}).get("source_receipt_sha256") == digest(originals["source"]),
+                  "ORIGINAL_SQLITE_CAS_REOPEN")
+          require(source_receipt.get("schema") == "motionwright.native-geometry-source/1",
+                  "SOURCE_RECEIPT_SCHEMA")
+          owners = root / "geometry-native-originals"
+          require(owners.is_dir() and not owners.is_symlink(), "ORIGINAL_NATIVE_ROOT")
+          children = [entry for entry in owners.iterdir() if entry.is_dir() and not entry.is_symlink()]
+          require(len(children) == 1, "ONE_NATIVE_ARTIFACT")
+          artifact = children[0]
+          manifest_raw = read_file(artifact / "artifact-manifest.json",4*1024*1024)
+          manifest = json.loads(manifest_raw)
+          plan = manifest.get("plan",{})
+          frames = manifest.get("frames",[])
+          require(plan.get("frame_count") == 60 and plan.get("first_frame") == 0
+                  and plan.get("end_frame_exclusive") == 60
+                  and type(frames) is list and len(frames) == 60
+                  and reviewed.get("artifact_manifest_sha256") == digest(manifest_raw),
+                  "ORIGINAL_FRAME_MANIFEST")
+          samples = reviewed.get("original_frames",[])
+          require(type(samples) is list and [v.get("frame") for v in samples] == [0,15,30],
+                  "MEASURED_NATIVE_FRAME_ROSTER")
+          verified = []
+          size = 0
+          for index,row in enumerate(frames):
+              expected = f"frames/{index:06d}.png"
+              require(type(row) is dict and row.get("index") == index
+                      and row.get("file") == expected
+                      and type(row.get("bytes")) is int
+                      and 0 < row["bytes"] <= 24*1024*1024
+                      and type(row.get("sha256")) is str and len(row["sha256"]) == 64,
+                      "ORIGINAL_FRAME_ENTRY")
+              path = artifact / expected
+              raw = read_file(path,24*1024*1024)
+              require(raw.startswith(b"\x89PNG\r\n\x1a\n")
+                      and len(raw) == row["bytes"]
+                      and digest(raw) == row["sha256"], "ORIGINAL_FRAME_DIGEST")
+              size += len(raw)
+              require(size <= 256*1024*1024, "ORIGINAL_FRAME_AGGREGATE")
+              verified.append({"index":index,"bytes":len(raw),"sha256":row["sha256"]})
+          for sample in samples:
+              require(sample.get("original_png_sha256") == verified[sample["frame"]]["sha256"],
+                      "SAMPLE_NATIVE_PIXEL_IDENTITY")
+          published.mkdir(mode=0o700,parents=False,exist_ok=False)
+          frames_root = published / "frames"
+          frames_root.mkdir(mode=0o700)
+          for row in verified:
+              label = f"{row['index']:06d}.png"
+              original = artifact / "frames" / label
+              copied = frames_root / label
+              shutil.copyfile(original,copied)
+              require(copied.stat().st_size == row["bytes"]
+                      and digest(copied.read_bytes()) == row["sha256"],"PUBLIC_ORIGINAL_CHANGED")
+          pin = json.loads(Path("SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"]
+          result = {
+              "schema":"motionwright.ci.native-geometry-safe-physical-evidence/1",
+              "status":"ONE_REAL_HOST_RENDER_60_ORIGINAL_FRAMES_VERIFIED",
+              "source_sha":sha, "semwright_source_pin":pin,
+              "run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+              "native_effect_count":1, "original_frame_count":60,
+              "original_frame_total_bytes":size,
+              "original_source_sha256":digest(originals["source"]),
+              "private_native_result_sha256":digest(originals["native"]),
+              "private_reader_original_sha256":digest(originals["reader"]),
+              "private_pixel_original_sha256":digest(originals["pixels"]),
+              "original_manifest_sha256":digest(manifest_raw),
+              "frame_originals":verified,
+              "pixel_measurements":[{
+                  "frame":s["frame"], "center":s["center"],
+                  "width":s["width"], "height":s["height"],
+                  "rotation_deg":s["rotation_deg"],
+                  "original_png_sha256":s["original_png_sha256"],
+              } for s in samples],
+              "same_store_independent_reader":"VERIFIED",
+              "unredacted_owner_or_broker_receipts_uploaded":False,
+              "installed_tauri":"NOT_RUN", "human_approval":False,
+              "G2":"NOT_GRANTED","G3":"STOP","release_authorized":False,
+          }
+          (published/"public-receipt.json").write_text(
+              json.dumps(result,sort_keys=True,indent=2)+"\n")
+          print("native-geometry-host=PASS original_frames=60 source="+sha+" G2=NOT_GRANTED")
+          PY_GEOMETRY_HOST_EVIDENCE
+
+      - name: Retain only verified original geometry PNGs and safe digest receipt
+        if: ${{ inputs.geometry_e2e && success() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-geometry-physical-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: verification/native-geometry-public/
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Verify review evidence
-        if: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' }}
+        if: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e }}
         run: |
           test -s "verification/native-render-e2e/${GITHUB_SHA}/result.json"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/motionwright-render-evidence.json"
@@ -625,7 +861,7 @@ jobs:
           PY
 
       - name: Repeat native render with a fresh owner Broker and Driver Host (v0.1 diagnostic only)
-        if: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && ((github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat/v01-provider-repeat-ci'))) }}
+        if: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && ((github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat/v01-provider-repeat-ci'))) }}
         env:
           MOTIONWRIGHT_NATIVE_RUN_LABEL: 'repeat-02'
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
@@ -648,7 +884,7 @@ jobs:
           PY
 
       - name: Stage only verified v0.1 native PNG review, not original Broker receipts
-        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' }}
+        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e }}
         env:
           NATIVE_CI_JOB_STATUS: ${{ job.status }}
         run: |
@@ -660,7 +896,7 @@ jobs:
           python3 -m json.tool verification/native-render-public/public-evidence.json >/dev/null
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' }}
+        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e }}
         with:
           name: motionwright-native-render-${{ github.sha }}
           path: verification/native-render-public
