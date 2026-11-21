@@ -21,6 +21,7 @@ use std::{
 };
 use uuid::Uuid;
 
+mod native_geometry_e2e;
 mod native_saved_mix_e2e;
 
 enum CombinedMaster<'a> {
@@ -36,7 +37,7 @@ enum CombinedMaster<'a> {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: native-render-e2e <seed DATABASE | film DATABASE FILM_JSON | render DATABASE CONNECTION EVIDENCE_JSON | seed-saved-mix DATABASE SOURCES EVIDENCE | seed-tauri-audio DATABASE PRIVATE_ROOT | tauri-audio-readback DATABASE PRIVATE_ROOT | render-master-saved-mix DATABASE CONNECTION RENDER_EVIDENCE MASTER_EVIDENCE | saved-mix-readback DATABASE EVIDENCE | cycle-snapshot DATABASE DIRECTORY | cycle-edit DATABASE BEFORE_PROJECT DIRECTORY | cycle-render-edited DATABASE CONNECTION EVIDENCE_JSON | cycle-verify-binding FILM_JSON INSPECTION_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
+        "usage: native-render-e2e <geometry-seed DATABASE SOURCE_RECEIPT | geometry-readback DATABASE SOURCE_RECEIPT EXPECTED_SHA256 REPORT_JSON | seed DATABASE | film DATABASE FILM_JSON | render DATABASE CONNECTION EVIDENCE_JSON | seed-saved-mix DATABASE SOURCES EVIDENCE | seed-tauri-audio DATABASE PRIVATE_ROOT | tauri-audio-readback DATABASE PRIVATE_ROOT | render-master-saved-mix DATABASE CONNECTION RENDER_EVIDENCE MASTER_EVIDENCE | saved-mix-readback DATABASE EVIDENCE | cycle-snapshot DATABASE DIRECTORY | cycle-edit DATABASE BEFORE_PROJECT DIRECTORY | cycle-render-edited DATABASE CONNECTION EVIDENCE_JSON | cycle-verify-binding FILM_JSON INSPECTION_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
     );
     std::process::exit(2);
 }
@@ -1514,6 +1515,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| usage());
 
     match command.as_str() {
+        "geometry-seed" => {
+            let database = path_arg(&mut args);
+            let source_receipt = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            native_geometry_e2e::seed(&database, &source_receipt)
+        }
+        "geometry-readback" => {
+            let database = path_arg(&mut args);
+            let source_receipt = path_arg(&mut args);
+            let expected_sha = text_arg(&mut args);
+            let report = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            native_geometry_e2e::readback(&database, &source_receipt, &expected_sha, &report)
+        }
         "cycle-verify-binding" => {
             let film = path_arg(&mut args);
             let inspection = path_arg(&mut args);

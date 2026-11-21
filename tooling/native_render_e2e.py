@@ -49,9 +49,16 @@ GITHUB_SHA = os.environ.get("GITHUB_SHA", "unknown")
 CAPTION_E2E = os.environ.get("MOTIONWRIGHT_NATIVE_CAPTION_E2E", "0")
 if CAPTION_E2E not in {"0", "1"}:
     raise SystemExit("Unknown native caption E2E mode")
+GEOMETRY_E2E = os.environ.get("MOTIONWRIGHT_NATIVE_GEOMETRY_E2E", "0")
+if GEOMETRY_E2E not in {"0", "1"}:
+    raise SystemExit("Unknown original native geometry selection")
+if GEOMETRY_E2E == "1" and (NATIVE_SCOPE != "standard" or CAPTION_E2E != "0"):
+    raise SystemExit("Native geometry source must not reuse a retained or captioned selection")
 RUN_LABEL = os.environ.get("MOTIONWRIGHT_NATIVE_RUN_LABEL", "")
 if RUN_LABEL not in {"", "repeat-02"}:
     raise SystemExit("Unrecognized CI-only native render evidence label")
+if GEOMETRY_E2E == "1" and RUN_LABEL:
+    raise SystemExit("One source-bound geometry render has no repeat-selection label")
 EVIDENCE = ROOT / "verification" / "native-render-e2e" / (
     GITHUB_SHA if not RUN_LABEL else GITHUB_SHA + "-" + RUN_LABEL
 )
@@ -60,6 +67,8 @@ if NATIVE_SCOPE == "n83-preview":
     EVIDENCE = ROOT / "verification" / "native-n83-private" / GITHUB_SHA
 elif NATIVE_SCOPE in RETAINED_SCOPES:
     EVIDENCE = ROOT / "verification" / retained_scope(NATIVE_SCOPE).evidence_directory / GITHUB_SHA
+elif GEOMETRY_E2E == "1":
+    EVIDENCE = ROOT / "verification" / "native-geometry-e2e" / GITHUB_SHA
 
 
 def digest(path: Path) -> str:
@@ -1503,7 +1512,18 @@ def main() -> None:
         if admitted is not None:
             seeded = n83_seed(database, env, admitted)
         else:
-            seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
+            if GEOMETRY_E2E == "1":
+                seeded = run_json(
+                    [str(MW_BIN), "geometry-seed", str(database),
+                     str(EVIDENCE / "geometry-source.original.json")],
+                    env=env,
+                )
+                if (seeded.get("geometry_seed") != "SOURCE_SQLITE_ONLY"
+                        or seeded.get("frame_count") != 60
+                        or len(seeded.get("source_receipt_sha256", "")) != 64):
+                    raise AssertionError("Original geometry source was not saved in the real Store")
+            else:
+                seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
             if (seeded["width"], seeded["height"]) != (1920, 1080):
                 raise AssertionError(f"unexpected master profile: {seeded}")
             # Non-mutating app-owned Film export, exactly the same source fixture
@@ -1789,6 +1809,76 @@ def main() -> None:
                     raise AssertionError(f"native PNG missing or replaced by link at {frame_index}")
                 if row.get("bytes") != frame.stat().st_size or row.get("sha256") != digest(frame):
                     raise AssertionError(f"native frame digest/size mismatch at {frame_index}")
+
+            if GEOMETRY_E2E == "1":
+                # One actual mediated Native render, not the standard second
+                # direct-driver comparison or a replay after UNKNOWN. The
+                # original project, source and all 60 frame PNGs are retained.
+                # Readback runs in a NEW StudioServiceReader CLI process after
+                # the rendering writer exited, before the Host finally closes.
+                import native_geometry_pixel_oracle as geometry_oracle
+
+                source_receipt = EVIDENCE / "geometry-source.original.json"
+                source_sha = seeded["source_receipt_sha256"]
+                if digest(source_receipt) != source_sha:
+                    raise AssertionError("Geometry source changed after one real render")
+                geometry_oracle.output_directory(paths["output"], directory)
+                original_result = EVIDENCE / "geometry-render-result.original.json"
+                write_private_json(original_result, result)
+
+                preserved_root = EVIDENCE / "geometry-native-originals"
+                preserved_root.mkdir(mode=0o700, exist_ok=False)
+                preserved_artifact = preserved_root / directory
+                (preserved_artifact / "frames").mkdir(
+                    mode=0o700, parents=True, exist_ok=False,
+                )
+                shutil.copyfile(manifest_file, preserved_artifact / "artifact-manifest.json")
+                if digest(preserved_artifact / "artifact-manifest.json") != manifest_digest:
+                    raise AssertionError("Copied original geometry manifest differs")
+                retained_total_bytes = 0
+                for frame_index, row in enumerate(indexed_frames):
+                    retained_bytes = row.get("bytes")
+                    if (type(retained_bytes) is not int
+                            or not 0 < retained_bytes <= 24 * 1024 * 1024):
+                        raise AssertionError("Geometry original PNG exceeds per-file budget")
+                    retained_total_bytes += retained_bytes
+                    if retained_total_bytes > 256 * 1024 * 1024:
+                        raise AssertionError("Geometry original PNG aggregate budget exceeded")
+                    source_png = artifact_root / row["file"]
+                    retained_png = preserved_artifact / row["file"]
+                    shutil.copyfile(source_png, retained_png)
+                    if (retained_png.stat().st_size != retained_bytes
+                            or digest(retained_png) != row["sha256"]):
+                        raise AssertionError("Retained original geometry PNG changed")
+
+                readback_file = EVIDENCE / "geometry-independent-store-readback.original.json"
+                readback = run_json([
+                    str(MW_BIN), "geometry-readback", str(database),
+                    str(source_receipt), source_sha, str(readback_file)
+                ], env=env, timeout=35)
+                if (readback.get("reader_authority") != "StudioServiceReader"
+                        or readback.get("source_receipt_sha256") != source_sha
+                        or readback.get("source_project_unchanged") is not True):
+                    raise AssertionError("Independent Studio Store geometry readback failed")
+
+                observed = geometry_oracle.inspect(
+                    source_receipt, source_sha, original_result, readback_file,
+                    preserved_root,
+                )
+                write_private_json(EVIDENCE / "geometry-three-frame-pixel-review.json", observed)
+                print(json.dumps({
+                    "native_geometry_original": "PIXELS_MEASURED_SOURCE_BOUND",
+                    "motionwright_sha": GITHUB_SHA, "semwright_sha": PIN,
+                    "project_id": seeded["project_id"],
+                    "source_receipt_sha256": source_sha,
+                    "frame_roster": [0, 15, 30],
+                    "native_effect_count": 1,
+                    "reader_authority": "StudioServiceReader",
+                    "host_closed_by_finally_not_yet_claimed": True,
+                    "human_approval": False, "formal_G2": False,
+                    "formal_G3": False, "automatic_retry": False
+                }, sort_keys=True))
+                return
 
             # The seeded X/Y tile starts at x=640 and finishes at its
             # unchanged base x=790 on native frame 30. A completely static
