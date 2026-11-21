@@ -547,6 +547,147 @@ mod tests {
     }
 
     #[test]
+    fn native_source_export_then_reimport_preserves_both_original_versions_and_reopens_store() {
+        use super::super::file_import::{
+            FileImportDispatchRequest, NativeCapsuleSourcePrepareRequest,
+            import_native_capsule_source_file, prepare_native_capsule_source_file,
+        };
+        use motionwright_domain::NativeCapsuleSourceSpec;
+
+        let f = fixture();
+        let grants = EffectGrantRegistry::default();
+        let initial = f
+            .service
+            .apply(
+                f.project.id,
+                &f.project.stamp(),
+                "first-native-source-scene",
+                &Change::AddScene {
+                    name: "Editable source roundtrip".into(),
+                    objective: "Keep both genuine saved source versions".into(),
+                    duration_seconds: 3,
+                },
+            )
+            .unwrap()
+            .project;
+        let scene_id = initial.scenes.last().unwrap().id;
+        let capsule_id = Uuid::now_v7();
+        let source = f.root.path().join("editable-source.json");
+        let original_bytes: &[u8] = br#"{"headline":"Original native source"}"#;
+        let edited_bytes: &[u8] = br#"{"headline":"Changed in user's editor"}"#;
+        fs::write(&source, original_bytes).unwrap();
+
+        // Real first-party prepare, one-use import grant and SQLite/CAS commit;
+        // only the external editor gesture is represented by test-owned bytes.
+        let import = |project: &Project, path: &Path| -> Project {
+            let spec = NativeCapsuleSourceSpec {
+                name: "editable-source.json".into(),
+                media_type: "application/json".into(),
+                capsule_id,
+                scene_id,
+                label: "Editable authored native source".into(),
+                editable_parameters: vec!["headline".into()],
+                native_editor_hint: "Trusted editor, not launched by Motionwright".into(),
+            };
+            let prepared = prepare_native_capsule_source_file(
+                &f.service,
+                NativeCapsuleSourcePrepareRequest {
+                    project_id: project.id,
+                    generation: project.generation,
+                    revision: project.revision,
+                    path: path.to_str().unwrap().to_owned(),
+                    spec,
+                },
+            )
+            .unwrap();
+            let grant = grants
+                .issue(
+                    EffectKind::ImportLocal,
+                    EffectScope::project(project.id, project.generation, project.revision),
+                    &prepared.path,
+                )
+                .unwrap();
+            let receipt = import_native_capsule_source_file(
+                &f.service,
+                &grants,
+                FileImportDispatchRequest {
+                    project_id: project.id,
+                    generation: project.generation,
+                    revision: project.revision,
+                    request_id: Uuid::new_v4().to_string(),
+                    effect_grant: grant.token,
+                    path: prepared.path,
+                    intent: prepared.intent,
+                },
+            )
+            .unwrap();
+            assert!(!receipt.replayed);
+            assert_eq!(receipt.project.revision, project.revision + 1);
+            receipt.project
+        };
+        let first = import(&initial, &source);
+        let first_capsule = &first.production_design.capsules[0];
+        let first_digest = first_capsule.source_sha256.clone();
+        let original_asset_id = first_capsule.source_asset_id;
+        let export_v1 = f.root.path().join("exports/recovered-first.json");
+        let receipt_v1 = export_native_capsule_source(
+            &f.service,
+            &grants,
+            native_request(&first, scene_id, capsule_id, &grants, &export_v1),
+        )
+        .unwrap();
+        assert_eq!(receipt_v1.source_sha256, first_digest);
+        assert_eq!(fs::read(&export_v1).unwrap().as_slice(), original_bytes);
+
+        // User edits only the recovered copy, then explicitly saves its new
+        // version with the same capsule ID and its original CAS blob untouched.
+        fs::write(&export_v1, edited_bytes).unwrap();
+        let second = import(&first, &export_v1);
+        assert_eq!(second.id, first.id);
+        assert_eq!(second.generation, first.generation);
+        assert_eq!(second.assets.len(), first.assets.len() + 1);
+        assert_eq!(second.production_design.capsules.len(), 1);
+        let second_capsule = &second.production_design.capsules[0];
+        assert_eq!(second_capsule.id, capsule_id);
+        assert_ne!(second_capsule.source_asset_id, original_asset_id);
+        assert_ne!(second_capsule.source_sha256, first_digest);
+        let export_v2 = f.root.path().join("exports/recovered-second.json");
+        let receipt_v2 = export_native_capsule_source(
+            &f.service,
+            &grants,
+            native_request(&second, scene_id, capsule_id, &grants, &export_v2),
+        )
+        .unwrap();
+        assert_eq!(receipt_v2.source_sha256, second_capsule.source_sha256);
+        assert_eq!(fs::read(&export_v2).unwrap().as_slice(), edited_bytes);
+
+        // Close the original writer and its import closure before an entirely
+        // new service handle independently reopens the durable Store.
+        drop(import);
+        drop(f.service);
+        let independent_reader = StudioService::open(&f.database).unwrap();
+        assert_eq!(independent_reader.project(second.id).unwrap(), second);
+        let store = independent_reader.store();
+        assert_eq!(
+            store
+                .lock()
+                .read_blob(&first_digest, 4096)
+                .unwrap()
+                .as_slice(),
+            original_bytes
+        );
+        assert_eq!(
+            store
+                .lock()
+                .read_blob(&second_capsule.source_sha256, 4096)
+                .unwrap()
+                .as_slice(),
+            edited_bytes
+        );
+        assert_eq!(fs::read(&source).unwrap().as_slice(), original_bytes);
+    }
+
+    #[test]
     fn native_source_exports_exact_original_bytes_without_launch_or_replay() {
         let f = fixture();
         let grants = EffectGrantRegistry::default();
