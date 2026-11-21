@@ -15,11 +15,11 @@ use motionwright_domain::{
 };
 use semwright_media_time::{CueGraph, Rate, Rational};
 use semwright_motion_authoring::{
-    AUTHORING_VERSION, Archetype, AspectFamily, AssetRef, Beat as AuthoringBeat, EditorialSystem,
-    Film, FontFallback, FontSpec, Insets, Invocation, Layer, MediaFit, MotionEasing, NarrativeRole,
-    OutputProfile, Point, Primitive, Sequence, Shot, Size, SpatialIntent, StartAnchor, Subject,
-    SubjectContent, TemporalConstraint, TemporalGraph, TemporalSpan, TextDirection, TextRun,
-    VisualConstraint, realize,
+    AUTHORING_VERSION, Archetype, AspectFamily, AssetRef, Beat as AuthoringBeat, Channel,
+    EditorialSystem, Film, FontFallback, FontSpec, Insets, Invocation, Layer, MediaFit,
+    MotionEasing, NarrativeRole, Operand, OutputProfile, Point, Primitive, Sequence, Shot, Size,
+    SpatialIntent, StartAnchor, Subject, SubjectContent, TemporalConstraint, TemporalGraph,
+    TemporalSpan, TextDirection, TextRun, VisualConstraint, realize,
 };
 use semwright_native_sdk::{Error, ErrorCode, Result as NativeResult};
 use semwright_semantic_composition::Digest;
@@ -451,6 +451,227 @@ fn native_linear_position_motion(
         start_y: ys[0].value,
         easing,
     }))
+}
+
+#[derive(Debug, Clone)]
+struct NativeGeometryKeyMotion {
+    duration: RationalTime,
+    easing: MotionEasing,
+    start: CanvasNode,
+    width_keyed: bool,
+    height_keyed: bool,
+    rotation_keyed: bool,
+}
+
+/// The pinned Motion Canvas SDK's GeometryTween represents literal width,
+/// height, rotation and position values. This exact subset preserves Studio's
+/// top-left anchored resize by also tweening the *center* of the fixed Subject.
+/// No native scale inference, beat remapping or per-channel timing conversion.
+fn native_linear_geometry_motion(
+    node: &CanvasNode,
+    scene: &Scene,
+    frame_rate: Rate,
+) -> NativeResult<Option<NativeGeometryKeyMotion>> {
+    let has_geometry = node.keyframes.iter().any(|key| {
+        matches!(
+            key.property,
+            MotionProperty::Width | MotionProperty::Height | MotionProperty::RotationDeg
+        )
+    });
+    if !has_geometry {
+        return Ok(None);
+    }
+    let fail = || {
+        unsupported(format!(
+            "Canvas node {} has geometry keys outside the exact aligned-frame shape tween subset",
+            node.id
+        ))
+    };
+    if !scene.beats.is_empty()
+        || node.parent_id.is_some()
+        || !matches!(node.kind.as_str(), "shape" | "rectangle" | "circle")
+        || scene
+            .nodes
+            .iter()
+            .any(|other| other.parent_id == Some(node.id))
+        || node.opacity != 1.0
+        || node.rotation_deg != 0.0
+    {
+        return Err(fail());
+    }
+    let mut start = node.clone();
+    let mut duration: Option<RationalTime> = None;
+    let mut easing: Option<MotionEasing> = None;
+    let mut admitted_count = 0;
+    let mut width_keyed = false;
+    let mut height_keyed = false;
+    let mut rotation_keyed = false;
+    for property in [
+        MotionProperty::X,
+        MotionProperty::Y,
+        MotionProperty::Width,
+        MotionProperty::Height,
+        MotionProperty::RotationDeg,
+    ] {
+        let mut keys = node
+            .keyframes
+            .iter()
+            .filter(|key| key.property == property)
+            .collect::<Vec<_>>();
+        if keys.is_empty() {
+            continue;
+        }
+        admitted_count += keys.len();
+        if keys.len() != 2 {
+            return Err(fail());
+        }
+        keys.sort_by_key(|key| key.at);
+        let base_value = match property {
+            MotionProperty::X => node.x,
+            MotionProperty::Y => node.y,
+            MotionProperty::Width => node.width,
+            MotionProperty::Height => node.height,
+            MotionProperty::RotationDeg => node.rotation_deg,
+            _ => return Err(fail()),
+        };
+        if keys[0].at != RationalTime::ZERO
+            || keys[1].at <= RationalTime::ZERO
+            || keys[1].at >= scene.duration
+            || keys[1].value != base_value
+            || keys[0].interpolation != MotionInterpolation::Linear
+        {
+            return Err(fail());
+        }
+        let native_easing = exact_native_easing(keys[1].interpolation).ok_or_else(&fail)?;
+        if duration.is_some_and(|previous| previous != keys[1].at)
+            || easing.is_some_and(|previous| previous != native_easing)
+        {
+            return Err(fail());
+        }
+        duration = Some(keys[1].at);
+        easing = Some(native_easing);
+        match property {
+            MotionProperty::X => start.x = keys[0].value,
+            MotionProperty::Y => start.y = keys[0].value,
+            MotionProperty::Width => {
+                width_keyed = true;
+                start.width = keys[0].value;
+            }
+            MotionProperty::Height => {
+                height_keyed = true;
+                start.height = keys[0].value;
+            }
+            MotionProperty::RotationDeg => {
+                rotation_keyed = true;
+                start.rotation_deg = keys[0].value;
+            }
+            _ => return Err(fail()),
+        }
+    }
+    if admitted_count != node.keyframes.len()
+        || !start.x.is_finite()
+        || !start.y.is_finite()
+        || !start.width.is_finite()
+        || !start.height.is_finite()
+        || start.width <= 0.0
+        || start.height <= 0.0
+        || !start.rotation_deg.is_finite()
+        || start.rotation_deg.abs() > 360.0
+    {
+        return Err(fail());
+    }
+    let duration = duration.ok_or_else(&fail)?;
+    let numerator = i128::from(duration.num)
+        .checked_mul(i128::from(frame_rate.num))
+        .ok_or_else(&fail)?;
+    let denominator = i128::from(duration.den)
+        .checked_mul(i128::from(frame_rate.den))
+        .ok_or_else(&fail)?;
+    if denominator <= 0 || numerator <= 0 || numerator % denominator != 0 {
+        return Err(fail());
+    }
+    Ok(Some(NativeGeometryKeyMotion {
+        duration,
+        easing: easing.ok_or_else(&fail)?,
+        start,
+        width_keyed,
+        height_keyed,
+        rotation_keyed,
+    }))
+}
+
+/// Use the *actual* native fixed-layout width scale for half-width
+/// compensation. Replan may scale positions anisotropically while native
+/// geometry uses the minimum isotropic object scale; sampling
+/// canonical_position(start) would shift the authored top-left on 9:16 output.
+fn projected_geometry_centers(
+    end: &CanvasNode,
+    start: &CanvasNode,
+    projection: LayoutProjection,
+    output: &OutputProfile,
+) -> (Point, Point) {
+    let to = canonical_position(end, projection, output);
+    let from = Point {
+        x: to.x
+            + (start.x - end.x) * projection.position_scale_x
+            + (start.width - end.width) * projection.object_scale / 2.0,
+        y: to.y
+            + (start.y - end.y) * projection.position_scale_y
+            + (start.height - end.height) * projection.object_scale / 2.0,
+    };
+    (from, to)
+}
+
+/// A rotating rectangle can attain its longest diagonal before the endpoint;
+/// use the maximum full diagonal for every intermediate frame. Monotone
+/// linear/out-cubic center paths then stay in the convex safe rectangle.
+fn validate_native_geometry_safety(
+    end: &CanvasNode,
+    start: &CanvasNode,
+    projection: LayoutProjection,
+    output: &OutputProfile,
+) -> NativeResult<()> {
+    let maximum_width = start.width.max(end.width) * projection.object_scale;
+    let maximum_height = start.height.max(end.height) * projection.object_scale;
+    if !maximum_width.is_finite()
+        || !maximum_height.is_finite()
+        || maximum_width <= 0.0
+        || maximum_height <= 0.0
+        || maximum_width > 16384.0
+        || maximum_height > 16384.0
+    {
+        return Err(unsupported(
+            "Animated canvas dimensions exceed native geometry bounds",
+        ));
+    }
+    let (from_center, to_center) = projected_geometry_centers(end, start, projection, output);
+    if ![from_center.x, from_center.y, to_center.x, to_center.y]
+        .iter()
+        .all(|value| value.is_finite())
+    {
+        return Err(unsupported(
+            "Animated canvas center exceeds finite native geometry coordinates",
+        ));
+    }
+    if !projection.enforce_safe_area {
+        return Ok(());
+    }
+    let radius = maximum_width.hypot(maximum_height) / 2.0;
+    for center in [from_center, to_center] {
+        let x = center.x + f64::from(output.width) / 2.0;
+        let y = center.y + f64::from(output.height) / 2.0;
+        if x - radius < output.safe_area.left - 1e-6
+            || y - radius < output.safe_area.top - 1e-6
+            || x + radius > f64::from(output.width) - output.safe_area.right + 1e-6
+            || y + radius > f64::from(output.height) - output.safe_area.bottom + 1e-6
+        {
+            return Err(unsupported(format!(
+                "Canvas node {} may rotate or resize outside the deterministic Film safe area",
+                end.id
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn subject_id(node_id: Uuid, beat_scope: Option<Uuid>) -> String {
@@ -1389,6 +1610,95 @@ fn build_segment(
             )?;
             let source_projection = scene_layout_projection(scene, projection);
             for node in &scene.nodes {
+                if let Some(motion) =
+                    native_linear_geometry_motion(node, scene, options.frame_rate)?
+                {
+                    if project
+                        .production_design
+                        .camera_reframes
+                        .iter()
+                        .any(|reframe| reframe.scene_id == scene.id)
+                    {
+                        return Err(unsupported(
+                            "Animated native geometry and authored camera reframe cannot share an unverified motion target",
+                        ));
+                    }
+                    validate_native_geometry_safety(
+                        node,
+                        &motion.start,
+                        source_projection,
+                        &output,
+                    )?;
+                    let span_id = format!("geometry-span-{}", node.id.simple());
+                    spans.push(TemporalSpan {
+                        id: span_id.clone(),
+                        minimum: motion.duration,
+                        preferred: motion.duration,
+                        maximum: motion.duration,
+                        anchor: StartAnchor::Absolute { time: local_start },
+                        preference_priority: 0,
+                    });
+                    constraints.push(TemporalConstraint::Contains {
+                        id: format!("geometry-contains-{}", node.id.simple()),
+                        parent: shot_span.clone(),
+                        child: span_id.clone(),
+                    });
+                    let target = subject_id(node.id, None);
+                    let (from_center, to_center) =
+                        projected_geometry_centers(node, &motion.start, source_projection, &output);
+                    if from_center != to_center {
+                        shot.motion.push(Invocation {
+                            id: format!("geometry-position-{}", node.id.simple()),
+                            span_id: span_id.clone(),
+                            easing: motion.easing,
+                            primitive: Primitive::GeometryTween {
+                                target: target.clone(),
+                                channel: Channel::Position,
+                                from: Operand::Vector(from_center),
+                                to: Operand::Vector(to_center),
+                            },
+                        });
+                    }
+                    for (keyed, name, channel, from, to) in [
+                        (
+                            motion.width_keyed,
+                            "width",
+                            Channel::Width,
+                            motion.start.width * source_projection.object_scale,
+                            node.width * source_projection.object_scale,
+                        ),
+                        (
+                            motion.height_keyed,
+                            "height",
+                            Channel::Height,
+                            motion.start.height * source_projection.object_scale,
+                            node.height * source_projection.object_scale,
+                        ),
+                        (
+                            motion.rotation_keyed,
+                            "rotation",
+                            Channel::Rotation,
+                            motion.start.rotation_deg,
+                            node.rotation_deg,
+                        ),
+                    ] {
+                        if !keyed {
+                            continue;
+                        }
+                        shot.motion.push(Invocation {
+                            id: format!("geometry-{name}-{}", node.id.simple()),
+                            span_id: span_id.clone(),
+                            easing: motion.easing,
+                            primitive: Primitive::GeometryTween {
+                                target: target.clone(),
+                                channel,
+                                from: Operand::Number(from),
+                                to: Operand::Number(to),
+                            },
+                        });
+                    }
+                    continue;
+                }
                 let Some(motion) = native_linear_position_motion(node, scene, options.frame_rate)?
                 else {
                     continue;
@@ -2806,6 +3116,223 @@ mod tests {
         assert_eq!(
             (project.scenes[0].nodes[0].x, project.scenes[0].nodes[0].y,),
             source_pose
+        );
+    }
+
+    fn set_exact_geometry_keys(node: &mut CanvasNode) {
+        for (property, first, last) in [
+            (MotionProperty::Width, 280.0, node.width),
+            (MotionProperty::Height, 90.0, node.height),
+            (MotionProperty::RotationDeg, -18.0, node.rotation_deg),
+        ] {
+            node.keyframes.push(CanvasKeyframe {
+                at: RationalTime::ZERO,
+                property,
+                value: first,
+                interpolation: MotionInterpolation::Linear,
+            });
+            node.keyframes.push(CanvasKeyframe {
+                at: RationalTime::new(1, 1).unwrap(),
+                property,
+                value: last,
+                interpolation: MotionInterpolation::EaseOutCubic,
+            });
+        }
+    }
+
+    #[test]
+    fn exact_shape_resize_and_rotation_preserve_top_left_authoring_in_native_tweens() {
+        use semwright_motion_authoring::NativeOp;
+        let mut project = fixture_project();
+        let mut shape = node("shape", None);
+        shape.x = 720.0;
+        shape.y = 460.0;
+        shape.width = 480.0;
+        shape.height = 160.0;
+        let saved_baseline = shape.clone();
+        set_exact_geometry_keys(&mut shape);
+        for (property, first, last) in [
+            (MotionProperty::X, 700.0, shape.x),
+            (MotionProperty::Y, 440.0, shape.y),
+        ] {
+            shape.keyframes.push(CanvasKeyframe {
+                at: RationalTime::ZERO,
+                property,
+                value: first,
+                interpolation: MotionInterpolation::Linear,
+            });
+            shape.keyframes.push(CanvasKeyframe {
+                at: RationalTime::new(1, 1).unwrap(),
+                property,
+                value: last,
+                interpolation: MotionInterpolation::EaseOutCubic,
+            });
+        }
+        let rendered_id = shape.id;
+        project.scenes[0].nodes[0] = shape.clone();
+        let options = fixture_options(&project);
+        let segment = &build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
+            .unwrap()[0];
+        let shot = &segment.film.sequences[0].beats[0].shots[0];
+        assert_eq!(shot.motion.len(), 4);
+        let compiled = realize(&segment.film).unwrap();
+        let (output, projection) = output_profile(
+            &project.deliverables[0],
+            options.frame_rate,
+            &[&project.scenes[0], &project.scenes[1]],
+        )
+        .unwrap();
+        let source_projection = scene_layout_projection(&project.scenes[0], projection);
+        let mut start = shape.clone();
+        start.x = 700.0;
+        start.y = 440.0;
+        start.width = 280.0;
+        start.height = 90.0;
+        start.rotation_deg = -18.0;
+        let (start_center, end_center) =
+            projected_geometry_centers(&shape, &start, source_projection, &output);
+        let mut channels = BTreeSet::new();
+        for instruction in &compiled.instructions {
+            let NativeOp::Tween {
+                target,
+                channel,
+                from,
+                to,
+            } = &instruction.operation
+            else {
+                continue;
+            };
+            if target != &subject_id(rendered_id, None) {
+                continue;
+            }
+            assert!(channels.insert(*channel));
+            assert_eq!(instruction.start, RationalTime::ZERO);
+            assert_eq!(instruction.duration, RationalTime::new(1, 1).unwrap());
+            assert_eq!(instruction.easing, MotionEasing::OutCubic);
+            match channel {
+                Channel::Position => {
+                    assert_eq!(from, &Some(Operand::Vector(start_center.clone())));
+                    assert_eq!(to, &Operand::Vector(end_center.clone()));
+                }
+                Channel::Width => {
+                    assert_eq!(
+                        from,
+                        &Some(Operand::Number(280.0 * source_projection.object_scale))
+                    );
+                    assert_eq!(to, &Operand::Number(480.0 * source_projection.object_scale));
+                }
+                Channel::Height => {
+                    assert_eq!(
+                        from,
+                        &Some(Operand::Number(90.0 * source_projection.object_scale))
+                    );
+                    assert_eq!(to, &Operand::Number(160.0 * source_projection.object_scale));
+                }
+                Channel::Rotation => {
+                    assert_eq!(from, &Some(Operand::Number(-18.0)));
+                    assert_eq!(to, &Operand::Number(0.0));
+                }
+                other => panic!("unadmitted native geometry channel: {other:?}"),
+            }
+        }
+        assert_eq!(
+            channels,
+            BTreeSet::from([
+                Channel::Position,
+                Channel::Width,
+                Channel::Height,
+                Channel::Rotation,
+            ])
+        );
+        assert_eq!(project.scenes[0].nodes[0].x, saved_baseline.x);
+        assert_eq!(project.scenes[0].nodes[0].y, saved_baseline.y);
+        assert_eq!(project.scenes[0].nodes[0].width, saved_baseline.width);
+        assert_eq!(project.scenes[0].nodes[0].height, saved_baseline.height);
+        assert_eq!(
+            project.scenes[0].nodes[0].rotation_deg,
+            saved_baseline.rotation_deg
+        );
+    }
+
+    #[test]
+    fn vertical_replan_shape_resize_keeps_native_top_left_across_asymmetric_scales() {
+        let project = fixture_project();
+        let mut profile = project.deliverables[0].clone();
+        profile.width = 1080;
+        profile.height = 1920;
+        profile.framing_strategy = FramingStrategy::Replan;
+        let rate = Rate::new(30, 1).unwrap();
+        let (output, projection) =
+            output_profile(&profile, rate, &[&project.scenes[0], &project.scenes[1]]).unwrap();
+        let projection = scene_layout_projection(&project.scenes[0], projection);
+        assert_ne!(projection.position_scale_y, projection.object_scale);
+        let mut end = node("shape", None);
+        end.x = 720.0;
+        end.y = 460.0;
+        end.width = 480.0;
+        end.height = 160.0;
+        let mut start = end.clone();
+        start.width = 280.0;
+        start.height = 90.0;
+        let (from, to) = projected_geometry_centers(&end, &start, projection, &output);
+        let half = projection.object_scale / 2.0;
+        assert!((from.x - start.width * half - (to.x - end.width * half)).abs() < 1e-8);
+        assert!((from.y - start.height * half - (to.y - end.height * half)).abs() < 1e-8);
+        // The pre-fix approach incorrectly used position_scale_y for the
+        // half-height delta, making exported 9:16 resize drift visibly.
+        let naive = canonical_position(&start, projection, &output);
+        assert!((naive.y - from.y).abs() > 1.0);
+    }
+
+    #[test]
+    fn unrepresentable_shape_geometry_never_silently_becomes_a_native_motion() {
+        let mut baseline = fixture_project();
+        let mut shape = node("shape", None);
+        shape.x = 720.0;
+        shape.y = 460.0;
+        shape.width = 480.0;
+        shape.height = 160.0;
+        set_exact_geometry_keys(&mut shape);
+        baseline.scenes[0].nodes[0] = shape;
+        let profile = baseline.deliverables[0].id;
+        let options = fixture_options(&baseline);
+        for invalid_case in 0..6 {
+            let mut candidate = baseline.clone();
+            let keys = &mut candidate.scenes[0].nodes[0].keyframes;
+            match invalid_case {
+                0 => keys[1].interpolation = MotionInterpolation::EaseInOut,
+                1 => keys[1].at = RationalTime::new(1, 7).unwrap(),
+                2 => keys[3].at = RationalTime::new(1, 2).unwrap(),
+                3 => keys[5].value = 5.0,
+                4 => keys.push(CanvasKeyframe {
+                    at: RationalTime::ZERO,
+                    property: MotionProperty::Opacity,
+                    value: 0.0,
+                    interpolation: MotionInterpolation::Linear,
+                }),
+                5 => keys[0].value = 1900.0,
+                _ => unreachable!(),
+            }
+            let result = build_motion_canvas_segments(&candidate, profile, &options);
+            let rejection = result.unwrap_err();
+            assert_eq!(rejection.code, ErrorCode::Unsupported);
+            if invalid_case == 5 {
+                assert!(rejection.message.contains("safe area"));
+            }
+        }
+        let mut text = baseline;
+        let mut source_text = node("text", Some("Rendered source text"));
+        source_text.x = 720.0;
+        source_text.y = 460.0;
+        source_text.width = 480.0;
+        source_text.height = 160.0;
+        source_text.keyframes = text.scenes[0].nodes[0].keyframes.clone();
+        text.scenes[0].nodes[0] = source_text;
+        assert_eq!(
+            build_motion_canvas_segments(&text, profile, &options)
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
         );
     }
 
