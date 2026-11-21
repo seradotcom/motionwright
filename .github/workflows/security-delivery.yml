@@ -1164,7 +1164,6 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_BUILD_JOBS: '2'
-      MW_NATIVE_EXPORT_ORIGINALS: ${{ runner.temp }}/native-source-export-originals
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -1181,6 +1180,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Run three exact original-source export regressions on the compiled desktop
         shell: bash
+        env:
+          MW_NATIVE_EXPORT_ORIGINALS: ${{ runner.temp }}/native-source-export-originals
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
