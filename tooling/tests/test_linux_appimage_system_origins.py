@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import linux_appimage_system_origins as origin
@@ -666,6 +667,32 @@ class LiveHostLoaderOriginTests(unittest.TestCase):
             self.manifests, self.root, identity_reader=lambda *_: True)
         self.assertEqual(report["unresolved"][0]["reason"],
                          "MULTIPLE_DECLARED_MANIFESTS")
+
+    def test_large_loaded_llvm_uses_extended_per_file_bound_with_same_total(self):
+        # The physical e605 candidate observed LLVM's real mapped inode but
+        # its generic 64 MiB file cap could not hash libLLVM.so.20.1.
+        # Assert only the live loader observer gets a larger bounded read.
+        self.assertEqual(origin.MAX_FILE_READ, 64 * 1024 * 1024)
+        self.assertEqual(host_loader.MAX_HOST_FILE_READ, 256 * 1024 * 1024)
+        self.assertEqual(host_loader.MAX_HOST_READ_TOTAL, 512 * 1024 * 1024)
+        for total, expected_limit in (
+            (host_loader.MAX_HOST_READ_TOTAL, host_loader.MAX_HOST_FILE_READ),
+            (origin.MAX_FILE_READ + 1, origin.MAX_FILE_READ + 1),
+        ):
+            with self.subTest(total=total):
+                observed = {"bytes": len(self.raw),
+                            "sha256": hashlib.sha256(self.raw).hexdigest()}
+                with patch.object(host_loader.origin, "regular_hash",
+                                  return_value=observed) as reader:
+                    report, _ = host_loader.audit_original(
+                        self.window, self.source, {self.pkg: "1.0"},
+                        self.manifests, self.root, host_budget=total,
+                        identity_reader=lambda *_: True)
+                reader.assert_called_once_with(self.root, self.host, expected_limit)
+                self.assertEqual(report["host_file_read_limit_bytes"],
+                                 256 * 1024 * 1024)
+                self.assertEqual(report["exact_host_manifest_matches"], 1)
+                self.assertEqual(report["G3"], "STOP")
 
     def test_budget_does_not_turn_unread_host_file_into_match(self):
         report, _ = self.observe(budget=0)

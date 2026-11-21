@@ -22,6 +22,10 @@ WINDOW_MAX = 128 * 1024
 MAX_HOST_FILES = 128
 MAX_MAPPED_FILES = 512
 MAX_HOST_READ_TOTAL = 512 * 1024 * 1024
+# Large host-side LLVM shared objects exceed the generic member cap (64 MiB).
+# This bound is scoped only to live, uniquely-owned host loader libraries;
+# the independent 512 MiB total and original AppImage member caps remain.
+MAX_HOST_FILE_READ = 256 * 1024 * 1024
 DEVICE = re.compile(r"[0-9a-fA-F]+:[0-9a-fA-F]+\Z")
 
 
@@ -115,6 +119,7 @@ def audit_original(window, source, installed, manifests, root, *,
     report = {
         "schema": SCHEMA, "source": source, "G3": "STOP", "G2": "NOT_GRANTED",
         "status": "NOT_OBSERVED", "matches": [], "unresolved": [],
+        "host_file_read_limit_bytes": MAX_HOST_FILE_READ,
         "original_scope": {
             "only_live_host_library_paths": True,
             "mapped_bytes_equal_rehashed_disk_bytes": "NOT_ATTESTED",
@@ -150,7 +155,7 @@ def audit_original(window, source, installed, manifests, root, *,
                 reason = "HOST_FILE_READ_BUDGET"
             else:
                 observed = origin.regular_hash(
-                    root, path, min(origin.MAX_FILE_READ, host_budget - spent))
+                    root, path, min(MAX_HOST_FILE_READ, host_budget - spent))
                 if not observed or observed.get("bytes", 0) <= 0:
                     reason = "REGULAR_HOST_BYTES_NOT_OBSERVED"
                 elif not identity_reader(root, path, before):
