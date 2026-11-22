@@ -86,6 +86,12 @@ on:
           - native-film-geometry
           - native-film-hold
           - native-geometry-readback
+      interchange_case:
+        description: One original Studio flow for native-otio-real-media; no other suites
+        type: choice
+        required: true
+        default: otio
+        options: [otio, portable-project]
 
 permissions:
   contents: read
@@ -1596,7 +1602,7 @@ jobs:
           retention-days: 14
 
   native-otio-media-real:
-    name: Original OTIO media in Studio through real Service and closed Store
+    name: ${{ inputs.interchange_case == 'portable-project' && 'Original portable project in Studio through real Service and Store reopen' || 'Original OTIO media in Studio through real Service and closed Store' }}
     if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'native-otio-real-media'
     runs-on: ubuntu-24.04
     timeout-minutes: 65
@@ -1606,7 +1612,8 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_BUILD_JOBS: '2'
       PYTHONDONTWRITEBYTECODE: '1'
-      MOTIONWRIGHT_OTIO_REAL_MEDIA_OWNER: '1'
+      MOTIONWRIGHT_OTIO_REAL_MEDIA_OWNER: ${{ inputs.interchange_case == 'portable-project' && '0' || '1' }}
+      MW_INTERCHANGE_CASE: ${{ inputs.interchange_case || 'otio' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -1630,12 +1637,15 @@ jobs:
           test -z "$(git status --porcelain=v1 --untracked-files=normal)"
           python3 -B -E -s tooling/source_policy.py
           python3 -B -E -s tooling/public_surface_policy.py
+          if [ "$MW_INTERCHANGE_CASE" = otio ]; then
           python3 -B -E -s -m unittest \
             tooling.tests.test_ci_saved_original_mix.GeneratedPermissionContracts -v
+          fi
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
             patchelf libssl-dev ffmpeg python3
+          if [ "$MW_INTERCHANGE_CASE" = otio ]; then
           test -x /usr/bin/python3
           test -x /usr/bin/ffprobe
           /usr/bin/python3 -B -E -s - <<'PY_NATIVE_OTIO_HOST'
@@ -1649,6 +1659,7 @@ jobs:
               assert real.stat().st_mode & 0o111, name
           print('native-otio-protected-runtime=PASS')
           PY_NATIVE_OTIO_HOST
+          fi
       - name: Compile exact Desktop OTIO source and real StudioService test owner
         shell: bash
         env:
@@ -1660,6 +1671,7 @@ jobs:
           test ! -e "$MW_OTIO_CI"
           test ! -e "$MW_OTIO_STORE"
           mkdir -m 700 "$MW_OTIO_CI" "$MW_OTIO_STORE"
+          if [ "$MW_INTERCHANGE_CASE" = otio ]; then
           cargo test --locked --jobs 2 -p motionwright-desktop --bin motionwright-desktop \
             'otio_bridge::tests::' -- --test-threads=1 \
             2>&1 | tee "$MW_OTIO_CI/desktop-tests.original.log"
@@ -1679,6 +1691,7 @@ jobs:
           assert re.search(r'(?m)^test result: ok\. 5 passed; 0 failed; 0 ignored;',text)
           print('native-otio-bridge-compiled=PASS 5/5 exact Rust tests')
           PY_NATIVE_OTIO_RUST
+          fi
           cargo build --locked --jobs 2 -p motionwright-service --example studio_review_session \
             > "$MW_OTIO_CI/cargo-service.original.log" 2>&1 || {
               tail -n 35 "$MW_OTIO_CI/cargo-service.original.log"; exit 1;
@@ -1710,18 +1723,22 @@ jobs:
               inventories.append(raw)
           permissions = generated.generated_permissions(repo)
           observed = generated.generated_schemas(repo, permissions, inventories)
-          assert set(permissions).issubset(observed), "generated command permissions are incomplete"
+          if os.environ["MW_INTERCHANGE_CASE"] == "otio":
+              assert set(permissions).issubset(observed), "generated command permissions are incomplete"
+          else:
+              assert os.environ["MW_INTERCHANGE_CASE"] == "portable-project"
+              assert not observed, "Service-only compilation must keep the checkout pristine"
           (output / "generated-permissions.json").write_text(json.dumps({
               "source_sha": os.environ["GITHUB_SHA"],
-              "permission_count": len(permissions),
+              "permission_count": len(permissions) if observed else 0,
               "files": observed,
-              "status": "EXACT_LOCKED_GENERATED_PERMISSIONS",
+              "status": "EXACT_LOCKED_GENERATED_PERMISSIONS" if observed else "PRISTINE_SERVICE_ONLY_BUILD",
           }, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-          print("native-otio-generated-permissions=PASS", len(permissions))
+          print("original-interchange-source=PASS", os.environ["MW_INTERCHANGE_CASE"])
           PY_NATIVE_OTIO_GENERATED
           printf 'MOTIONWRIGHT_SERVICE_TEST_BIN=%s\n' "$bin" >> "$GITHUB_ENV"
           printf 'MOTIONWRIGHT_SERVICE_TEST_TMPDIR=%s\n' "$MW_OTIO_STORE" >> "$GITHUB_ENV"
-      - name: One actual source-bound OTIO MP4 ffprobe Studio Save and fresh SQLite/CAS readback
+      - name: One selected original Studio interchange with actual Store readback
         working-directory: apps/studio
         shell: bash
         env:
@@ -1731,8 +1748,14 @@ jobs:
           set -euo pipefail
           npm ci --no-audit --no-fund
           npx playwright install --with-deps chromium
-          npx playwright test tests/otio-real-media-bridge-service.spec.ts \
-            --project chromium --reporter=line,json \
+          case "$MW_INTERCHANGE_CASE" in
+            otio) selection=(tests/otio-real-media-bridge-service.spec.ts) ;;
+            portable-project)
+              selection=(tests/project-mutation.spec.ts --grep 'real portable export and verified restore rotate generation, preserve CAS and serialize the next Brief edit$') ;;
+            *) echo 'Unadmitted original interchange selection'; exit 2 ;;
+          esac
+          npx playwright test "${selection[@]}" \
+            --project chromium --workers=1 --retries=0 --reporter=line,json \
             2>&1 | tee "$MW_OTIO_CI/otio-playwright.original.log"
           /usr/bin/python3 -B -E -s - <<'PY_NATIVE_OTIO_PASS'
           import hashlib, json, os, pathlib
@@ -1744,11 +1767,14 @@ jobs:
           original=(root/'otio-playwright.original.log').read_bytes()
           assert 0<len(original)<8*1024*1024
           receipt={
-            'schema':'motionwright.ci.original-otio-real-studio-service/1',
+            'schema':'motionwright.ci.original-studio-interchange/1',
+            'case':os.environ['MW_INTERCHANGE_CASE'],
             'source_sha':os.environ['GITHUB_SHA'],
             'run_id':os.environ['GITHUB_RUN_ID'],
             'attempt':os.environ['GITHUB_RUN_ATTEMPT'],
-            'status':'ONE_REAL_MEDIA_STUDIO_SERVICE_SQLITE_CAS_ROUNDTRIP_PASS',
+            'status':('ONE_REAL_MEDIA_STUDIO_SERVICE_SQLITE_CAS_ROUNDTRIP_PASS'
+                      if os.environ['MW_INTERCHANGE_CASE']=='otio'
+                      else 'ONE_ORIGINAL_PORTABLE_PROJECT_EXPORT_IMPORT_REOPEN_PASS'),
             'expected':1,'unexpected':0,'flaky':0,'skipped':0,
             'original_log_sha256':hashlib.sha256(original).hexdigest(),
             'original_log_bytes':len(original),
@@ -1757,13 +1783,13 @@ jobs:
             'G2':'NOT_GRANTED','G3':'STOP'
           }
           (root/'receipt.json').write_text(json.dumps(receipt,sort_keys=True,indent=2)+'\n')
-          print('native-otio-real-media=PASS one original closed-Store StudioService flow')
+          print('studio-interchange=PASS',os.environ['MW_INTERCHANGE_CASE'],'one original Store flow')
           PY_NATIVE_OTIO_PASS
       - name: Retain only safe source-bound logs and outcome, never original media or Store
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: original-otio-media-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: original-${{ inputs.interchange_case == 'portable-project' && 'portable-project' || 'otio-media' }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/desktop-tests.original.log
             ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/cargo-service.original.log
@@ -1773,5 +1799,14 @@ jobs:
             ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/otio-playwright.original.log
             ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/playwright.json
             ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/receipt.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Retain original portable Service observations and closed Store metadata
+        if: always() && inputs.interchange_case == 'portable-project'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: original-portable-service-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/studio/test-results/**/canonical-mutation-real-service-evidence.json
           if-no-files-found: warn
           retention-days: 14

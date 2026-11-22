@@ -1444,9 +1444,23 @@ test.describe("real service imports and portable restore", () => {
       await source.attachFixturePage(page);
       await page.goto("/");
       await button(page, "Deliver").click();
+      const originalInventory = page.getByLabel("Portable original source coverage");
+      const sourceCount = new Set(donor.assets.map(asset => asset.content_sha256)).size;
+      await expect(originalInventory).toContainText(
+        sourceCount + " unique blobs expected from " + donor.assets.length + " asset records",
+      );
+      await expect(originalInventory).toContainText("r" + donor.revision);
+      const omitted = page.getByLabel("Portable references not included");
+      await expect(omitted.locator("summary")).toContainText("external dependencies");
+      await omitted.locator("summary").click();
+      await expect(omitted).toContainText("motion-canvas");
       await field(page, "Portable export path").fill(bundlePath);
+      await expect(button(page, "Export bundle")).toBeEnabled();
       await button(page, "Export bundle").click();
       await expect(page.locator(".portable-project .portable-message")).toContainText("Portable bundle written to");
+      await expect(page.locator(".portable-project .portable-message")).toContainText(
+        "Saved r" + donor.revision + " with " + sourceCount + " original CAS blobs",
+      );
       const manifestBytes = await readFile(join(bundlePath, "manifest.json"));
       const manifest = JSON.parse(manifestBytes.toString()) as {
         backup: { project: Project }; blobs: { relative_path: string; sha256: string; size_bytes: number }[];

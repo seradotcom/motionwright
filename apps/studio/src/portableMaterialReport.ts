@@ -10,7 +10,8 @@ import type { PortableBundleExport, Project } from "./types";
  */
 export interface PortableMaterialIssue {
   id: string;
-  kind: "unbound_asset" | "external_font" | "font_copy_permission";
+  kind: "unbound_asset" | "external_font" | "font_copy_permission" |
+    "external_runtime" | "external_editor" | "external_extension" | "external_integration";
   label: string;
   reason: string;
   blocks_export: boolean;
@@ -55,11 +56,35 @@ export function inspectPortableMaterials(project: Project): PortableMaterialRepo
     }
   }
 
-  for (const font of project.visual_language.fonts) {
-    const isAssetSource = font.source.startsWith("asset:");
-    const referenced = isAssetSource ? originalAssets.get(font.source.slice(6)) : undefined;
-    const included = referenced !== undefined && sha256(referenced.content_sha256);
-    if (!included) {
+  const sourceRights = project.visual_language.fonts;
+  const declarations = project.production_design?.font_portable_copies ?? [];
+  const fontDigests = new Set<string>();
+
+  // Storage classifies fonts from *all* aliases, recorded permissions and
+  // original byte signatures. The UI cannot inspect CAS magic bytes; this
+  // catches the source-visible subset without claiming final admission.
+  const fontMime = (value: string): boolean => {
+    const mime = value.toLowerCase();
+    return mime.startsWith("font/") || [
+      "application/font-sfnt", "application/font-woff",
+      "application/x-font-ttf", "application/x-font-opentype",
+      "application/x-font-woff", "application/vnd.ms-opentype",
+      "application/vnd.ms-fontobject",
+    ].includes(mime);
+  };
+  for (const asset of project.assets) {
+    if (!sha256(asset.content_sha256)) continue;
+    if (fontMime(asset.media_type) ||
+        sourceRights.some(font => font.source === "asset:" + asset.id) ||
+        declarations.some(copy => copy.content_sha256 === asset.content_sha256)) {
+      fontDigests.add(asset.content_sha256);
+    }
+  }
+
+  for (const font of sourceRights) {
+    const referenced = font.source.startsWith("asset:")
+      ? originalAssets.get(font.source.slice(6)) : undefined;
+    if (!referenced || !sha256(referenced.content_sha256)) {
       issues.push({
         id: font.family + "\u0000" + font.source,
         kind: "external_font",
@@ -67,15 +92,87 @@ export function inspectPortableMaterials(project: Project): PortableMaterialRepo
         reason: "This typeface is a referenced external source, not a portable original in the saved CAS. Reinstall or relink it after import.",
         blocks_export: false,
       });
-    } else if (font.rights_status !== "cleared") {
+    }
+  }
+
+  for (const digest of fontDigests) {
+    const aliases = project.assets.filter(asset => asset.content_sha256 === digest);
+    const attachedRights = sourceRights.filter(font =>
+      aliases.some(asset => font.source === "asset:" + asset.id));
+    const forbidden = attachedRights.find(right => right.rights_status !== "cleared");
+    const prohibited = declarations.some(copy =>
+      copy.content_sha256 === digest && copy.permission === "prohibited");
+    const currentCopies = declarations.filter(copy =>
+      copy.content_sha256 === digest && aliases.some(asset => asset.id === copy.asset_id));
+    // Storage validates every current declaration. A second valid alias must
+    // not hide a recorded copy whose own source lacks cleared use rights.
+    const permitted = currentCopies.length > 0 && currentCopies.every(copy =>
+      copy.version === 1 && copy.permission === "allowed" &&
+      !!copy.origin.trim() && !!copy.license.trim() &&
+      attachedRights.some(right => right.source === "asset:" + copy.asset_id &&
+        right.rights_status === "cleared"));
+    if (forbidden || prohibited || !permitted) {
       issues.push({
-        id: font.family + "\u0000" + font.source,
+        id: digest,
         kind: "font_copy_permission",
-        label: font.family,
-        reason: "Font rights are not cleared. The Store requires original source-bound copy permission before exporting protected font bytes.",
+        label: forbidden?.family ?? attachedRights[0]?.family ??
+          aliases[0]?.name ?? "Original font",
+        reason: forbidden
+          ? "This original font has restricted or unknown use rights. A portable copy cannot be authorized by another alias."
+          : prohibited
+            ? "An original source-bound font copy is explicitly prohibited."
+            : "A current font-copy declaration is missing or invalid. Every recorded declaration for an attached original must allow copying and match cleared use rights, origin and license.",
         blocks_export: true,
       });
     }
+  }
+
+  // A portable Project records its chosen renderer, but does not bundle the
+  // installed renderer/Driver Host, native editor or execution permission.
+  for (const renderer of [...new Set(project.scenes.map(scene => scene.renderer))].sort()) {
+    issues.push({
+      id: renderer,
+      kind: "external_runtime",
+      label: renderer,
+      reason: "The project stores scene renderer intent. To re-render after import, a compatible, separately admitted renderer runtime is required; executable bytes and permissions are not part of this bundle.",
+      blocks_export: false,
+    });
+  }
+
+  // Native capsule source bytes ARE saved as CAS originals, but the external
+  // editor named by the author is still not included with those bytes.
+  const editors = new Map<string, string>();
+  for (const capsule of project.production_design?.capsules ?? []) {
+    const name = capsule.native_editor_hint.trim();
+    if (name) editors.set(name.toLowerCase(), name);
+  }
+  for (const [id, label] of [...editors.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    issues.push({
+      id, kind: "external_editor", label,
+      reason: "This is an author-declared native editor hint, not evidence that the editor is installed. The native source is a saved asset; editor software is not included.",
+      blocks_export: false,
+    });
+  }
+
+  for (const extension of project.extensions.filter(item => item.enabled)) {
+    issues.push({
+      id: extension.id,
+      kind: "external_extension",
+      label: extension.name,
+      reason: "The enabled extension " + extension.kind + " at version " +
+        extension.package_version + " must be installed and authorized separately. Executable bytes are not included, and this bundle grants no permission to run it or access the network.",
+      blocks_export: false,
+    });
+  }
+
+  for (const system of [...new Set(project.handoffs.map(handoff => handoff.system))].sort()) {
+    issues.push({
+      id: system,
+      kind: "external_integration",
+      label: system,
+      reason: "The project retains external handoff references, but remote resources, connections and credentials must be resolved and authorized separately after import.",
+      blocks_export: false,
+    });
   }
 
   const sorted = issues.sort(order);

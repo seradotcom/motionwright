@@ -949,13 +949,13 @@ function DeliverView({
       const result = await exportProjectBundle(project, exportPath.trim());
       assertPortableExportReceipt(portableReport, result);
       setPortableStatus(
-        "Portable bundle written to " + result.destination +
-        " · saved r" + portableReport.revision + " with " + result.blob_count + " original CAS blobs (" +
+        "Portable bundle written to " + result.destination + ". Saved r" +
+        portableReport.revision + " with " + result.blob_count + " original CAS blobs (" +
         formatByteCount(result.total_blob_bytes) + "). " +
         portableReport.saved_lock_count + " saved locks and " +
         portableReport.saved_measured_table_count + " measured tables remain in the project document." +
         (portableReport.external.length
-          ? " " + portableReport.external.length + " external font reference(s) still need review after import."
+          ? " " + portableReport.external.length + " external runtime, editor, extension, integration or font prerequisite(s) need review after import."
           : ""),
       );
     } catch (reason) {
@@ -1023,7 +1023,7 @@ function DeliverView({
         {portableReport.blocking.length > 0 && (
           <div className="portable-message error" role="alert" aria-label="Portable export blocked by missing originals">
             <strong>Export blocked until original materials are resolved</strong>
-            <span>The verified Store will reject a bundle with unbound assets or restricted font rights.</span>
+            <span>The Store rejects assets without originals and fonts without an admitted original-copy declaration or cleared rights.</span>
             <ul>{portableReport.blocking.map(issue => (
               <li key={issue.kind + ":" + issue.id}>
                 <strong>{issue.label}</strong> — {issue.reason}
@@ -1033,7 +1033,7 @@ function DeliverView({
         )}
         {portableReport.external.length > 0 && (
           <details className="portable-operation" aria-label="Portable references not included">
-            <summary>{portableReport.external.length} externally referenced typeface(s) are not contained in this bundle</summary>
+            <summary>{portableReport.external.length} external dependencies are not contained in this bundle</summary>
             <ul>{portableReport.external.map(issue => (
               <li key={issue.kind + ":" + issue.id}>
                 <strong>{issue.label}</strong> — {issue.reason}

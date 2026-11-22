@@ -61,7 +61,12 @@ export interface NarrationTakeLock {
 }
 import type { SemanticGraph } from "./semanticGraph";
 
-export interface ProductionDesign { scene_boundaries?: SceneBoundary[]; semantic_graphs?: SemanticGraph[]; delivery_recipes?: Record<string, DeliveryRecipe>; narration_take_lock?: NarrationTakeLock|null; plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; brand_profile?: BrandProfile | null; taste_profile?: TasteProfile | null; brand_exceptions?: BrandException[]; project_decisions?: CreativeDecision[]; stages?: ProductStageInstance[]; captures?: CaptureSourceRecord[]; procedural_fields?: ProceduralFieldInstance[]; measured_tables?: MeasuredTable[]; measured_bindings?: MeasuredBinding[]; last_measured_impact?: MeasuredDataImpact | null; camera_reframes?: CameraReframe[]; evaluator_bundles?: CreativeEvaluatorBundle[]; evaluation_reports?: CreativeEvaluationReport[]; identity_origins?: IdentityOriginRecord[]; identity_revocations?: IdentityRevocation[]; stage_capture_cards?: StageCaptureCard[]; distillations?: ComponentDistillationProposal[]; }
+/** Existing saved Rust source-bound font-copy declarations, not independently certified rights. */
+export interface FontPortableCopyDeclaration {
+  version: number; asset_id: string; content_sha256: string;
+  permission: "allowed" | "prohibited"; origin: string; license: string; note?: string | null;
+}
+export interface ProductionDesign { scene_boundaries?: SceneBoundary[]; semantic_graphs?: SemanticGraph[]; delivery_recipes?: Record<string, DeliveryRecipe>; narration_take_lock?: NarrationTakeLock|null; plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; brand_profile?: BrandProfile | null; font_portable_copies?: FontPortableCopyDeclaration[]; taste_profile?: TasteProfile | null; brand_exceptions?: BrandException[]; project_decisions?: CreativeDecision[]; stages?: ProductStageInstance[]; captures?: CaptureSourceRecord[]; procedural_fields?: ProceduralFieldInstance[]; measured_tables?: MeasuredTable[]; measured_bindings?: MeasuredBinding[]; last_measured_impact?: MeasuredDataImpact | null; camera_reframes?: CameraReframe[]; evaluator_bundles?: CreativeEvaluatorBundle[]; evaluation_reports?: CreativeEvaluationReport[]; identity_origins?: IdentityOriginRecord[]; identity_revocations?: IdentityRevocation[]; stage_capture_cards?: StageCaptureCard[]; distillations?: ComponentDistillationProposal[]; }
 export type ScopedCanvasEdit =
   | { kind: "text"; node_id: string; text: string }
   | { kind: "style"; node_id: string; style: NodeStyle }
