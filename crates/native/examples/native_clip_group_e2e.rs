@@ -366,8 +366,11 @@ mod tests {
         // separately selected Chromium UI and actual physical Native PNGs.
         let temp = tempfile::tempdir().unwrap();
         let database = temp.path().join("original.sqlite3");
-        let (_writer, _project) = seed_project(&database).unwrap();
-        drop(_writer);
+        let (writer, _project) = seed_project(&database).unwrap();
+        // The read-only original Store does not open merely because the
+        // SQLite writer was dropped. Finish its authorized WAL handoff first.
+        writer.prepare_read_only_handoff().unwrap();
+        drop(writer);
         let before_file = temp.path().join("before.json");
         before(&database, &before_file).unwrap();
         let before_sha = sha256_file(&before_file).unwrap();
