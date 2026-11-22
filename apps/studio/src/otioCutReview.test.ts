@@ -1,5 +1,8 @@
 import {describe,expect,it} from "vitest";
-import {inspectOtioCutPreview,otioHasAbsoluteAnchors} from "./otioCutReview";
+import {createElement} from "react";
+import {renderToStaticMarkup} from "react-dom/server";
+import OtioCutReviewWorkbench from "./OtioCutReviewWorkbench";
+import {inspectOtioCutPreview,otioHasAbsoluteAnchors,readOtioCutProposalFile} from "./otioCutReview";
 import {reviewableOtioProject,sampleOtioPreview} from "./otioCutReviewTestFixtures";
 
 describe("source-bound OTIO cut review is a non-executable proposal",()=>{
@@ -80,5 +83,60 @@ describe("source-bound OTIO cut review is a non-executable proposal",()=>{
     const project=reviewableOtioProject();
     expect(()=>inspectOtioCutPreview(project,"not json")).toThrow();
     expect(()=>inspectOtioCutPreview(project," ".repeat(130000))).toThrow();
+  });
+  it("exposes the source-bound file chooser in the actual owner review screen",()=>{
+    const project=reviewableOtioProject();
+    const markup=renderToStaticMarkup(createElement(OtioCutReviewWorkbench,{
+      project,commit:async()=>{throw new Error("no owner action during display");},
+      busy:false,desktopMode:true,
+    }));
+    expect(markup).toContain('aria-label="OTIO bridge proposal JSON file"');
+    expect(markup).toContain('type="file"');
+    expect(markup).toContain('accept=".json,application/json"');
+    expect(markup).toContain('aria-label="OTIO imported cut preview JSON"');
+    expect(markup).not.toContain("Commit reviewed OTIO cut");
+  });
+  it("reads a real bridge proposal file into the existing review without mutating the project",async()=>{
+    const project=reviewableOtioProject();
+    const original=structuredClone(project);
+    const preview=sampleOtioPreview(project);
+    const content=JSON.stringify(preview);
+    const file=new Blob([content],{type:"application/json"});
+    const selected=await readOtioCutProposalFile(project,{
+      name:"original-preview.json",size:file.size,arrayBuffer:()=>file.arrayBuffer(),
+    });
+    expect(selected.text).toBe(content);
+    expect(selected.preview).toEqual(preview);
+    expect(selected.preview.edit_imported).toBe(false);
+    expect(selected.preview.publication_approved).toBe(false);
+    expect(project).toEqual(original);
+  });
+  it("refuses oversized, wrong-extension or changed proposal files before any review",async()=>{
+    const project=reviewableOtioProject();
+    const bytes=new Blob([JSON.stringify(sampleOtioPreview(project))]);
+    const read=()=>bytes.arrayBuffer();
+    await expect(readOtioCutProposalFile(project,{
+      name:"edited.otio",size:bytes.size,arrayBuffer:read,
+    })).rejects.toThrow(/JSON proposal/);
+    await expect(readOtioCutProposalFile(project,{
+      name:"preview.json",size:128001,arrayBuffer:read,
+    })).rejects.toThrow(/128,000/);
+    await expect(readOtioCutProposalFile(project,{
+      name:"preview.json",size:bytes.size+1,arrayBuffer:read,
+    })).rejects.toThrow(/changed while reading/);
+  });
+  it("refuses invalid UTF-8 and proposals for an earlier saved revision",async()=>{
+    const project=reviewableOtioProject();
+    const bad=new Blob([new Uint8Array([0xff,0xfe])]);
+    await expect(readOtioCutProposalFile(project,{
+      name:"preview.json",size:bad.size,arrayBuffer:()=>bad.arrayBuffer(),
+    })).rejects.toThrow(/UTF-8/);
+    const stale={...sampleOtioPreview(project),
+      expected_project_revision:project.revision+1};
+    const staleBlob=new Blob([JSON.stringify(stale)]);
+    await expect(readOtioCutProposalFile(project,{
+      name:"preview.json",size:staleBlob.size,
+      arrayBuffer:()=>staleBlob.arrayBuffer(),
+    })).rejects.toThrow(/stale, foreign/);
   });
 });

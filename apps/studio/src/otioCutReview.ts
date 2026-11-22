@@ -64,6 +64,36 @@ const durationFraction=(v:unknown):[bigint,bigint]=>{
 };
 const same=(a:unknown,b:unknown)=>JSON.stringify(a)===JSON.stringify(b);
 
+export type OtioPreviewFile = Pick<File, "name" | "size" | "arrayBuffer">;
+
+/** Read a bridge-produced local proposal as data, not as executable OTIO.
+ * The owner still inspects property losses and confirms the service change.
+ * This does not independently authenticate media or the producing bridge. */
+export async function readOtioCutProposalFile(
+  project: Project, file: OtioPreviewFile,
+): Promise<{ text: string; preview: OtioEditPreview }> {
+  if (!file.name || file.name.length > 255 ||
+      !file.name.toLowerCase().endsWith(".json") ||
+      [...file.name].some(char => char === "/" || char.charCodeAt(0) === 92 ||
+        char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)) {
+    throw new Error("Choose the bounded JSON proposal produced by the OTIO bridge.");
+  }
+  if (!Number.isSafeInteger(file.size) || file.size < 1 || file.size > 128_000) {
+    throw new Error("The selected OTIO proposal must contain at most 128,000 UTF-8 bytes.");
+  }
+  const bytes = await file.arrayBuffer();
+  if (bytes.byteLength !== file.size || bytes.byteLength > 128_000) {
+    throw new Error("The selected OTIO proposal changed while reading or exceeds the source budget.");
+  }
+  let content: string;
+  try {
+    content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("The OTIO proposal must be valid UTF-8 JSON.");
+  }
+  return { text: content, preview: inspectOtioCutPreview(project, content) };
+}
+
 export function inspectOtioCutPreview(project:Project, text:string):OtioEditPreview{
   if(text.length>128_000)return invalid("The bounded OTIO preview exceeds 128 KiB.");
   let decoded:unknown;

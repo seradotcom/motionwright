@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowRightLeft, FileCheck2, ShieldAlert } from "lucide-react";
 import type { Change, Project } from "./types";
 import {
-  inspectOtioCutPreview, otioHasAbsoluteAnchors,
+  inspectOtioCutPreview, readOtioCutProposalFile, otioHasAbsoluteAnchors,
   type OtioEditPreview, type OtioOwnerCutReview,
 } from "./otioCutReview";
 
@@ -23,14 +23,37 @@ export default function OtioCutReviewWorkbench({
   const [losses,setLosses]=useState(false);
   const [anchors,setAnchors]=useState(false);
   const [working,setWorking]=useState(false);
+  const [fileLoading,setFileLoading]=useState(false);
+  const fileAttempt=useRef(0);
   const [error,setError]=useState<string|null>(null);
   const [status,setStatus]=useState<string|null>(null);
   const absolute=otioHasAbsoluteAnchors(project);
   useEffect(()=>{
+    fileAttempt.current++;
     setSelected(null);setLosses(false);setAnchors(false);
-    setStatus(null);setError(null);setWorking(false);
+    setStatus(null);setError(null);setWorking(false);setFileLoading(false);
   },[scope]);
+  const loadProposalFile=async(file:File)=>{
+    if(busy||working||fileLoading)return;
+    const selectedScope=scope;
+    const attempt=++fileAttempt.current;
+    setRaw("");setSelected(null);setLosses(false);setAnchors(false);
+    setError(null);setStatus(null);setFileLoading(true);
+    try{
+      const result=await readOtioCutProposalFile(project,file);
+      if(latest.current!==selectedScope||fileAttempt.current!==attempt)return;
+      setRaw(result.text);
+      setSelected({scope:selectedScope,preview:result.preview});
+      setStatus("Loaded "+file.name+" as a bounded review proposal. Confirm losses and the requested cut before committing. No source media, editor or effect was imported.");
+    }catch(reason){
+      if(latest.current===selectedScope&&fileAttempt.current===attempt)
+        setError(reason instanceof Error?reason.message:String(reason));
+    }finally{
+      if(latest.current===selectedScope&&fileAttempt.current===attempt)setFileLoading(false);
+    }
+  };
   const inspect=()=>{
+    fileAttempt.current++;
     setError(null);setStatus(null);setSelected(null);
     try {
       const preview=inspectOtioCutPreview(project,raw);
@@ -40,7 +63,7 @@ export default function OtioCutReviewWorkbench({
   };
   const current=selected?.scope===scope;
   const approved=!!(current&&losses&&(!absolute||anchors)&&
-    reviewer.trim()&&rationale.trim()&&desktopMode&&!busy&&!working);
+    reviewer.trim()&&rationale.trim()&&desktopMode&&!busy&&!working&&!fileLoading);
   const apply=async()=>{
     if(!approved || !selected || latest.current!==scope)return;
     if(!desktopMode){setError("The browser demo cannot commit external cut proposals.");return;}
@@ -76,24 +99,37 @@ export default function OtioCutReviewWorkbench({
       <div className="portable-operation-copy">
         <strong>Inspect a bounded external cut</strong>
         <span>
-          Run <code>tooling/otio-media/bridge.py preview-import</code> against the current
-          source snapshot, then paste its <code>motionwright.otio-edit-preview/1</code> JSON.
-          This desk checks scene identity and the native edit vocabulary; it cannot
-          authenticate third-party files or independently confirm the bridge's media checks.
+          Run <code>tooling/otio-media/bridge.py preview-import</code> on the current
+          source snapshot and edited OTIO cut. Choose its <code>motionwright.otio-edit-preview/1</code>
+          JSON file below or paste the JSON. Studio checks current scene identity and the native
+          edit vocabulary; it cannot authenticate third-party files or independently confirm
+          the bridge's media checks.
         </span>
       </div>
       <label>
-        <span className="field-label">Source-bound OTIO preview JSON</span>
+        <span className="field-label">Select the generated OTIO bridge proposal</span>
+        <input type="file" accept=".json,application/json"
+          aria-label="OTIO bridge proposal JSON file"
+          disabled={working||busy||fileLoading}
+          onChange={event=>{
+            const file=event.currentTarget.files?.[0];
+            event.currentTarget.value="";
+            if(file)void loadProposalFile(file);
+          }}/>
+      </label>
+      <label>
+        <span className="field-label">Source-bound OTIO preview JSON (manual alternative)</span>
         <textarea aria-label="OTIO imported cut preview JSON" rows={5} spellCheck={false}
           className="mono" value={raw} maxLength={128_000}
           placeholder='{"schema":"motionwright.otio-edit-preview/1", ...}'
-          disabled={working||busy} onChange={event=>{
+          disabled={working||busy||fileLoading} onChange={event=>{
+            fileAttempt.current++;
             setRaw(event.target.value);setSelected(null);
             setLosses(false);setAnchors(false);setError(null);setStatus(null);
           }}/>
       </label>
-      <button type="button" className="button" disabled={!raw.trim()||busy||working}
-        onClick={inspect}><FileCheck2 size={14} aria-hidden="true"/> Review bounded changes</button>
+      <button type="button" className="button" disabled={!raw.trim()||busy||working||fileLoading}
+        onClick={inspect}><FileCheck2 size={14} aria-hidden="true"/> {fileLoading?"Reading original proposal…":"Review bounded changes"}</button>
     </div>
     {!desktopMode&&<p className="portable-runtime-note" role="status">
       Browser demo: proposals can be inspected, never committed.
