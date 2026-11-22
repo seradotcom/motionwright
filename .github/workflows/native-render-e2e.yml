@@ -25,6 +25,11 @@ on:
         type: boolean
         required: false
         default: false
+      clip_e2e:
+        description: "One exact-source Studio Clip group Save, real Native pixels and Store reopen"
+        type: boolean
+        required: false
+        default: false
       expected_source_sha:
         description: "Exact frozen Motionwright SHA; required for retained scopes and geometry E2E"
         type: string
@@ -59,6 +64,7 @@ on:
       - 'tooling/tests/test_native_motion_canvas_retained_scope.py'
       - 'tooling/tests/test_native_out_cubic_pixels.py'
       - 'tooling/tests/test_native_layer_order_pixels.py'
+      - 'tooling/tests/test_native_clip_group_pixels.py'
       - 'tooling/native_render_public_artifact.py'
       - 'tooling/cross_app_public_artifact.py'
       - 'tooling/tests/test_native_render_public_artifact.py'
@@ -81,8 +87,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: native-motion-production-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}${{ inputs.native_scope == 'n83-preview' && '-n83-preview' || inputs.native_scope == 'editable-source-cycle' && '-editable-source-cycle' || inputs.native_scope == 'out-cubic-xy' && '-out-cubic-xy' || '' }}${{ inputs.geometry_e2e && '-one-geometry' || '' }}${{ inputs.layer_order_e2e && '-one-layer' || '' }}
-  cancel-in-progress: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && !inputs.layer_order_e2e }}
+  group: native-motion-production-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}${{ inputs.native_scope == 'n83-preview' && '-n83-preview' || inputs.native_scope == 'editable-source-cycle' && '-editable-source-cycle' || inputs.native_scope == 'out-cubic-xy' && '-out-cubic-xy' || '' }}${{ inputs.geometry_e2e && '-one-geometry' || '' }}${{ inputs.layer_order_e2e && '-one-layer' || '' }}${{ inputs.clip_e2e && '-one-clip' || '' }}
+  cancel-in-progress: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && !inputs.layer_order_e2e && !inputs.clip_e2e }}
 
 defaults:
   run:
@@ -93,6 +99,7 @@ env:
   MOTIONWRIGHT_NATIVE_GEOMETRY_E2E: ${{ (github.event_name == 'workflow_dispatch' && inputs.geometry_e2e) && '1' || '0' }}
   MOTIONWRIGHT_NATIVE_GEOMETRY_PROFILE: ${{ (github.event_name == 'workflow_dispatch' && inputs.geometry_profile) || 'out-cubic' }}
   MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E: ${{ (github.event_name == 'workflow_dispatch' && inputs.layer_order_e2e) && '1' || '0' }}
+  MOTIONWRIGHT_NATIVE_CLIP_E2E: ${{ (github.event_name == 'workflow_dispatch' && inputs.clip_e2e) && '1' || '0' }}
   MW_NATIVE_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
   MOTIONWRIGHT_N83_RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
   MOTIONWRIGHT_V01_PROVIDER_REPEAT: ${{ inputs.v01_provider_repeat && 'true' || 'false' }}
@@ -122,12 +129,23 @@ jobs:
           geometry_profile = os.environ["MOTIONWRIGHT_NATIVE_GEOMETRY_PROFILE"]
           assert geometry_profile in {"out-cubic", "hold"}, "unsupported geometry profile"
           layer_order = os.environ["MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E"]
+          clip = os.environ["MOTIONWRIGHT_NATIVE_CLIP_E2E"]
+          assert clip in {"0", "1"}, "unsupported clip selection"
           assert layer_order in {"0", "1"}, "unsupported layer source"
           if layer_order == "1":
+              assert clip == "0", "layer and clip must be separate source effects"
               assert os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
               assert os.environ["GITHUB_RUN_ATTEMPT"] == "1", "no automatic replay"
               assert scope == "standard" and os.environ["MOTIONWRIGHT_NATIVE_GEOMETRY_E2E"] == "0"
               assert geometry_profile == "out-cubic", "layer source uses standard native grammar"
+              assert os.environ["MOTIONWRIGHT_V01_PROVIDER_REPEAT"] == "false"
+              sha = os.environ["MW_NATIVE_EXPECTED_SOURCE_SHA"]
+              assert re.fullmatch("[0-9a-f]{40}", sha) and sha == os.environ["GITHUB_SHA"]
+          if clip == "1":
+              assert os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+              assert os.environ["GITHUB_RUN_ATTEMPT"] == "1", "no automatic clip retry"
+              assert scope == "standard" and os.environ["MOTIONWRIGHT_NATIVE_GEOMETRY_E2E"] == "0"
+              assert layer_order == "0" and geometry_profile == "out-cubic"
               assert os.environ["MOTIONWRIGHT_V01_PROVIDER_REPEAT"] == "false"
               sha = os.environ["MW_NATIVE_EXPECTED_SOURCE_SHA"]
               assert re.fullmatch("[0-9a-f]{40}", sha) and sha == os.environ["GITHUB_SHA"]
@@ -531,27 +549,40 @@ jobs:
           retention-days: 14
 
       - name: Verify authored FadeOut, layer order and Clip source before Native Host
-        if: ${{ inputs.layer_order_e2e }}
+        if: ${{ inputs.layer_order_e2e || inputs.clip_e2e }}
         shell: bash
         run: |
           set -euo pipefail
           umask 077
-          test "$MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E" = 1
+          if [ "$MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E" = 1 ]; then
+            test "$MOTIONWRIGHT_NATIVE_CLIP_E2E" = 0
+          elif [ "$MOTIONWRIGHT_NATIVE_CLIP_E2E" = 1 ]; then
+            test "$MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E" = 0
+          else
+            exit 2
+          fi
           test "$MOTIONWRIGHT_NATIVE_SCOPE" = standard
           test "$MOTIONWRIGHT_NATIVE_GEOMETRY_E2E" = 0
           test "$MW_NATIVE_EXPECTED_SOURCE_SHA" = "$GITHUB_SHA"
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$MOTIONWRIGHT_V01_PROVIDER_REPEAT" = false
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          root="$RUNNER_TEMP/native-layer-g1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          root="$RUNNER_TEMP/native-selected-g1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           test ! -e "$root"
           mkdir -m 700 "$root"
           python3 -B -m unittest \
             tooling.tests.test_native_layer_order_pixels \
+            tooling.tests.test_native_clip_group_pixels \
             tooling.tests.test_native_out_cubic_pixels -q > "$root/oracle.original.log" 2>&1
-          cargo test --locked -p motionwright-native --example native-render-e2e \
-            native_layer_order_e2e::tests::native_layer_save_requires_exact_source_and_independent_store_reopen \
-            -- --exact --test-threads=1 > "$root/layer-store.original.log" 2>&1
+          if [ "$MOTIONWRIGHT_NATIVE_CLIP_E2E" = 1 ]; then
+            cargo test --locked -p motionwright-native --example native-render-e2e \
+              native_clip_group_e2e::tests::exact_clip_source_requires_closed_writer_and_reopens_original_store \
+              -- --exact --test-threads=1 > "$root/selected-store.original.log" 2>&1
+          else
+            cargo test --locked -p motionwright-native --example native-render-e2e \
+              native_layer_order_e2e::tests::native_layer_save_requires_exact_source_and_independent_store_reopen \
+              -- --exact --test-threads=1 > "$root/selected-store.original.log" 2>&1
+          fi
           for case in \
             authored_rectangular_clip_group_has_real_native_parent_and_local_child_geometry \
             nested_rectangular_clip_group_is_refused_without_mask_or_preview_substitution \
@@ -578,8 +609,11 @@ jobs:
           import os
           from pathlib import Path
           root=Path(os.environ["NATIVE_LAYER_G1_ROOT"])
+          selected=("native_clip_group_e2e::tests::exact_clip_source_requires_closed_writer_and_reopens_original_store"
+              if os.environ["MOTIONWRIGHT_NATIVE_CLIP_E2E"] == "1"
+              else "native_layer_order_e2e::tests::native_layer_save_requires_exact_source_and_independent_store_reopen")
           tests=[
-              ("layer-store.original.log","native_layer_order_e2e::tests::native_layer_save_requires_exact_source_and_independent_store_reopen"),
+              ("selected-store.original.log",selected),
               *[(name+".original.log","film::tests::"+name) for name in (
                   "authored_rectangular_clip_group_has_real_native_parent_and_local_child_geometry",
                   "nested_rectangular_clip_group_is_refused_without_mask_or_preview_substitution",
@@ -589,8 +623,8 @@ jobs:
               raw=(root/path).read_text()
               assert "test "+test+" ... ok" in raw, "missing exact original G1: "+path
               assert "test result: ok. 1 passed; 0 failed;" in raw, "not isolated: "+path
-          assert "Ran 19 tests" in (root/"oracle.original.log").read_text()
-          print("layer-order-source=PASS Rust=4 Python=19 StudioType=PASS Browser=READY NativeHost=NOT_RUN")
+          assert "Ran 22 tests" in (root/"oracle.original.log").read_text()
+          print("selected-native-source=PASS Rust=4 Python=22 StudioType=PASS Browser=READY NativeHost=NOT_RUN")
           PY_LAYER_G1
 
       - name: Install exact Motion Canvas runtime and Firefox
@@ -613,7 +647,7 @@ jobs:
         run: cargo build --locked -p motionwright-native --example native-incremental-e2e
 
       - name: Build Motionwright production acceptance
-        if: ${{ inputs.native_scope != 'n83-preview' && !inputs.geometry_e2e && !inputs.layer_order_e2e }}
+        if: ${{ inputs.native_scope != 'n83-preview' && !inputs.geometry_e2e && !inputs.layer_order_e2e && !inputs.clip_e2e }}
         run: |
           cargo build --locked -p motionwright-native --example native-render-e2e
           cargo test --locked -p motionwright-native \
@@ -708,7 +742,7 @@ jobs:
       - name: Render application-owned revision through real Broker and Driver Host
         env:
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
-          MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: ${{ (inputs.native_scope == 'n83-preview' || inputs.native_scope == 'editable-source-cycle' || inputs.native_scope == 'out-cubic-xy' || inputs.geometry_e2e || inputs.layer_order_e2e) && '0' || '1' }}
+          MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: ${{ (inputs.native_scope == 'n83-preview' || inputs.native_scope == 'editable-source-cycle' || inputs.native_scope == 'out-cubic-xy' || inputs.geometry_e2e || inputs.layer_order_e2e || inputs.clip_e2e) && '0' || '1' }}
           SEMWRIGHT_TEST_SANDBOX_HELPER: ${{ env.SEMWRIGHT_CHECKOUT }}/target/debug/semwright-sandbox
         run: |
           set -euo pipefail
@@ -984,6 +1018,22 @@ jobs:
           assert pixels["checked_frames"] == [0, 15, 30, 59]
           assert all(len(value) == 64 for value in pixels["checked_frame_rgba_sha256"])
           assert comparison["human_visual_acceptance"] == "NOT_RUN"
+          if os.environ["MOTIONWRIGHT_NATIVE_CLIP_E2E"] == "1":
+              clip = result.get("native_clip_group_original")
+              assert isinstance(clip, dict)
+              assert clip["schema"] == "motionwright.native-clip-group-original-pixels/1"
+              assert clip["status"] == "ORIGINAL_NATIVE_RECTANGULAR_CLIP_PIXELS_PASS"
+              assert clip["parent_right_px"] == 1280
+              assert clip["original_child_right_px"] == 1460
+              assert clip["source_fill"] == "#E0A940"
+              assert [frame["frame"] for frame in clip["frames"]] == [0,30,59]
+              assert all(len(frame["source_roi_sha256"]) == 64 for frame in clip["frames"])
+              assert clip["source_replaced_with_overlay"] is False
+              assert clip["native_effect_invoked_by_validator"] is False
+              assert clip["human_visual_acceptance"] is False
+              assert len(clip["source_receipt_sha256"]) == 64
+              assert len(clip["independent_store_readback_sha256"]) == 64
+              assert "source_bound_rectangular_clip_group" in comparison["compared_properties"]
           if os.environ["MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E"] == "1":
               layer = result.get("native_layer_order_original")
               assert isinstance(layer, dict)
@@ -1064,7 +1114,7 @@ jobs:
           PY
 
       - name: Repeat native render with a fresh owner Broker and Driver Host (v0.1 diagnostic only)
-        if: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && !inputs.layer_order_e2e && ((github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat/v01-provider-repeat-ci'))) }}
+        if: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && !inputs.layer_order_e2e && !inputs.clip_e2e && ((github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat/v01-provider-repeat-ci'))) }}
         env:
           MOTIONWRIGHT_NATIVE_RUN_LABEL: 'repeat-02'
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
@@ -1087,7 +1137,7 @@ jobs:
           PY
 
       - name: Stage only verified v0.1 native PNG review, not original Broker receipts
-        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e }}
+        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && (success() || hashFiles('verification/native-render-e2e/**') != '') }}
         env:
           NATIVE_CI_JOB_STATUS: ${{ job.status }}
         run: |
@@ -1099,7 +1149,7 @@ jobs:
           python3 -m json.tool verification/native-render-public/public-evidence.json >/dev/null
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e }}
+        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && (success() || hashFiles('verification/native-render-e2e/**') != '') }}
         with:
           name: motionwright-native-render-${{ github.sha }}
           path: verification/native-render-public

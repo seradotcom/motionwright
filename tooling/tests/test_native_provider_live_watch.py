@@ -236,11 +236,11 @@ class BoundedLiveProviderTests(unittest.TestCase):
 
         original_step = workflow_step("Render application-owned revision through real Broker and Driver Host")
         repeat_step = workflow_step("Repeat native render with a fresh owner Broker and Driver Host (v0.1 diagnostic only)")
-        # The ordinary render keeps replay enabled; finite retained selections
-        # disable it and cannot enter the separate repeat step.
+        # Only the unselected ordinary render retains its original replay mode.
+        # All bounded source selections disable replay and the repeat step.
         self.assertEqual(
             [line.strip() for line in original_step.splitlines() if replay_key in line],
-            [replay_key + " ${{ (inputs.native_scope == 'n83-preview' || inputs.native_scope == 'editable-source-cycle' || inputs.native_scope == 'out-cubic-xy') && '0' || '1' }}"],
+            [replay_key + " ${{ (inputs.native_scope == 'n83-preview' || inputs.native_scope == 'editable-source-cycle' || inputs.native_scope == 'out-cubic-xy' || inputs.geometry_e2e || inputs.layer_order_e2e || inputs.clip_e2e) && '0' || '1' }}"],
         )
         self.assertEqual(
             [line.strip() for line in repeat_step.splitlines() if replay_key in line],
@@ -248,7 +248,7 @@ class BoundedLiveProviderTests(unittest.TestCase):
         )
         self.assertEqual(
             [line.strip() for line in repeat_step.splitlines() if line.strip().startswith("if:")],
-            ["if: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && "
+            ["if: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && !inputs.layer_order_e2e && !inputs.clip_e2e && "
              "((github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || "
              "(github.event_name == 'pull_request' && startsWith(github.head_ref, "
              "'feat/v01-provider-repeat-ci'))) }}"],
