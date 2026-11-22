@@ -24,6 +24,19 @@ pub struct ProjectExportRequest {
 
 pub type ExportBundleRequest = ProjectExportRequest;
 pub type ExportOtioRequest = ProjectExportRequest;
+pub type ExportOtioSourceSnapshotRequest = ProjectExportRequest;
+
+/// Exact saved Project bytes for the bridge's --current-project argument.
+/// This does not authenticate an external OTIO file or grant media rights.
+#[derive(Debug, Serialize)]
+pub struct OtioSourceSnapshotResponse {
+    pub path: String,
+    pub source_sha256: String,
+    pub size_bytes: String,
+    pub project_id: Uuid,
+    pub generation: Uuid,
+    pub revision: u64,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct NativeSourceExportRequest {
@@ -295,6 +308,48 @@ pub fn export_otio(
     execute_otio_export(service, prepared)
 }
 
+/// Capture the exact owner-authorized *current* saved Project for the OTIO
+/// bridge's --current-project byte-identity check. The bridge still requires
+/// its complete media-verified bundle, and this never imports external edits.
+pub fn export_otio_source_snapshot(
+    service: &StudioService,
+    grants: &EffectGrantRegistry,
+    request: ExportOtioSourceSnapshotRequest,
+) -> Result<OtioSourceSnapshotResponse, String> {
+    let prepared = prepare_project_export(service, grants, request)?;
+    execute_otio_source_snapshot(service, prepared)
+}
+
+fn execute_otio_source_snapshot(
+    service: &StudioService,
+    prepared: PreparedProjectExport,
+) -> Result<OtioSourceSnapshotResponse, String> {
+    let destination = absolute_otio_source_snapshot_path(&prepared.path)?;
+    let project = prepared.project;
+    // Never publish a stale snapshot after a later peer revision. If a peer
+    // changes it after this check, the original bridge's exact SHA check
+    // must still refuse the edited-source proposal.
+    if service.project(project.id).map_err(sanitized)? != project {
+        return Err("The saved Project changed before OTIO source capture; export again.".into());
+    }
+    let body = serde_json::to_vec(&project)
+        .map_err(|_| "The current Project could not be serialized.".to_string())?;
+    const MAX_OTIO_SOURCE_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
+    if body.is_empty() || body.len() > MAX_OTIO_SOURCE_SNAPSHOT_BYTES {
+        return Err("The current Project exceeds the OTIO bridge source budget.".into());
+    }
+    // Reuse the existing no-clobber, write-sync-then-atomic-persist boundary.
+    publish_otio(&destination, &body)?;
+    Ok(OtioSourceSnapshotResponse {
+        path: destination.display().to_string(),
+        source_sha256: format!("{:x}", Sha256::digest(&body)),
+        size_bytes: body.len().to_string(),
+        project_id: project.id,
+        generation: project.generation,
+        revision: project.revision,
+    })
+}
+
 fn execute_otio_export(
     _service: &StudioService,
     prepared: PreparedProjectExport,
@@ -370,6 +425,28 @@ fn absolute_otio_path(value: &str) -> Result<PathBuf, String> {
         return Err("OTIO export path must use the .otio extension.".into());
     }
     Ok(path)
+}
+
+fn absolute_otio_source_snapshot_path(value: &str) -> Result<PathBuf, String> {
+    let trimmed = value.trim();
+    let destination = PathBuf::from(trimmed);
+    if trimmed.is_empty() || !destination.is_absolute() {
+        return Err("Choose an absolute destination for the current OTIO Project JSON.".into());
+    }
+    if destination
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_none_or(|ext| !ext.eq_ignore_ascii_case("json"))
+    {
+        return Err("The current OTIO Project snapshot must be a .json file.".into());
+    }
+    let parent = destination
+        .parent()
+        .ok_or("The OTIO Project snapshot destination has no parent.")?;
+    if !parent.is_dir() || parent.is_symlink() || destination.is_symlink() {
+        return Err("Choose an existing, direct owner-controlled output directory.".into());
+    }
+    Ok(destination)
 }
 
 pub fn absolute_bundle_path(value: &str) -> Result<PathBuf, String> {
@@ -924,6 +1001,82 @@ mod tests {
         assert_eq!(inspected.project.project_id, f.project.id);
         assert_eq!(inspected.project.revision, f.project.revision);
         assert!(consume_again(&grants, &f.project, &destination, token).is_err());
+        assert_eq!(f.service.project(f.project.id).unwrap(), f.project);
+    }
+
+    #[test]
+    fn otio_current_project_snapshot_exports_exact_bridge_bytes_and_reopens_store() {
+        let mut f = fixture();
+        f.project = f
+            .service
+            .apply(
+                f.project.id,
+                &f.project.stamp(),
+                "add-otio-source-snapshot-scene",
+                &Change::AddScene {
+                    name: "Exact OTIO bridge source".into(),
+                    objective: "Preserve saved Project and source identity".into(),
+                    duration_seconds: 3,
+                },
+            )
+            .unwrap()
+            .project;
+        let grants = EffectGrantRegistry::default();
+        let destination = f.root.path().join("exports/current-project.json");
+        let req = request(&f, &grants, &destination);
+        let token = req.effect_grant;
+        let expected_bytes = serde_json::to_vec(&f.project).unwrap();
+        let response = export_otio_source_snapshot(&f.service, &grants, req).unwrap();
+        assert_eq!(response.path, destination.to_str().unwrap());
+        assert_eq!(response.project_id, f.project.id);
+        assert_eq!(response.generation, f.project.generation);
+        assert_eq!(response.revision, f.project.revision);
+        assert_eq!(response.size_bytes, expected_bytes.len().to_string());
+        assert_eq!(
+            response.source_sha256,
+            format!("{:x}", Sha256::digest(&expected_bytes))
+        );
+        assert_eq!(fs::read(&destination).unwrap(), expected_bytes);
+        assert_eq!(
+            serde_json::from_slice::<Project>(&fs::read(&destination).unwrap()).unwrap(),
+            f.project
+        );
+        assert!(consume_again(&grants, &f.project, &destination, token).is_err());
+        f.service.prepare_read_only_handoff().unwrap();
+        let independent = motionwright_service::StudioServiceReader::open(&f.database).unwrap();
+        assert_eq!(independent.project(f.project.id).unwrap(), f.project);
+    }
+
+    #[test]
+    fn otio_current_project_snapshot_rejects_later_peer_revision_before_publish() {
+        let f = fixture();
+        let grants = EffectGrantRegistry::default();
+        let destination = f.root.path().join("exports/obsolete-current-project.json");
+        let req = request(&f, &grants, &destination);
+        let token = req.effect_grant;
+        let prepared = prepare_project_export(&f.service, &grants, req).unwrap();
+        let peer = peer_edit(&f);
+        assert!(execute_otio_source_snapshot(&f.service, prepared).is_err());
+        assert!(!destination.exists());
+        assert!(consume_again(&grants, &f.project, &destination, token).is_err());
+        assert_eq!(f.service.project(f.project.id).unwrap(), peer);
+    }
+
+    #[test]
+    fn otio_current_project_snapshot_rejects_bad_extension_and_foreign_destination() {
+        let f = fixture();
+        let grants = EffectGrantRegistry::default();
+        let non_json = f.root.path().join("exports/current-project.otio");
+        let req = request(&f, &grants, &non_json);
+        assert!(export_otio_source_snapshot(&f.service, &grants, req).is_err());
+        assert!(!non_json.exists());
+
+        let destination = f.root.path().join("exports/current-project.json");
+        let foreign = b"original owner file; do not replace";
+        fs::write(&destination, foreign).unwrap();
+        let req = request(&f, &grants, &destination);
+        assert!(export_otio_source_snapshot(&f.service, &grants, req).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), foreign);
         assert_eq!(f.service.project(f.project.id).unwrap(), f.project);
     }
 

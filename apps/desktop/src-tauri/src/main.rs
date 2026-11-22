@@ -66,8 +66,9 @@ use motionwright_service::{
 };
 use native_preview::{NativeFrameGrant, NativeFrameRequest, NativePreviewRegistry};
 use project_export::{
-    BundleExportResponse, ExportBundleRequest, ExportOtioRequest, NativeSourceExportRequest,
-    NativeSourceExportResponse, OtioExportResponse, absolute_bundle_path,
+    BundleExportResponse, ExportBundleRequest, ExportOtioRequest, ExportOtioSourceSnapshotRequest,
+    NativeSourceExportRequest, NativeSourceExportResponse, OtioExportResponse,
+    OtioSourceSnapshotResponse, absolute_bundle_path,
 };
 use project_library::{BootstrapProjectSelection, BootstrapRequest};
 use runtime_setup::RuntimeConnectionRegistry;
@@ -2993,6 +2994,15 @@ fn export_otio(
 }
 
 #[tauri::command]
+fn export_otio_source_snapshot(
+    _owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: ExportOtioSourceSnapshotRequest,
+) -> Result<OtioSourceSnapshotResponse, String> {
+    project_export::export_otio_source_snapshot(&state.service, &state.effect_grants, request)
+}
+
+#[tauri::command]
 fn inspect_project_bundle(
     _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
@@ -3320,6 +3330,7 @@ fn main() {
             export_native_capsule_source,
             export_caption_sidecar,
             export_otio,
+            export_otio_source_snapshot,
             inspect_project_bundle,
             import_project_bundle,
             original_mix_native::native_original_mix_audition,
