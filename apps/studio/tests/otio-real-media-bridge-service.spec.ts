@@ -245,10 +245,13 @@ test("real verified media OTIO cut is reviewed in Studio, saved once and indepen
     if (process.env.MOTIONWRIGHT_R3_READ_ONLY_HANDOFF !== "1") {
       // Same legitimate SQLite writer handoff as desktop and R3. This is
       // read-only admission, not a second import, Save or grant.
-      const handoff = await service.invoke<{
+      const handoff = await service.rawRequest<{
         read_only_handoff: boolean; journal_mode: string;
-      }>("prepare_read_only_handoff");
-      expect(handoff).toEqual({ read_only_handoff: true, journal_mode: "delete" });
+      }>({ command: "prepare_read_only_handoff", args: null });
+      expect(handoff.ok).toBe(true);
+      if (!handoff.ok) throw new Error("Original writer refused the read-only handoff");
+      expect(handoff.result).toEqual({ read_only_handoff: true, journal_mode: "delete" });
+      record.writerReadOnlyHandoff = true;
     }
     const closedStore = await service.finalizeClosedStore(
       info.outputPath("otio-closed-original"), final, [], [() => page.close()],
@@ -297,6 +300,7 @@ test("real verified media OTIO cut is reviewed in Studio, saved once and indepen
     } finally {
       const commands = new Set([
         "export_portable_otio_media_bundle", "preview_otio_media_cut", "apply_change",
+        "prepare_read_only_handoff",
       ]);
       const requestIds = new Set(service.transcript.flatMap(entry =>
         entry.direction === "request" && "command" in entry.payload
