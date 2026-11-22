@@ -1,4 +1,5 @@
 import { previewTransform } from "./canvasMotion";
+import { rectangularClipInset } from "./canvasClip";
 import { sameProjectRevision, type ProjectRevision } from "./projectMutation";
 import { Camera, CircleDashed, LockKeyhole, Move, Plus, Unlock } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -61,21 +62,21 @@ function propertyLock(property: MotionProperty): NodeProperty {
   return "opacity";
 }
 
-function createNode(scene: Scene, kind: "text" | "shape" | "group"): CanvasNode {
+function createNode(scene: Scene, kind: "text" | "shape" | "group" | "clip_group"): CanvasNode {
   const count = scene.nodes.filter((node) => node.kind === kind).length + 1;
   const zIndex = scene.nodes.reduce((highest, node) => Math.max(highest, node.z_index), 0) + 1;
   const dimensions = kind === "text"
     ? { width: 520, height: 120 }
-    : kind === "group"
+    : kind === "group" || kind === "clip_group"
       ? { width: 640, height: 360 }
       : { width: 360, height: 220 };
   return {
     id: crypto.randomUUID(),
-    name: kind[0].toUpperCase() + kind.slice(1) + " " + count,
+    name: kind === "clip_group" ? "Clip group " + count : kind[0].toUpperCase() + kind.slice(1) + " " + count,
     kind,
     parent_id: null,
-    x: 240 + (count % 4) * 34,
-    y: 220 + (count % 4) * 34,
+    x: kind === "clip_group" ? (PROJECT_WIDTH - dimensions.width) / 2 : 240 + (count % 4) * 34,
+    y: kind === "clip_group" ? (PROJECT_HEIGHT - dimensions.height) / 2 : 220 + (count % 4) * 34,
     width: dimensions.width,
     height: dimensions.height,
     rotation_deg: 0,
@@ -84,7 +85,7 @@ function createNode(scene: Scene, kind: "text" | "shape" | "group"): CanvasNode 
     coordinate_space: "project_pixels",
     z_index: zIndex,
     style: {
-      fill: kind === "text" || kind === "group" ? null : "#1D242C",
+      fill: kind === "text" || kind === "group" || kind === "clip_group" ? null : "#1D242C",
       stroke: kind === "text" ? null : "#5A6570",
       stroke_width: kind === "text" ? 0 : 1,
       font_family: kind === "text" ? "Instrument Sans Variable" : null,
@@ -747,6 +748,7 @@ export default function CanvasWorkspace({
     && scene.renderer === "motion-canvas" && scene.beats.length === 0
     && !scenePositionLocked && !selectedNode.property_locks.includes("position")
     && selectedNode.parent_id === null && selectedNode.kind !== "group"
+    && selectedNode.kind !== "clip_group"
     && !scene.nodes.some((node) => node.parent_id === selectedNode.id)
     && selectedNode.keyframes.length === 0
     && Number.isFinite(nativeStartX) && Number.isFinite(nativeStartY)
@@ -761,7 +763,7 @@ export default function CanvasWorkspace({
     onSeek(sceneStartSeconds + Math.max(0, Math.min(relativeSeconds, maxPlayhead)));
   };
 
-  const addNode = async (kind: "text" | "shape" | "group") => {
+  const addNode = async (kind: "text" | "shape" | "group" | "clip_group") => {
     if (addPending.current) return;
     addPending.current = true;
     setAddBusy(true);
@@ -769,6 +771,14 @@ export default function CanvasWorkspace({
     const submittedScope = creationScope;
     const submittedInteraction = localInteractionVersion.current;
     const node = createNode(scene, kind);
+    // Creating a text/shape while a clipping group is selected should produce
+    // a usable editable child inside that exact saved group, not a visually
+    // vanished object somewhere outside its original clipping rectangle.
+    if ((kind === "text" || kind === "shape") && selectedNode?.kind === "clip_group") {
+      node.parent_id = selectedNode.id;
+      node.x = selectedNode.x + (selectedNode.width - node.width) / 2;
+      node.y = selectedNode.y + (selectedNode.height - node.height) / 2;
+    }
     try {
       await commitRequired({ type: "add_canvas_node", scene_id: scene.id, node });
       // Canonical publication is independent of the local inspector. Even in
@@ -982,7 +992,7 @@ export default function CanvasWorkspace({
         <aside className="canvas-object-tree" aria-label="Canvas object tree">
           <div className="canvas-panel-heading">Objects</div>
           <div className="canvas-create-row" aria-label="Create canvas object">
-            {(["text", "shape", "group"] as const).map((kind) => (
+            {(["text", "shape", "group", "clip_group"] as const).map((kind) => (
               <button
                 type="button"
                 className="canvas-create-button"
@@ -991,7 +1001,7 @@ export default function CanvasWorkspace({
                 onClick={() => void addNode(kind)}
               >
                 <Plus size={10} />
-                {kind}
+                {kind.replace("_", " ")}
               </button>
             ))}
           </div>
@@ -1036,6 +1046,9 @@ export default function CanvasWorkspace({
               style={{ transform: cameraLayerTransform(scene.camera) }}>
               {scene.nodes.map((node) => {
               const transform = stageTransform(node);
+              const clipParent = node.parent_id === null ? undefined
+                : scene.nodes.find(candidate => candidate.id === node.parent_id && candidate.kind === "clip_group");
+              const clipPath = clipParent ? rectangularClipInset(transform, stageTransform(clipParent)) : undefined;
               const positionLocked = scenePositionLocked || node.property_locks.includes("position");
               return (
                 <button
@@ -1045,6 +1058,7 @@ export default function CanvasWorkspace({
                   className={[
                     "canvas-object",
                     node.kind === "text" ? "text-object" : "",
+                    node.kind === "clip_group" ? "clip-group-object" : "",
                     selectedNodeId === node.id ? "selected" : "",
                     positionLocked ? "locked" : "",
                   ].join(" ")}
@@ -1056,6 +1070,7 @@ export default function CanvasWorkspace({
                     opacity: transform.opacity,
                     transform: "rotate(" + transform.rotation_deg + "deg)",
                     zIndex: node.z_index + 2,
+                    clipPath,
                   }}
                   onPointerDown={(event) => beginDrag(event, node)}
                   onPointerMove={moveDrag}

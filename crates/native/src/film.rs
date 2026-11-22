@@ -364,7 +364,7 @@ fn native_exact_opacity_fade(
     };
     if !scene.beats.is_empty()
         || node.parent_id.is_some()
-        || node.kind == "group"
+        || matches!(node.kind.as_str(), "group" | "clip_group")
         || scene
             .nodes
             .iter()
@@ -438,7 +438,7 @@ fn native_linear_position_motion(
     };
     if !scene.beats.is_empty()
         || node.parent_id.is_some()
-        || node.kind == "group"
+        || matches!(node.kind.as_str(), "group" | "clip_group")
         || scene
             .nodes
             .iter()
@@ -1013,7 +1013,7 @@ fn subject(
             })?,
             stroke: projected_shape_stroke(node),
         },
-        "group" => SubjectContent::Group,
+        "group" | "clip_group" => SubjectContent::Group,
         other => {
             return Err(unsupported(format!(
                 "Canvas node kind {other:?} has no canonical Film projection yet"
@@ -1061,7 +1061,7 @@ fn subject(
                     && key.at == RationalTime::ZERO
                     && key.value == 0.0
             }),
-            clip_intentional: false,
+            clip_intentional: node.kind == "clip_group",
         },
         constraints,
     ))
@@ -1226,8 +1226,35 @@ fn projected_shot(
         font_family: context.font_family,
     };
     for node in &scene.nodes {
-        let (mapped, mut node_constraints) =
+        if node.kind == "clip_group" && node.parent_id.is_some() {
+            return Err(unsupported(
+                "Native rectangular Clip groups must be unparented; nested clip transforms are not in the bounded source grammar",
+            ));
+        }
+        let (mut mapped, mut node_constraints) =
             subject(node, &layer_names, &subject_context, identity.beat_scope)?;
+        if let Some(parent) = node.parent_id.and_then(|id| {
+            scene
+                .nodes
+                .iter()
+                .find(|candidate| candidate.id == id && candidate.kind == "clip_group")
+        }) {
+            // Native Fixed child positions are local to their Group. Saved
+            // Canvas transforms are world/project coordinates. Convert once,
+            // without moving the persistent object or approximating a mask.
+            let native_parent = canonical_position(parent, projection, context.output);
+            match &mut mapped.layout {
+                SpatialIntent::Fixed { position, .. } => {
+                    position.x -= native_parent.x;
+                    position.y -= native_parent.y;
+                }
+                _ => {
+                    return Err(unsupported(
+                        "Clip group requires exact fixed child geometry",
+                    ));
+                }
+            }
+        }
         // A saved deliverable may add hard line breaks via text_overrides.
         // Preserve single-line lowering: changing its native hierarchy would
         // alter existing saved projects without any authored line advance.
@@ -1431,7 +1458,7 @@ fn attach_entrance_motion(
         {
             continue;
         }
-        if node.kind == "group"
+        if matches!(node.kind.as_str(), "group" | "clip_group")
             || scene
                 .nodes
                 .iter()
@@ -2385,6 +2412,134 @@ mod tests {
             })
             .unwrap();
         project
+    }
+
+    #[test]
+    fn authored_rectangular_clip_group_has_real_native_parent_and_local_child_geometry() {
+        let mut project = fixture_project();
+        let scene_id = project.scenes[0].id;
+        let mut group = node("clip_group", None);
+        group.x = 600.0;
+        group.y = 340.0;
+        group.width = 700.0;
+        group.height = 400.0;
+        group.z_index = 2;
+        group.style = NodeStyle::default();
+        let parent_id = group.id;
+        let mut child = node("rectangle", None);
+        child.name = "Clipped child with editable world coordinates".into();
+        child.parent_id = Some(parent_id);
+        child.x = 950.0;
+        child.y = 450.0;
+        child.width = 560.0;
+        child.height = 160.0;
+        child.z_index = 3;
+        child.style.fill = Some("#E0A940".into());
+        let child_id = child.id;
+        for next in [group.clone(), child.clone()] {
+            project
+                .apply_change(&Change::AddCanvasNode {
+                    scene_id,
+                    node: next,
+                })
+                .unwrap();
+        }
+        let options = fixture_options(&project);
+        let film = &build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
+            .unwrap()[0]
+            .film;
+        let shot = &film.sequences[0].beats[0].shots[0];
+        let group_subject = shot
+            .subjects
+            .iter()
+            .find(|subject| subject.id == subject_id(parent_id, None))
+            .unwrap();
+        let child_subject = shot
+            .subjects
+            .iter()
+            .find(|subject| subject.id == subject_id(child_id, None))
+            .unwrap();
+        assert!(matches!(&group_subject.content, SubjectContent::Group));
+        assert!(
+            group_subject.clip_intentional,
+            "Native Group must actually own the clipping plane"
+        );
+        assert_eq!(
+            child_subject.parent.as_deref(),
+            Some(group_subject.id.as_str())
+        );
+        assert!(!child_subject.clip_intentional);
+        match &child_subject.layout {
+            SpatialIntent::Fixed { position, .. } => {
+                assert!((position.x - 280.0).abs() < 1.0e-6);
+                assert!((position.y + 10.0).abs() < 1.0e-6);
+            }
+            _ => panic!("Editable clipped child was not projected to exact local Fixed geometry"),
+        }
+        let live = &project.scenes[0].nodes;
+        let after_group = live.iter().find(|node| node.id == parent_id).unwrap();
+        let after_child = live.iter().find(|node| node.id == child_id).unwrap();
+        assert_eq!(
+            (
+                after_group.x,
+                after_group.y,
+                after_group.width,
+                after_group.height
+            ),
+            (600.0, 340.0, 700.0, 400.0)
+        );
+        assert_eq!(
+            (
+                after_child.x,
+                after_child.y,
+                after_child.width,
+                after_child.height
+            ),
+            (950.0, 450.0, 560.0, 160.0)
+        );
+        assert_eq!(after_child.parent_id, Some(parent_id));
+        realize(film).expect("Pinned Native grammar must admit the authored rectangular clip");
+    }
+
+    #[test]
+    fn nested_rectangular_clip_group_is_refused_without_mask_or_preview_substitution() {
+        let mut project = fixture_project();
+        let scene_id = project.scenes[0].id;
+        let mut parent = node("clip_group", None);
+        parent.style = NodeStyle::default();
+        parent.x = 600.0;
+        parent.y = 300.0;
+        parent.width = 700.0;
+        parent.height = 450.0;
+        let parent_id = parent.id;
+        project
+            .apply_change(&Change::AddCanvasNode {
+                scene_id,
+                node: parent,
+            })
+            .unwrap();
+        let mut nested = node("clip_group", None);
+        nested.style = NodeStyle::default();
+        nested.parent_id = Some(parent_id);
+        nested.x = 650.0;
+        nested.y = 350.0;
+        let admitted = project.apply_change(&Change::AddCanvasNode {
+            scene_id,
+            node: nested,
+        });
+        if admitted.is_ok() {
+            let result = build_motion_canvas_segments(
+                &project,
+                project.deliverables[0].id,
+                &fixture_options(&project),
+            );
+            assert!(
+                result.is_err(),
+                "Nested clip scopes must not silently lose the authored clip"
+            );
+        }
+        // Domain rejecting the nested clip earlier is also an appropriate
+        // refusal, and must never trigger a Native effect.
     }
 
     fn stroke_projection_fixture(

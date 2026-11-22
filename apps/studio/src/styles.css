@@ -3003,6 +3003,11 @@ select:focus {
   cursor: default;
 }
 
+.canvas-object.clip-group-object {
+  border: 1px dashed rgba(127, 154, 169, 0.85);
+  background: rgba(28, 34, 42, 0.26);
+}
+
 .canvas-object.text-object {
   justify-content: flex-start;
   border-color: transparent;
