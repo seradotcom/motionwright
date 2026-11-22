@@ -1,4 +1,5 @@
 import CommandPalette, { type EditorCommand } from "./CommandPalette";
+import { assertPortableExportReceipt, inspectPortableMaterials } from "./portableMaterialReport";
 import SceneInspector from "./SceneInspector";
 import { isPaletteShortcut } from "./editorCommandSearch";
 import { resolveTimelineSelection, timelineSelectionScope, type TimelineSelection } from "./timelineSelection";
@@ -910,6 +911,7 @@ function DeliverView({
 }) {
   const [exportPath, setExportPath] = useState("");
   const [importPath, setImportPath] = useState("");
+  const portableReport = inspectPortableMaterials(project);
   const [bundleInspection, setBundleInspection] = useState<{
     path: string;
     plan: PortableBundlePlan;
@@ -939,15 +941,22 @@ function DeliverView({
   };
 
   const exportBundle = async () => {
-    if (!desktopMode || !exportPath.trim()) return;
+    if (!desktopMode || !exportPath.trim() || portableReport.blocking.length > 0) return;
     setPortableBusy("export");
     setPortableStatus(null);
     setPortableError(null);
     try {
       const result = await exportProjectBundle(project, exportPath.trim());
+      assertPortableExportReceipt(portableReport, result);
       setPortableStatus(
         "Portable bundle written to " + result.destination +
-        " · " + result.blob_count + " blobs · " + formatByteCount(result.total_blob_bytes),
+        " · saved r" + portableReport.revision + " with " + result.blob_count + " original CAS blobs (" +
+        formatByteCount(result.total_blob_bytes) + "). " +
+        portableReport.saved_lock_count + " saved locks and " +
+        portableReport.saved_measured_table_count + " measured tables remain in the project document." +
+        (portableReport.external.length
+          ? " " + portableReport.external.length + " external font reference(s) still need review after import."
+          : ""),
       );
     } catch (reason) {
       setPortableError(reason instanceof Error ? reason.message : String(reason));
@@ -999,10 +1008,45 @@ function DeliverView({
         <header className="portable-heading">
           <div>
             <strong>Portable project</strong>
-            <span>Project state, journal and content-addressed asset bytes.</span>
+            <span>Saved Project, revision journal and verified content-addressed sources. Installed runtimes, credentials and external font files are not bundled.</span>
           </div>
-          <span className="status-pill status-current">SELF-CONTAINED</span>
+          <span className="status-pill status-current">PROJECT STATE + CAS</span>
         </header>
+
+        <div className="portable-plan" aria-label="Portable original source coverage">
+          <div><span>Source revision</span><strong className="mono">r{portableReport.revision}</strong></div>
+          <div><span>Original CAS sources</span><strong>{portableReport.expected_unique_blob_count} unique blobs expected from {portableReport.asset_count} asset records</strong></div>
+          <div><span>Saved content locks</span><strong>{portableReport.saved_lock_count} in the Project document</strong></div>
+          <div><span>Measured tables</span><strong>{portableReport.saved_measured_table_count} authored records</strong></div>
+          <div><span>Native capsules</span><strong>{portableReport.saved_native_capsule_count} digest-bound source records</strong></div>
+        </div>
+        {portableReport.blocking.length > 0 && (
+          <div className="portable-message error" role="alert" aria-label="Portable export blocked by missing originals">
+            <strong>Export blocked until original materials are resolved</strong>
+            <span>The verified Store will reject a bundle with unbound assets or restricted font rights.</span>
+            <ul>{portableReport.blocking.map(issue => (
+              <li key={issue.kind + ":" + issue.id}>
+                <strong>{issue.label}</strong> — {issue.reason}
+              </li>
+            ))}</ul>
+          </div>
+        )}
+        {portableReport.external.length > 0 && (
+          <details className="portable-operation" aria-label="Portable references not included">
+            <summary>{portableReport.external.length} externally referenced typeface(s) are not contained in this bundle</summary>
+            <ul>{portableReport.external.map(issue => (
+              <li key={issue.kind + ":" + issue.id}>
+                <strong>{issue.label}</strong> — {issue.reason}
+              </li>
+            ))}</ul>
+          </details>
+        )}
+        <p className="portable-runtime-note">
+          This inventory describes saved references, not a CAS integrity proof. Original bytes,
+          font redistribution permissions, journal and locks are independently verified by
+          Storage before publication. Installed renderer binaries, cloud accounts and
+          external application licenses remain outside portable project bundles.
+        </p>
 
         <div className="portable-operation">
           <div className="portable-operation-copy">
@@ -1022,7 +1066,8 @@ function DeliverView({
           <button
             type="button"
             className="button button-primary"
-            disabled={!desktopMode || !exportPath.trim() || portableBusy !== null}
+            disabled={!desktopMode || !exportPath.trim() || portableBusy !== null
+              || portableReport.blocking.length > 0}
             onClick={() => void exportBundle()}
           >
             {portableBusy === "export" ? "Exporting…" : "Export bundle"}
