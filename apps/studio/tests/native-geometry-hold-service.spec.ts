@@ -58,7 +58,7 @@ test("Studio saves five original held geometry destinations and closes their ori
   expect(destinations.every(key => key.interpolation === "ease_out_cubic")).toBe(true);
 
   phase("start_service");
-  const service = await ScopedChangeService.create({ databasePath, seedFixture: false });
+  const service = await ScopedChangeService.create({ databasePath, seedFixture: false, desktopInvokeFixture: true });
   let final: Project | null = null, history: ProjectEvent[] | null = null;
   let completed = false, closed = false, handoff: unknown = null;
   try {
