@@ -24,6 +24,15 @@ def sha(blob: bytes) -> str:
 
 class NativeRenderPublicArtifactTests(unittest.TestCase):
     def setUp(self):
+        # GitHub's selected Clip/Layer lane sets global source flags. The
+        # generic fixture is deliberately unselected; each selected test opts
+        # in explicitly. Never weaken the production selection validator.
+        source_mode = patch.dict(pub.os.environ, {
+            "MOTIONWRIGHT_NATIVE_CLIP_E2E": "0",
+            "MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E": "0",
+        })
+        source_mode.start()
+        self.addCleanup(source_mode.stop)
         temp = tempfile.TemporaryDirectory(prefix="mw-v01-render-public-")
         self.addCleanup(temp.cleanup)
         self.private = Path(temp.name) / "private"
