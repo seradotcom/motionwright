@@ -362,8 +362,25 @@ fn native_exact_opacity_fade(
             node.id
         ))
     };
+    // A saved child of one static root Clip group can carry exactly the
+    // same native opacity tween as an unparented object. The already-authored
+    // Group remains the real clipping authority; never flatten its child or
+    // replace a source clip with an alpha approximation. Other parented
+    // hierarchies keep their historical closed refusal.
+    let exact_clip_parent = node.parent_id.is_some_and(|parent_id| {
+        scene.nodes.iter().any(|parent| {
+            parent.id == parent_id
+                && parent.kind == "clip_group"
+                && parent.parent_id.is_none()
+                && parent.keyframes.is_empty()
+                && parent.relations.is_empty()
+                && parent.opacity == 1.0
+                && parent.rotation_deg == 0.0
+                && parent.coordinate_space == CoordinateSpace::ProjectPixels
+        })
+    });
     if !scene.beats.is_empty()
-        || node.parent_id.is_some()
+        || (node.parent_id.is_some() && !exact_clip_parent)
         || matches!(node.kind.as_str(), "group" | "clip_group")
         || scene
             .nodes
@@ -3300,6 +3317,245 @@ mod tests {
             assert_eq!(
                 project.scenes[0].nodes[0], original,
                 "the original editable Canvas source remains unchanged"
+            );
+        }
+    }
+
+    fn clipped_opacity_source() -> (Project, Uuid, Uuid) {
+        let mut project = fixture_project();
+        let scene_id = project.scenes[0].id;
+        let mut parent = node("clip_group", None);
+        parent.name = "Bounded editable clipping parent".into();
+        parent.x = 400.0;
+        parent.y = 340.0;
+        parent.width = 650.0;
+        parent.height = 400.0;
+        parent.z_index = 2;
+        parent.style = NodeStyle::default();
+        let parent_id = parent.id;
+        let mut child = node("shape", None);
+        child.name = "Native opacity child inside Clip".into();
+        child.x = 690.0;
+        child.y = 420.0;
+        child.width = 510.0;
+        child.height = 180.0;
+        child.z_index = 3;
+        child.parent_id = Some(parent_id);
+        child.style.fill = Some("#E0A940".into());
+        let child_id = child.id;
+        for object in [parent, child] {
+            project
+                .apply_change(&Change::AddCanvasNode {
+                    scene_id,
+                    node: object,
+                })
+                .unwrap();
+        }
+        (project, parent_id, child_id)
+    }
+
+    #[test]
+    fn original_editable_clip_child_opacity_fades_in_and_out_in_native_film() {
+        for (start, end, interpolation, direction) in [
+            (
+                0.0,
+                1.0,
+                MotionInterpolation::Linear,
+                NativeOpacityDirection::In,
+            ),
+            (
+                1.0,
+                0.0,
+                MotionInterpolation::EaseOutCubic,
+                NativeOpacityDirection::Out,
+            ),
+        ] {
+            let (mut project, parent_id, child_id) = clipped_opacity_source();
+            let scene_id = project.scenes[0].id;
+            let child = project.scenes[0]
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == child_id)
+                .unwrap();
+            set_exact_linear_opacity_keys(child);
+            child.keyframes[0].value = start;
+            child.keyframes[1].value = end;
+            child.keyframes[1].interpolation = interpolation;
+            let original = project.clone();
+            let opts = fixture_options(&project);
+            let film = &build_motion_canvas_segments(&project, project.deliverables[0].id, &opts)
+                .unwrap()[0]
+                .film;
+            let shot = &film.sequences[0].beats[0].shots[0];
+            let parent = shot
+                .subjects
+                .iter()
+                .find(|subject| subject.id == subject_id(parent_id, None))
+                .unwrap();
+            let child = shot
+                .subjects
+                .iter()
+                .find(|subject| subject.id == subject_id(child_id, None))
+                .unwrap();
+            assert!(matches!(&parent.content, SubjectContent::Group));
+            assert!(
+                parent.clip_intentional,
+                "authoritative clipping remains a Native Group"
+            );
+            assert!(
+                !child.clip_intentional,
+                "child does not claim to own a fake mask"
+            );
+            assert_eq!(child.parent.as_deref(), Some(parent.id.as_str()));
+            assert_eq!(
+                child.initially_visible,
+                direction == NativeOpacityDirection::Out
+            );
+            let fade = shot
+                .motion
+                .iter()
+                .filter(|motion| {
+                    matches!(
+                        (&motion.primitive, direction),
+                        (Primitive::FadeIn { target }, NativeOpacityDirection::In)
+                            if target == &subject_id(child_id, None)
+                    ) || matches!(
+                        (&motion.primitive, direction),
+                        (Primitive::FadeOut { target }, NativeOpacityDirection::Out)
+                            if target == &subject_id(child_id, None)
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(fade.len(), 1, "original Clip child has one native fade");
+            let realized = realize(film).expect("pinned native SDK must admit fading a Clip child");
+            let tween = realized
+                .instructions
+                .iter()
+                .filter(|instruction| {
+                    matches!(
+                        &instruction.operation,
+                        semwright_motion_authoring::NativeOp::Tween {
+                            channel: semwright_motion_authoring::Channel::Opacity,
+                            ..
+                        }
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                tween.len(),
+                1,
+                "no opacity approximation or duplicate effects"
+            );
+            let expected_easing = if interpolation == MotionInterpolation::Linear {
+                MotionEasing::Linear
+            } else {
+                MotionEasing::OutCubic
+            };
+            assert_eq!(tween[0].start, RationalTime::ZERO);
+            assert_eq!(tween[0].duration, RationalTime::new(1, 1).unwrap());
+            assert_eq!(tween[0].easing, expected_easing);
+            match &tween[0].operation {
+                semwright_motion_authoring::NativeOp::Tween { to, .. } => {
+                    assert_eq!(to, &semwright_motion_authoring::Operand::Number(end));
+                }
+                _ => unreachable!("native opacity tween was selected"),
+            }
+            assert_eq!(
+                project, original,
+                "Native Film projection cannot change saved Clip source"
+            );
+            assert_eq!(project.scenes[0].id, scene_id);
+        }
+    }
+
+    #[test]
+    fn clipped_opacity_requires_one_static_root_clip_and_exact_native_curve() {
+        let (mut baseline, parent_id, child_id) = clipped_opacity_source();
+        set_exact_linear_opacity_keys(
+            baseline.scenes[0]
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == child_id)
+                .unwrap(),
+        );
+        let mut cases = Vec::new();
+        let mut ordinary_parent = baseline.clone();
+        ordinary_parent.scenes[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == parent_id)
+            .unwrap()
+            .kind = "group".into();
+        cases.push(ordinary_parent);
+        let mut rotated_parent = baseline.clone();
+        rotated_parent.scenes[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == parent_id)
+            .unwrap()
+            .rotation_deg = 5.0;
+        cases.push(rotated_parent);
+        let mut animated_parent = baseline.clone();
+        set_exact_linear_opacity_keys(
+            animated_parent.scenes[0]
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == parent_id)
+                .unwrap(),
+        );
+        cases.push(animated_parent);
+        let mut nested_parent = baseline.clone();
+        let mut top = node("group", None);
+        top.x = 120.0;
+        top.y = 180.0;
+        top.width = 400.0;
+        top.height = 400.0;
+        let top_id = top.id;
+        nested_parent
+            .apply_change(&Change::AddCanvasNode {
+                scene_id: nested_parent.scenes[0].id,
+                node: top,
+            })
+            .unwrap();
+        nested_parent.scenes[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == parent_id)
+            .unwrap()
+            .parent_id = Some(top_id);
+        cases.push(nested_parent);
+        let mut bad_curve = baseline.clone();
+        bad_curve.scenes[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == child_id)
+            .unwrap()
+            .keyframes[1]
+            .interpolation = MotionInterpolation::EaseInOut;
+        cases.push(bad_curve);
+        let mut mixed_keys = baseline.clone();
+        mixed_keys.scenes[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == child_id)
+            .unwrap()
+            .keyframes
+            .push(CanvasKeyframe {
+                at: RationalTime::ZERO,
+                property: MotionProperty::X,
+                value: 700.0,
+                interpolation: MotionInterpolation::Linear,
+            });
+        cases.push(mixed_keys);
+        for (case_index, project) in cases.iter().enumerate() {
+            let result = build_motion_canvas_segments(
+                project,
+                project.deliverables[0].id,
+                &fixture_options(project),
+            );
+            assert!(
+                result.is_err(),
+                "unsupported Clip/opacity combination {case_index} admitted"
             );
         }
     }
