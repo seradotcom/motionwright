@@ -23,6 +23,11 @@ const BRIDGE: &[u8] = include_bytes!("../../../../tooling/otio-media/bridge.py")
 const AUDIO: &[u8] =
     include_bytes!("../../../../tooling/otio-media/kdenlive_firstparty_audio_track.py");
 const INTAKE: &[u8] = include_bytes!("../../../../tooling/mlt_official_runtime_intake.py");
+// Real ffprobe readback is imported lazily by bridge._probe_output.
+// Mocked source-unit tests do not exercise this dependency. The installed
+// isolated Python runner must stage this original first-party executor, not
+// attempt to resolve it through the owner's project or site-packages.
+const READBACK: &[u8] = include_bytes!("../../../../tooling/manim_native_readback.py");
 // -I/-S remove project and site imports. Admit only the two first-party
 // module folders staged and SHA-checked above, never the owner's bundle.
 const RUNNER: &[u8] = b"import os,runpy,sys\nsource=sys.argv.pop(1)\nsource_dir=os.path.dirname(source)\nsys.path.insert(0,os.path.dirname(source_dir))\nsys.path.insert(0,source_dir)\nrunpy.run_path(source,run_name='__main__')\n";
@@ -224,6 +229,7 @@ fn stage_bridge_sources(temp: &Path) -> Result<(PathBuf, PathBuf), String> {
     let bridge = write_exact(&source_dir, "bridge.py", BRIDGE)?;
     write_exact(&source_dir, "kdenlive_firstparty_audio_track.py", AUDIO)?;
     write_exact(&tooling, "mlt_official_runtime_intake.py", INTAKE)?;
+    write_exact(&tooling, "manim_native_readback.py", READBACK)?;
     write_exact(&source_dir, "run-original-bridge.py", RUNNER)?;
     Ok((source_dir, bridge))
 }
@@ -420,6 +426,43 @@ pub fn preview(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn isolated_original_bridge_stages_the_real_decoder_supervisor_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let (source_dir, bridge) = stage_bridge_sources(directory.path()).unwrap();
+        assert_eq!(
+            read_regular_bounded(&bridge, BRIDGE.len() as u64).unwrap(),
+            BRIDGE
+        );
+        let tooling = source_dir.parent().unwrap();
+        assert_eq!(
+            read_regular_bounded(
+                &tooling.join("manim_native_readback.py"),
+                READBACK.len() as u64,
+            )
+            .unwrap(),
+            READBACK,
+            "the existing first-party ffprobe executor is required by the real bridge; mocked file_probe unit tests cannot exercise this import"
+        );
+        assert_eq!(
+            read_regular_bounded(
+                &tooling.join("mlt_official_runtime_intake.py"),
+                INTAKE.len() as u64,
+            )
+            .unwrap(),
+            INTAKE
+        );
+        assert_eq!(
+            read_regular_bounded(
+                &source_dir.join("run-original-bridge.py"),
+                RUNNER.len() as u64,
+            )
+            .unwrap(),
+            RUNNER
+        );
+    }
+
     #[test]
     fn refused_otio_names_and_missing_bundle_never_touch_media_or_grants() {
         for name in [

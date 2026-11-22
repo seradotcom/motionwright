@@ -1680,6 +1680,7 @@ jobs:
           text=pathlib.Path(os.environ['MW_OTIO_CI'],'desktop-tests.original.log').read_text()
           text=re.sub(r'\x1b\[[0-9;]*m','',text)
           expected={
+            'isolated_original_bridge_stages_the_real_decoder_supervisor_source',
             'refused_otio_names_and_missing_bundle_never_touch_media_or_grants',
             'original_source_identity_rejects_same_size_name_replacement_and_symlink',
             'portable_otio_publication_never_clobbers_a_racing_directory_or_dangling_symlink',
@@ -1688,8 +1689,8 @@ jobs:
           }
           found=set(re.findall(r'(?m)^test otio_bridge::tests::([A-Za-z0-9_]+) \.\.\. ok$',text))
           assert found==expected,(found,expected)
-          assert re.search(r'(?m)^test result: ok\. 5 passed; 0 failed; 0 ignored;',text)
-          print('native-otio-bridge-compiled=PASS 5/5 exact Rust tests')
+          assert re.search(r'(?m)^test result: ok\. 6 passed; 0 failed; 0 ignored;',text)
+          print('native-otio-bridge-compiled=PASS 6/6 exact Rust tests')
           PY_NATIVE_OTIO_RUST
           fi
           cargo build --locked --jobs 2 -p motionwright-service --example studio_review_session \
