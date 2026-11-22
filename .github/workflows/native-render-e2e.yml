@@ -598,10 +598,14 @@ jobs:
               lines=log.read_text(encoding="utf8",errors="replace").splitlines()
               for line in lines[-500:]:
                   t=line.strip()
+                  panic_location=re.search(r"panicked at (crates/native/examples/native_clip_group_e2e[.]rs:[0-9]+:[0-9]+)",t)
+                  prefix="called "+chr(96)+"Result::unwrap()"+chr(96)+" on an "+chr(96)+"Err"+chr(96)+" value: "
+                  source_error=re.fullmatch(re.escape(prefix)+r'"([A-Za-z0-9 ,._:-]{1,150})"',t)
                   safe=(
                       t.startswith(("error[E","error:","test result: FAILED","test result: FAILED.",
                                     "failures:","test " ))
                       or re.fullmatch(r"--> crates/native/[A-Za-z0-9_./-]+:[0-9]+:[0-9]+",t) is not None
+                      or panic_location is not None or source_error is not None
                   )
                   if not safe or not (1 <= len(t) <= 180) or not all(32 <= ord(ch) < 127 for ch in t):
                       continue
@@ -609,7 +613,12 @@ jobs:
                       continue
                   if t.startswith("test ") and not t.endswith(" ... FAILED"):
                       continue
-                  print(name+": "+t)
+                  if panic_location is not None:
+                      print(name+": SOURCE_RUST_PANIC_LOCATION:"+panic_location.group(1))
+                  elif source_error is not None:
+                      print(name+": SOURCE_RUST_DECLARED_ERROR:"+source_error.group(1))
+                  else:
+                      print(name+": "+t)
                   observed+=1
                   if observed >= 12:
                       break
