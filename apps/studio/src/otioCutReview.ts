@@ -181,7 +181,16 @@ export function inspectOtioCutPreview(project:Project, text:string):OtioEditPrev
     const duration=trimmed.get(sceneId);
     if(duration)canonical.push({type:"set_scene_duration",scene_id:sceneId,duration});
   }
-  if(!same(canonical,operations))return invalid("OTIO operations are reordered, nonminimal, duplicated or changed.");
+  // JSON object member order is not significant; the reviewed edit sequence is.
+  const exactSequence=canonical.length===operations.length && canonical.every((expected,index)=>{
+    const observed=operations[index] as OtioNativeCut;
+    if(expected.type!==observed.type || expected.scene_id!==observed.scene_id)return false;
+    if(expected.type==="move_scene")
+      return observed.type==="move_scene" && expected.to_index===observed.to_index;
+    return observed.type==="set_scene_duration" &&
+      expected.duration.num===observed.duration.num && expected.duration.den===observed.duration.den;
+  });
+  if(!exactSequence)return invalid("OTIO operations are reordered, nonminimal, duplicated or changed.");
   if(project.scenes.some(scene=>scene.status==="approved" || scene.status==="review") ||
       project.reviews?.some(review=>review.status==="open" || review.status==="needs_recheck"))
     return invalid("Resolve existing creative review and scene approval before applying an external cut.");

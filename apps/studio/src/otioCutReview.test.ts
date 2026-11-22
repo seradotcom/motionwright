@@ -17,6 +17,22 @@ describe("source-bound OTIO cut review is a non-executable proposal",()=>{
     expect(otioHasAbsoluteAnchors(project)).toBe(true);
     expect(project).toEqual(original);
   });
+  it("accepts the original bridge JSON member order while preserving the exact edit sequence",()=>{
+    const project=reviewableOtioProject(),data=sampleOtioPreview(project);
+    const bridgeJson=(value:unknown)=>JSON.stringify(value,(_key,entry:unknown)=>
+      entry && typeof entry==="object" && !Array.isArray(entry)
+        ? Object.fromEntries(Object.keys(entry).sort().map(key=>[
+          key,(entry as Record<string,unknown>)[key],
+        ]))
+        : entry);
+    expect(bridgeJson(data)).not.toBe(JSON.stringify(data));
+    const parsed=inspectOtioCutPreview(project,bridgeJson(data));
+    expect(parsed.native_change_proposals).toEqual(data.native_change_proposals);
+    expect(parsed).toEqual(data);
+    expect(()=>inspectOtioCutPreview(project,bridgeJson({
+      ...data,native_change_proposals:[...data.native_change_proposals].reverse(),
+    }))).toThrow(/reordered, nonminimal, duplicated or changed/i);
+  });
   it.each(["project_id","generation","expected_project_revision","source_project_sha256"])(
     "rejects a stale, unrelated or malformed %s",key=>{
       const project=reviewableOtioProject(),data=sampleOtioPreview(project);
