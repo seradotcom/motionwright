@@ -1503,6 +1503,9 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       next.production_design.taste_profile=structuredClone(change.profile);
       break;
     }
+    case "upsert_font_portable_copy":
+    case "remove_font_portable_copy":
+      throw new Error("Font-copy declarations require the actual StudioService and original saved assets.");
     case "apply_otio_owner_cut_review":
       throw new Error("OTIO owner cut mutation needs canonical desktop CAS; browser demos are read-only.");
     case "edit_paid_generation":

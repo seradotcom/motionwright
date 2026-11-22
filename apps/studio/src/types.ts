@@ -1,5 +1,5 @@
 import type { NarrativeEditingState, NarrativeEditingChange } from "./narrativeEditing";
-import type { ProductionDesign, HeroConfig, ProductionPlan, NativeCapsule, CreativePatch } from "./creativeProduction";
+import type { ProductionDesign, HeroConfig, ProductionPlan, NativeCapsule, CreativePatch, FontPortableCopyDeclaration } from "./creativeProduction";
 import type { DeliveryRecipe } from "./deliveryRecipe";
 import type { MeasuredTable, MeasuredView } from "./measuredData";
 import type { ProceduralConfig } from "./proceduralField";
@@ -836,6 +836,8 @@ export type Change =
   | { type:"release_narration_take"; expected_source_sha256:string; reviewer:string; reason:string }
   | { type:"apply_brand_campaign"; rollout:BrandCampaignRollout }
   | { type: "apply_otio_owner_cut_review"; review: OtioOwnerCutReview }
+  | { type: "upsert_font_portable_copy"; declaration: FontPortableCopyDeclaration }
+  | { type: "remove_font_portable_copy"; asset_id: string }
   | { type: "edit_paid_generation"; edit: PaidGenerationEdit }
   | { type: "undo_creative_patch"; patch_id: string }
   | { type: "upsert_product_hero"; instance_id: string; scene_id: string; config: HeroConfig }

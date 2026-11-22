@@ -10,8 +10,10 @@ import {
   BRAND_ROLLOUT_SCHEMA, previewBrandCampaign, validateBrandCampaignReceipt,
   type BrandCampaignRollout, type BrandCampaignPreview,
 } from "./brandCampaign";
+import { changedFontCopies, fontCopyDeclarationShape, fontCopyRawShape, prepareFontCopyChange, savedFontCopyRaw } from "./fontPortableCopyDraft";
+import type { FontCopyRaw } from "./fontPortableCopyDraft";
 
-export type BrandTarget = "governance" | "campaign";
+export type BrandTarget = "governance" | "campaign" | "font-copy";
 export interface GovernanceRaw {
   kind: "governance"; brandName: string; forbidden: string; accents: string; wordmark: string;
   tasteName: string; preferences: TastePreference[]; sceneId: string; ruleId: string;
@@ -21,11 +23,13 @@ export interface CampaignRaw {
   kind: "campaign"; campaign: string; owner: string; why: string; sceneIds: string[];
   accent: string; applyWordmark: boolean; ackRebuild: boolean;
 }
-export type BrandRaw = GovernanceRaw | CampaignRaw;
+export type BrandRaw = GovernanceRaw | CampaignRaw | FontCopyRaw;
 export type BrandChange = Extract<Change, {
   type: "set_brand_governance" | "set_taste_profile" | "record_creative_decision" | "apply_brand_campaign"
+    | "upsert_font_portable_copy" | "remove_font_portable_copy"
 }>;
-export type BrandOperation = "brand" | "taste" | "exception" | "revoke-all" | "decision" | "campaign" | { revoke: string };
+export type BrandOperation = "brand" | "taste" | "exception" | "revoke-all" | "decision" | "campaign" | "font-copy"
+  | { revoke: string } | { removeFont: string };
 export interface BrandProposal {
   id: string; scope: string; sequence: number; sourceRevision: number; sourceSha256: string;
   raw: CampaignRaw; rollout: BrandCampaignRollout; preview: BrandCampaignPreview;
@@ -83,13 +87,13 @@ const step = (sequence: number) => {
   if (!integer(sequence) || !Number.isSafeInteger(sequence + 1)) throw new Error("The brand draft sequence exceeded its safe limit.");
   return sequence + 1;
 };
-export const brandLabel = (target: BrandTarget) => target === "campaign" ? "campaign" : "brand and taste";
+export const brandLabel = (target: BrandTarget) => target === "font-copy" ? "font copy" : target === "campaign" ? "campaign" : "brand and taste";
 export const brandScope = (project: Project, target: BrandTarget) =>
   JSON.stringify([project.id, project.generation, project.active_branch, target]);
 export function brandIdentity(scope: string): [string, string, string, BrandTarget] {
   const value: unknown = JSON.parse(scope);
   if (!Array.isArray(value) || value.length !== 4 || !value.slice(0, 3).every(projectionUuid)
-      || !["governance", "campaign"].includes(String(value[3])))
+      || !["governance", "campaign", "font-copy"].includes(String(value[3])))
     throw new Error("The brand recovery owner is invalid.");
   return value as [string, string, string, BrandTarget];
 }
@@ -102,6 +106,7 @@ function owner(draft: BrandDraft, project: Project) {
     throw new Error("This brand input belongs to another project, generation, branch or editor.");
 }
 export function brandSavedRaw(project: Project, target: BrandTarget): BrandRaw {
+  if (target === "font-copy") return savedFontCopyRaw(project);
   if (target === "campaign") return {
     kind: "campaign", campaign: "", owner: "", why: "", sceneIds: [], accent: "", applyWordmark: false, ackRebuild: false,
   };
@@ -137,15 +142,18 @@ export function brandConflict(draft: BrandDraft, project: Project): boolean {
   owner(draft, project);
   return brandHasWork(draft) && (!sameProjectRevision(draft.baseProject, project) || !equal(draft.baseProject, project));
 }
-export function brandLocked(project: Project) {
-  return project.locks.some(lock => lock.resource === "project:" + project.id && lock.kind === "content");
+export function brandLocked(project: Project, target: BrandTarget = "governance") {
+  return project.locks.some(lock => lock.resource === "project:" + project.id
+    && (lock.kind === "content" || (target === "font-copy" && lock.kind === "style")));
 }
 function requireBase(draft: BrandDraft, project: Project) {
   owner(draft, project);
   if (draft.pending) throw new Error("The original brand attempt is unconfirmed. Read its outcome before a separate edit.");
   if (!sameProjectRevision(draft.baseProject, project) || !equal(draft.baseProject, project))
     throw new Error("Review the full saved Project before using a new brand base.");
-  if (brandLocked(project)) throw new Error("The project has a content lock. Your brand input is retained.");
+  if (brandLocked(project, draft.target)) throw new Error(draft.target === "font-copy"
+    ? "The project has a content/style lock. Your font input is retained."
+    : "The project has a content lock. Your brand input is retained.");
 }
 export function brandPreparationMatches(source: BrandDraft, project: Project, current: BrandDraft, selected: Project) {
   return source.scope === current.scope && source.sequence === current.sequence && equal(source, current)
@@ -231,7 +239,10 @@ export async function prepareBrandSubmission(draft: BrandDraft, project: Project
   if (!projectionUuid(id) || !operationShape(operation)) throw new Error("The brand submission identity or operation is invalid.");
   const raw = clone(draft.raw), design = project.production_design, profile = design?.brand_profile;
   let change: BrandChange, receiptProof: BrandReceiptProof | null = null;
-  if (operation === "campaign") {
+  if (operation === "font-copy" || (typeof operation === "object" && "removeFont" in operation)) {
+    if (raw.kind !== "font-copy") throw new Error("This operation belongs to the font-copy editor.");
+    change = prepareFontCopyChange(project, raw, typeof operation === "object" ? operation.removeFont : undefined);
+  } else if (operation === "campaign") {
     if (raw.kind !== "campaign" || !brandProposalCurrent(draft, project))
       throw new Error("Review the exact current campaign proposal before submitting.");
     const proposal = draft.proposal!;
@@ -276,7 +287,7 @@ export async function prepareBrandSubmission(draft: BrandDraft, project: Project
       ] };
     } else {
       const exceptions = design?.brand_exceptions ?? [];
-      if (!exceptions.length || (typeof operation === "object" && !exceptions.some(value => value.id === operation.revoke)))
+      if (!exceptions.length || (typeof operation === "object" && !exceptions.some(value => value.id === (operation as { revoke: string }).revoke)))
         throw new Error("The selected saved brand exception is no longer present.");
       change = { type: "set_brand_governance", profile: clone(profile ?? null),
         exceptions: operation === "revoke-all" ? [] : clone(exceptions.filter(value => value.id !== (operation as { revoke: string }).revoke)) };
@@ -350,6 +361,7 @@ function campaignReceipt(before: Project, after: Project, value: BrandProposal, 
 function cleanAfterOperation(clean: BrandRaw, pending: BrandPending): BrandRaw {
   const raw = pending.raw;
   if (raw.kind === "campaign") return clone(raw);
+  if (raw.kind === "font-copy") return { ...clone(raw), confirmed: false };
   if (clean.kind !== "governance") throw new Error("The saved brand buffer has an incompatible kind.");
   let fields: (keyof GovernanceRaw)[] = [];
   if (pending.operation === "brand") fields = ["brandName", "forbidden", "accents", "wordmark"];
@@ -379,7 +391,16 @@ export function acknowledgeBrandDraft(draft: BrandDraft, id: string, receipt: Pr
   } else if (change.type === "set_taste_profile") expected.taste_profile = clone(change.profile);
   else if (change.type === "record_creative_decision") expected.project_decisions.push(clone(change.decision));
   const campaign = change.type === "apply_brand_campaign";
-  if (!equal(otherDesign(submitted, campaign), otherDesign(receipt, campaign)))
+  const fontCopy = change.type === "upsert_font_portable_copy" || change.type === "remove_font_portable_copy";
+  if (fontCopy) {
+    const withoutFontCopies = (project: Project) => {
+      const { font_portable_copies: _copies, ...rest } = project.production_design ?? emptyProductionDesign();
+      return rest;
+    };
+    if (!equal(withoutFontCopies(submitted), withoutFontCopies(receipt))
+        || !equal(receipt.production_design?.font_portable_copies ?? [], changedFontCopies(submitted, change)))
+      throw new Error("The font response changed its original source declaration or unrelated production data.");
+  } else if (!equal(otherDesign(submitted, campaign), otherDesign(receipt, campaign)))
     throw new Error("The brand response changed an unrelated production definition.");
   if (campaign) {
     if (!draft.proposal || !equal(draft.proposal.rollout, change.rollout)
@@ -394,8 +415,9 @@ export function acknowledgeBrandDraft(draft: BrandDraft, id: string, receipt: Pr
     throw new Error("The brand response does not contain the submitted values and unchanged scene work.");
   }
   const cleanRaw = cleanAfterOperation(draft.cleanRaw, pending);
+  const raw = fontCopy && equal(draft.raw, pending.raw) ? clone(cleanRaw) : draft.raw;
   return { ...draft, baseRevision: receipt.revision, baseProject: clone(receipt),
-    cleanRaw, intent: !equal(draft.raw, cleanRaw), pending: null };
+    raw, cleanRaw, intent: !equal(raw, cleanRaw), pending: null };
 }
 export function resolveBrandDraft(draft: BrandDraft, project: Project, choice: "saved" | "draft"): BrandDraft {
   owner(draft, project);
@@ -468,6 +490,7 @@ export function separateBrandIntent(draft: BrandDraft, project: Project, review:
 const governanceStrings = ["brandName", "forbidden", "accents", "wordmark", "tasteName", "sceneId", "ruleId", "campaign", "author", "rationale", "decision"] as const;
 function rawShape(value: unknown): value is BrandRaw {
   if (!record(value)) return false;
+  if (value.kind === "font-copy") return fontCopyRawShape(value);
   if (value.kind === "governance") return exact(value, ["kind", ...governanceStrings, "preferences"])
     && governanceStrings.every(key => typeof value[key] === "string") && Array.isArray(value.preferences)
     && value.preferences.length <= 64 && value.preferences.every(item => record(item) && exact(item, ["axis", "preference", "inferred"])
@@ -484,8 +507,9 @@ function projectShape(value: unknown): value is Project {
     && (value.production_design === undefined || record(value.production_design));
 }
 function operationShape(value: unknown): value is BrandOperation {
-  return typeof value === "string" ? ["brand", "taste", "exception", "revoke-all", "decision", "campaign"].includes(value)
-    : record(value) && exact(value, ["revoke"]) && projectionUuid(value.revoke);
+  return typeof value === "string" ? ["brand", "taste", "exception", "revoke-all", "decision", "campaign", "font-copy"].includes(value)
+    : record(value) && ((exact(value, ["revoke"]) && projectionUuid(value.revoke))
+      || (exact(value, ["removeFont"]) && projectionUuid(value.removeFont)));
 }
 function preferenceShape(value: unknown) {
   return record(value) && exact(value, ["axis", "preference", "inferred"])
@@ -509,6 +533,8 @@ function exceptionShape(value: unknown) {
 }
 function changeShape(value: unknown): value is BrandChange {
   if (!record(value)) return false;
+  if (value.type === "upsert_font_portable_copy") return exact(value, ["type", "declaration"]) && fontCopyDeclarationShape(value.declaration);
+  if (value.type === "remove_font_portable_copy") return exact(value, ["type", "asset_id"]) && projectionUuid(value.asset_id);
   if (value.type === "set_brand_governance") return exact(value, ["type", "profile", "exceptions"])
     && (value.profile === null || profileShape(value.profile)) && Array.isArray(value.exceptions)
     && value.exceptions.length <= 128 && value.exceptions.every(exceptionShape);
@@ -582,7 +608,12 @@ function draftShape(value: unknown): value is BrandDraft {
       || !["UNKNOWN", "NOT_SENT"].includes(String(pending.outcome))
       || (pending.diagnostic !== null && typeof pending.diagnostic !== "string")) return false;
   const operation = pending.operation;
-  return operation === "campaign" ? value.target === "campaign" && pending.change.type === "apply_brand_campaign"
+  return operation === "font-copy" ? value.target === "font-copy" && pending.change.type === "upsert_font_portable_copy"
+      && pending.raw.kind === "font-copy" && pending.raw.assetId === pending.change.declaration.asset_id
+      && pending.raw.contentSha256 === pending.change.declaration.content_sha256
+    : typeof operation === "object" && "removeFont" in operation ? value.target === "font-copy"
+      && pending.change.type === "remove_font_portable_copy" && operation.removeFont === pending.change.asset_id
+    : operation === "campaign" ? value.target === "campaign" && pending.change.type === "apply_brand_campaign"
     && value.proposal !== null && equal((value.proposal as BrandProposal).rollout, pending.change.rollout)
     : value.target === "governance" && (operation === "taste" ? pending.change.type === "set_taste_profile"
       : operation === "decision" ? pending.change.type === "record_creative_decision" : pending.change.type === "set_brand_governance");

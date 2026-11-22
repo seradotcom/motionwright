@@ -1434,16 +1434,73 @@ test.describe("real service imports and portable restore", () => {
       let donor = (await source.fixtureBootstrap()).project;
       donor = await source.importAsset(donor, sourceFile, "Actual portable source bytes");
       donor = await source.apply(donor, { type: "rename_project", title: "Portable source from a real service" });
+      const fontPath = join(process.cwd(), "../../crates/service/tests/fixtures/managed-font-source.ttf");
+      const fontBytes = await readFile(fontPath);
+      donor = await source.importAsset(donor, fontPath, "Original licensed portable test font", "font/ttf");
+      const fontAsset = donor.assets.find(asset => asset.content_sha256 === hash(fontBytes))!;
+      expect(fontAsset).toBeDefined();
+      donor = await source.apply(donor, { type: "set_visual_language", visual_language: {
+        ...donor.visual_language, fonts: [...donor.visual_language.fonts, {
+          family: "COLRv1 Static Test Glyphs", source: "asset:" + fontAsset.id, rights_status: "cleared",
+        }],
+      } });
+      observations.originalFont = { sha256: hash(fontBytes), asset_id: fontAsset.id,
+        license_sha256: hash(await readFile(join(process.cwd(), "../../crates/service/tests/fixtures/managed-font-source-LICENSE"))),
+        fixture_only: true, human_acceptance: false };
       const original = (await target.fixtureBootstrap()).project;
       const originalOracle = await target.observeStoredProject(original);
       observations.targetOriginalOracle = originalOracle;
-      const donorHistory = await source.history(donor.id, 0, 256);
-      observations.source = donor; observations.targetBefore = original;
+      observations.targetBefore = original;
       expect(donor.id).not.toBe(original.id);
       const bundlePath = testInfo.outputPath("portable-export.motionwright");
       await source.attachFixturePage(page);
       await page.goto("/");
       await button(page, "Deliver").click();
+      await field(page, "Portable export path").fill(bundlePath);
+      await expect(button(page, "Export bundle")).toBeDisabled();
+      const fontEditor = page.getByLabel("Portable font copy declarations", { exact: true });
+      const savedFonts = fontEditor.getByLabel("Saved font copy declarations", { exact: true });
+      const confirmation = fontEditor.getByRole("checkbox", { name: "I confirm this font-copy declaration for these original bytes" });
+      const saveFont = fontEditor.getByRole("button", { name: "Save font copy declaration", exact: true });
+      const beforeFontEdits = requests(source, "apply_change").length;
+      await fontEditor.getByLabel("Original portable font", { exact: true }).selectOption(fontAsset.id);
+      await fontEditor.getByLabel("Portable font copy permission", { exact: true }).selectOption("prohibited");
+      await confirmation.check();
+      await saveFont.click();
+      await expect(savedFonts).toContainText("prohibited");
+      await expect(confirmation).not.toBeChecked();
+      await expect(button(page, "Export bundle")).toBeDisabled();
+
+      await fontEditor.getByLabel("Portable font copy permission", { exact: true }).selectOption("allowed");
+      await fontEditor.getByLabel("Font original origin", { exact: true }).fill("Original retained SDK test fixture with adjacent license");
+      await fontEditor.getByLabel("Font copy license or terms", { exact: true }).fill("Apache-2.0");
+      await fontEditor.getByLabel("Font copy note", { exact: true }).fill("Technical fixture declaration; no human or commercial license acceptance");
+      await confirmation.check();
+      await saveFont.click();
+      await expect(savedFonts).toContainText("allowed");
+      await expect(confirmation).not.toBeChecked();
+      await expect(button(page, "Export bundle")).toBeEnabled();
+
+      await savedFonts.getByRole("button", { name: "Remove font declaration", exact: true }).click();
+      await expect(savedFonts).toContainText("No font-copy declarations saved.");
+      await expect(button(page, "Export bundle")).toBeDisabled();
+      await expect(fontEditor.getByLabel("font copy uncertain outcome", { exact: true })).toHaveCount(0);
+      await confirmation.check();
+      await saveFont.click();
+      await expect(savedFonts).toContainText("allowed");
+      await expect(confirmation).not.toBeChecked();
+      expect(requests(source, "apply_change").slice(beforeFontEdits).map(request => (request.change as Change).type)).toEqual([
+        "upsert_font_portable_copy", "upsert_font_portable_copy", "remove_font_portable_copy", "upsert_font_portable_copy",
+      ]);
+      donor = await source.project(donor.id);
+      expect(donor.production_design?.font_portable_copies).toEqual([{
+        version: 1, asset_id: fontAsset.id, content_sha256: hash(fontBytes), permission: "allowed",
+        origin: "Original retained SDK test fixture with adjacent license", license: "Apache-2.0",
+        note: "Technical fixture declaration; no human or commercial license acceptance",
+      }]);
+      const donorHistory = await source.history(donor.id, 0, 256);
+      observations.source = donor;
+      observations.fontOwnerEditCount = 4;
       const originalInventory = page.getByLabel("Portable original source coverage");
       const sourceCount = new Set(donor.assets.map(asset => asset.content_sha256)).size;
       await expect(originalInventory).toContainText(
@@ -1557,6 +1614,12 @@ test.describe("real service imports and portable restore", () => {
       await targetPage.reload();
       await button(targetPage, "Brief").click();
       await expect(field(targetPage, "Project title")).toHaveValue(final.title);
+      await button(targetPage, "Deliver").click();
+      const reopenedFonts = targetPage.getByLabel("Saved font copy declarations", { exact: true });
+      await expect(reopenedFonts).toContainText("Original licensed portable test font");
+      await expect(reopenedFonts).toContainText("allowed");
+      await expect(reopenedFonts).toContainText("Apache-2.0");
+      await expect(reopenedFonts).toContainText(hash(fontBytes));
       await targetPage.screenshot({ path: testInfo.outputPath("real-portable-restored-edited-reopened.png"), fullPage: true });
       expect(requests(target, "apply_change")).toHaveLength(1);
       const unchangedOriginal = await target.observeStoredProject(original);

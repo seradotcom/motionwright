@@ -353,7 +353,7 @@ export function useBrandAuthoringDraft(
   return {
     draft: session.draft, session, working, conflict, unknown: brandUnknown(session.draft), reviewing, outcome,
     proposalCurrent: brandProposalCurrent(session.draft, project),
-    blocked: working || !!session.storageError || conflict || brandLocked(project) || !!session.draft.pending,
+    blocked: working || !!session.storageError || conflict || brandLocked(project, target) || !!session.draft.pending,
     edit, preview, submit, choose, retry, freshCopy, restore, inspect, separate, discardProposal, download,
     refresh: () => { refresh(session); notify(session); },
   };

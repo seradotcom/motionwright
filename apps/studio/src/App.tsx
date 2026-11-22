@@ -85,6 +85,7 @@ import DependenciesWorkspace from "./DependenciesWorkspace";
 import DeliveryProfiles from "./DeliveryProfiles";
 import type { DeliveryProjectState } from "./deliveryProfileDraft";
 import OtioCutReviewWorkbench from "./OtioCutReviewWorkbench";
+import FontPortableCopyEditor from "./FontPortableCopyEditor";
 import IntegrationsWorkspace from "./IntegrationsWorkspace";
 import ProductionJobsWorkspace from "./ProductionJobs";
 import NativeAvReview from "./NativeAvReview";
@@ -1012,6 +1013,8 @@ function DeliverView({
           </div>
           <span className="status-pill status-current">PROJECT STATE + CAS</span>
         </header>
+
+        <FontPortableCopyEditor project={project} commit={commitRecipe} busy={portableBusy !== null} desktopMode={desktopMode}/>
 
         <div className="portable-plan" aria-label="Portable original source coverage">
           <div><span>Source revision</span><strong className="mono">r{portableReport.revision}</strong></div>
