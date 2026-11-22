@@ -619,7 +619,7 @@ fn selected_owner_file(input: &str) -> Result<PathBuf, String> {
             .is_none_or(|ext| !ext.eq_ignore_ascii_case("mp4"))
         || path
             .symlink_metadata()
-            .is_err_or(|meta| !meta.file_type().is_file())
+            .map_or(true, |meta| !meta.file_type().is_file())
         || fs::canonicalize(&path).map_err(|_| refused())? != path
         || path.ancestors().any(|parent| {
             parent
