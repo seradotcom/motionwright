@@ -1981,10 +1981,14 @@ def main() -> None:
                 if LAYER_ORDER_E2E == "1":
                     seeded = run_json([str(MW_BIN), "layer-order-seed", str(database)], env=env)
                     seeded = author_native_layer_order(database, seeded, env)
+                elif CLIP_E2E == "1":
+                    # Only this selected source requires a read-only snapshot
+                    # before the first Studio Save. Preserve standard seed for
+                    # every historical native fixture and provider selection.
+                    seeded = run_json([str(MW_BIN), "clip-seed", str(database)], env=env)
+                    seeded = author_native_clip_group(database, seeded, env)
                 else:
                     seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
-                    if CLIP_E2E == "1":
-                        seeded = author_native_clip_group(database, seeded, env)
             if (seeded["width"], seeded["height"]) != (1920, 1080):
                 raise AssertionError(f"unexpected master profile: {seeded}")
             # Non-mutating app-owned Film export, exactly the same source fixture

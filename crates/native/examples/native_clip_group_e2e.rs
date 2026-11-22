@@ -361,6 +361,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn clip_seed_prepares_original_reader_before_first_ui_save() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("source-seed.sqlite3");
+        // Exercise the exact CLI producer, not only a separately constructed
+        // fixture. No Studio, Broker, Driver or effect is started here.
+        seed_clip(&database).unwrap();
+        let before_receipt = temp.path().join("original-before-ui.json");
+        before(&database, &before_receipt).unwrap();
+        let source: serde_json::Value =
+            serde_json::from_slice(&fs::read(&before_receipt).unwrap()).unwrap();
+        let reader = StudioServiceReader::open(&database).unwrap();
+        let projects = reader.projects(2).unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(
+            source["project"],
+            serde_json::to_value(&projects[0]).unwrap()
+        );
+        assert_eq!(
+            source["database_identity"],
+            serde_json::to_value(reader.database_file_identity().unwrap()).unwrap()
+        );
+        assert_eq!(source["native_execution"], false);
+    }
+
+    #[test]
     fn exact_clip_source_requires_closed_writer_and_reopens_original_store() {
         // These source-only synthetic edits do not substitute for the
         // separately selected Chromium UI and actual physical Native PNGs.

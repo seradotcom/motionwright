@@ -645,6 +645,9 @@ jobs:
             cargo test --locked -p motionwright-native --example native-render-e2e \
               native_clip_group_e2e::tests::exact_clip_source_requires_closed_writer_and_reopens_original_store \
               -- --exact --test-threads=1 > "$root/selected-store.original.log" 2>&1
+            cargo test --locked -p motionwright-native --example native-render-e2e \
+              native_clip_group_e2e::tests::clip_seed_prepares_original_reader_before_first_ui_save \
+              -- --exact --test-threads=1 > "$root/clip-seed.original.log" 2>&1
           else
             cargo test --locked -p motionwright-native --example native-render-e2e \
               native_layer_order_e2e::tests::native_layer_save_requires_exact_source_and_independent_store_reopen \
@@ -686,12 +689,15 @@ jobs:
                   "nested_rectangular_clip_group_is_refused_without_mask_or_preview_substitution",
                   "exact_fade_out_opacity_keeps_visible_source_and_real_native_zero_target")],
           ]
+          if os.environ["MOTIONWRIGHT_NATIVE_CLIP_E2E"] == "1":
+              tests.append(("clip-seed.original.log",
+                            "native_clip_group_e2e::tests::clip_seed_prepares_original_reader_before_first_ui_save"))
           for path,test in tests:
               raw=(root/path).read_text()
               assert "test "+test+" ... ok" in raw, "missing exact original G1: "+path
               assert "test result: ok. 1 passed; 0 failed;" in raw, "not isolated: "+path
           assert "Ran 22 tests" in (root/"oracle.original.log").read_text()
-          print("selected-native-source=PASS Rust=4 Python=22 StudioType=PASS Browser=READY NativeHost=NOT_RUN")
+          print("selected-native-source=PASS Rust="+str(len(tests))+" Python=22 StudioType=PASS Browser=READY NativeHost=NOT_RUN")
           PY_LAYER_G1
 
       - name: Install exact Motion Canvas runtime and Firefox

@@ -39,7 +39,7 @@ enum CombinedMaster<'a> {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: native-render-e2e <clip-before DATABASE BEFORE_JSON | clip-capture DATABASE BEFORE_JSON STUDIO_JSON STUDIO_SHA256 SOURCE_JSON | clip-readback DATABASE SOURCE_JSON SOURCE_SHA256 REPORT_JSON | layer-order-seed DATABASE | layer-order-before DATABASE BEFORE_JSON | layer-order-capture DATABASE BEFORE_JSON STUDIO_JSON STUDIO_SHA256 SOURCE_JSON | layer-order-readback DATABASE SOURCE_JSON SOURCE_SHA256 REPORT_JSON | geometry-seed DATABASE SOURCE_RECEIPT | geometry-capture-hold DATABASE SOURCE_RECEIPT STUDIO_RECEIPT STUDIO_SHA256 | geometry-readback DATABASE SOURCE_RECEIPT EXPECTED_SHA256 REPORT_JSON | seed DATABASE | film DATABASE FILM_JSON | render DATABASE CONNECTION EVIDENCE_JSON | seed-saved-mix DATABASE SOURCES EVIDENCE | seed-tauri-audio DATABASE PRIVATE_ROOT | tauri-audio-readback DATABASE PRIVATE_ROOT | render-master-saved-mix DATABASE CONNECTION RENDER_EVIDENCE MASTER_EVIDENCE | saved-mix-readback DATABASE EVIDENCE | cycle-snapshot DATABASE DIRECTORY | cycle-edit DATABASE BEFORE_PROJECT DIRECTORY | cycle-render-edited DATABASE CONNECTION EVIDENCE_JSON | cycle-verify-binding FILM_JSON INSPECTION_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
+        "usage: native-render-e2e <clip-seed DATABASE | clip-before DATABASE BEFORE_JSON | clip-capture DATABASE BEFORE_JSON STUDIO_JSON STUDIO_SHA256 SOURCE_JSON | clip-readback DATABASE SOURCE_JSON SOURCE_SHA256 REPORT_JSON | layer-order-seed DATABASE | layer-order-before DATABASE BEFORE_JSON | layer-order-capture DATABASE BEFORE_JSON STUDIO_JSON STUDIO_SHA256 SOURCE_JSON | layer-order-readback DATABASE SOURCE_JSON SOURCE_SHA256 REPORT_JSON | geometry-seed DATABASE SOURCE_RECEIPT | geometry-capture-hold DATABASE SOURCE_RECEIPT STUDIO_RECEIPT STUDIO_SHA256 | geometry-readback DATABASE SOURCE_RECEIPT EXPECTED_SHA256 REPORT_JSON | seed DATABASE | film DATABASE FILM_JSON | render DATABASE CONNECTION EVIDENCE_JSON | seed-saved-mix DATABASE SOURCES EVIDENCE | seed-tauri-audio DATABASE PRIVATE_ROOT | tauri-audio-readback DATABASE PRIVATE_ROOT | render-master-saved-mix DATABASE CONNECTION RENDER_EVIDENCE MASTER_EVIDENCE | saved-mix-readback DATABASE EVIDENCE | cycle-snapshot DATABASE DIRECTORY | cycle-edit DATABASE BEFORE_PROJECT DIRECTORY | cycle-render-edited DATABASE CONNECTION EVIDENCE_JSON | cycle-verify-binding FILM_JSON INSPECTION_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
     );
     std::process::exit(2);
 }
@@ -431,7 +431,29 @@ fn seed_layer_order(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let (_service, project) = seed_project(database)?;
+    seed_with_original_clip_handoff(database, false)
+}
+
+fn seed_clip(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    seed_with_original_clip_handoff(database, true)
+}
+
+fn seed_with_original_clip_handoff(
+    database: &Path,
+    clip_source: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (service, project) = seed_project(database)?;
+    if clip_source {
+        // A source-bound Studio Clip starts with an independent read-only
+        // observation. Dropping the writer alone cannot establish SQLite's
+        // authorized WAL-to-DELETE handoff or the original managed CAS.
+        service.prepare_read_only_handoff()?;
+        drop(service);
+        let reader = motionwright_service::StudioServiceReader::open(database)?;
+        if reader.project(project.id)? != project {
+            return Err("Clip source seed differs after original Store writer handoff".into());
+        }
+    }
     let deliverable = project
         .deliverables
         .first()
@@ -1614,6 +1636,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| usage());
 
     match command.as_str() {
+        "clip-seed" => {
+            let database = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            seed_clip(&database)
+        }
         "clip-before" => {
             let database = path_arg(&mut args);
             let output = path_arg(&mut args);
