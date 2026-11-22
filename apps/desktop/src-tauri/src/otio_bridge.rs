@@ -43,6 +43,10 @@ pub struct OtioMediaPreviewRequest {
     pub revision: u64,
     pub bundle_path: String,
     pub edited_file: String,
+    /// Original, unedited Kdenlive OTIO export in the same owner bundle.
+    /// None retains the metadata-preserving OTIO inspection contract.
+    #[serde(default)]
+    pub received_file: Option<String>,
     pub effect_grant: Uuid,
 }
 
@@ -51,6 +55,9 @@ pub struct OtioMediaPreviewResponse {
     pub preview: OtioEditPreview,
     pub source_project_sha256: String,
     pub media_refs_verified: usize,
+    pub input_profile: &'static str,
+    pub received_otio_sha256: Option<String>,
+    pub edited_otio_sha256: String,
     pub runtime: &'static str,
     pub source_media_relinked: bool,
     pub editor_launched: bool,
@@ -319,6 +326,126 @@ fn run_bridge(scripts: &Path, bridge: &Path, arguments: &[OsString]) -> Result<(
     }
 }
 
+fn preview_subject(bundle: &str, edited: &str, received: Option<&str>) -> Result<String, String> {
+    if !valid_edited_name(edited)
+        || received.is_some_and(|name| {
+            !valid_edited_name(name)
+                || name == edited
+                || name == "timeline.otio"
+                || edited == "timeline.otio"
+        })
+    {
+        return Err("Choose distinct original and edited .otio filenames inside the source bundle; timeline.otio remains the immutable Motionwright export.".into());
+    }
+    match received {
+        Some(initial) => {
+            serde_json::to_string(&("otio-kdenlive-pair-preview/1", bundle, initial, edited))
+        }
+        None => serde_json::to_string(&("otio-bridge-preview/1", bundle, edited)),
+    }
+    .map_err(|_| refused())
+}
+
+/// Adapt the existing native reader's bounded proposal, never its execution
+/// status. Both original files and the immutable capsule must match this
+/// invocation's held-byte observations before any owner Change can be offered.
+fn kdenlive_owner_preview(
+    raw: &[u8],
+    manifest_sha: &str,
+    original_otio_sha: &str,
+    received_sha: &str,
+    edited_sha: &str,
+    source_sha: &str,
+) -> Result<OtioEditPreview, String> {
+    let native: serde_json::Value = serde_json::from_slice(raw).map_err(|_| refused())?;
+    for (field, expected) in [
+        ("schema", "motionwright.kdenlive-bound-cut-preview/1"),
+        ("profile", "kdenlive-bound-video-cut-v1"),
+        ("status", "BOUNDED_PROPOSAL_RECEIVER_NOT_VERIFIED"),
+        ("capsule_manifest_sha256", manifest_sha),
+        ("original_otio_sha256", original_otio_sha),
+        ("received_otio_sha256", received_sha),
+        ("edited_otio_sha256", edited_sha),
+        ("source_project_sha256", source_sha),
+        ("nle_receiver_acceptance", "NOT_VERIFIED"),
+        ("native_project_reopened", "NOT_VERIFIED"),
+        ("semantic_native_roundtrip", "NOT_SUPPORTED"),
+    ] {
+        if native.get(field).and_then(serde_json::Value::as_str) != Some(expected) {
+            return Err(refused());
+        }
+    }
+    for (field, expected) in [
+        ("native_final_frames_verified", false),
+        ("edit_imported", false),
+        ("source_media_relinked", false),
+        ("raw_files_rewritten", false),
+        ("owner_revision_commit_required", true),
+        ("human_review_required", true),
+        ("publication_approved", false),
+    ] {
+        if native.get(field).and_then(serde_json::Value::as_bool) != Some(expected) {
+            return Err(refused());
+        }
+    }
+    let original_order = native["original_scene_order"]
+        .as_array()
+        .ok_or_else(refused)?;
+    if original_order.is_empty()
+        || original_order.len() > 32
+        || native["original_missing_scene_ids"] != serde_json::json!([])
+        || [
+            "media_refs_verified",
+            "received_clip_count",
+            "edited_clip_count",
+        ]
+        .into_iter()
+        .any(|field| native[field].as_u64() != Some(original_order.len() as u64))
+        || native["source_identity_mapping"].as_array().map(Vec::len) != Some(original_order.len())
+    {
+        return Err(refused());
+    }
+    let mut proposal = serde_json::Map::new();
+    for field in [
+        "source_project_sha256",
+        "project_id",
+        "generation",
+        "expected_project_revision",
+        "original_scene_order",
+        "proposed_scene_order",
+        "native_change_proposals",
+        "media_refs_verified",
+        "loss_report",
+        "property_fidelity",
+        "edit_imported",
+        "source_media_relinked",
+        "owner_revision_commit_required",
+        "human_review_required",
+        "semantic_native_roundtrip",
+        "nle_receiver_acceptance",
+        "publication_approved",
+    ] {
+        proposal.insert(field.into(), native.get(field).ok_or_else(refused)?.clone());
+    }
+    proposal.insert(
+        "schema".into(),
+        serde_json::json!("motionwright.otio-edit-preview/1"),
+    );
+    proposal.insert("missing_references_retained".into(), serde_json::json!(0));
+    proposal.insert("rendering_performed".into(), serde_json::json!(false));
+    // These immutable input identities remain in the actual reviewed Change
+    // and its journal. They do not claim an authenticated NLE process.
+    proposal.get_mut("loss_report").and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(refused)?.push(serde_json::json!(format!(
+            "Original Kdenlive cut files: initial SHA-256 {received_sha}; edited SHA-256 {edited_sha}. Source-file inspection does not authenticate editor execution or visual approval."
+        )));
+    let value = serde_json::Value::Object(proposal);
+    if serde_json::to_vec(&value).map_err(|_| refused())?.len() as u64 > MAX_PREVIEW {
+        return Err(refused());
+    }
+    serde_json::from_value(value).map_err(|_| refused())
+}
+
 /// Every input is source-scoped and the one-use local-import grant is consumed
 /// before Python/ffprobe starts. A complete original media bundle is required:
 /// an arbitrary .otio file, pasted claim or unverified JSON is insufficient.
@@ -327,11 +454,11 @@ pub fn preview(
     grants: &EffectGrantRegistry,
     request: OtioMediaPreviewRequest,
 ) -> Result<OtioMediaPreviewResponse, String> {
-    if !valid_edited_name(&request.edited_file) {
-        return Err(
-            "Choose a single edited .otio filename inside the original source bundle.".into(),
-        );
-    }
+    let subject = preview_subject(
+        &request.bundle_path,
+        &request.edited_file,
+        request.received_file.as_deref(),
+    )?;
     let bundle = canonical_owner_directory(&request.bundle_path)?;
     let project = service.project(request.project_id).map_err(|_| refused())?;
     if project.generation != request.generation || project.revision != request.revision {
@@ -347,23 +474,22 @@ pub fn preview(
     if source_project != project {
         return Err("The original OTIO media bundle does not belong to the currently saved project revision.".into());
     }
+    let manifest = read_regular_bounded(&bundle.join("bridge-manifest.json"), MAX_PROJECT)?;
     let edited = read_regular_bounded(&bundle.join(&request.edited_file), MAX_PROJECT)?;
-    if edited.len() < 16 {
+    let received = request
+        .received_file
+        .as_ref()
+        .map(|name| read_regular_bounded(&bundle.join(name), MAX_PROJECT))
+        .transpose()?;
+    if edited.len() < 16 || received.as_ref().is_some_and(|bytes| bytes.len() < 16) {
         return Err(refused());
     }
-    let subject = serde_json::to_string(&(
-        "otio-bridge-preview/1",
-        request.bundle_path.as_str(),
-        request.edited_file.as_str(),
-    ))
-    .map_err(|_| refused())?;
     grants.consume(
         request.effect_grant,
         EffectKind::ImportLocal,
         EffectScope::project(request.project_id, request.generation, request.revision),
         &subject,
     )?;
-    // Fixed system runtime must exist before creating any disposable stage.
     fixed_runtime()?;
     let parent = bundle.parent().ok_or_else(refused)?;
     let temp = tempfile::Builder::new()
@@ -376,25 +502,80 @@ pub fn preview(
     let (source_dir, bridge) = stage_bridge_sources(temp.path())?;
     let snapshot = write_exact(temp.path(), "current-project.json", &original)?;
     let output = temp.path().join("review-proposal.json");
-    let arguments = vec![
-        OsString::from("preview-import"),
-        OsString::from("--bundle"),
-        bundle.as_os_str().to_owned(),
-        OsString::from("--edited"),
-        OsString::from(request.edited_file.as_str()),
+    let mut arguments = if let (Some(initial_name), Some(initial)) =
+        (request.received_file.as_deref(), received.as_ref())
+    {
+        let native_request = serde_json::to_vec(&serde_json::json!({
+            "schema": "motionwright.kdenlive-bound-cut-request/1",
+            "capsule_manifest_sha256": sha(&manifest),
+            "received_otio": initial_name,
+            "received_sha256": sha(initial),
+            "edited_otio": request.edited_file,
+            "edited_sha256": sha(&edited),
+        }))
+        .map_err(|_| refused())?;
+        let selected = write_exact(temp.path(), "native-cut-request.json", &native_request)?;
+        vec![
+            OsString::from("preview-kdenlive-cut"),
+            OsString::from("--bundle"),
+            bundle.as_os_str().to_owned(),
+            OsString::from("--raw-root"),
+            bundle.as_os_str().to_owned(),
+            OsString::from("--request-file"),
+            selected.as_os_str().to_owned(),
+            // Only media under the selected bundle are authorized. Absolute
+            // external paths and implicit relinking remain refused.
+            OsString::from("--media-root"),
+            bundle.as_os_str().to_owned(),
+        ]
+    } else {
+        vec![
+            OsString::from("preview-import"),
+            OsString::from("--bundle"),
+            bundle.as_os_str().to_owned(),
+            OsString::from("--edited"),
+            OsString::from(request.edited_file.as_str()),
+        ]
+    };
+    arguments.extend([
         OsString::from("--current-project"),
         snapshot.as_os_str().to_owned(),
         OsString::from("--output"),
         output.as_os_str().to_owned(),
-    ];
+    ]);
     run_bridge(&source_dir, &bridge, &arguments)?;
     if read_regular_bounded(&bundle.join("source-project.json"), MAX_PROJECT)? != original
+        || read_regular_bounded(&bundle.join("bridge-manifest.json"), MAX_PROJECT)? != manifest
         || read_regular_bounded(&bundle.join(&request.edited_file), MAX_PROJECT)? != edited
     {
         return Err("The original OTIO source or edited cut changed during one media verification. Nothing was saved.".into());
     }
-    let raw = read_regular_bounded(&output, MAX_PREVIEW)?;
-    let preview: OtioEditPreview = serde_json::from_slice(&raw).map_err(|_| refused())?;
+    if let (Some(name), Some(initial)) = (request.received_file.as_ref(), received.as_ref()) {
+        if read_regular_bounded(&bundle.join(name), MAX_PROJECT)? != *initial {
+            return Err(
+                "The initial Kdenlive export changed during inspection. Nothing was saved.".into(),
+            );
+        }
+    }
+    let raw = read_regular_bounded(&output, MAX_PROJECT)?;
+    let preview: OtioEditPreview = if let Some(initial) = received.as_ref() {
+        let manifest_value: serde_json::Value =
+            serde_json::from_slice(&manifest).map_err(|_| refused())?;
+        let timeline_sha = manifest_value["otio_sha256"].as_str().ok_or_else(refused)?;
+        kdenlive_owner_preview(
+            &raw,
+            &sha(&manifest),
+            timeline_sha,
+            &sha(initial),
+            &sha(&edited),
+            &sha(&original),
+        )?
+    } else {
+        if raw.len() as u64 > MAX_PREVIEW {
+            return Err(refused());
+        }
+        serde_json::from_slice(&raw).map_err(|_| refused())?
+    };
     if preview.source_project_sha256 != sha(&original)
         || preview.project_id != project.id
         || preview.generation != project.generation
@@ -415,6 +596,13 @@ pub fn preview(
     Ok(OtioMediaPreviewResponse {
         source_project_sha256: sha(&original),
         media_refs_verified: preview.media_refs_verified,
+        input_profile: if received.is_some() {
+            "kdenlive-otio-pair"
+        } else {
+            "metadata-preserving-otio"
+        },
+        received_otio_sha256: received.as_ref().map(|bytes| sha(bytes)),
+        edited_otio_sha256: sha(&edited),
         preview,
         runtime: "system-root-owned-linux-python3-ffprobe; original first-party bridge source embedded",
         source_media_relinked: false,
@@ -477,6 +665,28 @@ mod tests {
         }
         assert!(valid_edited_name("edited-owner-cut.otio"));
         assert!(canonical_owner_directory("relative").is_err());
+        let legacy = preview_subject("/owner", "edited.otio", None).unwrap();
+        let paired = preview_subject("/owner", "edited.otio", Some("received.otio")).unwrap();
+        assert_eq!(
+            legacy,
+            r#"["otio-bridge-preview/1","/owner","edited.otio"]"#
+        );
+        assert_eq!(
+            paired,
+            r#"["otio-kdenlive-pair-preview/1","/owner","received.otio","edited.otio"]"#
+        );
+        assert_ne!(
+            legacy, paired,
+            "a legacy grant cannot authorize another source file"
+        );
+        assert_ne!(
+            paired,
+            preview_subject("/owner", "edited.otio", Some("other.otio")).unwrap()
+        );
+        for name in ["", "../received.otio", "edited.otio", "timeline.otio"] {
+            assert!(preview_subject("/owner", "edited.otio", Some(name)).is_err());
+        }
+        assert!(preview_subject("/owner", "timeline.otio", Some("received.otio")).is_err());
     }
     #[cfg(target_os = "linux")]
     #[test]
@@ -566,7 +776,93 @@ mod tests {
             "effect_grant": Uuid::now_v7(),
             "unverified_preview": true
         });
-        assert!(serde_json::from_value::<OtioMediaPreviewRequest>(input).is_err());
+        assert!(serde_json::from_value::<OtioMediaPreviewRequest>(input.clone()).is_err());
+        let mut allowed = input;
+        allowed
+            .as_object_mut()
+            .unwrap()
+            .remove("unverified_preview");
+        assert!(
+            serde_json::from_value::<OtioMediaPreviewRequest>(allowed.clone())
+                .unwrap()
+                .received_file
+                .is_none()
+        );
+        allowed["received_file"] = serde_json::json!("received.otio");
+        assert_eq!(
+            serde_json::from_value::<OtioMediaPreviewRequest>(allowed)
+                .unwrap()
+                .received_file
+                .as_deref(),
+            Some("received.otio")
+        );
+        // A returned RAW shape can become only a typed, unaccepted proposal.
+        // Full scene/edit/fidelity validation still belongs to bounded_native_changes.
+        let id = Uuid::now_v7();
+        let digest = "a".repeat(64);
+        let mut native = serde_json::json!({
+            "schema":"motionwright.kdenlive-bound-cut-preview/1",
+            "profile":"kdenlive-bound-video-cut-v1",
+            "status":"BOUNDED_PROPOSAL_RECEIVER_NOT_VERIFIED",
+            "capsule_manifest_sha256":digest, "original_otio_sha256":digest,
+            "received_otio_sha256":digest, "edited_otio_sha256":digest,
+            "source_project_sha256":digest, "project_id":id, "generation":Uuid::now_v7(),
+            "expected_project_revision":7, "original_scene_order":[id],
+            "proposed_scene_order":[id], "original_missing_scene_ids":[],
+            "native_change_proposals":[], "media_refs_verified":1,
+            "received_clip_count":1, "edited_clip_count":1,
+            "source_identity_mapping":[{}], "loss_report":["Original property losses"],
+            "property_fidelity":[], "nle_receiver_acceptance":"NOT_VERIFIED",
+            "native_project_reopened":"NOT_VERIFIED", "native_final_frames_verified":false,
+            "edit_imported":false, "source_media_relinked":false, "raw_files_rewritten":false,
+            "owner_revision_commit_required":true, "human_review_required":true,
+            "semantic_native_roundtrip":"NOT_SUPPORTED", "publication_approved":false
+        });
+        let project = |value: &serde_json::Value| {
+            kdenlive_owner_preview(
+                &serde_json::to_vec(value).unwrap(),
+                &digest,
+                &digest,
+                &digest,
+                &digest,
+                &digest,
+            )
+        };
+        let proposal = project(&native).unwrap();
+        assert_eq!(proposal.schema, "motionwright.otio-edit-preview/1");
+        assert!(!proposal.rendering_performed && !proposal.publication_approved);
+        assert_eq!(proposal.nle_receiver_acceptance, "NOT_VERIFIED");
+        assert!(proposal.loss_report.last().unwrap().contains(&digest));
+        for field in [
+            "received_otio_sha256",
+            "edited_otio_sha256",
+            "capsule_manifest_sha256",
+            "source_project_sha256",
+            "original_otio_sha256",
+            "nle_receiver_acceptance",
+            "native_project_reopened",
+            "status",
+        ] {
+            let mut substituted = native.clone();
+            substituted[field] = serde_json::json!("unbound");
+            assert!(project(&substituted).is_err(), "{field}");
+        }
+        for field in [
+            "edit_imported",
+            "source_media_relinked",
+            "raw_files_rewritten",
+            "native_final_frames_verified",
+            "publication_approved",
+        ] {
+            let mut forged = native.clone();
+            forged[field] = serde_json::json!(true);
+            assert!(project(&forged).is_err(), "{field}");
+        }
+        native["original_missing_scene_ids"] = serde_json::json!([id]);
+        assert!(
+            project(&native).is_err(),
+            "missing source cannot become a complete receiver"
+        );
     }
     #[test]
     fn media_bundle_export_rejects_implicit_rights_and_noncanonical_origins() {

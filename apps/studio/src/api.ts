@@ -567,6 +567,9 @@ export async function exportPortableOtioMediaBundle(
 
 export interface InstalledOtioCutPreview {
   preview: OtioEditPreview;
+  input_profile: "metadata-preserving-otio" | "kdenlive-otio-pair";
+  received_otio_sha256: string | null;
+  edited_otio_sha256: string;
   source_project_sha256: string;
   media_refs_verified: number;
   runtime: string;
@@ -580,15 +583,22 @@ export interface InstalledOtioCutPreview {
  * This previews a cut. It never applies or relinks foreign media. */
 export async function previewInstalledOtioMediaCut(
   project: Project, originalBundle: string, editedFilename: string,
+  receivedFilename?: string,
 ): Promise<InstalledOtioCutPreview> {
   if (!isTauri()) throw new Error("Verified OTIO media review requires Motionwright desktop.");
   const bundle = originalBundle.trim();
   const edited = editedFilename.trim();
-  if (!bundle || !/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\.otio$/.test(edited)
-      || edited.length > 160) {
-    throw new Error("Select an original OTIO media bundle and one edited .otio filename inside it.");
+  const received = receivedFilename?.trim();
+  const validName = (name: string) => name.length <= 160
+    && /^[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\.otio$/.test(name);
+  if (!bundle || !validName(edited) || (received !== undefined
+      && (!validName(received) || received === edited || received === "timeline.otio"
+        || edited === "timeline.otio"))) {
+    throw new Error("Select the original media bundle and distinct original and edited .otio filenames. Preserve timeline.otio as the Motionwright source.");
   }
-  const subject = JSON.stringify(["otio-bridge-preview/1", bundle, edited]);
+  const subject = JSON.stringify(received === undefined
+    ? ["otio-bridge-preview/1", bundle, edited]
+    : ["otio-kdenlive-pair-preview/1", bundle, received, edited]);
   if (new TextEncoder().encode(subject).length > 2_048) {
     throw new Error("The original OTIO bundle selection exceeds the local permission scope.");
   }
@@ -596,10 +606,18 @@ export async function previewInstalledOtioMediaCut(
   const response = await invoke<InstalledOtioCutPreview>("preview_otio_media_cut", {
     request: {
       project_id: project.id, generation: project.generation, revision: project.revision,
-      bundle_path: bundle, edited_file: edited, effect_grant: grant.token,
+      bundle_path: bundle, edited_file: edited,
+      ...(received === undefined ? {} : { received_file: received }),
+      effect_grant: grant.token,
     },
   });
-  if (!response || response.preview?.project_id !== project.id
+  if (!response || response.input_profile !== (received === undefined
+        ? "metadata-preserving-otio" : "kdenlive-otio-pair")
+      || !/^[0-9a-f]{64}$/.test(response.edited_otio_sha256)
+      || (received === undefined ? response.received_otio_sha256 !== null
+        : typeof response.received_otio_sha256 !== "string"
+          || !/^[0-9a-f]{64}$/.test(response.received_otio_sha256))
+      || response.preview?.project_id !== project.id
       || response.preview.generation !== project.generation
       || response.preview.expected_project_revision !== project.revision
       || response.preview.source_project_sha256 !== response.source_project_sha256

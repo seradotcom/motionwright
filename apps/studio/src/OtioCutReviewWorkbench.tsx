@@ -31,6 +31,8 @@ export default function OtioCutReviewWorkbench({
   const [bridgeInspecting,setBridgeInspecting]=useState(false);
   const [bundlePath,setBundlePath]=useState("");
   const [editedCut,setEditedCut]=useState("edited.otio");
+  const [cutOrigin,setCutOrigin]=useState<"motionwright"|"kdenlive">("motionwright");
+  const [receivedCut,setReceivedCut]=useState("received.otio");
   const [exportDestination,setExportDestination]=useState("");
   const [exportReviewer,setExportReviewer]=useState("");
   const [mediaOwner,setMediaOwner]=useState("");
@@ -43,6 +45,10 @@ export default function OtioCutReviewWorkbench({
     ?[{scene_id:project.scenes[0].id,asset_id:"",source_path:"",source_start_frame:0}]
     :[]);
   const fileAttempt=useRef(0);
+  const inspectedSelections=useRef(new Set<string>());
+  const inspectionKey=JSON.stringify([scope,bundlePath.trim(),cutOrigin,
+    cutOrigin==="kdenlive"?receivedCut.trim():null,editedCut.trim()]);
+  const inspectionAttempted=inspectedSelections.current.has(inspectionKey);
   const [error,setError]=useState<string|null>(null);
   const [status,setStatus]=useState<string|null>(null);
   const absolute=otioHasAbsoluteAnchors(project);
@@ -93,19 +99,24 @@ export default function OtioCutReviewWorkbench({
   };
   const previewOwnerMediaCut=async()=>{
     if(!desktopMode||busy||working||fileLoading||bridgeInspecting||exportingBundle
-       ||!bundlePath.trim()||!editedCut.trim())return;
+       ||!bundlePath.trim()||!editedCut.trim()
+       ||(cutOrigin==="kdenlive"&&!receivedCut.trim())||inspectionAttempted)return;
     const selectedScope=scope;
     const attempt=++fileAttempt.current;
     setSelected(null);setRaw("");setLosses(false);setAnchors(false);
+    inspectedSelections.current.add(inspectionKey);
     setError(null);setStatus(null);setBridgeInspecting(true);
     try{
-      const returned=await previewInstalledOtioMediaCut(project,bundlePath,editedCut);
+      const returned=await previewInstalledOtioMediaCut(project,bundlePath,editedCut,
+        cutOrigin==="kdenlive"?receivedCut:undefined);
       if(latest.current!==selectedScope||fileAttempt.current!==attempt)return;
       const preview=inspectOtioCutPreview(project,JSON.stringify(returned.preview));
       setRaw(JSON.stringify(preview));
       setSelected({scope:selectedScope,preview});
       setStatus("The installed bridge verified "+returned.media_refs_verified+
-        " original media reference(s) against this saved source. Review the proposed cut and every property loss before your one explicit Save. No media or editor was imported.");
+        " original media reference(s) against this saved source. Review the proposed cut and every property loss before your one explicit Save. No media or editor was imported."+
+        (returned.input_profile==="kdenlive-otio-pair"
+          ?" The initial and edited Kdenlive file hashes are retained in this review; editor execution and visual approval remain unverified.":""));
     }catch(reason){
       if(latest.current===selectedScope&&fileAttempt.current===attempt)
         setError(reason instanceof Error?reason.message:String(reason));
@@ -315,6 +326,39 @@ export default function OtioCutReviewWorkbench({
           }}/>
       </label>
       <label>
+        <span className="field-label">How the cut was exported</span>
+        <select aria-label="OTIO cut origin" value={cutOrigin}
+          disabled={busy||working||fileLoading||bridgeInspecting||exportingBundle}
+          onChange={event=>{
+            fileAttempt.current++;
+            setCutOrigin(event.target.value==="kdenlive"?"kdenlive":"motionwright");
+            setRaw("");setSelected(null);setLosses(false);setAnchors(false);
+            setError(null);setStatus(null);
+          }}>
+          <option value="motionwright">OTIO preserving Motionwright metadata</option>
+          <option value="kdenlive">Original and edited Kdenlive OTIO exports</option>
+        </select>
+      </label>
+      {cutOrigin==="kdenlive"&&<>
+        <p className="portable-runtime-note">
+          After importing timeline.otio in Kdenlive, export the unchanged cut as received.otio.
+          Then edit and export edited.otio. Keep both exports and all original media in this
+          bundle. Every scene needs its original media; additional tracks, effects, changed
+          in-points and missing sources are refused. Review supports scene order and end trims.
+        </p>
+        <label>
+          <span className="field-label">Initial Kdenlive OTIO export before editing</span>
+          <input type="text" aria-label="Initial Kdenlive OTIO filename in bundle"
+            value={receivedCut} maxLength={160} autoComplete="off" spellCheck={false}
+            placeholder="received.otio"
+            disabled={busy||working||fileLoading||bridgeInspecting||exportingBundle}
+            onChange={event=>{
+              fileAttempt.current++;setReceivedCut(event.target.value);setRaw("");setSelected(null);
+              setLosses(false);setAnchors(false);setError(null);setStatus(null);
+            }}/>
+        </label>
+      </>}
+      <label>
         <span className="field-label">Edited OTIO file inside that bundle</span>
         <input type="text" aria-label="Edited OTIO filename in bundle" value={editedCut}
           maxLength={160} autoComplete="off" spellCheck={false}
@@ -326,11 +370,16 @@ export default function OtioCutReviewWorkbench({
       </label>
       <button type="button" className="button"
         disabled={!desktopMode||busy||working||fileLoading||bridgeInspecting||exportingBundle
-          ||!bundlePath.trim()||!editedCut.trim()}
+          ||!bundlePath.trim()||!editedCut.trim()
+          ||(cutOrigin==="kdenlive"&&!receivedCut.trim())||inspectionAttempted}
         onClick={()=>void previewOwnerMediaCut()}>
         <FileCheck2 size={14} aria-hidden="true"/>
         {bridgeInspecting?"Verifying original OTIO media…":"Preview edited OTIO with verified media"}
       </button>
+      {inspectionAttempted&&!bridgeInspecting&&<p className="portable-runtime-note">
+        This source selection has already had one inspection attempt and will not be dispatched
+        again. Check its original outcome before selecting a different cut for a new inspection.
+      </p>}
       <div className="portable-operation-copy">
         <strong>Review an existing bridge proposal</strong>
         <span>Select its bounded <code>motionwright.otio-edit-preview/1</code> JSON file

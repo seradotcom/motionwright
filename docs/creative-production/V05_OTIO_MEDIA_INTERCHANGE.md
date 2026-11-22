@@ -168,6 +168,29 @@ Open **Deliver → OTIO cut review** in the Linux desktop application.
    Increasing an original scene duration is refused; only end trims and scene
    reordering are supported.
 
+### Returning original Kdenlive OTIO exports
+
+Select **Original and edited Kdenlive OTIO exports** under **How the cut was
+exported** when Kdenlive does not retain Motionwright metadata. After importing
+the exported `timeline.otio`, export the unchanged cut as `received.otio`, then
+make the supported edits and export `edited.otio`. Keep both original files
+inside the selected bundle and keep every source media reference inside that
+bundle. Preserve `timeline.otio` and the source manifest unchanged.
+
+The existing native cut reader checks both files against the saved Project and
+all original media. It requires a unique media SHA, frame rate and original
+in-point for every scene. It refuses missing clips, ambiguous source instances,
+foreign media, moved in-points, added tracks or unsupported effects. Only exact
+scene reordering and end trims become a proposal. The initial cut must still
+have the complete original scene order and duration.
+
+The review retains the initial and edited file hashes in the same owner Change
+that is saved to the journal. It does not relink assets, authenticate an editor
+process, approve visual fidelity or import external permissions. Review every
+property loss and explicitly save the proposed change through the ordinary
+project revision controls. An inspection selection is attempted once in the
+open review workbench; unknown results are not replayed.
+
 ### Installed runtime
 
 The DEB declares `python3` and `ffmpeg` as dependencies; ffmpeg supplies ffprobe.

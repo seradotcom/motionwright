@@ -17,6 +17,15 @@ import type { Project } from "../src/types";
 import { ScopedChangeService } from "./support/scopedChangeService";
 
 const run = promisify(execFile);
+const kdenlivePair = process.env.MOTIONWRIGHT_OTIO_INPUT_PROFILE === "kdenlive";
+if (process.env.MOTIONWRIGHT_OTIO_INPUT_PROFILE
+    && process.env.MOTIONWRIGHT_OTIO_INPUT_PROFILE !== "kdenlive") {
+  throw new Error("Unrecognized source-exact OTIO input profile");
+}
+const expectedMediaRefs = kdenlivePair ? 2 : 1;
+const flowTitle = kdenlivePair
+  ? "original Kdenlive-shaped OTIO pair is verified in Studio, saved once and independently reopened"
+  : "real verified media OTIO cut is reviewed in Studio, saved once and independently reopened";
 
 test.skip(
   !process.env.MOTIONWRIGHT_SERVICE_TEST_BIN ||
@@ -74,7 +83,7 @@ async function expectOtioTerminal(page: Page, success: Locator) {
   await expect(success).toBeVisible();
 }
 
-test("real verified media OTIO cut is reviewed in Studio, saved once and independently reopened", async ({ page }, info) => {
+test(flowTitle, async ({ page }, info) => {
   const databasePath = info.outputPath("service", "studio.sqlite3");
   const owner = info.outputPath("otio-owner");
   const exported = info.outputPath("verified-otio-bundle");
@@ -85,6 +94,8 @@ test("real verified media OTIO cut is reviewed in Studio, saved once and indepen
   let final: Project | undefined;
   let closed = false;
   const record: Record<string, unknown> = {
+    inputProfile: kdenlivePair ? "kdenlive-otio-pair" : "metadata-preserving-otio",
+    syntheticNativeData: kdenlivePair,
     actualOwnerMediaBytes: false,
     actualBridgeMediaProbe: false,
     bridgeSourceBoundProposal: false,
@@ -125,6 +136,12 @@ test("real verified media OTIO cut is reviewed in Studio, saved once and indepen
     await page.getByLabel("Original OTIO media license").fill("Synthetic test-owned original");
     await page.getByLabel("Original OTIO video asset 1").selectOption(mediaAsset!.id);
     await page.getByLabel("Original OTIO MP4 file path 1").fill(media);
+    if (kdenlivePair) {
+      await page.getByRole("button", { name: "Bind another original scene", exact: true }).click();
+      await page.getByLabel("Original OTIO video asset 2").selectOption(mediaAsset!.id);
+      await page.getByLabel("Original OTIO MP4 file path 2").fill(media);
+      await page.getByLabel("Original OTIO source start frame 2").fill("144");
+    }
     await page.getByLabel(/I confirm I have permission to use, copy and redistribute/).check();
     await page.getByLabel(/Explicitly permit synthetic or test-origin video inputs/).check();
     await page.getByRole("button", { name: "Export original media-bound OTIO bundle" }).click();
@@ -139,7 +156,7 @@ test("real verified media OTIO cut is reviewed in Studio, saved once and indepen
     expect(JSON.parse(await readFile(join(exported, "timeline.otio"), "utf8")).OTIO_SCHEMA)
       .toBe("Timeline.1");
     const manifest = JSON.parse(await readFile(join(exported, "bridge-manifest.json"), "utf8"));
-    expect(manifest.bound_media).toHaveLength(1);
+    expect(manifest.bound_media).toHaveLength(expectedMediaRefs);
     expect(manifest.project_sha256).toBe(sourceSnapshotSha);
     expect(manifest.bound_media[0].source_sha256).toBe(mediaSha);
     expect(manifest.bound_media[0].actual_media_frames).toBe(288);
@@ -150,20 +167,58 @@ test("real verified media OTIO cut is reviewed in Studio, saved once and indepen
     const originalClips = originalTimeline.tracks.children[0].children;
     expect(originalClips).toHaveLength(2);
     expect(originalClips[0].media_reference.OTIO_SCHEMA).toBe("ExternalReference.1");
-    expect(originalClips[1].media_reference.OTIO_SCHEMA).toBe("MissingReference.1");
-    const editedTimeline = structuredClone(originalTimeline);
+    expect(originalClips[1].media_reference.OTIO_SCHEMA)
+      .toBe(kdenlivePair ? "ExternalReference.1" : "MissingReference.1");
+    // This variant tests the actual installed reader on deliberately synthetic,
+    // metadata-stripped Kdenlive-shaped bytes. It does not run or authenticate
+    // a new NLE process, and never replaces the retained physical receiver.
+    const receivedTimeline = kdenlivePair ? {
+      OTIO_SCHEMA: "Timeline.1", name: "Test-owned receiver cut",
+      metadata: { kdenlive: { version: "26.08.3" } },
+      tracks: { OTIO_SCHEMA: "Stack.1", children: [{
+        OTIO_SCHEMA: "Track.1", kind: "Video",
+        children: originalClips.map((clip: {
+          name: string; source_range: unknown;
+          media_reference: { target_url: string; available_range: unknown };
+        }) => ({
+          OTIO_SCHEMA: "Clip.2", name: clip.name, enabled: true,
+          metadata: {}, effects: [], markers: [], source_range: clip.source_range,
+          active_media_reference_key: "DEFAULT_MEDIA",
+          media_references: { DEFAULT_MEDIA: {
+            OTIO_SCHEMA: "ExternalReference.1",
+            target_url: clip.media_reference.target_url,
+            available_range: clip.media_reference.available_range, metadata: {},
+          } },
+        })),
+      }] },
+    } : originalTimeline;
+    const receivedBytes = JSON.stringify(receivedTimeline);
+    if (kdenlivePair) {
+      await writeFile(join(exported, "received.otio"), receivedBytes, { flag: "wx" });
+      record.initialReceiverOriginalSha256 = sha(receivedBytes);
+    }
+    const editedTimeline = structuredClone(receivedTimeline);
     const editedClips = editedTimeline.tracks.children[0].children;
     editedClips[0].source_range.duration.value = 120; // 5 seconds at the original 24 fps
     editedTimeline.tracks.children[0].children = [editedClips[1], editedClips[0]];
-    await writeFile(join(exported, "edited.otio"), JSON.stringify(editedTimeline), { flag: "wx" });
+    const editedBytes = JSON.stringify(editedTimeline);
+    await writeFile(join(exported, "edited.otio"), editedBytes, { flag: "wx" });
+    record.editedCutOriginalSha256 = sha(editedBytes);
     // Same live Studio session now imports the edited cut via the compiled
     // bridge. The original export already installed its exact bundle path and
     // suggested filename; no navigation or second injected transport.
     await expect(page.getByLabel("Original OTIO media bundle folder")).toHaveValue(exported);
     await expect(page.getByLabel("Edited OTIO filename in bundle")).toHaveValue("edited.otio");
+    if (kdenlivePair) {
+      await page.getByLabel("OTIO cut origin").selectOption("kdenlive");
+      await expect(page.getByLabel("Initial Kdenlive OTIO filename in bundle"))
+        .toHaveValue("received.otio");
+    }
     await page.getByRole("button", { name: "Preview edited OTIO with verified media" }).click();
     const station = page.getByRole("region", { name: "OTIO proposed revision" });
     await expectOtioTerminal(page, station);
+    await expect(page.getByRole("button", { name: "Preview edited OTIO with verified media" }))
+      .toBeDisabled();
     const rawProposal = await page.getByLabel("OTIO imported cut preview JSON").inputValue();
     const preview = JSON.parse(rawProposal);
     expect(preview.schema).toBe("motionwright.otio-edit-preview/1");
@@ -175,8 +230,15 @@ test("real verified media OTIO cut is reviewed in Studio, saved once and indepen
       { type: "set_scene_duration", scene_id: current.scenes[0].id,
         duration: { num: "5", den: "1" } },
     ]);
-    expect(preview.media_refs_verified).toBe(1);
-    expect(preview.missing_references_retained).toBe(1);
+    expect(preview.media_refs_verified).toBe(expectedMediaRefs);
+    expect(preview.missing_references_retained).toBe(kdenlivePair ? 0 : 1);
+    if (kdenlivePair) {
+      expect(preview.loss_report.join("\n")).toContain(record.initialReceiverOriginalSha256);
+      expect(preview.loss_report.join("\n")).toContain(record.editedCutOriginalSha256);
+      expect(preview.nle_receiver_acceptance).toBe("NOT_VERIFIED");
+      expect(await readFile(join(exported, "received.otio"), "utf8")).toBe(receivedBytes);
+      expect(await readFile(join(exported, "edited.otio"), "utf8")).toBe(editedBytes);
+    }
     expect(preview.edit_imported).toBe(false);
     record.bridgeSourceBoundProposal = true;
     record.originalBridgeProposalSha256 = sha(Buffer.from(rawProposal));
@@ -186,7 +248,7 @@ test("real verified media OTIO cut is reviewed in Studio, saved once and indepen
     expect(bridgeCalls).toHaveLength(1);
     record.desktopModuleBridgePreviewCalls = bridgeCalls.length;
     await expect(station).toBeVisible();
-    await expect(station).toContainText("1 bridge-declared verified source");
+    await expect(station).toContainText(expectedMediaRefs + " bridge-declared verified source");
     await expect(page.getByLabel("Exact supported OTIO edits")).toContainText("End-trim");
     const commit = page.getByRole("button", { name: /Commit reviewed OTIO cut/ });
     await expect(commit).toBeDisabled();
@@ -284,7 +346,7 @@ test("real verified media OTIO cut is reviewed in Studio, saved once and indepen
         project_id: final.id, project_revision: final.revision,
         original_media_sha256: mediaSha, original_project_snapshot_sha256: sourceSnapshotSha,
         original_bridge_proposal_sha256: record.originalBridgeProposalSha256,
-        bridge_media_refs_verified: 1, physical_original_store_closed: true,
+        bridge_media_refs_verified: expectedMediaRefs, physical_original_store_closed: true,
         observations: record,
       }, null, 2),
       contentType: "application/json",

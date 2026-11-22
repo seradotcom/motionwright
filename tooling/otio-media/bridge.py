@@ -1896,7 +1896,9 @@ def main()->None:
     native=mode.add_parser("preview-kdenlive-cut")
     native.add_argument("--bundle",type=Path,required=True)
     native.add_argument("--raw-root",type=Path,required=True)
-    native.add_argument("--request",required=True)
+    native_request=native.add_mutually_exclusive_group(required=True)
+    native_request.add_argument("--request")
+    native_request.add_argument("--request-file",type=Path)
     native.add_argument("--current-project",type=Path,required=True)
     native.add_argument("--media-root",type=Path,action="append",required=True)
     native.add_argument("--output",type=Path,required=True)
@@ -1922,8 +1924,15 @@ def main()->None:
         elif args.command=="preview-kdenlive-cut":
             insist(not args.output.exists() and args.output.parent.is_dir()
                    and not args.output.parent.is_symlink(),"A new native cut proposal destination is required")
+            # Desktop keeps its source-bound request in a private staging
+            # directory; it never writes a helper into the owner media bundle.
+            if args.request_file is not None:
+                insist(args.request_file.is_absolute(), "Native cut request must be an absolute original file")
+                request=read_json(args.request_file.parent,args.request_file.name)
+            else:
+                request=read_json(args.raw_root,args.request)
             result=preview_kdenlive_cut(args.bundle,args.raw_root,
-                read_json(args.raw_root,args.request),args.current_project,
+                request,args.current_project,
                 authorized_media_roots=tuple(args.media_root))
             with args.output.open("x",encoding="utf-8")as stream:
                 stream.write(json.dumps(result,sort_keys=True,indent=2)+"\n")
