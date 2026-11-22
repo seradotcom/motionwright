@@ -1,0 +1,281 @@
+/**
+ * MW05-E11-03: original-source OTIO export -> one test-owned, actual H.264
+ * media source -> verified first-party bridge -> real Studio UI owner review
+ * -> one real StudioService change -> SQLite/CAS and independent closed Store.
+ *
+ * The ffmpeg-created media is explicitly synthetic and authorized only by this
+ * test. The full bridge runs without mocked probes. No installed NLE/Tauri,
+ * publisher authorization or external media rights are inferred.
+ */
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { expect, test, type Page } from "@playwright/test";
+import type { Project } from "../src/types";
+import { ScopedChangeService } from "./support/scopedChangeService";
+
+const run = promisify(execFile);
+
+test.skip(
+  !process.env.MOTIONWRIGHT_SERVICE_TEST_BIN ||
+  process.env.MOTIONWRIGHT_OTIO_REAL_MEDIA_OWNER !== "1",
+  "This source-exact flow requires the real service binary and one explicitly selected real-media bridge test.",
+);
+test.setTimeout(150_000);
+
+async function runBounded(binary: string, args: string[], cwd: string) {
+  const result = await run(binary, args, {
+    cwd, timeout: 55_000, maxBuffer: 2 * 1024 * 1024,
+    env: { ...process.env, PYTHONNOUSERSITE: "1" },
+  });
+  if (result.stderr.length > 32_000) {
+    throw new Error("Original bridge process emitted an oversized diagnostic");
+  }
+  return result.stdout;
+}
+
+function sha(data: Buffer | string): string {
+  return createHash("sha256").update(data).digest("hex");
+}
+
+async function prepareOriginalMedia(root: string): Promise<string> {
+  const original = join(root, "source-original.mp4");
+  await runBounded("ffmpeg", [
+    "-nostdin", "-hide_banner", "-loglevel", "error", "-n",
+    "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24",
+    "-frames:v", "288", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+    "-preset", "ultrafast", "-crf", "35", "-an", "-movflags", "+faststart",
+    original,
+  ], root);
+  const bytes = await readFile(original);
+  expect(bytes.length).toBeGreaterThan(1024);
+  expect(bytes.length).toBeLessThan(32 * 1024 * 1024);
+  return original;
+}
+
+async function showOtio(page: Page) {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Deliver", exact: true }).click();
+  await expect(page.getByRole("region", { name: "OTIO owner cut review" })).toBeVisible();
+}
+
+test("real verified media OTIO cut is reviewed in Studio, saved once and independently reopened", async ({ page }, info) => {
+  const databasePath = info.outputPath("service", "studio.sqlite3");
+  const owner = info.outputPath("otio-owner");
+  const exported = info.outputPath("verified-otio-bundle");
+  await mkdir(owner, { recursive: true });
+  const service = await ScopedChangeService.create({
+    databasePath, desktopInvokeFixture: true,
+  });
+  let final: Project | undefined;
+  let closed = false;
+  const record: Record<string, unknown> = {
+    actualOwnerMediaBytes: false,
+    actualBridgeMediaProbe: false,
+    bridgeSourceBoundProposal: false,
+    uiCommitCount: 0,
+    independentStoreOpen: false,
+    installedTauri: false, installedNle: false,
+    humanCreativeApproval: false, releaseAuthorized: false,
+  };
+  try {
+    const initial = (await service.fixtureBootstrap()).project;
+    expect(initial.scenes).toHaveLength(2);
+    expect(initial.scenes[0].duration).toEqual({ num: "6", den: "1" });
+    expect(initial.scenes[1].duration).toEqual({ num: "4", den: "1" });
+
+    const media = await prepareOriginalMedia(owner);
+    const sourceBytes = await readFile(media);
+    const mediaSha = sha(sourceBytes);
+    const originalMediaProject = await service.importAsset(
+      initial, media, "Owned original OTIO cut video", "video/mp4",
+    );
+    const mediaAsset = originalMediaProject.assets.find(asset =>
+      asset.media_type === "video/mp4" && asset.content_sha256 === mediaSha);
+    expect(mediaAsset).toBeDefined();
+    const current = await service.project(initial.id);
+    expect(current).toEqual(originalMediaProject);
+    record.actualOwnerMediaBytes = true;
+    record.mediaOriginalSha256 = mediaSha;
+    record.originalProjectRevision = current.revision;
+
+    // Original owner export is now initiated in installed Studio through
+    // the exact Desktop otio_bridge module and one use-limited grant.
+    await service.attachPage(page, current.id);
+    await showOtio(page);
+    await page.getByText("Create the original media-bound OTIO bundle", { exact: true }).click();
+    await page.getByLabel("New OTIO media bundle destination").fill(exported);
+    await page.getByLabel("Original OTIO source reviewer").fill("Test-only original source author");
+    await page.getByLabel("Original OTIO media owner").fill("Test fixture's original creator");
+    await page.getByLabel("Original OTIO media license").fill("Synthetic test-owned original");
+    await page.getByLabel("Original OTIO video asset 1").selectOption(mediaAsset!.id);
+    await page.getByLabel("Original OTIO MP4 file path 1").fill(media);
+    await page.getByLabel(/I confirm I have permission to use, copy and redistribute/).check();
+    await page.getByLabel(/Explicitly permit synthetic or test-origin video inputs/).check();
+    await page.getByRole("button", { name: "Export original media-bound OTIO bundle" }).click();
+    await expect(page.getByText(/Original verified OTIO media bundle exported to/)).toBeVisible();
+    const originalExportCalls = service.transcript.filter(item =>
+      item.direction === "request" && "command" in item.payload &&
+      item.payload.command === "export_portable_otio_media_bundle");
+    expect(originalExportCalls).toHaveLength(1);
+    record.installedOriginalBundleExportCalls = originalExportCalls.length;
+    const sourceSnapshotSha = sha(await readFile(join(exported, "source-project.json")));
+    expect(JSON.parse(await readFile(join(exported, "timeline.otio"), "utf8")).OTIO_SCHEMA)
+      .toBe("Timeline.1");
+    const manifest = JSON.parse(await readFile(join(exported, "bridge-manifest.json"), "utf8"));
+    expect(manifest.bound_media).toHaveLength(1);
+    expect(manifest.project_sha256).toBe(sourceSnapshotSha);
+    expect(manifest.bound_media[0].source_sha256).toBe(mediaSha);
+    expect(manifest.bound_media[0].actual_media_frames).toBe(288);
+    expect(manifest.nle_import_verified).toBe(false);
+    record.actualBridgeMediaProbe = true;
+
+    const originalTimeline = JSON.parse(await readFile(join(exported, "timeline.otio"), "utf8"));
+    const originalClips = originalTimeline.tracks.children[0].children;
+    expect(originalClips).toHaveLength(2);
+    expect(originalClips[0].media_reference.OTIO_SCHEMA).toBe("ExternalReference.1");
+    expect(originalClips[1].media_reference.OTIO_SCHEMA).toBe("MissingReference.1");
+    const editedTimeline = structuredClone(originalTimeline);
+    const editedClips = editedTimeline.tracks.children[0].children;
+    editedClips[0].source_range.duration.value = 120; // 5 seconds at the original 24 fps
+    editedTimeline.tracks.children[0].children = [editedClips[1], editedClips[0]];
+    await writeFile(join(exported, "edited.otio"), JSON.stringify(editedTimeline), { flag: "wx" });
+    // Same live Studio session now imports the edited cut via the compiled
+    // bridge. The original export already installed its exact bundle path and
+    // suggested filename; no navigation or second injected transport.
+    await expect(page.getByLabel("Original OTIO media bundle folder")).toHaveValue(exported);
+    await expect(page.getByLabel("Edited OTIO filename in bundle")).toHaveValue("edited.otio");
+    await page.getByRole("button", { name: "Preview edited OTIO with verified media" }).click();
+    const station = page.getByRole("region", { name: "OTIO proposed revision" });
+    await expect(station).toBeVisible();
+    const rawProposal = await page.getByLabel("OTIO imported cut preview JSON").inputValue();
+    const preview = JSON.parse(rawProposal);
+    expect(preview.schema).toBe("motionwright.otio-edit-preview/1");
+    expect(preview.source_project_sha256).toBe(sourceSnapshotSha);
+    expect(preview.project_id).toBe(current.id);
+    expect(preview.expected_project_revision).toBe(current.revision);
+    expect(preview.native_change_proposals).toEqual([
+      { type: "move_scene", scene_id: current.scenes[1].id, to_index: 0 },
+      { type: "set_scene_duration", scene_id: current.scenes[0].id,
+        duration: { num: "5", den: "1" } },
+    ]);
+    expect(preview.media_refs_verified).toBe(1);
+    expect(preview.missing_references_retained).toBe(1);
+    expect(preview.edit_imported).toBe(false);
+    record.bridgeSourceBoundProposal = true;
+    record.originalBridgeProposalSha256 = sha(Buffer.from(rawProposal));
+    const bridgeCalls = service.transcript.filter(item =>
+      item.direction === "request" && "command" in item.payload &&
+      item.payload.command === "preview_otio_media_cut");
+    expect(bridgeCalls).toHaveLength(1);
+    record.installedBridgePreviewCalls = bridgeCalls.length;
+    await expect(station).toBeVisible();
+    await expect(station).toContainText("1 bridge-declared verified source");
+    await expect(page.getByLabel("Exact supported OTIO edits")).toContainText("End-trim");
+    const commit = page.getByRole("button", { name: /Commit reviewed OTIO cut/ });
+    await expect(commit).toBeDisabled();
+
+    expect(await service.project(current.id)).toEqual(current);
+    await page.getByLabel("OTIO reviewer declaration").fill("Owner test-only identity");
+    await page.getByLabel("OTIO review rationale").fill(
+      "Keep the original author video and scene objects; accept only reordering and end trim",
+    );
+    await page.getByLabel(/I reviewed and accept the listed property losses/).check();
+    const absoluteAudio = page.getByLabel(/I acknowledge existing audio, transcript or marker timestamps/);
+    if (await absoluteAudio.count()) await absoluteAudio.check();
+    await expect(commit).toBeEnabled();
+    await commit.click();
+    await expect(page.locator(".revision-chip")).toHaveText("r" + (current.revision + 1));
+
+    const after = await service.project(current.id);
+    expect(after.revision).toBe(current.revision + 1);
+    expect(after.scenes.map(scene => scene.id)).toEqual(
+      [current.scenes[1].id, current.scenes[0].id],
+    );
+    expect(after.scenes[1].duration).toEqual({ num: "5", den: "1" });
+    expect(after.scenes[0].nodes).toEqual(current.scenes[1].nodes);
+    expect(after.scenes[1].nodes).toEqual(current.scenes[0].nodes);
+    expect(after.assets).toEqual(current.assets);
+    expect(after.audio).toEqual(current.audio);
+    expect(await readFile(media)).toEqual(sourceBytes);
+    const actualMutations = service.transcript.filter(item =>
+      item.direction === "request" && "command" in item.payload &&
+      item.payload.command === "apply_change");
+    // Fixture setup uses import_asset_file, not apply_change. The owner
+    // review is one and only one canonical Studio project mutation.
+    expect(actualMutations).toHaveLength(1);
+    record.uiCommitCount = actualMutations.length;
+
+    // The already-read proposal cannot authorize another mutation on the
+    // next revision. Only validate the retained JSON; no second media probe.
+    await page.getByLabel("OTIO imported cut preview JSON").fill(rawProposal);
+    await page.getByRole("button", { name: "Review bounded changes" }).click();
+    await expect(page.locator(".otio-cut-review [role=alert]")).toContainText(
+      /stale|foreign|revision/i,
+    );
+    await expect(page.getByRole("button", { name: /Commit reviewed OTIO cut/ }))
+      .toHaveCount(0);
+    expect(await service.project(current.id)).toEqual(after);
+
+    const reopened = await service.reopen(current.id);
+    expect(reopened).toEqual(after);
+    expect(await service.project(current.id)).toEqual(after);
+    const journal = await service.history(current.id, 0, 100);
+    expect(journal.at(-1)?.revision).toBe(after.revision);
+    final = after;
+
+    // Actual writer process is fully closed. The normal finalizer inventories
+    // original SQLite/CAS bytes; no fake success or an in-memory readback.
+    if (process.env.MOTIONWRIGHT_R3_READ_ONLY_HANDOFF !== "1") {
+      // Same legitimate SQLite writer handoff as desktop and R3. This is
+      // read-only admission, not a second import, Save or grant.
+      const handoff = await service.invoke<{
+        read_only_handoff: boolean; journal_mode: string;
+      }>("prepare_read_only_handoff");
+      expect(handoff).toEqual({ read_only_handoff: true, journal_mode: "delete" });
+    }
+    const closedStore = await service.finalizeClosedStore(
+      info.outputPath("otio-closed-original"), final, [], [() => page.close()],
+    );
+    expect(closedStore.errors).toEqual([]);
+    expect(closedStore.capture).not.toBeNull();
+    expect(closedStore.oracle?.project).toEqual(final);
+    closed = true;
+
+    // A NEW process opens the unchanged *original* SQLite in explicit
+    // StudioServiceReader mode. No writer, grant or fixture initializer is
+    // present. This is stronger than merely reading the captured copy.
+    const independent = await ScopedChangeService.createReadOnly({
+      binaryPath: service.binaryPath,
+      databasePath,
+      seedFixture: false,
+      desktopInvokeFixture: false,
+    });
+    try {
+      expect(await independent.project(final.id)).toEqual(final);
+      const history = await independent.history(final.id, 0, 100);
+      expect(history.at(-1)?.revision).toBe(final.revision);
+      record.independentStoreOpen = true;
+    } finally {
+      await independent.close();
+    }
+    await info.attach("otio-real-media-owner-cut", {
+      body: JSON.stringify({
+        schema: "motionwright.otio-real-media-studio-service/1",
+        project_id: final.id, project_revision: final.revision,
+        original_media_sha256: mediaSha, original_project_snapshot_sha256: sourceSnapshotSha,
+        original_bridge_proposal_sha256: record.originalBridgeProposalSha256,
+        bridge_media_refs_verified: 1, physical_original_store_closed: true,
+        observations: record,
+      }, null, 2),
+      contentType: "application/json",
+    });
+  } finally {
+    if (!closed) {
+      // Single cleanup; errors from a known process are never converted to PASS.
+      await service.close();
+    }
+  }
+});

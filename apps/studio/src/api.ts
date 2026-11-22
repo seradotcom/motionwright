@@ -1,4 +1,5 @@
 import type { NativeAudioQcReceiptHint, NativeAudioQcReceiptInventoryResponse } from "./types";
+import type { OtioEditPreview } from "./otioCutReview";
 import { savedOriginalMixAuditionRequest } from "./audioRecipeContract";
 import { readNativeAvAudioQcResponse, readNativeAudioQcReceiptInventoryResponse } from "./nativeAvAudioQc";
 import { claimFields, claimRaw, parseClaimRaw } from "./claimSourceDraft";
@@ -487,6 +488,127 @@ export async function exportNativeCapsuleSource(
       path, effect_grant: grant.token,
     },
   });
+}
+
+export interface OtioOriginalMediaExportBinding {
+  scene_id: string;
+  asset_id: string;
+  source_path: string;
+  source_start_frame: number;
+}
+export interface OtioPortableMediaExportInput {
+  destination: string;
+  reviewer_declaration: string;
+  media_owner: string;
+  media_license: string;
+  authorized: boolean;
+  redistributable: boolean;
+  allow_synthetic: boolean;
+  bindings: OtioOriginalMediaExportBinding[];
+}
+export interface OtioPortableMediaExportReceipt {
+  path: string;
+  source_project_sha256: string;
+  media_refs_verified: number;
+  missing_references: number;
+  source_media_relinked: false;
+  editor_launched: false;
+  project_modified: false;
+  nle_import_verified: false;
+  publication_authorized: false;
+}
+
+/** Produce the real first-party OTIO media capsule with a single locally
+ * permissioned export. User-selected original MP4s must already be saved
+ * as SHA-bound Project assets; owner rights are expressly declared. */
+export async function exportPortableOtioMediaBundle(
+  project: Project, input: OtioPortableMediaExportInput,
+): Promise<OtioPortableMediaExportReceipt> {
+  if (!isTauri()) throw new Error("Original media-bound OTIO export requires Motionwright desktop.");
+  const destination = input.destination.trim();
+  const bindings = input.bindings.map(binding => ({
+    ...binding,
+    source_path: binding.source_path.trim(),
+  }));
+  if (!destination || !input.authorized || !input.redistributable
+      || !input.reviewer_declaration.trim() || !input.media_owner.trim()
+      || !input.media_license.trim() || bindings.length === 0
+      || bindings.length > project.scenes.length || bindings.length > 32
+      || bindings.some(binding =>
+        !project.scenes.some(scene => scene.id === binding.scene_id)
+        || !project.assets.some(asset => asset.id === binding.asset_id
+          && asset.media_type === "video/mp4" && /^[0-9a-f]{64}$/.test(asset.content_sha256 ?? ""))
+        || !binding.source_path || !Number.isSafeInteger(binding.source_start_frame)
+        || binding.source_start_frame < 0
+      )) {
+    throw new Error("Select the saved original video assets, owner source files and explicit redistribution rights before exporting.");
+  }
+  const grant = await issueEffectGrant("deliver_local", project, destination);
+  const receipt = await invoke<OtioPortableMediaExportReceipt>("export_portable_otio_media_bundle", {
+    request: {
+      project_id: project.id, generation: project.generation, revision: project.revision,
+      destination, reviewer_declaration: input.reviewer_declaration.trim(),
+      media_owner: input.media_owner.trim(), media_license: input.media_license.trim(),
+      authorized: true, redistributable: true, allow_synthetic: input.allow_synthetic,
+      bindings, effect_grant: grant.token,
+    },
+  });
+  if (!receipt || receipt.path !== destination
+      || !/^[0-9a-f]{64}$/.test(receipt.source_project_sha256)
+      || receipt.media_refs_verified !== bindings.length
+      || receipt.missing_references !== project.scenes.length - bindings.length
+      || receipt.source_media_relinked !== false || receipt.editor_launched !== false
+      || receipt.project_modified !== false || receipt.nle_import_verified !== false
+      || receipt.publication_authorized !== false) {
+    throw new Error("The OTIO portable media export result does not identify the original saved source. Inspect the destination; do not retry automatically.");
+  }
+  return receipt;
+}
+
+export interface InstalledOtioCutPreview {
+  preview: OtioEditPreview;
+  source_project_sha256: string;
+  media_refs_verified: number;
+  runtime: string;
+  source_media_relinked: false;
+  editor_launched: false;
+  project_modified: false;
+}
+
+/** Read a complete existing original media bundle through the compiled
+ * first-party bridge, only after one scoped import-local owner grant.
+ * This previews a cut. It never applies or relinks foreign media. */
+export async function previewInstalledOtioMediaCut(
+  project: Project, originalBundle: string, editedFilename: string,
+): Promise<InstalledOtioCutPreview> {
+  if (!isTauri()) throw new Error("Verified OTIO media review requires Motionwright desktop.");
+  const bundle = originalBundle.trim();
+  const edited = editedFilename.trim();
+  if (!bundle || !/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\.otio$/.test(edited)
+      || edited.length > 160) {
+    throw new Error("Select an original OTIO media bundle and one edited .otio filename inside it.");
+  }
+  const subject = JSON.stringify(["otio-bridge-preview/1", bundle, edited]);
+  if (new TextEncoder().encode(subject).length > 2_048) {
+    throw new Error("The original OTIO bundle selection exceeds the local permission scope.");
+  }
+  const grant = await issueEffectGrant("import_local", project, subject);
+  const response = await invoke<InstalledOtioCutPreview>("preview_otio_media_cut", {
+    request: {
+      project_id: project.id, generation: project.generation, revision: project.revision,
+      bundle_path: bundle, edited_file: edited, effect_grant: grant.token,
+    },
+  });
+  if (!response || response.preview?.project_id !== project.id
+      || response.preview.generation !== project.generation
+      || response.preview.expected_project_revision !== project.revision
+      || response.preview.source_project_sha256 !== response.source_project_sha256
+      || response.media_refs_verified !== response.preview.media_refs_verified
+      || response.source_media_relinked !== false
+      || response.editor_launched !== false || response.project_modified !== false) {
+    throw new Error("The installed OTIO bridge returned a response for a different source or an unadmitted effect.");
+  }
+  return response;
 }
 
 export async function exportProjectBundle(

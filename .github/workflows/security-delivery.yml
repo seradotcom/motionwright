@@ -81,6 +81,7 @@ on:
           - service-legacy-fixtures
           - native-source-export
           - native-otio-snapshot
+          - native-otio-real-media
           - native-source-browser
           - native-film-geometry
           - native-film-hold
@@ -95,7 +96,7 @@ env:
 
 jobs:
   source-boundary:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures' && inputs.verification_scope != 'native-source-export' && inputs.verification_scope != 'native-otio-snapshot' && inputs.verification_scope != 'native-source-browser' && inputs.verification_scope != 'native-film-geometry' && inputs.verification_scope != 'native-film-hold' && inputs.verification_scope != 'native-geometry-readback')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures' && inputs.verification_scope != 'native-source-export' && inputs.verification_scope != 'native-otio-snapshot' && inputs.verification_scope != 'native-otio-real-media' && inputs.verification_scope != 'native-source-browser' && inputs.verification_scope != 'native-film-geometry' && inputs.verification_scope != 'native-film-hold' && inputs.verification_scope != 'native-geometry-readback')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1591,5 +1592,149 @@ jobs:
         with:
           name: native-film-hold-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/native-film-hold-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: warn
+          retention-days: 14
+
+  native-otio-media-real:
+    name: Original OTIO media in Studio through real Service and closed Store
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'native-otio-real-media'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_BUILD_JOBS: '2'
+      PYTHONDONTWRITEBYTECODE: '1'
+      MOTIONWRIGHT_OTIO_REAL_MEDIA_OWNER: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Original source policy and actual protected system media runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=normal)"
+          python3 -B -E -s tooling/source_policy.py
+          python3 -B -E -s tooling/public_surface_policy.py
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            patchelf libssl-dev ffmpeg python3
+          test -x /usr/bin/python3
+          test -x /usr/bin/ffprobe
+          /usr/bin/python3 -B -E -s - <<'PY_NATIVE_OTIO_HOST'
+          import os, pathlib, stat
+          for name in ('python3', 'ffprobe'):
+              real = pathlib.Path('/usr/bin',name).resolve(strict=True)
+              assert real.parent in (pathlib.Path('/usr/bin'),pathlib.Path('/bin'))
+              for path in (real,real.parent):
+                  info=path.stat()
+                  assert info.st_uid == 0 and not info.st_mode & 0o022, name
+              assert real.stat().st_mode & 0o111, name
+          print('native-otio-protected-runtime=PASS')
+          PY_NATIVE_OTIO_HOST
+      - name: Compile exact Desktop OTIO source and real StudioService test owner
+        shell: bash
+        env:
+          MW_OTIO_CI: ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}
+          MW_OTIO_STORE: ${{ runner.temp }}/otio-private-store-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test ! -e "$MW_OTIO_CI"
+          test ! -e "$MW_OTIO_STORE"
+          mkdir -m 700 "$MW_OTIO_CI" "$MW_OTIO_STORE"
+          cargo test --locked --jobs 2 -p motionwright-desktop --bin motionwright-desktop \
+            'otio_bridge::tests::' -- --test-threads=1 \
+            2>&1 | tee "$MW_OTIO_CI/desktop-tests.original.log"
+          /usr/bin/python3 -B -E -s - <<'PY_NATIVE_OTIO_RUST'
+          import os, pathlib, re
+          text=pathlib.Path(os.environ['MW_OTIO_CI'],'desktop-tests.original.log').read_text()
+          text=re.sub(r'\x1b\[[0-9;]*m','',text)
+          expected={
+            'refused_otio_names_and_missing_bundle_never_touch_media_or_grants',
+            'original_source_identity_rejects_same_size_name_replacement_and_symlink',
+            'portable_otio_publication_never_clobbers_a_racing_directory_or_dangling_symlink',
+            'request_rejects_foreign_fields_before_bridge_authority',
+            'media_bundle_export_rejects_implicit_rights_and_noncanonical_origins',
+          }
+          found=set(re.findall(r'(?m)^test otio_bridge::tests::([A-Za-z0-9_]+) \.\.\. ok$',text))
+          assert found==expected,(found,expected)
+          assert re.search(r'(?m)^test result: ok\. 5 passed; 0 failed; 0 ignored;',text)
+          print('native-otio-bridge-compiled=PASS 5/5 exact Rust tests')
+          PY_NATIVE_OTIO_RUST
+          cargo build --locked --jobs 2 -p motionwright-service --example studio_review_session \
+            > "$MW_OTIO_CI/cargo-service.original.log" 2>&1 || {
+              tail -n 35 "$MW_OTIO_CI/cargo-service.original.log"; exit 1;
+            }
+          bin="$GITHUB_WORKSPACE/target/debug/examples/studio_review_session"
+          test -f "$bin" && test -x "$bin" && test ! -L "$bin"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=normal)"
+          printf 'MOTIONWRIGHT_SERVICE_TEST_BIN=%s\n' "$bin" >> "$GITHUB_ENV"
+          printf 'MOTIONWRIGHT_SERVICE_TEST_TMPDIR=%s\n' "$MW_OTIO_STORE" >> "$GITHUB_ENV"
+      - name: One actual source-bound OTIO MP4 ffprobe Studio Save and fresh SQLite/CAS readback
+        working-directory: apps/studio
+        shell: bash
+        env:
+          MW_OTIO_CI: ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/playwright.json
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+          npx playwright test tests/otio-real-media-bridge-service.spec.ts \
+            --project chromium --reporter=line,json \
+            2>&1 | tee "$MW_OTIO_CI/otio-playwright.original.log"
+          /usr/bin/python3 -B -E -s - <<'PY_NATIVE_OTIO_PASS'
+          import hashlib, json, os, pathlib
+          root=pathlib.Path(os.environ['MW_OTIO_CI'])
+          result=json.loads((root/'playwright.json').read_bytes())
+          stats=result['stats']
+          assert stats.get('expected')==1,stats
+          assert all(stats.get(k,0)==0 for k in ('unexpected','flaky','skipped')),stats
+          original=(root/'otio-playwright.original.log').read_bytes()
+          assert 0<len(original)<8*1024*1024
+          receipt={
+            'schema':'motionwright.ci.original-otio-real-studio-service/1',
+            'source_sha':os.environ['GITHUB_SHA'],
+            'run_id':os.environ['GITHUB_RUN_ID'],
+            'attempt':os.environ['GITHUB_RUN_ATTEMPT'],
+            'status':'ONE_REAL_MEDIA_STUDIO_SERVICE_SQLITE_CAS_ROUNDTRIP_PASS',
+            'expected':1,'unexpected':0,'flaky':0,'skipped':0,
+            'original_log_sha256':hashlib.sha256(original).hexdigest(),
+            'original_log_bytes':len(original),
+            'installed_tauri':False,'actual_nle_installed':False,
+            'human_acceptance':False,'release_authorized':False,
+            'G2':'NOT_GRANTED','G3':'STOP'
+          }
+          (root/'receipt.json').write_text(json.dumps(receipt,sort_keys=True,indent=2)+'\n')
+          print('native-otio-real-media=PASS one original closed-Store StudioService flow')
+          PY_NATIVE_OTIO_PASS
+      - name: Retain only safe source-bound logs and outcome, never original media or Store
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: original-otio-media-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/desktop-tests.original.log
+            ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/cargo-service.original.log
+            ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/otio-playwright.original.log
+            ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/playwright.json
+            ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/receipt.json
           if-no-files-found: warn
           retention-days: 14

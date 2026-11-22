@@ -237,8 +237,26 @@ for path in iter_source_files(ROOT):
             and hashlib.sha256(text.encode("utf-8")).hexdigest()
                 == reviewed_process_fixture_sources[rel]
         )
+        # Independently reviewed production OTIO bridge process:
+        # - Linux-only, fixed root-owned /usr/bin/python3 + ffprobe and parents
+        # - embedded first-party Python source with isolated -I -S -B import path
+        # - one scoped owner grant, limits, private temporary files and deadline
+        # - owned child process group terminated and reaped on error/timeout
+        # - output is verified privately and then RENAME_NOREPLACE published
+        #   once, rejecting existing directories and dangling symlinks.
+        # Any code change revokes this admission until a new security review.
+        reviewed_production_process_sources = {
+            "apps/desktop/src-tauri/src/otio_bridge.rs":
+                "afa366187e2a40aa12cebe5447354cdb32a2584438553d97b4b141dcb8c1b9fd",
+        }
+        reviewed_production_process = (
+            rel in reviewed_production_process_sources
+            and hashlib.sha256(text.encode("utf-8")).hexdigest()
+                == reviewed_production_process_sources[rel]
+        )
         if (any(token in text for token in process_tokens)
-                and rel not in process_allowlist and not reviewed_process_fixture):
+                and rel not in process_allowlist
+                and not reviewed_process_fixture and not reviewed_production_process):
             errors.append(f"unreviewed first-party process execution primitive found: {rel}")
 
         direct_network_tokens = [

@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowRightLeft, FileCheck2, ShieldAlert } from "lucide-react";
 import type { Change, Project } from "./types";
 import {
+  exportPortableOtioMediaBundle, previewInstalledOtioMediaCut,
+  type OtioOriginalMediaExportBinding,
+} from "./api";
+import {
   inspectOtioCutPreview, readOtioCutProposalFile, otioHasAbsoluteAnchors,
   type OtioEditPreview, type OtioOwnerCutReview,
 } from "./otioCutReview";
@@ -24,6 +28,20 @@ export default function OtioCutReviewWorkbench({
   const [anchors,setAnchors]=useState(false);
   const [working,setWorking]=useState(false);
   const [fileLoading,setFileLoading]=useState(false);
+  const [bridgeInspecting,setBridgeInspecting]=useState(false);
+  const [bundlePath,setBundlePath]=useState("");
+  const [editedCut,setEditedCut]=useState("edited.otio");
+  const [exportDestination,setExportDestination]=useState("");
+  const [exportReviewer,setExportReviewer]=useState("");
+  const [mediaOwner,setMediaOwner]=useState("");
+  const [mediaLicense,setMediaLicense]=useState("");
+  const [exportRights,setExportRights]=useState(false);
+  const [allowSynthetic,setAllowSynthetic]=useState(false);
+  const [exportingBundle,setExportingBundle]=useState(false);
+  const [exportAttempted,setExportAttempted]=useState(false);
+  const [exportBindings,setExportBindings]=useState<OtioOriginalMediaExportBinding[]>(()=>project.scenes.length
+    ?[{scene_id:project.scenes[0].id,asset_id:"",source_path:"",source_start_frame:0}]
+    :[]);
   const fileAttempt=useRef(0);
   const [error,setError]=useState<string|null>(null);
   const [status,setStatus]=useState<string|null>(null);
@@ -32,9 +50,71 @@ export default function OtioCutReviewWorkbench({
     fileAttempt.current++;
     setSelected(null);setLosses(false);setAnchors(false);
     setStatus(null);setError(null);setWorking(false);setFileLoading(false);
+    setBridgeInspecting(false);
+    setExportingBundle(false);
+    setExportAttempted(false);
   },[scope]);
+  const videoAssets=project.assets.filter(asset=>
+    asset.media_type==="video/mp4"&&/^[0-9a-f]{64}$/.test(asset.content_sha256??""));
+  const updateExportBinding=(index:number,change:Partial<OtioOriginalMediaExportBinding>)=>{
+    setExportBindings(previous=>previous.map((binding,position)=>
+      position===index?{...binding,...change}:binding));
+  };
+  const exportOriginalMediaBundle=async()=>{
+    if(!desktopMode||busy||working||fileLoading||bridgeInspecting||exportingBundle
+      ||exportAttempted||!exportDestination.trim()||!exportReviewer.trim()
+      ||!mediaOwner.trim()||!mediaLicense.trim()||!exportRights
+      ||!exportBindings.length)return;
+    const selectedScope=scope;
+    const attempt=++fileAttempt.current;
+    setExportingBundle(true);setExportAttempted(true);
+    setError(null);setStatus(null);setSelected(null);
+    setLosses(false);setAnchors(false);
+    try{
+      const receipt=await exportPortableOtioMediaBundle(project,{
+        destination:exportDestination,reviewer_declaration:exportReviewer,
+        media_owner:mediaOwner,media_license:mediaLicense,
+        authorized:true,redistributable:true,allow_synthetic:allowSynthetic,
+        bindings:exportBindings,
+      });
+      if(latest.current!==selectedScope||fileAttempt.current!==attempt)return;
+      setBundlePath(receipt.path);
+      setEditedCut("edited.otio");
+      setStatus("Original verified OTIO media bundle exported to "+receipt.path+
+        ". Open its timeline.otio in your trusted editor, save the edited cut as edited.otio inside that folder, then choose Preview edited OTIO with verified media. MissingReferences remain unbound. No editor was launched or publication approved.");
+    }catch(reason){
+      if(latest.current===selectedScope&&fileAttempt.current===attempt)
+        setError((reason instanceof Error?reason.message:String(reason))+
+          " Check whether the destination already exists before choosing any new export. No automatic retry was made.");
+    }finally{
+      if(latest.current===selectedScope&&fileAttempt.current===attempt)
+        setExportingBundle(false);
+    }
+  };
+  const previewOwnerMediaCut=async()=>{
+    if(!desktopMode||busy||working||fileLoading||bridgeInspecting||exportingBundle
+       ||!bundlePath.trim()||!editedCut.trim())return;
+    const selectedScope=scope;
+    const attempt=++fileAttempt.current;
+    setSelected(null);setRaw("");setLosses(false);setAnchors(false);
+    setError(null);setStatus(null);setBridgeInspecting(true);
+    try{
+      const returned=await previewInstalledOtioMediaCut(project,bundlePath,editedCut);
+      if(latest.current!==selectedScope||fileAttempt.current!==attempt)return;
+      const preview=inspectOtioCutPreview(project,JSON.stringify(returned.preview));
+      setRaw(JSON.stringify(preview));
+      setSelected({scope:selectedScope,preview});
+      setStatus("The installed bridge verified "+returned.media_refs_verified+
+        " original media reference(s) against this saved source. Review the proposed cut and every property loss before your one explicit Save. No media or editor was imported.");
+    }catch(reason){
+      if(latest.current===selectedScope&&fileAttempt.current===attempt)
+        setError(reason instanceof Error?reason.message:String(reason));
+    }finally{
+      if(latest.current===selectedScope&&fileAttempt.current===attempt)setBridgeInspecting(false);
+    }
+  };
   const loadProposalFile=async(file:File)=>{
-    if(busy||working||fileLoading)return;
+    if(busy||working||fileLoading||bridgeInspecting||exportingBundle)return;
     const selectedScope=scope;
     const attempt=++fileAttempt.current;
     setRaw("");setSelected(null);setLosses(false);setAnchors(false);
@@ -53,6 +133,7 @@ export default function OtioCutReviewWorkbench({
     }
   };
   const inspect=()=>{
+    if(bridgeInspecting||exportingBundle)return;
     fileAttempt.current++;
     setError(null);setStatus(null);setSelected(null);
     try {
@@ -63,7 +144,8 @@ export default function OtioCutReviewWorkbench({
   };
   const current=selected?.scope===scope;
   const approved=!!(current&&losses&&(!absolute||anchors)&&
-    reviewer.trim()&&rationale.trim()&&desktopMode&&!busy&&!working&&!fileLoading);
+    reviewer.trim()&&rationale.trim()&&desktopMode&&!busy&&!working
+    &&!fileLoading&&!bridgeInspecting&&!exportingBundle);
   const apply=async()=>{
     if(!approved || !selected || latest.current!==scope)return;
     if(!desktopMode){setError("The browser demo cannot commit external cut proposals.");return;}
@@ -96,21 +178,170 @@ export default function OtioCutReviewWorkbench({
       <span className="status-pill">OWNER REVIEW REQUIRED</span>
     </header>
     <div className="portable-operation">
+    <details className="portable-operation">
+      <summary>Create the original media-bound OTIO bundle</summary>
+      <p className="portable-runtime-note">
+        Start with saved Motionwright MP4 assets and the same original files you own.
+        Export creates a new folder containing a source-bound OTIO timeline, original
+        media, provenance and property losses. Rights are your declarations, not
+        independent authorization; no NLE or publication is launched.
+      </p>
+      <label>
+        <span className="field-label">New OTIO media bundle destination</span>
+        <input aria-label="New OTIO media bundle destination" value={exportDestination}
+          maxLength={1800} autoComplete="off" spellCheck={false}
+          placeholder="Absolute path to a NEW export folder"
+          disabled={busy||working||exportingBundle||bridgeInspecting}
+          onChange={event=>{
+            fileAttempt.current++;setExportDestination(event.target.value);
+            setExportAttempted(false);setSelected(null);setStatus(null);setError(null);
+          }}/>
+      </label>
+      <label>
+        <span className="field-label">Original source reviewer declaration</span>
+        <input aria-label="Original OTIO source reviewer" maxLength={200}
+          value={exportReviewer} disabled={busy||exportingBundle||bridgeInspecting}
+          onChange={event=>setExportReviewer(event.target.value)}/>
+      </label>
+      <label>
+        <span className="field-label">Original media rights holder</span>
+        <input aria-label="Original OTIO media owner" maxLength={250}
+          value={mediaOwner} disabled={busy||exportingBundle||bridgeInspecting}
+          onChange={event=>setMediaOwner(event.target.value)}/>
+      </label>
+      <label>
+        <span className="field-label">Original media license</span>
+        <input aria-label="Original OTIO media license" maxLength={250}
+          value={mediaLicense} disabled={busy||exportingBundle||bridgeInspecting}
+          onChange={event=>setMediaLicense(event.target.value)}/>
+      </label>
+      {exportBindings.map((binding,index)=><fieldset key={index} className="portable-operation">
+        <legend>Original source media mapping {index+1}</legend>
+        <label>
+          <span className="field-label">Source scene</span>
+          <select aria-label={"Original OTIO source scene "+(index+1)}
+            value={binding.scene_id} disabled={busy||exportingBundle||bridgeInspecting}
+            onChange={event=>updateExportBinding(index,{scene_id:event.target.value})}>
+            <option value="">Choose saved scene</option>
+            {project.scenes.map(scene=><option key={scene.id} value={scene.id}>{scene.name}</option>)}
+          </select>
+        </label>
+        <label>
+          <span className="field-label">Saved original video asset</span>
+          <select aria-label={"Original OTIO video asset "+(index+1)}
+            value={binding.asset_id} disabled={busy||exportingBundle||bridgeInspecting}
+            onChange={event=>updateExportBinding(index,{asset_id:event.target.value})}>
+            <option value="">Choose saved MP4 asset</option>
+            {videoAssets.map(asset=><option key={asset.id} value={asset.id}>{asset.name}</option>)}
+          </select>
+        </label>
+        <label>
+          <span className="field-label">Original MP4 file matching the saved asset hash</span>
+          <input aria-label={"Original OTIO MP4 file path "+(index+1)}
+            value={binding.source_path} maxLength={1800} spellCheck={false}
+            autoComplete="off" disabled={busy||exportingBundle||bridgeInspecting}
+            placeholder="Absolute path to the original MP4 bytes"
+            onChange={event=>updateExportBinding(index,{source_path:event.target.value})}/>
+        </label>
+        <label>
+          <span className="field-label">Original source start frame</span>
+          <input aria-label={"Original OTIO source start frame "+(index+1)}
+            type="number" min={0} max={216000} step={1}
+            value={binding.source_start_frame} disabled={busy||exportingBundle||bridgeInspecting}
+            onChange={event=>updateExportBinding(index,{
+              source_start_frame:Number(event.target.value),
+            })}/>
+        </label>
+        {exportBindings.length>1&&<button type="button" className="button"
+          disabled={busy||exportingBundle||bridgeInspecting}
+          onClick={()=>setExportBindings(current=>current.filter((_,position)=>position!==index))}>
+          Remove media mapping
+        </button>}
+      </fieldset>)}
+      {exportBindings.length<Math.min(32,project.scenes.length)&&<button type="button"
+        className="button" disabled={busy||exportingBundle||bridgeInspecting}
+        onClick={()=>{
+          const next=project.scenes.find(scene=>!exportBindings.some(binding=>binding.scene_id===scene.id));
+          if(next)setExportBindings(current=>[...current,{
+            scene_id:next.id,asset_id:"",source_path:"",source_start_frame:0,
+          }]);
+        }}>Bind another original scene</button>}
+      <label className="otio-cut-check">
+        <input type="checkbox" checked={exportRights}
+          disabled={busy||exportingBundle||bridgeInspecting}
+          onChange={event=>setExportRights(event.target.checked)}/>
+        I confirm I have permission to use, copy and redistribute each selected
+        original MP4 in this local portable editorial bundle.
+      </label>
+      <label className="otio-cut-check">
+        <input type="checkbox" checked={allowSynthetic}
+          disabled={busy||exportingBundle||bridgeInspecting}
+          onChange={event=>setAllowSynthetic(event.target.checked)}/>
+        Explicitly permit synthetic or test-origin video inputs.
+      </label>
+      <button type="button" className="button button-primary"
+        disabled={!desktopMode||busy||working||fileLoading||bridgeInspecting
+          ||exportingBundle||exportAttempted||!exportRights
+          ||!exportDestination.trim()||!exportReviewer.trim()
+          ||!mediaOwner.trim()||!mediaLicense.trim()||videoAssets.length===0
+          ||exportBindings.length===0||exportBindings.some(binding=>
+            !binding.scene_id||!binding.asset_id||!binding.source_path.trim())}
+        onClick={()=>void exportOriginalMediaBundle()}>
+        {exportingBundle?"Verifying and exporting original media…":"Export original media-bound OTIO bundle"}
+      </button>
+      {exportAttempted&&!exportingBundle&&<p className="portable-runtime-note">
+        This destination has already had one export attempt. Inspect the folder before
+        choosing a new destination; this operation is never retried automatically.
+      </p>}
+    </details>
       <div className="portable-operation-copy">
-        <strong>Inspect a bounded external cut</strong>
+        <strong>Review an edited OTIO cut against its original media</strong>
         <span>
-          Run <code>tooling/otio-media/bridge.py preview-import</code> on the current
-          source snapshot and edited OTIO cut. Choose its <code>motionwright.otio-edit-preview/1</code>
-          JSON file below or paste the JSON. Studio checks current scene identity and the native
-          edit vocabulary; it cannot authenticate third-party files or independently confirm
-          the bridge's media checks.
+          Choose the complete original portable media bundle containing its first-party manifest,
+          source-project.json and original media, plus the edited .otio file inside that folder.
+          Motionwright verifies source identity and media through the embedded bridge; missing
+          protected Python or ffprobe runtimes refuse inspection. Nothing is saved by Preview.
         </span>
+      </div>
+      <label>
+        <span className="field-label">Original portable OTIO media bundle folder</span>
+        <input type="text" aria-label="Original OTIO media bundle folder"
+          value={bundlePath} maxLength={1700} autoComplete="off" spellCheck={false}
+          placeholder="Absolute path to the first-party exported media bundle"
+          disabled={busy||working||fileLoading||bridgeInspecting||exportingBundle}
+          onChange={event=>{
+            fileAttempt.current++;setBundlePath(event.target.value);setSelected(null);
+            setLosses(false);setAnchors(false);setError(null);setStatus(null);
+          }}/>
+      </label>
+      <label>
+        <span className="field-label">Edited OTIO file inside that bundle</span>
+        <input type="text" aria-label="Edited OTIO filename in bundle" value={editedCut}
+          maxLength={160} autoComplete="off" spellCheck={false}
+          placeholder="edited.otio" disabled={busy||working||fileLoading||bridgeInspecting}
+          onChange={event=>{
+            fileAttempt.current++;setEditedCut(event.target.value);setSelected(null);
+            setLosses(false);setAnchors(false);setError(null);setStatus(null);
+          }}/>
+      </label>
+      <button type="button" className="button"
+        disabled={!desktopMode||busy||working||fileLoading||bridgeInspecting||exportingBundle
+          ||!bundlePath.trim()||!editedCut.trim()}
+        onClick={()=>void previewOwnerMediaCut()}>
+        <FileCheck2 size={14} aria-hidden="true"/>
+        {bridgeInspecting?"Verifying original OTIO media…":"Preview edited OTIO with verified media"}
+      </button>
+      <div className="portable-operation-copy">
+        <strong>Review an existing bridge proposal</strong>
+        <span>Select its bounded <code>motionwright.otio-edit-preview/1</code> JSON file
+          or paste it below. A pasted declaration cannot authenticate the external media
+          independently; both paths still require the owner's explicit review and Save.</span>
       </div>
       <label>
         <span className="field-label">Select the generated OTIO bridge proposal</span>
         <input type="file" accept=".json,application/json"
           aria-label="OTIO bridge proposal JSON file"
-          disabled={working||busy||fileLoading}
+          disabled={working||busy||fileLoading||bridgeInspecting||exportingBundle}
           onChange={event=>{
             const file=event.currentTarget.files?.[0];
             event.currentTarget.value="";
@@ -122,13 +353,13 @@ export default function OtioCutReviewWorkbench({
         <textarea aria-label="OTIO imported cut preview JSON" rows={5} spellCheck={false}
           className="mono" value={raw} maxLength={128_000}
           placeholder='{"schema":"motionwright.otio-edit-preview/1", ...}'
-          disabled={working||busy||fileLoading} onChange={event=>{
+          disabled={working||busy||fileLoading||bridgeInspecting} onChange={event=>{
             fileAttempt.current++;
             setRaw(event.target.value);setSelected(null);
             setLosses(false);setAnchors(false);setError(null);setStatus(null);
           }}/>
       </label>
-      <button type="button" className="button" disabled={!raw.trim()||busy||working||fileLoading}
+      <button type="button" className="button" disabled={!raw.trim()||busy||working||fileLoading||bridgeInspecting}
         onClick={inspect}><FileCheck2 size={14} aria-hidden="true"/> {fileLoading?"Reading original proposal…":"Review bounded changes"}</button>
     </div>
     {!desktopMode&&<p className="portable-runtime-note" role="status">

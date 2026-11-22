@@ -11,6 +11,7 @@ mod local_error;
 mod media_integrity;
 mod narration_native;
 mod original_mix_native;
+mod otio_bridge;
 mod project_export;
 mod project_library;
 mod project_projection;
@@ -3003,6 +3004,37 @@ fn export_otio_source_snapshot(
 }
 
 #[tauri::command]
+async fn export_portable_otio_media_bundle(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: otio_bridge::OtioMediaBundleExportRequest,
+) -> Result<otio_bridge::OtioMediaBundleExportResponse, String> {
+    let service = state.service.clone();
+    let grants = state.effect_grants.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        otio_bridge::export_portable(&service, &grants, request)
+    })
+    .await
+    .map_err(|_| "The original OTIO media export worker did not finish cleanly.".to_string())?
+}
+
+#[tauri::command]
+async fn preview_otio_media_cut(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: otio_bridge::OtioMediaPreviewRequest,
+) -> Result<otio_bridge::OtioMediaPreviewResponse, String> {
+    // The human-reviewed Change remains a separate, scoped operation.
+    let service = state.service.clone();
+    let grants = state.effect_grants.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        otio_bridge::preview(&service, &grants, request)
+    })
+    .await
+    .map_err(|_| "The original OTIO inspection worker did not finish cleanly.".to_string())?
+}
+
+#[tauri::command]
 fn inspect_project_bundle(
     _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
@@ -3331,6 +3363,8 @@ fn main() {
             export_caption_sidecar,
             export_otio,
             export_otio_source_snapshot,
+            export_portable_otio_media_bundle,
+            preview_otio_media_cut,
             inspect_project_bundle,
             import_project_bundle,
             original_mix_native::native_original_mix_audition,

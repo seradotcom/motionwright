@@ -75,11 +75,18 @@ def capture_original(path:Path,budget:int)->tuple[bytes,dict]:
     insist(path.is_file() and not path.is_symlink(),f"Missing or unsafe file: {path.name}")
     size=path.stat().st_size
     insist(0<size<=budget,f"File exceeds byte budget: {path.name}")
-    import ci_private_evidence as custody
-    from mlt_official_runtime_intake import IntakeError
+    # Reuse the original held-FD intake directly, without loading the
+    # unrelated encrypted CI evidence exporter (and its crypto dependencies)
+    # into the installed OTIO media reader. Preserve that exporter's exact
+    # canonical-path/parent-symlink and stable namespace checks.
+    from mlt_official_runtime_intake import IntakeError, capture_regular
     try:
-        raw,observed=custody.regular(path.absolute(),budget)
-    except (custody.CustodyRejected,IntakeError) as error:
+        absolute=path.absolute()
+        insist(absolute.resolve(strict=True)==absolute
+               and not any(parent.is_symlink()for parent in absolute.parents),
+               "Original media path or parent directory is not canonical")
+        raw,observed=capture_regular(absolute,budget)
+    except (OSError,IntakeError) as error:
         raise BridgeRefused(f"File changed or became unsafe during retained capture: {path.name}") from error
     insist(0<len(raw)<=budget,f"File exceeds byte budget: {path.name}")
     return raw,observed

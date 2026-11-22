@@ -46,6 +46,11 @@ mod local_error;
 #[allow(dead_code)] // Exact Desktop local export authority, not an installed-Tauri claim.
 mod project_export;
 
+#[path = "../../../apps/desktop/src-tauri/src/otio_bridge.rs"]
+#[allow(dead_code)]
+// Source-exact Desktop owner media inspector; test grant/Store, not an installer.
+mod otio_bridge;
+
 use effect_grants::{EffectGrantRegistry, EffectKind, EffectScope};
 use motionwright_domain::{
     AlignmentEvidence, CanvasNode, Change, CreativePatch, CueEvidence, GraphAuthoringContext,
@@ -800,6 +805,23 @@ impl Session {
                     request(args)?,
                 )?)
             }
+            // Identical implementation and single-use grant to the real
+            // Desktop export_otio command. Exposes no NLE importer or effect.
+            "export_otio" => encoded(project_export::export_otio(
+                &self.service,
+                &self.grants,
+                request(args)?,
+            )?),
+            "export_portable_otio_media_bundle" => encoded(otio_bridge::export_portable(
+                &self.service,
+                &self.grants,
+                request(args)?,
+            )?),
+            "preview_otio_media_cut" => encoded(otio_bridge::preview(
+                &self.service,
+                &self.grants,
+                request(args)?,
+            )?),
             "waveform_page" => {
                 let request: WaveformPageRequest = request(args)?;
                 encoded(

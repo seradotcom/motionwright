@@ -31,5 +31,10 @@ tauri-plugin-dialog = "=2.8.1"
 [target.'cfg(windows)'.dependencies]
 winapi-util = "=0.1.11"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Existing locked libc 0.2.190 is used only to terminate the whole private
+# Python/ffprobe process group on bounded verification failure.
+libc = "0.2.190"
+
 [dev-dependencies]
 tempfile.workspace = true
