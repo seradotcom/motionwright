@@ -1463,11 +1463,18 @@ async fn render_requested(
             }))?
         );
     } else {
-        if std::env::var("MOTIONWRIGHT_NATIVE_GEOMETRY_E2E").as_deref() == Ok("1") {
-            // The real Host/Coordinator writer has finished its one effect.
-            // Its normal WAL reopen must be explicitly closed before a fresh,
-            // independent StudioServiceReader can admit the original Store.
-            // Do not weaken the reader or attempt any second Native effect.
+        if [
+            "MOTIONWRIGHT_NATIVE_GEOMETRY_E2E",
+            "MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E",
+            "MOTIONWRIGHT_NATIVE_CLIP_E2E",
+        ]
+        .iter()
+        .any(|selection| std::env::var(selection).as_deref() == Ok("1"))
+        {
+            // The authenticated Host/Coordinator writer finished its effect.
+            // Every selected same-Store readback, not only geometry, requires
+            // the original WAL-to-DELETE handoff before a *new* read-only
+            // StudioServiceReader. No replay, copied database or weaker reader.
             drop(coordinator);
             service.prepare_read_only_handoff()?;
         }
