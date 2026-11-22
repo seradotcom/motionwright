@@ -326,14 +326,28 @@ fn exact_native_easing(interpolation: MotionInterpolation) -> Option<MotionEasin
     }
 }
 
-/// Admit only the exact single-property native FadeIn contract: source opacity
-/// 0 at frame zero to the persisted opacity 1 at an integer output frame.
-/// No silent quantization, mixed channels, hierarchy or beat remapping.
-fn native_linear_opacity_entrance(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeOpacityDirection {
+    In,
+    Out,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeOpacityFade {
+    duration: RationalTime,
+    easing: MotionEasing,
+    direction: NativeOpacityDirection,
+}
+
+/// Only the two exact native opacity endpoints are admitted: 0 -> 1 (FadeIn)
+/// or 1 -> 0 (FadeOut), at an integer output frame. The Canvas base opacity
+/// remains 1; the terminal FadeOut value is a saved keyframe, not a mutation
+/// of the underlying object. No quantization or mixed channel substitution.
+fn native_exact_opacity_fade(
     node: &CanvasNode,
     scene: &Scene,
     frame_rate: Rate,
-) -> NativeResult<Option<(RationalTime, MotionEasing)>> {
+) -> NativeResult<Option<NativeOpacityFade>> {
     if node.keyframes.is_empty()
         || node
             .keyframes
@@ -344,7 +358,7 @@ fn native_linear_opacity_entrance(
     }
     let fail = || {
         unsupported(format!(
-            "Canvas node {} has opacity keys outside the exact native 0-to-1 linear FadeIn subset",
+            "Canvas node {} has opacity keys outside the exact native 0-to-1 FadeIn/1-to-0 FadeOut subset",
             node.id
         ))
     };
@@ -366,12 +380,17 @@ fn native_linear_opacity_entrance(
     if keys[0].at != RationalTime::ZERO
         || keys[1].at <= RationalTime::ZERO
         || keys[1].at >= scene.duration
-        || keys[0].value != 0.0
-        || keys[1].value != 1.0
         || keys[0].interpolation != MotionInterpolation::Linear
     {
         return Err(fail());
     }
+    let direction = if keys[0].value == 0.0 && keys[1].value == 1.0 {
+        NativeOpacityDirection::In
+    } else if keys[0].value == 1.0 && keys[1].value == 0.0 {
+        NativeOpacityDirection::Out
+    } else {
+        return Err(fail());
+    };
     let easing = exact_native_easing(keys[1].interpolation).ok_or_else(&fail)?;
     let numerator = i128::from(keys[1].at.num)
         .checked_mul(i128::from(frame_rate.num))
@@ -382,7 +401,11 @@ fn native_linear_opacity_entrance(
     if denominator <= 0 || numerator <= 0 || numerator % denominator != 0 {
         return Err(fail());
     }
-    Ok(Some((keys[1].at, easing)))
+    Ok(Some(NativeOpacityFade {
+        duration: keys[1].at,
+        easing,
+        direction,
+    }))
 }
 
 /// A deliberately narrow *exact* mapping to Semwright Primitive::Settle:
@@ -402,7 +425,7 @@ fn native_linear_position_motion(
         .iter()
         .any(|key| key.property == MotionProperty::Opacity)
     {
-        if native_linear_opacity_entrance(node, scene, frame_rate)?.is_none() {
+        if native_exact_opacity_fade(node, scene, frame_rate)?.is_none() {
             entry_motion(node)?;
         }
         return Ok(None);
@@ -1030,10 +1053,14 @@ fn subject(
                     height: node.height * projection.object_scale,
                 },
             },
-            initially_visible: !node
-                .keyframes
-                .iter()
-                .any(|key| key.property == MotionProperty::Opacity),
+            // A FadeIn starts hidden. A FadeOut must start visible: every
+            // original saved key is still validated against the exact native
+            // endpoint grammar before the Film can be admitted.
+            initially_visible: !node.keyframes.iter().any(|key| {
+                key.property == MotionProperty::Opacity
+                    && key.at == RationalTime::ZERO
+                    && key.value == 0.0
+            }),
             clip_intentional: false,
         },
         constraints,
@@ -1414,23 +1441,26 @@ fn attach_entrance_motion(
                 "Authored entrance motion on source hierarchies requires a dedicated mapping",
             ));
         }
-        if let Some((duration, easing)) = native_linear_opacity_entrance(node, scene, frame_rate)? {
+        if let Some(fade) = native_exact_opacity_fade(node, scene, frame_rate)? {
             let span_id = format!("linear-opacity-{}", node.id.simple());
             spans.push(TemporalSpan {
                 id: span_id.clone(),
-                minimum: duration,
-                preferred: duration,
-                maximum: duration,
+                minimum: fade.duration,
+                preferred: fade.duration,
+                maximum: fade.duration,
                 anchor: StartAnchor::Absolute { time: scene_start },
                 preference_priority: 0,
             });
+            let target = subject_id(node.id, None);
+            let primitive = match fade.direction {
+                NativeOpacityDirection::In => Primitive::FadeIn { target },
+                NativeOpacityDirection::Out => Primitive::FadeOut { target },
+            };
             shot.motion.push(Invocation {
                 id: format!("native-fade-{}", node.id.simple()),
                 span_id,
-                easing,
-                primitive: Primitive::FadeIn {
-                    target: subject_id(node.id, None),
-                },
+                easing: fade.easing,
+                primitive,
             });
             continue;
         }
@@ -3052,6 +3082,74 @@ mod tests {
     }
 
     #[test]
+    fn exact_fade_out_opacity_keeps_visible_source_and_real_native_zero_target() {
+        for interpolation in [
+            MotionInterpolation::Linear,
+            MotionInterpolation::EaseOutCubic,
+        ] {
+            let mut project = fixture_project();
+            set_exact_linear_opacity_keys(&mut project.scenes[0].nodes[0]);
+            let node = &mut project.scenes[0].nodes[0];
+            node.keyframes[0].value = 1.0;
+            node.keyframes[1].value = 0.0;
+            node.keyframes[1].interpolation = interpolation;
+            let original = node.clone();
+            let film = &build_motion_canvas_segments(
+                &project,
+                project.deliverables[0].id,
+                &fixture_options(&project),
+            )
+            .unwrap()[0]
+                .film;
+            let shot = &film.sequences[0].beats[0].shots[0];
+            assert_eq!(shot.motion.len(), 1);
+            assert!(
+                shot.subjects[0].initially_visible,
+                "FadeOut starts with source visible"
+            );
+            let easing = match interpolation {
+                MotionInterpolation::Linear => MotionEasing::Linear,
+                MotionInterpolation::EaseOutCubic => MotionEasing::OutCubic,
+                _ => unreachable!(),
+            };
+            assert_eq!(shot.motion[0].easing, easing);
+            assert!(matches!(
+                &shot.motion[0].primitive,
+                Primitive::FadeOut { target } if target == &subject_id(original.id, None)
+            ));
+            let realized = realize(film).unwrap();
+            let opacity = realized
+                .instructions
+                .iter()
+                .filter(|instruction| {
+                    matches!(
+                        &instruction.operation,
+                        semwright_motion_authoring::NativeOp::Tween {
+                            channel: semwright_motion_authoring::Channel::Opacity,
+                            ..
+                        }
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(opacity.len(), 1, "no sampled or duplicated alpha effect");
+            assert_eq!(opacity[0].start, RationalTime::ZERO);
+            assert_eq!(opacity[0].duration, RationalTime::new(1, 1).unwrap());
+            assert_eq!(opacity[0].easing, easing);
+            match &opacity[0].operation {
+                semwright_motion_authoring::NativeOp::Tween { from, to, .. } => {
+                    assert_eq!(from, &None);
+                    assert_eq!(to, &semwright_motion_authoring::Operand::Number(0.0));
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                project.scenes[0].nodes[0], original,
+                "the original editable Canvas source remains unchanged"
+            );
+        }
+    }
+
+    #[test]
     fn noncanonical_linear_opacity_keys_fail_without_approximation() {
         let mut baseline = fixture_project();
         set_exact_linear_opacity_keys(&mut baseline.scenes[0].nodes[0]);
@@ -3060,9 +3158,16 @@ mod tests {
 
         let mut off_frame = baseline.clone();
         off_frame.scenes[0].nodes[0].keyframes[1].at = RationalTime::new(1, 7).unwrap();
-        let mut reversed = baseline.clone();
-        reversed.scenes[0].nodes[0].keyframes[0].value = 1.0;
-        reversed.scenes[0].nodes[0].keyframes[1].value = 0.0;
+        let mut same_endpoint = baseline.clone();
+        same_endpoint.scenes[0].nodes[0].keyframes[0].value = 1.0;
+        same_endpoint.scenes[0].nodes[0].keyframes[1].value = 1.0;
+        let mut partial_exit = baseline.clone();
+        partial_exit.scenes[0].nodes[0].keyframes[0].value = 1.0;
+        partial_exit.scenes[0].nodes[0].keyframes[1].value = 0.2;
+        let mut held_exit = baseline.clone();
+        held_exit.scenes[0].nodes[0].keyframes[0].value = 1.0;
+        held_exit.scenes[0].nodes[0].keyframes[1].value = 0.0;
+        held_exit.scenes[0].nodes[0].keyframes[1].interpolation = MotionInterpolation::Hold;
         let mut wrong_target = baseline.clone();
         wrong_target.scenes[0].nodes[0].keyframes[1].value = 0.8;
         let mut wrong_curve = baseline.clone();
@@ -3090,7 +3195,9 @@ mod tests {
 
         for variant in [
             off_frame,
-            reversed,
+            same_endpoint,
+            partial_exit,
+            held_exit,
             wrong_target,
             wrong_curve,
             mixed,

@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from native_render_e2e import (
     verify_source_cubic_frames, mean_byte_distance, source_bound_cubic_roi,
     CUBIC_POSITION_REGION, CUBIC_POSITION_FRAMES, CUBIC_POSITION_RGB,
+    verify_source_fade_out_frames,
 )
 
 
@@ -126,6 +127,44 @@ class CubicPixelValidatorTests(unittest.TestCase):
     def test_mean_distance_uses_original_byte_values_without_correction(self):
         self.assertEqual(mean_byte_distance(data(0),data(255)),255)
         self.assertEqual(mean_byte_distance(data(128),data(128)),0)
+
+
+def fade_out_rois(*, middle_alpha=0.5, start_fill=(183, 124, 239),
+                  final_alpha=0.0, last_alpha=0.0):
+    background = (12, 18, 24)
+    def sample(alpha):
+        rgb = tuple(round(bg + (fill - bg) * alpha)
+                    for bg, fill in zip(background, start_fill))
+        return bytes(rgb) * (180 * 90)
+    return (sample(1.0), sample(middle_alpha), sample(final_alpha), sample(last_alpha))
+
+
+class FadeOutOriginalPixelControls(unittest.TestCase):
+    def test_exact_linear_exit_keeps_the_original_visible_until_it_reaches_zero(self):
+        report = verify_source_fade_out_frames(*fade_out_rois())
+        self.assertEqual(report["status"], "SOURCE_BOUND_ORIGINAL_LINEAR_FADE_OUT_PASS")
+        self.assertEqual(report["sampled_frames"], [0, 15, 30, 59])
+        self.assertTrue(report["destination_same_as_frame_59"])
+        self.assertFalse(report["human_visual_acceptance"])
+
+    def test_rejects_wrong_original_color_and_broken_byte_budget(self):
+        with self.assertRaisesRegex(AssertionError, "opaque fill"):
+            verify_source_fade_out_frames(*fade_out_rois(start_fill=(239, 124, 183)))
+        values = list(fade_out_rois())
+        values[2] = b"short"
+        with self.assertRaisesRegex(AssertionError, "byte budget"):
+            verify_source_fade_out_frames(*values)
+
+    def test_rejects_static_exit_jump_and_cubic_instead_of_linear(self):
+        for alpha in (0.0, 0.125, 0.95, 1.0):
+            with self.subTest(midpoint=alpha), self.assertRaisesRegex(AssertionError, "progressive"):
+                verify_source_fade_out_frames(*fade_out_rois(middle_alpha=alpha))
+        with self.assertRaisesRegex(AssertionError, "progressive"):
+            verify_source_fade_out_frames(*fade_out_rois(final_alpha=1.0, last_alpha=1.0))
+
+    def test_rejects_reappearance_after_terminal_frame(self):
+        with self.assertRaisesRegex(AssertionError, "reappears"):
+            verify_source_fade_out_frames(*fade_out_rois(last_alpha=0.1))
 
 
 if __name__ == "__main__":

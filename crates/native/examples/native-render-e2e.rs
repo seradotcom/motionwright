@@ -246,6 +246,22 @@ fn real_out_cubic_opacity_tile() -> CanvasNode {
     node
 }
 
+/// Distinct source-authored FadeOut: visible from frame zero, zero alpha at
+/// source frame 30. The authored base opacity stays 1.0; the terminal
+/// keyframe remains editable and is not approximated by a raster overlay.
+fn real_linear_fade_out_tile() -> CanvasNode {
+    let mut node = real_linear_fade_tile();
+    node.id = Uuid::now_v7();
+    node.name = "Native exact linear opacity exit tile".into();
+    node.x = 1100.0;
+    node.y = 890.0;
+    node.z_index = 6;
+    node.style.fill = Some("#B77CEF".into());
+    node.keyframes[0].value = 1.0;
+    node.keyframes[1].value = 0.0;
+    node
+}
+
 fn seed_project(
     database: &Path,
 ) -> Result<(StudioService, motionwright_domain::Project), Box<dyn std::error::Error>> {
@@ -325,7 +341,7 @@ fn seed_project(
             },
         )?
         .project;
-    let project = service
+    let with_cubic_fade = service
         .apply(
             with_cubic_move.id,
             &RevisionStamp::from(&with_cubic_move),
@@ -333,6 +349,17 @@ fn seed_project(
             &Change::AddCanvasNode {
                 scene_id,
                 node: real_out_cubic_opacity_tile(),
+            },
+        )?
+        .project;
+    let project = service
+        .apply(
+            with_cubic_fade.id,
+            &RevisionStamp::from(&with_cubic_fade),
+            "native-render-seed-linear-opacity-exit",
+            &Change::AddCanvasNode {
+                scene_id,
+                node: real_linear_fade_out_tile(),
             },
         )?
         .project;

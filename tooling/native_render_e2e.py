@@ -84,16 +84,17 @@ def digest(path: Path) -> str:
     return hasher.hexdigest()
 
 
-def native_opacity_tile_rgb(frame: Path) -> bytes:
-    """Decode only the source-authored 180x90 opacity-tile ROI from native PNG.
+def native_opacity_tile_rgb(frame: Path, *, fade_out: bool = False) -> bytes:
+    """Decode one isolated source-authored 180x90 native opacity ROI.
 
-    FFmpeg is used for acceptance *inspection* of immutable output frames,
-    never as an alternative renderer or image-generation backend.
+    FFmpeg is only an independent inspector of original PNG output; never
+    a source renderer or synthetic substitute. FadeIn's old region is fixed.
     """
+    x, y = (1100, 890) if fade_out else (1150, 750)
     command = [
         "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
         "-i", str(frame),
-        "-vf", "crop=180:90:1150:750",
+        "-vf", f"crop=180:90:{x}:{y}",
         "-frames:v", "1", "-pix_fmt", "rgb24",
         "-f", "rawvideo", "pipe:1",
     ]
@@ -249,6 +250,41 @@ def mean_byte_distance(left: bytes, right: bytes) -> float:
     if len(left) != len(right) or not left:
         raise AssertionError("decoded native ROI byte dimensions differ")
     return sum(abs(a - b) for a, b in zip(left, right)) / len(left)
+
+
+def verify_source_fade_out_frames(
+    start: bytes, halfway: bytes, destination: bytes, later: bytes,
+) -> dict:
+    """Original pixel samples must depict a real linear 1-to-0 FadeOut."""
+    expected_bytes = 180 * 90 * 3
+    if any(len(frame) != expected_bytes for frame in (start, halfway, destination, later)):
+        raise AssertionError("native FadeOut original RGB24 ROI has an incorrect byte budget")
+    source_rgb = (183, 124, 239)  # Exact authored fill #B77CEF
+    center = (45 * 180 + 90) * 3
+    if any(abs(start[center + channel] - original) > 3
+           for channel, original in enumerate(source_rgb)):
+        raise AssertionError("native FadeOut source ROI does not start with its original opaque fill")
+    full = mean_byte_distance(start, destination)
+    start_half = mean_byte_distance(start, halfway)
+    half_end = mean_byte_distance(halfway, destination)
+    if not (full >= 18.0
+            and full * 0.25 <= start_half <= full * 0.75
+            and full * 0.25 <= half_end <= full * 0.75):
+        raise AssertionError("native FadeOut ROI does not follow a progressive linear 1-to-0 alpha curve")
+    if destination != later:
+        raise AssertionError("native FadeOut ROI reappears after its exact frame-30 destination")
+    return {
+        "schema": "motionwright.native-fade-out-pixels/1",
+        "status": "SOURCE_BOUND_ORIGINAL_LINEAR_FADE_OUT_PASS",
+        "sampled_frames": [0, 15, 30, 59],
+        "source_rgb": list(source_rgb),
+        "full_mean_rgb_distance": round(full, 6),
+        "midpoint_to_start_distance": round(start_half, 6),
+        "midpoint_to_destination_distance": round(half_end, 6),
+        "destination_same_as_frame_59": True,
+        "native_effect": "NOT_INVOKED_BY_THIS_VALIDATOR",
+        "human_visual_acceptance": False,
+    }
 
 
 def write_private_json(path: Path, value: object) -> None:
@@ -2057,6 +2093,14 @@ def main() -> None:
                     "native opacity tile ROI does not show a bounded progressive 0-to-1 fade across native frames 0/15/30"
                 )
 
+            # One source-authored FadeOut must start visibly opaque, progress
+            # linearly to zero and remain absent after its terminal frame.
+            # This is read-only original PNG inspection of the same render.
+            fade_out_evidence = verify_source_fade_out_frames(
+                *(native_opacity_tile_rgb(frames[i], fade_out=True)
+                  for i in (0, 15, 30, 59))
+            )
+
             # Two MORE source-authored tiles prove the native cubic-out
             # path itself, not merely that the Film serialized an easing tag.
             # The old linear tile/ROI checks above remain unchanged.
@@ -2166,6 +2210,7 @@ def main() -> None:
                     "compared_properties": [
                         "exact_linear_xy_position",
                         "exact_linear_opacity_fade",
+                        "exact_linear_opacity_fade_out",
                         "exact_out_cubic_xy_position",
                         "exact_out_cubic_opacity_fade",
                         "static_geometry_and_native_text",
@@ -2200,6 +2245,7 @@ def main() -> None:
                     "linear_position_motion_sampled": True,
                     "linear_opacity_motion_sampled": True,
                     "native_cubic_out_region": cubic_evidence,
+                    "native_linear_fade_out_region": fade_out_evidence,
                     "direct_mediated_native_frame_parity": "PASS",
                     "direct_mediated_same_film_sha256": direct["film_sha256"],
                     "native_linear_opacity_region": {
