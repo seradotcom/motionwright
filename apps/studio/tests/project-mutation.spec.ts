@@ -1501,6 +1501,7 @@ test.describe("real service imports and portable restore", () => {
       const donorHistory = await source.history(donor.id, 0, 256);
       observations.source = donor;
       observations.fontOwnerEditCount = 4;
+      await fontEditor.screenshot({ path: testInfo.outputPath("font-copy-editor.png") });
       const originalInventory = page.getByLabel("Portable original source coverage");
       const sourceCount = new Set(donor.assets.map(asset => asset.content_sha256)).size;
       await expect(originalInventory).toContainText(

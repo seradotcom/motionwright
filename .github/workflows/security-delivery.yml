@@ -1808,6 +1808,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: original-portable-service-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/studio/test-results/**/canonical-mutation-real-service-evidence.json
+          path: |
+            apps/studio/test-results/**/canonical-mutation-real-service-evidence.json
+            apps/studio/test-results/**/font-copy-editor.png
+            apps/studio/test-results/**/real-portable-restored-edited-reopened.png
           if-no-files-found: warn
           retention-days: 14

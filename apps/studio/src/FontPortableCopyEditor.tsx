@@ -1,3 +1,4 @@
+import "./font-portable-copy.css";
 import type { Change, Project } from "./types";
 import { fontCopyCandidates, prepareFontCopyChange, savedFontCopyRaw, type FontCopyRaw } from "./fontPortableCopyDraft";
 import { BrandDraftFeedback, useBrandAuthoringDraft } from "./useBrandAuthoringDraft";
@@ -16,7 +17,7 @@ export default function FontPortableCopyEditor({ project, commit, busy, desktopM
   let invalid: string | null = null;
   try { prepareFontCopyChange(project, raw); }
   catch (reason) { invalid = reason instanceof Error ? reason.message : String(reason); }
-  return <section className="portable-operation" aria-label="Portable font copy declarations">
+  return <section className="font-copy-editor" aria-label="Portable font copy declarations">
     <div className="portable-operation-copy">
       <strong>Original font copies</strong>
       <span>Record whether the exact font original may travel with this project. Saving this declaration does not verify a license or approve publication.</span>
@@ -52,17 +53,17 @@ export default function FontPortableCopyEditor({ project, commit, busy, desktopM
           onChange={event => patch({ note: event.target.value, confirmed: false })}/></label>
     </div>
     {raw.contentSha256 && <p className="portable-runtime-note">Original SHA-256: <code>{raw.contentSha256}</code></p>}
-    <label><input type="checkbox" checked={raw.confirmed} disabled={editor.working}
+    <label className="font-copy-confirmation"><input type="checkbox" checked={raw.confirmed} disabled={editor.working}
       onChange={event => patch({ confirmed: event.target.checked })}/> I confirm this font-copy declaration for these original bytes</label>
     {invalid && raw.assetId && <p className="portable-runtime-note" role="status">{invalid}</p>}
     <button type="button" className="button button-primary" disabled={editor.blocked || !!invalid}
       onClick={() => void editor.submit("font-copy")}>Save font copy declaration</button>
-    <div aria-label="Saved font copy declarations">
+    <div className="font-copy-records" aria-label="Saved font copy declarations">
       <strong>Saved declarations · r{project.revision}</strong>
       {!saved.length && <p>No font-copy declarations saved.</p>}
       {saved.map(copy => {
         const asset = project.assets.find(value => value.id === copy.asset_id);
-        return <div className="portable-operation" key={copy.asset_id}>
+        return <div className="font-copy-record" key={copy.asset_id}>
           <p><strong>{asset?.name ?? "Detached original font"}</strong> · {copy.permission}</p>
           <p>{copy.origin || "Origin not recorded"} · {copy.license || "Terms not recorded"}</p>
           {copy.note && <p>{copy.note}</p>}

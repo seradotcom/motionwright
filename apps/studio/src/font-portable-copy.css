@@ -1,0 +1,55 @@
+.font-copy-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+  min-width: 0;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.font-copy-editor > *,
+.font-copy-editor .production-plan-grid > * { min-width: 0; }
+.font-copy-editor input:not([type="checkbox"]),
+.font-copy-editor select,
+.font-copy-editor textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 9px 11px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+}
+.font-copy-editor textarea { resize: vertical; }
+.font-copy-editor .font-copy-confirmation {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 12px;
+}
+.font-copy-confirmation input { flex-shrink: 0; width: auto; }
+.font-copy-records,
+.font-copy-record {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+}
+.font-copy-record {
+  padding: 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+}
+.font-copy-record p { margin: 0; font-size: 12px; }
+.font-copy-editor > .button,
+.font-copy-record > .button { justify-self: start; }
+.font-copy-editor code {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  font-size: 10px;
+}
+.font-copy-editor .portable-runtime-note { display: block; padding: 0; margin: 0; }
