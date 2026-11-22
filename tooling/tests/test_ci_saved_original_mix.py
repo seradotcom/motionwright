@@ -679,14 +679,43 @@ commands.deny = ["bootstrap"]
                                          {"test": "original Git inventory; no Native effects"})
 
     def test_source_roster_and_independent_provider_byte_expectations(self):
-        self.assertEqual(len(self.policy), 63)
-        self.assertEqual(sum(map(len, self.policy.values())), 27834)
+        self.assertEqual(len(self.policy), 68)
+        self.assertEqual(sum(map(len, self.policy.values())), 30192)
         self.assertEqual(self.policy[gate.GENERATED_PERMISSION_ROOT + "bootstrap.toml"], self.BOOTSTRAP)
         self.assertEqual(hashlib.sha256(self.BOOTSTRAP).hexdigest(),
                          "e249330f5e035d21dbf7ed00caa59fd1795c8f9500d4e5c5da7d8f989eb21c3e")
         self.assertEqual(hashlib.sha256(
             self.policy[gate.GENERATED_PERMISSION_ROOT + "apply_change.toml"]).hexdigest(),
             "d86b13e4fd459ab458d94026ae2e881905db91d087bd6c098af36c1c458f8edb")
+
+    def test_registered_desktop_commands_have_exact_local_owner_permissions(self):
+        main = (ROOT / "apps/desktop/src-tauri/src/main.rs").read_text(encoding="utf-8")
+        handlers = re.findall(r"tauri::generate_handler!\[([^\]]+)\]", main)
+        self.assertEqual(len(handlers), 1)
+        registered = [entry.strip().rsplit("::", 1)[-1]
+                      for entry in handlers[0].split(",") if entry.strip()]
+        self.assertTrue(all(re.fullmatch(r"[a-z][a-z0-9_]*", name) for name in registered))
+        self.assertEqual(len(registered), len(set(registered)))
+        self.assertEqual(set(self.policy), {
+            gate.GENERATED_PERMISSION_ROOT + name + ".toml" for name in registered
+        })
+        owner = gate.strict_json((ROOT / (
+            "apps/desktop/src-tauri/capabilities/desktop-owner.json")).read_bytes())
+        self.assertEqual(set(owner), {"identifier", "description", "local", "webviews", "permissions"})
+        self.assertEqual(owner["identifier"], "desktop-owner")
+        self.assertIs(owner["local"], True)
+        self.assertEqual(owner["webviews"], ["main"])
+        self.assertCountEqual(owner["permissions"], [
+            "allow-" + name.replace("_", "-") for name in registered
+        ])
+        # These actual commands were callable in the JSONL transport while
+        # missing from the installed app's generated/local capability roster.
+        for command in ("semantic_graph_operation_recovery", "export_native_capsule_source",
+                        "export_otio_source_snapshot", "export_portable_otio_media_bundle",
+                        "preview_otio_media_cut"):
+            signature = re.search(r"fn\s+" + command + r"\s*\((.*?)\)\s*->", main, re.DOTALL)
+            self.assertIsNotNone(signature, command)
+            self.assertRegex(signature.group(1), r"\bowner:\s*desktop_owner::OwnerInvocation|\b_owner:\s*desktop_owner::OwnerInvocation")
 
     def test_real_git_inventory_retains_both_streams_before_permission_admission(self):
         raw = gate.generated_inventory(self.execution, "focused")

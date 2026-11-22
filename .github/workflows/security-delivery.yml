@@ -1630,6 +1630,8 @@ jobs:
           test -z "$(git status --porcelain=v1 --untracked-files=normal)"
           python3 -B -E -s tooling/source_policy.py
           python3 -B -E -s tooling/public_surface_policy.py
+          python3 -B -E -s -m unittest \
+            tooling.tests.test_ci_saved_original_mix.GeneratedPermissionContracts -v
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
@@ -1684,7 +1686,39 @@ jobs:
           bin="$GITHUB_WORKSPACE/target/debug/examples/studio_review_session"
           test -f "$bin" && test -x "$bin" && test ! -L "$bin"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test -z "$(git status --porcelain=v1 --untracked-files=normal)"
+          git diff --exit-code
+          git diff --cached --exit-code
+          /usr/bin/python3 -B -E -s - <<'PY_NATIVE_OTIO_GENERATED'
+          import json, os, pathlib, subprocess, sys
+          repo = pathlib.Path.cwd()
+          output = pathlib.Path(os.environ["MW_OTIO_CI"])
+          sys.path.insert(0, str(repo / "tooling"))
+          import ci_saved_original_mix as generated
+          # Tauri emits its bounded command permissions during compilation.
+          # Admit exact provider-derived bytes only, retaining every other
+          # untracked file as a hard failure instead of ignoring the checkout.
+          inventories = []
+          for label, options in (
+              ("untracked", ("--others", "--exclude-standard")),
+              ("generated-ignored", ("--others", "--ignored", "--exclude-standard",
+                                    "--", "apps/desktop/src-tauri/gen",
+                                    "apps/desktop/src-tauri/permissions")),
+          ):
+              raw = subprocess.check_output(["git", "ls-files", "-z", *options], cwd=repo)
+              assert len(raw) <= 128 * 1024
+              (output / (label + ".original")).write_bytes(raw)
+              inventories.append(raw)
+          permissions = generated.generated_permissions(repo)
+          observed = generated.generated_schemas(repo, permissions, inventories)
+          assert set(permissions).issubset(observed), "generated command permissions are incomplete"
+          (output / "generated-permissions.json").write_text(json.dumps({
+              "source_sha": os.environ["GITHUB_SHA"],
+              "permission_count": len(permissions),
+              "files": observed,
+              "status": "EXACT_LOCKED_GENERATED_PERMISSIONS",
+          }, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          print("native-otio-generated-permissions=PASS", len(permissions))
+          PY_NATIVE_OTIO_GENERATED
           printf 'MOTIONWRIGHT_SERVICE_TEST_BIN=%s\n' "$bin" >> "$GITHUB_ENV"
           printf 'MOTIONWRIGHT_SERVICE_TEST_TMPDIR=%s\n' "$MW_OTIO_STORE" >> "$GITHUB_ENV"
       - name: One actual source-bound OTIO MP4 ffprobe Studio Save and fresh SQLite/CAS readback
@@ -1733,6 +1767,9 @@ jobs:
           path: |
             ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/desktop-tests.original.log
             ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/cargo-service.original.log
+            ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/untracked.original
+            ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/generated-ignored.original
+            ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/generated-permissions.json
             ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/otio-playwright.original.log
             ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/playwright.json
             ${{ runner.temp }}/otio-media-${{ github.run_id }}-${{ github.run_attempt }}/receipt.json
