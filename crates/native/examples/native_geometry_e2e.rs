@@ -295,11 +295,18 @@ pub(super) fn capture_hold(
     let project = &projects[0];
     check_project(project, MotionInterpolation::Hold)?;
     let history = reader.project_history(project.id, 0, 16)?;
+    // JSON.stringify writes an integral f64 such as 740.0 as 740. Reparse into
+    // the exact existing domain types; every value, event and source byte hash
+    // remains binding without treating JSON numeric spelling as a new Project.
+    let observed_project: motionwright_domain::Project =
+        serde_json::from_value(studio["project"].clone())?;
+    let observed_history: Vec<motionwright_storage::ProjectEvent> =
+        serde_json::from_value(studio["history"].clone())?;
     if project.id != initial.id
         || project.generation != initial.generation
         || project.revision != initial.revision.checked_add(5).ok_or("Revision overflow")?
-        || serde_json::to_value(project)? != studio["project"]
-        || serde_json::to_value(&history)? != studio["history"]
+        || project != &observed_project
+        || history != observed_history
     {
         return Err("Held geometry Studio receipt differs from original SQLite/CAS".into());
     }
@@ -442,13 +449,34 @@ mod tests {
         }
         let history = service.project_history(project.id, 0, 16).unwrap();
         let studio = dir.path().join("synthetic-studio-contract.json");
-        let record = json!({
+        let original_project = serde_json::to_value(&project).unwrap();
+        let mut record = json!({
             "schema": "motionwright.native-geometry-studio-hold/1",
             "status": "FIVE_ORIGINAL_UI_SAVES_AND_CLOSED_STORE", "ui_save_count": 5,
             "closed_store_handoff": true, "automatic_retry": false,
             "native_execution": false, "installed_tauri": false, "human_approval": false,
             "initial_project": initial, "project": project, "history": history,
         });
+        fn javascript_numbers(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Array(values) => values.iter_mut().for_each(javascript_numbers),
+                serde_json::Value::Object(values) => {
+                    values.values_mut().for_each(javascript_numbers)
+                }
+                serde_json::Value::Number(number) if number.is_f64() => {
+                    let value_f64 = number.as_f64().unwrap();
+                    if value_f64.fract() == 0.0 && value_f64.abs() <= 9_007_199_254_740_991.0 {
+                        *value = json!(value_f64 as i64);
+                    }
+                }
+                _ => {}
+            }
+        }
+        javascript_numbers(&mut record);
+        assert_ne!(
+            record["project"], original_project,
+            "the control must reproduce the actual JavaScript integer/f64 spelling change"
+        );
         cycle_new_json(&studio, &record).unwrap();
         let sha = sha_of(&studio).unwrap();
         let held = dir.path().join("held-source.json");
