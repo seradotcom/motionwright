@@ -408,43 +408,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libpipewire-0.3-dev pkg-config clang ffmpeg
 
-      - name: Install exact Motion Canvas runtime and Firefox
-        working-directory: ${{ env.SEMWRIGHT_CHECKOUT }}/integrations/motion-canvas/runtime
-        run: |
-          npm ci --ignore-scripts
-          npx --no-install playwright install --with-deps firefox
-          npm run probe
-
-      - name: Build exact Semwright Broker, sandbox and Motion Canvas provider
-        working-directory: ${{ env.SEMWRIGHT_CHECKOUT }}
-        run: |
-          cargo build --locked -p semwright-daemon -p semwright-cli --bins
-          cargo build --locked \
-            -p semwright-plugin-host --bin semwright-sandbox \
-            -p semwright-driver-motion-canvas --bin semwright-motion-canvas-driver
-
-      - name: Build admitted N83 preview producer
-        if: ${{ inputs.native_scope == 'n83-preview' }}
-        run: cargo build --locked -p motionwright-native --example native-incremental-e2e
-
-      - name: Build Motionwright production acceptance
-        if: ${{ inputs.native_scope != 'n83-preview' && !inputs.geometry_e2e }}
-        run: |
-          cargo build --locked -p motionwright-native --example native-render-e2e
-          cargo test --locked -p motionwright-native \
-            motion_canvas_production_is_revision_bound_rendered_and_natively_verified \
-            -- --nocapture
-          cargo test --locked -p motionwright-native --lib \
-            exact_linear_opacity_keys_preserve_native_fade_in_and_original_canvas \
-            -- --nocapture
-          cargo test --locked -p motionwright-native --lib \
-            noncanonical_linear_opacity_keys_fail_without_approximation \
-            -- --nocapture
-          cargo test --locked -p motionwright-native --lib \
-            exact_cubic_out_ -- --nocapture
-          cargo test --locked -p motionwright-native --lib \
-            smoothstep_is_still_rejected_as_not_equivalent_to_native_inout_cubic -- --nocapture
-
       - name: Build and verify exact Native geometry source before Host effect
         if: ${{ inputs.geometry_e2e }}
         shell: bash
@@ -549,6 +512,43 @@ jobs:
           path: ${{ runner.temp }}/native-geometry-source-${{ github.run_id }}-${{ github.run_attempt }}/
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Install exact Motion Canvas runtime and Firefox
+        working-directory: ${{ env.SEMWRIGHT_CHECKOUT }}/integrations/motion-canvas/runtime
+        run: |
+          npm ci --ignore-scripts
+          npx --no-install playwright install --with-deps firefox
+          npm run probe
+
+      - name: Build exact Semwright Broker, sandbox and Motion Canvas provider
+        working-directory: ${{ env.SEMWRIGHT_CHECKOUT }}
+        run: |
+          cargo build --locked -p semwright-daemon -p semwright-cli --bins
+          cargo build --locked \
+            -p semwright-plugin-host --bin semwright-sandbox \
+            -p semwright-driver-motion-canvas --bin semwright-motion-canvas-driver
+
+      - name: Build admitted N83 preview producer
+        if: ${{ inputs.native_scope == 'n83-preview' }}
+        run: cargo build --locked -p motionwright-native --example native-incremental-e2e
+
+      - name: Build Motionwright production acceptance
+        if: ${{ inputs.native_scope != 'n83-preview' && !inputs.geometry_e2e }}
+        run: |
+          cargo build --locked -p motionwright-native --example native-render-e2e
+          cargo test --locked -p motionwright-native \
+            motion_canvas_production_is_revision_bound_rendered_and_natively_verified \
+            -- --nocapture
+          cargo test --locked -p motionwright-native --lib \
+            exact_linear_opacity_keys_preserve_native_fade_in_and_original_canvas \
+            -- --nocapture
+          cargo test --locked -p motionwright-native --lib \
+            noncanonical_linear_opacity_keys_fail_without_approximation \
+            -- --nocapture
+          cargo test --locked -p motionwright-native --lib \
+            exact_cubic_out_ -- --nocapture
+          cargo test --locked -p motionwright-native --lib \
+            smoothstep_is_still_rejected_as_not_equivalent_to_native_inout_cubic -- --nocapture
 
       - name: Verify actual editable source Service cycle before Native
         id: cycle_rust_controls
