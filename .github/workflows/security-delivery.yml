@@ -91,7 +91,7 @@ on:
         type: choice
         required: true
         default: otio
-        options: [otio, portable-project]
+        options: [otio, otio-kdenlive, portable-project]
 
 permissions:
   contents: read
@@ -1614,6 +1614,7 @@ jobs:
       PYTHONDONTWRITEBYTECODE: '1'
       MOTIONWRIGHT_OTIO_REAL_MEDIA_OWNER: ${{ inputs.interchange_case == 'portable-project' && '0' || '1' }}
       MW_INTERCHANGE_CASE: ${{ inputs.interchange_case || 'otio' }}
+      MOTIONWRIGHT_OTIO_INPUT_PROFILE: ${{ inputs.interchange_case == 'otio-kdenlive' && 'kdenlive' || '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -1637,7 +1638,7 @@ jobs:
           test -z "$(git status --porcelain=v1 --untracked-files=normal)"
           python3 -B -E -s tooling/source_policy.py
           python3 -B -E -s tooling/public_surface_policy.py
-          if [ "$MW_INTERCHANGE_CASE" = otio ]; then
+          if [ "$MW_INTERCHANGE_CASE" = otio ] || [ "$MW_INTERCHANGE_CASE" = otio-kdenlive ]; then
           python3 -B -E -s -m unittest \
             tooling.tests.test_ci_saved_original_mix.GeneratedPermissionContracts -v
           fi
@@ -1645,7 +1646,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
             patchelf libssl-dev ffmpeg python3
-          if [ "$MW_INTERCHANGE_CASE" = otio ]; then
+          if [ "$MW_INTERCHANGE_CASE" = otio ] || [ "$MW_INTERCHANGE_CASE" = otio-kdenlive ]; then
           test -x /usr/bin/python3
           test -x /usr/bin/ffprobe
           /usr/bin/python3 -B -E -s - <<'PY_NATIVE_OTIO_HOST'
@@ -1671,7 +1672,7 @@ jobs:
           test ! -e "$MW_OTIO_CI"
           test ! -e "$MW_OTIO_STORE"
           mkdir -m 700 "$MW_OTIO_CI" "$MW_OTIO_STORE"
-          if [ "$MW_INTERCHANGE_CASE" = otio ]; then
+          if [ "$MW_INTERCHANGE_CASE" = otio ] || [ "$MW_INTERCHANGE_CASE" = otio-kdenlive ]; then
           cargo test --locked --jobs 2 -p motionwright-desktop --bin motionwright-desktop \
             'otio_bridge::tests::' -- --test-threads=1 \
             2>&1 | tee "$MW_OTIO_CI/desktop-tests.original.log"
@@ -1724,7 +1725,7 @@ jobs:
               inventories.append(raw)
           permissions = generated.generated_permissions(repo)
           observed = generated.generated_schemas(repo, permissions, inventories)
-          if os.environ["MW_INTERCHANGE_CASE"] == "otio":
+          if os.environ["MW_INTERCHANGE_CASE"] in ("otio", "otio-kdenlive"):
               assert set(permissions).issubset(observed), "generated command permissions are incomplete"
           else:
               assert os.environ["MW_INTERCHANGE_CASE"] == "portable-project"
@@ -1750,7 +1751,7 @@ jobs:
           npm ci --no-audit --no-fund
           npx playwright install --with-deps chromium
           case "$MW_INTERCHANGE_CASE" in
-            otio) selection=(tests/otio-real-media-bridge-service.spec.ts) ;;
+            otio|otio-kdenlive) selection=(tests/otio-real-media-bridge-service.spec.ts) ;;
             portable-project)
               selection=(tests/project-mutation.spec.ts --grep 'real portable export and verified restore rotate generation, preserve CAS and serialize the next Brief edit$') ;;
             *) echo 'Unadmitted original interchange selection'; exit 2 ;;
@@ -1773,9 +1774,12 @@ jobs:
             'source_sha':os.environ['GITHUB_SHA'],
             'run_id':os.environ['GITHUB_RUN_ID'],
             'attempt':os.environ['GITHUB_RUN_ATTEMPT'],
-            'status':('ONE_REAL_MEDIA_STUDIO_SERVICE_SQLITE_CAS_ROUNDTRIP_PASS'
-                      if os.environ['MW_INTERCHANGE_CASE']=='otio'
-                      else 'ONE_ORIGINAL_PORTABLE_PROJECT_EXPORT_IMPORT_REOPEN_PASS'),
+            'status':{
+              'otio':'ONE_REAL_MEDIA_STUDIO_SERVICE_SQLITE_CAS_ROUNDTRIP_PASS',
+              'otio-kdenlive':'ONE_KDENLIVE_CUT_STUDIO_SERVICE_SQLITE_CAS_ROUNDTRIP_PASS',
+              'portable-project':'ONE_ORIGINAL_PORTABLE_PROJECT_EXPORT_IMPORT_REOPEN_PASS',
+            }[os.environ['MW_INTERCHANGE_CASE']],
+            'input_profile':os.environ.get('MOTIONWRIGHT_OTIO_INPUT_PROFILE') or None,
             'expected':1,'unexpected':0,'flaky':0,'skipped':0,
             'original_log_sha256':hashlib.sha256(original).hexdigest(),
             'original_log_bytes':len(original),

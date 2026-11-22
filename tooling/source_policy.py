@@ -244,10 +244,13 @@ for path in iter_source_files(ROOT):
         # - owned child process group terminated and reaped on error/timeout
         # - output is verified privately and then RENAME_NOREPLACE published
         #   once, rejecting existing directories and dangling symlinks.
+        # - Kdenlive pair preview binds both original files and capsule hashes;
+        #   only bundle media roots are admitted, and the existing bounded
+        #   owner Change still requires review and one explicit Save.
         # Any code change revokes this admission until a new security review.
         reviewed_production_process_sources = {
             "apps/desktop/src-tauri/src/otio_bridge.rs":
-                "d4642ee8f1e44bbfd5f1c6db9f5651e0c473052d4d151c0090890a7b039b51b3",
+                "832390283b1de594bf128fe234a7c777d772ad39d905ceeac055358f66486b08",
         }
         reviewed_production_process = (
             rel in reviewed_production_process_sources
