@@ -119,6 +119,97 @@ class NativeRenderPublicArtifactTests(unittest.TestCase):
         self.assertNotIn("NEVER_PUBLISH_SESSION",
                          (self.public / "public-evidence.json").read_text())
 
+    def set_valid_original_clip(self):
+        self.result["project"]["clip_source_sha256"] = "1" * 64
+        self.result["project"]["clip_ui_sha256"] = "2" * 64
+        self.result["native_clip_group_original"] = {
+            "schema": "motionwright.native-clip-group-original-pixels/1",
+            "status": "ORIGINAL_NATIVE_RECTANGULAR_CLIP_PIXELS_PASS",
+            "parent_right_px": 1280, "original_child_right_px": 1460,
+            "source_fill": "#E0A940", "source_replaced_with_overlay": False,
+            "native_effect_invoked_by_validator": False,
+            "human_visual_acceptance": False,
+            "source_receipt_sha256": "1" * 64,
+            "independent_store_readback_sha256": "3" * 64,
+            "frames": [
+                {"frame": index, "source_roi_sha256": "4" * 64,
+                 "inside_rgb": [224, 169, 64], "outside_rgb": [12, 18, 24]}
+                for index in (0, 30, 59)
+            ],
+        }
+        self.parity["compared_properties"] = [
+            "source_bound_rectangular_clip_group",
+        ]
+        self.store()
+
+    def test_selected_clip_requires_actual_store_and_pixel_receipts(self):
+        with patch.dict(pub.os.environ, {"MOTIONWRIGHT_NATIVE_CLIP_E2E": "1",
+                                        "MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E": "0"}):
+            self.refused("native_clip_original_not_verified")
+            self.set_valid_original_clip()
+            report = pub.publish(self.private, self.public, SOURCE, SDK, "success")
+        self.assertTrue(report["selected_original_clip_pixels_and_store_verified"])
+        self.assertFalse(report["selected_original_layer_pixels_and_store_verified"])
+        self.assertTrue(report["native_rgba_direct_mediated_parity"])
+        self.assertFalse(report["original_owner_receipts_uploaded"])
+        self.assertFalse(report["v01_release_authorized"])
+        self.assertEqual({p.name for p in self.public.iterdir()},
+                         set(pub.FILES) | {"public-evidence.json"})
+
+    def test_selected_clip_rejects_forgeries_and_unselected_credit(self):
+        self.set_valid_original_clip()
+        with patch.dict(pub.os.environ, {"MOTIONWRIGHT_NATIVE_CLIP_E2E": "0",
+                                        "MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E": "0"}):
+            self.refused("native_clip_selection_mismatch")
+        with patch.dict(pub.os.environ, {"MOTIONWRIGHT_NATIVE_CLIP_E2E": "1",
+                                        "MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E": "0"}):
+            for field, replacement in (
+                ("status", "UNVERIFIED"),
+                ("source_receipt_sha256", "0" * 64),
+                ("independent_store_readback_sha256", "not-a-sha"),
+                ("human_visual_acceptance", True),
+                ("source_replaced_with_overlay", True),
+            ):
+                with self.subTest(field=field):
+                    self.set_valid_original_clip()
+                    self.result["native_clip_group_original"][field] = replacement
+                    self.store()
+                    self.refused("native_clip_original_not_verified")
+            self.set_valid_original_clip()
+            self.result["native_clip_group_original"]["frames"][1]["inside_rgb"] = [0, 0, 0]
+            self.store()
+            self.refused("native_clip_original_not_verified")
+            self.set_valid_original_clip()
+            self.result["native_clip_group_original"]["frames"][1]["outside_rgb"] = [224, 169, 64]
+            self.store()
+            self.refused("native_clip_original_not_verified")
+
+    def test_selected_layer_has_own_original_store_and_z_order_provenance(self):
+        layer = {
+            "schema": "motionwright.native-layer-original-pixels/1",
+            "status": "SOURCE_BOUND_PROMOTED_LAYER_VISIBLE",
+            "sampled_frames": [0, 30, 59],
+            "exact_static_region": True,
+            "overlap_front_rgb": [224, 169, 64],
+            "background_visible_rgb": [37, 105, 184],
+            "native_effect_invoked_by_validator": False,
+            "human_visual_acceptance": False,
+            "source_receipt_sha256": "5" * 64,
+            "independent_store_reader_sha256": "6" * 64,
+        }
+        self.result["project"].update({
+            "layer_order_source_sha256": "5" * 64,
+            "layer_order_ui_sha256": "7" * 64,
+        })
+        self.result["native_layer_order_original"] = layer
+        self.parity["compared_properties"] = ["source_bound_native_layer_order"]
+        self.store()
+        with patch.dict(pub.os.environ, {"MOTIONWRIGHT_NATIVE_CLIP_E2E": "0",
+                                        "MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E": "1"}):
+            report = pub.publish(self.private, self.public, SOURCE, SDK, "success")
+        self.assertTrue(report["selected_original_layer_pixels_and_store_verified"])
+        self.assertFalse(report["selected_original_clip_pixels_and_store_verified"])
+
     def test_failed_cancelled_or_skipped_never_admits_native_media(self):
         for status in ("failure", "cancelled", "skipped"):
             with self.subTest(status=status):
@@ -196,6 +287,21 @@ class NativeRenderPublicArtifactTests(unittest.TestCase):
         pub.publish(self.private, self.public, SOURCE, SDK, "failure")
         with self.assertRaises(pub.PublicationError):
             pub.publish(self.private, self.public, SOURCE, SDK, "success")
+
+    def test_selected_frames_publish_before_optional_review_and_without_replay(self):
+        wf = (Path(__file__).resolve().parents[2] /
+              ".github/workflows/native-render-e2e.yml").read_text()
+        assert wf.index("      - name: Render application-owned revision through real Broker and Driver Host") < (
+            wf.index("      - name: Preserve independently verified selected Native frames before review")
+        ) < wf.index("      - name: Verify review evidence")
+        sig = "$" + "{{"
+        sha = "$" + "{GITHUB_SHA}"
+        self.assertIn("NATIVE_CI_JOB_STATUS: " + sig + " steps.native_original_effect.outcome }}", wf)
+        self.assertIn("NATIVE_CI_JOB_STATUS: " + sig + " job.status }}", wf)
+        self.assertIn('test ! -e "verification/native-render-e2e/' + sha + '/native-provider-live-broker-events.json"', wf)
+        self.assertIn('test -s "verification/native-render-e2e/' + sha + '/native-provider-live-broker-events.json"', wf)
+        self.assertIn("selected no-replay source must have no optional Broker subscription", wf)
+        self.assertIn("!inputs.layer_order_e2e && !inputs.clip_e2e", wf)
 
     def test_workflow_upload_is_allowlisted_not_private_directory(self):
         path = (Path(__file__).resolve().parents[2] /

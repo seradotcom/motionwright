@@ -1035,6 +1035,24 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # Retain only verified PNGs before the auxiliary review can fail.
+      # Never upload private Studio, Broker or owner receipts.
+      - name: Preserve independently verified selected Native frames before review
+        if: ${{ (inputs.clip_e2e || inputs.layer_order_e2e) && steps.native_original_effect.outcome == 'success' }}
+        env:
+          NATIVE_CI_JOB_STATUS: ${{ steps.native_original_effect.outcome }}
+        run: |
+          python3 tooling/native_render_public_artifact.py             --source-sha "$GITHUB_SHA"             --evidence-root "verification/native-render-e2e/$GITHUB_SHA"             --output-root "verification/native-render-public"             --job-status "$NATIVE_CI_JOB_STATUS"
+          python3 -m json.tool verification/native-render-public/public-evidence.json >/dev/null
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: ${{ (inputs.clip_e2e || inputs.layer_order_e2e) && steps.native_original_effect.outcome == 'success' }}
+        with:
+          name: motionwright-native-render-${{ github.sha }}
+          path: verification/native-render-public
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Verify review evidence
         if: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e }}
         run: |
@@ -1045,7 +1063,13 @@ jobs:
           test -s "verification/native-render-e2e/${GITHUB_SHA}/frame-middle.png"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/frame-last.png"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/native-provider-lifecycle.json"
-          test -s "verification/native-render-e2e/${GITHUB_SHA}/native-provider-live-broker-events.json"
+          # Selected Clip/Layer disables the optional live Broker subscription.
+          # Its absence is required; unselected standard still requires it.
+          if [ "$MOTIONWRIGHT_NATIVE_CLIP_E2E" = 1 ] || [ "$MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E" = 1 ]; then
+            test ! -e "verification/native-render-e2e/${GITHUB_SHA}/native-provider-live-broker-events.json"
+          else
+            test -s "verification/native-render-e2e/${GITHUB_SHA}/native-provider-live-broker-events.json"
+          fi
           test -s "verification/native-render-e2e/${GITHUB_SHA}/motionwright-direct-parity-film.json"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/native-direct-mediated-parity.json"
           test -s "verification/native-render-e2e/${GITHUB_SHA}/native-render-stage-cost.json"
@@ -1162,29 +1186,37 @@ jobs:
           assert health["authority"] == "passive-ci-process-status-not-driver-evidence"
           assert health["sample_count"] >= 1
           assert health["daemon_exit_before_owner_cleanup"] is None
-          live = json.loads((root / "native-provider-live-broker-events.json").read_text())
-          assert live["schema"] == "motionwright-ci-native-provider-broker-events/1"
-          assert live["motionwright_source_sha"] == os.environ["GITHUB_SHA"]
-          assert live["semwright_source_pin"] == result["semwright_sha"]
-          assert live["capture_mode"] == "bounded-read-only-owner-session-live-watch"
-          assert type(live["started_before_render"]) is bool
-          assert live["history_exhaustive"] is False
-          assert live["native_provider_causation_proven"] is False
-          assert live["terminal_native_result_verified"] is False
-          assert live["original_render_retry_permitted"] is False
-          assert live["public_owner_payloads_copied"] is False
-          assert live["installed_owner_recovery"] == "NOT_RUN"
-          assert live["trusted_lifecycle_event_count"] == len(live["events"])
-          allowed = {
-              "provider.connected", "provider.disconnected",
-              "provider.capabilities.changed", "provider.generation.invalidated",
-              "provider.removed",
-          }
-          assert all(
-              set(event) == {"kind", "generation", "revision"}
-              and event["kind"] in allowed
-              for event in live["events"]
-          )
+          live_path = root / "native-provider-live-broker-events.json"
+          selected_source = (os.environ["MOTIONWRIGHT_NATIVE_CLIP_E2E"] == "1"
+                             or os.environ["MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E"] == "1")
+          if selected_source:
+              assert not live_path.exists() and not live_path.is_symlink(), (
+                  "selected no-replay source must have no optional Broker subscription"
+              )
+          else:
+              live = json.loads((root / "native-provider-live-broker-events.json").read_text())
+              assert live["schema"] == "motionwright-ci-native-provider-broker-events/1"
+              assert live["motionwright_source_sha"] == os.environ["GITHUB_SHA"]
+              assert live["semwright_source_pin"] == result["semwright_sha"]
+              assert live["capture_mode"] == "bounded-read-only-owner-session-live-watch"
+              assert type(live["started_before_render"]) is bool
+              assert live["history_exhaustive"] is False
+              assert live["native_provider_causation_proven"] is False
+              assert live["terminal_native_result_verified"] is False
+              assert live["original_render_retry_permitted"] is False
+              assert live["public_owner_payloads_copied"] is False
+              assert live["installed_owner_recovery"] == "NOT_RUN"
+              assert live["trusted_lifecycle_event_count"] == len(live["events"])
+              allowed = {
+                  "provider.connected", "provider.disconnected",
+                  "provider.capabilities.changed", "provider.generation.invalidated",
+                  "provider.removed",
+              }
+              assert all(
+                  set(event) == {"kind", "generation", "revision"}
+                  and event["kind"] in allowed
+                  for event in live["events"]
+              )
           PY
 
       - name: Repeat native render with a fresh owner Broker and Driver Host (v0.1 diagnostic only)
@@ -1211,7 +1243,7 @@ jobs:
           PY
 
       - name: Stage only verified v0.1 native PNG review, not original Broker receipts
-        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && (steps.native_original_effect.outcome == 'success' || steps.native_original_effect.outcome == 'failure') }}
+        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && !inputs.layer_order_e2e && !inputs.clip_e2e && (steps.native_original_effect.outcome == 'success' || steps.native_original_effect.outcome == 'failure') }}
         env:
           NATIVE_CI_JOB_STATUS: ${{ job.status }}
         run: |
@@ -1223,7 +1255,7 @@ jobs:
           python3 -m json.tool verification/native-render-public/public-evidence.json >/dev/null
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && (steps.native_original_effect.outcome == 'success' || steps.native_original_effect.outcome == 'failure') }}
+        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && !inputs.layer_order_e2e && !inputs.clip_e2e && (steps.native_original_effect.outcome == 'success' || steps.native_original_effect.outcome == 'failure') }}
         with:
           name: motionwright-native-render-${{ github.sha }}
           path: verification/native-render-public

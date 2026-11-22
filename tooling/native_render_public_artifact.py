@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -119,7 +120,88 @@ def sha256(blob: bytes) -> str:
     return hashlib.sha256(blob).hexdigest()
 
 
-def checked_source(root: Path, source: str, sdk: str) -> tuple[dict[str, bytes], str]:
+
+def verify_selected_original_source(result: dict, parity: dict) -> dict[str, bool]:
+    """Admit source-only Clip/Layer pixels and original Store reopen claims.
+
+    A public artifact never includes the original Studio receipt, Store or
+    owner payload; these exact fields are producer-bound through result/parity.
+    """
+    clip_mode = os.environ.get("MOTIONWRIGHT_NATIVE_CLIP_E2E", "0")
+    layer_mode = os.environ.get("MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E", "0")
+    require(clip_mode in {"0", "1"} and layer_mode in {"0", "1"}
+            and not (clip_mode == "1" and layer_mode == "1"),
+            "native_selected_source_invalid")
+    clip_selected = clip_mode == "1"
+    layer_selected = layer_mode == "1"
+    clip = result.get("native_clip_group_original")
+    layer = result.get("native_layer_order_original")
+    project = result.get("project")
+    compared = parity.get("compared_properties")
+    require(isinstance(project, dict), "native_selected_project_missing")
+    digest = lambda v: isinstance(v, str) and SHA256.fullmatch(v) is not None
+
+    if clip_selected:
+        frames = clip.get("frames") if isinstance(clip, dict) else None
+        require(
+            isinstance(clip, dict)
+            and clip.get("schema") == "motionwright.native-clip-group-original-pixels/1"
+            and clip.get("status") == "ORIGINAL_NATIVE_RECTANGULAR_CLIP_PIXELS_PASS"
+            and clip.get("parent_right_px") == 1280
+            and clip.get("original_child_right_px") == 1460
+            and clip.get("source_fill") == "#E0A940"
+            and clip.get("source_replaced_with_overlay") is False
+            and clip.get("native_effect_invoked_by_validator") is False
+            and clip.get("human_visual_acceptance") is False
+            and digest(project.get("clip_ui_sha256"))
+            and digest(project.get("clip_source_sha256"))
+            and clip.get("source_receipt_sha256") == project["clip_source_sha256"]
+            and digest(clip.get("independent_store_readback_sha256"))
+            and isinstance(frames, list) and len(frames) == 3
+            and all(
+                isinstance(frame, dict) and frame.get("frame") == index
+                and digest(frame.get("source_roi_sha256"))
+                and frame.get("inside_rgb") == [224, 169, 64]
+                and isinstance(frame.get("outside_rgb"), list)
+                and len(frame["outside_rgb"]) == 3
+                and all(type(channel) is int and 0 <= channel <= 255
+                        for channel in frame["outside_rgb"])
+                and sum(abs(channel - expected) for channel, expected
+                        in zip(frame["outside_rgb"], (224, 169, 64))) >= 45
+                for index, frame in zip((0, 30, 59), frames)
+            )
+            and isinstance(compared, list)
+            and "source_bound_rectangular_clip_group" in compared,
+            "native_clip_original_not_verified",
+        )
+    else:
+        require(clip is None, "native_clip_selection_mismatch")
+
+    if layer_selected:
+        require(
+            isinstance(layer, dict)
+            and layer.get("schema") == "motionwright.native-layer-original-pixels/1"
+            and layer.get("status") == "SOURCE_BOUND_PROMOTED_LAYER_VISIBLE"
+            and layer.get("sampled_frames") == [0, 30, 59]
+            and layer.get("exact_static_region") is True
+            and layer.get("overlap_front_rgb") == [224, 169, 64]
+            and layer.get("background_visible_rgb") == [37, 105, 184]
+            and layer.get("native_effect_invoked_by_validator") is False
+            and layer.get("human_visual_acceptance") is False
+            and digest(project.get("layer_order_ui_sha256"))
+            and digest(project.get("layer_order_source_sha256"))
+            and layer.get("source_receipt_sha256") == project["layer_order_source_sha256"]
+            and digest(layer.get("independent_store_reader_sha256"))
+            and isinstance(compared, list)
+            and "source_bound_native_layer_order" in compared,
+            "native_layer_original_not_verified",
+        )
+    else:
+        require(layer is None, "native_layer_selection_mismatch")
+    return {"clip": clip_selected, "layer_order": layer_selected}
+
+
+def checked_source(root: Path, source: str, sdk: str) -> tuple[dict[str, bytes], str, dict[str, bool]]:
     require(root.is_dir() and not root.is_symlink(),
             "missing_or_linked_private_evidence_root")
     result = strict_object(read_bounded(root, "result.json", 128_000))
@@ -161,6 +243,7 @@ def checked_source(root: Path, source: str, sdk: str) -> tuple[dict[str, bytes],
         and bool(SHA256.fullmatch(pixels["ordered_rgba_frame_digests_sha256"])),
         "native_render_parity_not_verified",
     )
+    source_selected = verify_selected_original_source(result, parity)
     manifest = parity.get("native_manifest_sha256")
     require(isinstance(manifest, dict)
             and manifest.get("mediated") == result.get("artifact_manifest_sha256")
@@ -186,7 +269,7 @@ def checked_source(root: Path, source: str, sdk: str) -> tuple[dict[str, bytes],
             and type(pixels.get("png_container_mismatch_count")) is int
             and 0 <= pixels["png_container_mismatch_count"] <= 60,
             "native_render_parity_not_verified")
-    return blobs, pixels["ordered_rgba_frame_digests_sha256"]
+    return blobs, pixels["ordered_rgba_frame_digests_sha256"], source_selected
 
 
 def publish(root: Path, out: Path, source: str, sdk: str, ci_status: str) -> dict:
@@ -200,8 +283,9 @@ def publish(root: Path, out: Path, source: str, sdk: str, ci_status: str) -> dic
     dest = out.resolve()
     require(src != dest and src not in dest.parents and dest not in src.parents,
             "public_root_overlaps_private_source")
-    blobs, rgba_sha = (checked_source(root, source, sdk)
-                       if ci_status == "success" else ({}, None))
+    blobs, rgba_sha, selected = (checked_source(root, source, sdk)
+                                 if ci_status == "success"
+                                 else ({}, None, {"clip": False, "layer_order": False}))
     failure_summary = (closed_failure_observation(root, source, sdk)
                        if ci_status != "success" else None)
     receipt = {
@@ -213,6 +297,8 @@ def publish(root: Path, out: Path, source: str, sdk: str, ci_status: str) -> dic
         "native_frames_per_leg": 60 if ci_status == "success" else None,
         "native_rgba_direct_mediated_parity": (True if ci_status == "success" else None),
         "native_ordered_rgba_digest_sha256": rgba_sha,
+        "selected_original_clip_pixels_and_store_verified": selected["clip"],
+        "selected_original_layer_pixels_and_store_verified": selected["layer_order"],
         "png_container_binary_equality_claimed": False,
         "original_owner_receipts_uploaded": False,
         "raw_daemon_provider_logs_uploaded": False,
