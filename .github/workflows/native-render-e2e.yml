@@ -14,6 +14,12 @@ on:
         type: boolean
         required: false
         default: false
+      geometry_profile:
+        description: "Closed geometry behavior; Hold requires one exact-source geometry E2E"
+        type: choice
+        options: [out-cubic, hold]
+        required: false
+        default: out-cubic
       expected_source_sha:
         description: "Exact frozen Motionwright SHA; required for retained scopes and geometry E2E"
         type: string
@@ -79,6 +85,7 @@ defaults:
 env:
   MOTIONWRIGHT_NATIVE_SCOPE: ${{ (github.event_name == 'workflow_dispatch' && inputs.native_scope) || 'standard' }}
   MOTIONWRIGHT_NATIVE_GEOMETRY_E2E: ${{ (github.event_name == 'workflow_dispatch' && inputs.geometry_e2e) && '1' || '0' }}
+  MOTIONWRIGHT_NATIVE_GEOMETRY_PROFILE: ${{ (github.event_name == 'workflow_dispatch' && inputs.geometry_profile) || 'out-cubic' }}
   MW_NATIVE_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
   MOTIONWRIGHT_N83_RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
   MOTIONWRIGHT_V01_PROVIDER_REPEAT: ${{ inputs.v01_provider_repeat && 'true' || 'false' }}
@@ -105,6 +112,10 @@ jobs:
           import os, re
           scope = os.environ["MOTIONWRIGHT_NATIVE_SCOPE"]
           assert scope in {"standard", "n83-preview", "editable-source-cycle", "out-cubic-xy"}, "unsupported native scope"
+          geometry_profile = os.environ["MOTIONWRIGHT_NATIVE_GEOMETRY_PROFILE"]
+          assert geometry_profile in {"out-cubic", "hold"}, "unsupported geometry profile"
+          if geometry_profile == "hold":
+              assert os.environ["MOTIONWRIGHT_NATIVE_GEOMETRY_E2E"] == "1", "Hold requires one admitted geometry flow"
           if scope in {"n83-preview", "editable-source-cycle", "out-cubic-xy"} or os.environ["MOTIONWRIGHT_NATIVE_GEOMETRY_E2E"] == "1":
               assert os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
               assert os.environ["GITHUB_RUN_ATTEMPT"] == "1", "native rerun forbidden"
@@ -458,6 +469,11 @@ jobs:
           cargo test --locked -p motionwright-native --lib \
             film::tests::vertical_replan_shape_resize_keeps_native_top_left_across_asymmetric_scales \
             -- --exact --test-threads=1 > "$root/portrait-film.original.log" 2>&1
+          if [ "$MOTIONWRIGHT_NATIVE_GEOMETRY_PROFILE" = hold ]; then
+            cargo test --locked -p motionwright-native --example native-render-e2e \
+              native_geometry_e2e::tests::held_geometry_capture_requires_exact_ui_source_and_closed_store \
+              -- --exact --test-threads=1 > "$root/held-store.original.log" 2>&1
+          fi
           MW_GEOMETRY_SOURCE_ROOT="$root" python3 -B -E -s - <<'PY_GEOMETRY_G1'
           import hashlib
           import json
@@ -467,38 +483,63 @@ jobs:
               if not value:
                   raise SystemExit("GEOMETRY_G1_REFUSED:" + code)
           folder = Path(os.environ["MW_GEOMETRY_SOURCE_ROOT"])
+          profile = os.environ["MOTIONWRIGHT_NATIVE_GEOMETRY_PROFILE"]
+          require(profile in {"out-cubic","hold"}, "CLOSED_GEOMETRY_PROFILE")
           tests = {
               "service-reader.original.log":
                 "native_geometry_e2e::tests::original_geometry_uses_sqlite_and_independent_reader",
               "portrait-film.original.log":
                 "film::tests::vertical_replan_shape_resize_keeps_native_top_left_across_asymmetric_scales",
           }
+          if profile == "hold":
+              tests["held-store.original.log"] = "native_geometry_e2e::tests::held_geometry_capture_requires_exact_ui_source_and_closed_store"
           for name, case in tests.items():
               log = (folder / name).read_text(encoding="utf-8")
               require("test " + case + " ... ok" in log, "TEST_ORIGINAL:" + name)
               require("test result: ok. 1 passed; 0 failed; 0 ignored;" in log,
                       "TEST_COUNT:" + name)
           raw_oracle = (folder / "oracle.original.log").read_text(encoding="utf-8")
-          require("Ran 5 tests" in raw_oracle and "OK" in raw_oracle,
+          require("Ran 9 tests" in raw_oracle and "OK" in raw_oracle,
                   "PIXEL_ORACLE_SOURCE")
           def original(name):
               data = (folder / name).read_bytes()
               require(0 < len(data) <= 32 * 1024 * 1024, "LOG_BUDGET:" + name)
               return {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-          names = ("oracle.original.log","build.original.log",
-                   "service-reader.original.log","portrait-film.original.log")
+          names = ("oracle.original.log","build.original.log",*tests)
           report = {
               "schema":"motionwright.ci.native-geometry-one-source/1",
               "source_sha":os.environ["GITHUB_SHA"],"run_id":os.environ["GITHUB_RUN_ID"],
               "run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],
-              "status":"SOURCE_COMPILED_AND_TWO_EXACT_RUST_TESTS_PASS",
-              "five_adversarial_pixel_tests":"PASS", "originals":{n:original(n) for n in names},
+              "status":"SOURCE_COMPILED_AND_EXACT_RUST_TESTS_PASS",
+              "geometry_profile":profile,"exact_rust_test_count":len(tests),
+              "adversarial_pixel_test_count":9,"adversarial_pixel_tests":"PASS",
+              "originals":{n:original(n) for n in names},
               "native_host_effect":"NOT_RUN", "G2":"NOT_GRANTED", "G3":"STOP",
               "release_authorized":False,
           }
           (folder / "receipt.json").write_text(json.dumps(report,sort_keys=True,indent=2)+"\n")
-          print("native-geometry-source=PASS compiled=2 tests=5 Host=NOT_RUN G2=NOT_GRANTED")
+          print(f"native-geometry-source=PASS profile={profile} compiled={len(tests)} oracle_tests=9 Host=NOT_RUN G2=NOT_GRANTED")
           PY_GEOMETRY_G1
+
+      - name: Prepare the real Studio Service and browser for authored Hold
+        if: ${{ inputs.geometry_e2e && inputs.geometry_profile == 'hold' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$MOTIONWRIGHT_NATIVE_GEOMETRY_PROFILE" = hold
+          test "$MOTIONWRIGHT_NATIVE_GEOMETRY_E2E" = 1
+          test "$MOTIONWRIGHT_NATIVE_SCOPE" = standard
+          test "$MW_NATIVE_EXPECTED_SOURCE_SHA" = "$GITHUB_SHA"
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$MOTIONWRIGHT_V01_PROVIDER_REPEAT" = false
+          root="$RUNNER_TEMP/native-geometry-source-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test -d "$root" && test ! -L "$root"
+          cargo build --locked -p motionwright-service --example studio_review_session \
+            > "$root/studio-service.original.log" 2>&1
+          test -x "$GITHUB_WORKSPACE/target/debug/examples/studio_review_session"
+          cd apps/studio
+          npm ci --no-audit --no-fund
+          npx --no-install playwright install --with-deps chromium
 
       - name: Retain source-only geometry test originals
         if: ${{ always() && inputs.geometry_e2e }}
@@ -613,10 +654,14 @@ jobs:
               if not condition:
                   raise SystemExit("GEOMETRY_PUBLIC_REFUSED:" + code)
           sha = os.environ["GITHUB_SHA"]
+          profile = os.environ["MOTIONWRIGHT_NATIVE_GEOMETRY_PROFILE"]
+          require(profile in {"out-cubic","hold"}, "CLOSED_GEOMETRY_PROFILE")
+          frame_roster = [0,29,30] if profile == "hold" else [0,15,30]
           require(os.environ["MOTIONWRIGHT_NATIVE_GEOMETRY_E2E"] == "1"
                   and os.environ["MOTIONWRIGHT_NATIVE_SCOPE"] == "standard"
                   and os.environ["MW_NATIVE_EXPECTED_SOURCE_SHA"] == sha
-                  and os.environ["GITHUB_RUN_ATTEMPT"] == "1",
+                  and os.environ["GITHUB_RUN_ATTEMPT"] == "1"
+                  and os.environ["MOTIONWRIGHT_V01_PROVIDER_REPEAT"] == "false",
                   "EXACT_SOURCE_OR_SCOPE")
           root = Path("verification/native-geometry-e2e") / sha
           published = Path("verification/native-geometry-public")
@@ -634,6 +679,9 @@ jobs:
               "reader": root / "geometry-independent-store-readback.original.json",
               "pixels": root / "geometry-three-frame-pixel-review.json",
           }
+          if profile == "hold":
+              sources["studio"] = root / "geometry-studio-hold.original.json"
+              sources["before_studio"] = root / "geometry-before-studio.original.json"
           originals = {label: read_file(path,4*1024*1024)
                        for label,path in sources.items()}
           reviewed = json.loads(originals["pixels"])
@@ -642,7 +690,12 @@ jobs:
           require(reviewed.get("schema") == "motionwright.native-geometry-pixels/1"
                   and reviewed.get("status") == "SOURCE_BOUND_ORIGINAL_PNG_GEOMETRY_OBSERVED"
                   and reviewed.get("read_only_store_source_bound") is True
-                  and reviewed.get("sampled_frame_roster") == [0,15,30]
+                  and reviewed.get("sampled_frame_roster") == frame_roster
+                  and reviewed.get("geometry_profile") == profile
+                  and reviewed.get("project",{}).get("geometry_profile") == profile
+                  and reviewed.get("automatic_retry") is False
+                  and reviewed.get("installed_tauri") is False
+                  and reviewed.get("human_visual_acceptance") is False
                   and reviewed.get("formal_G2") is False
                   and reviewed.get("formal_G3") is False
                   and reviewed.get("release_authorized") is False,
@@ -655,8 +708,42 @@ jobs:
                   and readback.get("source_receipt_sha256") == digest(originals["source"])
                   and reviewed.get("project",{}).get("source_receipt_sha256") == digest(originals["source"]),
                   "ORIGINAL_SQLITE_CAS_REOPEN")
-          require(source_receipt.get("schema") == "motionwright.native-geometry-source/1",
-                  "SOURCE_RECEIPT_SCHEMA")
+          require(source_receipt.get("schema") == "motionwright.native-geometry-source/1"
+                  and source_receipt.get("identity",{}).get("easing")
+                    == ("hold" if profile == "hold" else "ease_out_cubic"),
+                  "SOURCE_RECEIPT_SCHEMA_OR_PROFILE")
+          studio_summary = None
+          if profile == "hold":
+              studio = json.loads(originals["studio"])
+              before = json.loads(originals["before_studio"])
+              require(studio.get("schema") == "motionwright.native-geometry-studio-hold/1"
+                      and studio.get("status") == "FIVE_ORIGINAL_UI_SAVES_AND_CLOSED_STORE"
+                      and studio.get("source_sha") == sha
+                      and studio.get("seed_source_sha256") == digest(originals["before_studio"])
+                      and studio.get("ui_save_count") == 5
+                      and studio.get("closed_store_handoff") is True
+                      and studio.get("automatic_retry") is False
+                      and studio.get("native_execution") is False
+                      and studio.get("installed_tauri") is False
+                      and studio.get("human_approval") is False
+                      and studio.get("lifecycle_taints") == [],
+                      "ORIGINAL_STUDIO_HOLD_OUTCOME")
+              exits = studio.get("process_exits")
+              require(type(exits) is list and len(exits) == 1
+                      and exits[0].get("code") == 0 and exits[0].get("signal") is None,
+                      "ORIGINAL_STUDIO_WRITER_CLOSED")
+              require(before.get("schema") == "motionwright.native-geometry-source/1"
+                      and before.get("identity",{}).get("easing") == "ease_out_cubic"
+                      and studio.get("initial_project") == before.get("project")
+                      and studio.get("project") == source_receipt.get("project")
+                      and studio.get("history") == source_receipt.get("history")
+                      and source_receipt.get("identity",{}).get("studio_authoring_sha256") == digest(originals["studio"]),
+                      "ORIGINAL_STUDIO_AND_NATIVE_SOURCE_JOIN")
+              studio_summary = {
+                  "original_receipt_sha256":digest(originals["studio"]),
+                  "seed_original_sha256":digest(originals["before_studio"]),
+                  "ui_save_count":5,"closed_store_handoff":True,
+              }
           owners = root / "geometry-native-originals"
           require(owners.is_dir() and not owners.is_symlink(), "ORIGINAL_NATIVE_ROOT")
           children = [entry for entry in owners.iterdir() if entry.is_dir() and not entry.is_symlink()]
@@ -672,7 +759,7 @@ jobs:
                   and reviewed.get("artifact_manifest_sha256") == digest(manifest_raw),
                   "ORIGINAL_FRAME_MANIFEST")
           samples = reviewed.get("original_frames",[])
-          require(type(samples) is list and [v.get("frame") for v in samples] == [0,15,30],
+          require(type(samples) is list and [v.get("frame") for v in samples] == frame_roster,
                   "MEASURED_NATIVE_FRAME_ROSTER")
           verified = []
           size = 0
@@ -695,6 +782,20 @@ jobs:
           for sample in samples:
               require(sample.get("original_png_sha256") == verified[sample["frame"]]["sha256"],
                       "SAMPLE_NATIVE_PIXEL_IDENTITY")
+          held_identity = reviewed.get("held_frame_byte_identity")
+          if profile == "hold":
+              first, destination = verified[0]["sha256"], verified[30]["sha256"]
+              require(first != destination
+                      and all(row["sha256"] == first for row in verified[:30])
+                      and all(row["sha256"] == destination for row in verified[30:]),
+                      "COMPLETE_ORIGINAL_HOLD_INTERVALS")
+              require(held_identity == {
+                  "initial_interval":[0,30],"destination_interval":[30,60],
+                  "verified_original_frames":60,"equality":"complete_original_png_bytes",
+                  "first_png_sha256":first,"destination_png_sha256":destination,
+              }, "HELD_ORACLE_MATCHES_ORIGINAL_FRAMES")
+          else:
+              require(held_identity is None, "UNREQUESTED_HOLD_EVIDENCE")
           published.mkdir(mode=0o700,parents=False,exist_ok=False)
           frames_root = published / "frames"
           frames_root.mkdir(mode=0o700)
@@ -709,6 +810,8 @@ jobs:
           result = {
               "schema":"motionwright.ci.native-geometry-safe-physical-evidence/1",
               "status":"ONE_REAL_HOST_RENDER_60_ORIGINAL_FRAMES_VERIFIED",
+              "geometry_profile":profile,"studio_authoring":studio_summary,
+              "held_frame_byte_identity":held_identity,
               "source_sha":sha, "semwright_source_pin":pin,
               "run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],
               "native_effect_count":1, "original_frame_count":60,
