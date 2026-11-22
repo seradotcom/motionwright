@@ -75,6 +75,15 @@ if LAYER_ORDER_E2E == "1" and (RUN_LABEL
         or os.environ.get("GITHUB_RUN_ATTEMPT") != "1"
         or os.environ.get("MOTIONWRIGHT_V01_PROVIDER_REPEAT") != "false"):
     raise SystemExit("Original layer-order source needs exact SHA, first attempt, no provider repeat")
+CLIP_E2E = os.environ.get("MOTIONWRIGHT_NATIVE_CLIP_E2E", "0")
+if CLIP_E2E not in {"0", "1"}:
+    raise SystemExit("Unknown Native source-bound Clip selection")
+if CLIP_E2E == "1" and (NATIVE_SCOPE != "standard" or CAPTION_E2E != "0"
+        or GEOMETRY_E2E != "0" or LAYER_ORDER_E2E != "0" or RUN_LABEL
+        or os.environ.get("MW_NATIVE_EXPECTED_SOURCE_SHA") != os.environ.get("GITHUB_SHA")
+        or os.environ.get("GITHUB_RUN_ATTEMPT") != "1"
+        or os.environ.get("MOTIONWRIGHT_V01_PROVIDER_REPEAT") != "false"):
+    raise SystemExit("Native Clip requires exact first-attempt standard source, no provider repeat")
 EVIDENCE = ROOT / "verification" / "native-render-e2e" / (
     GITHUB_SHA if not RUN_LABEL else GITHUB_SHA + "-" + RUN_LABEL
 )
@@ -337,6 +346,60 @@ def verify_native_layer_original_pixels(samples: tuple[bytes, bytes, bytes]) -> 
             "exact_static_region":True,
             "human_visual_acceptance":False,
             "native_effect_invoked_by_validator":False}
+
+
+def native_clip_original_rgb(frame: Path) -> bytes:
+    """Read exact original Native PNG pixels, never generate substitute frames."""
+    command = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+               "-i", str(frame), "-vf", "crop=360:220:1100:430",
+               "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]
+    try:
+        process = subprocess.run(command, stdin=subprocess.DEVNULL,
+                                 capture_output=True, check=False, timeout=20)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise AssertionError("Original Native Clip PNG decoder is unavailable") from error
+    if process.returncode != 0 or len(process.stdout) != 360 * 220 * 3:
+        raise AssertionError("Original Native Clip source ROI is missing or incomplete")
+    return process.stdout
+
+
+def verify_source_clip_frames(originals: tuple[bytes, bytes, bytes]) -> dict:
+    """The saved Clip group must mask real child pixels beyond parent x=1280."""
+    if len(originals) != 3 or any(len(frame) != 360 * 220 * 3 for frame in originals):
+        raise AssertionError("Original Native Clip RGB24 frame dimensions or roster changed")
+    golden = (224, 169, 64)  # Actual saved style of the child #E0A940.
+    inside = ((80, 80), (140, 110), (90, 150))
+    outside = ((260, 80), (280, 110), (300, 150))
+    witness = []
+    for source_index, pixels in zip((0, 30, 59), originals):
+        def rgb(x: int, y: int) -> tuple[int, int, int]:
+            index = (y * 360 + x) * 3
+            return tuple(pixels[index:index + 3])
+        for point in inside:
+            color = rgb(*point)
+            if any(abs(a - b) > 3 for a, b in zip(color, golden)):
+                raise AssertionError("Original Native Clip child fill is missing inside its saved parent")
+        for point in outside:
+            color = rgb(*point)
+            if sum(abs(a - b) for a, b in zip(color, golden)) < 45:
+                raise AssertionError("Native Clip failed to hide original child pixels outside parent")
+        witness.append({
+            "frame": source_index,
+            "inside_rgb": list(rgb(*inside[1])),
+            "outside_rgb": list(rgb(*outside[1])),
+            "source_roi_sha256": hashlib.sha256(pixels).hexdigest(),
+        })
+    return {
+        "schema": "motionwright.native-clip-group-original-pixels/1",
+        "status": "ORIGINAL_NATIVE_RECTANGULAR_CLIP_PIXELS_PASS",
+        "parent_right_px": 1280,
+        "original_child_right_px": 1460,
+        "source_fill": "#E0A940",
+        "frames": witness,
+        "source_replaced_with_overlay": False,
+        "native_effect_invoked_by_validator": False,
+        "human_visual_acceptance": False,
+    }
 
 
 def write_private_json(path: Path, value: object) -> None:
@@ -1768,6 +1831,89 @@ def author_native_layer_order(database: Path, seeded: dict,
                 layer_order_ui_sha256=studio_sha)
 
 
+def author_native_clip_group(database: Path, seeded: dict,
+                             env: dict[str, str]) -> dict:
+    """One actual Studio Clip authoring and independently captured same Store."""
+    import native_geometry_pixel_oracle as original_files
+    studio = ROOT / "apps/studio"
+    binary = ROOT / "target/debug/examples/studio_review_session"
+    node = shutil.which("node")
+    if not node:
+        raise AssertionError("Clip Studio original preparation has no Node executable")
+    before = EVIDENCE / "clip-before.original.json"
+    snapshot = run_json([str(MW_BIN), "clip-before", str(database), str(before)],
+                        env=env, timeout=35)
+    before_sha = digest(before)
+    if (snapshot.get("source_receipt_sha256") != before_sha
+            or snapshot.get("project_id") != seeded["project_id"]
+            or snapshot.get("generation") != seeded["generation"]
+            or snapshot.get("revision") != seeded["revision"]):
+        raise AssertionError("Native Clip original pre-Studio project is not source-bound")
+
+    studio_original = EVIDENCE / "clip-studio.original.json"
+    child_env = dict(env, MOTIONWRIGHT_SERVICE_TEST_BIN=str(binary),
+                     MOTIONWRIGHT_NATIVE_CLIP_DATABASE=str(database),
+                     MOTIONWRIGHT_NATIVE_CLIP_BEFORE=str(before),
+                     MOTIONWRIGHT_NATIVE_CLIP_BEFORE_SHA256=before_sha,
+                     MOTIONWRIGHT_NATIVE_CLIP_OBSERVATION=str(studio_original))
+    process = None
+    group_quiet = False
+    timeout = False
+    try:
+        with (EVIDENCE / "clip-studio.stdout.original.log").open("x") as stdout, \
+                (EVIDENCE / "clip-studio.stderr.original.log").open("x") as stderr:
+            os.chmod(stdout.name, 0o600)
+            os.chmod(stderr.name, 0o600)
+            process = subprocess.Popen(
+                [node, str(studio / "node_modules/@playwright/test/cli.js"),
+                 "test", "tests/native-clip-group-original-service.spec.ts",
+                 "--project=chromium", "--workers=1", "--retries=0", "--reporter=line",
+                 "--output=" + str(EVIDENCE / "clip-studio-browser")],
+                cwd=studio, env=child_env, stdin=subprocess.DEVNULL,
+                stdout=stdout, stderr=stderr, start_new_session=True)
+            process.wait(timeout=180)
+    except subprocess.TimeoutExpired:
+        timeout = True
+    finally:
+        group_quiet = n83_stop_group(process)
+    if timeout or not group_quiet or process is None or process.returncode != 0:
+        print("NATIVE_CLIP_STUDIO_FAILURE=" + json.dumps({
+            "phase":"pre_native_studio","category":"PRE_EFFECT",
+            "group_quiet":group_quiet,"parent_timeout":timeout,
+            "process_returncode":process.returncode if process else None,
+            "native_host":"NOT_STARTED","automatic_retry":False
+        }, sort_keys=True), flush=True)
+        raise AssertionError("NATIVE_CLIP_STUDIO_NOT_COMPLETED_BEFORE_HOST")
+    original = original_files.strict_json(original_files.raw_file(studio_original, 4*1024*1024))
+    if (original.get("schema") != "motionwright.native-clip-group-studio/1"
+            or original.get("status") != "FOUR_ORIGINAL_UI_SAVES_AND_CLOSED_STORE"
+            or original.get("source_sha") != GITHUB_SHA
+            or original.get("before_original_sha256") != before_sha
+            or original.get("ui_save_count") != 4
+            or original.get("closed_store_handoff") is not True
+            or original.get("native_execution") is not False
+            or original.get("automatic_retry") is not False
+            or original.get("installed_tauri") is not False
+            or original.get("human_approval") is not False
+            or digest(before) != before_sha):
+        raise AssertionError("Native Clip original UI Save/closure does not match source")
+    studio_sha = digest(studio_original)
+    captured = EVIDENCE / "clip-source.original.json"
+    after = run_json([str(MW_BIN), "clip-capture", str(database), str(before),
+                      str(studio_original), studio_sha, str(captured)],
+                     env=env, timeout=35)
+    if (after.get("project_id") != seeded["project_id"]
+            or after.get("generation") != seeded["generation"]
+            or after.get("revision") != seeded["revision"] + 4
+            or after.get("clip_group_saved") is not True
+            or after.get("studio_authoring_sha256") != studio_sha
+            or after.get("source_receipt_sha256") != digest(captured)):
+        raise AssertionError("Native Clip independent captured project differs from four UI Saves")
+    return dict(seeded, revision=after["revision"],
+                clip_source_sha256=after["source_receipt_sha256"],
+                clip_ui_sha256=studio_sha)
+
+
 def main() -> None:
     global CYCLE_CONTEXT
     if NATIVE_SCOPE not in {"standard", "n83-preview", *RETAINED_SCOPES}:
@@ -1837,6 +1983,8 @@ def main() -> None:
                     seeded = author_native_layer_order(database, seeded, env)
                 else:
                     seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
+                    if CLIP_E2E == "1":
+                        seeded = author_native_clip_group(database, seeded, env)
             if (seeded["width"], seeded["height"]) != (1920, 1080):
                 raise AssertionError(f"unexpected master profile: {seeded}")
             # Non-mutating app-owned Film export, exactly the same source fixture
@@ -2257,6 +2405,30 @@ def main() -> None:
                 write_private_json(EVIDENCE / "layer-order-original-pixel-evidence.json",
                                    layer_order_evidence)
 
+            clip_evidence = None
+            if CLIP_E2E == "1":
+                source_file = EVIDENCE / "clip-source.original.json"
+                source_sha = seeded["clip_source_sha256"]
+                if digest(source_file) != source_sha:
+                    raise AssertionError("Source-authored Clip receipt changed after real Native render")
+                independent = EVIDENCE / "clip-independent-store-readback.original.json"
+                readback = run_json([
+                    str(MW_BIN), "clip-readback", str(database),
+                    str(source_file), source_sha, str(independent)
+                ], env=env, timeout=35)
+                if (readback.get("reader_authority") != "StudioServiceReader"
+                        or readback.get("source_receipt_sha256") != source_sha
+                        or readback.get("source_project_unchanged") is not True
+                        or readback.get("source_history_unchanged") is not True
+                        or readback.get("same_physical_database") is not True):
+                    raise AssertionError("Clip same physical SQLite/CAS failed independent original reopen")
+                clip_evidence = verify_source_clip_frames(
+                    tuple(native_clip_original_rgb(frames[i]) for i in (0, 30, 59))
+                )
+                clip_evidence["source_receipt_sha256"] = source_sha
+                clip_evidence["independent_store_readback_sha256"] = digest(independent)
+                write_private_json(EVIDENCE / "clip-original-native-pixels.json", clip_evidence)
+
             # Two MORE source-authored tiles prove the native cubic-out
             # path itself, not merely that the Film serialized an easing tag.
             # The old linear tile/ROI checks above remain unchanged.
@@ -2368,6 +2540,7 @@ def main() -> None:
                         "exact_linear_opacity_fade",
                         "exact_linear_opacity_fade_out",
                         *(["source_bound_native_layer_order"] if LAYER_ORDER_E2E == "1" else []),
+                        *(["source_bound_rectangular_clip_group"] if CLIP_E2E == "1" else []),
                         "exact_out_cubic_xy_position",
                         "exact_out_cubic_opacity_fade",
                         "static_geometry_and_native_text",
@@ -2404,6 +2577,7 @@ def main() -> None:
                     "native_cubic_out_region": cubic_evidence,
                     "native_linear_fade_out_region": fade_out_evidence,
                     "native_layer_order_original": layer_order_evidence,
+                    "native_clip_group_original": clip_evidence,
                     "direct_mediated_native_frame_parity": "PASS",
                     "direct_mediated_same_film_sha256": direct["film_sha256"],
                     "native_linear_opacity_region": {
