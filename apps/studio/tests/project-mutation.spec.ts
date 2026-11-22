@@ -1485,6 +1485,18 @@ test.describe("real service imports and portable restore", () => {
       await expect(savedFonts).toContainText("No font-copy declarations saved.");
       await expect(button(page, "Export bundle")).toBeDisabled();
       await expect(fontEditor.getByLabel("font copy uncertain outcome", { exact: true })).toHaveCount(0);
+      await expect(fontEditor.getByLabel("Portable font copy permission", { exact: true })).toHaveValue("");
+      await expect(fontEditor.getByLabel("Font original origin", { exact: true })).toHaveValue("");
+      await expect(fontEditor.getByLabel("Font copy license or terms", { exact: true })).toHaveValue("");
+      await expect(fontEditor.getByLabel("Font copy note", { exact: true })).toHaveValue("");
+      await expect(confirmation).not.toBeChecked();
+      await expect(saveFont).toBeDisabled();
+      // Removal cleared the saved declaration. A separate new declaration
+      // requires all original source terms and an explicit confirmation again.
+      await fontEditor.getByLabel("Portable font copy permission", { exact: true }).selectOption("allowed");
+      await fontEditor.getByLabel("Font original origin", { exact: true }).fill("Original retained SDK test fixture with adjacent license");
+      await fontEditor.getByLabel("Font copy license or terms", { exact: true }).fill("Apache-2.0");
+      await fontEditor.getByLabel("Font copy note", { exact: true }).fill("Technical fixture declaration; no human or commercial license acceptance");
       await confirmation.check();
       await saveFont.click();
       await expect(savedFonts).toContainText("allowed");
