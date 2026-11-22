@@ -121,3 +121,60 @@ describe("original font copy declaration authoring", () => {
     expect(() => prepareFontCopyChange(after, savedFontCopyRaw(after), assetId)).toThrow(/no longer present/);
   });
 });
+
+describe("font removal acknowledges only its own saved operation", () => {
+  it("retains another font's unsaved input and recovery intent when removing a saved declaration", async () => {
+    const value = project(), secondAssetId = "10000000-0000-4000-8000-000000000004";
+    value.assets.push({ ...value.assets[0], id: secondAssetId, name: "Second original font", content_sha256: "cd".repeat(32) });
+    value.visual_language.fonts.push({ family: "Second face", source: "asset:" + secondAssetId, rights_status: "cleared" });
+    value.production_design!.font_portable_copies = changedFontCopies(value, prepareFontCopyChange(value, raw(value)));
+    const second = { ...savedFontCopyRaw(value, secondAssetId), permission: "prohibited" as const, confirmed: true };
+    value.production_design!.font_portable_copies = changedFontCopies(value, prepareFontCopyChange(value, second));
+    const dirty = { ...raw(value), license: "Unsaved revised terms", note: "Unsaved context for the first original" };
+    const draft = editBrandDraft(createBrandDraft(value, "font-copy"), dirty);
+    const prepared = await prepareBrandSubmission(draft, value, attempt, { removeFont: secondAssetId });
+    const after = receipt(value, prepared.change as Parameters<typeof changedFontCopies>[1]);
+    const accepted = acknowledgeBrandDraft(prepared.draft, attempt, after, value, prepared.draft.pending!);
+    expect(after.production_design!.font_portable_copies).toHaveLength(1);
+    expect(after.production_design!.font_portable_copies![0].license).toBe("Owner supplied license");
+    expect(accepted.raw).toEqual(dirty);
+    expect(accepted.cleanRaw).toEqual(draft.cleanRaw);
+    expect(accepted.intent).toBe(true);
+    const restored = decodeBrandCopy(encodeBrandCopy(accepted, writer), draft.scope, writer).draft;
+    expect(restored.raw).toEqual(dirty);
+    expect(restored.intent).toBe(true);
+    expect(restored.pending).toBeNull();
+  });
+  it("clears the unchanged selected declaration after its removal without retaining a saved permission", async () => {
+    const value = project(), first = await pending(value);
+    const saved = receipt(value, first.change as Parameters<typeof changedFontCopies>[1]);
+    const clean = acknowledgeBrandDraft(first.draft, attempt, saved, value, first.draft.pending!);
+    const removal = await prepareBrandSubmission(clean, saved, writer, { removeFont: assetId });
+    const after = receipt(saved, removal.change as Parameters<typeof changedFontCopies>[1]);
+    const accepted = acknowledgeBrandDraft(removal.draft, writer, after, saved, removal.draft.pending!);
+    expect(accepted.raw).toEqual(savedFontCopyRaw(after, assetId));
+    expect(accepted.cleanRaw).toEqual(savedFontCopyRaw(after, assetId));
+    expect(accepted.intent).toBe(false);
+    expect(() => prepareFontCopyChange(after, accepted.raw as ReturnType<typeof raw>)).toThrow(/Confirm/);
+  });
+  it.each(["before", "after"] as const)("preserves edits made %s removal preparation and requires a separate confirmation", async when => {
+    const value = project(), first = await pending(value);
+    const saved = receipt(value, first.change as Parameters<typeof changedFontCopies>[1]);
+    const clean = acknowledgeBrandDraft(first.draft, attempt, saved, value, first.draft.pending!);
+    const dirty = { ...raw(saved), license: "Retained terms under review", note: "This input was never saved" };
+    const before = when === "before" ? editBrandDraft(clean, dirty) : clean;
+    const removal = await prepareBrandSubmission(before, saved, writer, { removeFont: assetId });
+    const live = when === "after" ? editBrandDraft(removal.draft, dirty) : removal.draft;
+    const after = receipt(saved, removal.change as Parameters<typeof changedFontCopies>[1]);
+    const accepted = acknowledgeBrandDraft(live, writer, after, saved, removal.draft.pending!);
+    expect(accepted.raw).toEqual({ ...dirty, confirmed: false });
+    expect(accepted.cleanRaw).toEqual(savedFontCopyRaw(after, assetId));
+    expect(accepted.intent).toBe(true);
+    expect(accepted.pending).toBeNull();
+    const restored = decodeBrandCopy(encodeBrandCopy(accepted, attempt), accepted.scope, attempt).draft;
+    expect(restored.raw).toEqual(accepted.raw);
+    expect(restored.cleanRaw).toEqual(accepted.cleanRaw);
+    expect(restored.intent).toBe(true);
+    expect(() => prepareFontCopyChange(after, accepted.raw as ReturnType<typeof raw>)).toThrow(/Confirm/);
+  });
+});

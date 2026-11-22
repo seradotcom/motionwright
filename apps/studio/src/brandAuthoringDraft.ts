@@ -361,7 +361,9 @@ function campaignReceipt(before: Project, after: Project, value: BrandProposal, 
 function cleanAfterOperation(clean: BrandRaw, pending: BrandPending): BrandRaw {
   const raw = pending.raw;
   if (raw.kind === "campaign") return clone(raw);
-  if (raw.kind === "font-copy") return { ...clone(raw), confirmed: false };
+  // Removing a saved declaration never saves the editor buffer.
+  if (raw.kind === "font-copy") return pending.change.type === "remove_font_portable_copy"
+    ? clone(clean) : { ...clone(raw), confirmed: false };
   if (clean.kind !== "governance") throw new Error("The saved brand buffer has an incompatible kind.");
   let fields: (keyof GovernanceRaw)[] = [];
   if (pending.operation === "brand") fields = ["brandName", "forbidden", "accents", "wordmark"];
@@ -414,8 +416,20 @@ export function acknowledgeBrandDraft(draft: BrandDraft, id: string, receipt: Pr
   } else if (!equal(governance(receipt), expected) || !equal(receipt.scenes, submitted.scenes)) {
     throw new Error("The brand response does not contain the submitted values and unchanged scene work.");
   }
-  const cleanRaw = cleanAfterOperation(draft.cleanRaw, pending);
-  const raw = fontCopy && equal(draft.raw, pending.raw) ? clone(cleanRaw) : draft.raw;
+  let cleanRaw = cleanAfterOperation(draft.cleanRaw, pending);
+  let raw = change.type === "upsert_font_portable_copy" && equal(draft.raw, pending.raw) ? clone(cleanRaw) : draft.raw;
+  if (change.type === "remove_font_portable_copy") {
+    if (cleanRaw.kind !== "font-copy" || raw.kind !== "font-copy")
+      throw new Error("The font removal response has an incompatible editor buffer.");
+    if (cleanRaw.assetId === change.asset_id) cleanRaw = savedFontCopyRaw(receipt, cleanRaw.assetId);
+    if (raw.assetId === change.asset_id) {
+      // Clear an unchanged saved form; retain real unsaved or later edits, with
+      // a new explicit confirmation required before any separate save.
+      cleanRaw = savedFontCopyRaw(receipt, raw.assetId);
+      const unconfirmed = { ...raw, confirmed: false };
+      raw = equal(unconfirmed, savedFontCopyRaw(submitted, raw.assetId)) ? clone(cleanRaw) : unconfirmed;
+    }
+  }
   return { ...draft, baseRevision: receipt.revision, baseProject: clone(receipt),
     raw, cleanRaw, intent: !equal(raw, cleanRaw), pending: null };
 }
