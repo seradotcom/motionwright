@@ -59,11 +59,22 @@ if GEOMETRY_PROFILE == "hold" and GEOMETRY_E2E != "1":
     raise SystemExit("Held geometry requires the original one-effect geometry selection")
 if GEOMETRY_E2E == "1" and (NATIVE_SCOPE != "standard" or CAPTION_E2E != "0"):
     raise SystemExit("Native geometry source must not reuse a retained or captioned selection")
+LAYER_ORDER_E2E = os.environ.get("MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E", "0")
+if LAYER_ORDER_E2E not in {"0", "1"}:
+    raise SystemExit("Unknown native layer-order source selection")
+if LAYER_ORDER_E2E == "1" and (NATIVE_SCOPE != "standard" or GEOMETRY_E2E != "0"
+                               or CAPTION_E2E != "0"):
+    raise SystemExit("Native layer-order must use only its original standard Film selection")
 RUN_LABEL = os.environ.get("MOTIONWRIGHT_NATIVE_RUN_LABEL", "")
 if RUN_LABEL not in {"", "repeat-02"}:
     raise SystemExit("Unrecognized CI-only native render evidence label")
 if GEOMETRY_E2E == "1" and RUN_LABEL:
     raise SystemExit("One source-bound geometry render has no repeat-selection label")
+if LAYER_ORDER_E2E == "1" and (RUN_LABEL
+        or os.environ.get("MW_NATIVE_EXPECTED_SOURCE_SHA") != os.environ.get("GITHUB_SHA")
+        or os.environ.get("GITHUB_RUN_ATTEMPT") != "1"
+        or os.environ.get("MOTIONWRIGHT_V01_PROVIDER_REPEAT") != "false"):
+    raise SystemExit("Original layer-order source needs exact SHA, first attempt, no provider repeat")
 EVIDENCE = ROOT / "verification" / "native-render-e2e" / (
     GITHUB_SHA if not RUN_LABEL else GITHUB_SHA + "-" + RUN_LABEL
 )
@@ -285,6 +296,47 @@ def verify_source_fade_out_frames(
         "native_effect": "NOT_INVOKED_BY_THIS_VALIDATOR",
         "human_visual_acceptance": False,
     }
+
+
+def native_layer_order_original_rgb(frame: Path) -> bytes:
+    """Crop only the bounded source-authored overlapping rectangle region."""
+    command = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+               "-i", str(frame), "-vf", "crop=240:145:340:790",
+               "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]
+    try:
+        process = subprocess.run(command, stdin=subprocess.DEVNULL,
+                                 capture_output=True, check=False, timeout=20)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise AssertionError("Native layer original ROI decoder was unavailable") from error
+    if process.returncode != 0 or len(process.stdout) != 240 * 145 * 3:
+        raise AssertionError("Native layer source pixels were unavailable or the ROI changed")
+    return process.stdout
+
+
+def verify_native_layer_original_pixels(samples: tuple[bytes, bytes, bytes]) -> dict:
+    """A saved z5 amber rectangle must occlude z3 blue at real PNG pixels."""
+    if len(samples) != 3 or any(len(sample) != 240 * 145 * 3 for sample in samples):
+        raise AssertionError("Native layer original PNG byte dimensions changed")
+    # Interior samples, far from antialiased edges. Both source rectangles
+    # must exist; the overlapping region must show amber after the actual UI Save.
+    points = ((125, 78, (224, 169, 64), "front"),
+              (13, 11, (37, 105, 184), "background"))
+    for pixels in samples:
+        for x, y, rgb, label in points:
+            offset = (y * 240 + x) * 3
+            if any(abs(pixels[offset + channel] - value) > 3
+                   for channel, value in enumerate(rgb)):
+                raise AssertionError(f"Native layer {label} is missing or Z order is incorrect")
+    if samples[0] != samples[1] or samples[0] != samples[2]:
+        raise AssertionError("Static source Z order changed between native frame0,30,59")
+    return {"schema":"motionwright.native-layer-original-pixels/1",
+            "status":"SOURCE_BOUND_PROMOTED_LAYER_VISIBLE",
+            "sampled_frames":[0,30,59],
+            "overlap_front_rgb":[224,169,64],
+            "background_visible_rgb":[37,105,184],
+            "exact_static_region":True,
+            "human_visual_acceptance":False,
+            "native_effect_invoked_by_validator":False}
 
 
 def write_private_json(path: Path, value: object) -> None:
@@ -1641,6 +1693,81 @@ def author_geometry_hold(database: Path, seed_receipt: Path, seeded: dict,
     return held
 
 
+def author_native_layer_order(database: Path, seeded: dict,
+                              env: dict[str, str]) -> dict:
+    """Original Studio reorder and independent Store capture before any Host."""
+    import native_geometry_pixel_oracle as original_files
+    studio = ROOT / "apps/studio"
+    binary = ROOT / "target/debug/examples/studio_review_session"
+    node = shutil.which("node")
+    if not node:
+        raise AssertionError("Native layer-order original Studio preparation has no Node")
+    before = EVIDENCE / "layer-order-before.original.json"
+    snapshot = run_json([str(MW_BIN), "layer-order-before", str(database), str(before)],
+                        env=env, timeout=35)
+    before_sha = digest(before)
+    if (snapshot.get("original_source_sha256") != before_sha
+            or snapshot.get("project_id") != seeded["project_id"]
+            or snapshot.get("revision") != seeded["revision"]):
+        raise AssertionError("Native layer-order original Store source differs")
+    studio_original = EVIDENCE / "layer-order-studio.original.json"
+    child_env = dict(env, MOTIONWRIGHT_SERVICE_TEST_BIN=str(binary),
+                     MOTIONWRIGHT_NATIVE_LAYER_DATABASE=str(database),
+                     MOTIONWRIGHT_NATIVE_LAYER_BEFORE=str(before),
+                     MOTIONWRIGHT_NATIVE_LAYER_BEFORE_SHA256=before_sha,
+                     MOTIONWRIGHT_NATIVE_LAYER_OBSERVATION=str(studio_original))
+    child = None
+    quiet = False
+    timed_out = False
+    try:
+        with (EVIDENCE / "layer-order-studio.stdout.original.log").open("x") as stdout, \
+                (EVIDENCE / "layer-order-studio.stderr.original.log").open("x") as stderr:
+            os.chmod(stdout.name, 0o600)
+            os.chmod(stderr.name, 0o600)
+            child = subprocess.Popen(
+                [node, str(studio / "node_modules/@playwright/test/cli.js"),
+                 "test", "tests/native-layer-order-service.spec.ts",
+                 "--project=chromium", "--workers=1", "--retries=0", "--reporter=line",
+                 "--output=" + str(EVIDENCE / "layer-order-studio-browser")],
+                cwd=studio, env=child_env, stdin=subprocess.DEVNULL,
+                stdout=stdout, stderr=stderr, start_new_session=True)
+            child.wait(timeout=180)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+    finally:
+        quiet = n83_stop_group(child)
+    if timed_out or not quiet or child is None or child.returncode != 0:
+        # The original full UI evidence never leaves the private EVIDENCE tree.
+        # No Native owner, permission or provider effect has started here.
+        raise AssertionError("NATIVE_LAYER_ORDER_STUDIO_NOT_CONFIRMED_BEFORE_EFFECT")
+    original = original_files.strict_json(original_files.raw_file(studio_original, 4 * 1024 * 1024))
+    if (original.get("schema") != "motionwright.native-layer-order-studio/1"
+            or original.get("status") != "ONE_SAVED_UI_LAYER_PROMOTION_AND_CLOSED_STORE"
+            or original.get("before_original_sha256") != before_sha
+            or original.get("source_sha") != GITHUB_SHA
+            or original.get("ui_save_count") != 1
+            or original.get("closed_store_handoff") is not True
+            or original.get("native_execution") is not False
+            or original.get("automatic_retry") is not False
+            or digest(before) != before_sha):
+        raise AssertionError("Native layer-order original Studio Save/closure is not exact")
+    studio_sha = digest(studio_original)
+    captured = EVIDENCE / "layer-order-source.original.json"
+    after = run_json([str(MW_BIN), "layer-order-capture", str(database), str(before),
+                      str(studio_original), studio_sha, str(captured)],
+                     env=env, timeout=35)
+    if (after.get("project_id") != seeded["project_id"]
+            or after.get("generation") != seeded["generation"]
+            or after.get("revision") != seeded["revision"] + 1
+            or after.get("layer_order_ui_saved") is not True
+            or after.get("studio_authoring_sha256") != studio_sha
+            or after.get("source_receipt_sha256") != digest(captured)):
+        raise AssertionError("Native layer-order independent Source and original UI Save differ")
+    return dict(seeded, revision=after["revision"],
+                layer_order_source_sha256=after["source_receipt_sha256"],
+                layer_order_ui_sha256=studio_sha)
+
+
 def main() -> None:
     global CYCLE_CONTEXT
     if NATIVE_SCOPE not in {"standard", "n83-preview", *RETAINED_SCOPES}:
@@ -1705,7 +1832,11 @@ def main() -> None:
                         or len(seeded.get("source_receipt_sha256", "")) != 64):
                     raise AssertionError("Original geometry source was not saved in the real Store")
             else:
-                seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
+                if LAYER_ORDER_E2E == "1":
+                    seeded = run_json([str(MW_BIN), "layer-order-seed", str(database)], env=env)
+                    seeded = author_native_layer_order(database, seeded, env)
+                else:
+                    seeded = run_json([str(MW_BIN), "seed", str(database)], env=env)
             if (seeded["width"], seeded["height"]) != (1920, 1080):
                 raise AssertionError(f"unexpected master profile: {seeded}")
             # Non-mutating app-owned Film export, exactly the same source fixture
@@ -2101,6 +2232,31 @@ def main() -> None:
                   for i in (0, 15, 30, 59))
             )
 
+            layer_order_evidence = None
+            if LAYER_ORDER_E2E == "1":
+                # Fresh independent StudioServiceReader process opens the
+                # original saved source AFTER the native rendering writer exited.
+                source_file = EVIDENCE / "layer-order-source.original.json"
+                source_sha = seeded["layer_order_source_sha256"]
+                if digest(source_file) != source_sha:
+                    raise AssertionError("Original authored layer Store source changed")
+                readback_file = EVIDENCE / "layer-order-independent-readback.original.json"
+                readback = run_json([
+                    str(MW_BIN), "layer-order-readback", str(database),
+                    str(source_file), source_sha, str(readback_file)
+                ], env=env, timeout=35)
+                if (readback.get("reader_authority") != "StudioServiceReader"
+                        or readback.get("source_receipt_sha256") != source_sha
+                        or readback.get("source_project_unchanged") is not True):
+                    raise AssertionError("Original saved layer order did not reopen in same SQLite/CAS")
+                layer_order_evidence = verify_native_layer_original_pixels(
+                    tuple(native_layer_order_original_rgb(frames[i]) for i in (0, 30, 59))
+                )
+                layer_order_evidence["source_receipt_sha256"] = source_sha
+                layer_order_evidence["independent_store_reader_sha256"] = digest(readback_file)
+                write_private_json(EVIDENCE / "layer-order-original-pixel-evidence.json",
+                                   layer_order_evidence)
+
             # Two MORE source-authored tiles prove the native cubic-out
             # path itself, not merely that the Film serialized an easing tag.
             # The old linear tile/ROI checks above remain unchanged.
@@ -2211,6 +2367,7 @@ def main() -> None:
                         "exact_linear_xy_position",
                         "exact_linear_opacity_fade",
                         "exact_linear_opacity_fade_out",
+                        *(["source_bound_native_layer_order"] if LAYER_ORDER_E2E == "1" else []),
                         "exact_out_cubic_xy_position",
                         "exact_out_cubic_opacity_fade",
                         "static_geometry_and_native_text",
@@ -2246,6 +2403,7 @@ def main() -> None:
                     "linear_opacity_motion_sampled": True,
                     "native_cubic_out_region": cubic_evidence,
                     "native_linear_fade_out_region": fade_out_evidence,
+                    "native_layer_order_original": layer_order_evidence,
                     "direct_mediated_native_frame_parity": "PASS",
                     "direct_mediated_same_film_sha256": direct["film_sha256"],
                     "native_linear_opacity_region": {

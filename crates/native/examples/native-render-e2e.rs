@@ -22,6 +22,7 @@ use std::{
 use uuid::Uuid;
 
 mod native_geometry_e2e;
+mod native_layer_order_e2e;
 mod native_saved_mix_e2e;
 
 enum CombinedMaster<'a> {
@@ -37,7 +38,7 @@ enum CombinedMaster<'a> {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: native-render-e2e <geometry-seed DATABASE SOURCE_RECEIPT | geometry-capture-hold DATABASE SOURCE_RECEIPT STUDIO_RECEIPT STUDIO_SHA256 | geometry-readback DATABASE SOURCE_RECEIPT EXPECTED_SHA256 REPORT_JSON | seed DATABASE | film DATABASE FILM_JSON | render DATABASE CONNECTION EVIDENCE_JSON | seed-saved-mix DATABASE SOURCES EVIDENCE | seed-tauri-audio DATABASE PRIVATE_ROOT | tauri-audio-readback DATABASE PRIVATE_ROOT | render-master-saved-mix DATABASE CONNECTION RENDER_EVIDENCE MASTER_EVIDENCE | saved-mix-readback DATABASE EVIDENCE | cycle-snapshot DATABASE DIRECTORY | cycle-edit DATABASE BEFORE_PROJECT DIRECTORY | cycle-render-edited DATABASE CONNECTION EVIDENCE_JSON | cycle-verify-binding FILM_JSON INSPECTION_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
+        "usage: native-render-e2e <layer-order-seed DATABASE | layer-order-before DATABASE BEFORE_JSON | layer-order-capture DATABASE BEFORE_JSON STUDIO_JSON STUDIO_SHA256 SOURCE_JSON | layer-order-readback DATABASE SOURCE_JSON SOURCE_SHA256 REPORT_JSON | geometry-seed DATABASE SOURCE_RECEIPT | geometry-capture-hold DATABASE SOURCE_RECEIPT STUDIO_RECEIPT STUDIO_SHA256 | geometry-readback DATABASE SOURCE_RECEIPT EXPECTED_SHA256 REPORT_JSON | seed DATABASE | film DATABASE FILM_JSON | render DATABASE CONNECTION EVIDENCE_JSON | seed-saved-mix DATABASE SOURCES EVIDENCE | seed-tauri-audio DATABASE PRIVATE_ROOT | tauri-audio-readback DATABASE PRIVATE_ROOT | render-master-saved-mix DATABASE CONNECTION RENDER_EVIDENCE MASTER_EVIDENCE | saved-mix-readback DATABASE EVIDENCE | cycle-snapshot DATABASE DIRECTORY | cycle-edit DATABASE BEFORE_PROJECT DIRECTORY | cycle-render-edited DATABASE CONNECTION EVIDENCE_JSON | cycle-verify-binding FILM_JSON INSPECTION_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
     );
     std::process::exit(2);
 }
@@ -262,6 +263,33 @@ fn real_linear_fade_out_tile() -> CanvasNode {
     node
 }
 
+/// Two actually overlapping, source-editable Native rectangles. The front
+/// amber rectangle starts behind the blue one and is promoted by a later
+/// explicit Studio hierarchy Save. Both remain real semantic Canvas nodes.
+fn real_layer_order_tiles() -> [CanvasNode; 2] {
+    let mut front = real_linear_motion_tile();
+    front.id = Uuid::now_v7();
+    front.name = "Native layer order amber foreground".into();
+    front.x = 405.0;
+    front.y = 820.0;
+    front.width = 155.0;
+    front.height = 95.0;
+    front.z_index = 1;
+    front.style.fill = Some("#E0A940".into());
+    front.keyframes.clear();
+    let mut back = real_linear_motion_tile();
+    back.id = Uuid::now_v7();
+    back.name = "Native layer order blue background".into();
+    back.x = 340.0;
+    back.y = 790.0;
+    back.width = 240.0;
+    back.height = 145.0;
+    back.z_index = 3;
+    back.style.fill = Some("#2569B8".into());
+    back.keyframes.clear();
+    [front, back]
+}
+
 fn seed_project(
     database: &Path,
 ) -> Result<(StudioService, motionwright_domain::Project), Box<dyn std::error::Error>> {
@@ -364,6 +392,41 @@ fn seed_project(
         )?
         .project;
     Ok((service, project))
+}
+
+fn seed_layer_order(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let (service, mut project) = seed_project(database)?;
+    let scene_id = project.scenes[0].id;
+    for (index, node) in real_layer_order_tiles().into_iter().enumerate() {
+        project = service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                &format!("native-layer-order-source-{index}"),
+                &Change::AddCanvasNode { scene_id, node },
+            )?
+            .project;
+    }
+    native_layer_order_e2e::check_project(&project, false)?;
+    service.prepare_read_only_handoff()?;
+    drop(service);
+    let reader = motionwright_service::StudioServiceReader::open(database)?;
+    let saved = reader.project(project.id)?;
+    if saved != project {
+        return Err("Original z-order seed changed during SQLite writer handoff".into());
+    }
+    let profile = &project.deliverables[0];
+    println!(
+        "{}",
+        json!({
+            "project_id":project.id,"resource":project.resource_key(),
+            "generation":project.generation,"revision":project.revision,
+            "scene_id":scene_id,"deliverable_id":profile.id,
+            "width":profile.width,"height":profile.height,
+            "native_execution":false,"layer_order_source":true,
+        })
+    );
+    Ok(())
 }
 
 fn seed(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -1550,6 +1613,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| usage());
 
     match command.as_str() {
+        "layer-order-seed" => {
+            let database = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            seed_layer_order(&database)
+        }
+        "layer-order-before" => {
+            let database = path_arg(&mut args);
+            let source = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            native_layer_order_e2e::before(&database, &source)
+        }
+        "layer-order-capture" => {
+            let database = path_arg(&mut args);
+            let before = path_arg(&mut args);
+            let studio = path_arg(&mut args);
+            let expected = text_arg(&mut args);
+            let output = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            native_layer_order_e2e::capture(&database, &before, &studio, &expected, &output)
+        }
+        "layer-order-readback" => {
+            let database = path_arg(&mut args);
+            let source = path_arg(&mut args);
+            let expected = text_arg(&mut args);
+            let output = path_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            native_layer_order_e2e::readback(&database, &source, &expected, &output)
+        }
         "geometry-seed" => {
             let database = path_arg(&mut args);
             let source_receipt = path_arg(&mut args);
