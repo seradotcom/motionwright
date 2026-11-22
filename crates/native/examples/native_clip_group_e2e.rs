@@ -230,6 +230,13 @@ pub(super) fn capture(
         return Err("Studio Clip original differs from independent pre-Save Store".into());
     }
     let reader = StudioServiceReader::open(database)?;
+    // The saved Project and journal may be byte-for-byte identical in a copy.
+    // Admission requires the original physical SQLite/CAS Store identity
+    // captured before the first Studio UI Save, not a transplanted copy.
+    let current_database_identity = serde_json::to_value(reader.database_file_identity()?)?;
+    if before["database_identity"] != current_database_identity {
+        return Err("Original Clip Store identity changed across the Studio Save".into());
+    }
     let projects = reader.projects(2)?;
     if projects.len() != 1 {
         return Err("Original Clip Store project roster changed".into());
@@ -298,7 +305,7 @@ pub(super) fn capture(
             "schema":SCHEMA,"phase":"after_ui","project":actual,"history":history,
             "before_original_sha256":sha256_file(before_path)?,
             "studio_original_sha256":studio_sha,
-            "database_identity":reader.database_file_identity()?,
+            "database_identity":current_database_identity,
             "native_execution":false,"automatic_retry":false,"formal_G2":false,"formal_G3":false
         }),
     )?;
@@ -505,5 +512,34 @@ mod tests {
             )
             .is_err()
         );
+
+        // A new SQLite file can contain the same Project and event history.
+        // Re-signing both source receipts after replacing the database-file
+        // identity must still fail before any Native Host can be admitted.
+        let mut substituted_before: serde_json::Value =
+            serde_json::from_slice(&fs::read(&before_file).unwrap()).unwrap();
+        let original_identity = substituted_before["database_identity"].clone();
+        assert!(original_identity.is_string());
+        substituted_before["database_identity"] = json!("forged-volume-and-inode");
+        let false_before = temp.path().join("substituted-physical-before.json");
+        cycle_new_json(&false_before, &substituted_before).unwrap();
+        let mut matching_studio: serde_json::Value =
+            serde_json::from_slice(&fs::read(&studio).unwrap()).unwrap();
+        matching_studio["before_original_sha256"] = json!(sha256_file(&false_before).unwrap());
+        let false_studio = temp.path().join("substituted-physical-studio.json");
+        cycle_new_json(&false_studio, &matching_studio).unwrap();
+        let refused = temp.path().join("substituted-physical-capture.json");
+        assert!(
+            capture(
+                &database,
+                &false_before,
+                &false_studio,
+                &sha256_file(&false_studio).unwrap(),
+                &refused,
+            )
+            .is_err(),
+            "Original physical Store custody must survive re-signed matching source/history bytes",
+        );
+        assert!(!refused.exists());
     }
 }

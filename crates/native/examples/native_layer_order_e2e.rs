@@ -212,6 +212,13 @@ pub(super) fn capture(
         return Err("Layer Save modified unrelated original creative content".into());
     }
     let reader = StudioServiceReader::open(database)?;
+    // A copied SQLite database can contain an identical Project and journal.
+    // Source custody binds the physical file identity captured BEFORE the
+    // Studio Save to the independent reader AFTER the saved revision.
+    let original_file_identity = serde_json::to_value(reader.database_file_identity()?)?;
+    if before["database_identity"] != original_file_identity {
+        return Err("Original layer Store identity changed across Studio Save".into());
+    }
     let actual = reader.projects(2)?;
     if actual.len() != 1 {
         return Err("Layer UI Store contains a substituted project roster".into());
@@ -257,7 +264,7 @@ pub(super) fn capture(
         receipt,
         &json!({
             "schema":SCHEMA,"phase":"after_ui","project":final_project,
-            "history":history,"database_identity":reader.database_file_identity()?,
+            "history":history,"database_identity":original_file_identity,
             "before_original_sha256":sha256_file(before_path)?,
             "studio_original_sha256":expected_studio_sha,"native_execution":false,
             "formal_G2":false,"formal_G3":false,"automatic_retry":false
@@ -407,5 +414,33 @@ mod tests {
             )
             .is_err()
         );
+
+        // A copied SQLite file can contain an identical Project/history.
+        // Even after both receipts are re-hashed, the original OS file
+        // identity must remain bound across the actual UI Save.
+        let mut forged_before: serde_json::Value =
+            serde_json::from_slice(&fs::read(&original).unwrap()).unwrap();
+        assert!(forged_before["database_identity"].is_string());
+        forged_before["database_identity"] = json!("substituted-same-content-physical-file");
+        let different_file = dir.path().join("substituted-file-before.json");
+        cycle_new_json(&different_file, &forged_before).unwrap();
+        let mut matching_ui: serde_json::Value =
+            serde_json::from_slice(&fs::read(&studio).unwrap()).unwrap();
+        matching_ui["before_original_sha256"] = json!(sha256_file(&different_file).unwrap());
+        let matching_ui_file = dir.path().join("substituted-file-studio.json");
+        cycle_new_json(&matching_ui_file, &matching_ui).unwrap();
+        let refused = dir.path().join("substituted-file-receipt.json");
+        assert!(
+            capture(
+                &database,
+                &different_file,
+                &matching_ui_file,
+                &sha256_file(&matching_ui_file).unwrap(),
+                &refused,
+            )
+            .is_err(),
+            "A substituted database identity with otherwise matching content must refuse pre-effect",
+        );
+        assert!(!refused.exists());
     }
 }
