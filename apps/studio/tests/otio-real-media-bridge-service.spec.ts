@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { Project } from "../src/types";
 import { ScopedChangeService } from "./support/scopedChangeService";
 
@@ -23,7 +23,11 @@ test.skip(
   process.env.MOTIONWRIGHT_OTIO_REAL_MEDIA_OWNER !== "1",
   "This source-exact flow requires the real service binary and one explicitly selected real-media bridge test.",
 );
-test.setTimeout(150_000);
+// Each bridge process has a 70-second production deadline. The observer must
+// retain its terminal result instead of closing the Service after a 5-second
+// UI wait or the helper's ordinary 10-second RPC timeout. Never retry effects.
+test.setTimeout(240_000);
+test.describe.configure({ retries: 0 });
 
 async function runBounded(binary: string, args: string[], cwd: string) {
   const result = await run(binary, args, {
@@ -61,13 +65,22 @@ async function showOtio(page: Page) {
   await expect(page.getByRole("region", { name: "OTIO owner cut review" })).toBeVisible();
 }
 
+async function expectOtioTerminal(page: Page, success: Locator) {
+  const refusal = page.locator(".otio-cut-review [role=alert]");
+  // Observe either terminal UI outcome from the one original invocation.
+  // Polling these locators never issues another grant or media operation.
+  await expect(success.or(refusal).first()).toBeVisible({ timeout: 85_000 });
+  expect(await refusal.allTextContents(), "Original OTIO refusal").toEqual([]);
+  await expect(success).toBeVisible();
+}
+
 test("real verified media OTIO cut is reviewed in Studio, saved once and independently reopened", async ({ page }, info) => {
   const databasePath = info.outputPath("service", "studio.sqlite3");
   const owner = info.outputPath("otio-owner");
   const exported = info.outputPath("verified-otio-bundle");
   await mkdir(owner, { recursive: true });
   const service = await ScopedChangeService.create({
-    databasePath, desktopInvokeFixture: true,
+    databasePath, desktopInvokeFixture: true, timeoutMs: 90_000,
   });
   let final: Project | undefined;
   let closed = false;
@@ -101,8 +114,8 @@ test("real verified media OTIO cut is reviewed in Studio, saved once and indepen
     record.mediaOriginalSha256 = mediaSha;
     record.originalProjectRevision = current.revision;
 
-    // Original owner export is now initiated in installed Studio through
-    // the exact Desktop otio_bridge module and one use-limited grant.
+    // Studio initiates export through the exact Desktop otio_bridge module
+    // and one use-limited grant via the real Service test transport.
     await service.attachPage(page, current.id);
     await showOtio(page);
     await page.getByText("Create the original media-bound OTIO bundle", { exact: true }).click();
@@ -115,12 +128,13 @@ test("real verified media OTIO cut is reviewed in Studio, saved once and indepen
     await page.getByLabel(/I confirm I have permission to use, copy and redistribute/).check();
     await page.getByLabel(/Explicitly permit synthetic or test-origin video inputs/).check();
     await page.getByRole("button", { name: "Export original media-bound OTIO bundle" }).click();
-    await expect(page.getByText(/Original verified OTIO media bundle exported to/)).toBeVisible();
+    await expectOtioTerminal(page,
+      page.getByText(/Original verified OTIO media bundle exported to/));
     const originalExportCalls = service.transcript.filter(item =>
       item.direction === "request" && "command" in item.payload &&
       item.payload.command === "export_portable_otio_media_bundle");
     expect(originalExportCalls).toHaveLength(1);
-    record.installedOriginalBundleExportCalls = originalExportCalls.length;
+    record.desktopModuleOriginalBundleExportCalls = originalExportCalls.length;
     const sourceSnapshotSha = sha(await readFile(join(exported, "source-project.json")));
     expect(JSON.parse(await readFile(join(exported, "timeline.otio"), "utf8")).OTIO_SCHEMA)
       .toBe("Timeline.1");
@@ -149,7 +163,7 @@ test("real verified media OTIO cut is reviewed in Studio, saved once and indepen
     await expect(page.getByLabel("Edited OTIO filename in bundle")).toHaveValue("edited.otio");
     await page.getByRole("button", { name: "Preview edited OTIO with verified media" }).click();
     const station = page.getByRole("region", { name: "OTIO proposed revision" });
-    await expect(station).toBeVisible();
+    await expectOtioTerminal(page, station);
     const rawProposal = await page.getByLabel("OTIO imported cut preview JSON").inputValue();
     const preview = JSON.parse(rawProposal);
     expect(preview.schema).toBe("motionwright.otio-edit-preview/1");
@@ -170,7 +184,7 @@ test("real verified media OTIO cut is reviewed in Studio, saved once and indepen
       item.direction === "request" && "command" in item.payload &&
       item.payload.command === "preview_otio_media_cut");
     expect(bridgeCalls).toHaveLength(1);
-    record.installedBridgePreviewCalls = bridgeCalls.length;
+    record.desktopModuleBridgePreviewCalls = bridgeCalls.length;
     await expect(station).toBeVisible();
     await expect(station).toContainText("1 bridge-declared verified source");
     await expect(page.getByLabel("Exact supported OTIO edits")).toContainText("End-trim");
@@ -273,9 +287,31 @@ test("real verified media OTIO cut is reviewed in Studio, saved once and indepen
       contentType: "application/json",
     });
   } finally {
-    if (!closed) {
-      // Single cleanup; errors from a known process are never converted to PASS.
-      await service.close();
+    const uiRefusals = await page.locator(".otio-cut-review [role=alert]")
+      .allTextContents().catch(() => []);
+    try {
+      if (!closed) {
+        // Single cleanup; errors from a known process are never converted to PASS.
+        await service.close();
+      }
+    } finally {
+      const commands = new Set([
+        "export_portable_otio_media_bundle", "preview_otio_media_cut", "apply_change",
+      ]);
+      const requestIds = new Set(service.transcript.flatMap(entry =>
+        entry.direction === "request" && "command" in entry.payload
+          && commands.has(entry.payload.command) ? [entry.payload.id] : []));
+      // Retain the original request/response pair even on failure. These are
+      // this test's synthetic owner inputs, never user media or Store files.
+      await info.attach("otio-original-terminal-observation", {
+        body: JSON.stringify({
+          schema: "motionwright.otio-original-terminal-observation/1",
+          observations: record, ui_refusals: uiRefusals,
+          original_effect_transcript: service.transcript.filter(entry =>
+            requestIds.has(entry.payload.id)),
+        }, null, 2),
+        contentType: "application/json",
+      });
     }
   }
 });
