@@ -145,24 +145,51 @@ may incur explicit losses, particularly audio/transcript/camera/effects.
 import/round-trip, edited clip semantic mapping and human visual review
 still `NOT_RUN` until demonstrated on the same source revision.
 
-## 4. New: explicit owner-reviewed acceptance (separate from bridge inspection)
+## 4. Desktop export, preview and owner-approved save
 
-The `preview-import` command remains read-only and still refuses stale project
-snapshots or changed media bytes. An additional optional, non-executable step
-is available in the desktop application: **Deliver → OTIO cut review**.
+Open **Deliver → OTIO cut review** in the Linux desktop application.
 
-Paste the complete `motionwright.otio-edit-preview/1` result there, review
-the proposed original scene order, bounded end trims and twelve preserved
-fidelity/loss classifications, acknowledge any original absolute
-audio/transcript/marker positions, identify the reviewer (declaration only)
-and confirm. Motionwright performs only an atomic `Change::ApplyOtioOwnerCutReview`
-through the existing SQLite CAS and Semwright Native SDK. Any lock, protected
-review, stale generation or late invalid trim leaves the entire project
-unchanged. See [Owner-reviewed OTIO cut commit](V05_OTIO_OWNER_CUT_COMMIT.md).
+1. Choose a new export folder, bind saved project scenes to their original
+   MP4 assets and source frames, and declare the media owner and license.
+   Confirm permission to copy and redistribute the selected media, then use
+   **Export original media-bound OTIO bundle**. The desktop exports the actual
+   saved Project and verifies original media through its embedded bridge.
+2. Save the bounded edited `.otio` inside that exported folder. Enter the
+   original bundle folder and edited filename, then use **Preview edited OTIO
+   with verified media**. This rechecks the source Project, revision, media
+   hashes and supported edits. Preview does not modify the project.
+3. Review the proposed scene order, end trims and twelve property-loss
+   classifications. Declare the reviewer, explain the change and acknowledge
+   the losses and any original absolute audio, transcript or marker positions.
+   Confirm the reviewed cut to save one atomic `Change::ApplyOtioOwnerCutReview`
+   through the existing StudioService and SQLite/CAS.
+4. Reopen the saved project to continue editing. Locks, protected reviews,
+   stale generations and late invalid trims refuse the complete change.
+   Increasing an original scene duration is refused; only end trims and scene
+   reordering are supported.
 
-This **does not** independently authenticate that an NLE produced the pasted
-JSON, import/relink media, prove external editor acceptance, move external
-audio tracks or license the result. A prepared proposal is not a cryptographic
-authority receipt. The Python bridge also now **rejects increasing a native
-scene's original duration**, so the phrase "end trim only" is enforced
-rather than merely documented.
+### Installed runtime
+
+The DEB declares `python3` and `ffmpeg` as dependencies; ffmpeg supplies ffprobe.
+Install the DEB through a dependency-resolving package manager. The AppImage
+also requires these system packages on its Linux host. The application embeds
+its first-party bridge modules and needs no manual Python script setup or
+third-party Python package installation. It runs only protected system tools
+under `/usr/bin`, with isolated imports and bounded execution. Missing tools
+or writable runtime paths refuse export and inspection before execution.
+
+Automated media inspection currently has no admitted runtime on Windows or
+macOS. Existing bridge-produced JSON files remain available for explicit
+proposal review on those platforms. Select the proposal file or paste its
+contents in **Review an existing bridge proposal**. A proposal declaration
+cannot independently authenticate media or an external editor.
+
+The export is published once into a previously unused folder after verification;
+existing directories and dangling symlinks are never replaced. An interrupted
+or unconfirmed export is not retried automatically. Inspect the selected
+folder before deciding what to do next.
+
+An external NLE import/render, installation qualification and real human review
+remain separate acceptance observations. The workflow does not launch an NLE,
+relink media, move external audio tracks, grant publishing rights or infer
+third-party licenses. See [Owner-reviewed OTIO cut commit](V05_OTIO_OWNER_CUT_COMMIT.md).
