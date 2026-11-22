@@ -1478,6 +1478,68 @@ def cycle_workspace(context):
             raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_NOT_VERIFIED")
 
 
+def held_studio_failure_diagnostic(observation: Path) -> dict:
+    """Only fixed phases and bounded original counts may leave private UI custody."""
+    import native_geometry_pixel_oracle as geometry_oracle
+    phases = {"validate_source", "start_service", "verify_initial_store", "open_studio",
+              "open_canvas", "select_node", "inspect_keys", "seek_destination",
+              "select_property", "enter_value", "select_hold", "save_key", "observe_save",
+              "verify_final_store", "reload_studio", "reopen_canvas", "close_page",
+              "prepare_handoff", "close_writer", "verify_closed_store", "completed"}
+    result = {"schema": "motionwright.native-geometry-studio-failure/1",
+              "source_sha": GITHUB_SHA, "phase": "not_observed",
+              "original_receipt": "unavailable", "log_originals": {},
+              "native_host": "NOT_STARTED", "automatic_retry": False}
+    # Playwright can fail before the selected test starts (including webServer).
+    # Never copy its arbitrary messages, project data, paths, or transport replies.
+    for name in ("geometry-studio.stdout.original.log", "geometry-studio.stderr.original.log"):
+        try:
+            data = geometry_oracle.raw_file(EVIDENCE / name, 1024 * 1024)
+            result["log_originals"][name] = {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+            raw = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", data.decode("utf-8", errors="replace"))
+            markers = re.findall(r"(?m)^MOTIONWRIGHT_HOLD_STUDIO_PHASE=([a-z_]+)\s*$", raw)
+            admitted = [phase for phase in markers if phase in phases]
+            if admitted:
+                result["phase"] = admitted[-1]
+            if "Timed out waiting 120000ms from config.webServer" in raw:
+                result["startup_failure"] = "web_server_timeout"
+            positions = re.findall(r"native-geometry-hold-service\.spec\.ts:([0-9]{1,4}):([0-9]{1,4})", raw)
+            if positions:
+                result["test_source_line"] = int(positions[-1][0])
+        except (OSError, ValueError, AssertionError):
+            pass
+    try:
+        raw = geometry_oracle.raw_file(observation, 4 * 1024 * 1024)
+        original = geometry_oracle.strict_json(raw)
+        if (original.get("schema") != "motionwright.native-geometry-studio-hold/1"
+                or original.get("source_sha") != GITHUB_SHA):
+            return result
+        result["original_receipt"] = hashlib.sha256(raw).hexdigest()
+        if original.get("last_phase") in phases:
+            result["phase"] = original["last_phase"]
+        transcript = original.get("original_transcript")
+        if isinstance(transcript, list) and len(transcript) <= 2048:
+            requests = [entry["payload"] for entry in transcript if isinstance(entry, dict)
+                        and entry.get("direction") == "request"
+                        and isinstance(entry.get("payload"), dict)
+                        and entry["payload"].get("command") == "apply_change"]
+            if len(requests) <= 5:
+                replies = [entry["payload"] for entry in transcript if isinstance(entry, dict)
+                           and entry.get("direction") == "response"
+                           and isinstance(entry.get("payload"), dict)]
+                outcomes = [[reply for reply in replies if reply.get("id") == request.get("id")]
+                            for request in requests]
+                result["original_apply_requests"] = len(requests)
+                result["original_apply_successes"] = sum(len(rows) == 1 and rows[0].get("ok") is True for rows in outcomes)
+                result["original_apply_rejections"] = sum(len(rows) == 1 and rows[0].get("ok") is False for rows in outcomes)
+                result["original_apply_unresolved"] = sum(len(rows) != 1 or type(rows[0].get("ok")) is not bool for rows in outcomes)
+        if type(original.get("closed_store_handoff")) is bool:
+            result["closed_store_handoff"] = original["closed_store_handoff"]
+    except (OSError, ValueError, AssertionError, TypeError, AttributeError):
+        pass
+    return result
+
+
 def author_geometry_hold(database: Path, seed_receipt: Path, seeded: dict,
                          env: dict[str, str]) -> dict:
     """Use the existing real-Service browser path before any Native owner starts."""
@@ -1495,6 +1557,7 @@ def author_geometry_hold(database: Path, seed_receipt: Path, seeded: dict,
                      MOTIONWRIGHT_GEOMETRY_UI_OBSERVATION=str(observation))
     process = None
     quiet = False
+    timed_out = False
     try:
         with (EVIDENCE / "geometry-studio.stdout.original.log").open("x") as stdout, \
                 (EVIDENCE / "geometry-studio.stderr.original.log").open("x") as stderr:
@@ -1508,9 +1571,15 @@ def author_geometry_hold(database: Path, seed_receipt: Path, seeded: dict,
                 cwd=studio, env=child_env, stdin=subprocess.DEVNULL,
                 stdout=stdout, stderr=stderr, start_new_session=True)
             process.wait(timeout=180)
+    except subprocess.TimeoutExpired:
+        timed_out = True
     finally:
         quiet = n83_stop_group(process)
-    if not quiet or process is None or process.returncode != 0:
+    if timed_out or not quiet or process is None or process.returncode != 0:
+        diagnostic = held_studio_failure_diagnostic(observation)
+        diagnostic.update(group_quiet=quiet, parent_timeout=timed_out,
+                          process_returncode=process.returncode if process is not None else None)
+        print("HELD_GEOMETRY_STUDIO_FAILURE=" + json.dumps(diagnostic, sort_keys=True), flush=True)
         raise AssertionError("HELD_GEOMETRY_STUDIO_NOT_COMPLETED_BEFORE_NATIVE")
     original = geometry_oracle.raw_file(observation, 4 * 1024 * 1024)
     observed = geometry_oracle.strict_json(original)

@@ -20,6 +20,14 @@ function requiredPath(name: string): string {
 }
 
 test("Studio saves five original held geometry destinations and closes their original Store", async ({ page }) => {
+  // Fixed phase names are the only UI diagnostics the parent may print publicly.
+  // Full responses and browser diagnostics stay in the private original.
+  let lastPhase = "validate_source", uiSaveCount = 0;
+  function phase(name: string) {
+    lastPhase = name;
+    console.log("MOTIONWRIGHT_HOLD_STUDIO_PHASE=" + name);
+  }
+  phase("validate_source");
   const databasePath = requiredPath("MOTIONWRIGHT_GEOMETRY_UI_DATABASE");
   const sourcePath = requiredPath("MOTIONWRIGHT_GEOMETRY_UI_SOURCE");
   const observationPath = requiredPath("MOTIONWRIGHT_GEOMETRY_UI_OBSERVATION");
@@ -49,33 +57,46 @@ test("Studio saves five original held geometry destinations and closes their ori
   expect(destinations).toHaveLength(5);
   expect(destinations.every(key => key.interpolation === "ease_out_cubic")).toBe(true);
 
+  phase("start_service");
   const service = await ScopedChangeService.create({ databasePath, seedFixture: false });
   let final: Project | null = null, history: ProjectEvent[] | null = null;
-  let completed = false, closed = false, uiSaveCount = 0, handoff: unknown = null;
+  let completed = false, closed = false, handoff: unknown = null;
   try {
+    phase("verify_initial_store");
     expect(await service.project(initial.id)).toEqual(initial);
     expect(await service.history(initial.id, 0, 16)).toEqual(original.history);
     await service.attachPage(page, initial.id);
+    phase("open_studio");
     await page.goto("/");
+    phase("open_canvas");
     await page.getByRole("button", { name: "Canvas", exact: true }).click();
+    phase("select_node");
     await page.getByRole("complementary", { name: "Canvas object tree" })
       .getByRole("button", { name: /Native geometry source-bound rectangle/ }).click();
+    phase("inspect_keys");
     const motion = page.getByRole("region", { name: "Typed motion keyframes" });
     const revision = page.locator(".command-bar .revision-chip");
     await expect(revision).toHaveText("r" + initial.revision);
     await expect(motion.locator(".motion-keyframe-row")).toHaveCount(10);
     for (const key of destinations) {
       // The existing jump button seeks the exact authored one-second/frame-30 clock.
+      phase("seek_destination");
       await motion.locator(".motion-keyframe-jump").filter({ hasText: "1.000s" }).first().click();
       await expect(motion.locator(".motion-editor-heading")).toContainText("1.000s");
+      phase("select_property");
       await page.getByLabel("Motion property", { exact: true }).selectOption(key.property);
+      phase("enter_value");
       await page.getByLabel("Motion keyframe value", { exact: true }).fill(String(key.value));
+      phase("select_hold");
       await page.getByLabel("Motion interpolation", { exact: true }).selectOption("hold");
+      phase("save_key");
       await motion.getByRole("button", { name: "Add or replace keyframe at playhead", exact: true }).click();
       uiSaveCount++;
+      phase("observe_save");
       await expect(revision).toHaveText("r" + (initial.revision + uiSaveCount));
       await expect(motion.locator(".motion-keyframe-row").filter({ hasText: "hold" })).toHaveCount(uiSaveCount);
     }
+    phase("verify_final_store");
     final = await service.project(initial.id);
     history = await service.history(initial.id, 0, 16);
     expect(final.revision).toBe(initial.revision + 5);
@@ -121,12 +142,16 @@ test("Studio saves five original held geometry destinations and closes their ori
       && "command" in entry.payload && /render|native_job|production_execute/.test(entry.payload.command));
     expect(nativeCommands).toHaveLength(0);
     // A fresh UI load must show the saved held keys before the writer closes.
+    phase("reload_studio");
     await page.reload();
+    phase("reopen_canvas");
     await page.getByRole("button", { name: "Canvas", exact: true }).click();
     await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + final.revision);
     await expect(page.locator(".motion-keyframe-row").filter({ hasText: "hold" })).toHaveCount(5);
     expect(await service.project(initial.id)).toEqual(final);
+    phase("close_page");
     await page.close();
+    phase("prepare_handoff");
     const response = await service.rawRequest<{ read_only_handoff: boolean; journal_mode: string }>({
       command: "prepare_read_only_handoff", args: null,
     });
@@ -134,13 +159,16 @@ test("Studio saves five original held geometry destinations and closes their ori
     expect(response.ok).toBe(true);
     if (!response.ok) throw new Error("The original geometry writer refused its handoff");
     expect(response.result).toEqual({ read_only_handoff: true, journal_mode: "delete" });
+    phase("close_writer");
     await service.close();
     closed = true;
+    phase("verify_closed_store");
     expect(service.processExits).toHaveLength(1);
     expect(service.processExits[0]).toMatchObject({ code: 0, signal: null });
     expect(service.lifecycleTaints).toEqual([]);
     expect(createHash("sha256").update(await readFile(sourcePath)).digest("hex")).toBe(sourceSha);
     completed = true;
+    phase("completed");
   } finally {
     if (!page.isClosed()) await page.close();
     if (!closed) {
@@ -152,7 +180,7 @@ test("Studio saves five original held geometry destinations and closes their ori
     await writeFile(observationPath, JSON.stringify({
       schema: "motionwright.native-geometry-studio-hold/1",
       status: completed ? "FIVE_ORIGINAL_UI_SAVES_AND_CLOSED_STORE" : "NOT_COMPLETED",
-      source_sha: process.env.GITHUB_SHA, seed_source_sha256: sourceSha,
+      source_sha: process.env.GITHUB_SHA, seed_source_sha256: sourceSha, last_phase: lastPhase,
       initial_project: initial, project: final, history, ui_save_count: uiSaveCount,
       closed_store_handoff: completed && closed, original_handoff: handoff,
       process_exits: service.processExits, lifecycle_taints: service.lifecycleTaints,

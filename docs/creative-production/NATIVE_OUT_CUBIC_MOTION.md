@@ -121,7 +121,7 @@ human acceptance are not established by this bounded production case.
 The 60 independent product acceptance cases remain NOT_RUN.
 
 
-## MW05-E01-02 — edit and save a frame-exact held shape
+## MW05-E01-01 — edit and save a frame-exact held shape
 
 The existing Canvas typed keyframe editor also authors Hold for an unparented
 rectangle/circle/shape. For the bounded two-second, 30 fps geometry case, the
