@@ -570,6 +570,57 @@ jobs:
           root="$RUNNER_TEMP/native-selected-g1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           test ! -e "$root"
           mkdir -m 700 "$root"
+          # The original compiler/test logs stay on the isolated runner. On
+          # pre-effect failure emit only an ASCII allowlist of error summaries
+          # and source-relative locations; no project, credentials or owner logs.
+          selected_source_failure() {
+            local code=$?
+            trap - ERR
+            SOURCE_G1_DIR="$root" python3 -B -E -s - <<'PY_SELECTED_SOURCE_FAILURE' || true
+          from pathlib import Path
+          import os, re
+          root=Path(os.environ["SOURCE_G1_DIR"])
+          names=(
+            "selected-store.original.log",
+            "authored_rectangular_clip_group_has_real_native_parent_and_local_child_geometry.original.log",
+            "nested_rectangular_clip_group_is_refused_without_mask_or_preview_substitution.original.log",
+            "exact_fade_out_opacity_keeps_visible_source_and_real_native_zero_target.original.log",
+            "native-build.original.log",
+            "studio-service.original.log",
+            "oracle.original.log",
+          )
+          observed=0
+          print("SOURCE_G1_PRE_HOST_FAILURE: original_Rust_or_control_nonzero; NativeHost=NOT_STARTED; G2=NOT_GRANTED; G3=STOP")
+          for name in names:
+              log=root/name
+              if not log.is_file() or log.is_symlink() or log.stat().st_size > 8*1024*1024:
+                  continue
+              lines=log.read_text(encoding="utf8",errors="replace").splitlines()
+              for line in lines[-500:]:
+                  t=line.strip()
+                  safe=(
+                      t.startswith(("error[E","error:","test result: FAILED","test result: FAILED.",
+                                    "failures:","test " ))
+                      or re.fullmatch(r"--> crates/native/[A-Za-z0-9_./-]+:[0-9]+:[0-9]+",t) is not None
+                  )
+                  if not safe or not (1 <= len(t) <= 180) or not all(32 <= ord(ch) < 127 for ch in t):
+                      continue
+                  if any(token in t.lower() for token in ("secret","token","credential","password","cookie","/home/runner","private/")):
+                      continue
+                  if t.startswith("test ") and not t.endswith(" ... FAILED"):
+                      continue
+                  print(name+": "+t)
+                  observed+=1
+                  if observed >= 12:
+                      break
+              if observed>=12:
+                  break
+          if observed==0:
+              print("SOURCE_G1_DIAGNOSTIC_NOT_EMITTED: original logs unavailable or not allowlisted")
+          PY_SELECTED_SOURCE_FAILURE
+            exit "$code"
+          }
+          trap selected_source_failure ERR
           python3 -B -m unittest \
             tooling.tests.test_native_layer_order_pixels \
             tooling.tests.test_native_clip_group_pixels \
@@ -740,6 +791,7 @@ jobs:
         run: python3 -m unittest discover -s tooling/tests -p 'test_native_provider_repeat.py' -v
 
       - name: Render application-owned revision through real Broker and Driver Host
+        id: native_original_effect
         env:
           SEMWRIGHT_TEST_DRIVER_SANDBOX: '1'
           MOTIONWRIGHT_V01_PROVIDER_EVENT_REPLAY: ${{ (inputs.native_scope == 'n83-preview' || inputs.native_scope == 'editable-source-cycle' || inputs.native_scope == 'out-cubic-xy' || inputs.geometry_e2e || inputs.layer_order_e2e || inputs.clip_e2e) && '0' || '1' }}
@@ -1137,7 +1189,7 @@ jobs:
           PY
 
       - name: Stage only verified v0.1 native PNG review, not original Broker receipts
-        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && (success() || hashFiles('verification/native-render-e2e/**') != '') }}
+        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && (steps.native_original_effect.outcome == 'success' || steps.native_original_effect.outcome == 'failure') }}
         env:
           NATIVE_CI_JOB_STATUS: ${{ job.status }}
         run: |
@@ -1149,7 +1201,7 @@ jobs:
           python3 -m json.tool verification/native-render-public/public-evidence.json >/dev/null
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && (success() || hashFiles('verification/native-render-e2e/**') != '') }}
+        if: ${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && (steps.native_original_effect.outcome == 'success' || steps.native_original_effect.outcome == 'failure') }}
         with:
           name: motionwright-native-render-${{ github.sha }}
           path: verification/native-render-public
