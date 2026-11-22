@@ -447,7 +447,7 @@ mod tests {
                 .unwrap()
                 .project;
         }
-        let history = service.project_history(project.id, 0, 16).unwrap();
+        let history = service.history(project.id, 0, 16).unwrap();
         let studio = dir.path().join("synthetic-studio-contract.json");
         let original_project = serde_json::to_value(&project).unwrap();
         let mut record = json!({
