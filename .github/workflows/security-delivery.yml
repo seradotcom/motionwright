@@ -80,6 +80,7 @@ on:
           - storage-service-current
           - service-legacy-fixtures
           - native-source-export
+          - native-otio-snapshot
           - native-source-browser
           - native-film-geometry
           - native-film-hold
@@ -94,7 +95,7 @@ env:
 
 jobs:
   source-boundary:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures' && inputs.verification_scope != 'native-source-export' && inputs.verification_scope != 'native-source-browser' && inputs.verification_scope != 'native-film-geometry' && inputs.verification_scope != 'native-film-hold' && inputs.verification_scope != 'native-geometry-readback')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures' && inputs.verification_scope != 'native-source-export' && inputs.verification_scope != 'native-otio-snapshot' && inputs.verification_scope != 'native-source-browser' && inputs.verification_scope != 'native-film-geometry' && inputs.verification_scope != 'native-film-hold' && inputs.verification_scope != 'native-geometry-readback')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1159,8 +1160,8 @@ jobs:
           retention-days: 14
 
   native-source-export-rust:
-    name: Native original-source export (5 focused Rust tests)
-    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'native-source-export'
+    name: Desktop owner exports (exact selected source regressions)
+    if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'native-source-export' || inputs.verification_scope == 'native-otio-snapshot')
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
@@ -1182,17 +1183,23 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - name: Run five exact original-source export regressions on the compiled desktop
+      - name: Compile only the selected owner-export source regressions on desktop
         shell: bash
         env:
           MW_NATIVE_EXPORT_ORIGINALS: ${{ runner.temp }}/native-source-export-originals
+          MW_EXPORT_CASE_SCOPE: ${{ inputs.verification_scope }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test ! -e "$MW_NATIVE_EXPORT_ORIGINALS"
           mkdir -m 700 "$MW_NATIVE_EXPORT_ORIGINALS"
+          case "$MW_EXPORT_CASE_SCOPE" in
+            native-source-export) selected_filter="native_source_" ;;
+            native-otio-snapshot) selected_filter="otio_current_project_snapshot_" ;;
+            *) echo "Unsupported owner-export test scope" >&2; exit 64 ;;
+          esac
           cargo test --locked -p motionwright-desktop --bin motionwright-desktop \
-            project_export::tests::native_source_ -- --test-threads=1 \
+            "project_export::tests::$selected_filter" -- --test-threads=1 \
             2>&1 | tee "$MW_NATIVE_EXPORT_ORIGINALS/cargo.original.log"
           /usr/bin/python3 -B -E -s - <<'PY_NATIVE_EXPORT'
           import hashlib
@@ -1203,18 +1210,30 @@ jobs:
           folder = Path(os.environ["MW_NATIVE_EXPORT_ORIGINALS"])
           original = (folder / "cargo.original.log").read_bytes()
           text = re.sub(r"\x1b\[[0-9;]*m", "", original.decode("utf-8", "strict"))
-          required = {
-              "project_export::tests::native_source_exports_exact_original_bytes_without_launch_or_replay",
-              "project_export::tests::native_source_export_cannot_overwrite_an_existing_file_or_switch_capsule",
-              "project_export::tests::native_source_export_rejects_a_peer_revision_before_creating_the_destination",
-              "project_export::tests::native_source_export_then_reimport_preserves_both_original_versions_and_reopens_store",
-              "project_export::tests::native_source_export_rejects_same_revision_branch_asset_and_digest_substitution_before_effect",
+          selected = os.environ["MW_EXPORT_CASE_SCOPE"]
+          expected = {
+              "native-source-export": {
+                  "project_export::tests::native_source_exports_exact_original_bytes_without_launch_or_replay",
+                  "project_export::tests::native_source_export_cannot_overwrite_an_existing_file_or_switch_capsule",
+                  "project_export::tests::native_source_export_rejects_a_peer_revision_before_creating_the_destination",
+                  "project_export::tests::native_source_export_then_reimport_preserves_both_original_versions_and_reopens_store",
+                  "project_export::tests::native_source_export_rejects_same_revision_branch_asset_and_digest_substitution_before_effect",
+              },
+              "native-otio-snapshot": {
+                  "project_export::tests::otio_current_project_snapshot_exports_exact_bridge_bytes_and_reopens_store",
+                  "project_export::tests::otio_current_project_snapshot_rejects_later_peer_revision_before_publish",
+                  "project_export::tests::otio_current_project_snapshot_rejects_bad_extension_and_foreign_destination",
+              },
           }
-          passed = re.findall(r"(?m)^test (project_export::tests::native_source_[A-Za-z0-9_]+) \.\.\. ok$", text)
-          assert len(passed) == len(required) == 5 and set(passed) == required, passed
-          assert re.search(r"(?m)^test result: ok\. 5 passed; 0 failed; 0 ignored;", text)
+          required = expected[selected]
+          passed = re.findall(r"(?m)^test (project_export::tests::(?:native_source_|otio_current_project_snapshot_)[A-Za-z0-9_]+) \.\.\. ok$", text)
+          assert len(passed) == len(required) == len(set(passed)) and set(passed) == required, passed
+          assert re.search(
+              r"(?m)^test result: ok\. " + str(len(required)) + r" passed; 0 failed; 0 ignored;", text
+          )
           record = {
-              "schema": "motionwright.ci.native-source-export-rust/1",
+              "schema": "motionwright.ci.desktop-owner-export-source/1",
+              "selected_scope": selected,
               "source_sha": os.environ["GITHUB_SHA"],
               "run_id": os.environ["GITHUB_RUN_ID"],
               "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
@@ -1228,7 +1247,7 @@ jobs:
               "G3": "STOP",
           }
           (folder / "receipt.json").write_text(json.dumps(record, sort_keys=True, indent=2) + "\n")
-          print("native-source-export-rust=PASS compiled_original_source_cases=5")
+          print("desktop-owner-export=PASS selected=" + selected + " exact_tests=" + str(len(required)))
           PY_NATIVE_EXPORT
           git diff --exit-code
       - name: Preserve exact Rust regression originals without converting to physical acceptance
