@@ -119,3 +119,42 @@ MW05-E01-01 remains PARTIAL: general multi-key curves, shape scale,
 rotation, masking, 3D camera/perspective, text rendering and complete
 human acceptance are not established by this bounded production case.
 The 60 independent product acceptance cases remain NOT_RUN.
+
+
+## MW05-E01-02 — edit and save a frame-exact held shape
+
+The existing Canvas typed keyframe editor also authors Hold for an unparented
+rectangle/circle/shape. For the bounded two-second, 30 fps geometry case, the
+initial X, Y, width, height and rotation keys are linear at frame 0. Seek the
+existing frame-30 key, select each property, retain its authored destination
+value, choose Hold and use **Add or replace keyframe at playhead**. Each explicit
+Save advances the real Project revision. All five destination keys must use the
+same supported interpolation before the Native Film is eligible; mixed curves
+are refused. The destination values remain the source object's base transform.
+
+The existing one-effect geometry runner has a closed `hold` profile. It opens
+its existing real SQLite Project in Studio through the original Service test
+transport, performs the five UI Saves, reloads Studio to read the saved held
+keys, closes the writer with its normal read-only handoff and captures that
+exact revision through StudioServiceReader. It then uses the existing standard
+Semwright Broker/Driver Host to render the one 60-frame Film. The source capture
+requires eight zero-duration Native Set operations at frames 0 and 30, with no
+Tween substitution. The final independent reader verifies the unchanged
+original Project, history and physical Store after the rendering writer exits.
+
+Hold verification reads original PNG geometry at frames 0, 29 and 30, using the
+same spatial tolerances as the existing geometry oracle. It additionally hashes
+every original PNG and requires frames 0–29 to have identical complete PNG
+bytes, frames 30–59 to have identical complete PNG bytes, and the two intervals
+to differ. This catches a transient intermediate frame or a late/early jump;
+whole-file equality of lossless PNG originals entails equality of their decoded
+frames. The unchanged OutCubic profile retains samples 0, 15 and 30.
+
+The Studio step precedes any Native owner launch and cannot grant or invoke a
+Native render. Missing, stale, incomplete or UNKNOWN source/Save/closure results
+stop the selected execution. Neither profile automatically retries effects.
+The source receipt binds the original Studio observation by SHA-256; raw grants
+and service transcripts stay private. This development path does not establish
+installed-Tauri operation, independent human visual approval, G2/G3 or release
+authority. A completed original run must be identified by its actual source and
+run before claiming the physical Hold path passed.

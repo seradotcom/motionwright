@@ -10,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import native_geometry_pixel_oracle as oracle
 
 
-def modeled_frame(frame: int, *, easing="cubic", width_delta=0, rotate_offset=0) -> bytes:
-    source = oracle.expected_geometry(frame)
+def modeled_frame(frame: int, *, easing="cubic", profile="out-cubic", width_delta=0, rotate_offset=0) -> bytes:
+    source = oracle.expected_geometry(frame, profile)
     progress = source["progress"] if easing == "cubic" else frame / 30.0
     cx = 820 + 120 * progress
     cy = 405 + 75 * progress
@@ -61,6 +61,39 @@ class GeometryPixelOracleTests(unittest.TestCase):
     def test_source_clock_is_not_approximated(self):
         with self.assertRaisesRegex(oracle.GeometryRefused, "UNAUTHORIZED_FRAME"):
             oracle.expected_geometry(14)
+
+
+    def test_held_geometry_stays_initial_through_frame_29_and_jumps_at_30(self):
+        for frame in oracle.HOLD_FRAMES:
+            with self.subTest(frame=frame):
+                report = oracle.measure_rgb(modeled_frame(frame, profile="hold"), frame, "hold")
+                self.assertEqual(report["expected"]["progress"], 0 if frame < 30 else 1)
+
+    def test_held_geometry_refuses_interpolation_and_late_or_early_jumps(self):
+        for observed, frame in ((modeled_frame(29, profile="hold", easing="linear"), 29),
+                                (modeled_frame(30, profile="hold"), 29),
+                                (modeled_frame(0, profile="hold"), 30)):
+            with self.subTest(frame=frame), self.assertRaises(oracle.GeometryRefused):
+                oracle.measure_rgb(observed, frame, "hold")
+
+    def test_complete_hold_intervals_reject_one_changed_original_or_static_output(self):
+        rows = [{"index": index, "sha256": ("a" if index < 30 else "b") * 64} for index in range(60)]
+        self.assertEqual(oracle.held_frame_identity(rows)["verified_original_frames"], 60)
+        for index in (1, 28, 29, 30, 31, 59):
+            bad = [dict(row) for row in rows]
+            bad[index]["sha256"] = "c" * 64
+            with self.subTest(index=index), self.assertRaises(oracle.GeometryRefused):
+                oracle.held_frame_identity(bad)
+        with self.assertRaisesRegex(oracle.GeometryRefused, "NO_DESTINATION"):
+            oracle.held_frame_identity([{"index": i, "sha256": "a" * 64} for i in range(60)])
+        with self.assertRaisesRegex(oracle.GeometryRefused, "ROSTER"):
+            oracle.held_frame_identity(rows[:-1])
+
+    def test_geometry_profile_cannot_be_replaced_with_another_easing(self):
+        with self.assertRaisesRegex(oracle.GeometryRefused, "UNKNOWN_PROFILE"):
+            oracle.expected_geometry(29, "linear")
+        with self.assertRaisesRegex(oracle.GeometryRefused, "UNAUTHORIZED_FRAME"):
+            oracle.expected_geometry(15, "hold")
 
 
 if __name__ == "__main__":

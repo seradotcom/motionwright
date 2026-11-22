@@ -37,7 +37,7 @@ enum CombinedMaster<'a> {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: native-render-e2e <geometry-seed DATABASE SOURCE_RECEIPT | geometry-readback DATABASE SOURCE_RECEIPT EXPECTED_SHA256 REPORT_JSON | seed DATABASE | film DATABASE FILM_JSON | render DATABASE CONNECTION EVIDENCE_JSON | seed-saved-mix DATABASE SOURCES EVIDENCE | seed-tauri-audio DATABASE PRIVATE_ROOT | tauri-audio-readback DATABASE PRIVATE_ROOT | render-master-saved-mix DATABASE CONNECTION RENDER_EVIDENCE MASTER_EVIDENCE | saved-mix-readback DATABASE EVIDENCE | cycle-snapshot DATABASE DIRECTORY | cycle-edit DATABASE BEFORE_PROJECT DIRECTORY | cycle-render-edited DATABASE CONNECTION EVIDENCE_JSON | cycle-verify-binding FILM_JSON INSPECTION_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
+        "usage: native-render-e2e <geometry-seed DATABASE SOURCE_RECEIPT | geometry-capture-hold DATABASE SOURCE_RECEIPT STUDIO_RECEIPT STUDIO_SHA256 | geometry-readback DATABASE SOURCE_RECEIPT EXPECTED_SHA256 REPORT_JSON | seed DATABASE | film DATABASE FILM_JSON | render DATABASE CONNECTION EVIDENCE_JSON | seed-saved-mix DATABASE SOURCES EVIDENCE | seed-tauri-audio DATABASE PRIVATE_ROOT | tauri-audio-readback DATABASE PRIVATE_ROOT | render-master-saved-mix DATABASE CONNECTION RENDER_EVIDENCE MASTER_EVIDENCE | saved-mix-readback DATABASE EVIDENCE | cycle-snapshot DATABASE DIRECTORY | cycle-edit DATABASE BEFORE_PROJECT DIRECTORY | cycle-render-edited DATABASE CONNECTION EVIDENCE_JSON | cycle-verify-binding FILM_JSON INSPECTION_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
     );
     std::process::exit(2);
 }
@@ -1530,6 +1530,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 usage();
             }
             native_geometry_e2e::seed(&database, &source_receipt)
+        }
+        "geometry-capture-hold" => {
+            let database = path_arg(&mut args);
+            let source_receipt = path_arg(&mut args);
+            let studio_receipt = path_arg(&mut args);
+            let expected_studio_sha = text_arg(&mut args);
+            if args.next().is_some() {
+                usage();
+            }
+            native_geometry_e2e::capture_hold(
+                &database,
+                &source_receipt,
+                &studio_receipt,
+                &expected_studio_sha,
+            )
         }
         "geometry-readback" => {
             let database = path_arg(&mut args);

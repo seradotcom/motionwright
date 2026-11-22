@@ -52,6 +52,11 @@ if CAPTION_E2E not in {"0", "1"}:
 GEOMETRY_E2E = os.environ.get("MOTIONWRIGHT_NATIVE_GEOMETRY_E2E", "0")
 if GEOMETRY_E2E not in {"0", "1"}:
     raise SystemExit("Unknown original native geometry selection")
+GEOMETRY_PROFILE = os.environ.get("MOTIONWRIGHT_NATIVE_GEOMETRY_PROFILE", "out-cubic")
+if GEOMETRY_PROFILE not in {"out-cubic", "hold"}:
+    raise SystemExit("Unknown original native geometry profile")
+if GEOMETRY_PROFILE == "hold" and GEOMETRY_E2E != "1":
+    raise SystemExit("Held geometry requires the original one-effect geometry selection")
 if GEOMETRY_E2E == "1" and (NATIVE_SCOPE != "standard" or CAPTION_E2E != "0"):
     raise SystemExit("Native geometry source must not reuse a retained or captioned selection")
 RUN_LABEL = os.environ.get("MOTIONWRIGHT_NATIVE_RUN_LABEL", "")
@@ -280,6 +285,16 @@ def exact_inputs() -> None:
     ]:
         if not path.exists():
             raise SystemExit(f"missing exact acceptance input: {path}")
+    if GEOMETRY_PROFILE == "hold":
+        if (os.environ.get("GITHUB_RUN_ATTEMPT") != "1"
+                or os.environ.get("MW_NATIVE_EXPECTED_SOURCE_SHA") != GITHUB_SHA
+                or not re.fullmatch(r"[0-9a-f]{40}", GITHUB_SHA)
+                or os.environ.get("MOTIONWRIGHT_V01_PROVIDER_REPEAT", "false") != "false"):
+            raise SystemExit("Held geometry source/attempt/repeat admission failed")
+        for path in (ROOT / "target/debug/examples/studio_review_session",
+                     ROOT / "apps/studio/node_modules/@playwright/test/cli.js"):
+            if not path.is_file() or path.is_symlink():
+                raise SystemExit("Held geometry requires the original built Studio inputs")
     if not shutil.which("bwrap"):
         raise SystemExit("bubblewrap is required; no unsandboxed fallback is accepted")
 
@@ -1463,6 +1478,64 @@ def cycle_workspace(context):
             raise N83RunnerFailure("EDITABLE_SOURCE_CYCLE_NOT_VERIFIED")
 
 
+def author_geometry_hold(database: Path, seed_receipt: Path, seeded: dict,
+                         env: dict[str, str]) -> dict:
+    """Use the existing real-Service browser path before any Native owner starts."""
+    import native_geometry_pixel_oracle as geometry_oracle
+    studio = ROOT / "apps/studio"
+    binary = ROOT / "target/debug/examples/studio_review_session"
+    node = shutil.which("node")
+    if not node or digest(seed_receipt) != seeded["source_receipt_sha256"]:
+        raise AssertionError("Held geometry original Studio input is unavailable")
+    observation = EVIDENCE / "geometry-studio-hold.original.json"
+    child_env = dict(env, MOTIONWRIGHT_SERVICE_TEST_BIN=str(binary),
+                     MOTIONWRIGHT_GEOMETRY_UI_DATABASE=str(database),
+                     MOTIONWRIGHT_GEOMETRY_UI_SOURCE=str(seed_receipt),
+                     MOTIONWRIGHT_GEOMETRY_UI_SOURCE_SHA256=seeded["source_receipt_sha256"],
+                     MOTIONWRIGHT_GEOMETRY_UI_OBSERVATION=str(observation))
+    process = None
+    quiet = False
+    try:
+        with (EVIDENCE / "geometry-studio.stdout.original.log").open("x") as stdout, \
+                (EVIDENCE / "geometry-studio.stderr.original.log").open("x") as stderr:
+            os.chmod(stdout.name, 0o600)
+            os.chmod(stderr.name, 0o600)
+            process = subprocess.Popen(
+                [node, str(studio / "node_modules/@playwright/test/cli.js"),
+                 "test", "tests/native-geometry-hold-service.spec.ts",
+                 "--project=chromium", "--workers=1", "--retries=0", "--reporter=line",
+                 "--output=" + str(EVIDENCE / "geometry-studio-browser")],
+                cwd=studio, env=child_env, stdin=subprocess.DEVNULL,
+                stdout=stdout, stderr=stderr, start_new_session=True)
+            process.wait(timeout=180)
+    finally:
+        quiet = n83_stop_group(process)
+    if not quiet or process is None or process.returncode != 0:
+        raise AssertionError("HELD_GEOMETRY_STUDIO_NOT_COMPLETED_BEFORE_NATIVE")
+    original = geometry_oracle.raw_file(observation, 4 * 1024 * 1024)
+    observed = geometry_oracle.strict_json(original)
+    if (observed.get("status") != "FIVE_ORIGINAL_UI_SAVES_AND_CLOSED_STORE"
+            or observed.get("source_sha") != GITHUB_SHA
+            or observed.get("seed_source_sha256") != seeded["source_receipt_sha256"]
+            or observed.get("ui_save_count") != 5
+            or observed.get("closed_store_handoff") is not True
+            or observed.get("automatic_retry") is not False
+            or observed.get("native_execution") is not False
+            or digest(seed_receipt) != seeded["source_receipt_sha256"]):
+        raise AssertionError("Held geometry original UI/source/closure observation changed")
+    observed_sha = hashlib.sha256(original).hexdigest()
+    held = run_json([str(MW_BIN), "geometry-capture-hold", str(database),
+                     str(EVIDENCE / "geometry-source.original.json"),
+                     str(observation), observed_sha], env=env, timeout=35)
+    if (held.get("geometry_profile") != "hold"
+            or held.get("studio_authoring_sha256") != observed_sha
+            or held.get("project_id") != seeded["project_id"]
+            or held.get("generation") != seeded["generation"]
+            or held.get("revision") != seeded["revision"] + 5):
+        raise AssertionError("Held geometry capture differs from original UI saves")
+    return held
+
+
 def main() -> None:
     global CYCLE_CONTEXT
     if NATIVE_SCOPE not in {"standard", "n83-preview", *RETAINED_SCOPES}:
@@ -1513,11 +1586,15 @@ def main() -> None:
             seeded = n83_seed(database, env, admitted)
         else:
             if GEOMETRY_E2E == "1":
+                source_name = ("geometry-before-studio.original.json" if GEOMETRY_PROFILE == "hold"
+                               else "geometry-source.original.json")
+                seed_receipt = EVIDENCE / source_name
                 seeded = run_json(
-                    [str(MW_BIN), "geometry-seed", str(database),
-                     str(EVIDENCE / "geometry-source.original.json")],
+                    [str(MW_BIN), "geometry-seed", str(database), str(seed_receipt)],
                     env=env,
                 )
+                if GEOMETRY_PROFILE == "hold":
+                    seeded = author_geometry_hold(database, seed_receipt, seeded, env)
                 if (seeded.get("geometry_seed") != "SOURCE_SQLITE_ONLY"
                         or seeded.get("frame_count") != 60
                         or len(seeded.get("source_receipt_sha256", "")) != 64):
@@ -1865,13 +1942,16 @@ def main() -> None:
                     source_receipt, source_sha, original_result, readback_file,
                     preserved_root,
                 )
+                if observed.get("geometry_profile") != GEOMETRY_PROFILE:
+                    raise AssertionError("Native geometry output belongs to a different profile")
                 write_private_json(EVIDENCE / "geometry-three-frame-pixel-review.json", observed)
                 print(json.dumps({
                     "native_geometry_original": "PIXELS_MEASURED_SOURCE_BOUND",
                     "motionwright_sha": GITHUB_SHA, "semwright_sha": PIN,
                     "project_id": seeded["project_id"],
                     "source_receipt_sha256": source_sha,
-                    "frame_roster": [0, 15, 30],
+                    "frame_roster": observed["sampled_frame_roster"],
+                    "geometry_profile": GEOMETRY_PROFILE,
                     "native_effect_count": 1,
                     "reader_authority": "StudioServiceReader",
                     "host_closed_by_finally_not_yet_claimed": True,

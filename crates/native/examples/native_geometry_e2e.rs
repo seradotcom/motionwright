@@ -46,7 +46,16 @@ fn geometry_node() -> CanvasNode {
     node
 }
 
-fn check_project(project: &motionwright_domain::Project) -> Result<(), Box<dyn std::error::Error>> {
+fn check_project(
+    project: &motionwright_domain::Project,
+    easing: MotionInterpolation,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !matches!(
+        easing,
+        MotionInterpolation::EaseOutCubic | MotionInterpolation::Hold
+    ) {
+        return Err("Geometry source easing is outside the closed selection".into());
+    }
     let scene = project.scenes.first().ok_or("Geometry scene is missing")?;
     let profile = project
         .deliverables
@@ -65,6 +74,32 @@ fn check_project(project: &motionwright_domain::Project) -> Result<(), Box<dyn s
     {
         return Err("Persisted original geometry source differs from bounded fixture".into());
     }
+    let mut expected = geometry_node();
+    for key in expected
+        .keyframes
+        .iter_mut()
+        .filter(|key| key.at > RationalTime::ZERO)
+    {
+        key.interpolation = easing;
+    }
+    if scene.nodes[0].x != expected.x
+        || scene.nodes[0].y != expected.y
+        || scene.nodes[0].width != expected.width
+        || scene.nodes[0].height != expected.height
+        || scene.nodes[0].rotation_deg != expected.rotation_deg
+        || expected.keyframes.iter().any(|key| {
+            scene.nodes[0]
+                .keyframes
+                .iter()
+                .filter(|actual| *actual == key)
+                .count()
+                != 1
+        })
+    {
+        return Err(
+            "Geometry source keys or base transform differ from the original selection".into(),
+        );
+    }
     let options = fixture_film_options(scene.id, FRAMES)?;
     let segments = build_motion_canvas_segments(project, profile.id, &options)?;
     if segments.len() != 1 || segments[0].frame_count != FRAMES {
@@ -75,20 +110,40 @@ fn check_project(project: &motionwright_domain::Project) -> Result<(), Box<dyn s
     let instructions = realized
         .instructions
         .iter()
-        .filter(|instruction| {
-            matches!(&instruction.operation,
-            semwright_motion_authoring::NativeOp::Tween { target: candidate, .. }
-                if candidate == &target)
+        .filter(|instruction| match &instruction.operation {
+            semwright_motion_authoring::NativeOp::Tween {
+                target: candidate, ..
+            } => candidate == &target,
+            semwright_motion_authoring::NativeOp::Set {
+                target: candidate, ..
+            } => easing == MotionInterpolation::Hold && candidate == &target,
+            _ => false,
         })
         .collect::<Vec<_>>();
-    if instructions.len() != 4
-        || instructions.iter().any(|instruction| {
-            instruction.start != RationalTime::ZERO
-                || instruction.duration != RationalTime::new(1, 1).expect("source frame")
-                || instruction.easing != semwright_motion_authoring::MotionEasing::OutCubic
-        })
-    {
-        return Err("Geometry source did not produce exactly four Native tweens".into());
+    let valid = if easing == MotionInterpolation::Hold {
+        instructions.len() == 8
+            && instructions.iter().all(|instruction| {
+                matches!(
+                    &instruction.operation,
+                    semwright_motion_authoring::NativeOp::Set { .. }
+                ) && instruction.duration == RationalTime::ZERO
+                    && instruction.easing == semwright_motion_authoring::MotionEasing::Linear
+                    && (instruction.start == RationalTime::ZERO
+                        || instruction.start == RationalTime::new(1, 1).expect("source frame"))
+            })
+    } else {
+        instructions.len() == 4
+            && instructions.iter().all(|instruction| {
+                matches!(
+                    &instruction.operation,
+                    semwright_motion_authoring::NativeOp::Tween { .. }
+                ) && instruction.start == RationalTime::ZERO
+                    && instruction.duration == RationalTime::new(1, 1).expect("source frame")
+                    && instruction.easing == semwright_motion_authoring::MotionEasing::OutCubic
+            })
+    };
+    if !valid {
+        return Err("Geometry source did not produce its exact Native sets or tweens".into());
     }
     Ok(())
 }
@@ -102,6 +157,22 @@ fn sha_of(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
         return Err("Native geometry receipt must be a bounded, plain absolute file".into());
     }
     Ok(format!("{:x}", Sha256::digest(fs::read(path)?)))
+}
+
+fn source_identity(project: &motionwright_domain::Project, easing: &str) -> serde_json::Value {
+    json!({
+        "schema": SCHEMA, "project_id": project.id,
+        "generation": project.generation, "revision": project.revision,
+        "scene_id": project.scenes[0].id, "node_id": project.scenes[0].nodes[0].id,
+        "deliverable_id": project.deliverables[0].id,
+        "frame_count": FRAMES, "fps": 30, "canvas_size": [1920, 1080],
+        "fill": COLOR, "easing": easing,
+        "keyframes": [
+            {"frame": 0, "x": 700.0,"y": 360.0,"width": 240.0,"height": 90.0,"rotation_deg": -18.0},
+            {"frame": 30,"x": 740.0,"y": 390.0,"width": 400.0,"height": 180.0,"rotation_deg": 0.0}
+        ],
+        "native_execution": false, "formal_G2": false, "formal_G3": false
+    })
 }
 
 pub(super) fn seed(database: &Path, receipt: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -140,20 +211,8 @@ pub(super) fn seed(database: &Path, receipt: &Path) -> Result<(), Box<dyn std::e
             },
         )?
         .project;
-    check_project(&project)?;
-    let identity = json!({
-        "schema": SCHEMA, "project_id": project.id,
-        "generation": project.generation, "revision": project.revision,
-        "scene_id": project.scenes[0].id, "node_id": project.scenes[0].nodes[0].id,
-        "deliverable_id": project.deliverables[0].id,
-        "frame_count": FRAMES, "fps": 30, "canvas_size": [1920, 1080],
-        "fill": COLOR, "easing": "ease_out_cubic",
-        "keyframes": [
-            {"frame": 0, "x": 700.0,"y": 360.0,"width": 240.0,"height": 90.0,"rotation_deg": -18.0},
-            {"frame": 30,"x": 740.0,"y": 390.0,"width": 400.0,"height": 180.0,"rotation_deg": 0.0}
-        ],
-        "native_execution": false, "formal_G2": false, "formal_G3": false
-    });
+    check_project(&project, MotionInterpolation::EaseOutCubic)?;
+    let identity = source_identity(&project, "ease_out_cubic");
     service.prepare_read_only_handoff()?;
     drop(service);
     let reader = StudioServiceReader::open(database)?;
@@ -194,6 +253,81 @@ pub(super) fn seed(database: &Path, receipt: &Path) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
+/// Capture the exact original Store only after the existing Studio Service case
+/// saved all five held destinations and closed its writer. This grants no effect.
+pub(super) fn capture_hold(
+    database: &Path,
+    receipt: &Path,
+    studio_receipt: &Path,
+    expected_studio_sha256: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !receipt.is_absolute()
+        || !receipt.parent().is_some_and(Path::is_dir)
+        || receipt.exists()
+        || receipt.is_symlink()
+        || expected_studio_sha256.len() != 64
+        || sha_of(studio_receipt)? != expected_studio_sha256
+    {
+        return Err(
+            "Held geometry capture requires a new destination and exact Studio original".into(),
+        );
+    }
+    let studio: serde_json::Value = serde_json::from_slice(&fs::read(studio_receipt)?)?;
+    if studio["schema"] != "motionwright.native-geometry-studio-hold/1"
+        || studio["status"] != "FIVE_ORIGINAL_UI_SAVES_AND_CLOSED_STORE"
+        || studio["ui_save_count"] != 5
+        || studio["closed_store_handoff"] != true
+        || studio["automatic_retry"] != false
+        || studio["native_execution"] != false
+        || studio["installed_tauri"] != false
+        || studio["human_approval"] != false
+    {
+        return Err("Held geometry requires the bounded, unaccepted Studio observation".into());
+    }
+    let initial: motionwright_domain::Project =
+        serde_json::from_value(studio["initial_project"].clone())?;
+    check_project(&initial, MotionInterpolation::EaseOutCubic)?;
+    let reader = StudioServiceReader::open(database)?;
+    let projects = reader.projects(2)?;
+    if projects.len() != 1 {
+        return Err("Held geometry capture requires the single original Project".into());
+    }
+    let project = &projects[0];
+    check_project(project, MotionInterpolation::Hold)?;
+    let history = reader.project_history(project.id, 0, 16)?;
+    if project.id != initial.id
+        || project.generation != initial.generation
+        || project.revision != initial.revision.checked_add(5).ok_or("Revision overflow")?
+        || serde_json::to_value(project)? != studio["project"]
+        || serde_json::to_value(&history)? != studio["history"]
+    {
+        return Err("Held geometry Studio receipt differs from original SQLite/CAS".into());
+    }
+    let mut identity = source_identity(project, "hold");
+    identity["studio_authoring_sha256"] = json!(expected_studio_sha256);
+    cycle_new_json(
+        receipt,
+        &json!({
+            "schema": SCHEMA, "identity": identity, "project": project, "history": history,
+            "database_identity": reader.database_file_identity()?,
+        }),
+    )?;
+    println!(
+        "{}",
+        json!({
+            "geometry_seed": "SOURCE_SQLITE_ONLY", "source_receipt": receipt,
+            "source_receipt_sha256": sha_of(receipt)?,
+            "project_id": project.id, "generation": project.generation,
+            "resource": project.resource_key(), "scene_id": project.scenes[0].id,
+            "deliverable_id": project.deliverables[0].id,
+            "width": project.deliverables[0].width, "height": project.deliverables[0].height,
+            "revision": project.revision, "frame_count": FRAMES, "native_execution": false,
+            "geometry_profile": "hold", "studio_authoring_sha256": expected_studio_sha256,
+        })
+    );
+    Ok(())
+}
+
 pub(super) fn readback(
     database: &Path,
     receipt: &Path,
@@ -227,7 +361,12 @@ pub(super) fn readback(
     {
         return Err("Independent reader found different original project, journal or Store".into());
     }
-    check_project(&saved[0])?;
+    let easing = match previous["identity"]["easing"].as_str() {
+        Some("ease_out_cubic") => MotionInterpolation::EaseOutCubic,
+        Some("hold") => MotionInterpolation::Hold,
+        _ => return Err("Original geometry selection changed".into()),
+    };
+    check_project(&saved[0], easing)?;
     let report = json!({
         "schema": "motionwright.native-geometry-independent-store-readback/1",
         "source_receipt_sha256": expected_sha256,
@@ -266,6 +405,87 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn held_geometry_capture_requires_exact_ui_source_and_closed_store() {
+        // Source contract only: a synthetic UI receipt cannot stand for a
+        // browser run or Native effect. The selected CI path supplies originals.
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("held.sqlite3");
+        let first_receipt = dir.path().join("before-studio.json");
+        seed(&database, &first_receipt).unwrap();
+        let service = StudioService::open(&database).unwrap();
+        let initial = service.projects(2).unwrap().remove(0);
+        let mut project = initial.clone();
+        let mut keys = initial.scenes[0].nodes[0]
+            .keyframes
+            .iter()
+            .filter(|key| key.at > RationalTime::ZERO)
+            .cloned()
+            .collect::<Vec<_>>();
+        for (index, key) in keys.iter_mut().enumerate() {
+            key.interpolation = MotionInterpolation::Hold;
+            project = service
+                .apply(
+                    project.id,
+                    &RevisionStamp::from(&project),
+                    &format!("synthetic-held-source-{index}"),
+                    &Change::SetCanvasKeyframe {
+                        scene_id: initial.scenes[0].id,
+                        node_id: initial.scenes[0].nodes[0].id,
+                        keyframe: key.clone(),
+                    },
+                )
+                .unwrap()
+                .project;
+        }
+        let history = service.project_history(project.id, 0, 16).unwrap();
+        let studio = dir.path().join("synthetic-studio-contract.json");
+        let record = json!({
+            "schema": "motionwright.native-geometry-studio-hold/1",
+            "status": "FIVE_ORIGINAL_UI_SAVES_AND_CLOSED_STORE", "ui_save_count": 5,
+            "closed_store_handoff": true, "automatic_retry": false,
+            "native_execution": false, "installed_tauri": false, "human_approval": false,
+            "initial_project": initial, "project": project, "history": history,
+        });
+        cycle_new_json(&studio, &record).unwrap();
+        let sha = sha_of(&studio).unwrap();
+        let held = dir.path().join("held-source.json");
+        assert!(
+            capture_hold(&database, &held, &studio, &sha).is_err(),
+            "a receipt cannot bypass the original writer's SQLite handoff"
+        );
+        assert!(!held.exists());
+        service.prepare_read_only_handoff().unwrap();
+        drop(service);
+        assert!(capture_hold(&database, &held, &studio, &"0".repeat(64)).is_err());
+        let mut forged = record;
+        forged["project"]["title"] = json!("Different source project");
+        let substituted = dir.path().join("substituted-studio-contract.json");
+        cycle_new_json(&substituted, &forged).unwrap();
+        assert!(
+            capture_hold(
+                &database,
+                &held,
+                &substituted,
+                &sha_of(&substituted).unwrap()
+            )
+            .is_err()
+        );
+        assert!(!held.exists());
+        capture_hold(&database, &held, &studio, &sha).unwrap();
+        let original: serde_json::Value =
+            serde_json::from_slice(&fs::read(&held).unwrap()).unwrap();
+        assert_eq!(original["identity"]["easing"], "hold");
+        assert_eq!(original["identity"]["studio_authoring_sha256"], sha);
+        readback(
+            &database,
+            &held,
+            &sha_of(&held).unwrap(),
+            &dir.path().join("held-readback.json"),
+        )
+        .unwrap();
     }
 
     #[test]

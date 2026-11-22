@@ -16,6 +16,8 @@ import re
 import subprocess
 
 FRAMES = (0, 15, 30)
+HOLD_FRAMES = (0, 29, 30)
+PROFILES = {"out-cubic", "hold"}
 RGB = (37, 212, 162)  # Exact authored source fill #25D4A2
 REGION = (600, 160, 800, 600)
 FRAME_BYTES = REGION[2] * REGION[3] * 3
@@ -70,11 +72,15 @@ def source_identity(source: dict, sha: str) -> dict:
             and identity.get("frame_count") == 60 and identity.get("fps") == 30
             and identity.get("canvas_size") == [1920, 1080]
             and identity.get("fill") == "#25D4A2"
-            and identity.get("easing") == "ease_out_cubic"
+            and identity.get("easing") in {"ease_out_cubic", "hold"}
             and identity.get("native_execution") is False
             and identity.get("formal_G2") is False
             and identity.get("formal_G3") is False,
             "GEOMETRY_SOURCE_SELECTION_CHANGED")
+    if identity["easing"] == "hold":
+        require(type(identity.get("studio_authoring_sha256")) is str
+                and SHA256.fullmatch(identity["studio_authoring_sha256"]),
+                "GEOMETRY_HELD_STUDIO_SOURCE_MISSING")
     for field, project_field in (("project_id", "id"), ("generation", "generation"),
                                  ("revision", "revision")):
         require(identity.get(field) == project.get(project_field),
@@ -118,7 +124,7 @@ def source_identity(source: dict, sha: str) -> dict:
     require(len(observed) == 10, "GEOMETRY_SOURCE_KEYS_CHANGED")
     for name, (first, last) in expected.items():
         require(observed.get((name, "0")) == (first, "linear")
-                and observed.get((name, "1")) == (last, "ease_out_cubic"),
+                and observed.get((name, "1")) == (last, identity["easing"]),
                 "GEOMETRY_SOURCE_KEYS_CHANGED")
     return {
         "project_id": identity["project_id"],
@@ -126,12 +132,15 @@ def source_identity(source: dict, sha: str) -> dict:
         "revision": identity["revision"],
         "node_id": identity["node_id"],
         "source_receipt_sha256": sha,
+        "geometry_profile": "hold" if identity["easing"] == "hold" else "out-cubic",
     }
 
 
-def expected_geometry(frame: int) -> dict:
-    require(frame in FRAMES, "GEOMETRY_UNAUTHORIZED_FRAME")
-    p = 1.0 - (1.0 - frame / 30.0) ** 3
+def expected_geometry(frame: int, profile: str = "out-cubic") -> dict:
+    require(profile in PROFILES, "GEOMETRY_UNKNOWN_PROFILE")
+    frames = HOLD_FRAMES if profile == "hold" else FRAMES
+    require(frame in frames, "GEOMETRY_UNAUTHORIZED_FRAME")
+    p = (0.0 if frame < 30 else 1.0) if profile == "hold" else 1.0 - (1.0 - frame / 30.0) ** 3
     width = 240.0 + 160.0 * p
     height = 90.0 + 90.0 * p
     rotation = -18.0 + 18.0 * p
@@ -145,7 +154,7 @@ def expected_geometry(frame: int) -> dict:
                      center[0] + dx, center[1] + dy)}
 
 
-def measure_rgb(pixels: bytes, frame: int) -> dict:
+def measure_rgb(pixels: bytes, frame: int, profile: str = "out-cubic") -> dict:
     x0, y0, rw, rh = REGION
     require(len(pixels) == FRAME_BYTES, "GEOMETRY_RGB24_FRAME_DIMENSIONS")
     count = sx = sy = sxx = syy = sxy = 0.0
@@ -175,7 +184,7 @@ def measure_rgb(pixels: bytes, frame: int) -> dict:
     measured_height = math.sqrt(max(0.0, 6 * (vx + vy - eigen)))
     observed_angle = math.degrees(0.5 * math.atan2(2 * cov, vx - vy))
     observed_bounds = (x0 + left, y0 + top, x0 + right + 1, y0 + bottom + 1)
-    expected = expected_geometry(frame)
+    expected = expected_geometry(frame, profile)
     require(abs(cx - expected["center"][0]) <= 2.0
             and abs(cy - expected["center"][1]) <= 2.0,
             "GEOMETRY_NATIVE_POSITION_MISMATCH")
@@ -229,6 +238,27 @@ def decode_png(path: Path) -> bytes:
     return result.stdout
 
 
+def held_frame_identity(rows: list[dict]) -> dict:
+    """A complete held interval has the same original lossless PNG bytes.
+
+    The caller first hashes every bounded original against these manifest rows.
+    Byte equality of complete PNGs implies equality of their decoded full frames.
+    """
+    require(type(rows) is list and len(rows) == 60
+            and all(type(row) is dict and row.get("index") == index
+                    and type(row.get("sha256")) is str and SHA256.fullmatch(row["sha256"])
+                    for index, row in enumerate(rows)),
+            "GEOMETRY_HOLD_ORIGINAL_ROSTER")
+    first, destination = rows[0]["sha256"], rows[30]["sha256"]
+    require(first != destination, "GEOMETRY_HOLD_NO_DESTINATION")
+    require(all(row["sha256"] == first for row in rows[:30])
+            and all(row["sha256"] == destination for row in rows[30:]),
+            "GEOMETRY_HOLD_FRAME_NOT_HELD")
+    return {"initial_interval": [0, 30], "destination_interval": [30, 60],
+            "verified_original_frames": 60, "equality": "complete_original_png_bytes",
+            "first_png_sha256": first, "destination_png_sha256": destination}
+
+
 def inspect(source_path: Path, source_sha: str, result_path: Path,
             store_path: Path, output_root: Path) -> dict:
     require(type(source_sha) is str and SHA256.fullmatch(source_sha),
@@ -275,14 +305,26 @@ def inspect(source_path: Path, source_sha: str, result_path: Path,
         require(type(row) is dict and row.get("index") == index
                 and row.get("file") == expected and SHA256.fullmatch(row.get("sha256", "")),
                 "GEOMETRY_MANIFEST_ENTRY_CHANGED")
+    profile = source["geometry_profile"]
+    frames = HOLD_FRAMES if profile == "hold" else FRAMES
+    held = None
+    if profile == "hold":
+        total = 0
+        for row in rows:
+            raw = raw_file(artifact_root / row["file"], 16 * 1024 * 1024)
+            total += len(raw)
+            require(total <= 256 * 1024 * 1024 and raw.startswith(b"\x89PNG\r\n\x1a\n")
+                    and len(raw) == row.get("bytes") and digest(raw) == row["sha256"],
+                    "GEOMETRY_HOLD_ORIGINAL_FRAME_CHANGED")
+        held = held_frame_identity(rows)
     samples = []
-    for frame in FRAMES:
+    for frame in frames:
         file = artifact_root / "frames" / f"{frame:06d}.png"
         raw = raw_file(file, 16 * 1024 * 1024)
         row = rows[frame]
         require(len(raw) == row["bytes"] and digest(raw) == row["sha256"],
                 "GEOMETRY_ORIGINAL_FRAME_DIGEST_CHANGED")
-        observed = measure_rgb(decode_png(file), frame)
+        observed = measure_rgb(decode_png(file), frame, profile)
         observed["original_png_sha256"] = row["sha256"]
         samples.append(observed)
     require(samples[0]["original_png_sha256"] != samples[-1]["original_png_sha256"],
@@ -291,7 +333,8 @@ def inspect(source_path: Path, source_sha: str, result_path: Path,
         "schema": "motionwright.native-geometry-pixels/1",
         "status": "SOURCE_BOUND_ORIGINAL_PNG_GEOMETRY_OBSERVED",
         "project": source, "artifact_manifest_sha256": observed_manifest,
-        "original_frames": samples, "sampled_frame_roster": list(FRAMES),
+        "original_frames": samples, "sampled_frame_roster": list(frames),
+        "geometry_profile": profile, "held_frame_byte_identity": held,
         "read_only_store_source_bound": True, "automatic_retry": False,
         "installed_tauri": False, "human_visual_acceptance": False,
         "formal_G2": False, "formal_G3": False, "release_authorized": False,
