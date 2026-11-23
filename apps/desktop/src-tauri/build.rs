@@ -55,6 +55,8 @@ fn main() {
             "waveform_page",
             "export_project_bundle",
             "export_native_capsule_source",
+            "native_hyperframes_source",
+            "export_hyperframes_source_file",
             "export_caption_sidecar",
             "export_otio",
             "export_otio_source_snapshot",

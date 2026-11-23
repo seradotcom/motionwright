@@ -180,6 +180,15 @@ pub fn build_hyperframes_source(
     source.validate()?;
     Ok(source)
 }
+/// Compile inert native source from one exact saved Project and delivery profile.
+/// This never installs dependencies, changes the Project, or dispatches a provider.
+pub fn compile_hyperframes_source(
+    project: &Project,
+    deliverable_id: Uuid,
+) -> NativeResult<model::CompiledSource> {
+    model::compile(&build_hyperframes_source(project, deliverable_id)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

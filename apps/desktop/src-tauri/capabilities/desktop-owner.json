@@ -60,6 +60,8 @@
     "allow-waveform-page",
     "allow-export-project-bundle",
     "allow-export-native-capsule-source",
+    "allow-native-hyperframes-source",
+    "allow-export-hyperframes-source-file",
     "allow-export-caption-sidecar",
     "allow-export-otio",
     "allow-export-otio-source-snapshot",

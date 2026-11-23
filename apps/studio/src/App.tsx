@@ -5,6 +5,7 @@ import { isPaletteShortcut } from "./editorCommandSearch";
 import { resolveTimelineSelection, timelineSelectionScope, type TimelineSelection } from "./timelineSelection";
 import { timelineMarkerTime } from "./timelineMarkerTime";
 import ProductionDesignWorkspace from "./ProductionDesignWorkspace";
+import HyperframesSourceWorkbench from "./HyperframesSourceWorkbench";
 import type { NativeSourceSaveRequest } from "./NativeSourceWorkbench";
 import { graphReviewAnchor, graphSame, type SemanticGraphChange } from "./semanticGraph";
 import { readSemanticGraphContext, readSemanticGraphOperationRecovery } from "./semanticGraphService";
@@ -1004,6 +1005,9 @@ function DeliverView({
 
       <OtioCutReviewWorkbench project={project} commit={commit} desktopMode={desktopMode}
         busy={portableBusy !== null}/>
+
+      <HyperframesSourceWorkbench key={[project.id, project.generation, project.active_branch].join(":")}
+        project={project} desktopMode={desktopMode}/>
 
       <section className="portable-project" aria-label="Portable project">
         <header className="portable-heading">

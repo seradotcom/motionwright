@@ -48,8 +48,12 @@ test("Studio saves a frame-exact masked reveal under one real Clip and reopens t
 
       // One standard Canvas transform Save leaves half the source shape
       // outside its exact authored parent's x=1280 clipping boundary.
-      await page.getByLabel("Canvas X", { exact: true }).fill("1100");
-      await page.getByRole("button", { name: "Commit transform", exact: true }).click();
+      const transform = page.locator(".canvas-draft-inspector").filter({
+        has: page.locator("#canvas-draft-" + child!.id + "-x"),
+      });
+      await expect(transform).toHaveCount(1);
+      await transform.getByLabel("Canvas X", { exact: true }).fill("1100");
+      await transform.getByRole("button", { name: "Commit transform", exact: true }).click();
       await expect(revision).toHaveText("r" + (original.revision + 3));
       const positioned = await service.project(original.id);
       expect(positioned.scenes.find(item => item.id === scene!.id)?.nodes

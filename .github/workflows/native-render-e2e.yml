@@ -1550,6 +1550,30 @@ jobs:
               grep -E '^test |^test result:|^error:|panicked at' "$root/pose-operation-contracts.original.log" | tail -n 12
               exit 1
             }
+          source_phase=desktop-hyperframes-export
+          cargo test --locked --jobs 2 -p motionwright-native --test desktop_hyperframes_source \
+            desktop_source_tests:: -- --test-threads=1 > "$root/hyperframes-desktop-source.original.log" 2>&1 || {
+              grep -E '^test |^test result:|^error:|panicked at' "$root/hyperframes-desktop-source.original.log" | tail -n 16
+              exit 1
+            }
+          python3 -B - "$root/hyperframes-desktop-source.original.log" <<'PY_HYPERFRAMES_SOURCE'
+          from pathlib import Path
+          import re, sys
+          raw = Path(sys.argv[1]).read_text(encoding="utf-8")
+          required = {
+              "saved_source_exports_exact_native_files_and_reopens_original_sqlite",
+              "stale_revision_branch_generation_and_profile_never_write",
+              "missing_foreign_and_replayed_grants_cannot_publish_source",
+              "existing_file_is_preserved_and_failed_stage_is_removed",
+              "unsupported_saved_content_is_rejected_before_export",
+              "foreign_fields_and_unknown_formats_are_not_an_export_request",
+              "dangling_destination_symlink_is_never_followed",
+          }
+          observed = re.findall(r"(?m)^test desktop_source_tests::([a-z0-9_]+) \.\.\. ok$", raw)
+          assert set(observed) == required and len(observed) == 7, observed
+          assert re.search(r"(?m)^test result: ok\. 7 passed; 0 failed; 0 ignored;", raw)
+          print("HYPERFRAMES_SAVED_SOURCE_EXPORT_REOPEN=PASS; source_tests=7; installedDesktop=NOT_RUN; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+          PY_HYPERFRAMES_SOURCE
           source_phase=service-build
           cargo build --locked -p motionwright-service --example studio_review_session > "$root/service-build.original.log" 2>&1 || {
             grep -E '^error:|^error\[' "$root/service-build.original.log" | tail -n 10

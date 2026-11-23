@@ -7,6 +7,7 @@ mod effect_authority;
 mod effect_grants;
 mod file_import;
 mod generation_journal;
+mod hyperframes_source;
 mod local_error;
 mod media_integrity;
 mod narration_native;
@@ -2959,6 +2960,24 @@ async fn waveform_page(
 }
 
 #[tauri::command]
+fn native_hyperframes_source(
+    _owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: hyperframes_source::SourceRequest,
+) -> Result<hyperframes_source::SourceSnapshot, String> {
+    hyperframes_source::inspect_source(&state.service, request)
+}
+
+#[tauri::command]
+fn export_hyperframes_source_file(
+    _owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: hyperframes_source::ExportRequest,
+) -> Result<hyperframes_source::ExportResponse, String> {
+    hyperframes_source::export_source(&state.service, &state.effect_grants, request)
+}
+
+#[tauri::command]
 fn export_project_bundle(
     _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
@@ -3360,6 +3379,8 @@ fn main() {
             waveform_page,
             export_project_bundle,
             export_native_capsule_source,
+            native_hyperframes_source,
+            export_hyperframes_source_file,
             export_caption_sidecar,
             export_otio,
             export_otio_source_snapshot,

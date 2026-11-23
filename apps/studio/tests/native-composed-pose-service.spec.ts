@@ -28,8 +28,12 @@ test("Studio saves and re-edits a complete clipped pose as one original Service 
     await expect(revision).toHaveText("r" + (original.revision + 2));
     const created = await service.project(original.id);
     const child = created.scenes.find(item => item.id === scene.id)!.nodes.find(item => item.parent_id === group.id)!;
-    await page.getByLabel("Canvas X", { exact: true }).fill("1100");
-    await page.getByRole("button", { name: "Commit transform", exact: true }).click();
+    const transform = page.locator(".canvas-draft-inspector").filter({
+        has: page.locator("#canvas-draft-" + child.id + "-x"),
+      });
+      await expect(transform).toHaveCount(1);
+      await transform.getByLabel("Canvas X", { exact: true }).fill("1100");
+    await transform.getByRole("button", { name: "Commit transform", exact: true }).click();
     await expect(revision).toHaveText("r" + (original.revision + 3));
     const positioned = await service.project(original.id);
 
