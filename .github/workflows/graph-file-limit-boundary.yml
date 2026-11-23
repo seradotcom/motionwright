@@ -13,6 +13,9 @@ on:
       - 'apps/studio/tooling/graph-owner/owner_environment_layout.test.mjs'
       - 'crates/service/examples/studio_review_session.rs'
       - 'apps/desktop/src-tauri/src/otio_bridge.rs'
+      - 'apps/desktop/src-tauri/src/project_export.rs'
+      - 'apps/desktop/src-tauri/src/file_import.rs'
+      - 'crates/service/tests/desktop_project_export.rs'
       - 'crates/native/examples/native-graph-review-session.rs'
       - 'apps/desktop/src-tauri/src/semantic_graph_mutation_error.rs'
       - 'apps/desktop/src-tauri/src/semantic_graph_recovery.rs'
@@ -142,6 +145,21 @@ jobs:
           ), "Graph admission did not execute all 23 cases"
           print("GRAPH_SERVICE_SQLITE_LEASE_23_TESTS=PASS; formal G2 NOT_GRANTED")
           PY
+      - name: Verify native source export and reimport preserve both original versions
+        run: |
+          set -euo pipefail
+          cargo test --locked --jobs 2 -p motionwright-service --test desktop_project_export \
+            project_export::tests::native_source_export_then_reimport_preserves_both_original_versions_and_reopens_store \
+            -- --exact --test-threads=1 2>&1 | tee "$RUNNER_TEMP/native-source-reopen.log"
+          python3 -B - <<'PY'
+          import os, re
+          from pathlib import Path
+          raw = (Path(os.environ["RUNNER_TEMP"]) / "native-source-reopen.log").read_text()
+          name = "project_export::tests::native_source_export_then_reimport_preserves_both_original_versions_and_reopens_store"
+          assert re.search(r"(?m)^test " + re.escape(name) + r" \.\.\. ok$", raw)
+          assert re.search(r"(?m)^test result: ok\. 1 passed; 0 failed; 0 ignored;", raw)
+          print("NATIVE_EDITABLE_SOURCE_EXPORT_REIMPORT_REOPEN=PASS; editor=NOT_LAUNCHED")
+          PY
       - name: Compile and lint every Graph Store and Native Rust source target
         run: |
           set -euo pipefail
@@ -199,6 +217,9 @@ jobs:
     # Share the bounded workflow and serialize heavy compilation with Linux.
     # This is Store continuity on macOS, not a Native render or a release grant.
     needs: compile-transports
+    # Serialize resources, while retaining independent macOS observations if
+    # Linux lint finds a separate defect. Any failed job still fails this run.
+    if: ${{ !cancelled() }}
     runs-on: macos-15
     timeout-minutes: 25
     steps:
