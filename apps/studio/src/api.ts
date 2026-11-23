@@ -1772,6 +1772,49 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       });
       break;
     }
+    case "set_canvas_motion_keyframes": {
+      assertUnlocked(next, sceneResource(change.scene_id), ["position"]);
+      const scene = next.scenes.find(entry => entry.id === change.scene_id);
+      const node = scene?.nodes.find(entry => entry.id === change.node_id);
+      if (!scene || !node) throw new Error("resource not found: node:" + change.node_id);
+      if (!change.keyframes.length || change.keyframes.length > 128) {
+        throw new Error("motion edit requires 1 to 128 keyframes");
+      }
+      const slots = new Set<string>();
+      for (const key of change.keyframes) {
+        const numerator = BigInt(key.at.num), denominator = BigInt(key.at.den);
+        if (denominator <= 0n || numerator < 0n
+          || numerator * BigInt(scene.duration.den) >= BigInt(scene.duration.num) * denominator
+          || !Number.isFinite(key.value)
+          || ((key.property === "width" || key.property === "height") && key.value < 0)
+          || (key.property === "opacity" && (key.value < 0 || key.value > 1))) {
+          throw new Error("motion edit keyframe is out of bounds");
+        }
+        let a = numerator, b = denominator;
+        while (b) [a, b] = [b, a % b];
+        if (a !== 1n) throw new Error("motion edit requires reduced rational time");
+        const slot = key.at.num + "/" + key.at.den + ":" + key.property;
+        if (slots.has(slot)) throw new Error("motion edit has duplicate time/property slots");
+        slots.add(slot);
+        const lock = key.property === "x" || key.property === "y" ? "position"
+          : key.property === "width" || key.property === "height" ? "size"
+          : key.property === "rotation_deg" ? "rotation" : "opacity";
+        if (node.property_locks.includes(lock)) throw new Error("resource is locked: node motion property");
+      }
+      for (const key of node.keyframes) {
+        const lock = key.property === "x" || key.property === "y" ? "position"
+          : key.property === "width" || key.property === "height" ? "size"
+          : key.property === "rotation_deg" ? "rotation" : "opacity";
+        if (node.property_locks.includes(lock)) throw new Error("resource is locked: node motion property");
+      }
+      node.keyframes = structuredClone(change.keyframes);
+      const propertyOrder = ["x", "y", "width", "height", "rotation_deg", "opacity"];
+      node.keyframes.sort((left, right) => {
+        const delta = BigInt(left.at.num) * BigInt(right.at.den) - BigInt(right.at.num) * BigInt(left.at.den);
+        return delta < 0n ? -1 : delta > 0n ? 1 : propertyOrder.indexOf(left.property) - propertyOrder.indexOf(right.property);
+      });
+      break;
+    }
     case "set_canvas_position_keyframe": {
       assertUnlocked(next, sceneResource(change.scene_id), ["position"]);
       const scene = next.scenes.find((entry) => entry.id === change.scene_id);

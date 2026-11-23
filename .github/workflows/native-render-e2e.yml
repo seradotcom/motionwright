@@ -30,8 +30,14 @@ on:
         type: boolean
         required: false
         default: false
+      clip_composition:
+        description: "Closed Clip source; pose requires one exact-source Clip effect"
+        type: choice
+        options: [static, pose]
+        required: false
+        default: static
       clipped_opacity_source_only:
-        description: "Exact source Rust and real Studio Save/reopen for Clip opacity and position; no Native Host effect"
+        description: "Exact source Rust and real Studio Save/reopen for Clip opacity, position and composed pose; no Native Host effect"
         type: boolean
         default: false
         required: false
@@ -70,6 +76,8 @@ on:
       - 'tooling/tests/test_native_out_cubic_pixels.py'
       - 'tooling/tests/test_native_layer_order_pixels.py'
       - 'tooling/tests/test_native_clip_group_pixels.py'
+      - 'tooling/native_composed_clip_pixels.py'
+      - 'tooling/tests/test_native_composed_clip_pixels.py'
       - 'tooling/native_render_public_artifact.py'
       - 'tooling/cross_app_public_artifact.py'
       - 'tooling/tests/test_native_render_public_artifact.py'
@@ -105,6 +113,7 @@ env:
   MOTIONWRIGHT_NATIVE_GEOMETRY_PROFILE: ${{ (github.event_name == 'workflow_dispatch' && inputs.geometry_profile) || 'out-cubic' }}
   MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E: ${{ (github.event_name == 'workflow_dispatch' && inputs.layer_order_e2e) && '1' || '0' }}
   MOTIONWRIGHT_NATIVE_CLIP_E2E: ${{ (github.event_name == 'workflow_dispatch' && inputs.clip_e2e) && '1' || '0' }}
+  MOTIONWRIGHT_NATIVE_CLIP_COMPOSITION: ${{ (github.event_name == 'workflow_dispatch' && inputs.clip_composition) || 'static' }}
   MW_NATIVE_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
   MW_CLIPPED_OPACITY_SOURCE_ONLY: ${{ (github.event_name == 'workflow_dispatch' && inputs.clipped_opacity_source_only) && '1' || '0' }}
   MOTIONWRIGHT_N83_RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
@@ -138,6 +147,10 @@ jobs:
           layer_order = os.environ["MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E"]
           clip = os.environ["MOTIONWRIGHT_NATIVE_CLIP_E2E"]
           assert clip in {"0", "1"}, "unsupported clip selection"
+          composition = os.environ["MOTIONWRIGHT_NATIVE_CLIP_COMPOSITION"]
+          assert composition in {"static", "pose"}, "unsupported Clip composition"
+          if composition == "pose":
+              assert clip == "1", "composed pose requires an admitted Clip effect"
           assert layer_order in {"0", "1"}, "unsupported layer source"
           if layer_order == "1":
               assert clip == "0", "layer and clip must be separate source effects"
@@ -647,6 +660,7 @@ jobs:
           python3 -B -m unittest \
             tooling.tests.test_native_layer_order_pixels \
             tooling.tests.test_native_clip_group_pixels \
+            tooling.tests.test_native_composed_clip_pixels \
             tooling.tests.test_native_out_cubic_pixels -q > "$root/oracle.original.log" 2>&1
           if [ "$MOTIONWRIGHT_NATIVE_CLIP_E2E" = 1 ]; then
             cargo test --locked -p motionwright-native --example native-render-e2e \
@@ -1126,12 +1140,22 @@ jobs:
           if os.environ["MOTIONWRIGHT_NATIVE_CLIP_E2E"] == "1":
               clip = result.get("native_clip_group_original")
               assert isinstance(clip, dict)
-              assert clip["schema"] == "motionwright.native-clip-group-original-pixels/1"
-              assert clip["status"] == "ORIGINAL_NATIVE_RECTANGULAR_CLIP_PIXELS_PASS"
+              composition = os.environ["MOTIONWRIGHT_NATIVE_CLIP_COMPOSITION"]
+              assert clip["composition_case"] == composition
+              if composition == "pose":
+                  import sys
+                  sys.path.insert(0, str(Path("tooling").resolve(strict=True)))
+                  from native_render_public_artifact import verify_original_composed_clip
+                  verify_original_composed_clip(clip, result["project"], comparison["compared_properties"])
+                  assert [frame["frame"] for frame in clip["frames"]] == [0,15,30]
+              else:
+                  assert composition == "static"
+                  assert clip["schema"] == "motionwright.native-clip-group-original-pixels/1"
+                  assert clip["status"] == "ORIGINAL_NATIVE_RECTANGULAR_CLIP_PIXELS_PASS"
+                  assert clip["original_child_right_px"] == 1460
+                  assert [frame["frame"] for frame in clip["frames"]] == [0,30,59]
               assert clip["parent_right_px"] == 1280
-              assert clip["original_child_right_px"] == 1460
               assert clip["source_fill"] == "#E0A940"
-              assert [frame["frame"] for frame in clip["frames"]] == [0,30,59]
               assert all(len(frame["source_roi_sha256"]) == 64 for frame in clip["frames"])
               assert clip["source_replaced_with_overlay"] is False
               assert clip["native_effect_invoked_by_validator"] is False
@@ -1404,6 +1428,7 @@ jobs:
           assert os.environ["MOTIONWRIGHT_NATIVE_GEOMETRY_E2E"] == "0"
           assert os.environ["MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E"] == "0"
           assert os.environ["MOTIONWRIGHT_NATIVE_CLIP_E2E"] == "0"
+          assert os.environ["MOTIONWRIGHT_NATIVE_CLIP_COMPOSITION"] == "static"
           assert os.environ["MOTIONWRIGHT_NATIVE_GEOMETRY_PROFILE"] == "out-cubic"
           assert os.environ["MOTIONWRIGHT_V01_PROVIDER_REPEAT"] == "false"
           assert re.fullmatch("[0-9a-f]{40}",os.environ["GITHUB_SHA"])
@@ -1415,6 +1440,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: 1.98.1
+          components: clippy
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
@@ -1434,7 +1460,7 @@ jobs:
           sudo apt-get install --no-install-recommends -y libpipewire-0.3-dev pkg-config clang
           python3 -B tooling/source_policy.py
 
-      - name: Verify clipped opacity and position through Film and real Studio Save
+      - name: Verify grouped Clip animation through Film and real Studio Save
         run: |
           set -euo pipefail
           umask 077
@@ -1443,6 +1469,10 @@ jobs:
           root="$RUNNER_TEMP/motionwright-clipped-opacity-g1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           test ! -e "$root"
           mkdir -m 700 "$root"
+          cargo clippy --locked --jobs 2 -p motionwright-native --all-targets -- -D warnings > "$root/native-compile.original.log" 2>&1 || {
+              grep -E '^error:|^error\[|^ *-->' "$root/native-compile.original.log" | tail -n 18
+              exit 1
+            }
           # The source verification has NO Broker, grant, render, or replay.
           # Only bounded test summaries are printed, not raw Service receipts.
           cargo test --locked -p motionwright-native --lib             film::tests::original_editable_clip_child_opacity_fades_in_and_out_in_native_film             -- --exact --test-threads=1 > "$root/film-positive.original.log" 2>&1 || {
@@ -1471,6 +1501,36 @@ jobs:
               grep -E '^test |^test result:|^error:|panicked at' "$root/position-negative.original.log" | tail -n 12
               exit 1
             }
+          cargo test --locked --jobs 2 -p motionwright-domain --lib \
+            tests::composed_motion_keyframes_are_one_atomic_validated_edit \
+            -- --exact --test-threads=1 > "$root/pose-domain.original.log" 2>&1 || {
+              grep -E '^test |^test result:|^error:|panicked at' "$root/pose-domain.original.log" | tail -n 12
+              exit 1
+            }
+          cargo test --locked --jobs 2 -p motionwright-native --lib \
+            film::tests::composed_pose_motion_preserves_all_channels_clip_coordinates_and_hold \
+            -- --exact --test-threads=1 > "$root/pose-film.original.log" 2>&1 || {
+              grep -E '^test |^test result:|^error:|panicked at' "$root/pose-film.original.log" | tail -n 12
+              exit 1
+            }
+          cargo test --locked --jobs 2 -p motionwright-native --lib \
+            film::tests::composed_pose_refuses_inexact_curves_parent_motion_and_invalid_alpha \
+            -- --exact --test-threads=1 > "$root/pose-negative.original.log" 2>&1 || {
+              grep -E '^test |^test result:|^error:|panicked at' "$root/pose-negative.original.log" | tail -n 12
+              exit 1
+            }
+          cargo test --locked --jobs 2 -p motionwright-native --lib \
+            tests::creative_operation_arguments_remain_typed_and_bounded \
+            -- --exact --test-threads=1 > "$root/pose-operations.original.log" 2>&1 || {
+              grep -E '^test |^test result:|^error:|panicked at' "$root/pose-operations.original.log" | tail -n 12
+              exit 1
+            }
+          cargo test --locked --jobs 2 -p motionwright-native --example native-render-e2e \
+            native_clip_group_e2e::tests::exact_clip_source_requires_closed_writer_and_reopens_original_store \
+            -- --exact --test-threads=1 > "$root/pose-original-store.original.log" 2>&1 || {
+              grep -E '^test |^test result:|^error:|panicked at' "$root/pose-original-store.original.log" | tail -n 12
+              exit 1
+            }
           cargo build --locked -p motionwright-service --example studio_review_session > "$root/service-build.original.log" 2>&1 || {
             grep -E '^error:|^error\[' "$root/service-build.original.log" | tail -n 10
             exit 1
@@ -1478,10 +1538,10 @@ jobs:
           test -x "$GITHUB_WORKSPACE/target/debug/examples/studio_review_session"
           cd apps/studio
           npm ci --no-audit --no-fund > "$root/npm.original.log" 2>&1
-          npx --no-install tsc --noEmit --project tsconfig.json > "$root/types.original.log" 2>&1
+          npx --no-install tsc --noEmit --project tsconfig.app.json > "$root/types.original.log" 2>&1
           npx --no-install playwright install --with-deps chromium > "$root/browser.original.log" 2>&1
           export MOTIONWRIGHT_SERVICE_TEST_BIN="$GITHUB_WORKSPACE/target/debug/examples/studio_review_session"
-          npx --no-install playwright test tests/native-clipped-opacity-service.spec.ts tests/native-clipped-position-service.spec.ts             --project=chromium --workers=1 --retries=0 --reporter=dot             --output="$root/browser-original" > "$root/studio-original.log" 2>&1 || {
+          npx --no-install playwright test tests/native-clipped-opacity-service.spec.ts tests/native-clipped-position-service.spec.ts tests/native-composed-pose-service.spec.ts             --project=chromium --workers=1 --retries=0 --reporter=dot             --output="$root/browser-original" > "$root/studio-original.log" 2>&1 || {
               grep -E '^\s*[0-9]+ failed|^\s*[0-9]+ passed|^\s*[0-9]+ skipped|Error:|TimeoutError:|AssertionError:|^\s*[0-9]+\)' "$root/studio-original.log" | tail -n 12
               exit 1
             }
@@ -1501,13 +1561,23 @@ jobs:
              "film::tests::exact_native_settle_moves_saved_child_inside_original_clipped_parent"),
             ("position-negative.original.log",
              "film::tests::native_clipped_position_refuses_dynamic_or_unrepresentable_parentage"),
+            ("pose-domain.original.log",
+             "tests::composed_motion_keyframes_are_one_atomic_validated_edit"),
+            ("pose-film.original.log",
+             "film::tests::composed_pose_motion_preserves_all_channels_clip_coordinates_and_hold"),
+            ("pose-negative.original.log",
+             "film::tests::composed_pose_refuses_inexact_curves_parent_motion_and_invalid_alpha"),
+            ("pose-operations.original.log",
+             "tests::creative_operation_arguments_remain_typed_and_bounded"),
+            ("pose-original-store.original.log",
+             "native_clip_group_e2e::tests::exact_clip_source_requires_closed_writer_and_reopens_original_store"),
           )
           for name,case in expected:
               data=(root/name).read_text(encoding="utf8")
               assert "test "+case+" ... ok" in data
               assert "test result: ok. 1 passed; 0 failed;" in data
           studio=(root/"studio-original.log").read_text(encoding="utf8")
-          assert re.search(r"\b2 passed\b",studio), "Both original Studio Clip Save/reopen paths must pass"
+          assert re.search(r"\b3 passed\b",studio), "All three original Studio Clip Save/reopen paths must pass"
           assert not re.search(r"\b[1-9][0-9]* skipped\b",studio)
-          print("SOURCE_CLIPPED_ANIMATION_G1=PASS; RustDomain=1; RustFilm=4; StudioChromium=2; StoreReopen=PRODUCER_TEST; NativeHost=NOT_RUN; G2=NOT_GRANTED; G3=STOP; RELEASE=NOT_AUTHORIZED")
+          print("SOURCE_CLIPPED_ANIMATION_G1=PASS; RustDomain=2; RustFilm=6; RustOperations=1; RustOriginalStore=1; StudioChromium=3; StoreReopen=PRODUCER_TEST; NativeHost=NOT_RUN; G2=NOT_GRANTED; G3=STOP; RELEASE=NOT_AUTHORIZED")
           PY_CLIPPED_CHECK

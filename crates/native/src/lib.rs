@@ -1277,6 +1277,7 @@ enum OperationKind {
     RemoveCanvasNode,
     TransformCanvasNode,
     SetCanvasKeyframe,
+    SetCanvasMotionKeyframes,
     SetCanvasPositionKeyframe,
     SetCanvasLinearPositionMotion,
     SetCanvasOutCubicPositionMotion,
@@ -1808,6 +1809,19 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                 scene_id: uuid(args, "scene_id")?,
                 node_id: uuid(args, "node_id")?,
                 keyframe,
+            })
+        }
+        OperationKind::SetCanvasMotionKeyframes => {
+            let keyframes = serde_json::from_value(
+                args.get("keyframes")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("motion keyframes are required"))?,
+            )
+            .map_err(|_| Error::invalid("canvas motion keyframes are invalid"))?;
+            Ok(Change::SetCanvasMotionKeyframes {
+                scene_id: uuid(args, "scene_id")?,
+                node_id: uuid(args, "node_id")?,
+                keyframes,
             })
         }
         OperationKind::SetCanvasPositionKeyframe => {
@@ -2566,7 +2580,7 @@ fn build_application_with_graph_store(
                                             "at":{"type":"object","properties":{"num":{"type":"string","pattern":"^(0|[1-9][0-9]*)$"},"den":{"type":"string","pattern":"^[1-9][0-9]*$"}},"required":["num","den"],"additionalProperties":false},
                                             "property":{"type":"string","enum":["x","y","width","height","rotation_deg","opacity"]},
                                             "value":{"type":"number"},
-                                            "interpolation":{"type":"string","enum":["hold","linear","ease_in_out"]}
+                                            "interpolation":{"type":"string","enum":["hold","linear","ease_in_out","ease_out_cubic"]}
                                         },
                                         "required":["at","property","value","interpolation"],
                                         "additionalProperties":false
@@ -2640,13 +2654,42 @@ fn build_application_with_graph_store(
                                 "at":{"type":"object","properties":{"num":{"type":"string","pattern":"^(0|[1-9][0-9]*)$"},"den":{"type":"string","pattern":"^[1-9][0-9]*$"}},"required":["num","den"],"additionalProperties":false},
                                 "property":{"type":"string","enum":["x","y","width","height","rotation_deg","opacity"]},
                                 "value":{"type":"number"},
-                                "interpolation":{"type":"string","enum":["hold","linear","ease_in_out"]}
+                                "interpolation":{"type":"string","enum":["hold","linear","ease_in_out","ease_out_cubic"]}
                             },
                             "required":["at","property","value","interpolation"],
                             "additionalProperties":false
                         }
                     }),
                     &["ref", "scene_id", "node_id", "keyframe"],
+                ),
+            ),
+        ),
+        (
+            OperationKind::SetCanvasMotionKeyframes,
+            descriptor(
+                "canvas.motion-keyframes.replace",
+                "Replace all typed motion keys of one Canvas object in one locked, revision-bound creative change",
+                schema(
+                    json!({
+                        "ref":{"type":"string","maxLength":512},
+                        "scene_id":{"type":"string","maxLength":64},
+                        "node_id":{"type":"string","maxLength":64},
+                        "keyframes":{
+                            "type":"array","minItems":1,"maxItems":128,
+                            "items":{
+                                "type":"object",
+                                "properties":{
+                                    "at":{"type":"object","properties":{"num":{"type":"string","pattern":"^(0|[1-9][0-9]*)$"},"den":{"type":"string","pattern":"^[1-9][0-9]*$"}},"required":["num","den"],"additionalProperties":false},
+                                    "property":{"type":"string","enum":["x","y","width","height","rotation_deg","opacity"]},
+                                    "value":{"type":"number"},
+                                    "interpolation":{"type":"string","enum":["hold","linear","ease_in_out","ease_out_cubic"]}
+                                },
+                                "required":["at","property","value","interpolation"],
+                                "additionalProperties":false
+                            }
+                        }
+                    }),
+                    &["ref", "scene_id", "node_id", "keyframes"],
                 ),
             ),
         ),
@@ -2663,7 +2706,7 @@ fn build_application_with_graph_store(
                         "at":{"type":"object","properties":{"num":{"type":"string","pattern":"^(0|[1-9][0-9]*)$"},"den":{"type":"string","pattern":"^[1-9][0-9]*$"}},"required":["num","den"],"additionalProperties":false},
                         "x":{"type":"number"},
                         "y":{"type":"number"},
-                        "interpolation":{"type":"string","enum":["hold","linear","ease_in_out"]}
+                        "interpolation":{"type":"string","enum":["hold","linear","ease_in_out","ease_out_cubic"]}
                     }),
                     &[
                         "ref",
@@ -6836,6 +6879,34 @@ mod tests {
                 ..
             }
         ));
+
+        let complete_motion = change_from_args(
+            OperationKind::SetCanvasMotionKeyframes,
+            &json!({
+                "scene_id": Uuid::now_v7().to_string(),
+                "node_id": Uuid::now_v7().to_string(),
+                "keyframes": [
+                    { "at": {"num":"0","den":"1"}, "property":"width", "value":100.0, "interpolation":"linear" },
+                    { "at": {"num":"1","den":"1"}, "property":"width", "value":200.0, "interpolation":"ease_out_cubic" },
+                    { "at": {"num":"0","den":"1"}, "property":"opacity", "value":1.0, "interpolation":"linear" },
+                    { "at": {"num":"1","den":"1"}, "property":"opacity", "value":0.0, "interpolation":"linear" }
+                ]
+            }),
+        ).unwrap();
+        match complete_motion {
+            Change::SetCanvasMotionKeyframes { keyframes, .. } => {
+                assert_eq!(keyframes.len(), 4);
+                assert_eq!(
+                    keyframes[1].interpolation,
+                    motionwright_domain::MotionInterpolation::EaseOutCubic
+                );
+                assert_eq!(
+                    keyframes[3].property,
+                    motionwright_domain::MotionProperty::Opacity
+                );
+            }
+            _ => panic!("complete motion must remain one typed creative change"),
+        }
 
         let pair = change_from_args(
             OperationKind::SetCanvasPositionKeyframe,

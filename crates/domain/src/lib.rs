@@ -1927,6 +1927,71 @@ impl Project {
                         .then(left.property.cmp(&right.property))
                 });
             }
+            Change::SetCanvasMotionKeyframes {
+                scene_id,
+                node_id,
+                keyframes,
+            } => {
+                let resource = format!("scene:{scene_id}");
+                self.ensure_unlocked(&resource, &[LockKind::Position])?;
+                if keyframes.is_empty() || keyframes.len() > 128 {
+                    return Err(DomainError::Invalid(
+                        "motion edit requires 1 to 128 keyframes".into(),
+                    ));
+                }
+                let mut slots = std::collections::BTreeSet::new();
+                for key in keyframes {
+                    key.validate()?;
+                    if !slots.insert((key.at, key.property)) {
+                        return Err(DomainError::Invalid(
+                            "motion edit has duplicate time/property slots".into(),
+                        ));
+                    }
+                }
+                let scene = self
+                    .scenes
+                    .iter_mut()
+                    .find(|scene| scene.id == *scene_id)
+                    .ok_or(DomainError::NotFound(resource))?;
+                if keyframes.iter().any(|key| key.at >= scene.duration) {
+                    return Err(DomainError::Invalid(
+                        "motion edit must stay inside the half-open scene".into(),
+                    ));
+                }
+                let node = scene
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == *node_id)
+                    .ok_or_else(|| DomainError::NotFound(format!("node:{node_id}")))?;
+                if keyframes
+                    .iter()
+                    .any(|key| node.property_locks.contains(&key.property.node_property()))
+                {
+                    return Err(DomainError::Locked(format!(
+                        "node:{node_id} motion property"
+                    )));
+                }
+                // Replacement also removes channels, so their locks apply even
+                // when the incoming pose deliberately omits those properties.
+                if node
+                    .keyframes
+                    .iter()
+                    .any(|key| node.property_locks.contains(&key.property.node_property()))
+                {
+                    return Err(DomainError::Locked(format!(
+                        "node:{node_id} motion property"
+                    )));
+                }
+                // Validate the whole replacement before its first write. A
+                // retime cannot leave obsolete endpoint keys behind; journal,
+                // CAS and undo still see one ordinary creative Change.
+                node.keyframes = keyframes.clone();
+                node.keyframes.sort_by(|left, right| {
+                    left.at
+                        .cmp(&right.at)
+                        .then(left.property.cmp(&right.property))
+                });
+            }
             Change::SetCanvasPositionKeyframe {
                 scene_id,
                 node_id,
@@ -3100,6 +3165,13 @@ pub enum Change {
         node_id: Uuid,
         keyframe: CanvasKeyframe,
     },
+    /// Atomically replace an object's complete bounded motion key set.
+    /// Omitting a channel removes its keys and requires its property unlocked.
+    SetCanvasMotionKeyframes {
+        scene_id: Uuid,
+        node_id: Uuid,
+        keyframes: Vec<CanvasKeyframe>,
+    },
     /// Two scene-local position axes in one verified creative transaction.
     /// Used by explicit Canvas Auto-key and available to Native SDK agents.
     SetCanvasPositionKeyframe {
@@ -3480,6 +3552,144 @@ mod tests {
                 .iter()
                 .all(|node| node.id != parent_id)
         );
+    }
+
+    #[test]
+    fn composed_motion_keyframes_are_one_atomic_validated_edit() {
+        let mut source = Project::new("Complete editable pose").unwrap();
+        source
+            .apply_change(&Change::AddScene {
+                name: "Pose".into(),
+                objective: "Compose all motion properties".into(),
+                duration_seconds: 3,
+            })
+            .unwrap();
+        let scene_id = source.scenes[0].id;
+        let node = canvas_node("Editable pose");
+        let node_id = node.id;
+        source
+            .apply_change(&Change::AddCanvasNode { scene_id, node })
+            .unwrap();
+        let original = source.scenes[0].nodes[0].clone();
+        let mut keys = Vec::new();
+        for (property, initial, terminal) in [
+            (MotionProperty::X, original.x - 20.0, original.x),
+            (MotionProperty::Y, original.y - 10.0, original.y),
+            (MotionProperty::Width, 120.0, original.width),
+            (MotionProperty::Height, 80.0, original.height),
+            (MotionProperty::RotationDeg, -15.0, 0.0),
+            (MotionProperty::Opacity, 1.0, 0.0),
+        ] {
+            keys.push(CanvasKeyframe {
+                at: RationalTime::ZERO,
+                property,
+                value: initial,
+                interpolation: MotionInterpolation::Linear,
+            });
+            keys.push(CanvasKeyframe {
+                at: RationalTime::ONE,
+                property,
+                value: terminal,
+                interpolation: MotionInterpolation::EaseOutCubic,
+            });
+        }
+        let change = Change::SetCanvasMotionKeyframes {
+            scene_id,
+            node_id,
+            keyframes: keys.clone(),
+        };
+        let json = serde_json::to_value(&change).unwrap();
+        assert_eq!(json["type"], "set_canvas_motion_keyframes");
+        let decoded: Change = serde_json::from_value(json).unwrap();
+        let mut edited = source.clone();
+        edited.apply_change(&decoded).unwrap();
+        let saved = &edited.scenes[0].nodes[0];
+        assert_eq!(saved.keyframes.len(), 12);
+        let mut unchanged = saved.clone();
+        unchanged.keyframes.clear();
+        assert_eq!(unchanged, original);
+        assert_eq!(edited.revision, source.revision);
+        edited.apply_change(&change).unwrap();
+        assert_eq!(edited.scenes[0].nodes[0].keyframes.len(), 12);
+        let mut retimed = keys.clone();
+        for key in &mut retimed {
+            if key.at != RationalTime::ZERO {
+                key.at = RationalTime::new(3, 2).unwrap();
+            }
+        }
+        edited
+            .apply_change(&Change::SetCanvasMotionKeyframes {
+                scene_id,
+                node_id,
+                keyframes: retimed.clone(),
+            })
+            .unwrap();
+        assert_eq!(edited.scenes[0].nodes[0].keyframes.len(), 12);
+        assert!(
+            !edited.scenes[0].nodes[0]
+                .keyframes
+                .iter()
+                .any(|key| key.at == RationalTime::ONE)
+        );
+        let geometry = retimed
+            .into_iter()
+            .filter(|key| key.property != MotionProperty::Opacity)
+            .collect::<Vec<_>>();
+        edited.scenes[0].nodes[0]
+            .property_locks
+            .insert(NodeProperty::Opacity);
+        let locked_source = edited.scenes[0].nodes[0].clone();
+        assert!(
+            edited
+                .apply_change(&Change::SetCanvasMotionKeyframes {
+                    scene_id,
+                    node_id,
+                    keyframes: geometry.clone(),
+                })
+                .is_err()
+        );
+        assert_eq!(edited.scenes[0].nodes[0], locked_source);
+        edited.scenes[0].nodes[0].property_locks.clear();
+        edited
+            .apply_change(&Change::SetCanvasMotionKeyframes {
+                scene_id,
+                node_id,
+                keyframes: geometry,
+            })
+            .unwrap();
+        assert_eq!(edited.scenes[0].nodes[0].keyframes.len(), 10);
+
+        for invalid in 0..5 {
+            let mut rejected = source.clone();
+            let mut draft = keys.clone();
+            match invalid {
+                0 => draft.push(draft[0].clone()),
+                1 => draft[11].at = rejected.scenes[0].duration,
+                2 => draft[11].value = 1.1,
+                3 => {
+                    rejected.scenes[0].nodes[0]
+                        .property_locks
+                        .insert(NodeProperty::Opacity);
+                }
+                4 => draft = vec![draft[0].clone(); 129],
+                _ => unreachable!(),
+            }
+            let before = rejected.scenes[0].nodes[0].clone();
+            assert!(
+                rejected
+                    .apply_change(&Change::SetCanvasMotionKeyframes {
+                        scene_id,
+                        node_id,
+                        keyframes: draft
+                    })
+                    .is_err(),
+                "case {invalid}"
+            );
+            assert_eq!(
+                rejected.scenes[0].nodes[0], before,
+                "no partial pose write in case {invalid}"
+            );
+        }
     }
 
     #[test]

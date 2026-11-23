@@ -30,6 +30,7 @@ class NativeRenderPublicArtifactTests(unittest.TestCase):
         source_mode = patch.dict(pub.os.environ, {
             "MOTIONWRIGHT_NATIVE_CLIP_E2E": "0",
             "MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E": "0",
+            "MOTIONWRIGHT_NATIVE_CLIP_COMPOSITION": "static",
         })
         source_mode.start()
         self.addCleanup(source_mode.stop)
@@ -192,6 +193,78 @@ class NativeRenderPublicArtifactTests(unittest.TestCase):
             self.result["native_clip_group_original"]["frames"][1]["outside_rgb"] = [224, 169, 64]
             self.store()
             self.refused("native_clip_original_not_verified")
+
+    def set_valid_original_pose(self):
+        self.set_valid_original_clip()
+        self.result["native_clip_group_original"] = {
+            "schema": "motionwright.native-composed-clip-original-pixels/1",
+            "status": "ORIGINAL_NATIVE_COMPOSED_CLIP_POSE_PIXELS_PASS",
+            "composition_case": "pose", "parent_right_px": 1280, "source_fill": "#E0A940",
+            "geometry_curve": "ease_out_cubic", "opacity_curve": "linear",
+            "source_replaced_with_overlay": False, "native_effect_invoked_by_validator": False,
+            "human_visual_acceptance": False, "source_receipt_sha256": "1" * 64,
+            "independent_store_readback_sha256": "3" * 64,
+            "frames": [
+                {"frame": index, "source_roi_sha256": "4" * 64, "motion_rgb": motion,
+                 "outside_rgb": [12, 18, 24]}
+                for index, motion in ((0, [12, 18, 24]), (15, [118, 94, 44]), (30, [12, 18, 24]))
+            ],
+        }
+        self.parity["compared_properties"].append("source_bound_composed_clip_pose")
+        self.store()
+
+    def test_selected_pose_preserves_exact_case_and_private_source_boundaries(self):
+        self.set_valid_original_pose()
+        with patch.dict(pub.os.environ, {"MOTIONWRIGHT_NATIVE_CLIP_E2E": "1",
+                                        "MOTIONWRIGHT_NATIVE_CLIP_COMPOSITION": "pose"}):
+            report = pub.publish(self.private, self.public, SOURCE, SDK, "success")
+        self.assertTrue(report["selected_original_clip_pixels_and_store_verified"])
+        self.assertEqual(report["selected_original_clip_composition"], "pose")
+        self.assertFalse(report["original_owner_receipts_uploaded"])
+        self.assertFalse(report["v01_release_authorized"])
+        self.assertEqual({p.name for p in self.public.iterdir()}, set(pub.FILES) | {"public-evidence.json"})
+
+    def test_selected_pose_rejects_false_pixels_foreign_source_and_inherited_acceptance(self):
+        with patch.dict(pub.os.environ, {"MOTIONWRIGHT_NATIVE_CLIP_E2E": "1",
+                                        "MOTIONWRIGHT_NATIVE_CLIP_COMPOSITION": "pose"}):
+            self.set_valid_original_clip()
+            self.refused("native_clip_pose_original_not_verified")
+            for field, replacement in (
+                ("schema", "motionwright.native-clip-group-original-pixels/1"),
+                ("status", "UNVERIFIED"), ("composition_case", "static"),
+                ("geometry_curve", "linear"), ("opacity_curve", "hold"),
+                ("source_receipt_sha256", "0" * 64),
+                ("independent_store_readback_sha256", "not-a-sha"),
+                ("source_replaced_with_overlay", True), ("human_visual_acceptance", True),
+                ("native_effect_invoked_by_validator", True),
+            ):
+                with self.subTest(field=field):
+                    self.set_valid_original_pose()
+                    self.result["native_clip_group_original"][field] = replacement
+                    self.store(); self.refused("native_clip_pose_original_not_verified")
+            for field, value in (
+                ("motion_rgb", [224, 169, 64]), ("motion_rgb", [True, 94, 44]),
+                ("motion_rgb", [float("nan"), 94, 44]), ("outside_rgb", [224, 169, 64]),
+                ("frame", 30),
+            ):
+                with self.subTest(field=field, value=value):
+                    self.set_valid_original_pose()
+                    self.result["native_clip_group_original"]["frames"][1][field] = value
+                    self.store(); self.refused("native_clip_pose_original_not_verified")
+            self.set_valid_original_pose()
+            self.parity["compared_properties"].remove("source_bound_composed_clip_pose")
+            self.store(); self.refused("native_clip_pose_original_not_verified")
+
+    def test_pose_cannot_be_credited_as_static_or_without_a_selected_clip(self):
+        self.set_valid_original_pose()
+        with patch.dict(pub.os.environ, {"MOTIONWRIGHT_NATIVE_CLIP_E2E": "1"}):
+            self.refused("native_clip_original_not_verified")
+        with patch.dict(pub.os.environ, {"MOTIONWRIGHT_NATIVE_CLIP_E2E": "0",
+                                        "MOTIONWRIGHT_NATIVE_CLIP_COMPOSITION": "pose"}):
+            self.refused("native_selected_source_invalid")
+        with patch.dict(pub.os.environ, {"MOTIONWRIGHT_NATIVE_CLIP_E2E": "1",
+                                        "MOTIONWRIGHT_NATIVE_CLIP_COMPOSITION": "unknown"}):
+            self.refused("native_selected_source_invalid")
 
     def test_selected_layer_has_own_original_store_and_z_order_provenance(self):
         layer = {

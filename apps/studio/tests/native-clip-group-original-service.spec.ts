@@ -13,6 +13,10 @@ test.skip(process.env.MOTIONWRIGHT_NATIVE_CLIP_E2E !== "1"
   || !process.env.MOTIONWRIGHT_SERVICE_TEST_BIN,
   "Requires one source-exact original SQLite and the real StudioService test binary");
 test.describe.configure({ timeout: 120_000, retries: 0 });
+const composition = process.env.MOTIONWRIGHT_NATIVE_CLIP_COMPOSITION ?? "static";
+if (!["static", "pose"].includes(composition)) throw new Error("Unknown original Clip composition");
+const poseSelected = composition === "pose";
+const expectedSaves = poseSelected ? 5 : 4;
 
 const requiredPath = (name: string) => {
   const path = process.env[name];
@@ -37,10 +41,11 @@ test("user saves a real Clip group and a partially clipped child, then Studio re
     expect(raw.length).toBeLessThan(4 * 1024 * 1024);
     expect(createHash("sha256").update(raw).digest("hex")).toBe(expectedSha);
     const receipt = JSON.parse(raw.toString("utf8")) as {
-      schema: string; phase: string; project: Project; history: ProjectEvent[];
+      schema: string; phase: string; composition_case: string; project: Project; history: ProjectEvent[];
     };
     expect(receipt.schema).toBe("motionwright.native-clip-group-source/1");
     expect(receipt.phase).toBe("before_ui");
+    expect(receipt.composition_case).toBe(composition);
     const original = receipt.project;
     expect(original.scenes).toHaveLength(1);
     expect(original.scenes[0].nodes.some(node => node.kind === "clip_group")).toBe(false);
@@ -87,9 +92,21 @@ test("user saves a real Clip group and a partially clipped child, then Studio re
       await page.getByLabel("Canvas X", { exact: true }).fill("1100");
       await page.getByRole("button", { name: "Commit transform", exact: true }).click();
       await expect(revision).toHaveText("r" + (original.revision + ++saveCount));
+      if (poseSelected) {
+        const pose = page.getByRole("region", { name: "Native pose animation" });
+        for (const [label, value] of [
+          ["Pose start x", "1200"], ["Pose start y", "410"], ["Pose start width", "280"],
+          ["Pose start height", "160"], ["Pose start rotation", "-18"], ["Pose end frame", "30"],
+        ]) await pose.getByLabel(label, { exact: true }).fill(value);
+        await pose.getByLabel("Pose geometry curve", { exact: true }).selectOption("ease_out_cubic");
+        await pose.getByLabel("Pose opacity", { exact: true }).selectOption("out");
+        await pose.getByLabel("Pose fade curve", { exact: true }).selectOption("linear");
+        await pose.getByRole("button", { name: "Create native pose animation", exact: true }).click();
+        await expect(revision).toHaveText("r" + (original.revision + ++saveCount));
+      }
       final = await service.project(original.id);
       history = await service.history(original.id, 0, 96);
-      expect(final.revision).toBe(original.revision + 4);
+      expect(final.revision).toBe(original.revision + expectedSaves);
       expect(final.id).toBe(original.id);
       expect(final.generation).toBe(original.generation);
       expect(final.scenes[0].nodes.slice(0, original.scenes[0].nodes.length))
@@ -102,19 +119,30 @@ test("user saves a real Clip group and a partially clipped child, then Studio re
       });
       expect(final.assets).toEqual(original.assets);
       expect(final.audio).toEqual(original.audio);
-      expect(history).toHaveLength(receipt.history.length + 4);
+      expect(updated!.keyframes).toHaveLength(poseSelected ? 12 : 0);
+      expect(history).toHaveLength(receipt.history.length + expectedSaves);
       expect(history.slice(0, receipt.history.length)).toEqual(receipt.history);
-      expect(history.slice(-4).map(item => item.change.type)).toEqual([
+      expect(history.slice(-expectedSaves).map(item => item.change.type)).toEqual([
         "add_canvas_node", "add_canvas_node", "update_canvas_style", "transform_canvas_node",
+        ...(poseSelected ? ["set_canvas_motion_keyframes"] : []),
       ]);
       const requests = service.transcript.filter(entry => entry.direction === "request"
         && "command" in entry.payload && entry.payload.command === "apply_change");
-      expect(requests).toHaveLength(4);
+      expect(requests).toHaveLength(expectedSaves);
+      if (poseSelected) {
+        await expect(page.getByRole("button", { name: "Canvas object " + child!.name })).toHaveCSS("clip-path", /^polygon\(/);
+        await page.locator(".motion-keyframe-jump").filter({ hasText: "1.000s" }).first().click();
+        await expect(page.getByRole("button", { name: "Canvas object " + child!.name })).toHaveCSS("opacity", "0");
+      }
       await expect(page.getByRole("button", { name: "Canvas object " + child!.name }))
         .toHaveCSS("clip-path", "inset(0% 50% 0% 0%)");
       await page.reload();
       await page.getByRole("button", { name: "Canvas", exact: true }).click();
       await expect(revision).toHaveText("r" + final.revision);
+      if (poseSelected) {
+        await page.locator(".canvas-tree-row").filter({ hasText: child!.name }).click();
+        await page.locator(".motion-keyframe-jump").filter({ hasText: "1.000s" }).first().click();
+      }
       await expect(page.getByRole("button", { name: "Canvas object " + child!.name }))
         .toHaveCSS("clip-path", "inset(0% 50% 0% 0%)");
       expect(await service.project(original.id)).toEqual(final);
@@ -141,7 +169,8 @@ test("user saves a real Clip group and a partially clipped child, then Studio re
       // request IDs, source Project bytes and grants are not public evidence.
       await writeFile(observationPath, JSON.stringify({
         schema: "motionwright.native-clip-group-studio/1",
-        status: completed ? "FOUR_ORIGINAL_UI_SAVES_AND_CLOSED_STORE" : "NOT_COMPLETED",
+        status: completed ? (poseSelected ? "FIVE" : "FOUR") + "_ORIGINAL_UI_SAVES_AND_CLOSED_STORE" : "NOT_COMPLETED",
+        composition_case: composition,
         source_sha: process.env.GITHUB_SHA,
         before_original_sha256: expectedSha,
         initial_project: original, project: final, history, ui_save_count: saveCount,

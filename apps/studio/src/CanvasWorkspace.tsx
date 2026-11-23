@@ -1,5 +1,6 @@
 import { previewTransform } from "./canvasMotion";
 import { rectangularClipInset } from "./canvasClip";
+import NativePoseMotion from "./NativePoseMotion";
 import { sameProjectRevision, type ProjectRevision } from "./projectMutation";
 import { Camera, CircleDashed, LockKeyhole, Move, Plus, Unlock } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -1207,7 +1208,7 @@ export default function CanvasWorkspace({
                     ))}
                 </div>
                 <p className="inspector-note">
-                  Editorial preview. Native Film preserves admitted synchronized entrances; other motion is rejected rather than approximated.
+                  Editorial preview. Native Film supports frame-aligned shape geometry, exact fades and their composition inside a static Clip. Preflight identifies unsupported curves.
                 </p>
               </section>
 
@@ -1283,6 +1284,9 @@ export default function CanvasWorkspace({
                   are not overwritten. Film preflight still verifies native framing.
                 </p>
               </section>
+
+              <NativePoseMotion key={canvasDraftScope(project, scene.id, selectedNode.id)}
+                project={project} scene={scene} node={selectedNode} profile={profile} commit={commitRequired} />
 
               <div className="property-locks">
                 <span className="field-label">Property locks</span>

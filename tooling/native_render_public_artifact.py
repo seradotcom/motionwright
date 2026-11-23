@@ -121,7 +121,52 @@ def sha256(blob: bytes) -> str:
 
 
 
-def verify_selected_original_source(result: dict, parity: dict) -> dict[str, bool]:
+def verify_original_composed_clip(clip: object, project: dict, compared: object) -> None:
+    """Closed projection of the existing original-frame pose verifier."""
+    require(isinstance(clip, dict), "native_clip_pose_original_not_verified")
+    frames = clip.get("frames")
+    digest = lambda value: isinstance(value, str) and SHA256.fullmatch(value) is not None
+    rgb = lambda value: (isinstance(value, list) and len(value) == 3
+                         and all(type(channel) is int and 0 <= channel <= 255 for channel in value))
+    require(
+        clip.get("schema") == "motionwright.native-composed-clip-original-pixels/1"
+        and clip.get("status") == "ORIGINAL_NATIVE_COMPOSED_CLIP_POSE_PIXELS_PASS"
+        and clip.get("composition_case") == "pose"
+        and clip.get("parent_right_px") == 1280
+        and clip.get("source_fill") == "#E0A940"
+        and clip.get("geometry_curve") == "ease_out_cubic"
+        and clip.get("opacity_curve") == "linear"
+        and clip.get("source_replaced_with_overlay") is False
+        and clip.get("native_effect_invoked_by_validator") is False
+        and clip.get("human_visual_acceptance") is False
+        and digest(project.get("clip_ui_sha256"))
+        and digest(project.get("clip_source_sha256"))
+        and clip.get("source_receipt_sha256") == project["clip_source_sha256"]
+        and digest(clip.get("independent_store_readback_sha256"))
+        and isinstance(frames, list) and len(frames) == 3
+        and all(isinstance(frame, dict) and type(frame.get("frame")) is int
+                and frame["frame"] == index and digest(frame.get("source_roi_sha256"))
+                and rgb(frame.get("motion_rgb")) and rgb(frame.get("outside_rgb"))
+                for index, frame in zip((0, 15, 30), frames))
+        and isinstance(compared, list)
+        and "source_bound_rectangular_clip_group" in compared
+        and "source_bound_composed_clip_pose" in compared,
+        "native_clip_pose_original_not_verified",
+    )
+    fill = (224, 169, 64)
+    first, middle, last = (frame["motion_rgb"] for frame in frames)
+    background = frames[2]["outside_rgb"]
+    near = lambda actual, expected: all(abs(a - b) <= 3 for a, b in zip(actual, expected))
+    require(
+        near(first, last) and sum(abs(a - b) for a, b in zip(fill, last)) >= 45
+        and near(middle, [(a + b) / 2 for a, b in zip(fill, last)])
+        and sum(abs(a - b) for a, b in zip(fill, background)) >= 45
+        and all(near(frame["outside_rgb"], background) for frame in frames),
+        "native_clip_pose_original_not_verified",
+    )
+
+
+def verify_selected_original_source(result: dict, parity: dict) -> dict[str, bool | str | None]:
     """Admit source-only Clip/Layer pixels and original Store reopen claims.
 
     A public artifact never includes the original Studio receipt, Store or
@@ -129,8 +174,11 @@ def verify_selected_original_source(result: dict, parity: dict) -> dict[str, boo
     """
     clip_mode = os.environ.get("MOTIONWRIGHT_NATIVE_CLIP_E2E", "0")
     layer_mode = os.environ.get("MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E", "0")
+    composition = os.environ.get("MOTIONWRIGHT_NATIVE_CLIP_COMPOSITION", "static")
     require(clip_mode in {"0", "1"} and layer_mode in {"0", "1"}
-            and not (clip_mode == "1" and layer_mode == "1"),
+            and not (clip_mode == "1" and layer_mode == "1")
+            and composition in {"static", "pose"}
+            and (composition == "static" or clip_mode == "1"),
             "native_selected_source_invalid")
     clip_selected = clip_mode == "1"
     layer_selected = layer_mode == "1"
@@ -141,11 +189,14 @@ def verify_selected_original_source(result: dict, parity: dict) -> dict[str, boo
     require(isinstance(project, dict), "native_selected_project_missing")
     digest = lambda v: isinstance(v, str) and SHA256.fullmatch(v) is not None
 
-    if clip_selected:
+    if clip_selected and composition == "pose":
+        verify_original_composed_clip(clip, project, compared)
+    elif clip_selected:
         frames = clip.get("frames") if isinstance(clip, dict) else None
         require(
             isinstance(clip, dict)
             and clip.get("schema") == "motionwright.native-clip-group-original-pixels/1"
+            and clip.get("composition_case", "static") == "static"
             and clip.get("status") == "ORIGINAL_NATIVE_RECTANGULAR_CLIP_PIXELS_PASS"
             and clip.get("parent_right_px") == 1280
             and clip.get("original_child_right_px") == 1460
@@ -198,10 +249,11 @@ def verify_selected_original_source(result: dict, parity: dict) -> dict[str, boo
         )
     else:
         require(layer is None, "native_layer_selection_mismatch")
-    return {"clip": clip_selected, "layer_order": layer_selected}
+    return {"clip": clip_selected, "layer_order": layer_selected,
+            "clip_composition": composition if clip_selected else None}
 
 
-def checked_source(root: Path, source: str, sdk: str) -> tuple[dict[str, bytes], str, dict[str, bool]]:
+def checked_source(root: Path, source: str, sdk: str) -> tuple[dict[str, bytes], str, dict[str, bool | str | None]]:
     require(root.is_dir() and not root.is_symlink(),
             "missing_or_linked_private_evidence_root")
     result = strict_object(read_bounded(root, "result.json", 128_000))
@@ -285,7 +337,7 @@ def publish(root: Path, out: Path, source: str, sdk: str, ci_status: str) -> dic
             "public_root_overlaps_private_source")
     blobs, rgba_sha, selected = (checked_source(root, source, sdk)
                                  if ci_status == "success"
-                                 else ({}, None, {"clip": False, "layer_order": False}))
+                                 else ({}, None, {"clip": False, "layer_order": False, "clip_composition": None}))
     failure_summary = (closed_failure_observation(root, source, sdk)
                        if ci_status != "success" else None)
     receipt = {
@@ -298,6 +350,7 @@ def publish(root: Path, out: Path, source: str, sdk: str, ci_status: str) -> dic
         "native_rgba_direct_mediated_parity": (True if ci_status == "success" else None),
         "native_ordered_rgba_digest_sha256": rgba_sha,
         "selected_original_clip_pixels_and_store_verified": selected["clip"],
+        "selected_original_clip_composition": selected["clip_composition"],
         "selected_original_layer_pixels_and_store_verified": selected["layer_order"],
         "png_container_binary_equality_claimed": False,
         "original_owner_receipts_uploaded": False,

@@ -39,7 +39,7 @@ enum CombinedMaster<'a> {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: native-render-e2e <clip-seed DATABASE | clip-before DATABASE BEFORE_JSON | clip-capture DATABASE BEFORE_JSON STUDIO_JSON STUDIO_SHA256 SOURCE_JSON | clip-readback DATABASE SOURCE_JSON SOURCE_SHA256 REPORT_JSON | layer-order-seed DATABASE | layer-order-before DATABASE BEFORE_JSON | layer-order-capture DATABASE BEFORE_JSON STUDIO_JSON STUDIO_SHA256 SOURCE_JSON | layer-order-readback DATABASE SOURCE_JSON SOURCE_SHA256 REPORT_JSON | geometry-seed DATABASE SOURCE_RECEIPT | geometry-capture-hold DATABASE SOURCE_RECEIPT STUDIO_RECEIPT STUDIO_SHA256 | geometry-readback DATABASE SOURCE_RECEIPT EXPECTED_SHA256 REPORT_JSON | seed DATABASE | film DATABASE FILM_JSON | render DATABASE CONNECTION EVIDENCE_JSON | seed-saved-mix DATABASE SOURCES EVIDENCE | seed-tauri-audio DATABASE PRIVATE_ROOT | tauri-audio-readback DATABASE PRIVATE_ROOT | render-master-saved-mix DATABASE CONNECTION RENDER_EVIDENCE MASTER_EVIDENCE | saved-mix-readback DATABASE EVIDENCE | cycle-snapshot DATABASE DIRECTORY | cycle-edit DATABASE BEFORE_PROJECT DIRECTORY | cycle-render-edited DATABASE CONNECTION EVIDENCE_JSON | cycle-verify-binding FILM_JSON INSPECTION_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
+        "usage: native-render-e2e <clip-seed DATABASE | clip-before/clip-pose-before DATABASE BEFORE_JSON | clip-capture/clip-pose-capture DATABASE BEFORE_JSON STUDIO_JSON STUDIO_SHA256 SOURCE_JSON | clip-readback/clip-pose-readback DATABASE SOURCE_JSON SOURCE_SHA256 REPORT_JSON | layer-order-seed DATABASE | layer-order-before DATABASE BEFORE_JSON | layer-order-capture DATABASE BEFORE_JSON STUDIO_JSON STUDIO_SHA256 SOURCE_JSON | layer-order-readback DATABASE SOURCE_JSON SOURCE_SHA256 REPORT_JSON | geometry-seed DATABASE SOURCE_RECEIPT | geometry-capture-hold DATABASE SOURCE_RECEIPT STUDIO_RECEIPT STUDIO_SHA256 | geometry-readback DATABASE SOURCE_RECEIPT EXPECTED_SHA256 REPORT_JSON | seed DATABASE | film DATABASE FILM_JSON | render DATABASE CONNECTION EVIDENCE_JSON | seed-saved-mix DATABASE SOURCES EVIDENCE | seed-tauri-audio DATABASE PRIVATE_ROOT | tauri-audio-readback DATABASE PRIVATE_ROOT | render-master-saved-mix DATABASE CONNECTION RENDER_EVIDENCE MASTER_EVIDENCE | saved-mix-readback DATABASE EVIDENCE | cycle-snapshot DATABASE DIRECTORY | cycle-edit DATABASE BEFORE_PROJECT DIRECTORY | cycle-render-edited DATABASE CONNECTION EVIDENCE_JSON | cycle-verify-binding FILM_JSON INSPECTION_JSON | master DATABASE CONNECTION MOTION_EVIDENCE AUDIO_RELATIVE AUDIO_SHA256 EVIDENCE_JSON>"
     );
     std::process::exit(2);
 }
@@ -1650,15 +1650,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             seed_clip(&database)
         }
-        "clip-before" => {
+        "clip-before" | "clip-pose-before" => {
             let database = path_arg(&mut args);
             let output = path_arg(&mut args);
             if args.next().is_some() {
                 usage();
             }
-            native_clip_group_e2e::before(&database, &output)
+            if command == "clip-pose-before" {
+                native_clip_group_e2e::before_pose(&database, &output)
+            } else {
+                native_clip_group_e2e::before(&database, &output)
+            }
         }
-        "clip-capture" => {
+        "clip-capture" | "clip-pose-capture" => {
             let database = path_arg(&mut args);
             let before = path_arg(&mut args);
             let studio = path_arg(&mut args);
@@ -1667,9 +1671,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if args.next().is_some() {
                 usage();
             }
-            native_clip_group_e2e::capture(&database, &before, &studio, &expected, &output)
+            if command == "clip-pose-capture" {
+                native_clip_group_e2e::capture_pose(&database, &before, &studio, &expected, &output)
+            } else {
+                native_clip_group_e2e::capture(&database, &before, &studio, &expected, &output)
+            }
         }
-        "clip-readback" => {
+        "clip-readback" | "clip-pose-readback" => {
             let database = path_arg(&mut args);
             let source = path_arg(&mut args);
             let expected = text_arg(&mut args);
@@ -1677,7 +1685,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if args.next().is_some() {
                 usage();
             }
-            native_clip_group_e2e::readback(&database, &source, &expected, &output)
+            if command == "clip-pose-readback" {
+                native_clip_group_e2e::readback_pose(&database, &source, &expected, &output)
+            } else {
+                native_clip_group_e2e::readback(&database, &source, &expected, &output)
+            }
         }
         "layer-order-seed" => {
             let database = path_arg(&mut args);

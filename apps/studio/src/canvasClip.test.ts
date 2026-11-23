@@ -22,11 +22,36 @@ describe("MW05-E01-02 editorial source-bound rectangular clipping", () => {
     expect(rectangularClipInset(geometry(850, 350, 100, 100), parent))
       .toBe("inset(50% 100% 0% 0%)");
   });
+  it.each([-135, -18, 45, 90, 180, 275])("keeps the same clipping plane at %s degrees", angle => {
+    const parent = geometry(600, 400, 100, 100);
+    const child = { ...geometry(550, 350, 200, 200), rotation_deg: angle };
+    const clip = rectangularClipInset(child, parent)!;
+    expect(clip).toMatch(/^polygon\(/);
+    const vertices = clip.slice(8, -1).split(", ").map(pair =>
+      pair.split(" ").map(value => Number(value.replace("%", "")) * 2));
+    const contains = (x: number, y: number) => {
+      let inside = false;
+      for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i++) {
+        const [xi, yi] = vertices[i], [xj, yj] = vertices[j];
+        if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+      }
+      return inside;
+    };
+    const radians = angle * Math.PI / 180;
+    for (let x = 7.37; x < 200; x += 13.1) for (let y = 5.91; y < 200; y += 11.3) {
+      const worldX = 650 + (x - 100) * Math.cos(radians) - (y - 100) * Math.sin(radians);
+      const worldY = 450 + (x - 100) * Math.sin(radians) + (y - 100) * Math.cos(radians);
+      expect(contains(x, y), `sample ${x},${y}`).toBe(worldX >= 600 && worldX <= 700 && worldY >= 400 && worldY <= 500);
+    }
+  });
+  it("hides a rotated child outside the plane and rejects invalid parent geometry", () => {
+    expect(rectangularClipInset({ ...geometry(900, 800, 80, 50), rotation_deg: 30 }, geometry(600, 400, 100, 100))).toBe("inset(100%)");
+  });
   it("does not invent a transformed clipping preview for unsupported geometry", () => {
     const parent = geometry(600, 400, 100, 100);
     const child = geometry(550, 350, 200, 200);
     expect(rectangularClipInset(child, {...parent, rotation_deg: 12})).toBeUndefined();
-    expect(rectangularClipInset({...child, rotation_deg: 5}, parent)).toBeUndefined();
+    expect(rectangularClipInset({...child, rotation_deg: 5}, parent)).toMatch(/^polygon\(/);
     expect(rectangularClipInset({...child, width: 0}, parent)).toBeUndefined();
     expect(rectangularClipInset({...child, x: NaN}, parent)).toBeUndefined();
   });

@@ -2,7 +2,67 @@
 //! same physical SQLite/CAS source used by the existing native render runner.
 //! Source capture is read-only and never grants, renders or replays an effect.
 use super::*;
+use motionwright_domain::{CanvasKeyframe, MotionInterpolation, MotionProperty};
 use motionwright_service::StudioServiceReader;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClipCase {
+    Static,
+    Pose,
+}
+impl ClipCase {
+    fn label(self) -> &'static str {
+        if self == Self::Pose { "pose" } else { "static" }
+    }
+    fn saves(self) -> usize {
+        if self == Self::Pose { 5 } else { 4 }
+    }
+    fn studio_status(self) -> &'static str {
+        if self == Self::Pose {
+            "FIVE_ORIGINAL_UI_SAVES_AND_CLOSED_STORE"
+        } else {
+            "FOUR_ORIGINAL_UI_SAVES_AND_CLOSED_STORE"
+        }
+    }
+}
+fn pose_keys(child: &CanvasNode) -> Vec<CanvasKeyframe> {
+    let mut keys = Vec::new();
+    for (property, start, end) in [
+        (MotionProperty::X, 1200.0, child.x),
+        (MotionProperty::Y, 410.0, child.y),
+        (MotionProperty::Width, 280.0, child.width),
+        (MotionProperty::Height, 160.0, child.height),
+        (MotionProperty::RotationDeg, -18.0, 0.0),
+        (MotionProperty::Opacity, 1.0, 0.0),
+    ] {
+        keys.push(CanvasKeyframe {
+            at: RationalTime::ZERO,
+            property,
+            value: start,
+            interpolation: MotionInterpolation::Linear,
+        });
+        keys.push(CanvasKeyframe {
+            at: RationalTime::ONE,
+            property,
+            value: end,
+            interpolation: if property == MotionProperty::Opacity {
+                MotionInterpolation::Linear
+            } else {
+                MotionInterpolation::EaseOutCubic
+            },
+        });
+    }
+    keys
+}
+fn saved_pose_keys(child: &CanvasNode) -> Vec<CanvasKeyframe> {
+    let mut keys = pose_keys(child);
+    keys.sort_by(|left, right| {
+        left.at
+            .cmp(&right.at)
+            .then(left.property.cmp(&right.property))
+    });
+    keys
+}
 use sha2::{Digest, Sha256};
 
 const SCHEMA: &str = "motionwright.native-clip-group-source/1";
@@ -56,6 +116,7 @@ fn clip_nodes(
     Ok((group, children[0]))
 }
 fn check_project(
+    case: ClipCase,
     project: &motionwright_domain::Project,
     baseline: &motionwright_domain::Project,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -107,7 +168,8 @@ fn check_project(
         || group.opacity != 1.0
         || child.opacity != 1.0
         || !group.keyframes.is_empty()
-        || !child.keyframes.is_empty()
+        || (case == ClipCase::Static && !child.keyframes.is_empty())
+        || (case == ClipCase::Pose && child.keyframes != saved_pose_keys(child))
         || group.style.fill.is_some()
         || child.style.fill.as_deref() != Some("#E0A940")
         || !group.relations.is_empty()
@@ -156,6 +218,19 @@ fn check_project(
     Ok(())
 }
 pub(super) fn before(database: &Path, receipt: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    before_case(ClipCase::Static, database, receipt)
+}
+pub(super) fn before_pose(
+    database: &Path,
+    receipt: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    before_case(ClipCase::Pose, database, receipt)
+}
+fn before_case(
+    case: ClipCase,
+    database: &Path,
+    receipt: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     new_receipt(receipt)?;
     let reader = StudioServiceReader::open(database)?;
     let projects = reader.projects(2)?;
@@ -174,20 +249,53 @@ pub(super) fn before(database: &Path, receipt: &Path) -> Result<(), Box<dyn std:
     cycle_new_json(
         receipt,
         &json!({
-            "schema":SCHEMA,"phase":"before_ui","project":project,"history":history,
+            "schema":SCHEMA,"phase":"before_ui","composition_case":case.label(),"project":project,"history":history,
             "database_identity":reader.database_file_identity()?,
             "native_execution":false,"automatic_retry":false,"formal_G2":false,"formal_G3":false
         }),
     )?;
     println!(
         "{}",
-        json!({"source_receipt_sha256":sha256_file(receipt)?,
+        json!({"source_receipt_sha256":sha256_file(receipt)?,"composition_case":case.label(),
         "project_id":project.id,"generation":project.generation,"revision":project.revision,
         "native_execution":false})
     );
     Ok(())
 }
 pub(super) fn capture(
+    database: &Path,
+    before_path: &Path,
+    studio_path: &Path,
+    studio_sha: &str,
+    receipt: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    capture_case(
+        ClipCase::Static,
+        database,
+        before_path,
+        studio_path,
+        studio_sha,
+        receipt,
+    )
+}
+pub(super) fn capture_pose(
+    database: &Path,
+    before_path: &Path,
+    studio_path: &Path,
+    studio_sha: &str,
+    receipt: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    capture_case(
+        ClipCase::Pose,
+        database,
+        before_path,
+        studio_path,
+        studio_sha,
+        receipt,
+    )
+}
+fn capture_case(
+    case: ClipCase,
     database: &Path,
     before_path: &Path,
     studio_path: &Path,
@@ -202,9 +310,11 @@ pub(super) fn capture(
     let studio: serde_json::Value = serde_json::from_slice(&fs::read(studio_path)?)?;
     if before["schema"] != SCHEMA
         || before["phase"] != "before_ui"
+        || before["composition_case"] != case.label()
         || studio["schema"] != STUDIO_SCHEMA
-        || studio["status"] != "FOUR_ORIGINAL_UI_SAVES_AND_CLOSED_STORE"
-        || studio["ui_save_count"] != 4
+        || studio["composition_case"] != case.label()
+        || studio["status"] != case.studio_status()
+        || studio["ui_save_count"] != case.saves()
         || studio["closed_store_handoff"] != true
         || studio["before_original_sha256"] != sha256_file(before_path)?
         || studio["automatic_retry"] != false
@@ -250,18 +360,19 @@ pub(super) fn capture(
         || actual.revision
             != original
                 .revision
-                .checked_add(4)
+                .checked_add(case.saves() as u64)
                 .ok_or("Clip revision overflow")?
-        || history.len() != old_history.len() + 4
+        || history.len() != old_history.len() + case.saves()
         || history[..old_history.len()] != old_history
     {
         return Err("Clip exact UI Saves differ from original physical SQLite/CAS".into());
     }
-    check_project(actual, &original)?;
+    check_project(case, actual, &original)?;
     let (group, child) = clip_nodes(actual)?;
     let events = &history[old_history.len()..];
     let scene_id = actual.scenes[0].id;
     let mut staged = child.clone();
+    staged.keyframes.clear();
     staged.x = 780.0;
     staged.style.fill = Some("#1D242C".into());
     let mut styled = staged.style.clone();
@@ -274,7 +385,7 @@ pub(super) fn capture(
         rotation_deg: child.rotation_deg,
         opacity: child.opacity,
     };
-    let expected = [
+    let mut expected = vec![
         Change::AddCanvasNode {
             scene_id,
             node: group.clone(),
@@ -294,6 +405,13 @@ pub(super) fn capture(
             transform: final_transform,
         },
     ];
+    if case == ClipCase::Pose {
+        expected.push(Change::SetCanvasMotionKeyframes {
+            scene_id,
+            node_id: child.id,
+            keyframes: pose_keys(child),
+        });
+    }
     if events.iter().map(|event| &event.change).ne(expected.iter()) {
         return Err(
             "Clip Studio event journal contains unexpected or missing source changes".into(),
@@ -302,7 +420,7 @@ pub(super) fn capture(
     cycle_new_json(
         receipt,
         &json!({
-            "schema":SCHEMA,"phase":"after_ui","project":actual,"history":history,
+            "schema":SCHEMA,"phase":"after_ui","composition_case":case.label(),"project":actual,"history":history,
             "before_original_sha256":sha256_file(before_path)?,
             "studio_original_sha256":studio_sha,
             "database_identity":current_database_identity,
@@ -314,7 +432,7 @@ pub(super) fn capture(
         json!({
             "project_id":actual.id,"generation":actual.generation,"revision":actual.revision,
             "source_receipt_sha256":sha256_file(receipt)?,
-            "studio_authoring_sha256":studio_sha,"clip_group_saved":true,"native_execution":false
+            "studio_authoring_sha256":studio_sha,"clip_group_saved":true,"composition_case":case.label(),"native_execution":false
         })
     );
     Ok(())
@@ -325,12 +443,32 @@ pub(super) fn readback(
     expected_sha: &str,
     report: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    readback_case(ClipCase::Static, database, receipt, expected_sha, report)
+}
+pub(super) fn readback_pose(
+    database: &Path,
+    receipt: &Path,
+    expected_sha: &str,
+    report: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    readback_case(ClipCase::Pose, database, receipt, expected_sha, report)
+}
+fn readback_case(
+    case: ClipCase,
+    database: &Path,
+    receipt: &Path,
+    expected_sha: &str,
+    report: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     new_receipt(report)?;
     if expected_sha.len() != 64 || sha256_file(receipt)? != expected_sha {
         return Err("Clip independent reader source hash mismatch".into());
     }
     let previous: serde_json::Value = serde_json::from_slice(&fs::read(receipt)?)?;
-    if previous["schema"] != SCHEMA || previous["phase"] != "after_ui" {
+    if previous["schema"] != SCHEMA
+        || previous["phase"] != "after_ui"
+        || previous["composition_case"] != case.label()
+    {
         return Err("Clip independent reader has no admitted original Save".into());
     }
     let expected: motionwright_domain::Project =
@@ -346,7 +484,7 @@ pub(super) fn readback(
     {
         return Err("Clip independent same physical Store, journal or Project changed".into());
     }
-    let report_value = json!({"schema":"motionwright.native-clip-group-readback/1",
+    let report_value = json!({"schema":"motionwright.native-clip-group-readback/1","composition_case":case.label(),
         "source_receipt_sha256":expected_sha,"reader_authority":"StudioServiceReader",
         "same_physical_database":true,"source_project_unchanged":true,
         "source_history_unchanged":true,"native_effect_observed_by_reader":false,
@@ -387,6 +525,11 @@ mod tests {
 
     #[test]
     fn exact_clip_source_requires_closed_writer_and_reopens_original_store() {
+        for case in [ClipCase::Static, ClipCase::Pose] {
+            exercise_original_clip(case);
+        }
+    }
+    fn exercise_original_clip(case: ClipCase) {
         // These source-only synthetic edits do not substitute for the
         // separately selected Chromium UI and actual physical Native PNGs.
         let temp = tempfile::tempdir().unwrap();
@@ -397,7 +540,7 @@ mod tests {
         writer.prepare_read_only_handoff().unwrap();
         drop(writer);
         let before_file = temp.path().join("before.json");
-        before(&database, &before_file).unwrap();
+        before_case(case, &database, &before_file).unwrap();
         let before_sha = sha256_file(&before_file).unwrap();
         let source: serde_json::Value =
             serde_json::from_slice(&fs::read(&before_file).unwrap()).unwrap();
@@ -488,15 +631,30 @@ mod tests {
             )
             .unwrap()
             .project;
-        check_project(&saved, &baseline).unwrap();
+        if case == ClipCase::Pose {
+            saved = service
+                .apply(
+                    saved.id,
+                    &RevisionStamp::from(&saved),
+                    "clip-test-composed-pose",
+                    &Change::SetCanvasMotionKeyframes {
+                        scene_id,
+                        node_id: child.id,
+                        keyframes: pose_keys(&child),
+                    },
+                )
+                .unwrap()
+                .project;
+        }
+        check_project(case, &saved, &baseline).unwrap();
         let history = service.history(saved.id, 0, 96).unwrap();
         let studio = temp.path().join("synthetic-no-browser.json");
         cycle_new_json(
             &studio,
             &json!({
                 "schema":STUDIO_SCHEMA,
-                "status":"FOUR_ORIGINAL_UI_SAVES_AND_CLOSED_STORE",
-                "ui_save_count":4,"closed_store_handoff":true,
+                "status":case.studio_status(),"composition_case":case.label(),
+                "ui_save_count":case.saves(),"closed_store_handoff":true,
                 "before_original_sha256":before_sha,
                 "initial_project":baseline,"project":saved,"history":history,
                 "lifecycle_taints":[],"process_exits":[{"code":0,"signal":null}],
@@ -508,22 +666,38 @@ mod tests {
         let studio_sha = sha256_file(&studio).unwrap();
         let captured = temp.path().join("captured.json");
         assert!(
-            capture(&database, &before_file, &studio, &studio_sha, &captured).is_err(),
+            capture_case(
+                case,
+                &database,
+                &before_file,
+                &studio,
+                &studio_sha,
+                &captured
+            )
+            .is_err(),
             "Open original writer must refuse any independent source capture"
         );
         assert!(!captured.exists());
         service.prepare_read_only_handoff().unwrap();
         drop(service);
-        capture(&database, &before_file, &studio, &studio_sha, &captured).unwrap();
+        capture_case(
+            case,
+            &database,
+            &before_file,
+            &studio,
+            &studio_sha,
+            &captured,
+        )
+        .unwrap();
         let source_sha = sha256_file(&captured).unwrap();
         let report = temp.path().join("reopened.json");
-        readback(&database, &captured, &source_sha, &report).unwrap();
+        readback_case(case, &database, &captured, &source_sha, &report).unwrap();
         let output: serde_json::Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
         assert_eq!(output["source_project_unchanged"], true);
         assert_eq!(output["same_physical_database"], true);
         assert_eq!(output["native_effect_observed_by_reader"], false);
         let wrong = temp.path().join("wrong-hash.json");
-        assert!(readback(&database, &captured, &"0".repeat(64), &wrong).is_err());
+        assert!(readback_case(case, &database, &captured, &"0".repeat(64), &wrong).is_err());
         assert!(!wrong.exists());
         let mut forged: serde_json::Value =
             serde_json::from_slice(&fs::read(&studio).unwrap()).unwrap();
@@ -531,7 +705,8 @@ mod tests {
         let fake = temp.path().join("forged.json");
         cycle_new_json(&fake, &forged).unwrap();
         assert!(
-            capture(
+            capture_case(
+                case,
                 &database,
                 &before_file,
                 &fake,
@@ -558,7 +733,8 @@ mod tests {
         cycle_new_json(&false_studio, &matching_studio).unwrap();
         let refused = temp.path().join("substituted-physical-capture.json");
         assert!(
-            capture(
+            capture_case(
+                case,
                 &database,
                 &false_before,
                 &false_studio,

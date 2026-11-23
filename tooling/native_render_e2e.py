@@ -76,6 +76,14 @@ if LAYER_ORDER_E2E == "1" and (RUN_LABEL
         or os.environ.get("MOTIONWRIGHT_V01_PROVIDER_REPEAT") != "false"):
     raise SystemExit("Original layer-order source needs exact SHA, first attempt, no provider repeat")
 CLIP_E2E = os.environ.get("MOTIONWRIGHT_NATIVE_CLIP_E2E", "0")
+CLIP_COMPOSITION = os.environ.get("MOTIONWRIGHT_NATIVE_CLIP_COMPOSITION", "static")
+if CLIP_COMPOSITION not in {"static", "pose"}:
+    raise SystemExit("Unknown Native Clip composition")
+if CLIP_COMPOSITION == "pose" and CLIP_E2E != "1":
+    raise SystemExit("Composed pose requires one explicitly selected original Clip effect")
+CLIP_PREFIX = "clip-pose" if CLIP_COMPOSITION == "pose" else "clip"
+CLIP_UI_SAVES = 5 if CLIP_COMPOSITION == "pose" else 4
+CLIP_UI_STATUS = ("FIVE" if CLIP_COMPOSITION == "pose" else "FOUR") + "_ORIGINAL_UI_SAVES_AND_CLOSED_STORE"
 if CLIP_E2E not in {"0", "1"}:
     raise SystemExit("Unknown Native source-bound Clip selection")
 if CLIP_E2E == "1" and (NATIVE_SCOPE != "standard" or CAPTION_E2E != "0"
@@ -1841,10 +1849,11 @@ def author_native_clip_group(database: Path, seeded: dict,
     if not node:
         raise AssertionError("Clip Studio original preparation has no Node executable")
     before = EVIDENCE / "clip-before.original.json"
-    snapshot = run_json([str(MW_BIN), "clip-before", str(database), str(before)],
+    snapshot = run_json([str(MW_BIN), CLIP_PREFIX + "-before", str(database), str(before)],
                         env=env, timeout=35)
     before_sha = digest(before)
     if (snapshot.get("source_receipt_sha256") != before_sha
+            or snapshot.get("composition_case") != CLIP_COMPOSITION
             or snapshot.get("project_id") != seeded["project_id"]
             or snapshot.get("generation") != seeded["generation"]
             or snapshot.get("revision") != seeded["revision"]):
@@ -1886,10 +1895,11 @@ def author_native_clip_group(database: Path, seeded: dict,
         raise AssertionError("NATIVE_CLIP_STUDIO_NOT_COMPLETED_BEFORE_HOST")
     original = original_files.strict_json(original_files.raw_file(studio_original, 4*1024*1024))
     if (original.get("schema") != "motionwright.native-clip-group-studio/1"
-            or original.get("status") != "FOUR_ORIGINAL_UI_SAVES_AND_CLOSED_STORE"
+            or original.get("status") != CLIP_UI_STATUS
+            or original.get("composition_case") != CLIP_COMPOSITION
             or original.get("source_sha") != GITHUB_SHA
             or original.get("before_original_sha256") != before_sha
-            or original.get("ui_save_count") != 4
+            or original.get("ui_save_count") != CLIP_UI_SAVES
             or original.get("closed_store_handoff") is not True
             or original.get("native_execution") is not False
             or original.get("automatic_retry") is not False
@@ -1899,16 +1909,17 @@ def author_native_clip_group(database: Path, seeded: dict,
         raise AssertionError("Native Clip original UI Save/closure does not match source")
     studio_sha = digest(studio_original)
     captured = EVIDENCE / "clip-source.original.json"
-    after = run_json([str(MW_BIN), "clip-capture", str(database), str(before),
+    after = run_json([str(MW_BIN), CLIP_PREFIX + "-capture", str(database), str(before),
                       str(studio_original), studio_sha, str(captured)],
                      env=env, timeout=35)
     if (after.get("project_id") != seeded["project_id"]
             or after.get("generation") != seeded["generation"]
-            or after.get("revision") != seeded["revision"] + 4
+            or after.get("revision") != seeded["revision"] + CLIP_UI_SAVES
+            or after.get("composition_case") != CLIP_COMPOSITION
             or after.get("clip_group_saved") is not True
             or after.get("studio_authoring_sha256") != studio_sha
             or after.get("source_receipt_sha256") != digest(captured)):
-        raise AssertionError("Native Clip independent captured project differs from four UI Saves")
+        raise AssertionError("Native Clip independent captured project differs from the selected UI Saves")
     return dict(seeded, revision=after["revision"],
                 clip_source_sha256=after["source_receipt_sha256"],
                 clip_ui_sha256=studio_sha)
@@ -2417,7 +2428,7 @@ def main() -> None:
                     raise AssertionError("Source-authored Clip receipt changed after real Native render")
                 independent = EVIDENCE / "clip-independent-store-readback.original.json"
                 readback = run_json([
-                    str(MW_BIN), "clip-readback", str(database),
+                    str(MW_BIN), CLIP_PREFIX + "-readback", str(database),
                     str(source_file), source_sha, str(independent)
                 ], env=env, timeout=35)
                 if (readback.get("reader_authority") != "StudioServiceReader"
@@ -2426,9 +2437,16 @@ def main() -> None:
                         or readback.get("source_history_unchanged") is not True
                         or readback.get("same_physical_database") is not True):
                     raise AssertionError("Clip same physical SQLite/CAS failed independent original reopen")
-                clip_evidence = verify_source_clip_frames(
-                    tuple(native_clip_original_rgb(frames[i]) for i in (0, 30, 59))
-                )
+                if readback.get("composition_case") != CLIP_COMPOSITION:
+                    raise AssertionError("Clip composition changed across original Store readback")
+                if CLIP_COMPOSITION == "pose":
+                    from native_composed_clip_pixels import original_composed_rgb, verify_composed_clip_frames
+                    clip_evidence = verify_composed_clip_frames(
+                        tuple(original_composed_rgb(frames[i]) for i in (0, 15, 30)))
+                else:
+                    clip_evidence = verify_source_clip_frames(
+                        tuple(native_clip_original_rgb(frames[i]) for i in (0, 30, 59)))
+                clip_evidence["composition_case"] = CLIP_COMPOSITION
                 clip_evidence["source_receipt_sha256"] = source_sha
                 clip_evidence["independent_store_readback_sha256"] = digest(independent)
                 write_private_json(EVIDENCE / "clip-original-native-pixels.json", clip_evidence)
@@ -2545,6 +2563,7 @@ def main() -> None:
                         "exact_linear_opacity_fade_out",
                         *(["source_bound_native_layer_order"] if LAYER_ORDER_E2E == "1" else []),
                         *(["source_bound_rectangular_clip_group"] if CLIP_E2E == "1" else []),
+                        *(["source_bound_composed_clip_pose"] if CLIP_COMPOSITION == "pose" else []),
                         "exact_out_cubic_xy_position",
                         "exact_out_cubic_opacity_fade",
                         "static_geometry_and_native_text",
