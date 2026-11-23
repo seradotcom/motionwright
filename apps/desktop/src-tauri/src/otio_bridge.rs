@@ -136,6 +136,20 @@ fn same_regular_source(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     true
 }
 
+/// Open the admitted leaf without following links or waiting for a FIFO writer.
+/// The automated bridge is admitted only on Linux. Keep the same kernel flags
+/// as Foundation's regular-file import boundary on that supported platform.
+fn open_bridge_source(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
+    }
+    options.open(path)
+}
+
 fn read_regular_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let before_name = path.symlink_metadata().map_err(|_| refused())?;
     if !before_name.file_type().is_file() || before_name.len() == 0 || before_name.len() > limit {
@@ -144,7 +158,9 @@ fn read_regular_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     // Read the same held regular handle, bounded even if a source file grows.
     // Re-observe the descriptor and original pathname after the read so a
     // same-sized replacement is not mistaken for the original file.
-    let mut file = File::open(path).map_err(|_| refused())?;
+    #[cfg(test)]
+    tests::before_source_open(path);
+    let mut file = open_bridge_source(path).map_err(|_| refused())?;
     let before_fd = file.metadata().map_err(|_| refused())?;
     if !same_regular_source(&before_name, &before_fd) {
         return Err(refused());
@@ -550,12 +566,12 @@ pub fn preview(
     {
         return Err("The original OTIO source or edited cut changed during one media verification. Nothing was saved.".into());
     }
-    if let (Some(name), Some(initial)) = (request.received_file.as_ref(), received.as_ref()) {
-        if read_regular_bounded(&bundle.join(name), MAX_PROJECT)? != *initial {
-            return Err(
-                "The initial Kdenlive export changed during inspection. Nothing was saved.".into(),
-            );
-        }
+    if let (Some(name), Some(initial)) = (request.received_file.as_ref(), received.as_ref())
+        && read_regular_bounded(&bundle.join(name), MAX_PROJECT)? != *initial
+    {
+        return Err(
+            "The initial Kdenlive export changed during inspection. Nothing was saved.".into(),
+        );
     }
     let raw = read_regular_bounded(&output, MAX_PROJECT)?;
     let preview: OtioEditPreview = if let Some(initial) = received.as_ref() {
@@ -614,6 +630,112 @@ pub fn preview(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type BeforeSourceOpen = Box<dyn FnOnce(&Path)>;
+    std::thread_local! {
+        static BEFORE_SOURCE_OPEN: std::cell::RefCell<Option<BeforeSourceOpen>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn before_source_open(path: &Path) {
+        let hook = BEFORE_SOURCE_OPEN.with(|slot| slot.borrow_mut().take());
+        if let Some(hook) = hook {
+            hook(path);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn original_source_open_never_follows_a_racing_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let selected = root.path().join("owner-cut.otio");
+        let retained = root.path().join("retained-original.otio");
+        let foreign = root.path().join("foreign-cut.otio");
+        fs::write(&selected, b"original cut").unwrap();
+        fs::write(&foreign, b"foreign clip").unwrap();
+        let selected_in_hook = selected.clone();
+        let foreign_in_hook = foreign.clone();
+        BEFORE_SOURCE_OPEN.with(|slot| {
+            assert!(
+                slot.borrow_mut()
+                    .replace(Box::new(move |path| {
+                        assert_eq!(path, selected_in_hook);
+                        fs::rename(path, &retained).unwrap();
+                        std::os::unix::fs::symlink(&foreign_in_hook, path).unwrap();
+                        // Require refusal at open itself, before an unrelated file
+                        // descriptor can be mistaken for the selected original.
+                        let error = open_bridge_source(path).unwrap_err();
+                        assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
+                    }))
+                    .is_none()
+            );
+        });
+        assert!(read_regular_bounded(&selected, 64).is_err());
+        assert_eq!(fs::read(&foreign).unwrap(), b"foreign clip");
+        assert!(
+            fs::symlink_metadata(&selected)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn original_source_open_rejects_racing_fifo_without_waiting_for_a_writer() {
+        use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
+        use std::sync::mpsc;
+
+        let root = tempfile::tempdir().unwrap();
+        let selected = root.path().join("owner-cut.otio");
+        let retained = root.path().join("retained-original.otio");
+        fs::write(&selected, b"original cut").unwrap();
+        let selected_in_hook = selected.clone();
+        BEFORE_SOURCE_OPEN.with(|slot| {
+            assert!(
+                slot.borrow_mut()
+                    .replace(Box::new(move |path| {
+                        assert_eq!(path, selected_in_hook);
+                        fs::rename(path, &retained).unwrap();
+                        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+                        // SAFETY: this test owns the private directory and the NUL-
+                        // terminated path; only a benign local FIFO is created.
+                        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+                    }))
+                    .is_none()
+            );
+        });
+
+        // Rescue an incorrectly blocking implementation so the negative case
+        // fails instead of hanging the test worker indefinitely. The corrected
+        // reader must finish without ever needing this synthetic FIFO writer.
+        let (finished, wait) = mpsc::channel();
+        let rescue_path = selected.clone();
+        let rescue = std::thread::spawn(move || {
+            if wait.recv_timeout(Duration::from_secs(2)).is_ok() {
+                return false;
+            }
+            let _release_blocked_open = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+                .open(rescue_path)
+                .unwrap();
+            true
+        });
+        let observed = read_regular_bounded(&selected, 64);
+        let _ = finished.send(());
+        let required_rescue = rescue.join().unwrap();
+        assert!(!required_rescue, "source open waited for a FIFO writer");
+        assert!(
+            observed.is_err(),
+            "a FIFO cannot become original media bytes"
+        );
+        assert_eq!(
+            fs::read(root.path().join("retained-original.otio")).unwrap(),
+            b"original cut"
+        );
+    }
 
     #[test]
     fn isolated_original_bridge_stages_the_real_decoder_supervisor_source() {

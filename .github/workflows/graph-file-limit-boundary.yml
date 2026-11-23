@@ -12,6 +12,7 @@ on:
       - 'apps/studio/tests/support/graph-owner/factory.mjs'
       - 'apps/studio/tooling/graph-owner/owner_environment_layout.test.mjs'
       - 'crates/service/examples/studio_review_session.rs'
+      - 'apps/desktop/src-tauri/src/otio_bridge.rs'
       - 'crates/native/examples/native-graph-review-session.rs'
       - 'apps/desktop/src-tauri/src/semantic_graph_mutation_error.rs'
       - 'apps/desktop/src-tauri/src/semantic_graph_recovery.rs'
@@ -96,6 +97,30 @@ jobs:
               raw = (root / filename).read_text()
               assert re.search(r"(?m)^test result: ok\. " + str(count) + r" passed; 0 failed; 1 ignored;", raw), filename
           print("LINUX_RETAINED_STORE_REGRESSION=PASS; identity=6; reader=15; helpers=2")
+          PY
+      - name: Verify the actual Desktop OTIO intake through its Service consumer
+        run: |
+          set -euo pipefail
+          cargo test --locked --jobs 2 -p motionwright-service --example studio_review_session \
+            'otio_bridge::tests::' -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/otio-source-intake.log"
+          python3 -B - <<'PY'
+          import os, re
+          from pathlib import Path
+          raw = (Path(os.environ["RUNNER_TEMP"]) / "otio-source-intake.log").read_text()
+          required = {
+              "isolated_original_bridge_stages_the_real_decoder_supervisor_source",
+              "refused_otio_names_and_missing_bundle_never_touch_media_or_grants",
+              "original_source_identity_rejects_same_size_name_replacement_and_symlink",
+              "portable_otio_publication_never_clobbers_a_racing_directory_or_dangling_symlink",
+              "request_rejects_foreign_fields_before_bridge_authority",
+              "media_bundle_export_rejects_implicit_rights_and_noncanonical_origins",
+              "original_source_open_never_follows_a_racing_symlink",
+              "original_source_open_rejects_racing_fifo_without_waiting_for_a_writer",
+          }
+          passed = re.findall(r"(?m)^test otio_bridge::tests::([A-Za-z0-9_]+) \.\.\. ok$", raw)
+          assert set(passed) == required and len(passed) == len(required), passed
+          assert re.search(r"(?m)^test result: ok\. 8 passed; 0 failed; 0 ignored;", raw)
+          print("OTIO_ORIGINAL_FILE_INTAKE=PASS; source_tests=8; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           PY
       - name: Run all 23 actual Graph Service admission and SQLite lease tests
         run: |

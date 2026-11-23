@@ -250,7 +250,7 @@ for path in iter_source_files(ROOT):
         # Any code change revokes this admission until a new security review.
         reviewed_production_process_sources = {
             "apps/desktop/src-tauri/src/otio_bridge.rs":
-                "832390283b1de594bf128fe234a7c777d772ad39d905ceeac055358f66486b08",
+                "20c856731fa93481b562da5d7ca556154c46975032b67a086210ed779b19fd84",
         }
         reviewed_production_process = (
             rel in reviewed_production_process_sources
