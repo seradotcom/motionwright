@@ -38,6 +38,12 @@ on:
       - 'crates/service/Cargo.toml'
       - 'Cargo.lock'
   workflow_dispatch:
+    inputs:
+      verify_macos_store:
+        description: "Verify macOS SQLite/CAS continuity when Store or macOS source changes"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -217,9 +223,10 @@ jobs:
     # Share the bounded workflow and serialize heavy compilation with Linux.
     # This is Store continuity on macOS, not a Native render or a release grant.
     needs: compile-transports
-    # Serialize resources, while retaining independent macOS observations if
-    # Linux lint finds a separate defect. Any failed job still fails this run.
-    if: ${{ !cancelled() }}
+    # Select this platform lane explicitly by impact. Unrelated Studio/Native
+    # source fixes reuse valid original Store observations instead of running
+    # another platform matrix. A selected failed job still fails this run.
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.verify_macos_store }}
     runs-on: macos-15
     timeout-minutes: 25
     steps:

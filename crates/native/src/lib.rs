@@ -6613,7 +6613,8 @@ mod tests {
         assert!(names.contains(&"driver.motionwright.narration.take.record"));
         assert!(names.contains(&"driver.motionwright.narration.take.release"));
         assert!(names.contains(&"driver.motionwright.operation.get"));
-        assert_eq!(capabilities.len(), 83);
+        assert!(names.contains(&"driver.motionwright.canvas.motion-keyframes.replace"));
+        assert_eq!(capabilities.len(), 84);
     }
 
     #[test]

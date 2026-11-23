@@ -1464,15 +1464,22 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
+          # Cargo's forced ANSI output hid the real compiler failure from the
+          # existing bounded diagnostic filter. Keep source diagnostics plain.
+          export CARGO_TERM_COLOR=never
+          source_phase=admission
+          trap 'status=$?; if [ "$status" -ne 0 ]; then echo "SOURCE_G1_FAILED_PHASE=$source_phase EXIT=$status"; fi' EXIT
           test "$MW_CLIPPED_OPACITY_SOURCE_ONLY" = 1
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           root="$RUNNER_TEMP/motionwright-clipped-opacity-g1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           test ! -e "$root"
           mkdir -m 700 "$root"
+          source_phase=compile-all-native-targets
           cargo clippy --locked --jobs 2 -p motionwright-native --all-targets -- -D warnings > "$root/native-compile.original.log" 2>&1 || {
               grep -E '^error:|^error\[|^ *-->' "$root/native-compile.original.log" | tail -n 18
               exit 1
             }
+          source_phase=rust-source-contracts
           # The source verification has NO Broker, grant, render, or replay.
           # Only bounded test summaries are printed, not raw Service receipts.
           cargo test --locked -p motionwright-native --lib             film::tests::original_editable_clip_child_opacity_fades_in_and_out_in_native_film             -- --exact --test-threads=1 > "$root/film-positive.original.log" 2>&1 || {
@@ -1531,21 +1538,42 @@ jobs:
               grep -E '^test |^test result:|^error:|panicked at' "$root/pose-original-store.original.log" | tail -n 12
               exit 1
             }
+          cargo test --locked --jobs 2 -p motionwright-native --lib \
+            tests::public_native_sdk_exposes_bounded_motionwright_capabilities \
+            -- --exact --test-threads=1 > "$root/pose-public-capabilities.original.log" 2>&1 || {
+              grep -E '^test |^test result:|^error:|panicked at' "$root/pose-public-capabilities.original.log" | tail -n 12
+              exit 1
+            }
+          cargo test --locked --jobs 2 -p motionwright-native --lib \
+            tests::every_operation_contract_keeps_semwright_provider_scope \
+            -- --exact --test-threads=1 > "$root/pose-operation-contracts.original.log" 2>&1 || {
+              grep -E '^test |^test result:|^error:|panicked at' "$root/pose-operation-contracts.original.log" | tail -n 12
+              exit 1
+            }
+          source_phase=service-build
           cargo build --locked -p motionwright-service --example studio_review_session > "$root/service-build.original.log" 2>&1 || {
             grep -E '^error:|^error\[' "$root/service-build.original.log" | tail -n 10
             exit 1
           }
           test -x "$GITHUB_WORKSPACE/target/debug/examples/studio_review_session"
           cd apps/studio
+          source_phase=npm-install
           npm ci --no-audit --no-fund > "$root/npm.original.log" 2>&1
-          npx --no-install tsc --noEmit --project tsconfig.app.json > "$root/types.original.log" 2>&1
+          source_phase=studio-types
+          npx --no-install tsc --noEmit --pretty false --project tsconfig.app.json > "$root/types.original.log" 2>&1 || {
+              grep -E '^src/[^()]+\([0-9]+,[0-9]+\): error TS[0-9]+:' "$root/types.original.log" | cut -c1-320 | head -n 12
+              exit 1
+            }
+          source_phase=chromium-install
           npx --no-install playwright install --with-deps chromium > "$root/browser.original.log" 2>&1
           export MOTIONWRIGHT_SERVICE_TEST_BIN="$GITHUB_WORKSPACE/target/debug/examples/studio_review_session"
+          source_phase=studio-original-save-and-reopen
           npx --no-install playwright test tests/native-clipped-opacity-service.spec.ts tests/native-clipped-position-service.spec.ts tests/native-composed-pose-service.spec.ts             --project=chromium --workers=1 --retries=0 --reporter=dot             --output="$root/browser-original" > "$root/studio-original.log" 2>&1 || {
               grep -E '^\s*[0-9]+ failed|^\s*[0-9]+ passed|^\s*[0-9]+ skipped|Error:|TimeoutError:|AssertionError:|^\s*[0-9]+\)' "$root/studio-original.log" | tail -n 12
               exit 1
             }
           cd ../..
+          source_phase=original-results
           CLIPPED_G1_ROOT="$root" python3 -B -E -s - <<'PY_CLIPPED_CHECK'
           from pathlib import Path
           import os,re
@@ -1569,6 +1597,10 @@ jobs:
              "film::tests::composed_pose_refuses_inexact_curves_parent_motion_and_invalid_alpha"),
             ("pose-operations.original.log",
              "tests::creative_operation_arguments_remain_typed_and_bounded"),
+            ("pose-public-capabilities.original.log",
+             "tests::public_native_sdk_exposes_bounded_motionwright_capabilities"),
+            ("pose-operation-contracts.original.log",
+             "tests::every_operation_contract_keeps_semwright_provider_scope"),
             ("pose-original-store.original.log",
              "native_clip_group_e2e::tests::exact_clip_source_requires_closed_writer_and_reopens_original_store"),
           )
@@ -1579,5 +1611,5 @@ jobs:
           studio=(root/"studio-original.log").read_text(encoding="utf8")
           assert re.search(r"\b3 passed\b",studio), "All three original Studio Clip Save/reopen paths must pass"
           assert not re.search(r"\b[1-9][0-9]* skipped\b",studio)
-          print("SOURCE_CLIPPED_ANIMATION_G1=PASS; RustDomain=2; RustFilm=6; RustOperations=1; RustOriginalStore=1; StudioChromium=3; StoreReopen=PRODUCER_TEST; NativeHost=NOT_RUN; G2=NOT_GRANTED; G3=STOP; RELEASE=NOT_AUTHORIZED")
+          print("SOURCE_CLIPPED_ANIMATION_G1=PASS; RustDomain=2; RustFilm=6; RustOperations=3; RustOriginalStore=1; StudioChromium=3; StoreReopen=PRODUCER_TEST; NativeHost=NOT_RUN; G2=NOT_GRANTED; G3=STOP; RELEASE=NOT_AUTHORIZED")
           PY_CLIPPED_CHECK

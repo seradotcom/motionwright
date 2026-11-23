@@ -782,9 +782,8 @@ mod tests {
         assert_eq!(receipt_v2.source_sha256, second_capsule.source_sha256);
         assert_eq!(fs::read(&export_v2).unwrap().as_slice(), edited_bytes);
 
-        // Close the original writer and its import closure before an entirely
-        // new service handle independently reopens the durable Store.
-        drop(import);
+        // The import closure only borrows the service; its last use is above.
+        // Drop the owning writer before a new handle reopens the durable Store.
         drop(f.service);
         let independent_reader = StudioService::open(&f.database).unwrap();
         assert_eq!(independent_reader.project(second.id).unwrap(), second);
