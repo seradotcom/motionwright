@@ -233,6 +233,22 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           key: motionwright-macos-retained-store-1.98.1
+      - name: Prepare physical temporary directory for no-follow Store fixtures
+        run: |
+          python3 -B - <<'PY'
+          import os, tempfile
+          from pathlib import Path
+          # Darwin's default /var temporary alias is deliberately refused by
+          # SQLITE_OPEN_NOFOLLOW. Resolve only the runner-owned parent of a NEW
+          # fixture directory; never resolve or reopen a project database path.
+          parent = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          assert parent.is_dir() and not any(p.is_symlink() for p in (parent, *parent.parents))
+          root = Path(tempfile.mkdtemp(prefix="motionwright-original-store-", dir=parent))
+          assert root.resolve(strict=True) == root and not root.is_symlink()
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as environment:
+              environment.write("TMPDIR=" + str(root) + "\n")
+          print("Physical fixture parent admitted; SQLite NOFOLLOW remains enabled")
+          PY
       - name: Verify retained-file binding against the native public SDK
         run: clang -std=c11 -Werror -fsyntax-only crates/storage/tests/macos_region_abi.c
       - name: Check actual macOS Store and Service compilation
