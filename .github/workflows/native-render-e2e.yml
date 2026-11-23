@@ -31,7 +31,7 @@ on:
         required: false
         default: false
       clipped_opacity_source_only:
-        description: "Exact source Rust + real Studio Chromium Save/reopen for FadeOut inside Clip; no Native Host effect"
+        description: "Exact source Rust and real Studio Save/reopen for Clip opacity and position; no Native Host effect"
         type: boolean
         default: false
         required: false
@@ -1392,7 +1392,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Admit exact Clip opacity source without an effect
+      - name: Admit exact clipped animation source without an effect
         run: |
           set -euo pipefail
           python3 -B -E -s - <<'PY_CLIPPED_ADMIT'
@@ -1434,7 +1434,7 @@ jobs:
           sudo apt-get install --no-install-recommends -y libpipewire-0.3-dev pkg-config clang
           python3 -B tooling/source_policy.py
 
-      - name: Verify exact Film Clip opacity source and real Studio Save in Chromium
+      - name: Verify clipped opacity and position through Film and real Studio Save
         run: |
           set -euo pipefail
           umask 077
@@ -1453,6 +1453,24 @@ jobs:
               grep -E '^test |^test result:|^error:|panicked at' "$root/film-negative.original.log" | tail -n 12
               exit 1
             }
+          cargo test --locked -p motionwright-domain --lib \
+            tests::exact_native_position_move_inside_static_clip_saves_four_editable_keys_once \
+            -- --exact --test-threads=1 > "$root/position-domain.original.log" 2>&1 || {
+              grep -E '^test |^test result:|^error:|panicked at' "$root/position-domain.original.log" | tail -n 12
+              exit 1
+            }
+          cargo test --locked -p motionwright-native --lib \
+            film::tests::exact_native_settle_moves_saved_child_inside_original_clipped_parent \
+            -- --exact --test-threads=1 > "$root/position-film.original.log" 2>&1 || {
+              grep -E '^test |^test result:|^error:|panicked at' "$root/position-film.original.log" | tail -n 12
+              exit 1
+            }
+          cargo test --locked -p motionwright-native --lib \
+            film::tests::native_clipped_position_refuses_dynamic_or_unrepresentable_parentage \
+            -- --exact --test-threads=1 > "$root/position-negative.original.log" 2>&1 || {
+              grep -E '^test |^test result:|^error:|panicked at' "$root/position-negative.original.log" | tail -n 12
+              exit 1
+            }
           cargo build --locked -p motionwright-service --example studio_review_session > "$root/service-build.original.log" 2>&1 || {
             grep -E '^error:|^error\[' "$root/service-build.original.log" | tail -n 10
             exit 1
@@ -1463,7 +1481,7 @@ jobs:
           npx --no-install tsc --noEmit --project tsconfig.json > "$root/types.original.log" 2>&1
           npx --no-install playwright install --with-deps chromium > "$root/browser.original.log" 2>&1
           export MOTIONWRIGHT_SERVICE_TEST_BIN="$GITHUB_WORKSPACE/target/debug/examples/studio_review_session"
-          npx --no-install playwright test tests/native-clipped-opacity-service.spec.ts             --project=chromium --workers=1 --retries=0 --reporter=dot             --output="$root/browser-original" > "$root/studio-original.log" 2>&1 || {
+          npx --no-install playwright test tests/native-clipped-opacity-service.spec.ts tests/native-clipped-position-service.spec.ts             --project=chromium --workers=1 --retries=0 --reporter=dot             --output="$root/browser-original" > "$root/studio-original.log" 2>&1 || {
               grep -E '^\s*[0-9]+ failed|^\s*[0-9]+ passed|^\s*[0-9]+ skipped|Error:|TimeoutError:|AssertionError:|^\s*[0-9]+\)' "$root/studio-original.log" | tail -n 12
               exit 1
             }
@@ -1477,13 +1495,19 @@ jobs:
              "film::tests::original_editable_clip_child_opacity_fades_in_and_out_in_native_film"),
             ("film-negative.original.log",
              "film::tests::clipped_opacity_requires_one_static_root_clip_and_exact_native_curve"),
+            ("position-domain.original.log",
+             "tests::exact_native_position_move_inside_static_clip_saves_four_editable_keys_once"),
+            ("position-film.original.log",
+             "film::tests::exact_native_settle_moves_saved_child_inside_original_clipped_parent"),
+            ("position-negative.original.log",
+             "film::tests::native_clipped_position_refuses_dynamic_or_unrepresentable_parentage"),
           )
           for name,case in expected:
               data=(root/name).read_text(encoding="utf8")
               assert "test "+case+" ... ok" in data
               assert "test result: ok. 1 passed; 0 failed;" in data
           studio=(root/"studio-original.log").read_text(encoding="utf8")
-          assert re.search(r"\b1 passed\b",studio), "Original Studio Chromium Save/reopen not proven"
+          assert re.search(r"\b2 passed\b",studio), "Both original Studio Clip Save/reopen paths must pass"
           assert not re.search(r"\b[1-9][0-9]* skipped\b",studio)
-          print("SOURCE_CLIPPED_OPACITY_G1=PASS; RustFilm=2; StudioChromium=1; StoreReopen=PRODUCER_TEST; NativeHost=NOT_RUN; G2=NOT_GRANTED; G3=STOP; RELEASE=NOT_AUTHORIZED")
+          print("SOURCE_CLIPPED_ANIMATION_G1=PASS; RustDomain=1; RustFilm=4; StudioChromium=2; StoreReopen=PRODUCER_TEST; NativeHost=NOT_RUN; G2=NOT_GRANTED; G3=STOP; RELEASE=NOT_AUTHORIZED")
           PY_CLIPPED_CHECK

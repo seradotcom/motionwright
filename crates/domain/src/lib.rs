@@ -2083,15 +2083,31 @@ impl Project {
                     .iter()
                     .position(|node| node.id == *node_id)
                     .ok_or_else(|| DomainError::NotFound(format!("node:{node_id}")))?;
-                if scene.nodes[index].parent_id.is_some()
-                    || scene.nodes[index].kind == "group"
+                // A direct child of one static root Clip group can move in
+                // that same saved clipping plane. Parent geometry, hierarchy
+                // and the original world-position source are not rewritten.
+                let direct_static_clip = scene.nodes[index].parent_id.is_some_and(|parent_id| {
+                    scene.nodes[index].coordinate_space == CoordinateSpace::ProjectPixels
+                        && scene.nodes.iter().any(|parent| {
+                            parent.id == parent_id
+                                && parent.kind == "clip_group"
+                                && parent.parent_id.is_none()
+                                && parent.keyframes.is_empty()
+                                && parent.relations.is_empty()
+                                && parent.opacity == 1.0
+                                && parent.rotation_deg == 0.0
+                                && parent.coordinate_space == CoordinateSpace::ProjectPixels
+                        })
+                });
+                if (scene.nodes[index].parent_id.is_some() && !direct_static_clip)
+                    || matches!(scene.nodes[index].kind.as_str(), "group" | "clip_group")
                     || scene
                         .nodes
                         .iter()
                         .any(|node| node.parent_id == Some(*node_id))
                 {
                     return Err(DomainError::Invalid(
-                        "native linear position move requires an independent unparented non-group object".into(),
+                        "native linear position move requires an unparented drawable or a direct child of one static root Clip group".into(),
                     ));
                 }
                 let node = &mut scene.nodes[index];
@@ -3516,6 +3532,131 @@ mod tests {
         );
         assert!(project.apply_change(&change).is_err());
         assert_eq!(project.scenes[0].nodes[0].keyframes.len(), 4);
+    }
+
+    #[test]
+    fn exact_native_position_move_inside_static_clip_saves_four_editable_keys_once() {
+        let mut baseline = Project::new("One authored clipped movement").unwrap();
+        baseline
+            .apply_change(&Change::AddScene {
+                name: "Clipped scene".into(),
+                objective: "Reveal one saved child inside a source Clip".into(),
+                duration_seconds: 2,
+            })
+            .unwrap();
+        let scene_id = baseline.scenes[0].id;
+        let mut group = canvas_node("Clip plane");
+        group.kind = "clip_group".into();
+        group.x = 640.0;
+        group.y = 360.0;
+        group.width = 640.0;
+        group.height = 360.0;
+        let group_id = group.id;
+        let mut child = canvas_node("Clipped moving shape");
+        child.parent_id = Some(group_id);
+        child.x = 1100.0;
+        child.y = 430.0;
+        child.width = 360.0;
+        child.height = 220.0;
+        let child_id = child.id;
+        for object in [group.clone(), child.clone()] {
+            baseline
+                .apply_change(&Change::AddCanvasNode {
+                    scene_id,
+                    node: object,
+                })
+                .unwrap();
+        }
+        let deliverable_id = baseline.deliverables[0].id;
+        for cubic in [false, true] {
+            let mut project = baseline.clone();
+            let change = if cubic {
+                Change::SetCanvasOutCubicPositionMotion {
+                    scene_id,
+                    node_id: child_id,
+                    deliverable_id,
+                    start_x: 1400.0,
+                    start_y: 430.0,
+                    end_frame: 30,
+                }
+            } else {
+                Change::SetCanvasLinearPositionMotion {
+                    scene_id,
+                    node_id: child_id,
+                    deliverable_id,
+                    start_x: 1400.0,
+                    start_y: 430.0,
+                    end_frame: 30,
+                }
+            };
+            let original_revision = project.revision;
+            project.apply_change(&change).unwrap();
+            assert_eq!(project.revision, original_revision);
+            assert_eq!(project.scenes[0].nodes[0], group, "Clip plane is immutable");
+            let saved = &project.scenes[0].nodes[1];
+            assert_eq!(saved.parent_id, Some(group_id));
+            assert_eq!((saved.x, saved.y), (1100.0, 430.0));
+            assert_eq!(saved.keyframes.len(), 4);
+            assert_eq!(saved.keyframes[0].at, RationalTime::ZERO);
+            assert_eq!(saved.keyframes[0].value, 1400.0);
+            assert_eq!(saved.keyframes[1].value, 430.0);
+            assert_eq!(saved.keyframes[2].at, RationalTime::new(1, 1).unwrap());
+            assert_eq!(saved.keyframes[2].value, 1100.0);
+            assert_eq!(saved.keyframes[3].value, 430.0);
+            let easing = if cubic {
+                MotionInterpolation::EaseOutCubic
+            } else {
+                MotionInterpolation::Linear
+            };
+            assert_eq!(saved.keyframes[2].interpolation, easing);
+            assert_eq!(saved.keyframes[3].interpolation, easing);
+            assert!(
+                project.apply_change(&change).is_err(),
+                "Existing keys cannot be overwritten"
+            );
+            assert_eq!(project.scenes[0].nodes[1].keyframes.len(), 4);
+        }
+
+        let request = Change::SetCanvasLinearPositionMotion {
+            scene_id,
+            node_id: child_id,
+            deliverable_id,
+            start_x: 1400.0,
+            start_y: 430.0,
+            end_frame: 30,
+        };
+        let mut ordinary_group = baseline.clone();
+        ordinary_group.scenes[0].nodes[0].kind = "group".into();
+        assert!(ordinary_group.apply_change(&request).is_err());
+        let mut rotated = baseline.clone();
+        rotated.scenes[0].nodes[0].rotation_deg = 7.0;
+        assert!(rotated.apply_change(&request).is_err());
+        let mut moving_parent = baseline.clone();
+        moving_parent.scenes[0].nodes[0]
+            .keyframes
+            .push(CanvasKeyframe {
+                at: RationalTime::ZERO,
+                property: MotionProperty::Opacity,
+                value: 0.5,
+                interpolation: MotionInterpolation::Linear,
+            });
+        assert!(moving_parent.apply_change(&request).is_err());
+        let mut non_project_pixels = baseline.clone();
+        non_project_pixels.scenes[0].nodes[1].coordinate_space = CoordinateSpace::SceneLocal;
+        assert!(non_project_pixels.apply_change(&request).is_err());
+        let parent_move = Change::SetCanvasLinearPositionMotion {
+            scene_id,
+            node_id: group_id,
+            deliverable_id,
+            start_x: 1400.0,
+            start_y: 430.0,
+            end_frame: 30,
+        };
+        let mut moving_group = baseline;
+        assert!(
+            moving_group.apply_change(&parent_move).is_err(),
+            "Clip plane itself cannot be silently animated through this API"
+        );
     }
 
     #[test]

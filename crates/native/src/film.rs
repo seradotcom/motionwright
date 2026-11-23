@@ -339,6 +339,24 @@ struct NativeOpacityFade {
     direction: NativeOpacityDirection,
 }
 
+/// Only one root, static, unparented Clip group can safely enclose a moving
+/// or fading child in the current pinned Native Film contract. Both child
+/// offset and source alpha are mapped relative to that same original parent.
+fn native_static_root_clip_parent(node: &CanvasNode, scene: &Scene) -> bool {
+    node.parent_id.is_some_and(|parent_id| {
+        scene.nodes.iter().any(|parent| {
+            parent.id == parent_id
+                && parent.kind == "clip_group"
+                && parent.parent_id.is_none()
+                && parent.keyframes.is_empty()
+                && parent.relations.is_empty()
+                && parent.opacity == 1.0
+                && parent.rotation_deg == 0.0
+                && parent.coordinate_space == CoordinateSpace::ProjectPixels
+        })
+    })
+}
+
 /// Only the two exact native opacity endpoints are admitted: 0 -> 1 (FadeIn)
 /// or 1 -> 0 (FadeOut), at an integer output frame. The Canvas base opacity
 /// remains 1; the terminal FadeOut value is a saved keyframe, not a mutation
@@ -367,18 +385,7 @@ fn native_exact_opacity_fade(
     // Group remains the real clipping authority; never flatten its child or
     // replace a source clip with an alpha approximation. Other parented
     // hierarchies keep their historical closed refusal.
-    let exact_clip_parent = node.parent_id.is_some_and(|parent_id| {
-        scene.nodes.iter().any(|parent| {
-            parent.id == parent_id
-                && parent.kind == "clip_group"
-                && parent.parent_id.is_none()
-                && parent.keyframes.is_empty()
-                && parent.relations.is_empty()
-                && parent.opacity == 1.0
-                && parent.rotation_deg == 0.0
-                && parent.coordinate_space == CoordinateSpace::ProjectPixels
-        })
-    });
+    let exact_clip_parent = native_static_root_clip_parent(node, scene);
     if !scene.beats.is_empty()
         || (node.parent_id.is_some() && !exact_clip_parent)
         || matches!(node.kind.as_str(), "group" | "clip_group")
@@ -454,7 +461,7 @@ fn native_linear_position_motion(
         ))
     };
     if !scene.beats.is_empty()
-        || node.parent_id.is_some()
+        || (node.parent_id.is_some() && !native_static_root_clip_parent(node, scene))
         || matches!(node.kind.as_str(), "group" | "clip_group")
         || scene
             .nodes
@@ -3731,6 +3738,214 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::Unsupported);
+    }
+
+    fn set_clipped_position_keys(
+        node: &mut CanvasNode,
+        start_x: f64,
+        interpolation: MotionInterpolation,
+    ) {
+        for (at, x, y, curve) in [
+            (
+                RationalTime::ZERO,
+                start_x,
+                node.y,
+                MotionInterpolation::Linear,
+            ),
+            (
+                RationalTime::new(1, 1).unwrap(),
+                node.x,
+                node.y,
+                interpolation,
+            ),
+        ] {
+            node.keyframes.push(CanvasKeyframe {
+                at,
+                property: MotionProperty::X,
+                value: x,
+                interpolation: curve,
+            });
+            node.keyframes.push(CanvasKeyframe {
+                at,
+                property: MotionProperty::Y,
+                value: y,
+                interpolation: curve,
+            });
+        }
+    }
+
+    #[test]
+    fn exact_native_settle_moves_saved_child_inside_original_clipped_parent() {
+        for (interpolation, easing) in [
+            (MotionInterpolation::Linear, MotionEasing::Linear),
+            (MotionInterpolation::EaseOutCubic, MotionEasing::OutCubic),
+        ] {
+            let (mut project, parent_id, child_id) = clipped_opacity_source();
+            let child = project.scenes[0]
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == child_id)
+                .unwrap();
+            // At frame zero the child is fully outside its saved parent's
+            // right edge. It moves into view, but only through the real Clip.
+            set_clipped_position_keys(child, 1140.0, interpolation);
+            let source = project.clone();
+            let segments = build_motion_canvas_segments(
+                &project,
+                project.deliverables[0].id,
+                &fixture_options(&project),
+            )
+            .unwrap();
+            let output = &segments[0];
+            let shot = &output.film.sequences[0].beats[0].shots[0];
+            let group = shot
+                .subjects
+                .iter()
+                .find(|subject| subject.id == subject_id(parent_id, None))
+                .unwrap();
+            let clipped_child = shot
+                .subjects
+                .iter()
+                .find(|subject| subject.id == subject_id(child_id, None))
+                .unwrap();
+            assert!(matches!(&group.content, SubjectContent::Group));
+            assert!(
+                group.clip_intentional,
+                "source parent must own the real native Clip"
+            );
+            assert_eq!(clipped_child.parent.as_deref(), Some(group.id.as_str()));
+            assert!(!clipped_child.clip_intentional);
+            assert_eq!(shot.motion.len(), 1, "no duplicate or substituted effect");
+            assert_eq!(shot.motion[0].easing, easing);
+            match &shot.motion[0].primitive {
+                Primitive::Settle {
+                    target,
+                    offset,
+                    rotation,
+                } => {
+                    assert_eq!(target, &subject_id(child_id, None));
+                    assert!(offset.x > 0.0, "child starts outside the right Clip edge");
+                    assert_eq!(offset.y, 0.0);
+                    assert_eq!(*rotation, 0.0);
+                }
+                other => panic!("Clipped movement lost exact Native Settle: {other:?}"),
+            }
+            let compiled = realize(&output.film).unwrap();
+            let position = compiled
+                .instructions
+                .iter()
+                .filter(|instruction| {
+                    matches!(
+                        &instruction.operation,
+                        semwright_motion_authoring::NativeOp::Tween {
+                            channel: semwright_motion_authoring::Channel::Position,
+                            ..
+                        }
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(position.len(), 1);
+            assert_eq!(position[0].start, RationalTime::ZERO);
+            assert_eq!(position[0].duration, RationalTime::new(1, 1).unwrap());
+            assert_eq!(position[0].easing, easing);
+            match &position[0].operation {
+                semwright_motion_authoring::NativeOp::Tween { from, to, .. } => {
+                    assert!(matches!(
+                        from,
+                        Some(semwright_motion_authoring::Operand::OriginalOffset(_))
+                    ));
+                    assert_eq!(to, &semwright_motion_authoring::Operand::Original);
+                }
+                other => panic!("Clipped source must produce one Native position Tween: {other:?}"),
+            }
+            assert_eq!(
+                project, source,
+                "Native preparation never edits saved Clip source"
+            );
+        }
+    }
+
+    #[test]
+    fn native_clipped_position_refuses_dynamic_or_unrepresentable_parentage() {
+        let (mut original, parent_id, child_id) = clipped_opacity_source();
+        set_clipped_position_keys(
+            original.scenes[0]
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == child_id)
+                .unwrap(),
+            1140.0,
+            MotionInterpolation::Linear,
+        );
+        let mut negatives = Vec::new();
+        let mut ordinary_parent = original.clone();
+        ordinary_parent.scenes[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == parent_id)
+            .unwrap()
+            .kind = "group".into();
+        negatives.push(ordinary_parent);
+        let mut rotated_parent = original.clone();
+        rotated_parent.scenes[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == parent_id)
+            .unwrap()
+            .rotation_deg = 6.0;
+        negatives.push(rotated_parent);
+        let mut animated_parent = original.clone();
+        set_exact_linear_opacity_keys(
+            animated_parent.scenes[0]
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == parent_id)
+                .unwrap(),
+        );
+        negatives.push(animated_parent);
+        let mut nested_parent = original.clone();
+        let root_id = nested_parent.scenes[0].nodes[0].id;
+        nested_parent.scenes[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == parent_id)
+            .unwrap()
+            .parent_id = Some(root_id);
+        negatives.push(nested_parent);
+        let mut smoothstep = original.clone();
+        smoothstep.scenes[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == child_id)
+            .unwrap()
+            .keyframes[2]
+            .interpolation = MotionInterpolation::EaseInOut;
+        negatives.push(smoothstep);
+        let mut mixed = original.clone();
+        mixed.scenes[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == child_id)
+            .unwrap()
+            .keyframes
+            .push(CanvasKeyframe {
+                at: RationalTime::ZERO,
+                property: MotionProperty::Opacity,
+                value: 0.5,
+                interpolation: MotionInterpolation::Linear,
+            });
+        negatives.push(mixed);
+        for (index, candidate) in negatives.into_iter().enumerate() {
+            let result = build_motion_canvas_segments(
+                &candidate,
+                candidate.deliverables[0].id,
+                &fixture_options(&candidate),
+            );
+            assert!(
+                result.is_err(),
+                "Clip motion negative case {index} was silently admitted"
+            );
+        }
     }
 
     #[test]

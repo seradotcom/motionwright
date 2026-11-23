@@ -744,11 +744,19 @@ export default function CanvasWorkspace({
   const nativeFrameRate = profile
     ? Number(profile.frame_rate.num) / Number(profile.frame_rate.den) : Number.NaN;
   const nativeMoveTime = nativeEndFrame / nativeFrameRate;
+  const selectedStaticClipParent = selectedNode?.parent_id
+    ? scene.nodes.find(parent => parent.id === selectedNode.parent_id
+        && parent.kind === "clip_group" && parent.parent_id === null
+        && parent.keyframes.length === 0 && parent.relations.length === 0
+        && parent.opacity === 1 && parent.rotation_deg === 0
+        && parent.coordinate_space === "project_pixels")
+    : null;
   const nativeMoveAllowed = Boolean(profile && selectedNode
     && scene.renderer === "motion-canvas" && scene.beats.length === 0
     && !scenePositionLocked && !selectedNode.property_locks.includes("position")
-    && selectedNode.parent_id === null && selectedNode.kind !== "group"
-    && selectedNode.kind !== "clip_group"
+    && (selectedNode.parent_id === null || (selectedStaticClipParent
+      && selectedNode.coordinate_space === "project_pixels"))
+    && selectedNode.kind !== "group" && selectedNode.kind !== "clip_group"
     && !scene.nodes.some((node) => node.parent_id === selectedNode.id)
     && selectedNode.keyframes.length === 0
     && Number.isFinite(nativeStartX) && Number.isFinite(nativeStartY)
