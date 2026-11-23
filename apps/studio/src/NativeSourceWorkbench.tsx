@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Download, RefreshCw, Save } from "lucide-react";
+import BlenderSourceInspector from "./BlenderSourceInspector";
+import { BLENDER_RECIPE_MEDIA_TYPE } from "./blenderSourceApi";
 import type { Project, Scene } from "./types";
 import {
   FILE_IMPORT_CHANGED, FILE_IMPORT_PREFIX, assertNoFileImport, readFileImports,
@@ -187,6 +189,9 @@ function SourceEditor({ project, scene, target, busy, saveSource, refreshProject
       <span className="mono" style={{ overflowWrap: "anywhere" }}>sha256:{capsule.source_sha256}</span>
       <span>Replacing this source clears its previous realization and fidelity evidence.</span>
     </div>}
+    {capsule && sourceAsset && [BLENDER_RECIPE_MEDIA_TYPE, "application/x-blender"].includes(sourceAsset.media_type) &&
+      <BlenderSourceInspector key={sourceKey} project={project} sceneId={scene.id}
+        capsuleId={capsule.id} busy={pending || pendingImport}/>}
     {capsule && <section className="production-notice" aria-label="Recover saved native source">
       <strong>Export the editable original</strong>
       <p className="production-help">Recover the saved source bytes without exporting the entire project. Choose a new absolute file path with the original extension. The export does not run an editor or execute imported content.</p>
