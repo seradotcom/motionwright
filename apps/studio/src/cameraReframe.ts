@@ -23,6 +23,51 @@ const KEYS=[
   "end_center_x","end_center_y","duration_frames",
 ];
 function invalid(message:string):never {throw new Error("CameraReframe: "+message);}
+
+export const cameraUsesComposition = (scene: Scene): boolean =>
+  scene.nodes.some(node => node.keyframes.length > 0 || node.parent_id !== null || node.kind === "clip_group");
+
+function cameraMotionStart(node: Scene["nodes"][number], scene: Scene): Scene["nodes"][number] {
+  const fail = (): never => invalid("composition requires exact paired motion and a static root Clip for node " + node.id);
+  if (node.coordinate_space !== "project_pixels" || node.relations.length || node.style.blend_mode !== "normal") fail();
+  if (node.parent_id !== null) {
+    const parent = scene.nodes.find(candidate => candidate.id === node.parent_id);
+    if (!parent || parent.kind !== "clip_group" || parent.parent_id !== null || parent.keyframes.length
+      || parent.rotation_deg !== 0 || parent.opacity !== 1 || parent.coordinate_space !== "project_pixels"
+      || parent.relations.length) fail();
+  }
+  if (node.kind === "group" || (node.kind === "clip_group" && (node.parent_id !== null
+    || node.keyframes.length || node.rotation_deg !== 0 || node.opacity !== 1))) fail();
+  const initial = structuredClone(node);
+  if (!node.keyframes.length) return initial;
+  if (node.rotation_deg !== 0 || node.opacity !== 1 || scene.nodes.some(child => child.parent_id === node.id)) fail();
+  const geometry = node.keyframes.some(key => key.property !== "opacity");
+  if (geometry && !["shape", "rectangle", "circle"].includes(node.kind)) fail();
+  if (node.keyframes.some(key => key.property === "x") !== node.keyframes.some(key => key.property === "y")) fail();
+  let geometryEnd: string | null = null;
+  for (const property of ["x", "y", "width", "height", "rotation_deg", "opacity"] as const) {
+    const keys = node.keyframes.filter(key => key.property === property).sort((a, b) => seconds(a.at) - seconds(b.at));
+    if (!keys.length) continue;
+    if (keys.length !== 2 || keys[0].at.num !== "0" || keys[0].at.den !== "1"
+      || keys[0].interpolation !== "linear" || seconds(keys[1].at) <= 0
+      || seconds(keys[1].at) >= seconds(scene.duration)) fail();
+    try { if ((BigInt(keys[1].at.num) * 30n) % BigInt(keys[1].at.den) !== 0n) fail(); } catch { fail(); }
+    if (property === "opacity") {
+      if (!["linear", "ease_out_cubic"].includes(keys[1].interpolation)
+        || !((keys[0].value === 0 && keys[1].value === 1) || (keys[0].value === 1 && keys[1].value === 0))) fail();
+      continue;
+    }
+    if (!["linear", "ease_out_cubic", "hold"].includes(keys[1].interpolation)) fail();
+    const end = JSON.stringify([keys[1].at.num, keys[1].at.den, keys[1].interpolation]);
+    if (geometryEnd !== null && geometryEnd !== end) fail();
+    geometryEnd = end;
+    if (keys[1].value !== node[property]) fail();
+    initial[property] = keys[0].value;
+  }
+  if (initial.width <= 0 || initial.height <= 0) fail();
+  return initial;
+}
+
 export function validateCameraReframe(source:CameraReframe,scene:Scene):void{
   if(!source || typeof source!=="object" || Array.isArray(source) ||
     Object.keys(source).sort().join("|")!==[...KEYS].sort().join("|"))
@@ -43,8 +88,9 @@ export function validateCameraReframe(source:CameraReframe,scene:Scene):void{
   const admittedPair=(source.component_version===CAMERA_REFRAME_VERSION && scene.renderer==="motion-canvas") ||
     (source.component_version===CAMERA_REFRAME_MANIM_VERSION && scene.renderer==="manim-community");
   if(!admittedPair || scene.nodes.length<1 || scene.nodes.length>32 ||
-    scene.beats.length || scene.nodes.some(node=>node.keyframes.length ||
-      node.parent_id!==null || node.kind==="group"))
+    scene.beats.length || scene.nodes.some(node=>node.kind==="group") ||
+    (source.component_version===CAMERA_REFRAME_MANIM_VERSION &&
+      scene.nodes.some(node=>node.keyframes.length || node.parent_id!==null)))
     invalid("an original, ungrouped and motion-free Canvas shot with at most 32 objects is required");
   if(scene.camera.zoom!==1 || scene.camera.rotation_deg!==0)
     invalid("this planar reframe cannot represent optical zoom or 3D rotation");
@@ -77,11 +123,25 @@ export function validateCameraReframe(source:CameraReframe,scene:Scene):void{
     invalid("terminal camera center must match the authored Scene camera");
   const marginX=1920*Math.max(.05,scene.camera.safe_margin);
   const marginY=1080*Math.max(.05,scene.camera.safe_margin);
+  const composed=source.component_version===CAMERA_REFRAME_VERSION && cameraUsesComposition(scene);
   for(const node of scene.nodes){
+    const initial=composed?cameraMotionStart(node,scene):node;
     for(const [cx,cy] of [
       [source.start_center_x,source.start_center_y],
       [source.end_center_x,source.end_center_y],
     ]){
+      if(composed){
+        const width=Math.max(initial.width,node.width),height=Math.max(initial.height,node.height);
+        const rotated=initial.rotation_deg!==0 || node.rotation_deg!==0;
+        const halfWidth=rotated?Math.hypot(width,height)/2:width/2;
+        const halfHeight=rotated?halfWidth:height/2;
+        for(const pose of [initial,node]){
+          const x=pose.x+pose.width/2+960-cx,y=pose.y+pose.height/2+540-cy;
+          if(x-halfWidth<marginX || y-halfHeight<marginY || x+halfWidth>1920-marginX || y+halfHeight>1080-marginY)
+            invalid("composition would crop moving Canvas node "+node.id+"; adjust its complete path");
+        }
+        continue;
+      }
       const x=node.x+960-cx,y=node.y+540-cy;
       if(x<marginX || y<marginY || x+node.width>1920-marginX ||
         y+node.height>1080-marginY)

@@ -299,8 +299,9 @@ export default function CameraReframeWorkbench({project,scene,busy,commitCamera,
         Author one genuine 2D camera-center translation through canonical
         editable subjects. This does not change focal length, create optical
         dolly or provide a 3D camera rig. Both endpoints must preserve every
-        Canvas object inside the native safe area. Scenes with their own
-        keyframes are rejected rather than silently overwriting motion.
+        Canvas object inside the native safe area. Motion Canvas keeps object
+        motion and static Clip groups editable while the camera moves their shared frame.
+        Manim camera sources keep their existing static shape limits.
       </p>
       {!commitCamera&&<p role="status" className="production-error">
         Camera saving is currently unavailable. Your local input is preserved.

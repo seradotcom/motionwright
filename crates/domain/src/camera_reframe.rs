@@ -30,6 +30,165 @@ pub struct CameraReframe {
     /// Exact 30fps duration; no silent shot/frame interpolation inference.
     pub duration_frames: u16,
 }
+
+/// A common native transform frame keeps camera translation on a separate
+/// hierarchy target from every editable object motion channel.
+pub fn camera_uses_composition(scene: &Scene) -> bool {
+    scene.nodes.iter().any(|node| {
+        !node.keyframes.is_empty() || node.parent_id.is_some() || node.kind == "clip_group"
+    })
+}
+
+fn camera_motion_start(node: &CanvasNode, scene: &Scene) -> Result<CanvasNode> {
+    let fail = || {
+        DomainError::Invalid(format!(
+            "Camera composition requires exact paired motion and a static root Clip for node {}",
+            node.id
+        ))
+    };
+    if node.coordinate_space != CoordinateSpace::ProjectPixels
+        || !node.relations.is_empty()
+        || node.style.blend_mode != BlendMode::Normal
+    {
+        return Err(fail());
+    }
+    if let Some(parent_id) = node.parent_id {
+        let parent = scene
+            .nodes
+            .iter()
+            .find(|candidate| candidate.id == parent_id)
+            .ok_or_else(&fail)?;
+        if parent.kind != "clip_group"
+            || parent.parent_id.is_some()
+            || !parent.keyframes.is_empty()
+            || parent.rotation_deg != 0.0
+            || parent.opacity != 1.0
+            || parent.coordinate_space != CoordinateSpace::ProjectPixels
+            || !parent.relations.is_empty()
+        {
+            return Err(fail());
+        }
+    }
+    if node.kind == "group"
+        || (node.kind == "clip_group"
+            && (node.parent_id.is_some()
+                || !node.keyframes.is_empty()
+                || node.rotation_deg != 0.0
+                || node.opacity != 1.0))
+    {
+        return Err(fail());
+    }
+    let mut initial = node.clone();
+    if node.keyframes.is_empty() {
+        return Ok(initial);
+    }
+    if node.rotation_deg != 0.0
+        || node.opacity != 1.0
+        || scene
+            .nodes
+            .iter()
+            .any(|child| child.parent_id == Some(node.id))
+    {
+        return Err(fail());
+    }
+    for key in &node.keyframes {
+        key.validate()?;
+    }
+    let geometry = node
+        .keyframes
+        .iter()
+        .any(|key| key.property != MotionProperty::Opacity);
+    if geometry && !matches!(node.kind.as_str(), "shape" | "rectangle" | "circle") {
+        return Err(fail());
+    }
+    let x = node
+        .keyframes
+        .iter()
+        .any(|key| key.property == MotionProperty::X);
+    let y = node
+        .keyframes
+        .iter()
+        .any(|key| key.property == MotionProperty::Y);
+    if x != y {
+        return Err(fail());
+    }
+    let mut geometry_end = None;
+    for property in [
+        MotionProperty::X,
+        MotionProperty::Y,
+        MotionProperty::Width,
+        MotionProperty::Height,
+        MotionProperty::RotationDeg,
+        MotionProperty::Opacity,
+    ] {
+        let mut keys = node
+            .keyframes
+            .iter()
+            .filter(|key| key.property == property)
+            .collect::<Vec<_>>();
+        if keys.is_empty() {
+            continue;
+        }
+        keys.sort_by_key(|key| key.at);
+        if keys.len() != 2
+            || keys[0].at != RationalTime::ZERO
+            || keys[1].at <= RationalTime::ZERO
+            || keys[1].at >= scene.duration
+            || keys[0].interpolation != MotionInterpolation::Linear
+            || (i128::from(keys[1].at.num) * 30) % i128::from(keys[1].at.den) != 0
+        {
+            return Err(fail());
+        }
+        if property == MotionProperty::Opacity {
+            if !matches!(
+                keys[1].interpolation,
+                MotionInterpolation::Linear | MotionInterpolation::EaseOutCubic
+            ) || !((keys[0].value == 0.0 && keys[1].value == 1.0)
+                || (keys[0].value == 1.0 && keys[1].value == 0.0))
+            {
+                return Err(fail());
+            }
+            continue;
+        }
+        if !matches!(
+            keys[1].interpolation,
+            MotionInterpolation::Linear
+                | MotionInterpolation::EaseOutCubic
+                | MotionInterpolation::Hold
+        ) {
+            return Err(fail());
+        }
+        let end = (keys[1].at, keys[1].interpolation);
+        if geometry_end.is_some_and(|prior| prior != end) {
+            return Err(fail());
+        }
+        geometry_end = Some(end);
+        let saved = match property {
+            MotionProperty::X => node.x,
+            MotionProperty::Y => node.y,
+            MotionProperty::Width => node.width,
+            MotionProperty::Height => node.height,
+            MotionProperty::RotationDeg => node.rotation_deg,
+            MotionProperty::Opacity => unreachable!(),
+        };
+        if keys[1].value != saved {
+            return Err(fail());
+        }
+        match property {
+            MotionProperty::X => initial.x = keys[0].value,
+            MotionProperty::Y => initial.y = keys[0].value,
+            MotionProperty::Width => initial.width = keys[0].value,
+            MotionProperty::Height => initial.height = keys[0].value,
+            MotionProperty::RotationDeg => initial.rotation_deg = keys[0].value,
+            MotionProperty::Opacity => unreachable!(),
+        }
+    }
+    if initial.width <= 0.0 || initial.height <= 0.0 {
+        return Err(fail());
+    }
+    Ok(initial)
+}
+
 impl CameraReframe {
     pub fn validate(&self, scene: &Scene) -> Result<()> {
         let admitted_pair = (self.component_version == CAMERA_REFRAME_VERSION
@@ -41,9 +200,12 @@ impl CameraReframe {
             || scene.nodes.is_empty()
             || scene.nodes.len() > 32
             || !scene.beats.is_empty()
-            || scene.nodes.iter().any(|node| {
-                !node.keyframes.is_empty() || node.parent_id.is_some() || node.kind == "group"
-            })
+            || scene.nodes.iter().any(|node| node.kind == "group")
+            || (self.component_version == CAMERA_REFRAME_MANIM_VERSION
+                && scene
+                    .nodes
+                    .iter()
+                    .any(|node| !node.keyframes.is_empty() || node.parent_id.is_some()))
         {
             return Err(DomainError::Invalid(
                 "CameraReframe requires one ungrouped, motion-free original Motion Canvas shot of at most 32 objects".into(),
@@ -139,11 +301,48 @@ impl CameraReframe {
         }
         let margin_x = CAMERA_REF_CANVAS_WIDTH * scene.camera.safe_margin.max(0.05);
         let margin_y = CAMERA_REF_CANVAS_HEIGHT * scene.camera.safe_margin.max(0.05);
+        let composed =
+            self.component_version == CAMERA_REFRAME_VERSION && camera_uses_composition(scene);
         for node in &scene.nodes {
+            let initial = if composed {
+                camera_motion_start(node, scene)?
+            } else {
+                node.clone()
+            };
             for (center_x, center_y) in [
                 (self.start_center_x, self.start_center_y),
                 (self.end_center_x, self.end_center_y),
             ] {
+                if composed {
+                    let width = initial.width.max(node.width);
+                    let height = initial.height.max(node.height);
+                    let rotated = initial.rotation_deg != 0.0 || node.rotation_deg != 0.0;
+                    let half_width = if rotated {
+                        width.hypot(height) / 2.0
+                    } else {
+                        width / 2.0
+                    };
+                    let half_height = if rotated { half_width } else { height / 2.0 };
+                    // Camera and object may use different durations/curves.
+                    // Their Cartesian envelope bounds every frame and Hold cut.
+                    for pose in [&initial, node] {
+                        let x =
+                            pose.x + pose.width / 2.0 + CAMERA_REF_CANVAS_WIDTH / 2.0 - center_x;
+                        let y =
+                            pose.y + pose.height / 2.0 + CAMERA_REF_CANVAS_HEIGHT / 2.0 - center_y;
+                        if x - half_width < margin_x
+                            || y - half_height < margin_y
+                            || x + half_width > CAMERA_REF_CANVAS_WIDTH - margin_x
+                            || y + half_height > CAMERA_REF_CANVAS_HEIGHT - margin_y
+                        {
+                            return Err(DomainError::Invalid(format!(
+                                "Camera composition would crop moving Canvas node {}; adjust its complete path",
+                                node.id
+                            )));
+                        }
+                    }
+                    continue;
+                }
                 let x = node.x + CAMERA_REF_CANVAS_WIDTH / 2.0 - center_x;
                 let y = node.y + CAMERA_REF_CANVAS_HEIGHT / 2.0 - center_y;
                 if x < margin_x
@@ -324,6 +523,99 @@ mod manim_camera_closed_pair_tests {
             end_center_x: 1000.0,
             end_center_y: 544.0,
             duration_frames: 24,
+        }
+    }
+
+    #[test]
+    fn camera_composition_preserves_pose_clip_identity_and_rejects_unsafe_paths() {
+        for curve in [
+            MotionInterpolation::Linear,
+            MotionInterpolation::EaseOutCubic,
+            MotionInterpolation::Hold,
+        ] {
+            let (mut project, scene_id) = reference_project();
+            project.scenes[0].renderer = RendererKind::MotionCanvas;
+            let mut clip = project.scenes[0].nodes[0].clone();
+            clip.id = Uuid::now_v7();
+            clip.kind = "clip_group".into();
+            clip.name = "Camera source Clip".into();
+            clip.x = 300.0;
+            clip.y = 300.0;
+            clip.width = 520.0;
+            clip.height = 400.0;
+            clip.style = NodeStyle::default();
+            let clip_id = clip.id;
+            project.scenes[0].nodes.push(clip);
+            let child = &mut project.scenes[0].nodes[0];
+            child.parent_id = Some(clip_id);
+            child.z_index = 2;
+            for (property, from, to) in [
+                (MotionProperty::X, 360.0, child.x),
+                (MotionProperty::Y, 380.0, child.y),
+                (MotionProperty::Width, 180.0, child.width),
+                (MotionProperty::Height, 90.0, child.height),
+                (MotionProperty::RotationDeg, -12.0, 0.0),
+                (MotionProperty::Opacity, 1.0, 0.0),
+            ] {
+                child.keyframes.push(CanvasKeyframe {
+                    at: RationalTime::ZERO,
+                    property,
+                    value: from,
+                    interpolation: MotionInterpolation::Linear,
+                });
+                child.keyframes.push(CanvasKeyframe {
+                    at: RationalTime::ONE,
+                    property,
+                    value: to,
+                    interpolation: if property == MotionProperty::Opacity {
+                        MotionInterpolation::Linear
+                    } else {
+                        curve
+                    },
+                });
+            }
+            let source = project.clone();
+            let mut camera = v2(scene_id);
+            camera.component_version = CAMERA_REFRAME_VERSION;
+            project
+                .apply_change(&Change::UpsertCameraReframe {
+                    reframe: camera.clone(),
+                })
+                .unwrap();
+            assert_eq!(project.scenes[0].nodes, source.scenes[0].nodes);
+            let reopened: Project =
+                serde_json::from_slice(&serde_json::to_vec(&project).unwrap()).unwrap();
+            assert_eq!(reopened, project);
+            reopened.validate().unwrap();
+            for negative in 0..4 {
+                let mut rejected = source.clone();
+                match negative {
+                    0 => rejected.scenes[0].nodes[0].keyframes[0].value = 0.0,
+                    1 => rejected.scenes[0].nodes[0].keyframes[11].value = 0.25,
+                    2 => {
+                        rejected.scenes[0]
+                            .nodes
+                            .iter_mut()
+                            .find(|node| node.id == clip_id)
+                            .unwrap()
+                            .rotation_deg = 5.0
+                    }
+                    3 => {
+                        rejected.scenes[0].nodes[0].keyframes[1].interpolation =
+                            MotionInterpolation::EaseInOut
+                    }
+                    _ => unreachable!(),
+                }
+                let before = rejected.clone();
+                assert!(
+                    rejected
+                        .apply_change(&Change::UpsertCameraReframe {
+                            reframe: camera.clone()
+                        })
+                        .is_err()
+                );
+                assert_eq!(rejected, before);
+            }
         }
     }
 

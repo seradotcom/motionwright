@@ -86,9 +86,6 @@ export function nativePoseEdit(
       return fail("The shape needs an unchanged root Clip group.");
     }
   }
-  if (project.production_design?.camera_reframes?.some(reframe => reframe.scene_id === scene.id)) {
-    return fail("This scene already has camera movement; review its motion mapping first.");
-  }
   if (node.keyframes.length && !savedNativePoseDraft(node, profile)) {
     return fail("This motion has independent or additional keys. Edit them in the Motion inspector.");
   }

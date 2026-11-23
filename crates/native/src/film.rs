@@ -1472,8 +1472,35 @@ fn attach_camera_reframe(
         // The original and terminal layouts must be independently valid for
         // this exact output profile. A linear camera translation is a convex
         // path between safe endpoints and thus cannot crop in between.
-        validate_static_safe_area(node, first_projection, context.output)?;
-        validate_static_safe_area(node, last_projection, context.output)?;
+        let composed = composed_shape_motion(node);
+        let geometry = composed.as_ref().map_or(node, |(geometry, _)| geometry);
+        if let Some(motion) = native_linear_geometry_motion(geometry, scene, context.frame_rate)? {
+            validate_native_geometry_safety(
+                geometry,
+                &motion.start,
+                first_projection,
+                context.output,
+            )?;
+            validate_native_geometry_safety(
+                geometry,
+                &motion.start,
+                last_projection,
+                context.output,
+            )?;
+        } else if let Some(motion) =
+            native_linear_position_motion(geometry, scene, context.frame_rate)?
+        {
+            let mut start = geometry.clone();
+            start.x = motion.start_x;
+            start.y = motion.start_y;
+            for pose in [&start, geometry] {
+                validate_static_safe_area(pose, first_projection, context.output)?;
+                validate_static_safe_area(pose, last_projection, context.output)?;
+            }
+        } else {
+            validate_static_safe_area(node, first_projection, context.output)?;
+            validate_static_safe_area(node, last_projection, context.output)?;
+        }
     }
     let span = format!("camera-reframe-{}", reframe.id.simple());
     let duration = RationalTime::new(i64::from(reframe.duration_frames), 30)
@@ -1497,6 +1524,53 @@ fn attach_camera_reframe(
         x: (reframe.end_center_x - reframe.start_center_x) * context.projection.position_scale_x,
         y: (reframe.end_center_y - reframe.start_center_y) * context.projection.position_scale_y,
     };
+    if motionwright_domain::camera_uses_composition(scene) {
+        let frame_id = uid("camera-frame", reframe.id);
+        let layer = shot
+            .layers
+            .first()
+            .ok_or_else(|| invalid("Camera source has no native layer"))?
+            .id
+            .clone();
+        for subject in &mut shot.subjects {
+            if subject.parent.is_none() {
+                subject.parent = Some(frame_id.clone());
+            }
+        }
+        // An unpainted, unclipped Group carries translation only. Its centered
+        // unit box does not constrain child layout: all existing subjects keep
+        // their exact fixed coordinates and source layer/identity/clip owners.
+        shot.subjects.insert(
+            0,
+            Subject {
+                id: frame_id.clone(),
+                role: "camera-frame".into(),
+                parent: None,
+                layer,
+                content: SubjectContent::Group,
+                layout: SpatialIntent::Fixed {
+                    position: Point { x: 0.0, y: 0.0 },
+                    size: Size {
+                        width: 1.0,
+                        height: 1.0,
+                    },
+                },
+                initially_visible: true,
+                clip_intentional: false,
+            },
+        );
+        shot.motion.push(Invocation {
+            id: format!("camera-reframe-{}", reframe.id.simple()),
+            span_id: span,
+            easing: MotionEasing::Linear,
+            primitive: Primitive::Settle {
+                target: frame_id,
+                offset: shift,
+                rotation: 0.0,
+            },
+        });
+        return Ok(());
+    }
     for node in &scene.nodes {
         shot.motion.push(Invocation {
             id: format!(
@@ -1795,16 +1869,6 @@ fn build_segment(
                 if let Some(motion) =
                     native_linear_geometry_motion(node, scene, options.frame_rate)?
                 {
-                    if project
-                        .production_design
-                        .camera_reframes
-                        .iter()
-                        .any(|reframe| reframe.scene_id == scene.id)
-                    {
-                        return Err(unsupported(
-                            "Animated native geometry and authored camera reframe cannot share an unverified motion target",
-                        ));
-                    }
                     validate_native_geometry_safety(
                         node,
                         &motion.start,
@@ -3426,191 +3490,245 @@ mod tests {
     #[test]
     fn composed_pose_motion_preserves_all_channels_clip_coordinates_and_hold() {
         use semwright_motion_authoring::NativeOp;
-        for clipped in [false, true] {
-            for curve in [
-                MotionInterpolation::Linear,
-                MotionInterpolation::EaseOutCubic,
-                MotionInterpolation::Hold,
-            ] {
-                for fade_in in [false, true] {
-                    let (mut project, parent_id, child_id) = clipped_opacity_source();
-                    let child = project.scenes[0]
-                        .nodes
-                        .iter_mut()
-                        .find(|node| node.id == child_id)
+        for with_camera in [false, true] {
+            for clipped in [false, true] {
+                for curve in [
+                    MotionInterpolation::Linear,
+                    MotionInterpolation::EaseOutCubic,
+                    MotionInterpolation::Hold,
+                ] {
+                    for fade_in in [false, true] {
+                        let (mut project, parent_id, child_id) = clipped_opacity_source();
+                        let child = project.scenes[0]
+                            .nodes
+                            .iter_mut()
+                            .find(|node| node.id == child_id)
+                            .unwrap();
+                        if !clipped {
+                            child.parent_id = None;
+                        }
+                        let mut initial = child.clone();
+                        initial.x -= 20.0;
+                        initial.y -= 20.0;
+                        initial.width = 280.0;
+                        initial.height = 90.0;
+                        initial.rotation_deg = -18.0;
+                        for (property, from, to) in [
+                            (MotionProperty::X, initial.x, child.x),
+                            (MotionProperty::Y, initial.y, child.y),
+                            (MotionProperty::Width, initial.width, child.width),
+                            (MotionProperty::Height, initial.height, child.height),
+                            (
+                                MotionProperty::RotationDeg,
+                                initial.rotation_deg,
+                                child.rotation_deg,
+                            ),
+                            (
+                                MotionProperty::Opacity,
+                                if fade_in { 0.0 } else { 1.0 },
+                                if fade_in { 1.0 } else { 0.0 },
+                            ),
+                        ] {
+                            child.keyframes.push(CanvasKeyframe {
+                                at: RationalTime::ZERO,
+                                property,
+                                value: from,
+                                interpolation: MotionInterpolation::Linear,
+                            });
+                            child.keyframes.push(CanvasKeyframe {
+                                at: RationalTime::ONE,
+                                property,
+                                value: to,
+                                interpolation: if property == MotionProperty::Opacity {
+                                    MotionInterpolation::EaseOutCubic
+                                } else {
+                                    curve
+                                },
+                            });
+                        }
+                        let camera_id = Uuid::now_v7();
+                        if with_camera {
+                            let saved_camera = project.scenes[0].camera.clone();
+                            let reframe = CameraReframe {
+                                id: camera_id,
+                                scene_id: project.scenes[0].id,
+                                component_version: 1,
+                                start_center_x: saved_camera.center_x - 18.0,
+                                start_center_y: saved_camera.center_y - 8.0,
+                                end_center_x: saved_camera.center_x,
+                                end_center_y: saved_camera.center_y,
+                                duration_frames: 45,
+                            };
+                            project
+                                .apply_change(&Change::UpsertCameraReframe { reframe })
+                                .unwrap();
+                        }
+                        let source = project.clone();
+                        let options = fixture_options(&project);
+                        let segments = build_motion_canvas_segments(
+                            &project,
+                            project.deliverables[0].id,
+                            &options,
+                        )
                         .unwrap();
-                    if !clipped {
-                        child.parent_id = None;
-                    }
-                    let mut initial = child.clone();
-                    initial.x -= 20.0;
-                    initial.y -= 20.0;
-                    initial.width = 280.0;
-                    initial.height = 90.0;
-                    initial.rotation_deg = -18.0;
-                    for (property, from, to) in [
-                        (MotionProperty::X, initial.x, child.x),
-                        (MotionProperty::Y, initial.y, child.y),
-                        (MotionProperty::Width, initial.width, child.width),
-                        (MotionProperty::Height, initial.height, child.height),
-                        (
-                            MotionProperty::RotationDeg,
-                            initial.rotation_deg,
-                            child.rotation_deg,
-                        ),
-                        (
-                            MotionProperty::Opacity,
-                            if fade_in { 0.0 } else { 1.0 },
-                            if fade_in { 1.0 } else { 0.0 },
-                        ),
-                    ] {
-                        child.keyframes.push(CanvasKeyframe {
-                            at: RationalTime::ZERO,
-                            property,
-                            value: from,
-                            interpolation: MotionInterpolation::Linear,
-                        });
-                        child.keyframes.push(CanvasKeyframe {
-                            at: RationalTime::ONE,
-                            property,
-                            value: to,
-                            interpolation: if property == MotionProperty::Opacity {
-                                MotionInterpolation::EaseOutCubic
-                            } else {
-                                curve
-                            },
-                        });
-                    }
-                    let source = project.clone();
-                    let options = fixture_options(&project);
-                    let segments = build_motion_canvas_segments(
-                        &project,
-                        project.deliverables[0].id,
-                        &options,
-                    )
-                    .unwrap();
-                    let segment = &segments[0];
-                    let shot = &segment.film.sequences[0].beats[0].shots[0];
-                    let target = subject_id(child_id, None);
-                    let subject = shot
-                        .subjects
-                        .iter()
-                        .find(|subject| subject.id == target)
-                        .unwrap();
-                    assert_eq!(subject.parent, clipped.then(|| subject_id(parent_id, None)));
-                    assert_eq!(subject.initially_visible, !fade_in);
-                    if clipped {
-                        assert!(
-                            shot.subjects
+                        let segment = &segments[0];
+                        let shot = &segment.film.sequences[0].beats[0].shots[0];
+                        let target = subject_id(child_id, None);
+                        let subject = shot
+                            .subjects
+                            .iter()
+                            .find(|subject| subject.id == target)
+                            .unwrap();
+                        let frame_id = uid("camera-frame", camera_id);
+                        let expected_parent = if clipped {
+                            Some(subject_id(parent_id, None))
+                        } else {
+                            with_camera.then(|| frame_id.clone())
+                        };
+                        assert_eq!(subject.parent, expected_parent);
+                        if with_camera {
+                            let frame = shot
+                                .subjects
+                                .iter()
+                                .find(|subject| subject.id == frame_id)
+                                .unwrap();
+                            assert!(frame.parent.is_none() && !frame.clip_intentional);
+                            let camera_motion = shot
+                                .motion
+                                .iter()
+                                .filter(|motion| {
+                                    motion.id == format!("camera-reframe-{}", camera_id.simple())
+                                })
+                                .collect::<Vec<_>>();
+                            assert_eq!(camera_motion.len(), 1);
+                            assert!(
+                                matches!(&camera_motion[0].primitive, Primitive::Settle { target, .. } if target == &frame_id)
+                            );
+                            let clip = shot
+                                .subjects
                                 .iter()
                                 .find(|subject| subject.id == subject_id(parent_id, None))
-                                .unwrap()
-                                .clip_intentional
-                        );
-                    }
-                    let (output, projection) = output_profile(
-                        &project.deliverables[0],
-                        options.frame_rate,
-                        &[&project.scenes[0], &project.scenes[1]],
-                    )
-                    .unwrap();
-                    let source_projection = scene_layout_projection(&project.scenes[0], projection);
-                    let saved = project.scenes[0]
-                        .nodes
-                        .iter()
-                        .find(|node| node.id == child_id)
+                                .unwrap();
+                            assert_eq!(clip.parent, Some(frame_id.clone()));
+                        }
+                        assert_eq!(subject.initially_visible, !fade_in);
+                        if clipped {
+                            assert!(
+                                shot.subjects
+                                    .iter()
+                                    .find(|subject| subject.id == subject_id(parent_id, None))
+                                    .unwrap()
+                                    .clip_intentional
+                            );
+                        }
+                        let (output, projection) = output_profile(
+                            &project.deliverables[0],
+                            options.frame_rate,
+                            &[&project.scenes[0], &project.scenes[1]],
+                        )
                         .unwrap();
-                    let (mut from_center, mut to_center) =
-                        projected_geometry_centers(saved, &initial, source_projection, &output);
-                    if clipped {
-                        let parent = project.scenes[0]
+                        let source_projection =
+                            scene_layout_projection(&project.scenes[0], projection);
+                        let saved = project.scenes[0]
                             .nodes
                             .iter()
-                            .find(|node| node.id == parent_id)
+                            .find(|node| node.id == child_id)
                             .unwrap();
-                        let parent_center = canonical_position(parent, source_projection, &output);
-                        from_center.x -= parent_center.x;
-                        from_center.y -= parent_center.y;
-                        to_center.x -= parent_center.x;
-                        to_center.y -= parent_center.y;
-                    }
-                    let realized = realize(&segment.film).unwrap();
-                    let mut channels = BTreeMap::<Channel, usize>::new();
-                    for instruction in &realized.instructions {
-                        let (actual_target, channel) = match &instruction.operation {
-                            NativeOp::Tween {
-                                target, channel, ..
-                            }
-                            | NativeOp::Set {
-                                target, channel, ..
-                            } => (target, *channel),
-                            _ => continue,
-                        };
-                        if actual_target != &target {
-                            continue;
+                        let (mut from_center, mut to_center) =
+                            projected_geometry_centers(saved, &initial, source_projection, &output);
+                        if clipped {
+                            let parent = project.scenes[0]
+                                .nodes
+                                .iter()
+                                .find(|node| node.id == parent_id)
+                                .unwrap();
+                            let parent_center =
+                                canonical_position(parent, source_projection, &output);
+                            from_center.x -= parent_center.x;
+                            from_center.y -= parent_center.y;
+                            to_center.x -= parent_center.x;
+                            to_center.y -= parent_center.y;
                         }
-                        *channels.entry(channel).or_default() += 1;
-                        if channel == Channel::Opacity {
-                            assert!(matches!(instruction.operation, NativeOp::Tween { .. }));
-                            assert_eq!(instruction.duration, RationalTime::ONE);
-                            assert_eq!(instruction.easing, MotionEasing::OutCubic);
-                        } else if curve == MotionInterpolation::Hold {
-                            assert!(matches!(instruction.operation, NativeOp::Set { .. }));
-                            assert_eq!(instruction.duration, RationalTime::ZERO);
-                            assert!(
-                                [RationalTime::ZERO, RationalTime::ONE]
-                                    .contains(&instruction.start)
-                            );
-                        } else {
-                            assert!(matches!(instruction.operation, NativeOp::Tween { .. }));
-                            assert_eq!(instruction.duration, RationalTime::ONE);
-                            assert_eq!(instruction.easing, exact_native_easing(curve).unwrap());
-                        }
-                        if channel == Channel::Position {
-                            match &instruction.operation {
-                                NativeOp::Tween { from, to, .. } => {
-                                    assert_eq!(from, &Some(Operand::Vector(from_center)));
-                                    assert_eq!(to, &Operand::Vector(to_center));
+                        let realized = realize(&segment.film).unwrap();
+                        let mut channels = BTreeMap::<Channel, usize>::new();
+                        for instruction in &realized.instructions {
+                            let (actual_target, channel) = match &instruction.operation {
+                                NativeOp::Tween {
+                                    target, channel, ..
                                 }
-                                NativeOp::Set { value, .. } => assert_eq!(
-                                    value,
-                                    &Operand::Vector(if instruction.start == RationalTime::ZERO {
-                                        from_center
-                                    } else {
-                                        to_center
-                                    })
-                                ),
-                                _ => unreachable!(),
+                                | NativeOp::Set {
+                                    target, channel, ..
+                                } => (target, *channel),
+                                _ => continue,
+                            };
+                            if actual_target != &target {
+                                continue;
+                            }
+                            *channels.entry(channel).or_default() += 1;
+                            if channel == Channel::Opacity {
+                                assert!(matches!(instruction.operation, NativeOp::Tween { .. }));
+                                assert_eq!(instruction.duration, RationalTime::ONE);
+                                assert_eq!(instruction.easing, MotionEasing::OutCubic);
+                            } else if curve == MotionInterpolation::Hold {
+                                assert!(matches!(instruction.operation, NativeOp::Set { .. }));
+                                assert_eq!(instruction.duration, RationalTime::ZERO);
+                                assert!(
+                                    [RationalTime::ZERO, RationalTime::ONE]
+                                        .contains(&instruction.start)
+                                );
+                            } else {
+                                assert!(matches!(instruction.operation, NativeOp::Tween { .. }));
+                                assert_eq!(instruction.duration, RationalTime::ONE);
+                                assert_eq!(instruction.easing, exact_native_easing(curve).unwrap());
+                            }
+                            if channel == Channel::Position {
+                                match &instruction.operation {
+                                    NativeOp::Tween { from, to, .. } => {
+                                        assert_eq!(from, &Some(Operand::Vector(from_center)));
+                                        assert_eq!(to, &Operand::Vector(to_center));
+                                    }
+                                    NativeOp::Set { value, .. } => assert_eq!(
+                                        value,
+                                        &Operand::Vector(
+                                            if instruction.start == RationalTime::ZERO {
+                                                from_center
+                                            } else {
+                                                to_center
+                                            }
+                                        )
+                                    ),
+                                    _ => unreachable!(),
+                                }
                             }
                         }
-                    }
-                    let count = if curve == MotionInterpolation::Hold {
-                        2
-                    } else {
-                        1
-                    };
-                    assert_eq!(
-                        channels,
-                        BTreeMap::from([
-                            (Channel::Position, count),
-                            (Channel::Width, count),
-                            (Channel::Height, count),
-                            (Channel::Rotation, count),
-                            (Channel::Opacity, 1),
-                        ])
-                    );
-                    assert_eq!(
-                        project, source,
-                        "Film must preserve every editable source key"
-                    );
-                    assert_eq!(
-                        scene_span_cost(&project.scenes[0]),
-                        2 + if curve == MotionInterpolation::Hold {
-                            3
-                        } else {
+                        let count = if curve == MotionInterpolation::Hold {
                             2
-                        }
-                    );
+                        } else {
+                            1
+                        };
+                        assert_eq!(
+                            channels,
+                            BTreeMap::from([
+                                (Channel::Position, count),
+                                (Channel::Width, count),
+                                (Channel::Height, count),
+                                (Channel::Rotation, count),
+                                (Channel::Opacity, 1),
+                            ])
+                        );
+                        assert_eq!(
+                            project, source,
+                            "Film must preserve every editable source key"
+                        );
+                        assert_eq!(
+                            scene_span_cost(&project.scenes[0]),
+                            2 + if curve == MotionInterpolation::Hold {
+                                3
+                            } else {
+                                2
+                            }
+                        );
+                    }
                 }
             }
         }

@@ -105,6 +105,30 @@ test("Studio saves and re-edits a complete clipped pose as one original Service 
     await expect(pose.getByLabel("Pose opacity", { exact: true })).toHaveValue("none");
     await motion.locator(".motion-keyframe-jump").filter({ hasText: "1.500s" }).first().click();
     await expect(object).toHaveCSS("opacity", "1");
+    const posedScene = final.scenes.find(item => item.id === scene.id)!;
+    await page.getByRole("button", { name: "Production", exact: true }).click();
+    await page.getByLabel("Production working scene", { exact: true }).selectOption(scene.id);
+    await page.getByRole("button", { name: "Camera", exact: true }).click();
+    await page.getByLabel("End center X", { exact: true }).fill(String(posedScene.camera.center_x + 12));
+    await page.getByLabel("Camera duration frames", { exact: true }).fill("30");
+    await page.getByRole("button", { name: "Attach camera reframe", exact: true }).click();
+    await expect(revision).toHaveText("r" + (final.revision + 1));
+    final = await service.project(original.id);
+    expect(final.scenes.find(item => item.id === scene.id)?.nodes).toEqual(posedScene.nodes);
+    const savedCamera = final.production_design?.camera_reframes?.find(item => item.scene_id === scene.id);
+    expect(savedCamera).toMatchObject({ end_center_x: posedScene.camera.center_x + 12, duration_frames: 30 });
+    await page.reload();
+    await page.getByRole("button", { name: "Production", exact: true }).click();
+    await page.getByLabel("Production working scene", { exact: true }).selectOption(scene.id);
+    await page.getByRole("button", { name: "Camera", exact: true }).click();
+    await expect(page.getByLabel("End center X", { exact: true })).toHaveValue(String(savedCamera!.end_center_x));
+    await page.getByRole("button", { name: "Canvas", exact: true }).click();
+    await page.locator(".tree-row").filter({ hasText: scene.name }).click();
+    await page.locator(".canvas-tree-row").filter({ hasText: child.name }).click();
+    await expect(pose.getByLabel("Pose end frame", { exact: true })).toHaveValue("45");
+    await expect(motion.locator(".motion-keyframe-row")).toHaveCount(10);
+    await motion.locator(".motion-keyframe-jump").filter({ hasText: "1.500s" }).first().click();
+    await expect(object).toHaveCSS("clip-path", "inset(0% 50% 0% 0%)");
     expect(final.scenes.filter(item => item.id !== scene.id)).toEqual(original.scenes.filter(item => item.id !== scene.id));
     expect(final.assets).toEqual(original.assets);
     expect(final.audio).toEqual(original.audio);
@@ -120,7 +144,7 @@ test("Studio saves and re-edits a complete clipped pose as one original Service 
     try {
       expect(await reader.project(original.id)).toEqual(final);
       expect((await reader.history(original.id, positioned.revision, 8)).map(event => event.change.type))
-        .toEqual(["set_canvas_motion_keyframes", "set_canvas_keyframe", "set_canvas_motion_keyframes"]);
+        .toEqual(["set_canvas_motion_keyframes", "set_canvas_keyframe", "set_canvas_motion_keyframes", "upsert_camera_reframe"]);
     } finally { await reader.close(); }
   } finally {
     if (!page.isClosed()) await page.close();

@@ -4,6 +4,8 @@ import {emptyProductionDesign} from "./creativeProduction";
 import {fixtureProject} from "./fixture";
 import {rationalSeconds} from "./types";
 import {cameraPreviewOffset,validateCameraReframe} from "./cameraReframe";
+import {nativePoseEdit,type NativePoseDraft} from "./nativePoseDraft";
+import {previewTransform} from "./canvasMotion";
 import type {CameraReframe} from "./cameraReframe";
 import type {Project} from "./types";
 
@@ -82,7 +84,7 @@ describe("source-authoritative planar camera reframe",()=>{
       at:rationalSeconds(0),property:"x",value:440,interpolation:"hold",
     }];
     await expect(applyChange(project,{type:"upsert_camera_reframe",reframe:camera}))
-      .rejects.toThrow(/motion-free/);
+      .rejects.toThrow(/exact paired motion/);
     project.scenes[0].nodes[0].keyframes=[];
     project.locks.push({
       id:crypto.randomUUID(),resource:"scene:"+project.scenes[0].id,
@@ -105,6 +107,42 @@ describe("source-authoritative planar camera reframe",()=>{
   });
 });
 
+
+
+describe("camera, complete pose and Clip keep separate editable channels", () => {
+  it.each(["linear","ease_out_cubic","hold"] as const)("saves and reopens %s object motion beneath the shared camera frame", async curve => {
+    const {project,camera}=source(),scene=project.scenes[0],node=scene.nodes[0];
+    const clip=structuredClone(node);
+    Object.assign(clip,{id:crypto.randomUUID(),kind:"clip_group",x:360,y:320,width:480,height:360,z_index:0});
+    clip.style={...clip.style,fill:null,stroke:null,stroke_width:0};
+    scene.nodes.push(clip);node.parent_id=clip.id;node.z_index=1;
+    const draft:NativePoseDraft={start:{x:400,y:400,width:220,height:80,rotation_deg:-12},
+      endFrame:30,curve,fade:"out",fadeCurve:"linear"};
+    const edit=nativePoseEdit(project,scene,node,project.deliverables[0],draft);
+    expect(edit.issue).toBeNull();
+    const posed=await applyChange(project,{type:"set_canvas_motion_keyframes",scene_id:scene.id,node_id:node.id,keyframes:edit.keys!});
+    const cameraSource={...camera,duration_frames:60};
+    const combined=await applyChange(posed,{type:"upsert_camera_reframe",reframe:cameraSource});
+    const saved=combined.scenes[0].nodes.find(item=>item.id===node.id)!;
+    expect(saved).toEqual(posed.scenes[0].nodes.find(item=>item.id===node.id));
+    const atHalf=previewTransform(saved,.5),offset=cameraPreviewOffset(cameraSource,.5);
+    expect(offset).toEqual({x:-4.5,y:-2});
+    expect(atHalf.opacity).toBe(.5);
+    expect(atHalf.x+offset.x).toBeCloseTo((curve==="hold"?400:curve==="linear"?420:435)-4.5);
+    const reopened:Project=JSON.parse(JSON.stringify(combined));
+    const reopenedScene=reopened.scenes[0],reopenedNode=reopenedScene.nodes.find(item=>item.id===node.id)!;
+    const replacement=nativePoseEdit(reopened,reopenedScene,reopenedNode,reopened.deliverables[0],{...draft,endFrame:45,fade:"in"});
+    expect(replacement.issue).toBeNull();
+    const continued=await applyChange(reopened,{type:"set_canvas_motion_keyframes",scene_id:scene.id,node_id:node.id,keyframes:replacement.keys!});
+    expect(continued.production_design?.camera_reframes).toEqual([cameraSource]);
+    expect(continued.scenes[0].nodes.find(item=>item.id===clip.id)).toEqual(clip);
+    expect(continued.scenes[0].nodes.find(item=>item.id===node.id)?.keyframes).toHaveLength(12);
+    const unsafe=structuredClone(posed);
+    unsafe.scenes[0].nodes.find(item=>item.id===node.id)!.keyframes.find(key=>key.property==="x" && key.at.num==="0")!.value=0;
+    await expect(applyChange(unsafe,{type:"upsert_camera_reframe",reframe:cameraSource})).rejects.toThrow(/crop/);
+    expect(unsafe.production_design?.camera_reframes).toEqual([]);
+  });
+});
 
 describe("Camera v2 client profile consistency",()=>{
   function manimSource(){
