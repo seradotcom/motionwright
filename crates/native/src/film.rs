@@ -4100,8 +4100,8 @@ mod tests {
             assert_eq!(instruction.easing, MotionEasing::OutCubic);
             match channel {
                 Channel::Position => {
-                    assert_eq!(from, &Some(Operand::Vector(start_center.clone())));
-                    assert_eq!(to, &Operand::Vector(end_center.clone()));
+                    assert_eq!(from, &Some(Operand::Vector(start_center)));
+                    assert_eq!(to, &Operand::Vector(end_center));
                 }
                 Channel::Width => {
                     assert_eq!(

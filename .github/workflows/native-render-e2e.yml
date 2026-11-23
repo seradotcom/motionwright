@@ -607,9 +607,9 @@ jobs:
                   t=re.sub(r"\x1b\[[0-9;]{1,15}m","",line).strip()
                   # Extract a fixed source-relative Rust coordinate even
                   # when Cargo prints the runner's full absolute path.
-                  panic_location=re.search(r"crates/native/examples/native_clip_group_e2e[.]rs:([0-9]+):([0-9]+)",t)
+                  panic_location=re.search(r"crates/native/examples/native_clip_group_e2e/mod[.]rs:([0-9]+):([0-9]+)",t)
                   if panic_location is not None:
-                      print(name+": SOURCE_RUST_PANIC_LOCATION:crates/native/examples/native_clip_group_e2e.rs:"
+                      print(name+": SOURCE_RUST_PANIC_LOCATION:crates/native/examples/native_clip_group_e2e/mod.rs:"
                             +panic_location.group(1)+":"+panic_location.group(2))
                       observed+=1
                       if observed>=12:
