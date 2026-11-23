@@ -80,6 +80,7 @@ on:
           - storage-service-current
           - service-legacy-fixtures
           - native-source-export
+          - desktop-source
           - native-otio-snapshot
           - native-otio-real-media
           - native-source-browser
@@ -102,7 +103,7 @@ env:
 
 jobs:
   source-boundary:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures' && inputs.verification_scope != 'native-source-export' && inputs.verification_scope != 'native-otio-snapshot' && inputs.verification_scope != 'native-otio-real-media' && inputs.verification_scope != 'native-source-browser' && inputs.verification_scope != 'native-film-geometry' && inputs.verification_scope != 'native-film-hold' && inputs.verification_scope != 'native-geometry-readback')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures' && inputs.verification_scope != 'native-source-export' && inputs.verification_scope != 'desktop-source' && inputs.verification_scope != 'native-otio-snapshot' && inputs.verification_scope != 'native-otio-real-media' && inputs.verification_scope != 'native-source-browser' && inputs.verification_scope != 'native-film-geometry' && inputs.verification_scope != 'native-film-hold' && inputs.verification_scope != 'native-geometry-readback')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -210,30 +211,39 @@ jobs:
 
   desktop-boundary:
     needs: source-boundary
+    if: ${{ !cancelled() && (needs.source-boundary.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'desktop-source')) }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: '2'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
           toolchain: 1.98.1
           components: clippy
+      - name: Check selected Desktop source policy
+        run: python3 -B tooling/source_policy.py
       - name: Tauri Linux prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libpipewire-0.3-dev pkg-config clang
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Check bounded desktop command surface
-        run: cargo check -p motionwright-desktop
+        run: cargo check --locked --jobs 2 -p motionwright-desktop
       - name: Effect-grant boundary regressions
-        run: cargo test -p motionwright-desktop effect_grants
+        run: cargo test --locked --jobs 2 -p motionwright-desktop effect_grants
       - name: Native PNG preview security regressions
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'desktop-source'
         run: cargo test --locked -p motionwright-desktop native_preview
       - name: Measured WAV / native AV master source regressions
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'desktop-source'
         run: cargo test --locked -p motionwright-desktop av_master
       - name: Verified MP4 local delivery security regressions
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'desktop-source'
         run: cargo test --locked -p motionwright-desktop av_delivery
       - name: Clippy desktop boundary
-        run: cargo clippy -p motionwright-desktop --all-targets -- -D warnings
+        run: cargo clippy --locked --jobs 2 -p motionwright-desktop --keep-going --all-targets -- -D warnings
 
   dependency-review:
     if: github.event_name == 'pull_request'
