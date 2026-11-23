@@ -3,6 +3,10 @@
 use crate::{Result, StorageError};
 use rusqlite::Connection;
 
+#[cfg(target_os = "macos")]
+#[path = "sqlite_identity_macos.rs"]
+mod macos;
+
 fn unavailable() -> StorageError {
     std::io::Error::new(
         std::io::ErrorKind::Unsupported,
@@ -59,21 +63,23 @@ pub(super) fn connection_identity(connection: &Connection) -> Result<String> {
     ))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn connection_identity(connection: &Connection) -> Result<String> {
     // The sole Store constructor explicitly uses PRIVATE_CACHE and rejects
     // URI filenames, so another connection cannot share this file's pager.
     // Unit-test connections below use the same explicit cache policy.
-    linux::connection_identity(connection)
+    mapped_database::connection_identity(connection)
 }
 
-#[cfg(target_os = "linux")]
-mod linux {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod mapped_database {
     use super::{Connection, Result, unavailable};
     use rusqlite::ffi;
     use std::ffi::{c_int, c_void};
+    #[cfg(target_os = "linux")]
     use std::io::Read;
 
+    #[cfg(target_os = "linux")]
     const MAX_MAPS_BYTES: usize = 4 * 1024 * 1024;
 
     struct ConnectionLock<'connection> {
@@ -249,6 +255,7 @@ mod linux {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn pair(value: &[u8], separator: u8) -> Result<(&[u8], &[u8])> {
         let mut parts = value.split(|byte| *byte == separator);
         let first = parts.next().ok_or_else(unavailable)?;
@@ -259,6 +266,7 @@ mod linux {
         Ok((first, second))
     }
 
+    #[cfg(target_os = "linux")]
     fn number(value: &[u8], radix: u32) -> Result<u64> {
         if value.is_empty() || value.first() == Some(&b'+') {
             return Err(unavailable());
@@ -267,6 +275,7 @@ mod linux {
         u64::from_str_radix(text, radix).map_err(|_| unavailable())
     }
 
+    #[cfg(target_os = "linux")]
     fn mapping_identity(pointer: *mut c_void) -> Result<String> {
         let address = u64::try_from(pointer.addr()).map_err(|_| unavailable())?;
         let end_address = address.checked_add(1).ok_or_else(unavailable)?;
@@ -326,10 +335,15 @@ mod linux {
         identity.ok_or_else(unavailable)
     }
 
+    #[cfg(target_os = "macos")]
+    fn mapping_identity(pointer: *mut c_void) -> Result<String> {
+        super::macos::mapping_identity(pointer)
+    }
+
     pub(super) fn connection_identity(connection: &Connection) -> Result<String> {
         let lock = ConnectionLock::enter(connection);
         let mapping = Mapping::acquire(&lock)?;
-        // Do not read the mapped page. Keep its VFS lease until procfs has
+        // Do not read the mapped page. Keep its VFS lease until the kernel has
         // identified the exact address, then check all cleanup before success.
         let identity = mapping_identity(mapping.pointer);
         mapping.finish()?;
@@ -337,14 +351,14 @@ mod linux {
     }
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub(super) fn connection_identity(_connection: &Connection) -> Result<String> {
     // Other platforms require their own verified retained-handle witness.
     // There is no pathname fallback and no cast to SQLite's private layout.
     Err(unavailable())
 }
 
-#[cfg(all(test, any(windows, target_os = "linux")))]
+#[cfg(all(test, any(windows, target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
     use rusqlite::{Connection, OpenFlags};
@@ -524,7 +538,7 @@ mod tests {
         assert!(connection_identity(&connection).is_err());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn retained_identity_survives_path_replacement_and_reopen() {
         let directory = tempfile::tempdir().unwrap();
@@ -564,7 +578,7 @@ mod tests {
         assert_eq!(retained_identity, connection_identity(&reopened).unwrap());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn repeated_identity_queries_restore_the_actual_vfs_mmap_limit() {
         use rusqlite::ffi;

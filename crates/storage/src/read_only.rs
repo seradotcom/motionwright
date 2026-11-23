@@ -6,7 +6,7 @@ use super::{
 };
 use motionwright_domain::RevisionStamp;
 use rusqlite::{Connection, OpenFlags, ffi};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", all(test, target_os = "macos")))]
 use std::fs;
 use std::{path::Path, time::Duration};
 use uuid::Uuid;
@@ -248,7 +248,7 @@ impl StoreReader {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
     use std::{collections::BTreeMap, os::unix::fs::MetadataExt, path::PathBuf};
@@ -812,30 +812,28 @@ mod tests {
     }
 }
 
-#[cfg(all(test, windows))]
-mod windows_original_handoff_tests {
+#[cfg(all(test, any(windows, target_os = "linux", target_os = "macos")))]
+mod original_handoff_tests {
     use super::*;
     use crate::{Change, RevisionStamp};
     use std::fs;
 
-    /// Windows has a different VFS and file-identity API from Linux. Verify
-    /// that Native/Studio can hand off the *same* physical SQLite and CAS
-    /// authority to the strictly read-only service on this platform too.
+    /// Each supported OS has a different retained-file witness. Verify that
+    /// Native/Studio hand off the same physical SQLite and CAS authority to
+    /// the strictly read-only service, then resume the original writer.
     #[test]
-    fn windows_original_read_only_handoff_preserves_sqlite_and_cas() {
+    fn original_read_only_handoff_preserves_sqlite_and_cas() {
         let directory = tempfile::tempdir().unwrap();
         let database = directory.path().join("state.sqlite3");
         let mut writer = Store::open(&database).unwrap();
-        let project = writer
-            .create_named_project("Windows original Graph")
-            .unwrap();
+        let project = writer.create_named_project("Original Graph").unwrap();
         let outcome = writer
             .apply(
                 project.id,
                 &RevisionStamp::from(&project),
-                "windows-original-change",
+                "original-handoff-change",
                 &Change::RenameProject {
-                    title: "Windows original updated".into(),
+                    title: "Original updated".into(),
                 },
             )
             .unwrap();
@@ -893,13 +891,13 @@ mod windows_original_handoff_tests {
         assert_eq!(mode, "wal");
     }
 
-    // Only a subprocess selected by the parent test has these inputs. Ordinary
-    // full-suite test discovery does not open or create any SQLite files here.
+    // This entrypoint must execute only in the actual child selected by its
+    // parent; ordinary test discovery must not count an empty reader as a pass.
     #[test]
-    fn windows_original_child_reader_entrypoint() {
-        let Some(database) = std::env::var_os("MOTIONWRIGHT_TEST_READER_CHILD_DB") else {
-            return;
-        };
+    #[ignore = "Requires the original database supplied by the parent handoff test"]
+    fn original_child_reader_entrypoint() {
+        let database = std::env::var_os("MOTIONWRIGHT_TEST_READER_CHILD_DB")
+            .expect("the parent must supply the original database");
         let project_id =
             Uuid::parse_str(&std::env::var("MOTIONWRIGHT_TEST_READER_CHILD_PROJECT").unwrap())
                 .unwrap();
@@ -915,7 +913,7 @@ mod windows_original_handoff_tests {
             assert!(
                 matches!(&outcome, Err(StorageError::InvalidBackup(reason))
                     if reason.contains("event sequence")),
-                "second Windows process must refuse the corrupted original history: {outcome:?}"
+                "independent reader process must refuse the corrupted original history: {outcome:?}"
             );
             let unrelated = Uuid::parse_str(
                 &std::env::var("MOTIONWRIGHT_TEST_READER_UNRELATED_PROJECT").unwrap(),
@@ -942,10 +940,10 @@ mod windows_original_handoff_tests {
     }
 
     /// In addition to in-process StoreReader custody, verify an actual second
-    /// Windows process reopens the original SQLite and managed CAS after the
+    /// OS process reopens the original SQLite and managed CAS after the
     /// first writer's WAL-to-DELETE handoff. No copied database or mock.
     #[test]
-    fn windows_independent_process_reopens_original_sqlite_and_cas() {
+    fn independent_process_reopens_original_sqlite_and_cas() {
         let directory = tempfile::tempdir().unwrap();
         let database = directory.path().join("state.sqlite3");
         let mut writer = Store::open(&database).unwrap();
@@ -973,9 +971,8 @@ mod windows_original_handoff_tests {
         let initial_catalog = fs::read(&catalog).unwrap();
         let response = std::process::Command::new(std::env::current_exe().unwrap())
             .arg("--exact")
-            .arg(
-                "read_only::windows_original_handoff_tests::windows_original_child_reader_entrypoint",
-            )
+            .arg("read_only::original_handoff_tests::original_child_reader_entrypoint")
+            .arg("--ignored")
             .arg("--nocapture")
             .arg("--test-threads=1")
             .env("MOTIONWRIGHT_TEST_READER_CHILD_DB", &database)
@@ -992,7 +989,7 @@ mod windows_original_handoff_tests {
         let child_output = String::from_utf8_lossy(&response.stderr);
         assert!(
             response.status.success() && child_output.contains("READ_ONLY_CHILD_ORIGINAL_OK"),
-            "independent Windows reader failed: {:?}; stderr={child_output}; stdout={}",
+            "independent reader failed: {:?}; stderr={child_output}; stdout={}",
             response.status,
             String::from_utf8_lossy(&response.stdout)
         );
@@ -1007,11 +1004,11 @@ mod windows_original_handoff_tests {
         assert_eq!(reader.project(outcome.project.id).unwrap(), outcome.project);
     }
 
-    /// A second Windows process must not publish a plausible Graph history
+    /// An independent reader process must not publish a plausible Graph history
     /// if an earlier original event has been deleted or rebased outside its
     /// cursor. Validate the original SQLite and CAS without an alternate DB.
     #[test]
-    fn windows_independent_process_rejects_hidden_graph_history_gap() {
+    fn independent_process_rejects_hidden_graph_history_gap() {
         for mutation in ["delete", "renumber"] {
             let directory = tempfile::tempdir().unwrap();
             let database = directory.path().join("state.sqlite3");
@@ -1064,22 +1061,30 @@ mod windows_original_handoff_tests {
             let original_catalog = fs::read(&catalog).unwrap();
             let result = std::process::Command::new(std::env::current_exe().unwrap())
                 .arg("--exact")
-                .arg(
-                    "read_only::windows_original_handoff_tests::windows_original_child_reader_entrypoint",
-                )
+                .arg("read_only::original_handoff_tests::original_child_reader_entrypoint")
+                .arg("--ignored")
                 .arg("--nocapture")
                 .arg("--test-threads=1")
                 .env("MOTIONWRIGHT_TEST_READER_CHILD_DB", &database)
-                .env("MOTIONWRIGHT_TEST_READER_CHILD_PROJECT", project.id.to_string())
-                .env("MOTIONWRIGHT_TEST_READER_CHILD_IDENTITY", &original_identity)
+                .env(
+                    "MOTIONWRIGHT_TEST_READER_CHILD_PROJECT",
+                    project.id.to_string(),
+                )
+                .env(
+                    "MOTIONWRIGHT_TEST_READER_CHILD_IDENTITY",
+                    &original_identity,
+                )
                 .env("MOTIONWRIGHT_TEST_READER_EXPECT_ORIGINAL_GAP", "1")
-                .env("MOTIONWRIGHT_TEST_READER_UNRELATED_PROJECT", unrelated.id.to_string())
+                .env(
+                    "MOTIONWRIGHT_TEST_READER_UNRELATED_PROJECT",
+                    unrelated.id.to_string(),
+                )
                 .output()
                 .unwrap();
             let child_error = String::from_utf8_lossy(&result.stderr);
             assert!(
                 result.status.success() && child_error.contains("READ_ONLY_CHILD_GAP_REFUSED pid="),
-                "real Windows child must refuse {mutation} original: {:?}; stdout={}; stderr={child_error}",
+                "real reader child must refuse {mutation} original: {:?}; stdout={}; stderr={child_error}",
                 result.status,
                 String::from_utf8_lossy(&result.stdout),
             );

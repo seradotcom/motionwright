@@ -219,13 +219,13 @@ for path in iter_source_files(ROOT):
                 "898dbb96ea14e2a24698bd2a97442eaa61debb55b91e627fd40a3ecb9ff14d4c",
             # Retained SQLite identity uses a bounded child only in cfg(test).
             "crates/storage/src/sqlite_identity.rs":
-                "7243dd93e28b4aa01e84ddbacea070625548f52f8c81800bd45a4cde1b72ea7e",
-            # Windows-only cfg(test) StoreReader custody: both original-process
+                "d85c4a7fcba781467fab6db7b0035882ae9bc212bc85978c23066865be23bd91",
+            # Supported-OS cfg(test) StoreReader custody: both original-process
             # probes execute this same test binary with a fixed --exact child
-            # name, no shell or project-provided executable/arguments. Any
+            # name and explicit ignored helper, no shell or project-selected arguments. Any
             # modification to that reviewed source invalidates this SHA gate.
             "crates/storage/src/read_only.rs":
-                "c16f3f236483b7d0611ae095ddaa25aee199bb8aa19ad8b548817d96451806c6",
+                "7dde67a8686564ad83f658042608608c75c018cbd079f98b26adb21d16720b9d",
             # N83 acceptance CLI, not cfg(test): fixed Git identity reads and
             # the committed preview helper under the admitted runner's owned
             # process group/deadline; no shell or project-selected executable.
