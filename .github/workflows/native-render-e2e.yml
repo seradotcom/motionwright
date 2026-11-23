@@ -1475,7 +1475,7 @@ jobs:
           test ! -e "$root"
           mkdir -m 700 "$root"
           source_phase=compile-all-native-targets
-          cargo clippy --locked --jobs 2 -p motionwright-native --all-targets -- -D warnings > "$root/native-compile.original.log" 2>&1 || {
+          cargo clippy --locked --jobs 2 -p motionwright-native --keep-going --all-targets -- -D warnings > "$root/native-compile.original.log" 2>&1 || {
               grep -E '^error:|^error\[|^ *-->' "$root/native-compile.original.log" | tail -n 18
               exit 1
             }
