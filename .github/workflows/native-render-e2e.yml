@@ -30,6 +30,11 @@ on:
         type: boolean
         required: false
         default: false
+      clipped_opacity_source_only:
+        description: "Exact source Rust + real Studio Chromium Save/reopen for FadeOut inside Clip; no Native Host effect"
+        type: boolean
+        default: false
+        required: false
       expected_source_sha:
         description: "Exact frozen Motionwright SHA; required for retained scopes and geometry E2E"
         type: string
@@ -87,8 +92,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: native-motion-production-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}${{ inputs.native_scope == 'n83-preview' && '-n83-preview' || inputs.native_scope == 'editable-source-cycle' && '-editable-source-cycle' || inputs.native_scope == 'out-cubic-xy' && '-out-cubic-xy' || '' }}${{ inputs.geometry_e2e && '-one-geometry' || '' }}${{ inputs.layer_order_e2e && '-one-layer' || '' }}${{ inputs.clip_e2e && '-one-clip' || '' }}
-  cancel-in-progress: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && !inputs.layer_order_e2e && !inputs.clip_e2e }}
+  group: native-motion-production-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}${{ inputs.native_scope == 'n83-preview' && '-n83-preview' || inputs.native_scope == 'editable-source-cycle' && '-editable-source-cycle' || inputs.native_scope == 'out-cubic-xy' && '-out-cubic-xy' || '' }}${{ inputs.geometry_e2e && '-one-geometry' || '' }}${{ inputs.layer_order_e2e && '-one-layer' || '' }}${{ inputs.clip_e2e && '-one-clip' || '' }}${{ inputs.clipped_opacity_source_only && '-clipped-opacity-g1' || '' }}
+  cancel-in-progress: ${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && !inputs.layer_order_e2e && !inputs.clip_e2e && !inputs.clipped_opacity_source_only }}
 
 defaults:
   run:
@@ -101,6 +106,7 @@ env:
   MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E: ${{ (github.event_name == 'workflow_dispatch' && inputs.layer_order_e2e) && '1' || '0' }}
   MOTIONWRIGHT_NATIVE_CLIP_E2E: ${{ (github.event_name == 'workflow_dispatch' && inputs.clip_e2e) && '1' || '0' }}
   MW_NATIVE_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+  MW_CLIPPED_OPACITY_SOURCE_ONLY: ${{ (github.event_name == 'workflow_dispatch' && inputs.clipped_opacity_source_only) && '1' || '0' }}
   MOTIONWRIGHT_N83_RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
   MOTIONWRIGHT_V01_PROVIDER_REPEAT: ${{ inputs.v01_provider_repeat && 'true' || 'false' }}
   PYTHONDONTWRITEBYTECODE: '1'
@@ -113,6 +119,7 @@ env:
 
 jobs:
   real-native-render:
+    if: ${{ !inputs.clipped_opacity_source_only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -1375,3 +1382,108 @@ jobs:
             verification/native-out-cubic-xy-public/public-evidence.json
           if-no-files-found: error
           retention-days: 14
+
+  clipped-opacity-source-g1:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.clipped_opacity_source_only }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Admit exact Clip opacity source without an effect
+        run: |
+          set -euo pipefail
+          python3 -B -E -s - <<'PY_CLIPPED_ADMIT'
+          import os,re
+          assert os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+          assert os.environ["GITHUB_RUN_ATTEMPT"] == "1"
+          assert os.environ["MW_CLIPPED_OPACITY_SOURCE_ONLY"] == "1"
+          assert os.environ["MOTIONWRIGHT_NATIVE_SCOPE"] == "standard"
+          assert os.environ["MOTIONWRIGHT_NATIVE_GEOMETRY_E2E"] == "0"
+          assert os.environ["MOTIONWRIGHT_NATIVE_LAYER_ORDER_E2E"] == "0"
+          assert os.environ["MOTIONWRIGHT_NATIVE_CLIP_E2E"] == "0"
+          assert os.environ["MOTIONWRIGHT_NATIVE_GEOMETRY_PROFILE"] == "out-cubic"
+          assert os.environ["MOTIONWRIGHT_V01_PROVIDER_REPEAT"] == "false"
+          assert re.fullmatch("[0-9a-f]{40}",os.environ["GITHUB_SHA"])
+          assert os.environ["MW_NATIVE_EXPECTED_SOURCE_SHA"] == os.environ["GITHUB_SHA"]
+          print("clipped-opacity-g1=SOURCE_ADMITTED; Host=NOT_STARTED; G2=NOT_GRANTED; G3=STOP")
+          PY_CLIPPED_ADMIT
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-clipped-opacity-source-1.98.1
+          cache-on-failure: true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+
+      - name: Install only source-test build and Chromium prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libpipewire-0.3-dev pkg-config clang
+          python3 -B tooling/source_policy.py
+
+      - name: Verify exact Film Clip opacity source and real Studio Save in Chromium
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$MW_CLIPPED_OPACITY_SOURCE_ONLY" = 1
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          root="$RUNNER_TEMP/motionwright-clipped-opacity-g1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$root"
+          mkdir -m 700 "$root"
+          # The source verification has NO Broker, grant, render, or replay.
+          # Only bounded test summaries are printed, not raw Service receipts.
+          cargo test --locked -p motionwright-native --lib             film::tests::original_editable_clip_child_opacity_fades_in_and_out_in_native_film             -- --exact --test-threads=1 > "$root/film-positive.original.log" 2>&1 || {
+              grep -E '^test |^test result:|^error:|panicked at' "$root/film-positive.original.log" | tail -n 12
+              exit 1
+            }
+          cargo test --locked -p motionwright-native --lib             film::tests::clipped_opacity_requires_one_static_root_clip_and_exact_native_curve             -- --exact --test-threads=1 > "$root/film-negative.original.log" 2>&1 || {
+              grep -E '^test |^test result:|^error:|panicked at' "$root/film-negative.original.log" | tail -n 12
+              exit 1
+            }
+          cargo build --locked -p motionwright-service --example studio_review_session > "$root/service-build.original.log" 2>&1 || {
+            grep -E '^error:|^error\[' "$root/service-build.original.log" | tail -n 10
+            exit 1
+          }
+          test -x "$GITHUB_WORKSPACE/target/debug/examples/studio_review_session"
+          cd apps/studio
+          npm ci --no-audit --no-fund > "$root/npm.original.log" 2>&1
+          npx --no-install tsc --noEmit --project tsconfig.json > "$root/types.original.log" 2>&1
+          npx --no-install playwright install --with-deps chromium > "$root/browser.original.log" 2>&1
+          export MOTIONWRIGHT_SERVICE_TEST_BIN="$GITHUB_WORKSPACE/target/debug/examples/studio_review_session"
+          npx --no-install playwright test tests/native-clipped-opacity-service.spec.ts             --project=chromium --workers=1 --retries=0 --reporter=dot             --output="$root/browser-original" > "$root/studio-original.log" 2>&1 || {
+              grep -E '^\s*[0-9]+ failed|^\s*[0-9]+ passed|^\s*[0-9]+ skipped|Error:|TimeoutError:|AssertionError:|^\s*[0-9]+\)' "$root/studio-original.log" | tail -n 12
+              exit 1
+            }
+          cd ../..
+          CLIPPED_G1_ROOT="$root" python3 -B -E -s - <<'PY_CLIPPED_CHECK'
+          from pathlib import Path
+          import os,re
+          root=Path(os.environ["CLIPPED_G1_ROOT"])
+          expected=(
+            ("film-positive.original.log",
+             "film::tests::original_editable_clip_child_opacity_fades_in_and_out_in_native_film"),
+            ("film-negative.original.log",
+             "film::tests::clipped_opacity_requires_one_static_root_clip_and_exact_native_curve"),
+          )
+          for name,case in expected:
+              data=(root/name).read_text(encoding="utf8")
+              assert "test "+case+" ... ok" in data
+              assert "test result: ok. 1 passed; 0 failed;" in data
+          studio=(root/"studio-original.log").read_text(encoding="utf8")
+          assert re.search(r"\b1 passed\b",studio), "Original Studio Chromium Save/reopen not proven"
+          assert not re.search(r"\b[1-9][0-9]* skipped\b",studio)
+          print("SOURCE_CLIPPED_OPACITY_G1=PASS; RustFilm=2; StudioChromium=1; StoreReopen=PRODUCER_TEST; NativeHost=NOT_RUN; G2=NOT_GRANTED; G3=STOP; RELEASE=NOT_AUTHORIZED")
+          PY_CLIPPED_CHECK
