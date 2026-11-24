@@ -2,7 +2,7 @@
  * admits the exact pinned renderer subset; this is not raster evidence. */
 import type { CanvasNode, DeliverableProfile, Project, Scene, SceneBoundary, SceneBoundaryAppearance, SceneBoundaryEndpoint } from "./types";
 import { seconds } from "./types";
-import { previewTransform } from "./canvasMotion";
+import { nativeStaticShapeRotation, previewTransform } from "./canvasMotion";
 import { sameValue } from "./creativeProduction";
 
 export interface AppearanceReview {
@@ -47,7 +47,7 @@ export function reviewBoundaryAppearance(project: Project, scene: Scene, profile
     if (shot.renderer !== "motion-canvas" || shot.beats.length || !["shape", "rectangle", "circle"].includes(node.kind) ||
         node.parent_id || node.relations.length || shot.nodes.some(item => item.parent_id === node.id) ||
         node.coordinate_space !== "project_pixels" || node.style.blend_mode !== "normal" ||
-        node.opacity !== 1 || node.rotation_deg !== 0 || shot.camera.zoom !== 1 || shot.camera.rotation_deg !== 0)
+        node.opacity !== 1 || (node.rotation_deg !== 0 && !nativeStaticShapeRotation(node)) || shot.camera.zoom !== 1 || shot.camera.rotation_deg !== 0)
       return unsupported("Only independent planar Motion Canvas shapes have a bounded cut projection.");
     if (project.production_design?.heroes.some(hero => hero.scene_id === shot.id) &&
         profile.framing_strategy === "replan" && (profile.width !== 1920 || profile.height !== 1080))

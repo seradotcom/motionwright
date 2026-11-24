@@ -12,6 +12,22 @@ pub enum CoordinateSpace {
     SceneLocal,
 }
 
+/// One literal, saved shape rotation is represented by a frame-zero
+/// Native GeometrySet, independently of its optional static root container.
+pub fn native_static_shape_rotation(node: &CanvasNode) -> bool {
+    matches!(node.kind.as_str(), "shape" | "rectangle" | "circle")
+        && node.coordinate_space == CoordinateSpace::ProjectPixels
+        && node.keyframes.is_empty()
+        && node.relations.is_empty()
+        && node.style.blend_mode == BlendMode::Normal
+        && node.opacity == 1.0
+        && node.rotation_deg.is_finite()
+        && node.rotation_deg != 0.0
+        && node.rotation_deg.abs() <= 360.0
+        && node.width > 0.0
+        && node.height > 0.0
+}
+
 /// A static, unpainted root container can preserve the saved world-space
 /// position of a direct child in the native local coordinate frame.
 pub fn is_static_native_group(node: &CanvasNode) -> bool {

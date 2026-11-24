@@ -8,6 +8,7 @@ import { emptyProductionDesign } from "./creativeProduction";
 import { seconds } from "./types";
 import { savedNativePoseDraft, type PoseGeometry } from "./nativePoseDraft";
 import { isStaticNativeGroup, nativeGroupOrderIssue, staticNativeGroupParent } from "./nativeGroupHierarchy";
+import { nativeStaticShapeRotation } from "./canvasMotion";
 
 export const CAMERA_REFRAME_VERSION=1;
 export const CAMERA_REFRAME_MANIM_VERSION=2;
@@ -27,7 +28,7 @@ const KEYS=[
 function invalid(message:string):never {throw new Error("CameraReframe: "+message);}
 
 export const cameraUsesComposition = (scene: Scene): boolean =>
-  scene.nodes.some(node => node.keyframes.length > 0 || node.parent_id !== null || ["group","clip_group"].includes(node.kind));
+  scene.nodes.some(node => node.keyframes.length > 0 || node.rotation_deg !== 0 || node.parent_id !== null || ["group","clip_group"].includes(node.kind));
 
 function cameraMotionStart(node: Scene["nodes"][number], scene: Scene): Scene["nodes"][number] {
   const fail = (): never => invalid("composition requires exact paired motion and a static root Clip or Group for node " + node.id);
@@ -35,7 +36,10 @@ function cameraMotionStart(node: Scene["nodes"][number], scene: Scene): Scene["n
   if ((node.parent_id !== null && !staticNativeGroupParent(node, scene)) ||
       (["group","clip_group"].includes(node.kind) && !isStaticNativeGroup(node))) fail();
   const initial = structuredClone(node);
-  if (!node.keyframes.length) return initial;
+  if (!node.keyframes.length) {
+    if (node.rotation_deg!==0 && !nativeStaticShapeRotation(node)) fail();
+    return initial;
+  }
   if (node.rotation_deg !== 0 || node.opacity !== 1 || scene.nodes.some(child => child.parent_id === node.id)) fail();
   const geometry = node.keyframes.some(key => key.property !== "opacity");
   if (geometry && !["shape", "rectangle", "circle"].includes(node.kind)) fail();

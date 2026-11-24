@@ -1,6 +1,15 @@
 import type { CanvasNode, CanvasTransform, MotionInterpolation, MotionProperty } from "./types";
 import { seconds } from "./types";
 
+/** Same closed static rotation subset as Domain and Film. */
+export function nativeStaticShapeRotation(node: CanvasNode): boolean {
+  return ["shape","rectangle","circle"].includes(node.kind) &&
+    node.coordinate_space==="project_pixels" && node.keyframes.length===0 &&
+    node.relations.length===0 && node.style.blend_mode==="normal" && node.opacity===1 &&
+    Number.isFinite(node.rotation_deg) && node.rotation_deg!==0 && Math.abs(node.rotation_deg)<=360 &&
+    node.width>0 && node.height>0;
+}
+
 export const motionProperties: MotionProperty[] = ["x", "y", "width", "height", "rotation_deg", "opacity"];
 export function easedProgress(progress: number, interpolation: MotionInterpolation): number {
   if (interpolation === "hold") return 0;

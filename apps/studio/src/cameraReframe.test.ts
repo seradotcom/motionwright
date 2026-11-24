@@ -58,6 +58,22 @@ describe("source-authoritative planar camera reframe",()=>{
     expect(detached.scenes[0].nodes).toEqual(nodes);
     expect(detached.scenes[0].camera.center_x).toBe(978);
   });
+  it("preserves a saved static shape rotation and refuses incompatible camera poses",async()=>{
+    const {project,camera}=source();
+    const node=project.scenes[0].nodes[0];
+    node.rotation_deg=25;
+    const result=await applyChange(project,{type:"upsert_camera_reframe",reframe:camera});
+    expect(result.scenes[0].nodes).toEqual(project.scenes[0].nodes);
+    expect(previewTransform(result.scenes[0].nodes[0],1.5).rotation_deg).toBe(25);
+    const invalid=source();
+    invalid.project.scenes[0].nodes[0].kind="text";
+    invalid.project.scenes[0].nodes[0].rotation_deg=25;
+    await expect(applyChange(invalid.project,{type:"upsert_camera_reframe",reframe:invalid.camera})).rejects.toThrow(/exact paired motion/);
+    const crop=source();
+    const box=crop.project.scenes[0].nodes[0];
+    box.x=120;box.y=200;box.width=100;box.height=400;box.rotation_deg=90;
+    await expect(applyChange(crop.project,{type:"upsert_camera_reframe",reframe:crop.camera})).rejects.toThrow(/crop/);
+  });
   it("rejects optical zoom, unsafe crops, nonnative frame rates and loss of source identity",async()=>{
     const {project,camera}=source();
     const rejections=[

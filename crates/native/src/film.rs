@@ -185,7 +185,18 @@ fn scene_span_cost(scene: &Scene) -> usize {
     // Native Hold requires two anchored one-frame spans (Set at t0, Set at tN)
     // instead of a tween's single span. Budget before provider realization,
     // retaining at least the original one-span bound for unsupported keys.
+    // One shared first-frame span per shot, independent of shape count.
+    let static_rotation_spans = if scene
+        .nodes
+        .iter()
+        .any(motionwright_domain::native_static_shape_rotation)
+    {
+        scene.beats.len().max(1)
+    } else {
+        0
+    };
     1 + scene.beats.len().max(1)
+        + static_rotation_spans
         + scene
             .nodes
             .iter()
@@ -1125,10 +1136,15 @@ fn validate_static_safe_area(
     let center_y = (node.y + node.height / 2.0) * projection.position_scale_y + projection.offset_y;
     let width = node.width * projection.object_scale;
     let height = node.height * projection.object_scale;
-    let left = center_x - width / 2.0;
-    let top = center_y - height / 2.0;
-    let right = center_x + width / 2.0;
-    let bottom = center_y + height / 2.0;
+    // The saved shape rotates about its center after the profile projection.
+    // The rotated rectangle is also a conservative envelope for an ellipse.
+    let (sin, cos) = node.rotation_deg.to_radians().sin_cos();
+    let half_width = (width * cos.abs() + height * sin.abs()) / 2.0;
+    let half_height = (width * sin.abs() + height * cos.abs()) / 2.0;
+    let left = center_x - half_width;
+    let top = center_y - half_height;
+    let right = center_x + half_width;
+    let bottom = center_y + half_height;
     let epsilon = 1e-6;
     if left + epsilon < output.safe_area.left
         || top + epsilon < output.safe_area.top
@@ -1152,7 +1168,9 @@ fn validate_node_projection(node: &CanvasNode, font_family: &str) -> NativeResul
             node.id
         )));
     }
-    if node.rotation_deg != 0.0 || node.opacity != 1.0 {
+    if node.opacity != 1.0
+        || (node.rotation_deg != 0.0 && !motionwright_domain::native_static_shape_rotation(node))
+    {
         return Err(unsupported(format!(
             "Canvas node {} has rotation/opacity state that canonical Film cannot preserve yet",
             node.id
@@ -1661,6 +1679,11 @@ fn projected_shot(
                 .iter()
                 .find(|capture| capture.id == link.capture_id)
                 .ok_or_else(|| invalid("Stage screenshot source was removed"))?;
+            if node.rotation_deg != 0.0 {
+                return Err(unsupported(
+                    "A rotated source-capture card requires a dedicated coupled tile transform",
+                ));
+            }
             let mut tile = node.clone();
             tile.id = stage_node_id(stage.id, "source_capture_tile");
             tile.name = "Source-bound first-party synthetic screenshot tile".into();
@@ -1711,6 +1734,71 @@ fn projected_shot(
         motion: vec![],
         constraints: visual_constraints,
     })
+}
+
+/// Lower one shared frame-zero span per shot. GeometrySet writes rotation
+/// instantaneously; a tween would change the static authored appearance.
+struct StaticRotationClock {
+    start: RationalTime,
+    duration: RationalTime,
+    rate: Rate,
+    beat_scope: Option<Uuid>,
+}
+fn attach_static_rotations(
+    shot: &mut Shot,
+    scene: &Scene,
+    clock: StaticRotationClock,
+    spans: &mut Vec<TemporalSpan>,
+    constraints: &mut Vec<TemporalConstraint>,
+) -> NativeResult<()> {
+    let rotated = scene
+        .nodes
+        .iter()
+        .filter(|node| motionwright_domain::native_static_shape_rotation(node))
+        .collect::<Vec<_>>();
+    if rotated.is_empty() {
+        return Ok(());
+    }
+    let frame = RationalTime::new(i64::from(clock.rate.den), i64::from(clock.rate.num))
+        .map_err(|error| contract("Static rotation frame duration", error))?;
+    if frame > clock.duration || spans.len() >= MAX_TEMPORAL_SPANS {
+        return Err(unsupported(
+            "Static shape rotation requires one complete first frame and a bounded Film span",
+        ));
+    }
+    let span_id = format!("static-rotation-span-{}", shot.id);
+    spans.push(TemporalSpan {
+        id: span_id.clone(),
+        minimum: frame,
+        preferred: frame,
+        maximum: frame,
+        anchor: StartAnchor::Absolute { time: clock.start },
+        preference_priority: 0,
+    });
+    constraints.push(TemporalConstraint::Contains {
+        id: format!("static-rotation-contains-{}", shot.id),
+        parent: shot.span_id.clone(),
+        child: span_id.clone(),
+    });
+    for node in rotated {
+        let target = subject_id(node.id, clock.beat_scope);
+        if !shot.subjects.iter().any(|subject| subject.id == target) {
+            return Err(unsupported(
+                "Static rotation cannot find its original projected shape",
+            ));
+        }
+        shot.motion.push(Invocation {
+            id: format!("static-rotation-{target}"),
+            span_id: span_id.clone(),
+            easing: MotionEasing::Linear,
+            primitive: Primitive::GeometrySet {
+                target,
+                channel: Channel::Rotation,
+                value: Operand::Number(node.rotation_deg),
+            },
+        });
+    }
+    Ok(())
 }
 
 /// MW05-E07-03: authored bounded planar camera reframe as native source motion.
@@ -2147,6 +2235,18 @@ fn build_segment(
                     beat_scope: None,
                 },
             )?;
+            attach_static_rotations(
+                &mut shot,
+                scene,
+                StaticRotationClock {
+                    start: local_start,
+                    duration: scene.duration,
+                    rate: options.frame_rate,
+                    beat_scope: None,
+                },
+                &mut spans,
+                &mut constraints,
+            )?;
             let source_projection = scene_layout_projection(scene, projection);
             for source_node in &scene.nodes {
                 let composed = composed_shape_motion(source_node);
@@ -2458,7 +2558,7 @@ fn build_segment(
                     parent: sequence_span.clone(),
                     child: shot_span.clone(),
                 });
-                let shot = projected_shot(
+                let mut shot = projected_shot(
                     scene,
                     &shot_context,
                     ShotIdentity {
@@ -2467,6 +2567,18 @@ fn build_segment(
                         span_id: shot_span,
                         beat_scope: Some(beat.id),
                     },
+                )?;
+                attach_static_rotations(
+                    &mut shot,
+                    scene,
+                    StaticRotationClock {
+                        start: beat_start,
+                        duration: beat.duration,
+                        rate: options.frame_rate,
+                        beat_scope: Some(beat.id),
+                    },
+                    &mut spans,
+                    &mut constraints,
                 )?;
                 authoring_beats.push(AuthoringBeat {
                     id: format!("beat-{}-{}", scene.id.simple(), beat.id.simple()),
@@ -2868,6 +2980,146 @@ mod tests {
             })
             .unwrap();
         project
+    }
+
+    #[test]
+    fn saved_static_shape_rotation_compiles_at_every_original_shot_start() {
+        use semwright_motion_authoring::NativeOp;
+        for (width, height) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
+            for clipped in [false, true] {
+                let (mut project, _parent, child_id) = clipped_opacity_source();
+                let child = project.scenes[0]
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == child_id)
+                    .unwrap();
+                child.x = 650.0;
+                child.y = 400.0;
+                child.width = 240.0;
+                child.height = 120.0;
+                child.rotation_deg = -33.0;
+                if !clipped {
+                    child.parent_id = None;
+                }
+                project.deliverables[0].width = width;
+                project.deliverables[0].height = height;
+                project.deliverables[0].framing_strategy = FramingStrategy::Replan;
+                let scene_id = project.scenes[0].id;
+                for (label, start) in [("First", RationalTime::ZERO), ("Second", RationalTime::ONE)]
+                {
+                    project
+                        .apply_change(&Change::UpsertSceneBeat {
+                            scene_id,
+                            beat: SceneBeat {
+                                id: Uuid::now_v7(),
+                                label: label.into(),
+                                objective: label.into(),
+                                start,
+                                duration: RationalTime::ONE,
+                            },
+                        })
+                        .unwrap();
+                }
+                let before = project.clone();
+                let segments = build_motion_canvas_segments(
+                    &project,
+                    project.deliverables[0].id,
+                    &fixture_options(&project),
+                )
+                .unwrap();
+                let film = &segments[0].film;
+                let realized = realize(film).unwrap();
+                for beat in &project.scenes[0].beats {
+                    let target = subject_id(child_id, Some(beat.id));
+                    let rotation=realized.instructions.iter().filter(|instruction|matches!(
+                        &instruction.operation,NativeOp::Set {target:actual,channel:Channel::Rotation,..} if actual==&target
+                    )).collect::<Vec<_>>();
+                    assert_eq!(rotation.len(), 1);
+                    assert_eq!(rotation[0].start, beat.start);
+                    assert_eq!(rotation[0].duration, RationalTime::ZERO);
+                    assert!(matches!(&rotation[0].operation,NativeOp::Set {
+                        value:Operand::Number(value),..} if *value == -33.0));
+                }
+                assert_eq!(project, before);
+            }
+        }
+    }
+
+    #[test]
+    fn saved_static_rotation_preserves_camera_translation_and_rejects_unsafe_geometry() {
+        use semwright_motion_authoring::NativeOp;
+        let mut project = fixture_project();
+        let mut shape = node("rectangle", None);
+        shape.x = 720.0;
+        shape.y = 440.0;
+        shape.width = 250.0;
+        shape.height = 120.0;
+        shape.rotation_deg = 27.0;
+        let node_id = shape.id;
+        let scene_id = project.scenes[0].id;
+        project.scenes[0].nodes = vec![shape];
+        let camera_id = Uuid::now_v7();
+        project
+            .apply_change(&Change::UpsertCameraReframe {
+                reframe: motionwright_domain::CameraReframe {
+                    id: camera_id,
+                    scene_id,
+                    component_version: 1,
+                    start_center_x: 960.0,
+                    start_center_y: 540.0,
+                    end_center_x: 980.0,
+                    end_center_y: 550.0,
+                    duration_frames: 30,
+                },
+            })
+            .unwrap();
+        let before = project.clone();
+        let options = fixture_options(&project);
+        let profile = project.deliverables[0].id;
+        let segments = build_motion_canvas_segments(&project, profile, &options).unwrap();
+        let shot = &segments[0].film.sequences[0].beats[0].shots[0];
+        let target = subject_id(node_id, None);
+        let frame = uid("camera-frame", camera_id);
+        let actual = shot
+            .subjects
+            .iter()
+            .find(|subject| subject.id == target)
+            .unwrap();
+        assert_eq!(actual.parent.as_deref(), Some(frame.as_str()));
+        let realized = realize(&segments[0].film).unwrap();
+        assert!(realized.instructions.iter().any(
+            |instruction| matches!(&instruction.operation,NativeOp::Set {
+                target:actual,channel:Channel::Rotation,value:Operand::Number(value),
+            } if actual==&target && *value==27.0)
+        ));
+        assert_eq!(project, before);
+
+        let mut unsafe_project = fixture_project();
+        let mut unsafe_shape = node("rectangle", None);
+        unsafe_shape.x = 98.0;
+        unsafe_shape.y = 100.0;
+        unsafe_shape.width = 100.0;
+        unsafe_shape.height = 400.0;
+        unsafe_project.scenes[0].nodes = vec![unsafe_shape];
+        let opts = fixture_options(&unsafe_project);
+        let profile = unsafe_project.deliverables[0].id;
+        assert!(build_motion_canvas_segments(&unsafe_project, profile, &opts).is_ok());
+        unsafe_project.scenes[0].nodes[0].rotation_deg = 90.0;
+        assert!(build_motion_canvas_segments(&unsafe_project, profile, &opts).is_err());
+        for angle in [361.0, -361.0] {
+            let mut invalid_project = fixture_project();
+            let mut shape = node("rectangle", None);
+            shape.rotation_deg = angle;
+            invalid_project.scenes[0].nodes = vec![shape];
+            assert!(
+                build_motion_canvas_segments(
+                    &invalid_project,
+                    invalid_project.deliverables[0].id,
+                    &fixture_options(&invalid_project)
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

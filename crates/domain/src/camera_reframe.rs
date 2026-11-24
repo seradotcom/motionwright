@@ -36,6 +36,7 @@ pub struct CameraReframe {
 pub fn camera_uses_composition(scene: &Scene) -> bool {
     scene.nodes.iter().any(|node| {
         !node.keyframes.is_empty()
+            || node.rotation_deg != 0.0
             || node.parent_id.is_some()
             || matches!(node.kind.as_str(), "group" | "clip_group")
     })
@@ -183,6 +184,9 @@ fn camera_motion_start(node: &CanvasNode, scene: &Scene) -> Result<CanvasNode> {
     }
     let mut initial = node.clone();
     if node.keyframes.is_empty() {
+        if node.rotation_deg != 0.0 && !native_static_shape_rotation(node) {
+            return Err(fail());
+        }
         return Ok(initial);
     }
     if node.rotation_deg != 0.0
