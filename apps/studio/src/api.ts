@@ -83,6 +83,7 @@ import type {
   WorkflowOverview,
 } from "./types";
 import { applyGeneralSceneTiming } from "./sceneTimingAuthority";
+import { applySceneBeatTimeline, type SceneBeatTimelineChange } from "./sceneBeatTimeline";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 let browserState = structuredClone(fixtureBootstrap);
@@ -1478,6 +1479,11 @@ function simulationCandidate(project: Project): Project {
   return next;
 }
 
+/** Read-only authoring comparison using the existing complete project guards. */
+export async function previewSceneBeatTimeline(project: Project, change: SceneBeatTimelineChange): Promise<Project> {
+  return simulateChange(project, change, "", false);
+}
+
 async function simulateChange(project: Project, change: Change, requestId: string, record: boolean): Promise<Project> {
   const next = simulationCandidate(project);
   switch (change.type) {
@@ -1711,6 +1717,9 @@ async function simulateChange(project: Project, change: Change, requestId: strin
     }
     case "set_scene_duration":
       applyGeneralSceneTiming(next, change);
+      break;
+    case "edit_scene_beat_timeline":
+      applySceneBeatTimeline(next, change);
       break;
     case "upsert_scene_beat": {
       assertUnlocked(next, sceneResource(change.scene_id), ["content", "timing"]);

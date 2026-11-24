@@ -141,6 +141,21 @@ export function assessEditorialPreferences(project: Pick<Project, "narrative" | 
       contradictory_preferences: !!minimum && !!preference && cmp(q(minimum), q(preference)) > 0 };
   });
 }
+/** Browser parity with the existing Domain minimum-allocation transition guard. */
+export function preserveEditorialMinimumHolds(before: Project, after: Project): void {
+  if (!before.narrative.editing || sameEditorialValue(before.scenes, after.scenes)) return;
+  const old = assessEditorialPreferences(before), next = assessEditorialPreferences(after);
+  for (const previous of old) {
+    const minimum = previous.minimum_hold;
+    if (!minimum) continue;
+    const current = next.find(value => value.beat_id === previous.beat_id);
+    if (!current) throw new Error("minimum-hold:narrative-beat:" + previous.beat_id + " was removed by a timing edit");
+    if (sameEditorialValue(current.minimum_hold, minimum)
+      && !sameEditorialValue(previous.allocated_duration, current.allocated_duration)
+      && (!current.allocated_duration || cmp(q(current.allocated_duration), q(minimum)) < 0))
+      throw new Error("minimum-hold:narrative-beat:" + previous.beat_id + " cannot fit its unchanged authored allocation requirement");
+  }
+}
 export function inspectEditorialReorder(project: Project, after: string[]): NarrativeReorderImpact {
   const before = project.narrative.beats.map(beat => beat.id), ids = new Set(before);
   if (before.length !== after.length || new Set(after).size !== before.length || after.some(id => !ids.has(id)))

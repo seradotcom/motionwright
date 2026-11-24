@@ -5,6 +5,7 @@ import {
 import CommandPalette, { type EditorCommand } from "./CommandPalette";
 import { assertPortableExportReceipt, inspectPortableMaterials } from "./portableMaterialReport";
 import SceneInspector from "./SceneInspector";
+import SceneBeatTimelineEditor from "./SceneBeatTimelineEditor";
 import { isPaletteShortcut } from "./editorCommandSearch";
 import { timelineSelectionScope, type TimelineSelection, type TimelineEditorRequest } from "./timelineSelection";
 import Timeline from "./Timeline";
@@ -655,12 +656,14 @@ function StoryboardView({
   onSelect,
   rate,
   mode,
+  onEditTiming,
 }: {
   project: Project;
   selectedSceneId: string | null;
   onSelect: (id: string) => void;
   rate: RationalTime;
   mode: TimecodeMode;
+  onEditTiming: () => void;
 }) {
   return (
     <div className="workspace-scroll storyboard-view">
@@ -669,6 +672,7 @@ function StoryboardView({
           <h2>Storyboard</h2>
           <p>Persistent scene identity, timing and realization choice.</p>
         </div>
+        <button className="secondary-button" disabled={!selectedSceneId} onClick={onEditTiming}>Edit beat timeline</button>
         <span className="count-label">{project.scenes.length} scenes</span>
       </header>
       <div className="storyboard-strip">
@@ -1409,6 +1413,7 @@ export default function App() {
   }, []);
   const [workspace, setWorkspace] = useState<Workspace>("Timeline");
   const [timelineEditorRequest, setTimelineEditorRequest] = useState<TimelineEditorRequest | null>(null);
+  const [beatTimelineOpen,setBeatTimelineOpen]=useState(false);
   const timelineRequestSequence = useRef(0);
   const consumeTimelineEditorRequest = useCallback((nonce: number) => setTimelineEditorRequest(current => current?.nonce === nonce ? null : current), []);
   const [graphReviewSelection, setGraphReviewSelection] = useState<{ owner: string; resource: string } | null>(null);
@@ -2065,6 +2070,7 @@ export default function App() {
       : selection.kind === "camera" ? project.scenes.find(item=>item.id===project.production_design?.camera_reframes?.find(move=>move.id===selection.id)?.scene_id)
       : selection.kind === "beat" ? project.scenes.find(item=>item.beats.some(beat=>beat.id===selection.id)) : undefined;
     if (scene) selectScene(scene.id,false);
+    if (selection.kind==="beat") setBeatTimelineOpen(true);
     setTimelineEditorRequest({nonce:++timelineRequestSequence.current,scope:timelineSelectionScope(project),selection,sceneId:scene?.id??null});
     setWorkspace(selection.kind==="object"?"Canvas":selection.kind==="camera"?"Production":selection.kind==="review"?"Review":selection.kind==="beat"?"Storyboard":"Audio");
   };
@@ -2089,7 +2095,13 @@ export default function App() {
           />
         );
       case "Storyboard":
-        return <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={selectScene} rate={timebaseRate} mode={displayMode} />;
+        return beatTimelineOpen && selectedScene ? <SceneBeatTimelineEditor
+          key={JSON.stringify([project.id,project.generation,project.active_branch,selectedScene.id])}
+          project={project} scene={selectedScene} commit={commitCamera} busy={busy}
+          onClose={()=>setBeatTimelineOpen(false)} playhead={playhead} rate={timebaseRate} onSeek={seekTo}
+          request={timelineEditorRequest} onRequestHandled={consumeTimelineEditorRequest}/>
+          : <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={selectScene}
+            rate={timebaseRate} mode={displayMode} onEditTiming={()=>setBeatTimelineOpen(true)} />;
       case "Production":
         return <ProductionDesignWorkspace timelineRequest={timelineEditorRequest} onTimelineRequestHandled={consumeTimelineEditorRequest} project={project} scene={selectedScene} commit={commit} commitCamera={commitCamera}
           sourceServices={{

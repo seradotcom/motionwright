@@ -34,6 +34,7 @@ mod product_stage;
 mod production_design;
 mod project_template;
 mod render_tail_impact;
+mod scene_beat_timeline;
 mod scene_boundary;
 mod scene_timing_guard;
 mod semantic_graph;
@@ -1218,6 +1219,7 @@ impl Project {
         if matches!(
             change,
             Change::UpsertSemanticGraph { .. }
+                | Change::EditSceneBeatTimeline { .. }
                 | Change::RemoveSemanticGraph { .. }
                 | Change::ReparentCanvasNode { .. }
                 | Change::UpsertSceneBoundary { .. }
@@ -1761,6 +1763,23 @@ impl Project {
                     .find(|scene| scene.id == *scene_id)
                     .ok_or(DomainError::NotFound(resource))?;
                 scene.status = status.clone();
+            }
+            Change::EditSceneBeatTimeline {
+                expected,
+                scene_id,
+                expected_duration,
+                expected_beats,
+                beats,
+                rationale,
+            } => {
+                self.edit_scene_beat_timeline(
+                    expected,
+                    *scene_id,
+                    *expected_duration,
+                    expected_beats,
+                    beats,
+                    rationale,
+                )?;
             }
             Change::UpsertSceneBeat { scene_id, beat } => {
                 let resource = format!("scene:{scene_id}");
@@ -3156,6 +3175,15 @@ pub enum Change {
         source_sha256: String,
         base_revision: u64,
         acknowledge_absolute_anchors: bool,
+    },
+    /// One conditional, reversible scene-beat timeline transaction.
+    EditSceneBeatTimeline {
+        expected: NarrativeEditSource,
+        scene_id: Uuid,
+        expected_duration: RationalTime,
+        expected_beats: Vec<Beat>,
+        beats: Vec<Beat>,
+        rationale: String,
     },
     UpsertSceneBeat {
         scene_id: Uuid,

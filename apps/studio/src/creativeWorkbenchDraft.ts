@@ -10,8 +10,10 @@ import type { ProceduralConfig, ProceduralInfluence, ProceduralPath } from "./pr
 import { applyStageCaptureChange } from "./stageCapture";
 import { applyMeasuredBinding, applyMeasuredTable, detachMeasuredBinding, measuredOutput, validateMeasuredTable, validateMeasuredView } from "./measuredData";
 import type { MeasuredBinding, MeasuredTable, MeasuredView } from "./measuredData";
+import { beatTimelineInputShape, savedBeatTimelineInput, sceneBeatTimelineChangeShape, sceneBeatTimelineProposal } from "./sceneBeatTimeline";
+import type { BeatTimelineInput } from "./sceneBeatTimeline";
 
-export type WorkbenchKind = "stage" | "procedural" | "measured";
+export type WorkbenchKind = "stage" | "procedural" | "measured" | "beat_timeline";
 export type WorkbenchTarget = { kind: WorkbenchKind; sceneId: string | null };
 export type StageRaw = Omit<ProductStageConfig, "focus_x_permille" | "focus_y_permille"> & { focus_x_permille: string; focus_y_permille: string };
 export const PROCEDURAL_NUMBERS = ["seed", "count", "columns", "origin_x", "origin_y", "area_width", "area_height", "size", "opacity_percent", "reveal_step_frames", "reveal_duration_frames"] as const;
@@ -38,12 +40,12 @@ export interface MeasuredRaw extends MeasuredPresentationRaw {
 export interface MeasuredBindingRaw extends MeasuredPresentationRaw {
   sceneId: string; tableId: string;
 }
-export type WorkbenchInput = { kind: "stage"; config: StageRaw; captureId: string }
+export type WorkbenchInput = BeatTimelineInput | { kind: "stage"; config: StageRaw; captureId: string }
   | { kind: "procedural"; config: ProceduralRaw }
   | { kind: "measured"; selectedTable: string; tables: Record<string, MeasuredRaw>;
       selectedBinding?: string; bindings?: Record<string, MeasuredBindingRaw> };
 export type WorkbenchChange = Extract<Change, { type: "upsert_product_stage" | "detach_product_stage" | "bind_stage_capture" | "detach_stage_capture"
-  | "upsert_procedural_field" | "detach_procedural_field" | "upsert_measured_table" | "upsert_measured_binding" | "detach_measured_binding" }>;
+  | "upsert_procedural_field" | "detach_procedural_field" | "upsert_measured_table" | "upsert_measured_binding" | "detach_measured_binding" | "edit_scene_beat_timeline" }>;
 export type WorkbenchOperation = "save" | "detach" | "bind-source" | "detach-source" | "table" | "binding" | { detachBinding: string };
 export interface WorkbenchPending {
   /** Comparison data only. No stored Change is ever dispatched or replayed. */
@@ -68,7 +70,7 @@ const bytes = (value: string) => new TextEncoder().encode(value).length;
 export const workbenchScope = (project: Project, target: WorkbenchTarget) => JSON.stringify([project.id, project.generation, project.active_branch, target.kind, target.sceneId]);
 export const workbenchCopyKey = (scope: string, writer: string) => WORKBENCH_RECOVERY_PREFIX + encodeURIComponent(scope) + ":" + writer;
 export const workbenchPointerKey = (scope: string) => WORKBENCH_POINTER_PREFIX + encodeURIComponent(scope);
-export const workbenchLabel = (target: WorkbenchTarget) => ({ stage: "ProductStage", procedural: "Procedural", measured: "Measured data" })[target.kind];
+export const workbenchLabel = (target: WorkbenchTarget) => ({ stage: "ProductStage", procedural: "Procedural", measured: "Measured data", beat_timeline: "Scene beat timeline" })[target.kind];
 export const workbenchHasWork = (draft: WorkbenchDraft) => draft.intent || draft.pending !== null;
 export const workbenchUnconfirmed = (draft: WorkbenchDraft) => draft.pending?.outcome === "UNKNOWN";
 function checkScope(draft: WorkbenchDraft, project: Project) {
@@ -206,6 +208,11 @@ export function selectMeasuredTable(input: Extract<WorkbenchInput, { kind: "meas
   return { ...input, selectedTable: key, tables: { ...input.tables, [key]: input.tables[key] ?? newMeasuredRaw(table) } };
 }
 export function workbenchSavedInput(project: Project, target: WorkbenchTarget, previous?: WorkbenchInput): WorkbenchInput {
+  if (target.kind === "beat_timeline") {
+    const scene=project.scenes.find(scene=>scene.id===target.sceneId);
+    if (!scene) throw new Error("The working scene is unavailable.");
+    return savedBeatTimelineInput(scene, previous?.kind==="beat_timeline"?previous:undefined);
+  }
   if (target.kind === "stage") {
     const stage = project.production_design?.stages?.find(value => value.scene_id === target.sceneId);
     return { kind: "stage", config: rawStage(stage?.config ?? defaultProductStageConfig()), captureId: project.production_design?.stage_capture_cards?.find(value => value.stage_id === stage?.id)?.capture_id ?? "" };
@@ -274,7 +281,7 @@ export async function prepareWorkbenchSubmission(draft: WorkbenchDraft, project:
   if (!uuid(id) || workbenchUnconfirmed(draft) || workbenchConflict(draft, project)) throw new Error("Review the saved revision and any unconfirmed attempt before a separate save.");
   const scene = project.scenes.find(value => value.id === draft.target.sceneId), input = clone(draft.input);
   let change: WorkbenchChange, nodesBefore: CanvasNode[] | null = null;
-  if (input.kind !== "measured" && (!scene || scene.renderer !== "motion-canvas" || Number(scene.duration.num) / Number(scene.duration.den) < 2)) throw new Error("Choose a Motion Canvas scene at least two seconds long.");
+  if (input.kind !== "measured" && input.kind !== "beat_timeline" && (!scene || scene.renderer !== "motion-canvas" || Number(scene.duration.num) / Number(scene.duration.den) < 2)) throw new Error("Choose a Motion Canvas scene at least two seconds long.");
   if (input.kind === "stage") {
     const stored = project.production_design?.stages?.find(value => value.scene_id === scene!.id);
     if (operation === "save") {
@@ -300,6 +307,10 @@ export async function prepareWorkbenchSubmission(draft: WorkbenchDraft, project:
       await applyProceduralChange(clone(project), change);
     } else if (operation === "detach" && stored) { change = { type: "detach_procedural_field", instance_id: stored.id }; nodesBefore = clone(scene!.nodes); }
     else throw new Error("Unsupported procedural action or missing field.");
+  } else if (input.kind === "beat_timeline") {
+    if (!scene || operation !== "save") throw new Error("Choose the working scene and its timeline operation.");
+    change=sceneBeatTimelineProposal(project,scene.id,input.config);
+    nodesBefore=clone(scene.nodes);
   } else {
     const raw = measuredRaw(input);
     if (operation === "table") {
@@ -314,7 +325,7 @@ export async function prepareWorkbenchSubmission(draft: WorkbenchDraft, project:
       detachMeasuredBinding(clone(project), binding.id); change = { type: "detach_measured_binding", binding_id: binding.id }; nodesBefore = clone(scene.nodes);
     } else throw new Error("Unsupported measured action.");
   }
-  const lockKinds = operation === "detach" || operation === "detach-source" ? ["content"] : ["content", "position", "style", "timing", "renderer"];
+  const lockKinds = input.kind === "beat_timeline" ? ["content","timing"] : operation === "detach" || operation === "detach-source" ? ["content"] : ["content", "position", "style", "timing", "renderer"];
   if (input.kind !== "measured" && project.locks.some(lock => ["project:" + project.id, "scene:" + scene!.id].includes(lock.resource) && lockKinds.includes(lock.kind))) throw new Error("The selected scene or project is locked.");
   return { change, draft: { ...draft, intent: true, pending: { id, revision: project.revision, sequence: draft.sequence, input, submitted: clone(change), nodesBefore, outcome: "UNKNOWN" } } };
 }
@@ -328,6 +339,10 @@ export function retainWorkbenchFailure(draft: WorkbenchDraft, id: string, diagno
 export function submittedWorkbenchMatches(project: Project, change: WorkbenchChange): boolean {
   const design = project.production_design;
   switch (change.type) {
+    case "edit_scene_beat_timeline": {
+      const scene=project.scenes.find(scene=>scene.id===change.scene_id);
+      return !!scene && sameValue(scene.duration,change.expected_duration) && sameValue(scene.beats,change.beats);
+    }
     case "upsert_product_stage": { const value = design?.stages?.find(item => item.id === change.instance_id); return !!value && value.scene_id === change.scene_id && value.component_version === 1 && sameValue(value.config, change.config); }
     case "detach_product_stage": return !design?.stages?.some(item => item.id === change.instance_id);
     case "bind_stage_capture": return sameValue(design?.stage_capture_cards?.find(item => item.stage_id === change.stage_id), { stage_id: change.stage_id, capture_id: change.capture_id, version: 1 });
@@ -349,6 +364,7 @@ export function submittedWorkbenchMatches(project: Project, change: WorkbenchCha
 /** One successful operation cannot mark a different author buffer as saved. */
 function remainingInput(input: WorkbenchInput, target: WorkbenchTarget, project: Project): boolean {
   try {
+    if (input.kind === "beat_timeline") return false;
     if (input.kind === "stage") {
       const saved = project.production_design?.stages?.find(value => value.scene_id === target.sceneId);
       const capture = project.production_design?.stage_capture_cards?.find(value => value.stage_id === saved?.id)?.capture_id ?? "";
@@ -387,6 +403,9 @@ export function acknowledgeWorkbenchDraft(draft: WorkbenchDraft, id: string, rec
   // Keep raw text and every table buffer, including later selections. A clean
   // checkpoint remains immutable before any future author input is written.
   let input = draft.input;
+  if (input.kind === "beat_timeline" && draft.sequence === pending.sequence) {
+    input=workbenchSavedInput(receipt,draft.target,input);
+  }
   if (input.kind === "measured" && pending.submitted.type === "upsert_measured_table") {
     const table = pending.submitted.table, currentNew = input.tables.new;
     // A reviewed UNKNOWN can leave both the original "new" alias and a
@@ -464,6 +483,7 @@ function proceduralPathRawShape(value: unknown): value is ProceduralPathRaw {
 }
 function inputShape(value: unknown): value is WorkbenchInput {
   if (!record(value)) return false;
+  if (value.kind === "beat_timeline") return beatTimelineInputShape(value);
   if (value.kind === "stage") return exact(value, ["kind", "config", "captureId"]) && typeof value.captureId === "string" && record(value.config)
     && exact(value.config, ["frame", "animate_focus", ...stageTextKeys]) && allStrings(value.config, stageTextKeys)
     && ["browser", "flat_panel", "generic_handset"].includes(String(value.config.frame)) && typeof value.config.animate_focus === "boolean";
@@ -494,6 +514,7 @@ function tableShape(value: unknown): boolean {
 }
 function changeShape(value: unknown, kind: WorkbenchKind): value is WorkbenchChange {
   if (!record(value) || typeof value.type !== "string") return false;
+  if (kind === "beat_timeline") return sceneBeatTimelineChangeShape(value);
   if (kind === "stage") {
     if (value.type === "detach_product_stage") return exact(value, ["type", "instance_id"]) && uuid(value.instance_id);
     if (value.type === "bind_stage_capture") return exact(value, ["type", "stage_id", "capture_id"]) && uuid(value.stage_id) && uuid(value.capture_id);
@@ -534,7 +555,7 @@ function cleanDraft(value: unknown, scope: string): WorkbenchDraft {
     || !integer(value.baseRevision) || !integer(value.sequence) || typeof value.intent !== "boolean" || !inputShape(value.input) || !inputShape(value.base))
     throw new Error("Unsupported workbench recovery shape. Earlier bytes were retained.");
   const target = value.target, identity: unknown = JSON.parse(scope);
-  if (!exact(target, ["kind", "sceneId"]) || !["stage", "procedural", "measured"].includes(String(target.kind)) || value.input.kind !== target.kind || value.base.kind !== target.kind
+  if (!exact(target, ["kind", "sceneId"]) || !["stage", "procedural", "measured", "beat_timeline"].includes(String(target.kind)) || value.input.kind !== target.kind || value.base.kind !== target.kind
     || (target.sceneId !== null && (typeof target.sceneId !== "string" || !target.sceneId)) || !Array.isArray(identity) || identity.length !== 5
     || identity.slice(0, 3).some(item => typeof item !== "string" || !item) || identity[3] !== target.kind || identity[4] !== target.sceneId)
     throw new Error("This workbench copy belongs to another editor scope.");
@@ -547,7 +568,7 @@ function cleanDraft(value: unknown, scope: string): WorkbenchDraft {
       || (sent.nodesBefore !== null && !nodesShape(sent.nodesBefore)) || !["UNKNOWN", "NOT_SENT"].includes(String(sent.outcome))
       || (sent.diagnostic !== undefined && typeof sent.diagnostic !== "string")) throw new Error("Unreadable workbench comparison snapshot.");
     if ("scene_id" in sent.submitted && sent.submitted.scene_id !== target.sceneId) throw new Error("The comparison snapshot belongs to another scene.");
-    const preservesNodes = ["detach_product_stage", "bind_stage_capture", "detach_stage_capture", "detach_procedural_field", "detach_measured_binding"].includes(sent.submitted.type);
+    const preservesNodes = ["detach_product_stage", "bind_stage_capture", "detach_stage_capture", "detach_procedural_field", "detach_measured_binding", "edit_scene_beat_timeline"].includes(sent.submitted.type);
     if (preservesNodes !== (sent.nodesBefore !== null)) throw new Error("Incomplete Canvas preservation comparison.");
     // Recovered NOT_SENT is conservative UNKNOWN, never permission to replay.
     pending = { ...clone(sent), outcome: "UNKNOWN" } as unknown as WorkbenchPending;

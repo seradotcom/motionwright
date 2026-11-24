@@ -402,6 +402,7 @@ export default function Timeline({
                     key={beat.id}
                     type="button"
                     className={"timeline-beat" + (selected ? " selected" : "")}
+                    data-source-id={beat.id}
                     style={{
                       left: position(start),
                       width: (Math.max(0, end - start) / windowRange.span) * 100 + "%",
