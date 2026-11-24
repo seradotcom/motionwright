@@ -6,9 +6,11 @@ import { sameValue } from "./creativeProduction";
 import { parseNativeCapsuleSourceSpec, type NativeCapsuleSourceSpec7 } from "./fileImport";
 import { isRecoveryOrigin, matchesRecoveryOrigin, recoveryOrigin, type RecoveryOrigin } from "./recoveryOrigin";
 import type { Project } from "./types";
+import { BLENDER_PRODUCT_RECIPE_MIME, blenderRecipeFile } from "./blenderProductRecipe";
 
 export interface NativeSourceFields {
   path: string; name: string; mediaType: string; label: string; parameters: string; editorHint: string;
+  blenderRecipe?: string; blenderRecipeExport?: string;
 }
 export type NativeSourceField = keyof NativeSourceFields;
 export type NativeSourceTarget = "new" | string;
@@ -29,7 +31,9 @@ interface AuthorCheckpoint { raw: string; origin: RecoveryOrigin; }
 export const NATIVE_SOURCE_COPY_PREFIX = "motionwright.native-source-draft.v1:";
 export const NATIVE_SOURCE_POINTER_PREFIX = "motionwright.native-source-writer.v1:";
 export const MAX_NATIVE_SOURCE_COPY_BYTES = 1024 * 1024;
-const fields: NativeSourceField[] = ["path", "name", "mediaType", "label", "parameters", "editorHint"];
+const requiredFields: NativeSourceField[] = ["path", "name", "mediaType", "label", "parameters", "editorHint"];
+const optionalFields: NativeSourceField[] = ["blenderRecipe", "blenderRecipeExport"];
+const fields: NativeSourceField[] = [...requiredFields, ...optionalFields];
 const uuid = (value: unknown): value is string => typeof value === "string"
   && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(value) && value !== "00000000-0000-0000-0000-000000000000";
 const integer = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value < Number.MAX_SAFE_INTEGER;
@@ -72,6 +76,13 @@ export function createNativeSourceDraft(project: Project, sceneId: string, targe
 /** JSON remains raw in storage and through every edit/recovery. The save path
  * alone calls this parser; it preserves array order and each authored string. */
 export function prepareNativeSourceSpec(input: NativeSourceFields, capsuleId: string, sceneId: string): NativeCapsuleSourceSpec7 {
+  if (input.blenderRecipeExport) {
+    if (input.mediaType !== BLENDER_PRODUCT_RECIPE_MIME || !input.blenderRecipe
+      || blenderRecipeFile(input.blenderRecipe, capsuleId).sha256 !== input.blenderRecipeExport)
+      throw new Error("The prepared recipe file no longer matches the authored input. Download the current recipe or clear its binding explicitly.");
+  } else if (input.blenderRecipe && input.mediaType === BLENDER_PRODUCT_RECIPE_MIME) {
+    throw new Error("Download the authored product recipe and prepare its exact file before saving.");
+  }
   let parameters: unknown;
   try { parameters = JSON.parse(input.parameters); }
   catch { throw new Error("Complete the editable parameters JSON array before saving. Your exact input remains retained."); }
@@ -95,8 +106,9 @@ export function decodeNativeSourceCopy(raw: string, scope: string, writerId: str
       || draft.schema !== "motionwright.native-source-draft/1" || draft.scope !== scope || typeof draft.sceneId !== "string"
       || (draft.target !== "new" && !uuid(draft.target)) || !uuid(draft.capsuleId)
       || (draft.target !== "new" && draft.target !== draft.capsuleId) || !integer(draft.baseRevision) || !integer(draft.sequence)
-      || typeof draft.dirty !== "boolean" || !record(draft.fields) || !exact(draft.fields, fields)
-      || fields.some(field => typeof (draft.fields as Record<string, unknown>)[field] !== "string"))
+      || typeof draft.dirty !== "boolean" || !record(draft.fields)
+      || requiredFields.some(field => typeof (draft.fields as Record<string, unknown>)[field] !== "string")
+      || Object.keys(draft.fields).some(field => !(fields as string[]).includes(field) || typeof (draft.fields as Record<string, unknown>)[field] !== "string"))
     throw new Error("The original native source input has an unsupported shape. Its exact bytes remain available.");
   if (!Array.isArray(draft.previousCopies) || draft.previousCopies.length > 32
       || draft.previousCopies.some(value => !isRecoveryOrigin(value) || !uuid(value.writerId) || value.writerId === writerId)
@@ -191,7 +203,10 @@ export class NativeSourceDraftSession {
       throw new Error("The first native source pointer or bytes changed during recovery.");
     const next = clone(restored);
     if (this.touched.size) {
-      for (const field of this.touched) next.fields[field] = this.draft.fields[field];
+      for (const field of this.touched) {
+        const value = this.draft.fields[field];
+        if (value !== undefined) next.fields[field] = value;
+      }
       next.sequence = Math.max(next.sequence, this.draft.sequence) + 1; next.dirty = true;
       if (!integer(next.sequence)) throw new Error("The native source edit sequence is exhausted. Download both inputs.");
     }
@@ -259,11 +274,16 @@ export class NativeSourceDraftSession {
     } catch (reason) { this.backupError = message(reason); return false; }
   }
   setField(field: NativeSourceField, value: string): void {
-    if (!fields.includes(field) || typeof value !== "string") throw new Error("Unsupported native source input field.");
-    if (!integer(this.draft.sequence + 1)) { this.backupError = "The native source edit sequence is exhausted. Download the current input."; this.changed(); return; }
-    this.touched.add(field);
-    this.draft = { ...this.draft, fields: { ...this.draft.fields, [field]: value }, sequence: this.draft.sequence + 1, dirty: true };
-    this.notice = null; this.backup(); this.changed();
+    this.setFields({[field]: value});
+  }
+  setFields(patch: Partial<NativeSourceFields>): boolean {
+    const entries = Object.entries(patch);
+    if (!entries.length || entries.some(([field, value]) => !(fields as string[]).includes(field) || typeof value !== "string"))
+      throw new Error("Unsupported native source input field.");
+    if (!integer(this.draft.sequence + 1)) { this.backupError = "The native source edit sequence is exhausted. Download the current input."; this.changed(); return false; }
+    for (const [field] of entries) this.touched.add(field as NativeSourceField);
+    this.draft = { ...this.draft, fields: { ...this.draft.fields, ...patch }, sequence: this.draft.sequence + 1, dirty: true };
+    this.notice = null; const saved = this.backup(); this.changed(); return saved;
   }
   retryBackup(): boolean {
     try {
@@ -346,6 +366,8 @@ export class NativeSourceDraftSession {
       if (linkedAssets.length !== 1 || linkedAssets[0].content_sha256 !== current.source_sha256
           || linkedAssets[0].name !== spec.name || linkedAssets[0].media_type !== spec.media_type)
         throw new Error("The published native capsule and saved asset do not match. Preserve the original authored input and review the saved project.");
+      if (submitted.fields.blenderRecipeExport && current.source_sha256 !== submitted.fields.blenderRecipeExport)
+        throw new Error("A source file was saved, but its digest differs from the prepared Blender recipe. Review the saved original; the prepared input remains retained. Do not retry automatically.");
       this.draft = { ...this.draft, baseRevision: project.revision, baseCapsule: clone(current),
         dirty: this.draft.sequence !== sequence };
       this.project = project; this.submitted.delete(sequence);
@@ -414,6 +436,7 @@ export function useNativeSourceDraft(project: Project, sceneId: string, target: 
     recoveryProblem: current.recoveryProblem, backupError: current.backupError, notice: current.notice,
     downloadableOriginals: current.downloadableOriginals, downloadableInput: current.downloadableInput,
     setField: (field: NativeSourceField, value: string) => current.setField(field, value),
+    setFields: (patch: Partial<NativeSourceFields>) => current.setFields(patch),
     assertReady: () => current.assertReady(), acknowledge: (sequence: number, value: Project) => current.acknowledge(sequence, value),
     rebase: (value: Project) => current.rebase(value), startAnother: (value: Project) => current.startAnother(value), retryBackup: () => current.retryBackup() };
 }

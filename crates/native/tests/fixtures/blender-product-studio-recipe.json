@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "namespace": "StudioVessel",
+  "coating": "graphite",
+  "roughness": 0.37,
+  "metallic": 0.72,
+  "samples": 96,
+  "annotation": "AUTHOR SOURCE\nGRAPHITE",
+  "camera_curve": "linear"
+}

@@ -3,6 +3,7 @@ import { fixtureProject } from "./fixture";
 import { emptyProductionDesign, type NativeCapsule } from "./creativeProduction";
 import { assertNoFileImport, fileImportKey } from "./fileImport";
 import type { Project } from "./types";
+import { blenderProductMetadata, newBlenderProductInput } from "./blenderProductRecipe";
 import {
   NativeSourceDraftSession, createNativeSourceDraft, decodeNativeSourceCopy, encodeNativeSourceCopy,
   nativeSourceCopyKey, nativeSourcePointerKey, nativeSourceScope, prepareNativeSourceSpec,
@@ -44,7 +45,9 @@ function retained(value = project(), draft = rawDraft(value)) {
 }
 function author(session: NativeSourceDraftSession) {
   const input = rawDraft(project()).fields;
-  for (const key of Object.keys(input) as Array<keyof typeof input>) session.setField(key, input[key]);
+  for (const [key,value] of Object.entries(input)) {
+    if (typeof value === "string") session.setField(key as keyof typeof input, value);
+  }
 }
 function committed(session: NativeSourceDraftSession, before: Project): Project {
   const spec = prepareNativeSourceSpec(session.draft.fields, session.draft.capsuleId, session.draft.sceneId);
@@ -63,6 +66,23 @@ function acknowledge(s: ReturnType<typeof state>) {
 }
 
 describe("native source authored input custody", () => {
+  it("requires the saved recipe digest to match the retained prepared bytes before acknowledging",()=>{
+    const s=state();
+    const raw=JSON.stringify({...newBlenderProductInput(s.session.draft.sceneId),roughness:"0.37"});
+    const metadata=blenderProductMetadata(raw,s.session.draft.capsuleId);
+    expect(s.session.setFields({...metadata,path:"E:/product.json"})).toBe(true);
+    expect(s.session.assertReady()).toBe(true);
+    const sequence=s.session.draft.sequence,wrong=committed(s.session,s.value);
+    expect(s.session.acknowledge(sequence,wrong)).toBe(false);
+    expect(s.session.draft.fields.blenderRecipeExport).toBe(metadata.blenderRecipeExport);
+    expect(s.session.notice).toContain("digest differs");
+    const correct=structuredClone(wrong);
+    correct.production_design!.capsules[0].source_sha256=metadata.blenderRecipeExport;
+    correct.assets.find(a=>a.id===ASSET)!.content_sha256=metadata.blenderRecipeExport;
+    expect(s.session.acknowledge(sequence,correct)).toBe(true);
+    const restored=state(correct,200,s.storage,s.pointers).session;
+    expect(restored.draft.fields).toEqual(s.session.draft.fields);
+  });
   it("retains incomplete JSON and exact raw strings across a cold reload with one capsule identity", () => {
     const s = state(); author(s.session);
     s.session.setField("parameters", '["partial", 1e');

@@ -9,6 +9,8 @@ import {
   type NativeCapsuleSourceSpec7,
 } from "./fileImport";
 import { prepareNativeSourceSpec, useNativeSourceDraft, type NativeSourceField } from "./nativeSourceDraft";
+import BlenderProductRecipeEditor from "./BlenderProductRecipeEditor";
+import { blenderProductSceneIssues } from "./blenderProductRecipe";
 
 export interface NativeSourceSaveRequest {
   path: string;
@@ -88,6 +90,10 @@ function SourceEditor({ project, scene, target, busy, saveSource, refreshProject
     setError(null); setNotice(null);
     try {
       assertNoFileImport(project.id);
+      if (editor.fields.blenderRecipeExport) {
+        const issues = blenderProductSceneIssues(project,scene,editor.capsuleId);
+        if (issues.length) throw new Error(issues.join(" "));
+      }
       if (!editor.assertReady()) return;
       const spec = prepareNativeSourceSpec(editor.fields, editor.capsuleId, scene.id);
       const sequence = editor.sequence;
@@ -218,6 +224,10 @@ function SourceEditor({ project, scene, target, busy, saveSource, refreshProject
         onClick={useExportedSourceAsNextInput}>Use exported file as next version input</button>}
     </section>}
     {unavailable && <p role="alert" className="production-error">This capsule is no longer available in the selected scene. Its authored input has been kept.</p>}
+    {(scene.renderer === "blender" || !!editor.fields.blenderRecipe) && <BlenderProductRecipeEditor key={editor.capsuleId}
+      project={project} scene={scene} capsuleId={editor.capsuleId} fields={editor.fields}
+      blocked={pending || pendingImport || unavailable || editor.conflict || !!editor.recoveryProblem || !!editor.backupError}
+      change={patch => { setNotice(null); setError(null); return editor.setFields(patch); }}/>}
     <label className="production-field"><span>Source file path</span>
       <input value={editor.fields.path} onChange={event => edit("path", event.target.value)} autoComplete="off" spellCheck={false}/>
     </label>
