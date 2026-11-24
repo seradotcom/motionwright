@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { rectangularClipInset } from "./canvasClip";
+import { intersectRectangularClips, rectangularAncestorClip, rectangularClipInset } from "./canvasClip";
 import type { CanvasTransform } from "./types";
 
 const geometry = (x: number, y: number, width: number, height: number): CanvasTransform =>
@@ -54,5 +54,22 @@ describe("MW05-E01-02 editorial source-bound rectangular clipping", () => {
     expect(rectangularClipInset({...child, rotation_deg: 5}, parent)).toMatch(/^polygon\(/);
     expect(rectangularClipInset({...child, width: 0}, parent)).toBeUndefined();
     expect(rectangularClipInset({...child, x: NaN}, parent)).toBeUndefined();
+  });
+});
+
+describe("every ancestor clip plane", () => {
+  it("intersects nested masks exactly, including disjoint and rotated child geometry", () => {
+    const outer=geometry(200,100,600,500), inner=geometry(400,50,600,400);
+    const bounds=intersectRectangularClips([outer,inner])!;
+    expect(bounds).toEqual(geometry(400,100,400,350));
+    const child=geometry(300,50,600,500);
+    for (const angle of [0,30,-75,180]) {
+      const rotated={...child,rotation_deg:angle};
+      expect(rectangularAncestorClip(rotated,[outer,inner]))
+        .toBe(rectangularClipInset(rotated,bounds));
+    }
+    expect(rectangularAncestorClip(child,[outer,geometry(900,800,100,100)])).toBe("inset(100%)");
+    expect(rectangularAncestorClip(child,[])).toBeUndefined();
+    expect(rectangularAncestorClip(child,[outer,{...inner,rotation_deg:10}])).toBeUndefined();
   });
 });

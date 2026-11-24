@@ -31,7 +31,7 @@ export const cameraUsesComposition = (scene: Scene): boolean =>
   scene.nodes.some(node => node.keyframes.length > 0 || node.rotation_deg !== 0 || node.parent_id !== null || ["group","clip_group"].includes(node.kind));
 
 function cameraMotionStart(node: Scene["nodes"][number], scene: Scene): Scene["nodes"][number] {
-  const fail = (): never => invalid("composition requires exact paired motion and a static root Clip or Group for node " + node.id);
+  const fail = (): never => invalid("composition requires exact paired motion and unchanged Clip or Group ancestors for node " + node.id);
   if (node.coordinate_space !== "project_pixels" || node.relations.length || node.style.blend_mode !== "normal") fail();
   if ((node.parent_id !== null && !staticNativeGroupParent(node, scene)) ||
       (["group","clip_group"].includes(node.kind) && !isStaticNativeGroup(node))) fail();
@@ -71,7 +71,7 @@ function cameraMotionStart(node: Scene["nodes"][number], scene: Scene): Scene["n
 function cameraMotionPoses(node: Scene["nodes"][number], scene: Scene): PoseGeometry[] {
   const times = new Set(node.keyframes.filter(key => key.property !== "opacity").map(key => JSON.stringify(key.at)));
   if (times.size <= 2) return [cameraMotionStart(node, scene), node];
-  const fail = (): never => invalid("composition requires complete frame-aligned waypoint poses and a static root Clip or Group for node " + node.id);
+  const fail = (): never => invalid("composition requires complete frame-aligned waypoint poses and unchanged Clip or Group ancestors for node " + node.id);
   if (!["shape", "rectangle", "circle"].includes(node.kind) || node.rotation_deg !== 0 || node.opacity !== 1 ||
       scene.nodes.some(child => child.parent_id === node.id)) fail();
   if (node.parent_id !== null && scene.nodes.find(parent => parent.id === node.parent_id)?.style.blend_mode !== "normal") fail();

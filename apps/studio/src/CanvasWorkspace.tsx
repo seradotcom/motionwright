@@ -1,8 +1,8 @@
 import { previewTransform } from "./canvasMotion";
-import { rectangularClipInset } from "./canvasClip";
+import { rectangularAncestorClip } from "./canvasClip";
 import { alignmentScale } from "./canvasAlignment";
 import { resolveCanvasRelations } from "./canvasFollow";
-import { isStaticNativeGroup, nativeGroupOrderIssue, staticNativeGroupParent } from "./nativeGroupHierarchy";
+import { isStaticNativeGroup, nativeGroupOrderIssue, nativeGroupTreeRows, staticNativeGroupAncestors, staticNativeGroupParent } from "./nativeGroupHierarchy";
 import NativePoseMotion from "./NativePoseMotion";
 import { sameProjectRevision, type ProjectRevision } from "./projectMutation";
 import { Camera, CircleDashed, LockKeyhole, Move, Plus, Unlock } from "lucide-react";
@@ -801,10 +801,12 @@ export default function CanvasWorkspace({
       node.y = selectedNode.y + (selectedNode.height - node.height) / 2;
       // An earlier group must not append a child above unrelated root
       // layers: retain its existing subtree's highest authored layer.
-      const children=scene.nodes.filter(child=>child.parent_id===selectedNode.id);
-      const top=Math.max(selectedNode.z_index,...children.map(child=>child.z_index));
-      if(scene.nodes.some(other=>other.parent_id===null && other.id!==selectedNode.id && other.z_index>selectedNode.z_index))
-        node.z_index=top;
+      const descendants = scene.nodes.filter(child => staticNativeGroupAncestors(child, scene)
+        ?.some(parent => parent.id === selectedNode.id));
+      const top = Math.max(selectedNode.z_index, ...descendants.map(child => child.z_index));
+      const chain = [selectedNode, ...(staticNativeGroupAncestors(selectedNode, scene) ?? [])];
+      if (chain.some(scope => scene.nodes.some(other => other.parent_id === scope.parent_id
+        && other.id !== scope.id && other.z_index > scope.z_index))) node.z_index = top;
     }
     try {
       await commitRequired({ type: "add_canvas_node", scene_id: scene.id, node });
@@ -1055,11 +1057,14 @@ export default function CanvasWorkspace({
             <div className="canvas-empty-note">This scene has no semantic canvas objects yet.</div>
           ) : (
             <div className="canvas-tree-list">
-              {[...scene.nodes].sort((a, b) => b.z_index - a.z_index).map((node) => (
+              {nativeGroupTreeRows(scene).map(({ node, depth }) => (
                 <button
                   type="button"
                   key={node.id}
                   className={"canvas-tree-row" + (selectedNodeId === node.id ? " selected" : "")}
+                  style={{ paddingInlineStart: 10 + Math.min(depth, 12) * 14 }}
+                  data-parent-id={node.parent_id ?? undefined}
+                  data-tree-depth={depth}
                   onClick={() => selectNode(node)}
                 >
                   <span className="canvas-kind">{node.kind}</span>
@@ -1100,9 +1105,8 @@ export default function CanvasWorkspace({
               style={{ transform: cameraLayerTransform(scene.camera) }}>
               {scene.nodes.map((node) => {
               const transform = stageTransform(node);
-              const clipParent = node.parent_id === null ? undefined
-                : scene.nodes.find(candidate => candidate.id === node.parent_id && candidate.kind === "clip_group");
-              const clipPath = clipParent ? rectangularClipInset(transform, stageTransform(clipParent)) : undefined;
+              const clips = staticNativeGroupAncestors(node, scene)?.filter(parent => parent.kind === "clip_group") ?? [];
+              const clipPath = rectangularAncestorClip(transform, clips.map(stageTransform));
               const positionLocked = scenePositionLocked || node.property_locks.includes("position");
               return (
                 <button

@@ -126,7 +126,7 @@ export function nativePoseEdit(project: Project, scene: Scene, node: CanvasNode,
     return fail("Select a plain shape with base rotation 0 and opacity 1.");
   }
   if (node.parent_id !== null && !staticNativeGroupParent(node, scene))
-    return fail("The shape needs an unchanged root Clip or Group.");
+    return fail("The shape needs unchanged Group or Clip ancestors.");
   if (node.keyframes.length && !savedNativePoseDraft(node, profile)) {
     return fail("This motion has independent or additional keys. Edit them in the Motion inspector.");
   }

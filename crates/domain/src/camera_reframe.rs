@@ -74,7 +74,7 @@ pub fn exact_canvas_pose_waypoints(
     }
     let fail = || {
         DomainError::Invalid(format!(
-            "Canvas node {} requires 3 to 6 complete frame-aligned geometry poses with exact curves and a static root Clip or Group",
+            "Canvas node {} requires 3 to 6 complete frame-aligned geometry poses with exact curves and unchanged Clip or Group ancestors",
             node.id
         ))
     };
@@ -167,7 +167,7 @@ pub fn exact_canvas_pose_waypoints(
 fn camera_motion_start(node: &CanvasNode, scene: &Scene) -> Result<CanvasNode> {
     let fail = || {
         DomainError::Invalid(format!(
-            "Camera composition requires exact paired motion and a static root Clip or Group for node {}",
+            "Camera composition requires exact paired motion and unchanged Clip or Group ancestors for node {}",
             node.id
         ))
     };

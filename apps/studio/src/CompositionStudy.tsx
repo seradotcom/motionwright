@@ -1,6 +1,7 @@
 import { useId } from "react";
 import type { CanvasNode } from "./types";
-import { isStaticNativeGroup, nativeGroupOrderIssue, staticNativeGroupParent } from "./nativeGroupHierarchy";
+import { isStaticNativeGroup, nativeGroupOrderIssue, staticNativeGroupAncestors } from "./nativeGroupHierarchy";
+import { intersectRectangularClips } from "./canvasClip";
 import { previewTransform } from "./canvasMotion";
 import { resolveCanvasRelations } from "./canvasFollow";
 function safePaint(value: string | null, fallback: string): string { return value && /^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(value) ? value : fallback; }
@@ -16,11 +17,15 @@ export default function CompositionStudy({ nodes, width=1920, height=1080, time,
   const hierarchyIssue = nativeGroupOrderIssue({nodes});
   const alignment = resolveCanvasRelations(nodes);
   return <svg className="production-study" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={label}>
-    {nodes.some(node => node.parent_id !== null) && <desc>Direct static Group children use their saved world coordinates and rectangular Clip planes. Native Film defines authoritative transforms and relations. {hierarchyIssue ?? ""}</desc>}
+    {nodes.some(node => node.parent_id !== null) && <desc>Static Group descendants retain saved world coordinates and every ancestor's rectangular Clip plane. Native Film defines authoritative transforms and relations. {hierarchyIssue ?? ""}</desc>}
     {alignment.participants.size > 0 && <desc>{alignment.issue ? "Authored relation unresolved: " + alignment.issue : "Authored static alignment or Follow resolved for this editorial study, not native glyph or pixel evidence."}</desc>}
-    <defs>{clipGroups.map(group => <clipPath key={group.id} id={clipIds.get(group.id)} clipPathUnits="userSpaceOnUse">
-      <rect x={group.x} y={group.y} width={group.width} height={group.height}/>
-    </clipPath>)}</defs>
+    <defs>{clipGroups.map(group => {
+      const ancestors = staticNativeGroupAncestors(group, {nodes});
+      const bounds = ancestors && intersectRectangularClips([group, ...ancestors.filter(parent => parent.kind === "clip_group")]);
+      return bounds ? <clipPath key={group.id} id={clipIds.get(group.id)} clipPathUnits="userSpaceOnUse">
+        <rect x={bounds.x} y={bounds.y} width={bounds.width} height={bounds.height}/>
+      </clipPath> : null;
+    })}</defs>
     <rect width={width} height={height} fill={safePaint(background, "#0F1216")}/>
     {nodes.filter(node => !["group","clip_group"].includes(node.kind)).sort((a,b) => a.z_index-b.z_index).map(node => {
       const followTrack = alignment.tracks.get(node.id);
@@ -32,8 +37,8 @@ export default function CompositionStudy({ nodes, width=1920, height=1080, time,
       const fromProfile = Object.prototype.hasOwnProperty.call(textOverrides ?? {}, node.id);
       const textValue = fromProfile ? textOverrides![node.id] : node.text ?? "";
       const rotation = `rotate(${t.rotation_deg} ${t.x+t.width/2} ${t.y+t.height/2})`;
-      const parent = staticNativeGroupParent(node, {nodes});
-      const clipId = parent ? clipIds.get(parent.id) : undefined;
+      const clipParent = staticNativeGroupAncestors(node, {nodes})?.find(parent => parent.kind === "clip_group");
+      const clipId = clipParent ? clipIds.get(clipParent.id) : undefined;
       // Apply the world-space rectangular clipping plane outside the local
       // rotation, so a rotated child is clipped by its actual parent plane.
       return <g key={node.id} clipPath={clipId ? "url(#" + clipId + ")" : undefined}><g data-canvas-node-id={node.id} data-parent-id={node.parent_id ?? undefined} opacity={t.opacity} transform={rotation}>

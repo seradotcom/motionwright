@@ -1868,7 +1868,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
         (node.parent_id !== null && !staticNativeGroupParent(node, scene)) ||
         ["group","clip_group"].includes(node.kind) ||
         scene.nodes.some((item) => item.parent_id === node.id)) {
-        throw new Error("native linear motion requires a drawable Motion Canvas object or direct static root Group/Clip child without authored beats");
+        throw new Error("native linear motion requires a drawable Motion Canvas object with unchanged Group/Clip ancestors and no authored beats");
       }
       if (node.property_locks.includes("position")) {
         throw new Error("resource is locked: node motion property");

@@ -56,7 +56,7 @@ describe("one complete editable Native pose", () => {
     expect(edit.keys?.filter(key => key.at.num !== "0").map(key => key.at))
       .toEqual(Array(6).fill({ num: "1001", den: "1000" }));
     parent.rotation_deg = 5;
-    expect(nativePoseEdit(project, scene, node, profile, draft).issue).toMatch(/root Clip/);
+    expect(nativePoseEdit(project, scene, node, profile, draft).issue).toMatch(/Group or Clip ancestors/);
   });
   it("rejects a locked last property, duplicate slot or invalid last value before any write", async () => {
     const { project, scene, node, profile, draft } = source();

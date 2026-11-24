@@ -1,6 +1,6 @@
 use crate::{CanvasNode, DomainError, RationalTime, Result, Scene};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -28,11 +28,10 @@ pub fn native_static_shape_rotation(node: &CanvasNode) -> bool {
         && node.height > 0.0
 }
 
-/// A static, unpainted root container can preserve the saved world-space
-/// position of a direct child in the native local coordinate frame.
+/// Unpainted, unchanged containers retain literal world-space rectangles.
+/// Parent validity is checked separately across the complete ancestry.
 pub fn is_static_native_group(node: &CanvasNode) -> bool {
     matches!(node.kind.as_str(), "group" | "clip_group")
-        && node.parent_id.is_none()
         && node.coordinate_space == CoordinateSpace::ProjectPixels
         && node.keyframes.is_empty()
         && node.relations.is_empty()
@@ -41,6 +40,9 @@ pub fn is_static_native_group(node: &CanvasNode) -> bool {
         && node.style.blend_mode == BlendMode::Normal
 }
 
+/// Return the immediate parent only after validating every ancestor. Each
+/// native local center is the difference of two saved world centers, so
+/// nesting never accumulates the parent's translation twice.
 pub fn static_native_group_parent<'a>(
     node: &CanvasNode,
     scene: &'a Scene,
@@ -48,16 +50,31 @@ pub fn static_native_group_parent<'a>(
     if node.coordinate_space != CoordinateSpace::ProjectPixels {
         return None;
     }
-    let id = node.parent_id?;
-    scene
+    let by_id = scene
         .nodes
         .iter()
-        .find(|parent| parent.id == id && is_static_native_group(parent))
+        .map(|parent| (parent.id, parent))
+        .collect::<BTreeMap<_, _>>();
+    let mut next = node.parent_id;
+    let mut first = None;
+    let mut seen = BTreeSet::from([node.id]);
+    while let Some(id) = next {
+        if !seen.insert(id) {
+            return None;
+        }
+        let parent = *by_id.get(&id)?;
+        if !is_static_native_group(parent) {
+            return None;
+        }
+        first.get_or_insert(parent);
+        next = parent.parent_id;
+    }
+    first
 }
 
-/// Native draws an entire Group subtree in its parent's layer. Reject a
-/// flat Canvas painter order that would require interleaving independent
-/// root subtrees; retaining the hierarchy must not silently reorder paint.
+/// Native paints each subtree atomically in its parent's layer. Every pair
+/// of sibling subtrees must preserve the flat saved drawable order, at all
+/// levels. The original tree and authored layers are never rewritten.
 pub fn validate_static_native_group_order(scene: &Scene) -> Result<()> {
     if !scene.nodes.iter().any(|node| {
         node.parent_id.is_some() || matches!(node.kind.as_str(), "group" | "clip_group")
@@ -65,55 +82,74 @@ pub fn validate_static_native_group_order(scene: &Scene) -> Result<()> {
         return Ok(());
     }
     let fail = |why: &str| DomainError::Invalid(format!("Native Group hierarchy: {why}"));
+    let mut identities = BTreeSet::new();
     for node in &scene.nodes {
-        if node.parent_id.is_some()
-            && (matches!(node.kind.as_str(), "group" | "clip_group")
-                || static_native_group_parent(node, scene).is_none()
-                || scene
-                    .nodes
-                    .iter()
-                    .any(|child| child.parent_id == Some(node.id)))
-        {
+        if !identities.insert(node.id) {
+            return Err(fail("duplicate object identity"));
+        }
+        if node.parent_id.is_some() && static_native_group_parent(node, scene).is_none() {
             return Err(fail(
-                "only direct drawable children of a static root Group or Clip are supported",
+                "every ancestor must be an unchanged static Group or Clip; missing parents and cycles are invalid",
             ));
         }
         if matches!(node.kind.as_str(), "group" | "clip_group") && !is_static_native_group(node) {
             return Err(fail(
-                "animated, transformed or nested group containers require a dedicated projection",
+                "animated or transformed group containers require a dedicated projection",
             ));
         }
     }
-    // For a root drawable its painted layer is its own. For an unpainted
-    // container the full range of the direct children's authored layers
-    // must remain on the same side of every other root subtree.
-    let mut scopes = Vec::new();
-    for node in scene.nodes.iter().filter(|node| node.parent_id.is_none()) {
-        let group = matches!(node.kind.as_str(), "group" | "clip_group");
-        let (minimum, maximum) = if group {
-            let mut layers = scene
-                .nodes
-                .iter()
-                .filter(|child| child.parent_id == Some(node.id))
-                .map(|child| child.z_index);
-            let Some(first) = layers.next() else { continue };
-            layers.fold((first, first), |(low, high), z| (low.min(z), high.max(z)))
-        } else {
-            (node.z_index, node.z_index)
-        };
-        scopes.push((node.z_index, minimum, maximum, group));
+
+    // Compute each container's complete painted range without recursion.
+    // An empty Group has no paint and cannot change another object's order.
+    let by_id = scene
+        .nodes
+        .iter()
+        .map(|node| (node.id, node))
+        .collect::<BTreeMap<_, _>>();
+    let mut ranges = BTreeMap::<Uuid, (i32, i32)>::new();
+    for node in scene
+        .nodes
+        .iter()
+        .filter(|node| !is_static_native_group(node))
+    {
+        ranges.insert(node.id, (node.z_index, node.z_index));
+        let mut parent_id = node.parent_id;
+        while let Some(id) = parent_id {
+            ranges
+                .entry(id)
+                .and_modify(|range| {
+                    range.0 = range.0.min(node.z_index);
+                    range.1 = range.1.max(node.z_index);
+                })
+                .or_insert((node.z_index, node.z_index));
+            parent_id = by_id[&id].parent_id;
+        }
     }
-    for (index, (layer, low, high, group)) in scopes.iter().enumerate() {
-        for (other_layer, other_low, other_high, other_group) in scopes.iter().skip(index + 1) {
-            if !group && !other_group {
-                continue;
-            }
-            if !((layer < other_layer && high < other_low)
-                || (layer > other_layer && low > other_high))
-            {
-                return Err(fail(
-                    "root layers and child layers interleave; assign nonoverlapping layer ranges",
-                ));
+    let parents = scene
+        .nodes
+        .iter()
+        .map(|node| node.parent_id)
+        .collect::<BTreeSet<_>>();
+    for parent_id in parents {
+        let siblings = scene
+            .nodes
+            .iter()
+            .filter(|node| node.parent_id == parent_id && ranges.contains_key(&node.id))
+            .collect::<Vec<_>>();
+        for (index, node) in siblings.iter().enumerate() {
+            let (low, high) = ranges[&node.id];
+            for other in siblings.iter().skip(index + 1) {
+                if !is_static_native_group(node) && !is_static_native_group(other) {
+                    continue;
+                }
+                let (other_low, other_high) = ranges[&other.id];
+                if !((node.z_index < other.z_index && high < other_low)
+                    || (node.z_index > other.z_index && low > other_high))
+                {
+                    return Err(fail(
+                        "sibling subtree layers interleave; assign nonoverlapping layer ranges",
+                    ));
+                }
             }
         }
     }
@@ -648,6 +684,71 @@ pub fn property_locked(locks: &BTreeSet<NodeProperty>, properties: &[NodePropert
 mod tests {
     use super::*;
     use crate::{Change, LockKind, Project, ProjectLock};
+
+    #[test]
+    fn nested_static_group_order_validates_all_ancestors_and_sibling_scopes() {
+        let mut project = Project::new("Nested editable hierarchy").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Nested scopes".into(),
+                objective: "Preserve source paint and coordinates".into(),
+                duration_seconds: 3,
+            })
+            .unwrap();
+        let mut outer = node("Outer clip", 300.0, 200.0, 800.0, 600.0);
+        outer.kind = "clip_group".into();
+        outer.opacity = 1.0;
+        outer.z_index = 2;
+        let mut middle = node("Middle group", 400.0, 300.0, 600.0, 400.0);
+        middle.kind = "group".into();
+        middle.opacity = 1.0;
+        middle.z_index = 3;
+        middle.parent_id = Some(outer.id);
+        let mut inner = node("Inner clip", 450.0, 350.0, 400.0, 300.0);
+        inner.kind = "clip_group".into();
+        inner.opacity = 1.0;
+        inner.z_index = 4;
+        inner.parent_id = Some(middle.id);
+        let mut child = node("Child", 500.0, 400.0, 200.0, 100.0);
+        child.opacity = 1.0;
+        child.parent_id = Some(inner.id);
+        child.z_index = 5;
+        let mut peer = child.clone();
+        peer.id = Uuid::now_v7();
+        peer.parent_id = Some(middle.id);
+        peer.z_index = 6;
+        let (outer_id, middle_id, inner_id, child_id) = (outer.id, middle.id, inner.id, child.id);
+        project.scenes[0].nodes = vec![outer, middle, inner, child, peer];
+        let original = project.clone();
+        let scene = &project.scenes[0];
+        assert_eq!(
+            static_native_group_parent(&scene.nodes[3], scene)
+                .unwrap()
+                .id,
+            inner_id
+        );
+        validate_static_native_group_order(scene).unwrap();
+        assert_eq!(project, original);
+        node_mut(&mut project, child_id).z_index = 7;
+        assert!(validate_static_native_group_order(&project.scenes[0]).is_err());
+        project = original.clone();
+        node_mut(&mut project, outer_id).parent_id = Some(inner_id);
+        assert!(
+            static_native_group_parent(saved_node(&project, child_id), &project.scenes[0])
+                .is_none()
+        );
+        assert!(validate_static_native_group_order(&project.scenes[0]).is_err());
+        project = original.clone();
+        node_mut(&mut project, outer_id).parent_id = Some(Uuid::now_v7());
+        assert!(validate_static_native_group_order(&project.scenes[0]).is_err());
+        project = original;
+        node_mut(&mut project, middle_id).rotation_deg = 5.0;
+        assert!(
+            static_native_group_parent(saved_node(&project, child_id), &project.scenes[0])
+                .is_none()
+        );
+        assert!(validate_static_native_group_order(&project.scenes[0]).is_err());
+    }
 
     #[test]
     fn transform_rejects_non_finite_values() {

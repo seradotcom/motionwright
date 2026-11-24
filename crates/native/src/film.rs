@@ -483,8 +483,8 @@ struct NativeOpacityFade {
     direction: NativeOpacityDirection,
 }
 
-/// Direct children of static root containers use the same literal local
-/// geometry regardless of whether their parent owns a clipping plane.
+/// Children of unchanged container chains use literal local geometry.
+/// Every ancestor retains its own clipping plane and authored identity.
 fn native_static_root_group_parent(node: &CanvasNode, scene: &Scene) -> bool {
     motionwright_domain::static_native_group_parent(node, scene).is_some()
 }
@@ -512,8 +512,8 @@ fn native_exact_opacity_fade(
             node.id
         ))
     };
-    // A saved child of a static root Group or Clip can carry the same
-    // opacity tween as a root drawable. Keep the authored container and
+    // A saved child of unchanged Group or Clip ancestors carries the same
+    // opacity tween as a root drawable. Keep each authored container and
     // its optional clipping plane; never flatten or approximate its alpha.
     let exact_group_parent = native_static_root_group_parent(node, scene);
     if !scene.beats.is_empty()
@@ -3524,44 +3524,146 @@ mod tests {
     }
 
     #[test]
-    fn nested_rectangular_clip_group_is_refused_without_mask_or_preview_substitution() {
-        let mut project = fixture_project();
-        let scene_id = project.scenes[0].id;
-        let mut parent = node("clip_group", None);
-        parent.style = NodeStyle::default();
-        parent.x = 600.0;
-        parent.y = 300.0;
-        parent.width = 700.0;
-        parent.height = 450.0;
-        let parent_id = parent.id;
-        project
-            .apply_change(&Change::AddCanvasNode {
-                scene_id,
-                node: parent,
-            })
-            .unwrap();
-        let mut nested = node("clip_group", None);
-        nested.style = NodeStyle::default();
-        nested.parent_id = Some(parent_id);
-        nested.x = 650.0;
-        nested.y = 350.0;
-        let admitted = project.apply_change(&Change::AddCanvasNode {
-            scene_id,
-            node: nested,
-        });
-        if admitted.is_ok() {
-            let result = build_motion_canvas_segments(
-                &project,
-                project.deliverables[0].id,
-                &fixture_options(&project),
-            );
+    fn nested_static_group_clip_preserves_exact_world_pose_camera_and_independent_motion() {
+        for curve in [
+            MotionInterpolation::Linear,
+            MotionInterpolation::EaseOutCubic,
+            MotionInterpolation::Hold,
+        ] {
+            let (mut project, outer_id, child_id) = clipped_opacity_source();
+            let scene = &mut project.scenes[0];
+            let outer = scene
+                .nodes
+                .iter()
+                .find(|node| node.id == outer_id)
+                .unwrap()
+                .clone();
+            let mut middle = outer.clone();
+            middle.id = Uuid::now_v7();
+            middle.kind = "group".into();
+            middle.parent_id = Some(outer_id);
+            middle.x = 520.0;
+            middle.y = 360.0;
+            middle.width = 520.0;
+            middle.height = 340.0;
+            middle.z_index = 3;
+            let middle_id = middle.id;
+            let mut inner = middle.clone();
+            inner.id = Uuid::now_v7();
+            inner.kind = "clip_group".into();
+            inner.parent_id = Some(middle_id);
+            inner.x = 600.0;
+            inner.y = 380.0;
+            inner.width = 540.0;
+            inner.height = 280.0;
+            inner.z_index = 4;
+            let inner_id = inner.id;
+            let child = scene
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == child_id)
+                .unwrap();
+            child.parent_id = Some(inner_id);
+            child.z_index = 5;
+            for (property, from, to) in [
+                (MotionProperty::X, child.x - 20.0, child.x),
+                (MotionProperty::Y, child.y - 20.0, child.y),
+                (MotionProperty::Width, 280.0, child.width),
+                (MotionProperty::Height, 90.0, child.height),
+                (MotionProperty::RotationDeg, -18.0, child.rotation_deg),
+                (MotionProperty::Opacity, 0.0, 1.0),
+            ] {
+                child.keyframes.extend([
+                    CanvasKeyframe {
+                        at: RationalTime::ZERO,
+                        property,
+                        value: from,
+                        interpolation: MotionInterpolation::Linear,
+                    },
+                    CanvasKeyframe {
+                        at: RationalTime::ONE,
+                        property,
+                        value: to,
+                        interpolation: if property == MotionProperty::Opacity {
+                            MotionInterpolation::EaseOutCubic
+                        } else {
+                            curve
+                        },
+                    },
+                ]);
+            }
+            scene.nodes.extend([middle, inner]);
+            let camera_id = Uuid::now_v7();
+            let reframe = CameraReframe {
+                id: camera_id,
+                scene_id: scene.id,
+                component_version: 1,
+                start_center_x: scene.camera.center_x - 18.0,
+                start_center_y: scene.camera.center_y - 8.0,
+                end_center_x: scene.camera.center_x,
+                end_center_y: scene.camera.center_y,
+                duration_frames: 45,
+            };
+            project
+                .apply_change(&Change::UpsertCameraReframe { reframe })
+                .unwrap();
+            let original = project.clone();
+            let options = fixture_options(&project);
+            let segments =
+                build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
+                    .unwrap();
+            let shot = &segments[0].film.sequences[0].beats[0].shots[0];
+            let scene = &project.scenes[0];
+            for (id, parent_id) in [
+                (outer_id, None),
+                (middle_id, Some(outer_id)),
+                (inner_id, Some(middle_id)),
+                (child_id, Some(inner_id)),
+            ] {
+                let authored = scene.nodes.iter().find(|node| node.id == id).unwrap();
+                let actual = shot
+                    .subjects
+                    .iter()
+                    .find(|subject| subject.id == subject_id(id, None))
+                    .unwrap();
+                let expected_parent = parent_id
+                    .map(|parent| subject_id(parent, None))
+                    .or_else(|| Some(uid("camera-frame", camera_id)));
+                assert_eq!(actual.parent, expected_parent);
+                assert_eq!(actual.clip_intentional, id == outer_id || id == inner_id);
+                let mut x = 0.0;
+                let mut y = 0.0;
+                let mut cursor = Some(actual);
+                while let Some(subject) = cursor {
+                    match &subject.layout {
+                        SpatialIntent::Fixed { position, .. } => {
+                            x += position.x;
+                            y += position.y;
+                        }
+                        _ => panic!("Nested native geometry must remain literal and editable"),
+                    }
+                    cursor = subject.parent.as_ref().and_then(|parent| {
+                        shot.subjects
+                            .iter()
+                            .find(|candidate| &candidate.id == parent)
+                    });
+                }
+                assert!((x - (authored.x + authored.width / 2.0 - 960.0)).abs() < 1e-6);
+                assert!((y - (authored.y + authored.height / 2.0 - 540.0)).abs() < 1e-6);
+            }
             assert!(
-                result.is_err(),
-                "Nested clip scopes must not silently lose the authored clip"
+                shot.motion
+                    .iter()
+                    .any(|invocation| matches!(&invocation.primitive,
+                Primitive::FadeIn { target } if target == &subject_id(child_id, None)))
+            );
+            realize(&segments[0].film)
+                .expect("Pinned Film must preserve all nested clipping owners");
+            assert_eq!(
+                project, original,
+                "Projection must not flatten or rewrite the saved tree"
             );
         }
-        // Domain rejecting the nested clip earlier is also an appropriate
-        // refusal, and must never trigger a Native effect.
     }
 
     fn stroke_projection_fixture(
@@ -4987,6 +5089,7 @@ mod tests {
         top.y = 180.0;
         top.width = 400.0;
         top.height = 400.0;
+        top.rotation_deg = 8.0;
         let top_id = top.id;
         nested_parent
             .apply_change(&Change::AddCanvasNode {

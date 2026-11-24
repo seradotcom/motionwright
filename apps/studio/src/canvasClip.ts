@@ -65,3 +65,21 @@ export function rectangularClipInset(child: CanvasTransform, parent: CanvasTrans
   });
   return `polygon(${coordinates.join(", ")})`;
 }
+
+/** All static rectangular ancestor masks intersect in world coordinates.
+ * An empty intersection is an intentional fully clipped result. */
+export function intersectRectangularClips(clips: readonly CanvasTransform[]): CanvasTransform | undefined {
+  if (!clips.length || clips.some(clip => ![clip.x, clip.y, clip.width, clip.height, clip.rotation_deg].every(Number.isFinite)
+    || clip.width <= 0 || clip.height <= 0 || clip.rotation_deg !== 0)) return undefined;
+  const x = Math.max(...clips.map(clip => clip.x)), y = Math.max(...clips.map(clip => clip.y));
+  const right = Math.min(...clips.map(clip => clip.x + clip.width));
+  const bottom = Math.min(...clips.map(clip => clip.y + clip.height));
+  return { x, y, width: Math.max(0, right - x), height: Math.max(0, bottom - y), rotation_deg: 0, opacity: 1 };
+}
+
+export function rectangularAncestorClip(child: CanvasTransform, clips: readonly CanvasTransform[]): string | undefined {
+  const intersection = intersectRectangularClips(clips);
+  if (!intersection) return undefined;
+  if (intersection.width === 0 || intersection.height === 0) return "inset(100%)";
+  return rectangularClipInset(child, intersection);
+}
