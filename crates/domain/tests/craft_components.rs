@@ -403,7 +403,7 @@ fn typography_variations_preserve_human_appearance_and_report_copy_conflicts() {
     p.apply_change(&Change::UpdateCanvasText {
         scene_id,
         node_id: node.id,
-        text: "The human direction".into(),
+        text: Some("The human direction".into()),
     })
     .unwrap();
     let saved = p.clone();
