@@ -324,7 +324,9 @@ describe("bounded procedural influence components", () => {
       influence({ offset_x: 1920 }), influence({ scale_percent: 400 }),
       { ...influence(), effect_grant: "not-an-authoring-field" } as ProceduralInfluence,
     ]) await expect(realizeProceduralField(ID, influenced(field))).rejects.toThrow();
-    await expect(realizeProceduralField(ID, { ...influenced(), reveal_step_frames: 3 })).rejects.toThrow("zero orientation");
+    const entering = await realizeProceduralField(ID, { ...influenced(), reveal_step_frames: 3 });
+    expect(entering.map(node => node.rotation_deg)).toEqual([15, 30, 15]);
+    expect(entering.every(node => node.keyframes.length >= 4 && node.keyframes.every(key => key.property !== "rotation_deg"))).toBe(true);
     const base = await upsert(project(), influenced(influence({ rotation_deg: 0 })));
     const lock = { ...fixtureProject.locks[0], id: crypto.randomUUID(), resource: "scene:" + base.scenes[0].id, kind: "timing" as const };
     const locked = { ...base, locks: [lock] }, before = structuredClone(locked);

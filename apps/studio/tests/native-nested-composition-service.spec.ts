@@ -54,8 +54,14 @@ test("saves nested Clip Group Clip composition and continues the same child pose
     await innerPanel.getByRole("button",{name:"Commit transform",exact:true}).click();
     await expect(revision).toHaveText("r"+(++expectedRevision));
     inner=(await savedScene()).nodes.find(node=>node.id===inner.id)!;
-    const child=await create("shape");
+    let child=await create("shape");
     expect(child.parent_id).toBe(inner.id);
+    const childPanel=inspector(child);
+    await childPanel.getByLabel("Canvas Rotation",{exact:true}).fill("37");
+    await childPanel.getByRole("button",{name:"Commit transform",exact:true}).click();
+    await expect(revision).toHaveText("r"+(++expectedRevision));
+    child=(await savedScene()).nodes.find(node=>node.id===child.id)!;
+    expect(child.rotation_deg).toBe(37);
     const row=page.locator(".canvas-tree-row").filter({hasText:child.name});
     await expect(row).toHaveAttribute("data-tree-depth","3");
     const pose=page.getByRole("region",{name:"Native pose animation"});
@@ -73,7 +79,10 @@ test("saves nested Clip Group Clip composition and continues the same child pose
     await expect(revision).toHaveText("r"+(++expectedRevision));
     const saved=await service.project(original.id);
     const savedNodes=saved.scenes.find(item=>item.id===scene.id)!.nodes;
-    expect(savedNodes.find(node=>node.id===child.id)?.keyframes).toHaveLength(14);
+    const savedChild=savedNodes.find(node=>node.id===child.id)!;
+    expect(savedChild.keyframes).toHaveLength(14);
+    expect(savedChild.rotation_deg).toBe(37);
+    expect(savedChild.keyframes.filter(key=>key.property==="rotation_deg").at(-1)?.value).toBe(37);
     for(const container of [outer,middle,inner]) expect(savedNodes.find(node=>node.id===container.id)).toEqual(container);
     const object=page.getByRole("button",{name:"Canvas object "+child.name,exact:true});
     await expect(object).not.toHaveCSS("clip-path","none");
@@ -82,6 +91,7 @@ test("saves nested Clip Group Clip composition and continues the same child pose
     await page.locator(".tree-row").filter({hasText:scene.name}).click();
     await row.click();
     await expect(row).toHaveAttribute("data-tree-depth","3");
+    await expect(inspector(child).getByLabel("Canvas Rotation",{exact:true})).toHaveValue("37");
     await expect(pose.getByLabel("Pose start x",{exact:true})).toHaveValue(String(child.x-40));
     await expect(pose.getByLabel("Pose opacity",{exact:true})).toHaveValue("in_out");
     await expect(pose.getByLabel("Pose fade end frame",{exact:true})).toHaveValue("15");

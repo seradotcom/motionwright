@@ -134,9 +134,9 @@ export function nativePoseEdit(project: Project, scene: Scene, node: CanvasNode,
   if (scene.renderer !== "motion-canvas" || scene.beats.length) return fail("Use a Motion Canvas scene with a continuous timeline.");
   if (!["shape", "rectangle", "circle"].includes(node.kind) ||
       node.coordinate_space !== "project_pixels" || node.relations.length ||
-      node.style.blend_mode !== "normal" || node.rotation_deg !== 0 || node.opacity !== 1 ||
+      node.style.blend_mode !== "normal" || node.opacity !== 1 ||
       scene.nodes.some(candidate => candidate.parent_id === node.id)) {
-    return fail("Select a plain shape with base rotation 0 and opacity 1.");
+    return fail("Select a plain shape with base opacity 1. Its saved orientation is the terminal pose.");
   }
   if (node.parent_id !== null && !staticNativeGroupParent(node, scene))
     return fail("The shape needs unchanged Group or Clip ancestors.");

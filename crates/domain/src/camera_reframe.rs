@@ -88,7 +88,6 @@ pub fn exact_canvas_pose_waypoints(
         || node.style.blend_mode != BlendMode::Normal
         || !node.relations.is_empty()
         || node.opacity != 1.0
-        || node.rotation_deg != 0.0
         || scene
             .nodes
             .iter()
@@ -189,7 +188,7 @@ fn camera_motion_start(node: &CanvasNode, scene: &Scene) -> Result<CanvasNode> {
         }
         return Ok(initial);
     }
-    if node.rotation_deg != 0.0
+    if (node.rotation_deg != 0.0 && !native_shape_rotation(node))
         || node.opacity != 1.0
         || scene
             .nodes

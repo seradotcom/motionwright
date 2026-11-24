@@ -125,7 +125,7 @@ function ProceduralEditor({project,scene,commit,busy,onOpenCanvas,displayProfile
             disabled={!influence.enabled} onChange={event => patchInfluence({ fill: event.target.value })}/></label>
         </div>
         <p className="production-help">Center values fade toward the unchanged field at the radius. Objects must remain between 4 and 128 pixels and fit the authored stage.
-          Use zero orientation with entrances, or turn entrances off for a static rotated field.</p>
+          Each object keeps its orientation throughout its entrance.</p>
         {!influence.enabled && <p className="production-help" role="status">Disabled influence values remain in this local draft. Saving removes the influence from the generator while preserving those fields for further editing.</p>}
       </>}
     </section>

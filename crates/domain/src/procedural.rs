@@ -158,9 +158,6 @@ impl ProceduralConfig {
         }
         if let Some(field) = &self.influence {
             field.validate()?;
-            if self.reveal_step_frames > 0 && field.rotation_deg != 0 {
-                return Err(DomainError::Invalid("sequenced influence fields require zero orientation; disable entrances for static orientation".into()));
-            }
         }
         let columns = u32::from(self.columns).min(u32::from(self.count));
         let rows = u32::from(self.count).div_ceil(columns);

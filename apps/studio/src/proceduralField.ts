@@ -58,8 +58,6 @@ export function validateProceduralConfig(input:ProceduralConfig):void {
     throw new Error("Procedural field exceeds 1920x1080 authored stage.");
   if (c.influence !== undefined) {
     validateProceduralInfluence(c.influence);
-    if (c.reveal_step_frames > 0 && c.influence.rotation_deg !== 0)
-      throw new Error("Sequenced influence fields require zero orientation; disable entrances for static orientation.");
   }
   const columns=Math.min(c.columns,c.count), rows=Math.ceil(c.count/columns);
   if(c.distribution==="radial" || c.distribution==="spiral"){

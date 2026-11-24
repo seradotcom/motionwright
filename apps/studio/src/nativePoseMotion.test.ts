@@ -143,3 +143,24 @@ describe("editable fade-in, hold and fade-out with an independent pose", () => {
     expect(nativePoseEdit(saved, saved.scenes[0], extra, profile, draft).issue).toMatch(/additional keys/);
   });
 });
+
+describe("nonzero terminal orientation throughout an editable composition",()=>{
+  it.each(["linear","ease_out_cubic","hold"] as const)("retains terminal rotation with %s poses, intermediate holds and an independent opacity cycle",async curve=>{
+    const {project,scene,node,profile,draft}=source();node.rotation_deg=37;
+    draft.curve=curve;draft.fade="in_out";draft.fadeEndFrame=10;draft.fadeOutStartFrame=20;draft.fadeOutEndFrame=45;draft.fadeOutCurve="linear";
+    draft.waypoints=[{frame:15,curve:"hold",pose:{x:1050,y:420,width:300,height:180,rotation_deg:12}}];
+    const edit=nativePoseEdit(project,scene,node,profile,draft);expect(edit.issue).toBeNull();
+    const saved=await applyChange(project,{type:"set_canvas_motion_keyframes",scene_id:scene.id,node_id:node.id,keyframes:edit.keys!});
+    const reopened=JSON.parse(JSON.stringify(saved)),shape=reopened.scenes[0].nodes[0];
+    expect(previewTransform(shape,14/30).rotation_deg).toBe(-18);
+    expect(previewTransform(shape,.5).rotation_deg).toBe(12);
+    expect(previewTransform(shape,1).rotation_deg).toBe(37);
+    expect(previewTransform(shape,1.25).opacity).toBeCloseTo(.3);
+    expect(savedNativePoseDraft(shape,profile)).toEqual(draft);
+    const replacement=nativePoseEdit(reopened,reopened.scenes[0],shape,profile,{...draft,endFrame:40});
+    expect(replacement.issue).toBeNull();expect(replacement.keys!.filter(key=>key.property==="rotation_deg").at(-1)!.value).toBe(37);
+    for(const invalid of [361,-361,Infinity]){
+      const bad={...node,rotation_deg:invalid};expect(nativePoseEdit(project,scene,bad,profile,draft).keys).toBeNull();
+    }
+  });
+});

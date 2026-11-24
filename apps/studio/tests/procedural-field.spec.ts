@@ -87,10 +87,9 @@ test("procedural influence component edits complete geometry and color while ret
   await page.getByLabel("Influence falloff", { exact: true }).selectOption("smoothstep");
   await page.getByRole("button", { name: "Update procedural field", exact: true }).click();
   await page.getByLabel("Entrance interval (frames; 0 disables)", { exact: true }).fill("3");
-  await expect(page.getByRole("alert")).toContainText("zero orientation");
-  await expect(page.getByRole("button", { name: "Update procedural field", exact: true })).toBeDisabled();
-  await page.getByLabel("Influence static orientation (degrees)", { exact: true }).fill("0");
+  await expect(page.getByRole("button", { name: "Update procedural field", exact: true })).toBeEnabled();
   await page.getByRole("button", { name: "Update procedural field", exact: true }).click();
+  await expect(page.getByLabel("Influence static orientation (degrees)", { exact: true })).toHaveValue("30");
   await page.getByLabel("Enable influence field", { exact: true }).uncheck();
   await page.getByRole("button", { name: "Update procedural field", exact: true }).click();
   await expect(page.getByLabel("Influence offset X", { exact: true })).toHaveValue("-20");

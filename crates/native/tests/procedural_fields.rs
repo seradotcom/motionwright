@@ -209,3 +209,75 @@ fn sequenced_influence_uses_the_original_native_y_opacity_path_without_baking() 
         assert!(realize(&film[0].film).is_ok());
     }
 }
+
+#[test]
+fn oriented_influence_entrances_keep_literal_rotation_and_original_delayed_motion() {
+    use semwright_motion_authoring::{Channel, NativeOp, Operand};
+    let (p, options) = project(ProceduralConfig {
+        count: 3,
+        columns: 3,
+        origin_x: 200,
+        origin_y: 200,
+        area_width: 300,
+        area_height: 100,
+        size: 40,
+        reveal_step_frames: 3,
+        influence: Some(ProceduralInfluence {
+            shape: InfluenceShape::Radial,
+            falloff: InfluenceFalloff::Linear,
+            center_x: 350,
+            center_y: 250,
+            radius: 200,
+            offset_x: 20,
+            offset_y: -10,
+            scale_percent: 150,
+            rotation_deg: 30,
+            fill: "#FFFFFF".into(),
+        }),
+        ..Default::default()
+    });
+    let original = p.clone();
+    let segments = build_motion_canvas_segments(&p, p.deliverables[0].id, &options).unwrap();
+    let shot = &segments[0].film.sequences[0].beats[0].shots[0];
+    assert_eq!(shot.subjects.len(), 3);
+    assert_eq!(
+        shot.motion
+            .iter()
+            .filter(|motion| matches!(motion.primitive, Primitive::SlideIn { .. }))
+            .count(),
+        3
+    );
+    let lowered = realize(&segments[0].film).unwrap();
+    let rotations = lowered
+        .instructions
+        .iter()
+        .filter_map(|instruction| match &instruction.operation {
+            NativeOp::Set {
+                target,
+                channel: Channel::Rotation,
+                value: Operand::Number(angle),
+            } => {
+                assert_eq!(instruction.start, RationalTime::ZERO);
+                assert_eq!(instruction.duration, RationalTime::ZERO);
+                Some((target.clone(), *angle))
+            }
+            NativeOp::Tween {
+                channel: Channel::Rotation,
+                ..
+            } => panic!("An entrance must not overwrite constant orientation"),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rotations.len(), 3);
+    for (subject, node) in shot.subjects.iter().zip(&p.scenes[0].nodes) {
+        assert_eq!(
+            rotations
+                .iter()
+                .filter(|(target, _)| target == &subject.id)
+                .map(|(_, angle)| *angle)
+                .collect::<Vec<_>>(),
+            vec![node.rotation_deg]
+        );
+    }
+    assert_eq!(p, original);
+}

@@ -825,17 +825,6 @@ fn influence_rejects_unsafe_bounds_and_unadmitted_rotating_entrances() {
     bad.scale_percent = 400;
     assert!(upsert(&mut p, influenced(bad)).is_err());
     assert_eq!(p, before);
-    let config = ProceduralConfig {
-        reveal_step_frames: 3,
-        ..influenced(influence())
-    };
-    assert!(
-        upsert(&mut p, config)
-            .unwrap_err()
-            .to_string()
-            .contains("zero orientation")
-    );
-    assert_eq!(p, before);
     let mut malformed = serde_json::to_value(influence()).unwrap();
     malformed["effect_grant"] = serde_json::json!("forbidden");
     assert!(serde_json::from_value::<ProceduralInfluence>(malformed).is_err());
@@ -863,4 +852,31 @@ fn influence_updates_honor_project_and_scene_timing_locks_before_any_source_muta
         assert!(upsert(&mut p, influenced(field)).is_err());
         assert_eq!(p, before);
     }
+}
+
+#[test]
+fn influenced_orientation_remains_constant_during_each_exact_staggered_entrance() {
+    let config = ProceduralConfig {
+        reveal_step_frames: 3,
+        ..influenced(influence())
+    };
+    let mut p = project();
+    upsert(&mut p, config).unwrap();
+    let nodes = &p.scenes[0].nodes;
+    assert_eq!(
+        nodes
+            .iter()
+            .map(|node| node.rotation_deg as i32)
+            .collect::<Vec<_>>(),
+        vec![15, 30, 15]
+    );
+    assert!(nodes.iter().all(|node| {
+        node.keyframes.len() >= 4
+            && node
+                .keyframes
+                .iter()
+                .all(|key| key.property != MotionProperty::RotationDeg)
+    }));
+    let reopened: Project = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+    assert_eq!(reopened, p);
 }

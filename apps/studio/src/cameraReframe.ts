@@ -8,7 +8,7 @@ import { emptyProductionDesign } from "./creativeProduction";
 import { seconds } from "./types";
 import { savedNativePoseDraft, type PoseGeometry } from "./nativePoseDraft";
 import { isStaticNativeGroup, nativeGroupOrderIssue, staticNativeGroupParent } from "./nativeGroupHierarchy";
-import { nativeStaticShapeRotation } from "./canvasMotion";
+import { nativeShapeRotation, nativeStaticShapeRotation } from "./canvasMotion";
 import { exactCanvasOpacitySpans } from "./canvasOpacity";
 
 export const CAMERA_REFRAME_VERSION=1;
@@ -41,7 +41,7 @@ function cameraMotionStart(node: Scene["nodes"][number], scene: Scene): Scene["n
     if (node.rotation_deg!==0 && !nativeStaticShapeRotation(node)) fail();
     return initial;
   }
-  if (node.rotation_deg !== 0 || node.opacity !== 1 || scene.nodes.some(child => child.parent_id === node.id)) fail();
+  if ((node.rotation_deg !== 0 && !nativeShapeRotation(node)) || node.opacity !== 1 || scene.nodes.some(child => child.parent_id === node.id)) fail();
   const geometry = node.keyframes.some(key => key.property !== "opacity");
   if (geometry && !["shape", "rectangle", "circle"].includes(node.kind)) fail();
   if (node.keyframes.some(key => key.property === "x") !== node.keyframes.some(key => key.property === "y")) fail();
@@ -69,7 +69,7 @@ function cameraMotionPoses(node: Scene["nodes"][number], scene: Scene): PoseGeom
   const times = new Set(node.keyframes.filter(key => key.property !== "opacity").map(key => JSON.stringify(key.at)));
   if (times.size <= 2) return [cameraMotionStart(node, scene), node];
   const fail = (): never => invalid("composition requires complete frame-aligned waypoint poses and unchanged Clip or Group ancestors for node " + node.id);
-  if (!["shape", "rectangle", "circle"].includes(node.kind) || node.rotation_deg !== 0 || node.opacity !== 1 ||
+  if (!["shape", "rectangle", "circle"].includes(node.kind) || node.opacity !== 1 ||
       scene.nodes.some(child => child.parent_id === node.id)) fail();
   if (node.parent_id !== null && scene.nodes.find(parent => parent.id === node.parent_id)?.style.blend_mode !== "normal") fail();
   cameraMotionStart({...node, keyframes: node.keyframes.filter(key => key.property === "opacity")}, scene);

@@ -270,3 +270,21 @@ it("keeps a shared camera, intermediate pose and independent entry/hold/exit edi
   expect(continued.production_design?.camera_reframes).toEqual([camera]);
   expect(previewTransform(continued.scenes[0].nodes[0],1.5).opacity).toBe(1);
 });
+
+it("composes nonzero terminal orientation, exact intermediate poses and independent opacity with the same camera",async()=>{
+  const {project,camera}=source(),scene=project.scenes[0],node=scene.nodes[0];
+  node.rotation_deg=27;
+  const draft:NativePoseDraft={start:{x:400,y:400,width:220,height:80,rotation_deg:-12},
+    endFrame:60,curve:"ease_out_cubic",fade:"in_out",fadeCurve:"linear",fadeEndFrame:15,
+    fadeOutStartFrame:30,fadeOutEndFrame:45,fadeOutCurve:"linear",
+    waypoints:[{frame:30,curve:"hold",pose:{x:500,y:440,width:240,height:100,rotation_deg:15}}]};
+  const edit=nativePoseEdit(project,scene,node,project.deliverables[0],draft);expect(edit.issue).toBeNull();
+  const saved=await applyChange(project,{type:"set_canvas_motion_keyframes",scene_id:scene.id,node_id:node.id,keyframes:edit.keys!});
+  const composed=await applyChange(saved,{type:"upsert_camera_reframe",reframe:camera});
+  expect(composed.scenes[0].nodes).toEqual(saved.scenes[0].nodes);
+  expect(previewTransform(composed.scenes[0].nodes[0],2).rotation_deg).toBe(27);
+  const before=JSON.stringify(composed),unsafe=structuredClone(composed);
+  unsafe.scenes[0].nodes[0].keyframes.find(key=>key.property==="x"&&key.at.num==="1"&&key.at.den==="1")!.value=0;
+  await expect(applyChange(unsafe,{type:"upsert_camera_reframe",reframe:camera})).rejects.toThrow(/crop/);
+  expect(JSON.stringify(composed)).toBe(before);
+});

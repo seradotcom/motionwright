@@ -12,12 +12,11 @@ pub enum CoordinateSpace {
     SceneLocal,
 }
 
-/// One literal, saved shape rotation is represented by a frame-zero
-/// Native GeometrySet, independently of its optional static root container.
-pub fn native_static_shape_rotation(node: &CanvasNode) -> bool {
+/// Shape rotation is a literal native channel. Motion timing and complete
+/// channel coverage are independently checked by the exact Film projection.
+pub fn native_shape_rotation(node: &CanvasNode) -> bool {
     matches!(node.kind.as_str(), "shape" | "rectangle" | "circle")
         && node.coordinate_space == CoordinateSpace::ProjectPixels
-        && node.keyframes.is_empty()
         && node.relations.is_empty()
         && node.style.blend_mode == BlendMode::Normal
         && node.opacity == 1.0
@@ -26,6 +25,21 @@ pub fn native_static_shape_rotation(node: &CanvasNode) -> bool {
         && node.rotation_deg.abs() <= 360.0
         && node.width > 0.0
         && node.height > 0.0
+}
+
+/// Constant orientation needs one frame-zero Set, even when other channels
+/// move. A keyed rotation owns that channel itself and never gets this Set.
+pub fn native_constant_shape_rotation(node: &CanvasNode) -> bool {
+    native_shape_rotation(node)
+        && node
+            .keyframes
+            .iter()
+            .all(|key| key.property != MotionProperty::RotationDeg)
+}
+
+/// Preserve the original strict static subset for callers that need no motion.
+pub fn native_static_shape_rotation(node: &CanvasNode) -> bool {
+    native_shape_rotation(node) && node.keyframes.is_empty()
 }
 
 /// Unpainted, unchanged containers retain literal world-space rectangles.

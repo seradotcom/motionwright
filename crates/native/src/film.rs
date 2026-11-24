@@ -158,6 +158,12 @@ fn flush_run(runs: &mut Vec<Vec<Scene>>, current: &mut Vec<Scene>) {
 /// Geometry and opacity write disjoint native channels. Keep both original
 /// key sets in the document and split only their read-only Film projection.
 fn composed_shape_motion(node: &CanvasNode) -> Option<(CanvasNode, CanvasNode)> {
+    // Existing staggered entrances carry a t0 Hold and optional delayed Hold.
+    // Keep their exact SlideIn/Settle route; splitting them would reinterpret
+    // those holds as a different pose/opacity grammar.
+    if matches!(entry_motion(node), Ok(Some(_))) {
+        return None;
+    }
     if !matches!(node.kind.as_str(), "shape" | "rectangle" | "circle")
         || !node
             .keyframes
@@ -189,7 +195,7 @@ fn scene_span_cost(scene: &Scene) -> usize {
     let static_rotation_spans = if scene
         .nodes
         .iter()
-        .any(motionwright_domain::native_static_shape_rotation)
+        .any(motionwright_domain::native_constant_shape_rotation)
     {
         scene.beats.len().max(1)
     } else {
@@ -535,7 +541,7 @@ fn native_exact_opacity_fade(
             .iter()
             .any(|candidate| candidate.parent_id == Some(node.id))
         || node.opacity != 1.0
-        || node.rotation_deg != 0.0
+        || (node.rotation_deg != 0.0 && !motionwright_domain::native_shape_rotation(node))
     {
         return Err(fail());
     }
@@ -671,6 +677,9 @@ fn native_linear_geometry_motion(
     scene: &Scene,
     frame_rate: Rate,
 ) -> NativeResult<Option<NativeGeometryKeyMotion>> {
+    if matches!(entry_motion(node), Ok(Some(_))) {
+        return Ok(None);
+    }
     // A single authored X *or* Y curve is exactly expressible as one
     // Position Vector tween/Set, with the untouched axis held at its saved
     // value. The paired X/Y route remains the existing Settle projection.
@@ -683,7 +692,14 @@ fn native_linear_geometry_motion(
                 .keyframes
                 .iter()
                 .all(|key| key.property == MotionProperty::Y));
+    // A rotated shape's X/Y motion uses literal Position geometry. Settle
+    // also writes Rotation and would otherwise flatten its authored angle.
     let has_geometry = single_axis_motion
+        || (node.rotation_deg != 0.0
+            && node
+                .keyframes
+                .iter()
+                .any(|key| key.property != MotionProperty::Opacity))
         || node.keyframes.iter().any(|key| {
             matches!(
                 key.property,
@@ -708,7 +724,6 @@ fn native_linear_geometry_motion(
             .iter()
             .any(|other| other.parent_id == Some(node.id))
         || node.opacity != 1.0
-        || node.rotation_deg != 0.0
     {
         return Err(fail());
     }
@@ -924,6 +939,9 @@ fn native_pose_waypoints(
     scene: &Scene,
     rate: Rate,
 ) -> NativeResult<Option<Vec<motionwright_domain::CanvasPosePoint>>> {
+    if matches!(entry_motion(node), Ok(Some(_))) {
+        return Ok(None);
+    }
     let fps = RationalTime::new(i64::from(rate.num), i64::from(rate.den))
         .map_err(|error| contract("Native waypoint frame rate", error))?;
     motionwright_domain::exact_canvas_pose_waypoints(node, scene, fps)
@@ -1169,7 +1187,7 @@ fn validate_node_projection(node: &CanvasNode, font_family: &str) -> NativeResul
         )));
     }
     if node.opacity != 1.0
-        || (node.rotation_deg != 0.0 && !motionwright_domain::native_static_shape_rotation(node))
+        || (node.rotation_deg != 0.0 && !motionwright_domain::native_shape_rotation(node))
     {
         return Err(unsupported(format!(
             "Canvas node {} has rotation/opacity state that canonical Film cannot preserve yet",
@@ -1736,8 +1754,9 @@ fn projected_shot(
     })
 }
 
-/// Lower one shared frame-zero span per shot. GeometrySet writes rotation
-/// instantaneously; a tween would change the static authored appearance.
+/// Lower one shared frame-zero span per shot for constant shape orientation,
+/// including shapes with position, size or opacity motion. Keyed rotation is
+/// owned only by its literal pose track; no second writer is introduced.
 struct StaticRotationClock {
     start: RationalTime,
     duration: RationalTime,
@@ -1754,7 +1773,7 @@ fn attach_static_rotations(
     let rotated = scene
         .nodes
         .iter()
-        .filter(|node| motionwright_domain::native_static_shape_rotation(node))
+        .filter(|node| motionwright_domain::native_constant_shape_rotation(node))
         .collect::<Vec<_>>();
     if rotated.is_empty() {
         return Ok(());
@@ -4857,6 +4876,227 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn rotated_terminal_pose_family_keeps_clip_camera_hold_and_independent_opacity() {
+        use semwright_motion_authoring::NativeOp;
+        for curve in [
+            MotionInterpolation::Linear,
+            MotionInterpolation::EaseOutCubic,
+            MotionInterpolation::Hold,
+        ] {
+            for waypoint in [false, true] {
+                let (mut project, parent_id, child_id) = clipped_opacity_source();
+                let child = project.scenes[0]
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == child_id)
+                    .unwrap();
+                child.x = 720.0;
+                child.y = 420.0;
+                child.width = 240.0;
+                child.height = 120.0;
+                child.rotation_deg = 27.0;
+                child.keyframes.clear();
+                let mut poses = vec![(
+                    RationalTime::ZERO,
+                    MotionInterpolation::Linear,
+                    [680.0, 400.0, 200.0, 100.0, -12.0],
+                )];
+                if waypoint {
+                    poses.push((
+                        RationalTime::new(1, 2).unwrap(),
+                        curve,
+                        [700.0, 410.0, 220.0, 110.0, 15.0],
+                    ));
+                }
+                poses.push((
+                    RationalTime::ONE,
+                    curve,
+                    [
+                        child.x,
+                        child.y,
+                        child.width,
+                        child.height,
+                        child.rotation_deg,
+                    ],
+                ));
+                for (at, interpolation, values) in poses {
+                    for (property, value) in [
+                        MotionProperty::X,
+                        MotionProperty::Y,
+                        MotionProperty::Width,
+                        MotionProperty::Height,
+                        MotionProperty::RotationDeg,
+                    ]
+                    .into_iter()
+                    .zip(values)
+                    {
+                        child.keyframes.push(CanvasKeyframe {
+                            at,
+                            property,
+                            value,
+                            interpolation,
+                        });
+                    }
+                }
+                for (at, value, interpolation) in [
+                    (RationalTime::ZERO, 0.0, MotionInterpolation::Linear),
+                    (
+                        RationalTime::new(1, 4).unwrap(),
+                        1.0,
+                        MotionInterpolation::EaseOutCubic,
+                    ),
+                    (
+                        RationalTime::new(1, 2).unwrap(),
+                        1.0,
+                        MotionInterpolation::Hold,
+                    ),
+                    (
+                        RationalTime::new(3, 2).unwrap(),
+                        0.0,
+                        MotionInterpolation::Linear,
+                    ),
+                ] {
+                    child.keyframes.push(CanvasKeyframe {
+                        at,
+                        property: MotionProperty::Opacity,
+                        value,
+                        interpolation,
+                    });
+                }
+                let camera = project.scenes[0].camera.clone();
+                project
+                    .apply_change(&Change::UpsertCameraReframe {
+                        reframe: CameraReframe {
+                            id: Uuid::now_v7(),
+                            scene_id: project.scenes[0].id,
+                            component_version: 1,
+                            start_center_x: camera.center_x - 18.0,
+                            start_center_y: camera.center_y - 8.0,
+                            end_center_x: camera.center_x,
+                            end_center_y: camera.center_y,
+                            duration_frames: 45,
+                        },
+                    })
+                    .unwrap();
+                let original = project.clone();
+                let segments = build_motion_canvas_segments(
+                    &project,
+                    project.deliverables[0].id,
+                    &fixture_options(&project),
+                )
+                .unwrap();
+                let shot = &segments[0].film.sequences[0].beats[0].shots[0];
+                let target = subject_id(child_id, None);
+                assert_eq!(
+                    shot.subjects
+                        .iter()
+                        .find(|subject| subject.id == target)
+                        .unwrap()
+                        .parent,
+                    Some(subject_id(parent_id, None))
+                );
+                let realized = realize(&segments[0].film).unwrap();
+                let rotations = realized.instructions.iter().filter(|instruction| matches!(&instruction.operation,
+                    NativeOp::Set { target: actual, channel: Channel::Rotation, .. }
+                    | NativeOp::Tween { target: actual, channel: Channel::Rotation, .. } if actual == &target)).collect::<Vec<_>>();
+                assert_eq!(
+                    rotations.len(),
+                    if curve == MotionInterpolation::Hold {
+                        if waypoint { 3 } else { 2 }
+                    } else if waypoint {
+                        2
+                    } else {
+                        1
+                    }
+                );
+                assert!(
+                    matches!(&rotations.last().unwrap().operation,
+                    NativeOp::Set { value: Operand::Number(value), .. } if *value == 27.0)
+                        || matches!(&rotations.last().unwrap().operation,
+                    NativeOp::Tween { to: Operand::Number(value), .. } if *value == 27.0)
+                );
+                if curve == MotionInterpolation::Hold {
+                    assert!(
+                        rotations
+                            .iter()
+                            .all(|instruction| instruction.duration == RationalTime::ZERO)
+                    );
+                    assert_eq!(rotations.last().unwrap().start, RationalTime::ONE);
+                }
+                let alpha = realized.instructions.iter().filter(|instruction| matches!(&instruction.operation,
+                    NativeOp::Tween { target: actual, channel: Channel::Opacity, .. } if actual == &target)).count();
+                assert_eq!(alpha, 2);
+                assert_eq!(project, original);
+                let reopened: Project =
+                    serde_json::from_str(&serde_json::to_string(&project).unwrap()).unwrap();
+                assert_eq!(reopened, original);
+            }
+        }
+    }
+
+    #[test]
+    fn constant_orientation_uses_one_initial_write_while_other_channels_move() {
+        use semwright_motion_authoring::NativeOp;
+        for mode in ["opacity", "position", "resize", "position-opacity"] {
+            let mut project = fixture_project();
+            let mut shape = node("rectangle", None);
+            shape.x = 720.0;
+            shape.y = 420.0;
+            shape.width = 240.0;
+            shape.height = 120.0;
+            shape.rotation_deg = -31.0;
+            let target = subject_id(shape.id, None);
+            for (property, initial, terminal) in [
+                (MotionProperty::X, 680.0, shape.x),
+                (MotionProperty::Y, 400.0, shape.y),
+                (MotionProperty::Width, 200.0, shape.width),
+                (MotionProperty::Opacity, 0.0, 1.0),
+            ] {
+                let selected = match property {
+                    MotionProperty::Opacity => mode.contains("opacity"),
+                    MotionProperty::Width => mode == "resize",
+                    _ => mode.contains("position"),
+                };
+                if selected {
+                    shape.keyframes.extend([
+                        CanvasKeyframe {
+                            at: RationalTime::ZERO,
+                            property,
+                            value: initial,
+                            interpolation: MotionInterpolation::Linear,
+                        },
+                        CanvasKeyframe {
+                            at: RationalTime::ONE,
+                            property,
+                            value: terminal,
+                            interpolation: MotionInterpolation::EaseOutCubic,
+                        },
+                    ]);
+                }
+            }
+            project.scenes[0].nodes = vec![shape];
+            let original = project.clone();
+            let segments = build_motion_canvas_segments(
+                &project,
+                project.deliverables[0].id,
+                &fixture_options(&project),
+            )
+            .unwrap();
+            let realized = realize(&segments[0].film).unwrap();
+            let rotations = realized.instructions.iter().filter(|instruction| matches!(&instruction.operation,
+                NativeOp::Set { target: actual, channel: Channel::Rotation, .. }
+                | NativeOp::Tween { target: actual, channel: Channel::Rotation, .. } if actual == &target)).collect::<Vec<_>>();
+            assert_eq!(rotations.len(), 1);
+            assert_eq!(rotations[0].start, RationalTime::ZERO);
+            assert_eq!(rotations[0].duration, RationalTime::ZERO);
+            assert!(
+                matches!(&rotations[0].operation, NativeOp::Set { value: Operand::Number(value), .. } if *value == -31.0)
+            );
+            assert_eq!(project, original);
         }
     }
 

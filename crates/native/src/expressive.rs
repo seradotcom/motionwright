@@ -26,9 +26,12 @@ pub(crate) fn entry_motion(node: &CanvasNode) -> Result<Option<EntryMotion>> {
     if node.keyframes.is_empty() {
         return Ok(None);
     }
-    if node.parent_id.is_some() || node.rotation_deg != 0.0 || node.opacity != 1.0 {
+    if node.parent_id.is_some()
+        || (node.rotation_deg != 0.0 && !motionwright_domain::native_constant_shape_rotation(node))
+        || node.opacity != 1.0
+    {
         return Err(unsupported(
-            "parented motion or non-neutral final rotation/opacity",
+            "parented motion, unsupported orientation or non-neutral final opacity",
         ));
     }
     if node.keyframes.iter().any(|key| {
