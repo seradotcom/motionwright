@@ -36,6 +36,8 @@ fn main() {
             "read_original_native_job_status",
             "production_jobs_history",
             "native_blender_product_source",
+            "prepare_blender_product_cycle",
+            "start_blender_product_cycle",
             "native_blender_product_attempt",
             "motion_canvas_preflight",
             "render_motion_canvas",

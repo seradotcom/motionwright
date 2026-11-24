@@ -15,7 +15,7 @@ use semwright_native_sdk::ErrorCode;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BlenderProductReadRequest {
     pub project_id: Uuid,

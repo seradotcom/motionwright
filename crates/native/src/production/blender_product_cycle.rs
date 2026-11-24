@@ -49,6 +49,23 @@ pub struct BlenderProductCycleJournal {
     verify: BlenderProductJournal,
 }
 
+impl BlenderProductCycleJournal {
+    /// Bounded IPC projection. Full original calls remain in the existing
+    /// production receipt/custody channel; connection paths are not exposed.
+    pub fn summary(&self) -> Value {
+        json!({
+            "schema": "motionwright.blender.product-cycle-journal-summary/1",
+            "root_intent": self.root_intent,
+            "root_terminal": self.root_terminal,
+            "source_action_count": self.source_actions.len(),
+            "create_call_count": self.create.calls.len(),
+            "edit_call_count": self.edit.calls.len(),
+            "verify_call_count": self.verify.calls.len(),
+            "automatic_retry": false,
+        })
+    }
+}
+
 /// Owner-only phase coordination. A hook cannot approve a Broker operation.
 /// Implementations must bound their own I/O and must not retry an invocation.
 pub trait BlenderProductCycleHook: Send {
@@ -441,7 +458,44 @@ fn cycle_stage_cas_source(
     staged
 }
 
+fn planned_cycle_source(
+    coordinators: [&ProductionCoordinator; 3],
+    request: &BlenderProductCycleRequest,
+) -> NativeResult<(SavedProductSource, [PathBuf; 3])> {
+    let source = read_saved_product_source(
+        &coordinators[0].service,
+        &cycle_create_request(request),
+        BLENDER_PRODUCT_RECIPE_MEDIA_TYPE,
+        decode_blender_product_recipe,
+    )?;
+    let (edited_source, edit_steps) = crate::blender_product_scene::project_product_edit(
+        &source.source,
+        &crate::blender_product_scene::ProductEdit::Annotation(request.annotation_body.clone()),
+    )
+    .map_err(|_| invalid("Product cycle annotation edit is outside the closed source profile"))?;
+    if edited_source.annotation == source.source.annotation || edit_steps.len() != 1 {
+        return Err(invalid(
+            "Product cycle requires exactly one nontrivial annotation edit",
+        ));
+    }
+    let roots = cycle_connection_roots(coordinators, &source.project)?;
+    Ok((source, roots))
+}
+
 impl ProductionCoordinator {
+    /// Check the saved recipe, explicit edit and isolated fresh output roots.
+    /// This performs no Native call, receipt reservation, grant or file write.
+    /// Starting the cycle repeats these checks before its durable source claim.
+    pub fn preflight_blender_product_cycle(
+        &self,
+        editor: &ProductionCoordinator,
+        verifier: &ProductionCoordinator,
+        request: &BlenderProductCycleRequest,
+    ) -> NativeResult<String> {
+        planned_cycle_source([self, editor, verifier], request)
+            .map(|(source, _)| source.source_sha256)
+    }
+
     /// Run one explicit source attempt through three existing owner connections.
     /// The owner must retain exclusive control of their staging roots for this
     /// call. A failure never causes native mutation replay or a new runtime.
@@ -472,25 +526,7 @@ impl ProductionCoordinator {
         if !cycle_journal_is_empty(journal) {
             return Err(invalid("Product cycle requires one new caller journal"));
         }
-        let source = read_saved_product_source(
-            &self.service,
-            &create_request,
-            BLENDER_PRODUCT_RECIPE_MEDIA_TYPE,
-            decode_blender_product_recipe,
-        )?;
-        let (edited_source, edit_steps) = crate::blender_product_scene::project_product_edit(
-            &source.source,
-            &crate::blender_product_scene::ProductEdit::Annotation(request.annotation_body.clone()),
-        )
-        .map_err(|_| {
-            invalid("Product cycle annotation edit is outside the closed source profile")
-        })?;
-        if edited_source.annotation == source.source.annotation || edit_steps.len() != 1 {
-            return Err(invalid(
-                "Product cycle requires exactly one nontrivial annotation edit",
-            ));
-        }
-        let roots = cycle_connection_roots([self, editor, verifier], &source.project)?;
+        let (source, roots) = planned_cycle_source([self, editor, verifier], request)?;
         let claim = lineage::reserve_product_cycle(self, request, &source)?;
         journal.schema = PRODUCT_CALLER_SCHEMA.into();
         journal.root_intent = Some(claim.journal_intent());

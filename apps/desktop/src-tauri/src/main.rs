@@ -1,6 +1,7 @@
 mod av_delivery;
 mod av_master;
 mod blender_product;
+mod blender_product_run;
 mod caption_export;
 mod desktop_owner;
 mod effect_authority;
@@ -110,7 +111,8 @@ struct AppState {
     av_delivery: NativeMasterDeliveryRegistry,
     runtime_connections: RuntimeConnectionRegistry,
     runtime_profiles: runtime_profiles::RuntimeProfiles,
-    hyperframes_renders: hyperframes_render::RenderRegistry,
+    native_renders: hyperframes_render::RenderRegistry,
+    blender_cycle_plans: blender_product_run::CyclePlans,
     graph_exchange_custody: GraphExchangeJournal,
     development_audition_custody: motionwright_native::original_mix::DevelopmentAuditionCustody,
 }
@@ -1581,6 +1583,158 @@ async fn production_jobs_history(
         return Err("Project or production receipts changed during historical paging.".into());
     }
     Ok(page.0)
+}
+
+/// Prepare only: the native picker selects three existing owner connections.
+/// IPC never supplies executable, session, socket or output-root paths.
+#[tauri::command]
+async fn prepare_blender_product_cycle(
+    mut owner: desktop_owner::OwnerInvocation,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: blender_product_run::PrepareRequest,
+) -> Result<Option<blender_product_run::PlanView>, String> {
+    let service = state.service.clone();
+    let check = request.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        blender_product_run::checked_source(&service, &check).map(|_| ())
+    })
+    .await
+    .map_err(|_| "Blender source preparation did not complete.".to_string())??;
+    let mut connections = Vec::with_capacity(3);
+    for title in [
+        "Blender: select the Create original owner connection",
+        "Blender: select the Edit original owner connection",
+        "Blender: select the Verify edited owner connection",
+    ] {
+        let handle = app.clone();
+        let selected = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+            handle
+                .dialog()
+                .file()
+                .set_title(title)
+                .add_filter("JSON connection", &["json"])
+                .blocking_pick_file()
+        })
+        .await
+        .map_err(|_| "The native Blender connection picker did not complete.".to_string())?;
+        let Some(selected) = selected else {
+            return Ok(None);
+        };
+        let path = selected
+            .into_path()
+            .map_err(|_| "Choose a local owner connection file.")?;
+        let connection = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+            ProductionConnection::load(path)
+                .map_err(|_| "The selected Blender connection failed local validation.".to_string())
+        })
+        .await
+        .map_err(|_| "Blender connection validation did not complete.".to_string())??;
+        owner.begin_phase()?;
+        let client = ProductionClient::new(connection.clone())
+            .map_err(|_| "The selected Blender connection was rejected.")?;
+        let probe = client
+            .probe_runtime(SEMWRIGHT_VERSION)
+            .await
+            .map_err(|_| "The selected Blender runtime is unavailable or its digest changed.")?;
+        if !probe.version_compatible {
+            return Err(
+                "The selected Blender runtime does not match the pinned Semwright version.".into(),
+            );
+        }
+        connections.push(connection);
+    }
+    let connections: [ProductionConnection; 3] = connections
+        .try_into()
+        .map_err(|_| "Blender requires three original owner connections.")?;
+    let plans = state.blender_cycle_plans.clone();
+    let service = state.service.clone();
+    let custody = state.production_receipt_custody.clone();
+    let view = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        plans.prepare(&service, &custody, request, connections)
+    })
+    .await
+    .map_err(|_| "Blender preparation could not be confirmed.".to_string())??;
+    owner.begin_phase()?;
+    let current = state
+        .service
+        .project(view.source.project_id)
+        .map_err(sanitized)?;
+    if current.generation != view.source.generation || current.revision != view.source.revision {
+        return Err("The project changed during Blender preparation.".into());
+    }
+    Ok(Some(view))
+}
+
+struct BlenderCycleOwnerHook<'a> {
+    owner: &'a mut desktop_owner::OwnerInvocation,
+    admitted: &'a blender_product_run::AdmittedCycle,
+}
+impl motionwright_native::production::BlenderProductCycleHook for BlenderCycleOwnerHook<'_> {
+    fn enter(
+        &mut self,
+        _phase: motionwright_native::production::BlenderOriginalPhase,
+    ) -> semwright_native_sdk::Result<()> {
+        self.owner.begin_phase().map_err(|_| {
+            semwright_native_sdk::Error::new(
+                semwright_native_sdk::ErrorCode::PermissionDenied,
+                "Desktop owner retired before the next Blender phase",
+            )
+        })?;
+        self.admitted.check_roots().map_err(|_| {
+            semwright_native_sdk::Error::new(
+                semwright_native_sdk::ErrorCode::StaleReference,
+                "A retained Blender output root changed before its next phase",
+            )
+        })
+    }
+    fn leave(
+        &mut self,
+        phase: motionwright_native::production::BlenderOriginalPhase,
+    ) -> semwright_native_sdk::Result<()> {
+        // A native reply cannot authorize later source writes after owner close.
+        // The coordinator retains that original reply and any leave failure.
+        self.enter(phase)
+    }
+}
+
+#[tauri::command]
+async fn start_blender_product_cycle(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: blender_product_run::StartRequest,
+) -> Result<blender_product_run::CycleResponse, String> {
+    let _lease = state.native_renders.acquire(request.source.project_id)?;
+    let service = state.service.clone();
+    let plans = state.blender_cycle_plans.clone();
+    let grants = state.effect_grants.clone();
+    let custody = state.production_receipt_custody.clone();
+    let admitted = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        plans.admit(&service, &custody, &grants, request)
+    })
+    .await
+    .map_err(|_| {
+        "Blender admission could not be confirmed; retain the original request.".to_string()
+    })??;
+    owner.begin_phase()?;
+    let mut journal = motionwright_native::production::BlenderProductCycleJournal::default();
+    let mut hook = BlenderCycleOwnerHook {
+        owner: &mut owner,
+        admitted: &admitted,
+    };
+    let outcome = admitted.coordinators[0]
+        .realize_blender_product_cycle_with_hook(
+            &admitted.coordinators[1],
+            &admitted.coordinators[2],
+            &admitted.request,
+            &mut journal,
+            &mut hook,
+        )
+        .await;
+    // No new phase or effect follows the existing coordinator's terminal.
+    // Its bounded summary survives an error or a retired owner; query the
+    // original native_blender_product_attempt after reloading current scope.
+    Ok(admitted.response(&journal, outcome))
 }
 
 #[tauri::command]
@@ -3434,9 +3588,7 @@ async fn render_hyperframes_source(
     state: State<'_, AppState>,
     request: hyperframes_render::RenderRequest,
 ) -> Result<DesktopHyperframesResponse, String> {
-    let _lease = state
-        .hyperframes_renders
-        .acquire(request.source.project_id)?;
+    let _lease = state.native_renders.acquire(request.source.project_id)?;
     let connection_path =
         selected_connection_path(&state, request.source.project_id)?.ok_or_else(|| {
             "Select an owner-provisioned Semwright connection in Integrations.".to_string()
@@ -3516,7 +3668,7 @@ async fn observe_original_hyperframes_job(
     state: State<'_, AppState>,
     request: hyperframes_render::ReadRequest,
 ) -> Result<DesktopHyperframesResponse, String> {
-    let _lease = state.hyperframes_renders.acquire(request.project_id)?;
+    let _lease = state.native_renders.acquire(request.project_id)?;
     let service = state.service.clone();
     let original_request = hyperframes_render::ReadRequest {
         project_id: request.project_id,
@@ -3744,7 +3896,8 @@ fn main() {
                 av_delivery: NativeMasterDeliveryRegistry::default(),
                 runtime_connections: RuntimeConnectionRegistry::new(&data_dir)?,
                 runtime_profiles: runtime_profiles::RuntimeProfiles::new(&data_dir),
-                hyperframes_renders: hyperframes_render::RenderRegistry::default(),
+                native_renders: hyperframes_render::RenderRegistry::default(),
+                blender_cycle_plans: blender_product_run::CyclePlans::default(),
                 graph_exchange_custody: GraphExchangeJournal::new(&data_dir, workspace_session)?,
                 development_audition_custody,
             });
@@ -3787,6 +3940,8 @@ fn main() {
             read_original_native_job_status,
             production_jobs_history,
             native_blender_product_source,
+            prepare_blender_product_cycle,
+            start_blender_product_cycle,
             native_blender_product_attempt,
             motion_canvas_preflight,
             render_motion_canvas,

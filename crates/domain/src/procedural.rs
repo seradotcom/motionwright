@@ -589,7 +589,7 @@ pub fn realize_procedural_field(id: Uuid, config: &ProceduralConfig) -> Result<V
                     let quarter = free_x / 4;
                     let mid = free_x / 2;
                     (
-                        if row % 2 == 0 {
+                        if row.is_multiple_of(2) {
                             mid + quarter
                         } else {
                             mid - quarter

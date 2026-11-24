@@ -89,7 +89,7 @@ impl RenderRegistry {
     pub fn acquire(&self, project_id: Uuid) -> Result<RenderLease, String> {
         let mut active = self.0.lock().map_err(|_| UNCONFIRMED)?;
         if !active.insert(project_id) {
-            return Err("A HyperFrames operation is already active for this project.".into());
+            return Err("A native render operation is already active for this project.".into());
         }
         Ok(RenderLease {
             registry: self.clone(),

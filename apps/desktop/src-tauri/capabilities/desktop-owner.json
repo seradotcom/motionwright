@@ -41,6 +41,8 @@
     "allow-read-original-native-job-status",
     "allow-production-jobs-history",
     "allow-native-blender-product-source",
+    "allow-prepare-blender-product-cycle",
+    "allow-start-blender-product-cycle",
     "allow-native-blender-product-attempt",
     "allow-motion-canvas-preflight",
     "allow-render-motion-canvas",
