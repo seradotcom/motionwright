@@ -1,6 +1,7 @@
 import { previewTransform } from "./canvasMotion";
 import { rectangularClipInset } from "./canvasClip";
-import { alignmentScale, resolveCanvasAlignments } from "./canvasAlignment";
+import { alignmentScale } from "./canvasAlignment";
+import { resolveCanvasRelations } from "./canvasFollow";
 import { isStaticNativeGroup, nativeGroupOrderIssue, staticNativeGroupParent } from "./nativeGroupHierarchy";
 import NativePoseMotion from "./NativePoseMotion";
 import { sameProjectRevision, type ProjectRevision } from "./projectMutation";
@@ -756,9 +757,11 @@ export default function CanvasWorkspace({
   const alignmentInput = scene.nodes.map(node => draftTransforms[node.id]
     ? {...node,...draftTransforms[node.id]} : node);
   const alignment = scene.renderer === "motion-canvas"
-    ? resolveCanvasAlignments(alignmentInput, undefined, alignmentLocked) : null;
+    ? resolveCanvasRelations(alignmentInput, undefined, alignmentLocked, {
+      duration:scene.duration,fps:profile?.frame_rate,continuous:scene.beats.length===0}) : null;
   const deliveryAlignment = scene.renderer === "motion-canvas" && profile
-    ? resolveCanvasAlignments(scene.nodes, alignmentScale(profile.width,profile.height,profile.framing_strategy), alignmentLocked)
+    ? resolveCanvasRelations(scene.nodes, alignmentScale(profile.width,profile.height,profile.framing_strategy), alignmentLocked,
+      {duration:scene.duration,fps:profile.frame_rate,continuous:scene.beats.length===0})
     : null;
   const nativeMoveAllowed = Boolean(profile && selectedNode
     && scene.renderer === "motion-canvas" && scene.beats.length === 0
@@ -827,6 +830,8 @@ export default function CanvasWorkspace({
 
   const objectTransform = (node: CanvasNode) => draftTransforms[node.id] ?? nodeTransform(node);
   const stageTransform = (node: CanvasNode) => {
+    const followTrack = alignment?.tracks.get(node.id);
+    if (followTrack) return previewTransform({...node,...draftTransforms[node.id],keyframes:followTrack},scenePlayhead);
     const base = draftTransforms[node.id] ?? previewTransform(node, scenePlayhead);
     const position = alignment?.positions.get(node.id);
     return position ? {...base,...position} : base;
@@ -836,12 +841,16 @@ export default function CanvasWorkspace({
     if (event.button !== 0 || drag.current || gesturePending.current) return;
     selectNode(node);
     if (scenePositionLocked || node.property_locks.includes("position")) return;
+    if (alignment?.tracks.has(node.id)) {
+      setGestureStatus("This follower inherits its target's translation. Edit its saved terminal offset in the transform inspector.");
+      return;
+    }
     if (alignment?.positions.has(node.id)) {
       setGestureStatus("This object's position is resolved by saved alignments. Move its target or edit the relation instead.");
       return;
     }
     if (autoKeyPosition && alignment?.participants.has(node.id)) {
-      setGestureStatus("Static alignment participants cannot be auto-keyed. Remove or revise the saved relation first.");
+      setGestureStatus("Relation participants cannot be auto-keyed. Remove or revise the saved relation first.");
       return;
     }
     setGestureStatus(null);
@@ -1077,9 +1086,11 @@ export default function CanvasWorkspace({
           {groupProjectionIssue && scene.nodes.some(node=>node.parent_id!==null || ["group","clip_group"].includes(node.kind)) &&
             <p className="production-error" role="status">{groupProjectionIssue}</p>}
           {alignment && alignment.participants.size > 0 && <p className={alignment.issue || deliveryAlignment?.issue ? "production-error" : "semantic-footnote"} role="status">
-            {alignment.issue ? "Source alignment unresolved: " + alignment.issue
-              : deliveryAlignment?.issue ? "Selected delivery alignment unresolved: " + deliveryAlignment.issue
-              : "Static box alignment is resolved in the source preview. The selected delivery resolves the same relations at its own aspect."}
+            {alignment.issue ? "Source relation unresolved: " + alignment.issue
+              : deliveryAlignment?.issue ? "Selected delivery relation unresolved: " + deliveryAlignment.issue
+              : alignment.tracks.size
+                ? "Follow translation is inherited during playback. Saved terminal poses and relation identities remain unchanged."
+                : "Static box alignment is resolved in the source preview. The selected delivery resolves the same relations at its own aspect."}
           </p>}
           <div className="canvas-stage">
             <div className="canvas-safe-area" style={{ inset: (scene.camera.safe_margin * 100) + "%" }}>
@@ -1116,6 +1127,7 @@ export default function CanvasWorkspace({
                     clipPath,
                   }}
                   data-alignment-resolved={alignment?.positions.has(node.id) ? "true" : undefined}
+                  data-follow-resolved={alignment?.tracks.has(node.id) ? "true" : undefined}
                   onPointerDown={(event) => beginDrag(event, node)}
                   onPointerMove={moveDrag}
                   onPointerUp={endDrag}

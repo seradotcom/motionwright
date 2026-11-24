@@ -2,7 +2,7 @@ import { useId } from "react";
 import type { CanvasNode } from "./types";
 import { isStaticNativeGroup, nativeGroupOrderIssue, staticNativeGroupParent } from "./nativeGroupHierarchy";
 import { previewTransform } from "./canvasMotion";
-import { resolveCanvasAlignments } from "./canvasAlignment";
+import { resolveCanvasRelations } from "./canvasFollow";
 function safePaint(value: string | null, fallback: string): string { return value && /^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(value) ? value : fallback; }
 
 /** A DOM/SVG editorial study. Raster/native evidence is shown by the existing native frame stage. */
@@ -14,16 +14,18 @@ export default function CompositionStudy({ nodes, width=1920, height=1080, time,
   const clipGroups = nodes.filter(node => node.kind === "clip_group" && isStaticNativeGroup(node));
   const clipIds = new Map(clipGroups.map((group, index) => [group.id, prefix + "-" + index]));
   const hierarchyIssue = nativeGroupOrderIssue({nodes});
-  const alignment = resolveCanvasAlignments(nodes);
+  const alignment = resolveCanvasRelations(nodes);
   return <svg className="production-study" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={label}>
     {nodes.some(node => node.parent_id !== null) && <desc>Direct static Group children use their saved world coordinates and rectangular Clip planes. Native Film defines authoritative transforms and relations. {hierarchyIssue ?? ""}</desc>}
-    {alignment.participants.size > 0 && <desc>{alignment.issue ? "Static box alignment unresolved: " + alignment.issue : "Static box alignment resolved for this editorial study, not native glyph or pixel evidence."}</desc>}
+    {alignment.participants.size > 0 && <desc>{alignment.issue ? "Authored relation unresolved: " + alignment.issue : "Authored static alignment or Follow resolved for this editorial study, not native glyph or pixel evidence."}</desc>}
     <defs>{clipGroups.map(group => <clipPath key={group.id} id={clipIds.get(group.id)} clipPathUnits="userSpaceOnUse">
       <rect x={group.x} y={group.y} width={group.width} height={group.height}/>
     </clipPath>)}</defs>
     <rect width={width} height={height} fill={safePaint(background, "#0F1216")}/>
     {nodes.filter(node => !["group","clip_group"].includes(node.kind)).sort((a,b) => a.z_index-b.z_index).map(node => {
-      const t = {...previewTransform(node,time),...alignment.positions.get(node.id)}, size = node.style.font_size ?? 30;
+      const followTrack = alignment.tracks.get(node.id);
+      const t = {...previewTransform(followTrack ? {...node,keyframes:followTrack} : node,time),
+        ...alignment.positions.get(node.id)}, size = node.style.font_size ?? 30;
       // A selected DeliverableProfile override has the same precedence as
       // native Film's text_overrides. Even an explicitly empty override must
       // never be interpreted as "no override" and reveal the source copy.

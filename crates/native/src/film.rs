@@ -279,6 +279,15 @@ fn aligned_motion_canvas_scene(
                 || lock.resource == format!("scene:{}", source.id))
     });
     let projection = layout_projection(profile);
+    let follow_tracks =
+        motionwright_domain::resolve_canvas_follow_tracks(&projected, profile.frame_rate, locked)
+            .map_err(|error| unsupported(error.to_string()))?;
+    for node in &mut projected.nodes {
+        if let Some(track) = follow_tracks.get(&node.id) {
+            node.keyframes = track.clone();
+            node.relations.clear();
+        }
+    }
     let positions = motionwright_domain::resolve_canvas_alignments(
         &projected,
         motionwright_domain::AlignmentScale {
@@ -2859,6 +2868,142 @@ mod tests {
             })
             .unwrap();
         project
+    }
+
+    #[test]
+    fn authored_follow_chain_compiles_exact_native_translation_without_saved_keys() {
+        use motionwright_domain::{NodeRelation, RelationKind};
+        for (curve, easing) in [
+            (MotionInterpolation::Linear, MotionEasing::Linear),
+            (MotionInterpolation::EaseOutCubic, MotionEasing::OutCubic),
+        ] {
+            let mut project = fixture_project();
+            let mut a = node("rectangle", None);
+            a.x = 620.0;
+            a.y = 340.0;
+            a.width = 160.0;
+            a.height = 100.0;
+            let mut b = a.clone();
+            b.id = Uuid::now_v7();
+            b.x = 920.0;
+            b.y = 480.0;
+            let mut c = b.clone();
+            c.id = Uuid::now_v7();
+            c.x = 1200.0;
+            c.y = 590.0;
+            for (at, x, y, interpolation) in [
+                (
+                    RationalTime::ZERO,
+                    420.0,
+                    240.0,
+                    MotionInterpolation::Linear,
+                ),
+                (RationalTime::ONE, a.x, a.y, curve),
+            ] {
+                for (property, value) in [(MotionProperty::X, x), (MotionProperty::Y, y)] {
+                    a.keyframes.push(CanvasKeyframe {
+                        at,
+                        property,
+                        value,
+                        interpolation,
+                    });
+                }
+            }
+            b.relations = vec![NodeRelation {
+                id: Uuid::now_v7(),
+                kind: RelationKind::Follow,
+                target_id: a.id,
+            }];
+            c.relations = vec![NodeRelation {
+                id: Uuid::now_v7(),
+                kind: RelationKind::Follow,
+                target_id: b.id,
+            }];
+            project.scenes[0].nodes = vec![c.clone(), b.clone(), a.clone()];
+            let options = fixture_options(&project);
+            let id = project.deliverables[0].id;
+            for (width, height) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
+                project.deliverables[0].width = width;
+                project.deliverables[0].height = height;
+                project.deliverables[0].framing_strategy = FramingStrategy::Replan;
+                let before = project.clone();
+                let segments = build_motion_canvas_segments(&project, id, &options).unwrap();
+                let film = &segments[0].film;
+                let shot = &film.sequences[0].beats[0].shots[0];
+                assert_eq!(shot.motion.len(), 3);
+                let expected_x = -200.0 * f64::from(width) / 1920.0;
+                let expected_y = -100.0 * f64::from(height) / 1080.0;
+                for node in [&a, &b, &c] {
+                    let target = subject_id(node.id, None);
+                    let invocation = shot.motion.iter().find(|motion|
+                        matches!(&motion.primitive,Primitive::Settle {target: actual,..} if actual == &target)
+                    ).unwrap();
+                    assert_eq!(invocation.easing, easing);
+                    let Primitive::Settle {
+                        offset, rotation, ..
+                    } = &invocation.primitive
+                    else {
+                        unreachable!()
+                    };
+                    assert!((offset.x - expected_x).abs() <= 1e-6);
+                    assert!((offset.y - expected_y).abs() <= 1e-6);
+                    assert_eq!(*rotation, 0.0);
+                }
+                realize(film).unwrap();
+                assert_eq!(project, before);
+            }
+            for case in [
+                "cycle",
+                "missing",
+                "conflict",
+                "locked",
+                "off-frame",
+                "unsupported-curve",
+                "static",
+                "independent-keys",
+            ] {
+                let mut invalid_project = project.clone();
+                let nodes = &mut invalid_project.scenes[0].nodes;
+                match case {
+                    "cycle" => {
+                        nodes[2].keyframes.clear();
+                        nodes[2].relations.push(NodeRelation {
+                            id: Uuid::now_v7(),
+                            kind: RelationKind::Follow,
+                            target_id: c.id,
+                        });
+                    }
+                    "missing" => nodes[1].relations[0].target_id = Uuid::now_v7(),
+                    "conflict" => nodes[1].relations.push(NodeRelation {
+                        id: Uuid::now_v7(),
+                        kind: RelationKind::AlignTop,
+                        target_id: a.id,
+                    }),
+                    "locked" => {
+                        nodes[1]
+                            .property_locks
+                            .insert(motionwright_domain::NodeProperty::Position);
+                    }
+                    "off-frame" => {
+                        nodes[2].keyframes[2].at = RationalTime::new(1, 31).unwrap();
+                        nodes[2].keyframes[3].at = RationalTime::new(1, 31).unwrap();
+                    }
+                    "unsupported-curve" => {
+                        nodes[2].keyframes[2].interpolation = MotionInterpolation::EaseInOut;
+                        nodes[2].keyframes[3].interpolation = MotionInterpolation::EaseInOut;
+                    }
+                    "static" => nodes[2].keyframes.clear(),
+                    "independent-keys" => nodes[1].keyframes = a.keyframes.clone(),
+                    _ => unreachable!(),
+                }
+                let before = invalid_project.clone();
+                assert!(
+                    build_motion_canvas_segments(&invalid_project, id, &options).is_err(),
+                    "{case}"
+                );
+                assert_eq!(invalid_project, before);
+            }
+        }
     }
 
     #[test]
