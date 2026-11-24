@@ -99,3 +99,24 @@ describe("native pose durable custody", () => {
     expect(preparePose(next.draft, saved, scene, node, profile, ATTEMPT).change).not.toEqual(submission.change);
   });
 });
+
+it("preserves exact waypoint and independent fade input, then acknowledges one complete change", async () => {
+  const f = source(), store = storage(), scope = f.draft.authority.scope;
+  f.draft.raw.fade = "out";
+  f.draft.raw.fadeEndFrame = "015";
+  f.draft.raw.waypoints = [{frame:"010",curve:"hold",x:"-",y:"00415.00",width:"300",height:"180",rotation_deg:"-8"}];
+  const incomplete = writePoseRecovery(store, f.draft, null);
+  const recovered = decodePoseRecovery(incomplete, scope);
+  expect(recovered.raw).toEqual(f.draft.raw);
+  expect(() => preparePose(recovered, f.project, f.scene, f.node, f.profile, ATTEMPT)).toThrow(/complete finite/);
+  recovered.raw.waypoints![0].x = "1010.00";
+  const submission = preparePose(recovered, f.project, f.scene, f.node, f.profile, ATTEMPT);
+  expect(submission.change.keyframes).toHaveLength(17);
+  const armed = writePoseRecovery(store, submission.draft, incomplete);
+  const pending = decodePoseRecovery(armed, scope);
+  const saved = await applyChange(f.project, submission.change);
+  const confirmed = acknowledgePose(pending, ATTEMPT, saved);
+  expect(confirmed.pending).toBeNull();
+  expect(confirmed.raw).toEqual(recovered.raw);
+  expect(confirmed.authority.revision).toBe(saved.revision);
+});

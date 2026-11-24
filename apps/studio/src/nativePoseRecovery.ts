@@ -1,13 +1,17 @@
 /** Local author-buffer custody, never a Project writer or execution authority. */
 import type { CanvasKeyframe, CanvasNode, Change, Project, ProjectEvent, Scene } from "./types";
-import { defaultNativePoseDraft, savedNativePoseDraft, nativePoseEdit, type NativePoseDraft } from "./nativePoseDraft";
+import { defaultNativePoseDraft, savedNativePoseDraft, nativePoseEdit, MAX_POSE_WAYPOINTS, POSE_GEOMETRY, type NativePoseDraft, type PoseCurve, type PoseGeometry } from "./nativePoseDraft";
 import { sameValue } from "./creativeProduction";
 import { sameProjectRevision } from "./projectMutation";
 
 export const POSE_RECOVERY_PREFIX = "motionwright.native-pose-recovery.v1:";
 export const POSE_FIELDS = ["x", "y", "width", "height", "rotation_deg", "endFrame"] as const;
 export type PoseField = typeof POSE_FIELDS[number];
-export type PoseRaw = Record<PoseField, string> & Pick<NativePoseDraft, "curve" | "fade" | "fadeCurve">;
+export type PoseWaypointRaw = Record<keyof PoseGeometry, string> & { frame: string; curve: PoseCurve };
+export type PoseRaw = Record<PoseField, string> & Pick<NativePoseDraft, "curve" | "fade" | "fadeCurve"> & {
+  fadeEndFrame?: string;
+  waypoints?: PoseWaypointRaw[];
+};
 type Profile = Project["deliverables"][number] | null;
 type PoseChange = Extract<Change, { type: "set_canvas_motion_keyframes" }>;
 export interface PoseAuthority {
@@ -37,8 +41,18 @@ const validKey = (value: unknown): value is CanvasKeyframe =>
   string(value.property) && properties.includes(value.property) &&
   typeof value.value === "number" && Number.isFinite(value.value) &&
   string(value.interpolation) && ["linear", "ease_out_cubic", "hold"].includes(value.interpolation);
+const numericText = (value: unknown): value is string => string(value) && value.length <= 64;
+const validWaypoint = (value: unknown): value is PoseWaypointRaw =>
+  obj(value) && exact(value, [...POSE_GEOMETRY, "frame", "curve"]) &&
+  [...POSE_GEOMETRY, "frame"].every(field => numericText(value[field])) &&
+  string(value.curve) && ["linear", "ease_out_cubic", "hold"].includes(value.curve);
 const validRaw = (value: unknown): value is PoseRaw =>
-  obj(value) && exact(value, [...POSE_FIELDS, "curve", "fade", "fadeCurve"]) &&
+  obj(value) && exact(value, [...POSE_FIELDS, "curve", "fade", "fadeCurve",
+    ...(Object.hasOwn(value, "fadeEndFrame") ? ["fadeEndFrame"] : []),
+    ...(Object.hasOwn(value, "waypoints") ? ["waypoints"] : [])]) &&
+  (!Object.hasOwn(value, "fadeEndFrame") || numericText(value.fadeEndFrame)) &&
+  (!Object.hasOwn(value, "waypoints") || (Array.isArray(value.waypoints) &&
+    value.waypoints.length <= MAX_POSE_WAYPOINTS && value.waypoints.every(validWaypoint))) &&
   POSE_FIELDS.every(field => string(value[field]) && value[field].length <= 64) &&
   string(value.curve) && ["linear", "ease_out_cubic", "hold"].includes(value.curve) &&
   string(value.fade) && ["none", "in", "out"].includes(value.fade) &&
@@ -60,17 +74,34 @@ export function poseAuthority(project: Project, scene: Scene, node: CanvasNode, 
 export function poseRaw(draft: NativePoseDraft): PoseRaw {
   return { x: String(draft.start.x), y: String(draft.start.y), width: String(draft.start.width),
     height: String(draft.start.height), rotation_deg: String(draft.start.rotation_deg),
-    endFrame: String(draft.endFrame), curve: draft.curve, fade: draft.fade, fadeCurve: draft.fadeCurve };
+    endFrame: String(draft.endFrame), curve: draft.curve, fade: draft.fade, fadeCurve: draft.fadeCurve,
+    ...(draft.fadeEndFrame === undefined ? {} : { fadeEndFrame: String(draft.fadeEndFrame) }),
+    ...(draft.waypoints === undefined ? {} : { waypoints: draft.waypoints.map(waypoint => ({
+      frame: String(waypoint.frame), curve: waypoint.curve, x: String(waypoint.pose.x), y: String(waypoint.pose.y),
+      width: String(waypoint.pose.width), height: String(waypoint.pose.height), rotation_deg: String(waypoint.pose.rotation_deg),
+    })) }) };
 }
 export function parsePoseRaw(raw: PoseRaw): NativePoseDraft {
   if (!validRaw(raw)) throw new Error("Pose input exceeds its supported fields or 64-character limit.");
-  const number = (field: PoseField) => {
-    const value = raw[field].trim();
+  const number = (field: string, text: string) => {
+    const value = text.trim();
     if (!decimal.test(value) || !Number.isFinite(Number(value))) throw new Error("Enter a complete finite number for " + field + ". Your exact input is retained.");
     return Number(value);
   };
-  return { start: { x: number("x"), y: number("y"), width: number("width"), height: number("height"),
-    rotation_deg: number("rotation_deg") }, endFrame: number("endFrame"), curve: raw.curve, fade: raw.fade, fadeCurve: raw.fadeCurve };
+  const pose = (value: Pick<PoseRaw, keyof PoseGeometry>): PoseGeometry => ({
+    x: number("x", value.x), y: number("y", value.y), width: number("width", value.width),
+    height: number("height", value.height), rotation_deg: number("rotation_deg", value.rotation_deg),
+  });
+  return { start: pose(raw), endFrame: number("endFrame", raw.endFrame),
+    curve: raw.curve, fade: raw.fade, fadeCurve: raw.fadeCurve,
+    ...(raw.fade === "none" || raw.fadeEndFrame === undefined || raw.fadeEndFrame === "" ? {} :
+      { fadeEndFrame: number("fade end frame", raw.fadeEndFrame) }),
+    ...(raw.waypoints === undefined || raw.waypoints.length === 0 ? {} : {
+      waypoints: raw.waypoints.map(waypoint => ({
+        frame: number("intermediate frame", waypoint.frame), curve: waypoint.curve, pose: pose(waypoint),
+      })),
+    }),
+  };
 }
 export function freshPoseRecovery(project: Project, scene: Scene, node: CanvasNode, profile: Profile, blocked: PoseChange[] = []): PoseRecovery {
   return { schema: "motionwright.native-pose-recovery/1", authority: poseAuthority(project, scene, node, profile),
@@ -118,7 +149,7 @@ function validChange(value: unknown, scope: string): value is PoseChange {
   if (!obj(value) || !exact(value, ["type", "scene_id", "node_id", "keyframes"]) || value.type !== "set_canvas_motion_keyframes") return false;
   const ids = JSON.parse(scope) as string[];
   return value.scene_id === ids[3] && value.node_id === ids[4] && Array.isArray(value.keyframes) &&
-    [10, 12].includes(value.keyframes.length) && value.keyframes.every(validKey);
+    [10, 12, 15, 17, 20, 22, 25, 27, 30, 32].includes(value.keyframes.length) && value.keyframes.every(validKey);
 }
 export function decodePoseRecovery(raw: string, scope: string): PoseRecovery {
   if (bytes(raw) > MAX_COPY) throw new Error("The retained pose copy exceeds its bounded size.");

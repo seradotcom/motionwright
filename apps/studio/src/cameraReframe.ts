@@ -6,6 +6,7 @@ import type { Project, Scene } from "./types";
 import type { Change } from "./types";
 import { emptyProductionDesign } from "./creativeProduction";
 import { seconds } from "./types";
+import { savedNativePoseDraft, type PoseGeometry } from "./nativePoseDraft";
 
 export const CAMERA_REFRAME_VERSION=1;
 export const CAMERA_REFRAME_MANIM_VERSION=2;
@@ -68,6 +69,27 @@ function cameraMotionStart(node: Scene["nodes"][number], scene: Scene): Scene["n
   return initial;
 }
 
+function cameraMotionPoses(node: Scene["nodes"][number], scene: Scene): PoseGeometry[] {
+  const times = new Set(node.keyframes.filter(key => key.property !== "opacity").map(key => JSON.stringify(key.at)));
+  if (times.size <= 2) return [cameraMotionStart(node, scene), node];
+  const fail = (): never => invalid("composition requires complete frame-aligned waypoint poses and a static root Clip for node " + node.id);
+  if (!["shape", "rectangle", "circle"].includes(node.kind) || node.rotation_deg !== 0 || node.opacity !== 1 ||
+      scene.nodes.some(child => child.parent_id === node.id)) fail();
+  if (node.parent_id !== null && scene.nodes.find(parent => parent.id === node.parent_id)?.style.blend_mode !== "normal") fail();
+  cameraMotionStart({...node, keyframes: node.keyframes.filter(key => key.property === "opacity")}, scene);
+  const draft = savedNativePoseDraft(node, {frame_rate: {num: "30", den: "1"}});
+  if (!draft || !draft.waypoints?.length) return fail();
+  const points = [...draft.waypoints, {frame: draft.endFrame, curve: draft.curve}];
+  try {
+    const den = BigInt(scene.duration.den), end = BigInt(scene.duration.num) * 30n;
+    if (den <= 0n) fail();
+    for (const point of points) {
+      const at = BigInt(point.frame) * den;
+      if (at >= end || (point.curve === "hold" && at + den > end)) fail();
+    }
+  } catch { fail(); }
+  return [draft.start, ...draft.waypoints.map(point => point.pose), node];
+}
 export function validateCameraReframe(source:CameraReframe,scene:Scene):void{
   if(!source || typeof source!=="object" || Array.isArray(source) ||
     Object.keys(source).sort().join("|")!==[...KEYS].sort().join("|"))
@@ -125,17 +147,17 @@ export function validateCameraReframe(source:CameraReframe,scene:Scene):void{
   const marginY=1080*Math.max(.05,scene.camera.safe_margin);
   const composed=source.component_version===CAMERA_REFRAME_VERSION && cameraUsesComposition(scene);
   for(const node of scene.nodes){
-    const initial=composed?cameraMotionStart(node,scene):node;
+    const poses=composed?cameraMotionPoses(node,scene):[node];
     for(const [cx,cy] of [
       [source.start_center_x,source.start_center_y],
       [source.end_center_x,source.end_center_y],
     ]){
       if(composed){
-        const width=Math.max(initial.width,node.width),height=Math.max(initial.height,node.height);
-        const rotated=initial.rotation_deg!==0 || node.rotation_deg!==0;
+        const width=Math.max(...poses.map(pose=>pose.width)),height=Math.max(...poses.map(pose=>pose.height));
+        const rotated=poses.some(pose=>pose.rotation_deg!==0);
         const halfWidth=rotated?Math.hypot(width,height)/2:width/2;
         const halfHeight=rotated?halfWidth:height/2;
-        for(const pose of [initial,node]){
+        for(const pose of poses){
           const x=pose.x+pose.width/2+960-cx,y=pose.y+pose.height/2+540-cy;
           if(x-halfWidth<marginX || y-halfHeight<marginY || x+halfWidth>1920-marginX || y+halfHeight>1080-marginY)
             invalid("composition would crop moving Canvas node "+node.id+"; adjust its complete path");

@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import type { CanvasNode, Change, Project, Scene } from "./types";
-import { nativePoseEdit, type NativePoseDraft } from "./nativePoseDraft";
+import { MAX_POSE_WAYPOINTS, nativePoseEdit, type NativePoseDraft } from "./nativePoseDraft";
 import { bootstrap, projectHistory } from "./api";
 import { acknowledgePose, decodePoseRecovery, freshPoseRecovery, parsePoseRaw, poseConflict,
-  poseRecoveryKey, poseScope, preparePose, rebasePose, writePoseRecovery, inspectPoseOutcome, poseReviewMatches, retainSeparatePose, type PoseOutcomeReview, type PoseRaw, type PoseRecovery } from "./nativePoseRecovery";
+  poseRecoveryKey, poseScope, preparePose, rebasePose, writePoseRecovery, inspectPoseOutcome, poseReviewMatches, retainSeparatePose, type PoseOutcomeReview, type PoseRaw, type PoseRecovery, type PoseWaypointRaw } from "./nativePoseRecovery";
 
 type Props = {
   project: Project; scene: Scene; node: CanvasNode;
@@ -86,12 +86,35 @@ export default function NativePoseMotion(props: Props) {
   let issue: string | null = null;
   try { issue = nativePoseEdit(project, scene, node, profile, parsePoseRaw(draft.raw)).issue; }
   catch (cause) { issue = message(cause); }
-  const changeRaw = (field: keyof PoseRaw, value: string) => {
+  const replaceRaw = (raw: PoseRaw) => {
     if (session.busy || session.draft.pending || session.corrupt) return;
-    const next: PoseRecovery = { ...session.draft, dirty: true, raw: { ...session.draft.raw, [field]: value } };
+    const next: PoseRecovery = { ...session.draft, dirty: true, raw };
     session.draft = next; // Keep the original exact input even if local storage fails.
     session.error = null;
     backup(session, next);
+  };
+  const changeRaw = (field: Exclude<keyof PoseRaw, "waypoints">, value: string) =>
+    replaceRaw({ ...session.draft.raw, [field]: value });
+  const changeWaypoint = (index: number, field: keyof PoseWaypointRaw, value: string) => {
+    const raw = session.draft.raw, waypoints = [...(raw.waypoints ?? [])];
+    if (!waypoints[index]) return;
+    waypoints[index] = { ...waypoints[index], [field]: value };
+    replaceRaw({ ...raw, waypoints });
+  };
+  const addWaypoint = () => {
+    const raw = session.draft.raw, waypoints = [...(raw.waypoints ?? [])];
+    if (waypoints.length >= MAX_POSE_WAYPOINTS) return;
+    const prior = Number(waypoints.at(-1)?.frame ?? "0"), end = Number(raw.endFrame);
+    const midpoint = Math.floor((prior + end) / 2);
+    const frame = Number.isSafeInteger(midpoint) && midpoint > prior && midpoint < end ? String(midpoint) : "";
+    const previous = waypoints.at(-1) ?? raw;
+    waypoints.push({ frame, curve: "linear", x: previous.x, y: previous.y, width: previous.width,
+      height: previous.height, rotation_deg: previous.rotation_deg });
+    replaceRaw({ ...raw, waypoints });
+  };
+  const removeWaypoint = (index: number) => {
+    const raw = session.draft.raw;
+    replaceRaw({ ...raw, waypoints: (raw.waypoints ?? []).filter((_, i) => i !== index) });
   };
   const useSaved = () => {
     if (session.busy || session.draft.pending || session.corrupt) return;
@@ -164,7 +187,7 @@ export default function NativePoseMotion(props: Props) {
   const fieldsLocked = busy || unresolved || corrupt;
   return <section className="native-motion-authoring" aria-label="Native pose animation">
     <div className="motion-editor-heading"><strong>{node.keyframes.length ? "Edit the saved pose animation" : "Animate a complete pose"}</strong></div>
-    <p className="inspector-note">Move, resize and rotate into the saved pose, with an optional fade. All keys save together in one editable revision.</p>
+    <p className="inspector-note">Move, resize and rotate through up to four intermediate poses into the saved destination. Each incoming geometry curve and fade timing is editable. All keys save together in one revision.</p>
     <div className="canvas-field-grid motion-fields">
       {([["Start X", "x"], ["Start Y", "y"], ["Start width", "width"], ["Start height", "height"], ["Start rotation", "rotation_deg"]] as const)
         .map(([label, property]) => <label key={property}><span>{label}</span>
@@ -173,7 +196,7 @@ export default function NativePoseMotion(props: Props) {
         </label>)}
       <label><span>End frame</span><input disabled={fieldsLocked} type="text" inputMode="numeric" maxLength={64} aria-label="Pose end frame"
         value={draft.raw.endFrame} onChange={event => changeRaw("endFrame", event.target.value)} /></label>
-      <label><span>Geometry curve</span><select disabled={fieldsLocked} aria-label="Pose geometry curve" value={draft.raw.curve}
+      <label><span>Curve into destination</span><select disabled={fieldsLocked} aria-label="Pose geometry curve" value={draft.raw.curve}
         onChange={event => changeRaw("curve", event.target.value as NativePoseDraft["curve"])}>
         <option value="linear">Linear</option><option value="ease_out_cubic">Cubic ease-out</option><option value="hold">Hold then cut</option>
       </select></label>
@@ -185,7 +208,33 @@ export default function NativePoseMotion(props: Props) {
         onChange={event => changeRaw("fadeCurve", event.target.value as NativePoseDraft["fadeCurve"])}>
         <option value="linear">Linear</option><option value="ease_out_cubic">Cubic ease-out</option>
       </select></label>}
+      {draft.raw.fade !== "none" && <label><span>Fade end frame (optional)</span>
+        <input disabled={fieldsLocked} type="text" inputMode="numeric" maxLength={64}
+          aria-label="Pose fade end frame" placeholder="Same as geometry" value={draft.raw.fadeEndFrame ?? ""}
+          onChange={event => changeRaw("fadeEndFrame", event.target.value)} />
+      </label>}
     </div>
+    {(draft.raw.waypoints ?? []).map((waypoint, index) => <fieldset className="canvas-field-grid motion-fields" key={index}>
+      <legend>Intermediate pose {index + 1}</legend>
+      <label><span>Frame</span><input disabled={fieldsLocked} type="text" inputMode="numeric" maxLength={64}
+        aria-label={"Intermediate pose " + (index + 1) + " frame"} value={waypoint.frame}
+        onChange={event => changeWaypoint(index, "frame", event.target.value)} /></label>
+      {([["X", "x"], ["Y", "y"], ["Width", "width"], ["Height", "height"], ["Rotation", "rotation_deg"]] as const)
+        .map(([label, field]) => <label key={field}><span>{label}</span>
+          <input disabled={fieldsLocked} type="text" inputMode="decimal" maxLength={64}
+            aria-label={"Intermediate pose " + (index + 1) + " " + label.toLowerCase()}
+            value={waypoint[field]} onChange={event => changeWaypoint(index, field, event.target.value)} />
+        </label>)}
+      <label><span>Incoming curve</span><select disabled={fieldsLocked}
+        aria-label={"Intermediate pose " + (index + 1) + " curve"} value={waypoint.curve}
+        onChange={event => changeWaypoint(index, "curve", event.target.value)}>
+        <option value="linear">Linear</option><option value="ease_out_cubic">Cubic ease-out</option><option value="hold">Hold then cut</option>
+      </select></label>
+      <button className="button" type="button" disabled={fieldsLocked} onClick={() => removeWaypoint(index)}
+        aria-label={"Remove intermediate pose " + (index + 1)}>Remove pose</button>
+    </fieldset>)}
+    <button className="button full" type="button" disabled={fieldsLocked || (draft.raw.waypoints?.length ?? 0) >= MAX_POSE_WAYPOINTS}
+      onClick={addWaypoint}>Add intermediate pose</button>
     {draft.dirty && !backupError && <p className="inspector-note">Pose draft retained locally, based on revision {draft.authority.revision}. It is not saved project content.</p>}
     {issue && <p className="inspector-note">{issue}</p>}
     {stale && draft.dirty && !unresolved && <div role="alert">

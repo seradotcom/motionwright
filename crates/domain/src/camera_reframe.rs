@@ -6,7 +6,7 @@
 //! Both source and destination camera boxes must preserve every authored
 //! native Canvas object inside the output-safe 1920x1080 source bounds.
 use crate::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 pub const CAMERA_REFRAME_VERSION: u32 = 1;
@@ -37,6 +37,143 @@ pub fn camera_uses_composition(scene: &Scene) -> bool {
     scene.nodes.iter().any(|node| {
         !node.keyframes.is_empty() || node.parent_id.is_some() || node.kind == "clip_group"
     })
+}
+
+/// One literal source pose and its incoming curve. This is an interpreted
+/// read-only view of existing Canvas keyframes, never new persisted state.
+#[derive(Debug, Clone)]
+pub struct CanvasPosePoint {
+    pub at: RationalTime,
+    pub pose: CanvasNode,
+    pub curve: MotionInterpolation,
+}
+
+/// Admit the bounded multi-pose grammar only when every geometry channel
+/// has the exact same time slots and incoming interpolation. Alpha remains
+/// a separate original channel, validated by its own consumer. Two-pose
+/// and single-channel legacy routes continue through their existing code.
+pub fn exact_canvas_pose_waypoints(
+    node: &CanvasNode,
+    scene: &Scene,
+    fps: RationalTime,
+) -> Result<Option<Vec<CanvasPosePoint>>> {
+    let mut slots = BTreeMap::<RationalTime, Vec<&CanvasKeyframe>>::new();
+    for key in node
+        .keyframes
+        .iter()
+        .filter(|key| key.property != MotionProperty::Opacity)
+    {
+        key.validate()?;
+        slots.entry(key.at).or_default().push(key);
+    }
+    if slots.len() <= 2 {
+        return Ok(None);
+    }
+    let fail = || {
+        DomainError::Invalid(format!(
+            "Canvas node {} requires 3 to 6 complete frame-aligned geometry poses with exact curves and a static root Clip",
+            node.id
+        ))
+    };
+    if !(3..=6).contains(&slots.len())
+        || fps.validate().is_err()
+        || fps.num <= 0
+        || fps.den <= 0
+        || !scene.beats.is_empty()
+        || !matches!(node.kind.as_str(), "shape" | "rectangle" | "circle")
+        || node.coordinate_space != CoordinateSpace::ProjectPixels
+        || node.style.blend_mode != BlendMode::Normal
+        || !node.relations.is_empty()
+        || node.opacity != 1.0
+        || node.rotation_deg != 0.0
+        || scene
+            .nodes
+            .iter()
+            .any(|child| child.parent_id == Some(node.id))
+    {
+        return Err(fail());
+    }
+    if let Some(parent_id) = node.parent_id {
+        let parent = scene
+            .nodes
+            .iter()
+            .find(|parent| parent.id == parent_id)
+            .ok_or_else(&fail)?;
+        if parent.kind != "clip_group"
+            || parent.parent_id.is_some()
+            || !parent.keyframes.is_empty()
+            || !parent.relations.is_empty()
+            || parent.rotation_deg != 0.0
+            || parent.opacity != 1.0
+            || parent.coordinate_space != CoordinateSpace::ProjectPixels
+            || parent.style.blend_mode != BlendMode::Normal
+        {
+            return Err(fail());
+        }
+    }
+    let frame_duration = RationalTime::new(fps.den, fps.num).map_err(|_| fail())?;
+    let mut points = Vec::with_capacity(slots.len());
+    for (at, keys) in slots {
+        let numerator = i128::from(at.num) * i128::from(fps.num);
+        let denominator = i128::from(at.den) * i128::from(fps.den);
+        if at >= scene.duration
+            || denominator <= 0
+            || numerator < 0
+            || numerator % denominator != 0
+            || numerator / denominator > 36000
+            || keys.len() != 5
+        {
+            return Err(fail());
+        }
+        let curve = keys[0].interpolation;
+        if !matches!(
+            curve,
+            MotionInterpolation::Linear
+                | MotionInterpolation::EaseOutCubic
+                | MotionInterpolation::Hold
+        ) || (points.is_empty()
+            && (at != RationalTime::ZERO || curve != MotionInterpolation::Linear))
+            || (curve == MotionInterpolation::Hold
+                && at.checked_add(frame_duration).map_err(|_| fail())? > scene.duration)
+        {
+            return Err(fail());
+        }
+        let mut seen = BTreeSet::new();
+        let mut pose = node.clone();
+        pose.keyframes.clear();
+        for key in keys {
+            if key.interpolation != curve || !seen.insert(key.property) {
+                return Err(fail());
+            }
+            match key.property {
+                MotionProperty::X => pose.x = key.value,
+                MotionProperty::Y => pose.y = key.value,
+                MotionProperty::Width => pose.width = key.value,
+                MotionProperty::Height => pose.height = key.value,
+                MotionProperty::RotationDeg => pose.rotation_deg = key.value,
+                MotionProperty::Opacity => return Err(fail()),
+            }
+        }
+        if pose.width <= 0.0
+            || pose.height <= 0.0
+            || pose.width > 16384.0
+            || pose.height > 16384.0
+            || pose.rotation_deg.abs() > 360.0
+        {
+            return Err(fail());
+        }
+        points.push(CanvasPosePoint { at, pose, curve });
+    }
+    let end = &points.last().expect("bounded nonempty poses").pose;
+    if end.x != node.x
+        || end.y != node.y
+        || end.width != node.width
+        || end.height != node.height
+        || end.rotation_deg != node.rotation_deg
+    {
+        return Err(fail());
+    }
+    Ok(Some(points))
 }
 
 fn camera_motion_start(node: &CanvasNode, scene: &Scene) -> Result<CanvasNode> {
@@ -304,19 +441,37 @@ impl CameraReframe {
         let composed =
             self.component_version == CAMERA_REFRAME_VERSION && camera_uses_composition(scene);
         for node in &scene.nodes {
-            let initial = if composed {
-                camera_motion_start(node, scene)?
+            let poses = if composed {
+                if let Some(points) = exact_canvas_pose_waypoints(
+                    node,
+                    scene,
+                    RationalTime::new(30, 1).expect("camera fps"),
+                )? {
+                    // Reuse the existing exact opacity check, independently
+                    // of the multi-pose geometry timestamps.
+                    let mut alpha = node.clone();
+                    alpha
+                        .keyframes
+                        .retain(|key| key.property == MotionProperty::Opacity);
+                    camera_motion_start(&alpha, scene)?;
+                    points
+                        .into_iter()
+                        .map(|point| point.pose)
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![camera_motion_start(node, scene)?, node.clone()]
+                }
             } else {
-                node.clone()
+                vec![node.clone()]
             };
             for (center_x, center_y) in [
                 (self.start_center_x, self.start_center_y),
                 (self.end_center_x, self.end_center_y),
             ] {
                 if composed {
-                    let width = initial.width.max(node.width);
-                    let height = initial.height.max(node.height);
-                    let rotated = initial.rotation_deg != 0.0 || node.rotation_deg != 0.0;
+                    let width = poses.iter().map(|pose| pose.width).fold(0.0_f64, f64::max);
+                    let height = poses.iter().map(|pose| pose.height).fold(0.0_f64, f64::max);
+                    let rotated = poses.iter().any(|pose| pose.rotation_deg != 0.0);
                     let half_width = if rotated {
                         width.hypot(height) / 2.0
                     } else {
@@ -325,7 +480,7 @@ impl CameraReframe {
                     let half_height = if rotated { half_width } else { height / 2.0 };
                     // Camera and object may use different durations/curves.
                     // Their Cartesian envelope bounds every frame and Hold cut.
-                    for pose in [&initial, node] {
+                    for pose in &poses {
                         let x =
                             pose.x + pose.width / 2.0 + CAMERA_REF_CANVAS_WIDTH / 2.0 - center_x;
                         let y =

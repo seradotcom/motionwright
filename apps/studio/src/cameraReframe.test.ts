@@ -215,3 +215,18 @@ describe("Camera v2 client profile consistency",()=>{
     }
   });
 });
+
+it("preserves complete intermediate poses and rejects an unsafe intermediate excursion", async () => {
+  const {project,camera}=source(),scene=project.scenes[0],node=scene.nodes[0];
+  const draft:NativePoseDraft={start:{x:400,y:400,width:220,height:80,rotation_deg:-12},
+    endFrame:60,curve:"ease_out_cubic",fade:"in",fadeCurve:"linear",fadeEndFrame:15,
+    waypoints:[{frame:30,curve:"hold",pose:{x:500,y:440,width:240,height:100,rotation_deg:15}}]};
+  const edit=nativePoseEdit(project,scene,node,project.deliverables[0],draft);
+  expect(edit.issue).toBeNull();
+  const saved=await applyChange(project,{type:"set_canvas_motion_keyframes",scene_id:scene.id,node_id:node.id,keyframes:edit.keys!});
+  const p=await applyChange(saved,{type:"upsert_camera_reframe",reframe:camera});
+  expect(p.scenes[0].nodes).toEqual(saved.scenes[0].nodes);
+  const invalid=structuredClone(saved);
+  invalid.scenes[0].nodes[0].keyframes.find(key=>key.property==="x" && key.at.num==="1" && key.at.den==="1")!.value=0;
+  await expect(applyChange(invalid,{type:"upsert_camera_reframe",reframe:camera})).rejects.toThrow(/cropped|crop/);
+});

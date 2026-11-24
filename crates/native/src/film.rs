@@ -189,7 +189,22 @@ fn scene_span_cost(scene: &Scene) -> usize {
             .iter()
             .map(|node| {
                 let opacity_span = usize::from(composed_shape_motion(node).is_some());
-                if node.keyframes.is_empty() {
+                let geometry_times = node
+                    .keyframes
+                    .iter()
+                    .filter(|key| key.property != MotionProperty::Opacity)
+                    .map(|key| key.at)
+                    .collect::<BTreeSet<_>>();
+                if geometry_times.len() > 2 {
+                    let final_hold = geometry_times.last().is_some_and(|time| {
+                        node.keyframes.iter().any(|key| {
+                            key.at == *time
+                                && key.property != MotionProperty::Opacity
+                                && key.interpolation == MotionInterpolation::Hold
+                        })
+                    });
+                    geometry_times.len() - 1 + usize::from(final_hold) + opacity_span
+                } else if node.keyframes.is_empty() {
                     0
                 } else if node.keyframes.iter().any(|key| {
                     key.interpolation == MotionInterpolation::Hold
@@ -811,6 +826,204 @@ fn validate_native_geometry_safety(
                 "Canvas node {} may rotate or resize outside the deterministic Film safe area",
                 end.id
             )));
+        }
+    }
+    Ok(())
+}
+
+fn native_pose_waypoints(
+    node: &CanvasNode,
+    scene: &Scene,
+    rate: Rate,
+) -> NativeResult<Option<Vec<motionwright_domain::CanvasPosePoint>>> {
+    let fps = RationalTime::new(i64::from(rate.num), i64::from(rate.den))
+        .map_err(|error| contract("Native waypoint frame rate", error))?;
+    motionwright_domain::exact_canvas_pose_waypoints(node, scene, fps)
+        .map_err(|error| unsupported(error.to_string()))
+}
+
+/// Every interval uses the same interpolation on all geometry channels.
+/// Compensated centers are monotone between literal endpoints; a common
+/// maximum diagonal bounds every intermediate rotation and dimension.
+fn validate_pose_track_safety(
+    node: &CanvasNode,
+    points: &[motionwright_domain::CanvasPosePoint],
+    projection: LayoutProjection,
+    output: &OutputProfile,
+) -> NativeResult<()> {
+    let width = points
+        .iter()
+        .map(|point| point.pose.width)
+        .fold(0.0_f64, f64::max)
+        * projection.object_scale;
+    let height = points
+        .iter()
+        .map(|point| point.pose.height)
+        .fold(0.0_f64, f64::max)
+        * projection.object_scale;
+    if !width.is_finite()
+        || !height.is_finite()
+        || width <= 0.0
+        || height <= 0.0
+        || width > 16384.0
+        || height > 16384.0
+    {
+        return Err(unsupported(
+            "Waypoint dimensions exceed native geometry bounds",
+        ));
+    }
+    let radius = width.hypot(height) / 2.0;
+    for point in points {
+        // Anchor every literal pose to the same canonical terminal layout.
+        // Re-anchoring each interval would drift on nonuniform replans.
+        let center = projected_geometry_centers(node, &point.pose, projection, output).0;
+        if !center.x.is_finite() || !center.y.is_finite() {
+            return Err(unsupported(
+                "Waypoint center exceeds finite native geometry",
+            ));
+        }
+        let x = center.x + f64::from(output.width) / 2.0;
+        let y = center.y + f64::from(output.height) / 2.0;
+        if projection.enforce_safe_area
+            && (x - radius < output.safe_area.left - 1e-6
+                || y - radius < output.safe_area.top - 1e-6
+                || x + radius > f64::from(output.width) - output.safe_area.right + 1e-6
+                || y + radius > f64::from(output.height) - output.safe_area.bottom + 1e-6)
+        {
+            return Err(unsupported(format!(
+                "Canvas node {} waypoint path exceeds the Film safe area",
+                node.id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn append_native_pose_track(
+    shot: &mut Shot,
+    node: &CanvasNode,
+    scene: &Scene,
+    points: &[motionwright_domain::CanvasPosePoint],
+    context: &CameraFilmContext<'_>,
+    spans: &mut Vec<TemporalSpan>,
+    constraints: &mut Vec<TemporalConstraint>,
+) -> NativeResult<()> {
+    validate_pose_track_safety(node, points, context.projection, context.output)?;
+    let frame = RationalTime::new(
+        i64::from(context.frame_rate.den),
+        i64::from(context.frame_rate.num),
+    )
+    .map_err(|error| contract("Native waypoint Hold frame duration", error))?;
+    let target = subject_id(node.id, None);
+    for (index, from) in points.iter().enumerate() {
+        let next = points.get(index + 1);
+        // A Hold interval changes only at its start. Its next literal pose
+        // is set by the following invocation, or by the last-frame Set.
+        if next.is_none() && from.curve != MotionInterpolation::Hold {
+            continue;
+        }
+        let held = next.is_none_or(|to| to.curve == MotionInterpolation::Hold);
+        let to = next.unwrap_or(from);
+        let duration = if held {
+            frame
+        } else {
+            sub(to.at, from.at, "Native waypoint interval underflow")?
+        };
+        let curve = if held {
+            MotionEasing::Linear
+        } else {
+            exact_native_easing(to.curve)
+                .ok_or_else(|| unsupported("Unsupported native waypoint curve"))?
+        };
+        if spans.len() >= MAX_TEMPORAL_SPANS {
+            return Err(unsupported(
+                "Waypoint track exceeds canonical Film temporal span budget",
+            ));
+        }
+        let span_id = format!("pose-track-{}-{}", index, node.id.simple());
+        spans.push(TemporalSpan {
+            id: span_id.clone(),
+            minimum: duration,
+            preferred: duration,
+            maximum: duration,
+            anchor: StartAnchor::Absolute {
+                time: add(
+                    context.scene_start,
+                    from.at,
+                    "Native waypoint span start overflow",
+                )?,
+            },
+            preference_priority: 0,
+        });
+        constraints.push(TemporalConstraint::Contains {
+            id: format!("pose-track-contains-{}-{}", index, node.id.simple()),
+            parent: context.shot_span.to_owned(),
+            child: span_id.clone(),
+        });
+        let from_center = projected_local_geometry_centers(
+            node,
+            &from.pose,
+            scene,
+            context.projection,
+            context.output,
+        )
+        .0;
+        let to_center = projected_local_geometry_centers(
+            node,
+            &to.pose,
+            scene,
+            context.projection,
+            context.output,
+        )
+        .0;
+        let scale = context.projection.object_scale;
+        let operands = [
+            (
+                "position",
+                Channel::Position,
+                Operand::Vector(from_center),
+                Operand::Vector(to_center),
+            ),
+            (
+                "width",
+                Channel::Width,
+                Operand::Number(from.pose.width * scale),
+                Operand::Number(to.pose.width * scale),
+            ),
+            (
+                "height",
+                Channel::Height,
+                Operand::Number(from.pose.height * scale),
+                Operand::Number(to.pose.height * scale),
+            ),
+            (
+                "rotation",
+                Channel::Rotation,
+                Operand::Number(from.pose.rotation_deg),
+                Operand::Number(to.pose.rotation_deg),
+            ),
+        ];
+        for (name, channel, start, end) in operands {
+            let primitive = if held {
+                Primitive::GeometrySet {
+                    target: target.clone(),
+                    channel,
+                    value: start,
+                }
+            } else {
+                Primitive::GeometryTween {
+                    target: target.clone(),
+                    channel,
+                    from: start,
+                    to: end,
+                }
+            };
+            shot.motion.push(Invocation {
+                id: format!("pose-track-{}-{}-{}", index, name, node.id.simple()),
+                span_id: span_id.clone(),
+                easing: curve,
+                primitive,
+            });
         }
     }
     Ok(())
@@ -1474,7 +1687,12 @@ fn attach_camera_reframe(
         // path between safe endpoints and thus cannot crop in between.
         let composed = composed_shape_motion(node);
         let geometry = composed.as_ref().map_or(node, |(geometry, _)| geometry);
-        if let Some(motion) = native_linear_geometry_motion(geometry, scene, context.frame_rate)? {
+        if let Some(points) = native_pose_waypoints(geometry, scene, context.frame_rate)? {
+            validate_pose_track_safety(geometry, &points, first_projection, context.output)?;
+            validate_pose_track_safety(geometry, &points, last_projection, context.output)?;
+        } else if let Some(motion) =
+            native_linear_geometry_motion(geometry, scene, context.frame_rate)?
+        {
             validate_native_geometry_safety(
                 geometry,
                 &motion.start,
@@ -1866,6 +2084,25 @@ fn build_segment(
                 let node = composed
                     .as_ref()
                     .map_or(source_node, |(geometry, _)| geometry);
+                if let Some(points) = native_pose_waypoints(node, scene, options.frame_rate)? {
+                    let context = CameraFilmContext {
+                        scene_start: local_start,
+                        shot_span: &shot_span,
+                        frame_rate: options.frame_rate,
+                        projection: source_projection,
+                        output: &output,
+                    };
+                    append_native_pose_track(
+                        &mut shot,
+                        node,
+                        scene,
+                        &points,
+                        &context,
+                        &mut spans,
+                        &mut constraints,
+                    )?;
+                    continue;
+                }
                 if let Some(motion) =
                     native_linear_geometry_motion(node, scene, options.frame_rate)?
                 {
@@ -3732,6 +3969,178 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn waypoint_track_realizes_mixed_curves_with_independent_fade_inside_clip() {
+        use semwright_motion_authoring::NativeOp;
+        let (mut project, parent_id, child_id) = clipped_opacity_source();
+        let child = project.scenes[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == child_id)
+            .unwrap();
+        let half = RationalTime::new(1, 2).unwrap();
+        let quarter = RationalTime::new(1, 4).unwrap();
+        for (at, curve, pose) in [
+            (
+                RationalTime::ZERO,
+                MotionInterpolation::Linear,
+                [650.0, 400.0, 400.0, 160.0, -10.0],
+            ),
+            (
+                half,
+                MotionInterpolation::Hold,
+                [680.0, 430.0, 450.0, 170.0, 12.0],
+            ),
+            (
+                RationalTime::ONE,
+                MotionInterpolation::EaseOutCubic,
+                [
+                    child.x,
+                    child.y,
+                    child.width,
+                    child.height,
+                    child.rotation_deg,
+                ],
+            ),
+        ] {
+            for (property, value) in [
+                MotionProperty::X,
+                MotionProperty::Y,
+                MotionProperty::Width,
+                MotionProperty::Height,
+                MotionProperty::RotationDeg,
+            ]
+            .into_iter()
+            .zip(pose)
+            {
+                child.keyframes.push(CanvasKeyframe {
+                    at,
+                    property,
+                    value,
+                    interpolation: curve,
+                });
+            }
+        }
+        child.keyframes.extend([
+            CanvasKeyframe {
+                at: RationalTime::ZERO,
+                property: MotionProperty::Opacity,
+                value: 0.0,
+                interpolation: MotionInterpolation::Linear,
+            },
+            CanvasKeyframe {
+                at: RationalTime::new(4, 15).unwrap(),
+                property: MotionProperty::Opacity,
+                value: 1.0,
+                interpolation: MotionInterpolation::Linear,
+            },
+        ]);
+        let camera = project.scenes[0].camera.clone();
+        let camera_id = Uuid::now_v7();
+        project
+            .apply_change(&Change::UpsertCameraReframe {
+                reframe: CameraReframe {
+                    id: camera_id,
+                    scene_id: project.scenes[0].id,
+                    component_version: 1,
+                    start_center_x: camera.center_x - 18.0,
+                    start_center_y: camera.center_y - 8.0,
+                    end_center_x: camera.center_x,
+                    end_center_y: camera.center_y,
+                    duration_frames: 45,
+                },
+            })
+            .unwrap();
+        let source = project.clone();
+        let options = fixture_options(&project);
+        let segments =
+            build_motion_canvas_segments(&project, project.deliverables[0].id, &options).unwrap();
+        let shot = &segments[0].film.sequences[0].beats[0].shots[0];
+        let target = subject_id(child_id, None);
+        assert_eq!(
+            shot.subjects
+                .iter()
+                .find(|s| s.id == target)
+                .unwrap()
+                .parent,
+            Some(subject_id(parent_id, None))
+        );
+        let realized = realize(&segments[0].film).unwrap();
+        let mut counts = BTreeMap::<Channel, usize>::new();
+        for instruction in &realized.instructions {
+            match &instruction.operation {
+                NativeOp::Set {
+                    target: actual,
+                    channel,
+                    ..
+                } if actual == &target => {
+                    assert_ne!(*channel, Channel::Opacity);
+                    assert_eq!(instruction.start, RationalTime::ZERO);
+                    assert_eq!(instruction.duration, RationalTime::ZERO);
+                    *counts.entry(*channel).or_default() += 1;
+                }
+                NativeOp::Tween {
+                    target: actual,
+                    channel,
+                    ..
+                } if actual == &target => {
+                    if *channel == Channel::Opacity {
+                        assert_eq!(instruction.start, RationalTime::ZERO);
+                        assert_eq!(instruction.duration, RationalTime::new(4, 15).unwrap());
+                    } else {
+                        assert_eq!(instruction.start, half);
+                        assert_eq!(instruction.duration, half);
+                        assert_eq!(instruction.easing, MotionEasing::OutCubic);
+                    }
+                    *counts.entry(*channel).or_default() += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            counts,
+            BTreeMap::from([
+                (Channel::Position, 2),
+                (Channel::Width, 2),
+                (Channel::Height, 2),
+                (Channel::Rotation, 2),
+                (Channel::Opacity, 1)
+            ])
+        );
+        assert_eq!(project, source);
+        let invalid = project.scenes[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == child_id)
+            .unwrap();
+        invalid
+            .keyframes
+            .iter_mut()
+            .find(|key| key.at == half && key.property == MotionProperty::X)
+            .unwrap()
+            .value = 0.0;
+        assert!(
+            build_motion_canvas_segments(&project, project.deliverables[0].id, &options).is_err()
+        );
+        // The intermediate slot also fails when it is not on the selected frame grid.
+        let invalid = project.scenes[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == child_id)
+            .unwrap();
+        for key in &mut invalid.keyframes {
+            if key.at == half {
+                key.at = quarter;
+                if key.property == MotionProperty::X {
+                    key.value = 680.0;
+                }
+            }
+        }
+        assert!(
+            build_motion_canvas_segments(&project, project.deliverables[0].id, &options).is_err()
+        );
     }
 
     #[test]

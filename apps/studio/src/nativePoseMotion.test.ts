@@ -81,3 +81,33 @@ describe("one complete editable Native pose", () => {
     expect(nativePoseEdit(saved, saved.scenes[0], savedNode, profile, draft).issue).toMatch(/independent or additional/);
   });
 });
+
+describe("bounded Native waypoint track", () => {
+  it("saves independent fade and exact incoming curves, then reopens all poses", async () => {
+    const { project, scene, node, profile, draft } = source();
+    draft.waypoints = [
+      {frame: 10, curve: "hold", pose: {x: 1020, y: 425, width: 310, height: 170, rotation_deg: -5}},
+      {frame: 20, curve: "linear", pose: {x: 1060, y: 440, width: 330, height: 200, rotation_deg: 8}},
+    ];
+    draft.fadeEndFrame = 15;
+    const edit = nativePoseEdit(project, scene, node, profile, draft);
+    expect(edit.issue).toBeNull();
+    expect(edit.keys).toHaveLength(22);
+    const saved = await applyChange(project, {type: "set_canvas_motion_keyframes", scene_id: scene.id, node_id: node.id, keyframes: edit.keys!});
+    const reopened = JSON.parse(JSON.stringify(saved)).scenes[0].nodes[0];
+    expect(savedNativePoseDraft(reopened, profile)).toEqual(draft);
+    expect(previewTransform(reopened, 9/30).x).toBe(1000);
+    expect(previewTransform(reopened, 10/30).x).toBe(1020);
+    expect(previewTransform(reopened, 15/30).x).toBeCloseTo(1040);
+    expect(previewTransform(reopened, 15/30).opacity).toBe(0);
+    expect(previewTransform(reopened, 20/30).width).toBe(330);
+    expect(previewTransform(reopened, 1).rotation_deg).toBe(0);
+    const invalid = structuredClone(draft);
+    invalid.waypoints![1].frame = 10;
+    expect(nativePoseEdit(project, scene, node, profile, invalid).issue).toMatch(/strictly increasing/);
+    invalid.waypoints![1].frame = 20; invalid.fadeEndFrame = 0;
+    expect(nativePoseEdit(project, scene, node, profile, invalid).issue).toMatch(/frame/);
+    reopened.keyframes = reopened.keyframes.filter((key: {property:string;at:{num:string;den:string}}) => !(key.property === "width" && key.at.num === "1" && key.at.den === "3"));
+    expect(savedNativePoseDraft(reopened, profile)).toBeNull();
+  });
+});
