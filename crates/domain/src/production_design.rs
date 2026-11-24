@@ -579,6 +579,11 @@ pub enum ScopedCanvasEdit {
         node_id: Uuid,
         keyframe: CanvasKeyframe,
     },
+    /// Replace the complete authored track, including deliberate removal.
+    Motion {
+        node_id: Uuid,
+        keyframes: Vec<CanvasKeyframe>,
+    },
 }
 impl ScopedCanvasEdit {
     pub fn node_id(&self) -> Uuid {
@@ -586,7 +591,8 @@ impl ScopedCanvasEdit {
             Self::Text { node_id, .. }
             | Self::Style { node_id, .. }
             | Self::Transform { node_id, .. }
-            | Self::Keyframe { node_id, .. } => *node_id,
+            | Self::Keyframe { node_id, .. }
+            | Self::Motion { node_id, .. } => *node_id,
         }
     }
     fn change(&self, scene_id: Uuid) -> Change {
@@ -610,6 +616,11 @@ impl ScopedCanvasEdit {
                 scene_id,
                 node_id: *node_id,
                 keyframe: keyframe.clone(),
+            },
+            Self::Motion { node_id, keyframes } => Change::SetCanvasMotionKeyframes {
+                scene_id,
+                node_id: *node_id,
+                keyframes: keyframes.clone(),
             },
         }
     }

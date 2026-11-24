@@ -71,7 +71,8 @@ export type ScopedCanvasEdit =
   | { kind: "text"; node_id: string; text: string }
   | { kind: "style"; node_id: string; style: NodeStyle }
   | { kind: "transform"; node_id: string; transform: CanvasTransform }
-  | { kind: "keyframe"; node_id: string; keyframe: CanvasKeyframe };
+  | { kind: "keyframe"; node_id: string; keyframe: CanvasKeyframe }
+  | { kind: "motion"; node_id: string; keyframes: CanvasKeyframe[] };
 export interface CreativePatch { scene_id: string; base_revision: number; rationale: string; edits: ScopedCanvasEdit[]; }
 export type ProductionDesignChange = Extract<Change, { type: "upsert_product_hero" | "detach_product_hero" | "set_production_plan" | "set_delivery_recipe" | "upsert_native_capsule" | "apply_creative_patch" | "upsert_procedural_field" | "detach_procedural_field" }>;
 

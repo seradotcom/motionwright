@@ -2,19 +2,25 @@ import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { sameValue } from "./creativeProduction";
 import type { NativeReviewRepairDraft } from "./nativeReviewRepair";
 import type { CanvasNode, CanvasTransform, Change, Project, Scene } from "./types";
+import { CANVAS_STYLE_FIELDS, cleanScopedMotion, cleanScopedStyle, parseScopedMotion, parseScopedStyle,
+  scopedMotionRows, scopedStyleRaw, validScopedMotion, validScopedMotionRows, validScopedStyle, validScopedStyleRaw } from "./scopedPaintMotion";
+import type { ScopedMotionRow, ScopedStyleRaw } from "./scopedPaintMotion";
 
-export type DraftEdit = Extract<ScopedCanvasEdit, { kind: "text" | "transform" }>;
-type SourceNode = Pick<CanvasNode, "id" | "kind" | "parent_id" | "text"> & CanvasTransform;
+export type DraftEdit = Extract<ScopedCanvasEdit, { kind: "text" | "transform" | "style" | "motion" }>;
+type SourceNode = Pick<CanvasNode, "id" | "kind" | "parent_id" | "text"> & CanvasTransform &
+  Partial<Pick<CanvasNode, "style" | "keyframes" | "coordinate_space" | "relations">>;
 interface DraftEditor {
   nodeId: string;
-  kind: "text" | "transform";
+  kind: DraftEdit["kind"];
   text: string;
   transform: CanvasTransform;
   transformRaw?: Record<keyof CanvasTransform, string>;
+  styleRaw?: ScopedStyleRaw;
+  motionRaw?: ScopedMotionRow[];
   source: SourceNode | null;
 }
 export interface ScopedChangeDraft {
-  schema: "motionwright.scoped-change-draft/2";
+  schema: "motionwright.scoped-change-draft/3";
   scope: string;
   baseRevision: number;
   rationale: string;
@@ -36,6 +42,7 @@ export interface DraftConflict {
 export const DRAFT_STORAGE_PREFIX = "motionwright.scoped-change-draft.v1:";
 export const MAX_DRAFT_BYTES = 512 * 1024;
 const transformFields = ["x", "y", "width", "height", "rotation_deg", "opacity"] as const;
+const draftKinds = ["text", "transform", "style", "motion"] as const;
 const emptyTransform: CanvasTransform = { x: 0, y: 0, width: 0, height: 0, rotation_deg: 0, opacity: 1 };
 
 function transformInput(editor: DraftEditor, field: keyof CanvasTransform): string {
@@ -69,6 +76,32 @@ export function draftTransformInvalidFields(draft: ScopedChangeDraft): (keyof Ca
   return transformFields.filter(field => parseTransformInput(transformInput(draft.editor, field)) === null);
 }
 
+function styleInput(editor: DraftEditor): ScopedStyleRaw {
+  return editor.styleRaw ?? (editor.source?.style ? scopedStyleRaw(editor.source.style)
+    : Object.fromEntries(CANVAS_STYLE_FIELDS.map(field => [field, ""])) as ScopedStyleRaw);
+}
+function motionInput(editor: DraftEditor): ScopedMotionRow[] {
+  return editor.motionRaw ?? scopedMotionRows(editor.source?.keyframes ?? []);
+}
+export function draftStyleInput(draft: ScopedChangeDraft): ScopedStyleRaw {
+  return { ...styleInput(draft.editor) };
+}
+export function updateDraftStyleInput(draft: ScopedChangeDraft, field: keyof ScopedStyleRaw, raw: string): ScopedChangeDraft {
+  return { ...draft, editor: { ...draft.editor, styleRaw: { ...styleInput(draft.editor), [field]: raw } } };
+}
+export function draftMotionInput(draft: ScopedChangeDraft): ScopedMotionRow[] {
+  return motionInput(draft.editor).map(row => ({ ...row }));
+}
+export function updateDraftMotionInput(draft: ScopedChangeDraft, rows: ScopedMotionRow[]): ScopedChangeDraft {
+  if (!validScopedMotionRows(rows)) throw new Error("A motion draft is limited to 128 typed keyframe rows.");
+  return { ...draft, editor: { ...draft.editor, motionRaw: rows.map(row => ({ ...row })) } };
+}
+function sourceHasKind(source: SourceNode | null | undefined, kind: DraftEdit["kind"]): boolean {
+  return Boolean(source && (kind === "style" ? source.style !== undefined : kind === "motion" ? source.keyframes !== undefined : true));
+}
+export function draftEditorSourceAvailable(draft: ScopedChangeDraft): boolean {
+  return draft.editor.source?.id === draft.editor.nodeId && sourceHasKind(draft.editor.source, draft.editor.kind);
+}
 export function scopedDraftScope(project: Project, scene: Scene | null): string {
   return JSON.stringify([project.id, project.generation, project.active_branch, scene?.id ?? null]);
 }
@@ -76,7 +109,11 @@ export function nodeTransform(node: CanvasTransform): CanvasTransform {
   return Object.fromEntries(transformFields.map(field => [field, node[field]])) as unknown as CanvasTransform;
 }
 function sourceNode(node: SourceNode): SourceNode {
-  return { id: node.id, kind: node.kind, parent_id: node.parent_id, text: node.text, ...nodeTransform(node) };
+  return { id: node.id, kind: node.kind, parent_id: node.parent_id, text: node.text, ...nodeTransform(node),
+    ...(node.style ? { style: cleanScopedStyle(node.style) } : {}),
+    ...(node.keyframes ? { keyframes: cleanScopedMotion(node.keyframes) } : {}),
+    ...(node.coordinate_space ? { coordinate_space: node.coordinate_space } : {}),
+    ...(node.relations ? { relations: node.relations.map(relation => ({ id: relation.id, kind: relation.kind, target_id: relation.target_id })) } : {}) };
 }
 export function selectDraftNode(draft: ScopedChangeDraft, node: CanvasNode | undefined): ScopedChangeDraft {
   if (node?.id === draft.editor.nodeId) return draft;
@@ -91,28 +128,64 @@ export function selectDraftNode(draft: ScopedChangeDraft, node: CanvasNode | und
 }
 export function createScopedDraft(project: Project, scene: Scene | null): ScopedChangeDraft {
   return selectDraftNode({
-    schema: "motionwright.scoped-change-draft/2", scope: scopedDraftScope(project, scene),
+    schema: "motionwright.scoped-change-draft/3", scope: scopedDraftScope(project, scene),
     baseRevision: project.revision, rationale: "", edits: [], origins: [], parkedEditors: [], nativeSource: null,
     editor: { nodeId: "", kind: "text", text: "", transform: { ...emptyTransform }, source: null },
   }, scene?.nodes[0]);
+}
+/** Old text/transform backups can acquire the additional read-only source fields
+ * only while their exact original revision and original object values still match.
+ * A missing original object is never reconstructed from current data.
+ */
+export function hydrateScopedDraft(draft: ScopedChangeDraft, project: Project, scene: Scene | null): ScopedChangeDraft {
+  if (draft.scope !== scopedDraftScope(project, scene) || draft.baseRevision !== project.revision || !scene) return draft;
+  const hydrate = (source: SourceNode): SourceNode => {
+    if (source.style !== undefined || source.keyframes !== undefined) return source;
+    const current = scene.nodes.find(node => node.id === source.id);
+    return current && source.kind === current.kind && source.parent_id === current.parent_id && source.text === current.text &&
+      sameValue(nodeTransform(source), nodeTransform(current)) ? sourceNode(current) : source;
+  };
+  const editor = (value: DraftEditor): DraftEditor => ({ ...value, source: value.source ? hydrate(value.source) : null });
+  return { ...draft, origins: draft.origins.map(hydrate), editor: editor(draft.editor), parkedEditors: draft.parkedEditors.map(editor) };
 }
 export function draftEditorEdit(draft: ScopedChangeDraft): DraftEdit {
   return editorEdit(draft.editor, draft.editor.kind);
 }
 function editorEdit(editor: DraftEditor, kind: DraftEdit["kind"]): DraftEdit {
+  if (!sourceHasKind(editor.source, kind)) throw new Error("The original values for this edit are unavailable. Review the draft on the current revision or start a new draft.");
   if (kind === "text") return { kind: "text", node_id: editor.nodeId, text: editor.text };
+  if (kind === "style") return { kind: "style", node_id: editor.nodeId, style: parseScopedStyle(styleInput(editor)) };
+  if (kind === "motion") return { kind: "motion", node_id: editor.nodeId, keyframes: parseScopedMotion(motionInput(editor)) };
   const transform = editorTransform(editor);
   if (!transform) throw new Error("Complete every transform value with a finite decimal number before adding it to the proposal.");
   return { kind: "transform", node_id: editor.nodeId, transform };
 }
 function editValue(edit: DraftEdit): unknown {
-  return edit.kind === "text" ? edit.text : edit.transform;
+  switch (edit.kind) {
+    case "text": return edit.text;
+    case "transform": return edit.transform;
+    case "style": return edit.style;
+    case "motion": return edit.keyframes;
+  }
 }
 function sourceValue(node: SourceNode | CanvasNode, kind: DraftEdit["kind"]): unknown {
-  return kind === "text" ? node.text ?? "" : nodeTransform(node);
+  switch (kind) {
+    case "text": return node.text ?? "";
+    case "transform": return nodeTransform(node);
+    case "style": return node.style;
+    case "motion": return node.keyframes;
+  }
 }
 function editorValue(editor: DraftEditor, kind: DraftEdit["kind"]): unknown {
   if (kind === "text") return editor.text;
+  if (kind === "style") {
+    if (!editor.styleRaw) return editor.source?.style;
+    try { return parseScopedStyle(styleInput(editor)); } catch { return { invalidStyle: styleInput(editor) }; }
+  }
+  if (kind === "motion") {
+    if (!editor.motionRaw) return editor.source?.keyframes;
+    try { return parseScopedMotion(motionInput(editor)); } catch { return { invalidMotion: motionInput(editor) }; }
+  }
   // Invalid input remains visible and differs from every numeric domain value.
   // Complete decimal spellings compare numerically, including after a receipt.
   return editorTransform(editor) ?? { ...editor.transformRaw };
@@ -123,20 +196,21 @@ export function draftEditorDirty(draft: ScopedChangeDraft): boolean {
 function editorFieldHasInput(draft: ScopedChangeDraft, editor: DraftEditor, kind: DraftEdit["kind"]): boolean {
   // Without original values, recovered raw input cannot be classified as
   // unchanged. Keep it recoverable; queueing still requires its source.
-  if (!editor.source) return kind === "transform" && editor.transformRaw !== undefined;
+  if (!sourceHasKind(editor.source, kind)) return kind === "transform" ? editor.transformRaw !== undefined
+    : kind === "style" ? editor.styleRaw !== undefined : kind === "motion" ? editor.motionRaw !== undefined : false;
   const value = editorValue(editor, kind);
   const queued = draft.edits.find(edit => edit.node_id === editor.nodeId && edit.kind === kind);
-  return !sameValue(value, sourceValue(editor.source, kind)) || (queued !== undefined && !sameValue(value, editValue(queued)));
+  return !sameValue(value, sourceValue(editor.source!, kind)) || (queued !== undefined && !sameValue(value, editValue(queued)));
 }
 function editorHasInputs(draft: ScopedChangeDraft, editor: DraftEditor): boolean {
-  return editorFieldHasInput(draft, editor, "text") || editorFieldHasInput(draft, editor, "transform");
+  return draftKinds.some(kind => editorFieldHasInput(draft, editor, kind));
 }
 export function scopedDraftHasWork(draft: ScopedChangeDraft): boolean {
   return draft.edits.length > 0 || draft.rationale.length > 0 ||
     [draft.editor, ...draft.parkedEditors].some(editor => editorHasInputs(draft, editor));
 }
 export function unqueuedInputCount(draft: ScopedChangeDraft): number {
-  return [draft.editor, ...draft.parkedEditors].flatMap(editor => (["text", "transform"] as const)
+  return [draft.editor, ...draft.parkedEditors].flatMap(editor => draftKinds
     .filter(kind => editorFieldHasInput(draft, editor, kind) && !draft.edits.some(edit =>
       edit.node_id === editor.nodeId && edit.kind === kind && sameValue(editValue(edit), editorValue(editor, kind))))).length;
 }
@@ -165,7 +239,7 @@ export function scopedDraftConflicts(draft: ScopedChangeDraft, scene: Scene | nu
   const candidates = draft.edits.map(edit => ({ nodeId: edit.node_id, kind: edit.kind, proposed: editValue(edit),
     source: draft.origins.find(node => node.id === edit.node_id) }));
   for (const editor of [draft.editor, ...draft.parkedEditors]) {
-    for (const kind of ["text", "transform"] as const) {
+    for (const kind of draftKinds) {
       if (editorFieldHasInput(draft, editor, kind) && !candidates.some(item => item.nodeId === editor.nodeId && item.kind === kind)) {
         candidates.push({ nodeId: editor.nodeId, kind, proposed: editorValue(editor, kind), source: editor.source ?? undefined });
       }
@@ -173,8 +247,12 @@ export function scopedDraftConflicts(draft: ScopedChangeDraft, scene: Scene | nu
   }
   return candidates.flatMap(({ nodeId, kind, proposed, source }) => {
     const current = scene?.nodes.find(node => node.id === nodeId);
-    const reason = !source || !current ? "missing"
-      : source.kind !== current.kind || (kind === "transform" && source.parent_id !== current.parent_id) ? "structure"
+    const spatial = kind === "transform" || kind === "motion";
+    const reason = !source || !current || !sourceHasKind(source, kind) ? "missing"
+      : source.kind !== current.kind || (spatial && (source.parent_id !== current.parent_id ||
+        (source.coordinate_space !== undefined && source.coordinate_space !== current.coordinate_space) ||
+        (source.relations !== undefined && !sameValue(source.relations, current.relations)))) ||
+        (kind === "motion" && !sameValue(nodeTransform(source), nodeTransform(current))) ? "structure"
       : !sameValue(sourceValue(source, kind), sourceValue(current, kind)) ? "value" : null;
     return reason ? [{ nodeId, kind, reason,
       label: current?.name ?? "Unavailable object", before: source ? sourceValue(source, kind) : null,
@@ -190,6 +268,18 @@ export function keepCurrentDraftValue(draft: ScopedChangeDraft, conflict: DraftC
     if (conflict.kind === "text") {
       const text = current ? current.text ?? "" : editor.source.text ?? "";
       return { ...editor, text, source: { ...editor.source, text } };
+    }
+    if (conflict.kind === "style") {
+      const style = current?.style ?? editor.source.style;
+      const next = { ...editor, source: { ...editor.source, ...(style ? { style: cleanScopedStyle(style) } : {}) } };
+      delete next.styleRaw;
+      return next;
+    }
+    if (conflict.kind === "motion") {
+      const keyframes = current?.keyframes ?? editor.source.keyframes;
+      const next = { ...editor, source: { ...editor.source, ...(keyframes ? { keyframes: cleanScopedMotion(keyframes) } : {}) } };
+      delete next.motionRaw;
+      return next;
     }
     const transform = nodeTransform(current ?? editor.source);
     const next = { ...editor, transform, source: { ...editor.source, ...transform } };
@@ -212,18 +302,23 @@ function refreshEditor(draft: ScopedChangeDraft, editor: DraftEditor, node: Canv
   // A receipt for other queued work cannot reconstruct a recovered source.
   if (!editor.source) return editor;
   const keepTransform = editorFieldHasInput(draft, editor, "transform");
+  const keepStyle = editorFieldHasInput(draft, editor, "style"), keepMotion = editorFieldHasInput(draft, editor, "motion");
   const next = { ...editor, source: sourceNode(node),
     text: editorFieldHasInput(draft, editor, "text") ? editor.text : node.text ?? "",
     transform: keepTransform ? { ...editor.transform } : nodeTransform(node) };
   if (!keepTransform) delete next.transformRaw;
   else if (editor.transformRaw) next.transformRaw = { ...editor.transformRaw };
+  if (!keepStyle) delete next.styleRaw;
+  else next.styleRaw = { ...styleInput(editor) };
+  if (!keepMotion) delete next.motionRaw;
+  else next.motionRaw = motionInput(editor).map(row => ({ ...row }));
   return next;
 }
 function refreshEditors(draft: ScopedChangeDraft, scene: Scene): Pick<ScopedChangeDraft, "editor" | "parkedEditors"> {
   const selected = scene.nodes.find(node => node.id === draft.editor.nodeId);
   const editor = selected ? refreshEditor(draft, draft.editor, selected)
     : { ...draft.editor, nodeId: "", source: null, text: "", transform: { ...emptyTransform } };
-  if (!selected) delete editor.transformRaw;
+  if (!selected) { delete editor.transformRaw; delete editor.styleRaw; delete editor.motionRaw; }
   const parkedEditors = draft.parkedEditors.flatMap(buffer => {
     const node = scene.nodes.find(item => item.id === buffer.nodeId);
     return node ? [refreshEditor(draft, buffer, node)] : [];
@@ -279,14 +374,23 @@ const validTransform = (value: unknown): value is CanvasTransform => record(valu
 const validTransformRaw = (value: unknown): value is Record<keyof CanvasTransform, string> => record(value) &&
   transformFields.every(field => typeof value[field] === "string");
 const validSource = (value: unknown): value is SourceNode => record(value) && typeof value.id === "string" && typeof value.kind === "string" &&
-  (value.parent_id === null || typeof value.parent_id === "string") && (value.text === null || typeof value.text === "string") && validTransform(value);
+  (value.parent_id === null || typeof value.parent_id === "string") && (value.text === null || typeof value.text === "string") && validTransform(value) &&
+  (value.style === undefined || validScopedStyle(value.style)) && (value.keyframes === undefined || validScopedMotion(value.keyframes)) &&
+  (value.coordinate_space === undefined || ["project_pixels", "normalized", "scene_local"].includes(String(value.coordinate_space))) &&
+  (value.relations === undefined || (Array.isArray(value.relations) && value.relations.length <= 128 && value.relations.every(relation =>
+    record(relation) && typeof relation.id === "string" && typeof relation.target_id === "string" &&
+    ["align_left", "align_center_x", "align_right", "align_top", "align_center_y", "align_bottom", "follow", "attach"].includes(String(relation.kind)))));
 const validEditor = (value: unknown): value is DraftEditor => record(value) && typeof value.nodeId === "string" &&
-  ["text", "transform"].includes(String(value.kind)) && typeof value.text === "string" && validTransform(value.transform) &&
+  (draftKinds as readonly string[]).includes(String(value.kind)) && typeof value.text === "string" && validTransform(value.transform) &&
   (value.transformRaw === undefined || validTransformRaw(value.transformRaw)) &&
+  (value.styleRaw === undefined || validScopedStyleRaw(value.styleRaw)) &&
+  (value.motionRaw === undefined || validScopedMotionRows(value.motionRaw)) &&
   (value.source === null || (validSource(value.source) && value.source.id === value.nodeId));
 const cleanEditor = (editor: DraftEditor): DraftEditor => ({ nodeId: editor.nodeId, kind: editor.kind,
   text: editor.text, transform: nodeTransform(editor.transform), source: editor.source ? sourceNode(editor.source) : null,
-  ...(editor.transformRaw ? { transformRaw: Object.fromEntries(transformFields.map(field => [field, editor.transformRaw![field]])) as Record<keyof CanvasTransform, string> } : {}) });
+  ...(editor.transformRaw ? { transformRaw: Object.fromEntries(transformFields.map(field => [field, editor.transformRaw![field]])) as Record<keyof CanvasTransform, string> } : {}),
+  ...(editor.styleRaw ? { styleRaw: Object.fromEntries(CANVAS_STYLE_FIELDS.map(field => [field, editor.styleRaw![field]])) as ScopedStyleRaw } : {}),
+  ...(editor.motionRaw ? { motionRaw: editor.motionRaw.map(row => ({ at: row.at, property: row.property, value: row.value, interpolation: row.interpolation })) } : {}) });
 function validNativeSource(value: unknown): value is NativeReviewRepairDraft | null {
   return value === null || (record(value) && value.schema === "motionwright.native-review-repair-draft/1" &&
     ["projectId", "generation", "sceneId", "profileId", "targetNodeId", "rationale"].every(key => typeof value[key] === "string") &&
@@ -297,10 +401,11 @@ function validNativeSource(value: unknown): value is NativeReviewRepairDraft | n
 export function decodeScopedDraft(raw: string, scope: string): ScopedChangeDraft {
   if (new TextEncoder().encode(raw).length > MAX_DRAFT_BYTES) throw new Error("Saved proposal exceeds the local draft budget.");
   const value: unknown = JSON.parse(raw);
-  if (!record(value) || (value.schema !== "motionwright.scoped-change-draft/1" && value.schema !== "motionwright.scoped-change-draft/2") || value.scope !== scope ||
+  if (!record(value) || !["motionwright.scoped-change-draft/1", "motionwright.scoped-change-draft/2", "motionwright.scoped-change-draft/3"].includes(String(value.schema)) || value.scope !== scope ||
       !Number.isSafeInteger(value.baseRevision) || Number(value.baseRevision) < 0 || typeof value.rationale !== "string" ||
       !Array.isArray(value.edits) || value.edits.length > 128 || !value.edits.every(edit => record(edit) && typeof edit.node_id === "string" &&
-        (edit.kind === "text" ? typeof edit.text === "string" : edit.kind === "transform" && validTransform(edit.transform))) ||
+        (edit.kind === "text" ? typeof edit.text === "string" : edit.kind === "transform" ? validTransform(edit.transform)
+          : edit.kind === "style" ? validScopedStyle(edit.style) : edit.kind === "motion" && validScopedMotion(edit.keyframes))) ||
       !Array.isArray(value.origins) || value.origins.length > 128 || !value.origins.every(validSource) ||
       !validEditor(value.editor) || !Array.isArray(value.parkedEditors) || value.parkedEditors.length > 128 || !value.parkedEditors.every(validEditor) ||
       !validNativeSource(value.nativeSource)) {
@@ -309,11 +414,13 @@ export function decodeScopedDraft(raw: string, scope: string): ScopedChangeDraft
   // Project validation and permission checks belong to the service. Only restore
   // the typed editor fields; unknown fields cannot become a command or grant.
   return {
-    schema: "motionwright.scoped-change-draft/2", scope, baseRevision: value.baseRevision as number,
+    schema: "motionwright.scoped-change-draft/3", scope, baseRevision: value.baseRevision as number,
     rationale: value.rationale, edits: (value.edits as DraftEdit[]).map(edit => edit.kind === "text"
       ? { kind: "text", node_id: edit.node_id, text: edit.text }
-      : { kind: "transform", node_id: edit.node_id, transform: nodeTransform(edit.transform) }),
-    origins: (value.origins as SourceNode[]).map(node => ({ id: node.id, kind: node.kind, parent_id: node.parent_id, text: node.text, ...nodeTransform(node) })),
+      : edit.kind === "transform" ? { kind: "transform", node_id: edit.node_id, transform: nodeTransform(edit.transform) }
+        : edit.kind === "style" ? { kind: "style", node_id: edit.node_id, style: cleanScopedStyle(edit.style) }
+          : { kind: "motion", node_id: edit.node_id, keyframes: cleanScopedMotion(edit.keyframes) }),
+    origins: (value.origins as SourceNode[]).map(sourceNode),
     editor: cleanEditor(value.editor), parkedEditors: value.parkedEditors.map(cleanEditor),
     nativeSource: value.nativeSource ? { schema: "motionwright.native-review-repair-draft/1",
       projectId: value.nativeSource.projectId, generation: value.nativeSource.generation, revision: value.nativeSource.revision,

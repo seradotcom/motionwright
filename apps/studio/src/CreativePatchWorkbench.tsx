@@ -2,17 +2,20 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Eye, Plus, Trash2 } from "lucide-react";
 import { previewCreativePatch } from "./api";
 import SceneCompositionStudy from "./SceneCompositionStudy";
+import ScopedPaintMotionEditor from "./ScopedPaintMotionEditor";
+import { scopedMotionIssue, scopedStyleIssues } from "./scopedPaintMotion";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { previewCreativePatchUndo } from "./creativeUndo";
 import { nativeRepairDraftIsCurrent } from "./nativeReviewRepair";
 import type { NativeReviewRepairDraft } from "./nativeReviewRepair";
 import {
-  continueDraftManually, createScopedDraft, decodeScopedDraft, DRAFT_STORAGE_PREFIX, draftEditorDirty,
+  continueDraftManually, createScopedDraft, decodeScopedDraft, DRAFT_STORAGE_PREFIX, draftEditorDirty, draftEditorSourceAvailable,
+  draftMotionInput, draftStyleInput, hydrateScopedDraft,
   draftPatch, draftTransformInput, draftTransformInvalidFields, encodeScopedDraft, keepCurrentDraftValue, queueDraftEdit, rebaseScopedDraft,
   removeDraftEdit, retainUnqueuedInputs, reviewedChangeWasCommitted, scopedDraftConflicts, scopedDraftHasWork, scopedDraftScope,
   scopedReviewKey, selectDraftNode, unqueuedInputCount, updateDraftTransformInput,
 } from "./scopedChangeDraft";
-import type { ReviewedScopedChange, ScopedChangeDraft } from "./scopedChangeDraft";
+import type { DraftEdit, ReviewedScopedChange, ScopedChangeDraft } from "./scopedChangeDraft";
 import type { CanvasNode, Change, DeliverableProfile, Project, Scene } from "./types";
 import { seconds } from "./types";
 
@@ -43,7 +46,7 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
   const [recovery] = useState(() => {
     try {
       const raw = window.sessionStorage.getItem(storageKey);
-      return { draft: raw ? decodeScopedDraft(raw, scope) : createScopedDraft(project, scene), blocked: false, error: null as string | null };
+      return { draft: raw ? hydrateScopedDraft(decodeScopedDraft(raw, scope), project, scene) : createScopedDraft(project, scene), blocked: false, error: null as string | null };
     } catch {
       return { draft: createScopedDraft(project, scene), blocked: true,
         error: "The saved draft could not be restored. Its recovery copy has been left untouched; your project is unchanged." };
@@ -71,12 +74,17 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
   const preview = activeReview?.preview ?? null;
   const node = scene?.nodes.find(item => item.id === draft.editor.nodeId);
   const lockedUi = busy || submitting;
-  const hasTargetSource = Boolean(node && draft.editor.source?.id === node.id);
+  const hasObjectSource = Boolean(node && draft.editor.source?.id === node.id);
+  const hasTargetSource = hasObjectSource && draftEditorSourceAvailable(draft);
   const targetEditingDisabled = lockedUi || !hasTargetSource;
   const conflicts = scopedDraftConflicts(draft, scene);
   const invalidTransformFields = draftTransformInvalidFields(draft);
   const transformInputError = draft.editor.kind === "transform" && invalidTransformFields.length
     ? `Complete ${invalidTransformFields.join(", ")} with a finite number before adding this transform.` : null;
+  const styleErrors = draft.editor.kind === "style" ? scopedStyleIssues(draftStyleInput(draft)) : {};
+  const editorInputError = transformInputError ?? (draft.editor.kind === "style" && Object.keys(styleErrors).length
+    ? Object.entries(styleErrors).map(([field, issue]) => field + ": " + issue).join(" ")
+    : draft.editor.kind === "motion" ? scopedMotionIssue(draftMotionInput(draft), scene?.duration) : null);
 
   const invalidate = () => {
     epoch.current += 1;
@@ -151,7 +159,7 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
   }, [scene, preview]);
   const sourceUnchanged = nativeSource !== null && !draftEditorDirty(draft);
   const queue = () => {
-    if (!hasTargetSource || !node || draftStale || sourceUnchanged || transformInputError || lockedUi || (nativeSource && node.id !== nativeSource.targetNodeId)) return;
+    if (!hasTargetSource || !node || draftStale || sourceUnchanged || editorInputError || lockedUi || (nativeSource && node.id !== nativeSource.targetNodeId)) return;
     try { update(queueDraftEdit(draft)); }
     catch (reason) { setError(message(reason)); }
   };
@@ -258,17 +266,19 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
           onChange={event => selectTarget(event.target.value)}>
           <option value="" disabled>Select an object</option>{!node && draft.editor.nodeId && <option value={draft.editor.nodeId}>Unavailable draft object</option>}
           {scene?.nodes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-        <label className="production-field"><span>Edit</span><select aria-label="Patch edit kind" value={draft.editor.kind} disabled={targetEditingDisabled}
-          onChange={event => update({ ...draft, editor: { ...draft.editor, kind: event.target.value as "text" | "transform" } })}><option value="text">Text only</option><option value="transform">Transform only</option></select></label>
+        <label className="production-field"><span>Edit</span><select aria-label="Patch edit kind" value={draft.editor.kind} disabled={lockedUi || !hasObjectSource}
+          onChange={event => update({ ...draft, editor: { ...draft.editor, kind: event.target.value as DraftEdit["kind"] } })}><option value="text">Text only</option><option value="transform">Transform only</option>
+            <option value="style">Style</option><option value="motion">Complete animation</option></select></label>
         {draft.editor.kind === "text" ? <label className="production-field"><span>Replacement text</span><textarea aria-label="Patch replacement text" rows={4} value={draft.editor.text} disabled={targetEditingDisabled}
           onChange={event => update({ ...draft, editor: { ...draft.editor, text: event.target.value } })}/></label>
-          : <div className="production-transform-grid">{(["x", "y", "width", "height", "rotation_deg", "opacity"] as const).map(field => <label className="production-field" key={field}><span>{field.replace("_deg", " (deg)")}</span>
+          : draft.editor.kind === "transform" ? <div className="production-transform-grid">{(["x", "y", "width", "height", "rotation_deg", "opacity"] as const).map(field => <label className="production-field" key={field}><span>{field.replace("_deg", " (deg)")}</span>
             <input aria-label={`Patch ${field}`} type="text" inputMode="decimal" value={draftTransformInput(draft, field)} disabled={targetEditingDisabled}
               aria-invalid={invalidTransformFields.includes(field) || undefined}
-              aria-describedby={invalidTransformFields.includes(field) ? "scoped-transform-error" : undefined}
-              onChange={event => update(updateDraftTransformInput(draft, field, event.target.value))}/></label>)}</div>}
-        {transformInputError && <p className="production-error" role="status" id="scoped-transform-error">{transformInputError}</p>}
-        <button className="secondary-button" disabled={!hasTargetSource || !node || draftStale || sourceUnchanged || transformInputError !== null || lockedUi || (nativeSource !== null && node.id !== nativeSource.targetNodeId)} onClick={queue}><Plus size={14}/> Add to proposal</button>
+              aria-describedby={invalidTransformFields.includes(field) ? "scoped-editor-error" : undefined}
+              onChange={event => update(updateDraftTransformInput(draft, field, event.target.value))}/></label>)}</div>
+          : <ScopedPaintMotionEditor draft={draft} disabled={targetEditingDisabled} onChange={update}/>}
+        {editorInputError && <p className="production-error" role="status" id="scoped-editor-error">{editorInputError}</p>}
+        <button className="secondary-button" disabled={!hasTargetSource || !node || draftStale || sourceUnchanged || editorInputError !== null || lockedUi || (nativeSource !== null && node.id !== nativeSource.targetNodeId)} onClick={queue}><Plus size={14}/> Add to proposal</button>
         <label className="production-field"><span>Visible reason for this change</span><textarea aria-label="Patch rationale" rows={3} placeholder="What is wrong, where is it visible, and why does this edit help?" value={draft.rationale} disabled={lockedUi}
           onChange={event => update({ ...draft, rationale: event.target.value })}/></label>
       </section>
@@ -287,12 +297,12 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
         label="Before scoped changes"/></figure>
       <figure><figcaption>AFTER · {undoTarget ? "uncommitted undo" : "uncommitted proposal"}</figcaption><SceneCompositionStudy scene={scene} frameRate={displayProfile?.frame_rate} nodes={resultNodes} cameraReframes={project.production_design?.camera_reframes} time={time} background={background} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
         label="After scoped changes"/></figure></div>
-      <div className="production-transport"><span className="mono">{time.toFixed(3)} s</span><input aria-label="Comparison playhead" type="range" min={0} max={seconds(scene.duration)} step={1 / 30} value={time}
+      <div className="production-transport"><span className="mono">{time.toFixed(3)} s</span><input aria-label="Comparison playhead" type="range" min={0} max={seconds(scene.duration)} step={displayProfile ? 1 / seconds(displayProfile.frame_rate) : 1 / 30} value={time}
         onChange={event => onSeek(seconds(scene.start) + Number(event.target.value))}/></div>
       {displayProfile && Object.keys(displayProfile.text_overrides).length > 0 &&
         <p className="production-help" role="status">Editorial text is shown for selected output profile {displayProfile.name}.
           Profile text overrides take precedence over the original Canvas node text. Revise the variant in Deliver to change this displayed copy.</p>}
-      <p className="production-help">Both sides share the application playhead. This bounded study draws flat text, shapes and circles; parenting, imported media and advanced paint effects must be reviewed in native frames.</p></>}
+      <p className="production-help">Both sides share the application playhead, scene camera and saved object relationships. Imported media and advanced paint effects require review in native frames.</p></>}
     <div className="production-button-row"><button className="primary-button" disabled={!activeReview || lockedUi || pending} onClick={applyReviewed}><Check size={14}/> {undoTarget ? "Apply undo as new revision" : "Apply as one revision"}</button>
       {undoTarget && <button className="secondary-button" disabled={lockedUi} onClick={() => { invalidate(); setUndoTarget(null); }}>Back to proposal</button>}
       <button className="secondary-button" disabled={lockedUi} onClick={reset}>Discard proposal</button></div>

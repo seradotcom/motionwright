@@ -1941,10 +1941,10 @@ impl Project {
                 keyframes,
             } => {
                 let resource = format!("scene:{scene_id}");
-                self.ensure_unlocked(&resource, &[LockKind::Position])?;
-                if keyframes.is_empty() || keyframes.len() > 128 {
+                self.ensure_unlocked(&resource, &[LockKind::Position, LockKind::Timing])?;
+                if keyframes.len() > 128 {
                     return Err(DomainError::Invalid(
-                        "motion edit requires 1 to 128 keyframes".into(),
+                        "motion edit permits at most 128 keyframes".into(),
                     ));
                 }
                 let mut slots = std::collections::BTreeSet::new();

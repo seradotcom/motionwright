@@ -1,0 +1,12 @@
+.scoped-paint-editor, .scoped-motion-editor { min-width: 0; }
+.scoped-motion-editor { container-type: inline-size; }
+.scoped-motion-keys { display: grid; gap: 10px; max-height: 540px; overflow: auto; padding: 2px; }
+.scoped-motion-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--border-subtle, #3a414c); border-radius: 8px; }
+.scoped-motion-row legend { padding: 0 5px; font-size: 12px; }
+.scoped-motion-row .production-field { min-width: 0; margin: 0; }
+.scoped-motion-row input, .scoped-motion-row select { width: 100%; min-width: 0; }
+.scoped-motion-remove { justify-self: start; }
+.scoped-motion-editor > .production-button-row { flex-wrap: wrap; margin-top: 10px; }
+@container (min-width: 600px) {
+  .scoped-motion-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}

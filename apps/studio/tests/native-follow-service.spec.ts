@@ -121,8 +121,8 @@ test("context label retains authored pose relations, own fades and editability t
     expect(label.relations).toHaveLength(1);
     expect(label.relations[0]).toMatchObject({kind:"follow",target_id:target.id});
     const history=await service.history(original.id,original.revision,16);
-    expect(history.map(event=>event.change.type)).toEqual(["add_canvas_node","set_canvas_transform",
-      "set_canvas_motion_keyframes","add_canvas_node","set_canvas_text","set_canvas_keyframe","set_canvas_keyframe"]);
+    expect(history.map(event=>event.change.type)).toEqual(["add_canvas_node","transform_canvas_node",
+      "set_canvas_motion_keyframes","add_canvas_node","update_canvas_text","set_canvas_keyframe","set_canvas_keyframe"]);
     await page.reload();await page.getByRole("button",{name:"Canvas",exact:true}).click();
     await page.locator(".tree-row").filter({hasText:scene.name}).click();
     await page.locator(".canvas-tree-row").filter({hasText:label.name}).click();

@@ -1775,12 +1775,12 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       break;
     }
     case "set_canvas_motion_keyframes": {
-      assertUnlocked(next, sceneResource(change.scene_id), ["position"]);
+      assertUnlocked(next, sceneResource(change.scene_id), ["position", "timing"]);
       const scene = next.scenes.find(entry => entry.id === change.scene_id);
       const node = scene?.nodes.find(entry => entry.id === change.node_id);
       if (!scene || !node) throw new Error("resource not found: node:" + change.node_id);
-      if (!change.keyframes.length || change.keyframes.length > 128) {
-        throw new Error("motion edit requires 1 to 128 keyframes");
+      if (change.keyframes.length > 128) {
+        throw new Error("motion edit permits at most 128 keyframes");
       }
       const slots = new Set<string>();
       for (const key of change.keyframes) {
@@ -2538,6 +2538,7 @@ function scopedEditChange(scene_id: string, edit: ScopedCanvasEdit): Change {
     case "style": return { type:"update_canvas_style", scene_id, node_id:edit.node_id, style:edit.style };
     case "transform": return { type:"transform_canvas_node", scene_id, node_id:edit.node_id, transform:edit.transform };
     case "keyframe": return { type:"set_canvas_keyframe", scene_id, node_id:edit.node_id, keyframe:edit.keyframe };
+    case "motion": return { type:"set_canvas_motion_keyframes", scene_id, node_id:edit.node_id, keyframes:edit.keyframes };
   }
 }
 

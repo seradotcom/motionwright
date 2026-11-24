@@ -647,3 +647,222 @@ fn metric_source_disclosure_is_frozen_until_explicit_detach() {
     assert!(p.production_design.heroes.is_empty());
     assert!(p.scenes[0].nodes.iter().any(|node| node.id == node_id));
 }
+
+fn scoped_repair_motion(node: &CanvasNode) -> Vec<CanvasKeyframe> {
+    let mut keys = Vec::new();
+    for at in [RationalTime::ZERO, RationalTime::new(3, 2).unwrap()] {
+        for (property, original) in [
+            (MotionProperty::X, node.x),
+            (MotionProperty::Y, node.y),
+            (MotionProperty::Width, node.width),
+            (MotionProperty::Height, node.height),
+            (MotionProperty::RotationDeg, node.rotation_deg),
+            (MotionProperty::Opacity, node.opacity),
+        ] {
+            let value = if at == RationalTime::ZERO && property == MotionProperty::X {
+                original - 40.0
+            } else if at == RationalTime::ZERO && property == MotionProperty::Opacity {
+                0.4
+            } else {
+                original
+            };
+            keys.push(CanvasKeyframe {
+                at,
+                property,
+                value,
+                interpolation: if at == RationalTime::ZERO {
+                    MotionInterpolation::Linear
+                } else {
+                    MotionInterpolation::EaseOutCubic
+                },
+            });
+        }
+    }
+    keys
+}
+
+#[test]
+fn complete_style_motion_repair_is_atomic_reopenable_and_reversible() {
+    let mut source = project();
+    let instance = Uuid::new_v4();
+    insert(&mut source, instance, HeroConfig::default());
+    let scene_id = source.scenes[0].id;
+    let node_id = hero_node_id(instance, "body");
+    let original = source.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == node_id)
+        .unwrap()
+        .clone();
+    let mut style = original.style.clone();
+    style.fill = Some("#C95D63".into());
+    let keys = scoped_repair_motion(&original);
+    let patch = CreativePatch {
+        scene_id,
+        base_revision: source.revision,
+        rationale: "Repair contrast and the complete entrance without replacing the component"
+            .into(),
+        edits: vec![
+            ScopedCanvasEdit::Style {
+                node_id,
+                style: style.clone(),
+            },
+            ScopedCanvasEdit::Motion {
+                node_id,
+                keyframes: keys.clone(),
+            },
+        ],
+    };
+    let frozen = source.clone();
+    let preview = source.preview_creative_patch(&patch).unwrap();
+    assert_eq!(source, frozen);
+    assert_eq!(preview.before, vec![original.clone()]);
+    assert_eq!(preview.after[0].style, style);
+    assert_eq!(preview.after[0].keyframes, keys);
+    let mut invalid = patch.clone();
+    invalid.edits[1] = ScopedCanvasEdit::Motion {
+        node_id,
+        keyframes: vec![keys[0].clone(), keys[0].clone()],
+    };
+    assert!(
+        source
+            .apply_change(&Change::ApplyCreativePatch { patch: invalid })
+            .is_err()
+    );
+    assert_eq!(
+        source, frozen,
+        "an invalid track cannot partially apply its preceding style edit"
+    );
+    let serialized = serde_json::to_string(&Change::ApplyCreativePatch { patch }).unwrap();
+    let change: Change = serde_json::from_str(&serialized).unwrap();
+    source.apply_change(&change).unwrap();
+    assert_eq!(
+        source.production_design.patches.last().unwrap().before,
+        vec![original]
+    );
+    let edited = source.clone();
+    let reopened: Project = serde_json::from_str(&serde_json::to_string(&source).unwrap()).unwrap();
+    assert_eq!(reopened, edited);
+    let clear = CreativePatch {
+        scene_id,
+        base_revision: reopened.revision,
+        rationale: "Hold the authored object still".into(),
+        edits: vec![ScopedCanvasEdit::Motion {
+            node_id,
+            keyframes: vec![],
+        }],
+    };
+    source = reopened;
+    source
+        .apply_change(&Change::ApplyCreativePatch { patch: clear })
+        .unwrap();
+    assert!(
+        source.scenes[0]
+            .nodes
+            .iter()
+            .find(|node| node.id == node_id)
+            .unwrap()
+            .keyframes
+            .is_empty()
+    );
+    let clear_id = source.production_design.patches.last().unwrap().id;
+    source
+        .apply_change(&Change::UndoCreativePatch { patch_id: clear_id })
+        .unwrap();
+    assert_eq!(source.scenes[0].nodes, edited.scenes[0].nodes);
+    let undo_id = source.production_design.patches.last().unwrap().id;
+    source
+        .apply_change(&Change::UndoCreativePatch { patch_id: undo_id })
+        .unwrap();
+    assert!(
+        source.scenes[0]
+            .nodes
+            .iter()
+            .find(|node| node.id == node_id)
+            .unwrap()
+            .keyframes
+            .is_empty()
+    );
+    assert_eq!(
+        source.scenes[0]
+            .nodes
+            .iter()
+            .find(|node| node.id == node_id)
+            .unwrap()
+            .style,
+        style
+    );
+}
+
+#[test]
+fn whole_track_removal_checks_removed_property_and_scene_timing_locks() {
+    let mut source = project();
+    let instance = Uuid::new_v4();
+    insert(&mut source, instance, HeroConfig::default());
+    let scene_id = source.scenes[0].id;
+    let node_id = hero_node_id(instance, "body");
+    let index = source.scenes[0]
+        .nodes
+        .iter()
+        .position(|node| node.id == node_id)
+        .unwrap();
+    source.scenes[0].nodes[index].keyframes = scoped_repair_motion(&source.scenes[0].nodes[index]);
+    let mut style = source.scenes[0].nodes[index].style.clone();
+    style.fill = Some("#C95D63".into());
+    let patch = CreativePatch {
+        scene_id,
+        base_revision: source.revision,
+        rationale: "Review a complete track removal".into(),
+        edits: vec![
+            ScopedCanvasEdit::Style { node_id, style },
+            ScopedCanvasEdit::Motion {
+                node_id,
+                keyframes: vec![],
+            },
+        ],
+    };
+    for property in [
+        NodeProperty::Size,
+        NodeProperty::Opacity,
+        NodeProperty::Style,
+    ] {
+        let mut locked = source.clone();
+        locked.scenes[0].nodes[index]
+            .property_locks
+            .insert(property);
+        let before = locked.clone();
+        assert!(locked.preview_creative_patch(&patch).is_err());
+        assert!(
+            locked
+                .apply_change(&Change::ApplyCreativePatch {
+                    patch: patch.clone()
+                })
+                .is_err()
+        );
+        assert_eq!(locked, before);
+    }
+    let mut timed = source;
+    timed
+        .apply_change(&Change::SetLock {
+            resource: format!("scene:{scene_id}"),
+            kind: LockKind::Timing,
+            note: "Preserve the approved scene timing".into(),
+        })
+        .unwrap();
+    let before = timed.clone();
+    assert!(
+        timed
+            .apply_change(&Change::SetCanvasMotionKeyframes {
+                scene_id,
+                node_id,
+                keyframes: vec![],
+            })
+            .is_err()
+    );
+    assert!(
+        timed
+            .apply_change(&Change::ApplyCreativePatch { patch })
+            .is_err()
+    );
+    assert_eq!(timed, before);
+}
