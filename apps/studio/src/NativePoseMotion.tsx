@@ -261,6 +261,6 @@ export default function NativePoseMotion(props: Props) {
     <button className="button full" type="button" disabled={busy || stale || unresolved || !!backupError || corrupt || !!issue} onClick={() => void save()}>
       {busy ? "Saving pose animation..." : node.keyframes.length ? "Save native pose animation" : "Create native pose animation"}
     </button>
-    <p className="inspector-note">A root Clip keeps its clipping plane during this motion. Camera framing and the selected output are checked before rendering.</p>
+    <p className="inspector-note">A static root Group keeps its local frame; a Clip keeps its clipping plane during this motion. Camera framing and the selected output are checked before rendering.</p>
   </section>;
 }

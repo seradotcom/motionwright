@@ -35,7 +35,9 @@ pub struct CameraReframe {
 /// hierarchy target from every editable object motion channel.
 pub fn camera_uses_composition(scene: &Scene) -> bool {
     scene.nodes.iter().any(|node| {
-        !node.keyframes.is_empty() || node.parent_id.is_some() || node.kind == "clip_group"
+        !node.keyframes.is_empty()
+            || node.parent_id.is_some()
+            || matches!(node.kind.as_str(), "group" | "clip_group")
     })
 }
 
@@ -71,7 +73,7 @@ pub fn exact_canvas_pose_waypoints(
     }
     let fail = || {
         DomainError::Invalid(format!(
-            "Canvas node {} requires 3 to 6 complete frame-aligned geometry poses with exact curves and a static root Clip",
+            "Canvas node {} requires 3 to 6 complete frame-aligned geometry poses with exact curves and a static root Clip or Group",
             node.id
         ))
     };
@@ -93,23 +95,8 @@ pub fn exact_canvas_pose_waypoints(
     {
         return Err(fail());
     }
-    if let Some(parent_id) = node.parent_id {
-        let parent = scene
-            .nodes
-            .iter()
-            .find(|parent| parent.id == parent_id)
-            .ok_or_else(&fail)?;
-        if parent.kind != "clip_group"
-            || parent.parent_id.is_some()
-            || !parent.keyframes.is_empty()
-            || !parent.relations.is_empty()
-            || parent.rotation_deg != 0.0
-            || parent.opacity != 1.0
-            || parent.coordinate_space != CoordinateSpace::ProjectPixels
-            || parent.style.blend_mode != BlendMode::Normal
-        {
-            return Err(fail());
-        }
+    if node.parent_id.is_some() && static_native_group_parent(node, scene).is_none() {
+        return Err(fail());
     }
     let frame_duration = RationalTime::new(fps.den, fps.num).map_err(|_| fail())?;
     let mut points = Vec::with_capacity(slots.len());
@@ -179,7 +166,7 @@ pub fn exact_canvas_pose_waypoints(
 fn camera_motion_start(node: &CanvasNode, scene: &Scene) -> Result<CanvasNode> {
     let fail = || {
         DomainError::Invalid(format!(
-            "Camera composition requires exact paired motion and a static root Clip for node {}",
+            "Camera composition requires exact paired motion and a static root Clip or Group for node {}",
             node.id
         ))
     };
@@ -189,29 +176,8 @@ fn camera_motion_start(node: &CanvasNode, scene: &Scene) -> Result<CanvasNode> {
     {
         return Err(fail());
     }
-    if let Some(parent_id) = node.parent_id {
-        let parent = scene
-            .nodes
-            .iter()
-            .find(|candidate| candidate.id == parent_id)
-            .ok_or_else(&fail)?;
-        if parent.kind != "clip_group"
-            || parent.parent_id.is_some()
-            || !parent.keyframes.is_empty()
-            || parent.rotation_deg != 0.0
-            || parent.opacity != 1.0
-            || parent.coordinate_space != CoordinateSpace::ProjectPixels
-            || !parent.relations.is_empty()
-        {
-            return Err(fail());
-        }
-    }
-    if node.kind == "group"
-        || (node.kind == "clip_group"
-            && (node.parent_id.is_some()
-                || !node.keyframes.is_empty()
-                || node.rotation_deg != 0.0
-                || node.opacity != 1.0))
+    if (node.parent_id.is_some() && static_native_group_parent(node, scene).is_none())
+        || (matches!(node.kind.as_str(), "group" | "clip_group") && !is_static_native_group(node))
     {
         return Err(fail());
     }
@@ -337,12 +303,12 @@ impl CameraReframe {
             || scene.nodes.is_empty()
             || scene.nodes.len() > 32
             || !scene.beats.is_empty()
-            || scene.nodes.iter().any(|node| node.kind == "group")
             || (self.component_version == CAMERA_REFRAME_MANIM_VERSION
-                && scene
-                    .nodes
-                    .iter()
-                    .any(|node| !node.keyframes.is_empty() || node.parent_id.is_some()))
+                && scene.nodes.iter().any(|node| {
+                    matches!(node.kind.as_str(), "group" | "clip_group")
+                        || !node.keyframes.is_empty()
+                        || node.parent_id.is_some()
+                }))
         {
             return Err(DomainError::Invalid(
                 "CameraReframe requires one ungrouped, motion-free original Motion Canvas shot of at most 32 objects".into(),
@@ -440,6 +406,9 @@ impl CameraReframe {
         let margin_y = CAMERA_REF_CANVAS_HEIGHT * scene.camera.safe_margin.max(0.05);
         let composed =
             self.component_version == CAMERA_REFRAME_VERSION && camera_uses_composition(scene);
+        if composed {
+            validate_static_native_group_order(scene)?;
+        }
         for node in &scene.nodes {
             let poses = if composed {
                 if let Some(points) = exact_canvas_pose_waypoints(
@@ -699,6 +668,7 @@ mod manim_camera_closed_pair_tests {
             clip.width = 520.0;
             clip.height = 400.0;
             clip.style = NodeStyle::default();
+            clip.z_index = 2;
             let clip_id = clip.id;
             project.scenes[0].nodes.push(clip);
             let child = &mut project.scenes[0].nodes[0];
@@ -742,7 +712,7 @@ mod manim_camera_closed_pair_tests {
                 serde_json::from_slice(&serde_json::to_vec(&project).unwrap()).unwrap();
             assert_eq!(reopened, project);
             reopened.validate().unwrap();
-            for negative in 0..4 {
+            for negative in 0..5 {
                 let mut rejected = source.clone();
                 match negative {
                     0 => rejected.scenes[0].nodes[0].keyframes[0].value = 0.0,
@@ -758,6 +728,16 @@ mod manim_camera_closed_pair_tests {
                     3 => {
                         rejected.scenes[0].nodes[0].keyframes[1].interpolation =
                             MotionInterpolation::EaseInOut
+                    }
+                    4 => {
+                        // The root lies below an unrelated drawable but its
+                        // painted child lies above it. Native cannot interleave.
+                        rejected.scenes[0]
+                            .nodes
+                            .iter_mut()
+                            .find(|node| node.id == clip_id)
+                            .unwrap()
+                            .z_index = 0;
                     }
                     _ => unreachable!(),
                 }

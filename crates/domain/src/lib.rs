@@ -2150,23 +2150,11 @@ impl Project {
                     .iter()
                     .position(|node| node.id == *node_id)
                     .ok_or_else(|| DomainError::NotFound(format!("node:{node_id}")))?;
-                // A direct child of one static root Clip group can move in
-                // that same saved clipping plane. Parent geometry, hierarchy
-                // and the original world-position source are not rewritten.
-                let direct_static_clip = scene.nodes[index].parent_id.is_some_and(|parent_id| {
-                    scene.nodes[index].coordinate_space == CoordinateSpace::ProjectPixels
-                        && scene.nodes.iter().any(|parent| {
-                            parent.id == parent_id
-                                && parent.kind == "clip_group"
-                                && parent.parent_id.is_none()
-                                && parent.keyframes.is_empty()
-                                && parent.relations.is_empty()
-                                && parent.opacity == 1.0
-                                && parent.rotation_deg == 0.0
-                                && parent.coordinate_space == CoordinateSpace::ProjectPixels
-                        })
-                });
-                if (scene.nodes[index].parent_id.is_some() && !direct_static_clip)
+                // Preserve the exact authored world position under a static
+                // native root Group or Clip; no source coordinates change.
+                let direct_static_group =
+                    static_native_group_parent(&scene.nodes[index], scene).is_some();
+                if (scene.nodes[index].parent_id.is_some() && !direct_static_group)
                     || matches!(scene.nodes[index].kind.as_str(), "group" | "clip_group")
                     || scene
                         .nodes
@@ -2174,7 +2162,7 @@ impl Project {
                         .any(|node| node.parent_id == Some(*node_id))
                 {
                     return Err(DomainError::Invalid(
-                        "native linear position move requires an unparented drawable or a direct child of one static root Clip group".into(),
+                        "native linear position move requires an unparented drawable or a direct child of one static root Clip or Group".into(),
                     ));
                 }
                 let node = &mut scene.nodes[index];
@@ -3839,7 +3827,9 @@ mod tests {
         };
         let mut ordinary_group = baseline.clone();
         ordinary_group.scenes[0].nodes[0].kind = "group".into();
-        assert!(ordinary_group.apply_change(&request).is_err());
+        ordinary_group.apply_change(&request).unwrap();
+        assert_eq!(ordinary_group.scenes[0].nodes[1].keyframes.len(), 4);
+        assert_eq!(ordinary_group.scenes[0].nodes[1].parent_id, Some(group_id));
         let mut rotated = baseline.clone();
         rotated.scenes[0].nodes[0].rotation_deg = 7.0;
         assert!(rotated.apply_change(&request).is_err());

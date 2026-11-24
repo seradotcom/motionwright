@@ -381,22 +381,10 @@ struct NativeOpacityFade {
     direction: NativeOpacityDirection,
 }
 
-/// Only one root, static, unparented Clip group can safely enclose a moving
-/// or fading child in the current pinned Native Film contract. Both child
-/// offset and source alpha are mapped relative to that same original parent.
-fn native_static_root_clip_parent(node: &CanvasNode, scene: &Scene) -> bool {
-    node.parent_id.is_some_and(|parent_id| {
-        scene.nodes.iter().any(|parent| {
-            parent.id == parent_id
-                && parent.kind == "clip_group"
-                && parent.parent_id.is_none()
-                && parent.keyframes.is_empty()
-                && parent.relations.is_empty()
-                && parent.opacity == 1.0
-                && parent.rotation_deg == 0.0
-                && parent.coordinate_space == CoordinateSpace::ProjectPixels
-        })
-    })
+/// Direct children of static root containers use the same literal local
+/// geometry regardless of whether their parent owns a clipping plane.
+fn native_static_root_group_parent(node: &CanvasNode, scene: &Scene) -> bool {
+    motionwright_domain::static_native_group_parent(node, scene).is_some()
 }
 
 /// Only the two exact native opacity endpoints are admitted: 0 -> 1 (FadeIn)
@@ -422,14 +410,12 @@ fn native_exact_opacity_fade(
             node.id
         ))
     };
-    // A saved child of one static root Clip group can carry exactly the
-    // same native opacity tween as an unparented object. The already-authored
-    // Group remains the real clipping authority; never flatten its child or
-    // replace a source clip with an alpha approximation. Other parented
-    // hierarchies keep their historical closed refusal.
-    let exact_clip_parent = native_static_root_clip_parent(node, scene);
+    // A saved child of a static root Group or Clip can carry the same
+    // opacity tween as a root drawable. Keep the authored container and
+    // its optional clipping plane; never flatten or approximate its alpha.
+    let exact_group_parent = native_static_root_group_parent(node, scene);
     if !scene.beats.is_empty()
-        || (node.parent_id.is_some() && !exact_clip_parent)
+        || (node.parent_id.is_some() && !exact_group_parent)
         || matches!(node.kind.as_str(), "group" | "clip_group")
         || scene
             .nodes
@@ -503,7 +489,7 @@ fn native_linear_position_motion(
         ))
     };
     if !scene.beats.is_empty()
-        || (node.parent_id.is_some() && !native_static_root_clip_parent(node, scene))
+        || (node.parent_id.is_some() && !native_static_root_group_parent(node, scene))
         || matches!(node.kind.as_str(), "group" | "clip_group")
         || scene
             .nodes
@@ -613,7 +599,7 @@ fn native_linear_geometry_motion(
         ))
     };
     if !scene.beats.is_empty()
-        || (node.parent_id.is_some() && !native_static_root_clip_parent(node, scene))
+        || (node.parent_id.is_some() && !native_static_root_group_parent(node, scene))
         || !matches!(node.kind.as_str(), "shape" | "rectangle" | "circle")
         || scene
             .nodes
@@ -1512,23 +1498,15 @@ fn projected_shot(
         output: context.output,
         font_family: context.font_family,
     };
+    motionwright_domain::validate_static_native_group_order(scene)
+        .map_err(|error| unsupported(error.to_string()))?;
     for node in &scene.nodes {
-        if node.kind == "clip_group" && node.parent_id.is_some() {
-            return Err(unsupported(
-                "Native rectangular Clip groups must be unparented; nested clip transforms are not in the bounded source grammar",
-            ));
-        }
         let (mut mapped, mut node_constraints) =
             subject(node, &layer_names, &subject_context, identity.beat_scope)?;
-        if let Some(parent) = node.parent_id.and_then(|id| {
-            scene
-                .nodes
-                .iter()
-                .find(|candidate| candidate.id == id && candidate.kind == "clip_group")
-        }) {
-            // Native Fixed child positions are local to their Group. Saved
-            // Canvas transforms are world/project coordinates. Convert once,
-            // without moving the persistent object or approximating a mask.
+        if let Some(parent) = motionwright_domain::static_native_group_parent(node, scene) {
+            // Native fixed children use local coordinates. The authored
+            // Group/Clip is unpainted and its children remain world-space
+            // objects in the saved Canvas. Convert exactly once.
             let native_parent = canonical_position(parent, projection, context.output);
             match &mut mapped.layout {
                 SpatialIntent::Fixed { position, .. } => {
@@ -1537,7 +1515,7 @@ fn projected_shot(
                 }
                 _ => {
                     return Err(unsupported(
-                        "Clip group requires exact fixed child geometry",
+                        "Native Group requires exact fixed child geometry",
                     ));
                 }
             }
@@ -2886,6 +2864,71 @@ mod tests {
         );
         assert_eq!(after_child.parent_id, Some(parent_id));
         realize(film).expect("Pinned Native grammar must admit the authored rectangular clip");
+    }
+
+    #[test]
+    fn static_native_group_preserves_world_pose_motion_and_rejects_interleaved_layers() {
+        let (mut project, parent_id, child_id) = clipped_opacity_source();
+        let scene = &mut project.scenes[0];
+        let group = scene
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == parent_id)
+            .unwrap();
+        group.kind = "group".into();
+        let group = group.clone();
+        let child = scene
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == child_id)
+            .unwrap();
+        set_clipped_position_keys(child, 1140.0, MotionInterpolation::EaseOutCubic);
+        let child = child.clone();
+        let source = project.clone();
+        let options = fixture_options(&project);
+        let segments =
+            build_motion_canvas_segments(&project, project.deliverables[0].id, &options).unwrap();
+        let shot = &segments[0].film.sequences[0].beats[0].shots[0];
+        let parent = shot
+            .subjects
+            .iter()
+            .find(|item| item.id == subject_id(parent_id, None))
+            .unwrap();
+        let actual = shot
+            .subjects
+            .iter()
+            .find(|item| item.id == subject_id(child_id, None))
+            .unwrap();
+        assert!(!parent.clip_intentional);
+        assert_eq!(actual.parent.as_deref(), Some(parent.id.as_str()));
+        match (&parent.layout, &actual.layout) {
+            (
+                SpatialIntent::Fixed { position: root, .. },
+                SpatialIntent::Fixed {
+                    position: local, ..
+                },
+            ) => {
+                assert!((root.x + local.x - (child.x + child.width / 2.0 - 960.0)).abs() < 1e-6);
+                assert!((root.y + local.y - (child.y + child.height / 2.0 - 540.0)).abs() < 1e-6);
+                assert!((root.x - (group.x + group.width / 2.0 - 960.0)).abs() < 1e-6);
+            }
+            _ => panic!("Group child must retain local fixed geometry"),
+        }
+        assert!(shot.motion.iter().any(|item| matches!(&item.primitive,
+            Primitive::Settle { target, .. } if target == &actual.id)));
+        realize(&segments[0].film).unwrap();
+        assert_eq!(project, source);
+        // This exact saved child layer is above the independent root, while
+        // its group is below it. A renderer subtree cannot preserve both.
+        project.scenes[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == parent_id)
+            .unwrap()
+            .z_index = -2;
+        assert!(
+            build_motion_canvas_segments(&project, project.deliverables[0].id, &options).is_err()
+        );
     }
 
     #[test]
@@ -4327,7 +4370,7 @@ mod tests {
             .iter_mut()
             .find(|node| node.id == parent_id)
             .unwrap()
-            .kind = "group".into();
+            .kind = "rectangle".into();
         cases.push(ordinary_parent);
         let mut rotated_parent = baseline.clone();
         rotated_parent.scenes[0]
@@ -4719,7 +4762,7 @@ mod tests {
             .iter_mut()
             .find(|node| node.id == parent_id)
             .unwrap()
-            .kind = "group".into();
+            .kind = "rectangle".into();
         negatives.push(ordinary_parent);
         let mut rotated_parent = original.clone();
         rotated_parent.scenes[0]

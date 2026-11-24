@@ -7,6 +7,7 @@ import type { Change } from "./types";
 import { emptyProductionDesign } from "./creativeProduction";
 import { seconds } from "./types";
 import { savedNativePoseDraft, type PoseGeometry } from "./nativePoseDraft";
+import { isStaticNativeGroup, nativeGroupOrderIssue, staticNativeGroupParent } from "./nativeGroupHierarchy";
 
 export const CAMERA_REFRAME_VERSION=1;
 export const CAMERA_REFRAME_MANIM_VERSION=2;
@@ -26,19 +27,13 @@ const KEYS=[
 function invalid(message:string):never {throw new Error("CameraReframe: "+message);}
 
 export const cameraUsesComposition = (scene: Scene): boolean =>
-  scene.nodes.some(node => node.keyframes.length > 0 || node.parent_id !== null || node.kind === "clip_group");
+  scene.nodes.some(node => node.keyframes.length > 0 || node.parent_id !== null || ["group","clip_group"].includes(node.kind));
 
 function cameraMotionStart(node: Scene["nodes"][number], scene: Scene): Scene["nodes"][number] {
-  const fail = (): never => invalid("composition requires exact paired motion and a static root Clip for node " + node.id);
+  const fail = (): never => invalid("composition requires exact paired motion and a static root Clip or Group for node " + node.id);
   if (node.coordinate_space !== "project_pixels" || node.relations.length || node.style.blend_mode !== "normal") fail();
-  if (node.parent_id !== null) {
-    const parent = scene.nodes.find(candidate => candidate.id === node.parent_id);
-    if (!parent || parent.kind !== "clip_group" || parent.parent_id !== null || parent.keyframes.length
-      || parent.rotation_deg !== 0 || parent.opacity !== 1 || parent.coordinate_space !== "project_pixels"
-      || parent.relations.length) fail();
-  }
-  if (node.kind === "group" || (node.kind === "clip_group" && (node.parent_id !== null
-    || node.keyframes.length || node.rotation_deg !== 0 || node.opacity !== 1))) fail();
+  if ((node.parent_id !== null && !staticNativeGroupParent(node, scene)) ||
+      (["group","clip_group"].includes(node.kind) && !isStaticNativeGroup(node))) fail();
   const initial = structuredClone(node);
   if (!node.keyframes.length) return initial;
   if (node.rotation_deg !== 0 || node.opacity !== 1 || scene.nodes.some(child => child.parent_id === node.id)) fail();
@@ -72,7 +67,7 @@ function cameraMotionStart(node: Scene["nodes"][number], scene: Scene): Scene["n
 function cameraMotionPoses(node: Scene["nodes"][number], scene: Scene): PoseGeometry[] {
   const times = new Set(node.keyframes.filter(key => key.property !== "opacity").map(key => JSON.stringify(key.at)));
   if (times.size <= 2) return [cameraMotionStart(node, scene), node];
-  const fail = (): never => invalid("composition requires complete frame-aligned waypoint poses and a static root Clip for node " + node.id);
+  const fail = (): never => invalid("composition requires complete frame-aligned waypoint poses and a static root Clip or Group for node " + node.id);
   if (!["shape", "rectangle", "circle"].includes(node.kind) || node.rotation_deg !== 0 || node.opacity !== 1 ||
       scene.nodes.some(child => child.parent_id === node.id)) fail();
   if (node.parent_id !== null && scene.nodes.find(parent => parent.id === node.parent_id)?.style.blend_mode !== "normal") fail();
@@ -110,9 +105,9 @@ export function validateCameraReframe(source:CameraReframe,scene:Scene):void{
   const admittedPair=(source.component_version===CAMERA_REFRAME_VERSION && scene.renderer==="motion-canvas") ||
     (source.component_version===CAMERA_REFRAME_MANIM_VERSION && scene.renderer==="manim-community");
   if(!admittedPair || scene.nodes.length<1 || scene.nodes.length>32 ||
-    scene.beats.length || scene.nodes.some(node=>node.kind==="group") ||
+    scene.beats.length ||
     (source.component_version===CAMERA_REFRAME_MANIM_VERSION &&
-      scene.nodes.some(node=>node.keyframes.length || node.parent_id!==null)))
+      scene.nodes.some(node=>["group","clip_group"].includes(node.kind) || node.keyframes.length || node.parent_id!==null)))
     invalid("an original, ungrouped and motion-free Canvas shot with at most 32 objects is required");
   if(scene.camera.zoom!==1 || scene.camera.rotation_deg!==0)
     invalid("this planar reframe cannot represent optical zoom or 3D rotation");
@@ -146,6 +141,10 @@ export function validateCameraReframe(source:CameraReframe,scene:Scene):void{
   const marginX=1920*Math.max(.05,scene.camera.safe_margin);
   const marginY=1080*Math.max(.05,scene.camera.safe_margin);
   const composed=source.component_version===CAMERA_REFRAME_VERSION && cameraUsesComposition(scene);
+  if(composed){
+    const issue=nativeGroupOrderIssue(scene);
+    if(issue) invalid(issue);
+  }
   for(const node of scene.nodes){
     const poses=composed?cameraMotionPoses(node,scene):[node];
     for(const [cx,cy] of [

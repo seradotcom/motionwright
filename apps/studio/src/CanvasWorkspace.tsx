@@ -1,5 +1,6 @@
 import { previewTransform } from "./canvasMotion";
 import { rectangularClipInset } from "./canvasClip";
+import { isStaticNativeGroup, nativeGroupOrderIssue, staticNativeGroupParent } from "./nativeGroupHierarchy";
 import NativePoseMotion from "./NativePoseMotion";
 import { sameProjectRevision, type ProjectRevision } from "./projectMutation";
 import { Camera, CircleDashed, LockKeyhole, Move, Plus, Unlock } from "lucide-react";
@@ -745,17 +746,12 @@ export default function CanvasWorkspace({
   const nativeFrameRate = profile
     ? Number(profile.frame_rate.num) / Number(profile.frame_rate.den) : Number.NaN;
   const nativeMoveTime = nativeEndFrame / nativeFrameRate;
-  const selectedStaticClipParent = selectedNode?.parent_id
-    ? scene.nodes.find(parent => parent.id === selectedNode.parent_id
-        && parent.kind === "clip_group" && parent.parent_id === null
-        && parent.keyframes.length === 0 && parent.relations.length === 0
-        && parent.opacity === 1 && parent.rotation_deg === 0
-        && parent.coordinate_space === "project_pixels")
-    : null;
+  const selectedStaticGroupParent = selectedNode ? staticNativeGroupParent(selectedNode,scene) : undefined;
+  const groupProjectionIssue = nativeGroupOrderIssue(scene);
   const nativeMoveAllowed = Boolean(profile && selectedNode
     && scene.renderer === "motion-canvas" && scene.beats.length === 0
     && !scenePositionLocked && !selectedNode.property_locks.includes("position")
-    && (selectedNode.parent_id === null || (selectedStaticClipParent
+    && (selectedNode.parent_id === null || (selectedStaticGroupParent
       && selectedNode.coordinate_space === "project_pixels"))
     && selectedNode.kind !== "group" && selectedNode.kind !== "clip_group"
     && !scene.nodes.some((node) => node.parent_id === selectedNode.id)
@@ -783,10 +779,16 @@ export default function CanvasWorkspace({
     // Creating a text/shape while a clipping group is selected should produce
     // a usable editable child inside that exact saved group, not a visually
     // vanished object somewhere outside its original clipping rectangle.
-    if ((kind === "text" || kind === "shape") && selectedNode?.kind === "clip_group") {
+    if ((kind === "text" || kind === "shape") && selectedNode && isStaticNativeGroup(selectedNode)) {
       node.parent_id = selectedNode.id;
       node.x = selectedNode.x + (selectedNode.width - node.width) / 2;
       node.y = selectedNode.y + (selectedNode.height - node.height) / 2;
+      // An earlier group must not append a child above unrelated root
+      // layers: retain its existing subtree's highest authored layer.
+      const children=scene.nodes.filter(child=>child.parent_id===selectedNode.id);
+      const top=Math.max(selectedNode.z_index,...children.map(child=>child.z_index));
+      if(scene.nodes.some(other=>other.parent_id===null && other.id!==selectedNode.id && other.z_index>selectedNode.z_index))
+        node.z_index=top;
     }
     try {
       await commitRequired({ type: "add_canvas_node", scene_id: scene.id, node });
@@ -1047,6 +1049,8 @@ export default function CanvasWorkspace({
             <span>{PROJECT_WIDTH} × {PROJECT_HEIGHT}</span>
             <span>Semantic camera · no renderer evidence</span>
           </div>
+          {groupProjectionIssue && scene.nodes.some(node=>node.parent_id!==null || ["group","clip_group"].includes(node.kind)) &&
+            <p className="production-error" role="status">{groupProjectionIssue}</p>}
           <div className="canvas-stage">
             <div className="canvas-safe-area" style={{ inset: (scene.camera.safe_margin * 100) + "%" }}>
               <span>SAFE</span>

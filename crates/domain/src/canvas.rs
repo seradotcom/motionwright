@@ -12,6 +12,98 @@ pub enum CoordinateSpace {
     SceneLocal,
 }
 
+/// A static, unpainted root container can preserve the saved world-space
+/// position of a direct child in the native local coordinate frame.
+pub fn is_static_native_group(node: &CanvasNode) -> bool {
+    matches!(node.kind.as_str(), "group" | "clip_group")
+        && node.parent_id.is_none()
+        && node.coordinate_space == CoordinateSpace::ProjectPixels
+        && node.keyframes.is_empty()
+        && node.relations.is_empty()
+        && node.rotation_deg == 0.0
+        && node.opacity == 1.0
+        && node.style.blend_mode == BlendMode::Normal
+}
+
+pub fn static_native_group_parent<'a>(
+    node: &CanvasNode,
+    scene: &'a Scene,
+) -> Option<&'a CanvasNode> {
+    if node.coordinate_space != CoordinateSpace::ProjectPixels {
+        return None;
+    }
+    let id = node.parent_id?;
+    scene
+        .nodes
+        .iter()
+        .find(|parent| parent.id == id && is_static_native_group(parent))
+}
+
+/// Native draws an entire Group subtree in its parent's layer. Reject a
+/// flat Canvas painter order that would require interleaving independent
+/// root subtrees; retaining the hierarchy must not silently reorder paint.
+pub fn validate_static_native_group_order(scene: &Scene) -> Result<()> {
+    if !scene.nodes.iter().any(|node| {
+        node.parent_id.is_some() || matches!(node.kind.as_str(), "group" | "clip_group")
+    }) {
+        return Ok(());
+    }
+    let fail = |why: &str| DomainError::Invalid(format!("Native Group hierarchy: {why}"));
+    for node in &scene.nodes {
+        if node.parent_id.is_some()
+            && (matches!(node.kind.as_str(), "group" | "clip_group")
+                || static_native_group_parent(node, scene).is_none()
+                || scene
+                    .nodes
+                    .iter()
+                    .any(|child| child.parent_id == Some(node.id)))
+        {
+            return Err(fail(
+                "only direct drawable children of a static root Group or Clip are supported",
+            ));
+        }
+        if matches!(node.kind.as_str(), "group" | "clip_group") && !is_static_native_group(node) {
+            return Err(fail(
+                "animated, transformed or nested group containers require a dedicated projection",
+            ));
+        }
+    }
+    // For a root drawable its painted layer is its own. For an unpainted
+    // container the full range of the direct children's authored layers
+    // must remain on the same side of every other root subtree.
+    let mut scopes = Vec::new();
+    for node in scene.nodes.iter().filter(|node| node.parent_id.is_none()) {
+        let group = matches!(node.kind.as_str(), "group" | "clip_group");
+        let (minimum, maximum) = if group {
+            let mut layers = scene
+                .nodes
+                .iter()
+                .filter(|child| child.parent_id == Some(node.id))
+                .map(|child| child.z_index);
+            let Some(first) = layers.next() else { continue };
+            layers.fold((first, first), |(low, high), z| (low.min(z), high.max(z)))
+        } else {
+            (node.z_index, node.z_index)
+        };
+        scopes.push((node.z_index, minimum, maximum, group));
+    }
+    for (index, (layer, low, high, group)) in scopes.iter().enumerate() {
+        for (other_layer, other_low, other_high, other_group) in scopes.iter().skip(index + 1) {
+            if !group && !other_group {
+                continue;
+            }
+            if !((layer < other_layer && high < other_low)
+                || (layer > other_layer && low > other_high))
+            {
+                return Err(fail(
+                    "root layers and child layers interleave; assign nonoverlapping layer ranges",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Intent for one reparent operation. Absence retains the historical world pose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

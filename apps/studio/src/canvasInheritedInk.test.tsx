@@ -159,3 +159,20 @@ describe("profile text flows through expanded and camera studies", () => {
     expect(html).toContain('data-text-origin="profile"');
   });
 });
+
+describe("editorial source clip plane", () => {
+  it("clips a rotated child in world coordinates and leaves an ordinary Group unclipped", () => {
+    const parent = rootText(), child = rootText();
+    parent.id="clip-root"; parent.kind="clip_group"; parent.parent_id=null;parent.keyframes=[];
+    parent.rotation_deg=0;parent.opacity=1;parent.relations=[];parent.x=100;parent.y=150;parent.width=320;parent.height=240;
+    child.id="clip-child";child.parent_id=parent.id;child.kind="rectangle";child.rotation_deg=17;child.style.fill="#AA5533";
+    const markup=renderToStaticMarkup(<CompositionStudy nodes={[parent,child]} time={0} background="#101820" label="Clip study"/>);
+    expect(markup).toContain('clipPathUnits="userSpaceOnUse"');
+    expect(markup).toContain('x="100" y="150" width="320" height="240"');
+    expect(markup).toMatch(/<g clip-path="url\(#study-clip-[^"]+\)"><g data-canvas-node-id="clip-child"/);
+    parent.kind="group";
+    const unclipped=renderToStaticMarkup(<CompositionStudy nodes={[parent,child]} time={0} background="#101820" label="Group study"/>);
+    expect(unclipped).not.toContain("clip-path=");
+    expect(unclipped).toContain('data-parent-id="clip-root"');
+  });
+});

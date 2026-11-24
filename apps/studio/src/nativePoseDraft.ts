@@ -1,4 +1,5 @@
 import type { CanvasKeyframe, CanvasNode, CanvasTransform, MotionInterpolation, Project, RationalTime, Scene } from "./types";
+import { staticNativeGroupParent } from "./nativeGroupHierarchy";
 
 export type PoseGeometry = Omit<CanvasTransform, "opacity">;
 export type PoseCurve = "linear" | "ease_out_cubic" | "hold";
@@ -122,13 +123,8 @@ export function nativePoseEdit(project: Project, scene: Scene, node: CanvasNode,
       scene.nodes.some(candidate => candidate.parent_id === node.id)) {
     return fail("Select a plain shape with base rotation 0 and opacity 1.");
   }
-  if (node.parent_id !== null) {
-    const parent = scene.nodes.find(candidate => candidate.id === node.parent_id);
-    if (!parent || parent.kind !== "clip_group" || parent.parent_id !== null ||
-        parent.keyframes.length || parent.relations.length || parent.rotation_deg !== 0 ||
-        parent.opacity !== 1 || parent.coordinate_space !== "project_pixels" ||
-        parent.style.blend_mode !== "normal") return fail("The shape needs an unchanged root Clip group.");
-  }
+  if (node.parent_id !== null && !staticNativeGroupParent(node, scene))
+    return fail("The shape needs an unchanged root Clip or Group.");
   if (node.keyframes.length && !savedNativePoseDraft(node, profile)) {
     return fail("This motion has independent or additional keys. Edit them in the Motion inspector.");
   }

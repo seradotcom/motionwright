@@ -7,6 +7,7 @@ export { nativePaidGenerationJournal, nativePaidGenerationPreflight, nativePaidG
 export {nativeNarrationSourceSnapshot,nativeNarrationReplacementImpact} from "./narrationReviewApi";
 import { appendCreativePatchRecord, previewCreativePatchUndo } from "./creativeUndo";
 import { proposeCanvasReparent } from "./canvasWorkspaceDraft";
+import { staticNativeGroupParent } from "./nativeGroupHierarchy";
 import { browserCreativeDoctor } from "./creativeDoctor";
 import { applyMusicCutToProject, inspectMusicCut, inspectMusicConform, applyMusicConformToProject } from "./musicClock";
 import { applyProductionDesignChange, emptyProductionDesign, sameValue, validateCraftDisclosures, validateMetricSourceNoticesOnEdit,
@@ -1864,9 +1865,10 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       const node = scene.nodes.find((entry) => entry.id === change.node_id);
       if (!node) throw new Error("resource not found: node:" + change.node_id);
       if (scene.renderer !== "motion-canvas" || scene.beats.length > 0 ||
-        node.parent_id !== null || node.kind === "group" ||
+        (node.parent_id !== null && !staticNativeGroupParent(node, scene)) ||
+        ["group","clip_group"].includes(node.kind) ||
         scene.nodes.some((item) => item.parent_id === node.id)) {
-        throw new Error("native linear motion requires an independent Motion Canvas object without authored beats");
+        throw new Error("native linear motion requires a drawable Motion Canvas object or direct static root Group/Clip child without authored beats");
       }
       if (node.property_locks.includes("position")) {
         throw new Error("resource is locked: node motion property");
