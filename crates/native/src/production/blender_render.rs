@@ -1793,7 +1793,7 @@ impl ProductionCoordinator {
     fn planned_blender_lit_still(
         &self,
         request: &BlenderLitStillRequest,
-    ) -> NativeResult<(Project, BlenderLitStillPlan)> {
+    ) -> NativeResult<(motionwright_domain::Project, BlenderLitStillPlan)> {
         validate_lit_request(request)?;
         let project = self
             .service
