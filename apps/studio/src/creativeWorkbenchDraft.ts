@@ -9,7 +9,7 @@ import { applyProceduralChange, defaultProceduralConfig, defaultProceduralInflue
 import type { ProceduralConfig, ProceduralInfluence } from "./proceduralField";
 import { applyStageCaptureChange } from "./stageCapture";
 import { applyMeasuredBinding, applyMeasuredTable, detachMeasuredBinding, measuredOutput, validateMeasuredTable, validateMeasuredView } from "./measuredData";
-import type { MeasuredTable, MeasuredView } from "./measuredData";
+import type { MeasuredBinding, MeasuredTable, MeasuredView } from "./measuredData";
 
 export type WorkbenchKind = "stage" | "procedural" | "measured";
 export type WorkbenchTarget = { kind: WorkbenchKind; sceneId: string | null };
@@ -24,14 +24,20 @@ export function rawProceduralInfluence(config = defaultProceduralInfluence(), en
   return { ...Object.fromEntries(Object.entries(config).map(([key, value]) =>
     [key, INFLUENCE_NUMBERS.includes(key as InfluenceNumber) ? String(value) : value])), enabled } as InfluenceRaw;
 }
-export interface MeasuredRaw {
-  draftId: string; label: string; assetId: string; rowsText: string;
+export interface MeasuredPresentationRaw {
   selectedNode: string; selectedKey: string; view: MeasuredView["kind"];
   decimals: string; axisMin: string; axisMax: string; maxWidth: string;
 }
+export interface MeasuredRaw extends MeasuredPresentationRaw {
+  draftId: string; label: string; assetId: string; rowsText: string;
+}
+export interface MeasuredBindingRaw extends MeasuredPresentationRaw {
+  sceneId: string; tableId: string;
+}
 export type WorkbenchInput = { kind: "stage"; config: StageRaw; captureId: string }
   | { kind: "procedural"; config: ProceduralRaw }
-  | { kind: "measured"; selectedTable: string; tables: Record<string, MeasuredRaw> };
+  | { kind: "measured"; selectedTable: string; tables: Record<string, MeasuredRaw>;
+      selectedBinding?: string; bindings?: Record<string, MeasuredBindingRaw> };
 export type WorkbenchChange = Extract<Change, { type: "upsert_product_stage" | "detach_product_stage" | "bind_stage_capture" | "detach_stage_capture"
   | "upsert_procedural_field" | "detach_procedural_field" | "upsert_measured_table" | "upsert_measured_binding" | "detach_measured_binding" }>;
 export type WorkbenchOperation = "save" | "detach" | "bind-source" | "detach-source" | "table" | "binding" | { detachBinding: string };
@@ -106,9 +112,78 @@ function rawProcedural(config: ProceduralConfig): ProceduralRaw {
   return { ...Object.fromEntries(Object.entries(result).map(([key, value]) => [key, PROCEDURAL_NUMBERS.includes(key as ProceduralNumber) ? String(value) : value])),
     ...(influence ? { influence: rawProceduralInfluence(influence) } : {}) } as ProceduralRaw;
 }
+const newMeasuredPresentation = (): MeasuredPresentationRaw => ({
+  selectedNode: "", selectedKey: "", view: "counter", decimals: "2", axisMin: "", axisMax: "", maxWidth: "",
+});
 function newMeasuredRaw(table?: MeasuredTable): MeasuredRaw {
   return { draftId: table?.id ?? crypto.randomUUID(), label: table?.label ?? "", assetId: table?.source_asset_id ?? "", rowsText: JSON.stringify(table?.rows ?? [], null, 2),
-    selectedNode: "", selectedKey: "", view: "counter", decimals: "2", axisMin: "", axisMax: "", maxWidth: "" };
+    ...newMeasuredPresentation() };
+}
+type MeasuredInput = Extract<WorkbenchInput, { kind: "measured" }>;
+function rawMeasuredBinding(binding: MeasuredBinding): MeasuredBindingRaw {
+  return { ...newMeasuredPresentation(), sceneId: binding.scene_id, tableId: binding.table_id,
+    selectedNode: binding.node_id, selectedKey: binding.datum_key, view: binding.view.kind,
+    ...(binding.view.kind === "bar" ? { axisMin: String(binding.view.axis_min_milli),
+      axisMax: String(binding.view.axis_max_milli), maxWidth: String(binding.view.max_width_px) }
+      : { decimals: String(binding.view.decimals) }) };
+}
+export function measuredPresentation(input: MeasuredInput): MeasuredPresentationRaw {
+  if (!input.selectedBinding) return measuredRaw(input);
+  const raw = input.bindings?.[input.selectedBinding];
+  if (!raw) throw new Error("The selected measured binding draft is unavailable.");
+  return raw;
+}
+export function selectMeasuredBinding(input: MeasuredInput, bindingId: string, project: Project, sceneId: string | null): MeasuredInput {
+  if (!bindingId) return { ...input, selectedBinding: "" };
+  const saved = project.production_design?.measured_bindings?.find(binding => binding.id === bindingId && binding.scene_id === sceneId);
+  const retained = input.bindings?.[bindingId];
+  if ((!saved && !retained) || (retained && retained.sceneId !== sceneId))
+    throw new Error("The measured binding is unavailable in this scene.");
+  if (!retained && Object.keys(input.bindings ?? {}).length >= 64)
+    throw new Error("Retained measured binding drafts reached 64. Discard an unneeded draft before opening another.");
+  const tableId = retained?.tableId ?? saved!.table_id;
+  const selected = project.production_design?.measured_tables?.some(table => table.id === tableId)
+    ? selectMeasuredTable(input, tableId, project) : input;
+  return { ...selected, selectedBinding: bindingId, bindings: { ...selected.bindings,
+    [bindingId]: retained ?? rawMeasuredBinding(saved!) } };
+}
+export function editMeasuredPresentation(input: MeasuredInput, patch: Partial<MeasuredPresentationRaw>): MeasuredInput {
+  if (!input.selectedBinding) return { ...input, tables: { ...input.tables,
+    [input.selectedTable]: { ...measuredRaw(input), ...patch } } };
+  const raw = input.bindings?.[input.selectedBinding];
+  if (!raw) throw new Error("The selected measured binding draft is unavailable.");
+  if (patch.selectedNode !== undefined && patch.selectedNode !== raw.selectedNode)
+    throw new Error("An existing measured binding keeps its original Canvas node.");
+  return { ...input, bindings: { ...input.bindings, [input.selectedBinding]: { ...raw, ...patch } } };
+}
+/** Explicit discard affects only the selected output draft, never its source
+ * table, other output buffers, saved Canvas objects or an uncertain request. */
+export function discardMeasuredPresentation(input: MeasuredInput, project: Project, sceneId: string | null): MeasuredInput {
+  if (!input.selectedBinding) return editMeasuredPresentation(input, newMeasuredPresentation());
+  const bindingId = input.selectedBinding, saved = project.production_design?.measured_bindings?.find(binding => binding.id === bindingId && binding.scene_id === sceneId);
+  const bindings = { ...input.bindings };
+  if (saved) bindings[bindingId] = rawMeasuredBinding(saved);
+  else delete bindings[bindingId];
+  return { ...input, selectedBinding: saved ? bindingId : "", bindings };
+}
+export function measuredBindingProposal(input: MeasuredInput, project: Project, sceneId: string | null, newId: string):
+  Extract<WorkbenchChange, { type: "upsert_measured_binding" }> {
+  const raw = measuredPresentation(input), editing = input.selectedBinding;
+  let tableId = measuredRaw(input).draftId;
+  if (!editing && Object.keys(input.bindings ?? {}).length >= 64)
+    throw new Error("Retained measured binding drafts reached 64. Discard an unneeded draft before binding another output.");
+  if (editing) {
+    const retained = input.bindings![editing], saved = project.production_design?.measured_bindings?.find(binding => binding.id === editing);
+    if (!saved) throw new Error("This measured binding was removed. Keep or discard its draft explicitly; it cannot be recreated by an update.");
+    if (saved.scene_id !== sceneId || retained.sceneId !== sceneId || saved.node_id !== retained.selectedNode || saved.table_id !== retained.tableId)
+      throw new Error("The measured binding node, source or scene identity changed. Its retained input cannot move to a different target.");
+    tableId = retained.tableId;
+  }
+  if (!sceneId) throw new Error("Choose the working scene and Canvas node.");
+  const change = { type: "upsert_measured_binding" as const, binding_id: editing || newId,
+    scene_id: sceneId, node_id: raw.selectedNode, table_id: tableId, datum_key: raw.selectedKey, view: measuredView(raw) };
+  applyMeasuredBinding(clone(project), change);
+  return change;
 }
 export function measuredRaw(input: Extract<WorkbenchInput, { kind: "measured" }>): MeasuredRaw {
   if (!Object.hasOwn(input.tables, input.selectedTable)) throw new Error("The selected measured draft is unavailable.");
@@ -126,11 +201,18 @@ export function workbenchSavedInput(project: Project, target: WorkbenchTarget, p
   }
   if (target.kind === "procedural") return { kind: "procedural", config: rawProcedural(project.production_design?.procedural_fields?.find(value => value.scene_id === target.sceneId)?.config ?? defaultProceduralConfig()) };
   const initial: Extract<WorkbenchInput, { kind: "measured" }> = { kind: "measured", selectedTable: "new", tables: { new: newMeasuredRaw() } };
+  let result = initial;
   if (previous?.kind === "measured") {
     const saved = project.production_design?.measured_tables?.find(value => value.id === measuredRaw(previous).draftId);
-    if (saved) return selectMeasuredTable(initial, saved.id, project);
+    if (saved) result = selectMeasuredTable(initial, saved.id, project);
+    if (previous.selectedBinding) {
+      const binding = project.production_design?.measured_bindings?.find(value => value.id === previous.selectedBinding && value.scene_id === target.sceneId);
+      const raw = binding ? rawMeasuredBinding(binding) : previous.bindings?.[previous.selectedBinding];
+      if (raw) result = { ...result, selectedBinding: previous.selectedBinding,
+        bindings: { [previous.selectedBinding]: clone(raw) } };
+    }
   }
-  return initial;
+  return result;
 }
 export function createWorkbenchDraft(project: Project, target: WorkbenchTarget): WorkbenchDraft {
   const initial = workbenchSavedInput(project, target);
@@ -162,7 +244,7 @@ export function measuredTable(raw: MeasuredRaw, project: Project): MeasuredTable
     source_asset_id: raw.assetId, source_sha256: source?.content_sha256 ?? "", rows: JSON.parse(raw.rowsText) as MeasuredTable["rows"] };
   validateMeasuredTable(table, project); return table;
 }
-export function measuredView(raw: MeasuredRaw): MeasuredView {
+export function measuredView(raw: MeasuredPresentationRaw): MeasuredView {
   const result: MeasuredView = raw.view === "bar" ? { kind: "bar", axis_min_milli: authoredInteger(raw.axisMin, "Axis minimum", -1e9, 1e9),
     axis_max_milli: authoredInteger(raw.axisMax, "Axis maximum", -1e9, 1e9), max_width_px: authoredInteger(raw.maxWidth, "Bar width", 16, 1920) }
     : { kind: raw.view, decimals: authoredInteger(raw.decimals, "Decimal places", 0, 3) };
@@ -214,8 +296,7 @@ export async function prepareWorkbenchSubmission(draft: WorkbenchDraft, project:
       const table = measuredTable(raw, project); applyMeasuredTable(clone(project), table); change = { type: "upsert_measured_table", table };
     } else if (operation === "binding") {
       if (!scene) throw new Error("Choose the working scene and Canvas node.");
-      change = { type: "upsert_measured_binding", binding_id: crypto.randomUUID(), scene_id: scene.id, node_id: raw.selectedNode, table_id: raw.draftId, datum_key: raw.selectedKey, view: measuredView(raw) };
-      applyMeasuredBinding(clone(project), change);
+      change = measuredBindingProposal(input, project, scene.id, crypto.randomUUID());
     } else if (typeof operation === "object") {
       const binding = project.production_design?.measured_bindings?.find(value => value.id === operation.detachBinding && value.scene_id === scene?.id);
       if (!binding || !scene) throw new Error("This measured binding belongs to another scene or no longer exists.");
@@ -267,7 +348,14 @@ function remainingInput(input: WorkbenchInput, target: WorkbenchTarget, project:
       return !saved || input.config.influence?.enabled === false
         || !sameValue(normalizedProceduralConfig(proceduralConfig(input.config)), normalizedProceduralConfig(saved.config));
     }
-    return Object.values(input.tables).some(raw => {
+    const retainedBindings = Object.entries(input.bindings ?? {}).some(([id, raw]) => {
+      const binding = project.production_design?.measured_bindings?.find(value => value.id === id);
+      return !binding || binding.scene_id !== target.sceneId || raw.sceneId !== binding.scene_id
+        || raw.tableId !== binding.table_id || raw.selectedNode !== binding.node_id
+        || raw.selectedKey !== binding.datum_key || !sameValue(measuredView(raw), binding.view)
+        || (raw.view === "bar" ? raw.decimals !== "2" : raw.axisMin !== "" || raw.axisMax !== "" || raw.maxWidth !== "");
+    });
+    return retainedBindings || Object.values(input.tables).some(raw => {
       const table = project.production_design?.measured_tables?.find(value => value.id === raw.draftId);
       if (!table) return raw.label !== "" || raw.assetId !== "" || raw.rowsText !== "[]" || raw.selectedNode !== "" || raw.selectedKey !== ""
         || raw.view !== "counter" || raw.decimals !== "2" || raw.axisMin !== "" || raw.axisMax !== "" || raw.maxWidth !== "";
@@ -295,6 +383,20 @@ export function acknowledgeWorkbenchDraft(draft: WorkbenchDraft, id: string, rec
     const destination = input.tables[table.id];
     if (currentNew?.draftId === table.id && (!destination || sameValue(destination, currentNew))) input = { ...input, selectedTable: input.selectedTable === "new" ? table.id : input.selectedTable,
       tables: { ...input.tables, [table.id]: currentNew, new: newMeasuredRaw() } };
+  }
+  if (input.kind === "measured" && pending.input.kind === "measured" && !pending.input.selectedBinding
+    && pending.submitted.type === "upsert_measured_binding") {
+    const change = pending.submitted, tableKey = pending.input.selectedTable, raw = input.tables[tableKey];
+    // Promote only the original node/table buffer. Later presentation input
+    // follows that same identity; a newly selected node or output stays separate.
+    if (raw?.draftId === change.table_id && raw.selectedNode === change.node_id && !input.bindings?.[change.binding_id]) {
+      const { selectedNode, selectedKey, view, decimals, axisMin, axisMax, maxWidth } = raw;
+      input = { ...input,
+        selectedBinding: !input.selectedBinding && input.selectedTable === tableKey ? change.binding_id : input.selectedBinding,
+        tables: { ...input.tables, [tableKey]: { ...raw, ...newMeasuredPresentation() } },
+        bindings: { ...input.bindings, [change.binding_id]: { sceneId: change.scene_id, tableId: change.table_id,
+          selectedNode, selectedKey, view, decimals, axisMin, axisMax, maxWidth } } };
+    }
   }
   return { ...draft, input, base: workbenchSavedInput(receipt, draft.target, input), baseRevision: receipt.revision, pending: null, intent: draft.sequence !== pending.sequence || pending.submitted.type.startsWith("detach_") || remainingInput(input, draft.target, receipt) };
 }
@@ -351,8 +453,15 @@ function inputShape(value: unknown): value is WorkbenchInput {
     && exact(value.config, [...PROCEDURAL_NUMBERS, "distribution", "shape", "fill"], ["influence"])
     && (value.config.influence === undefined || influenceRawShape(value.config.influence)) && allStrings(value.config, [...PROCEDURAL_NUMBERS, "fill"])
     && ["grid", "staggered", "scatter", "radial", "spiral"].includes(String(value.config.distribution)) && ["square", "circle"].includes(String(value.config.shape));
-  if (value.kind !== "measured" || !exact(value, ["kind", "selectedTable", "tables"]) || typeof value.selectedTable !== "string" || !record(value.tables)
+  if (value.kind !== "measured" || !exact(value, ["kind", "selectedTable", "tables"], ["selectedBinding", "bindings"]) || typeof value.selectedTable !== "string" || !record(value.tables)
     || Object.keys(value.tables).length > 17 || !Object.hasOwn(value.tables, value.selectedTable)) return false;
+  if (value.bindings !== undefined && (!record(value.bindings) || Object.keys(value.bindings).length > 64
+    || !Object.entries(value.bindings).every(([id, raw]) => uuid(id) && record(raw)
+      && exact(raw, ["sceneId", "tableId", "selectedNode", "selectedKey", "view", "decimals", "axisMin", "axisMax", "maxWidth"])
+      && allStrings(raw, ["sceneId", "tableId", "selectedNode", "selectedKey", "decimals", "axisMin", "axisMax", "maxWidth"])
+      && uuid(raw.sceneId) && uuid(raw.tableId) && uuid(raw.selectedNode) && ["counter", "label", "bar"].includes(String(raw.view))))) return false;
+  if (value.selectedBinding !== undefined && (typeof value.selectedBinding !== "string"
+    || (value.selectedBinding !== "" && (!uuid(value.selectedBinding) || !record(value.bindings) || !Object.hasOwn(value.bindings, value.selectedBinding))))) return false;
   return Object.entries(value.tables).every(([key, raw]) => (key === "new" || uuid(key)) && record(raw)
     && exact(raw, ["draftId", "label", "assetId", "rowsText", "selectedNode", "selectedKey", "view", "decimals", "axisMin", "axisMax", "maxWidth"])
     && allStrings(raw, ["draftId", "label", "assetId", "rowsText", "selectedNode", "selectedKey", "decimals", "axisMin", "axisMax", "maxWidth"])

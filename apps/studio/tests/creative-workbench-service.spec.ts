@@ -358,3 +358,77 @@ test("procedural influence edits and reopens one source-bound field with indepen
   } catch (reason) { primary = { reason }; }
   finally { await finish(page, info, service, [], final, observations, [], primary); }
 });
+
+test("Measured complete output editing preserves independent drafts, source revisions and the original SQLite bindings", async ({ page }, info) => {
+  const service = await setup(info), observations: Record<string, unknown> = {};
+  let final: Project | undefined, primary: Failure | undefined, hold: ReturnType<typeof holdReply> | undefined;
+  try {
+    const imported = await sourceAsset(service, info, await unlocked(service)), initial = imported.project;
+    observations.initial = initial;
+    const scene = workbenchScene(initial, "measured"), text = scene.nodes.find(node => node.kind === "text"), bar = scene.nodes.find(node => node.kind === "rectangle");
+    if (!text || !bar) throw new Error("The real source fixture needs an editable text and rectangle for this measured-output scenario.");
+    await attach(page, service, initial, "measured"); await fill(page, "measured", initial);
+    const initialWrites = applies(service).length;
+    await button(page, "Register measured source").click(); await revision(page, initial.revision + 1);
+    const registered = await service.project(initial.id), table = registered.production_design!.measured_tables![0];
+    await page.getByLabel("Measured datum row", { exact: true }).selectOption("latency");
+    await page.getByLabel("Measured Canvas node", { exact: true }).selectOption(text.id);
+    await button(page, "Bind measured output").click(); await revision(page, registered.revision + 1);
+    const counterSaved = await service.project(initial.id), counter = counterSaved.production_design!.measured_bindings!.find(binding => binding.node_id === text.id)!;
+    await expect(page.getByLabel("Measured output to edit", { exact: true })).toHaveValue(counter.id);
+    await page.getByLabel("Measured output to edit", { exact: true }).selectOption("");
+    await page.getByLabel("Measured output kind", { exact: true }).selectOption("bar");
+    await page.getByLabel("Measured datum row", { exact: true }).selectOption("latency");
+    await page.getByLabel("Measured Canvas node", { exact: true }).selectOption(bar.id);
+    for (const [label, value] of [["Measured axis minimum", "0"], ["Measured axis maximum", "100000"], ["Measured maximum bar width", "800"]])
+      await page.getByLabel(label, { exact: true }).fill(value);
+    await button(page, "Bind measured output").click(); await revision(page, counterSaved.revision + 1);
+    const bound = await service.project(initial.id), barBinding = bound.production_design!.measured_bindings!.find(binding => binding.node_id === bar.id)!;
+    await page.getByLabel("Measured output to edit", { exact: true }).selectOption(counter.id);
+    await page.getByLabel("Measured output kind", { exact: true }).selectOption("label");
+    await page.getByLabel("Measured decimals", { exact: true }).fill("1");
+    hold = holdReply(service, "upsert_measured_binding");
+    await button(page, "Update measured output").click(); const original = await hold.observed;
+    await page.getByLabel("Measured decimals", { exact: true }).fill("1e");
+    await page.getByLabel("Measured output to edit", { exact: true }).selectOption(barBinding.id);
+    await page.getByLabel("Measured axis minimum", { exact: true }).fill("-");
+    hold.release(); await hold.dispose(); await revision(page, original.revision);
+    await expect(page.getByLabel("Measured axis minimum", { exact: true })).toHaveValue("-");
+    await page.getByLabel("Measured axis minimum", { exact: true }).fill("0");
+    await page.getByLabel("Measured axis maximum", { exact: true }).fill("50000");
+    await page.getByLabel("Measured maximum bar width", { exact: true }).fill("900");
+    await button(page, "Update measured output").click(); await revision(page, original.revision + 1);
+    await page.reload(); await openWorkbench(page, "measured");
+    await page.getByLabel("Measured output to edit", { exact: true }).selectOption(counter.id);
+    await expect(page.getByLabel("Measured decimals", { exact: true })).toHaveValue("1e");
+    await expect(button(page, "Update measured output")).toBeDisabled();
+    await button(page, "Use saved output").click();
+    await expect(page.getByLabel("Measured decimals", { exact: true })).toHaveValue("1");
+    await page.getByLabel("Measured decimals", { exact: true }).fill("3");
+    await button(page, "Update measured output").click(); await revision(page, original.revision + 2);
+    const edited = await service.project(initial.id);
+    expect(edited.production_design!.measured_bindings!.map(binding => binding.id)).toEqual([counter.id, barBinding.id]);
+    expect(edited.scenes.find(item => item.id === scene.id)!.nodes.find(node => node.id === bar.id)!.width).toBe(225);
+    expect(edited.scenes.find(item => item.id === scene.id)!.nodes.find(node => node.id === text.id)!.text).toBe("Observed latency · 12.500 ms");
+    const nextSource = await sourceAsset(service, info, edited, 22500);
+    await page.reload(); await openWorkbench(page, "measured");
+    await page.getByLabel("Measured table", { exact: true }).selectOption(table.id);
+    const keep = button(page, "Keep my Measured data input"); if (await keep.isVisible()) await keep.click();
+    await page.getByLabel("Measured source asset", { exact: true }).selectOption(nextSource.asset.id);
+    await page.getByLabel("Measured source file verification", { exact: true }).setInputFiles({ name: "next.json", mimeType: "application/json", buffer: Buffer.from(nextSource.bytes) });
+    await button(page, "Commit next measured source revision").click(); await revision(page, nextSource.project.revision + 1);
+    final = await service.project(initial.id);
+    expect(final.production_design!.measured_bindings!.map(binding => binding.id)).toEqual([counter.id, barBinding.id]);
+    const finalScene = final.scenes.find(item => item.id === scene.id)!;
+    expect(finalScene.nodes.find(node => node.id === text.id)).toEqual({ ...text, text: "Observed latency · 22.500 ms" });
+    expect(finalScene.nodes.find(node => node.id === bar.id)).toEqual({ ...bar, width: 405 });
+    expect(final.production_design!.measured_tables![0]).toMatchObject({ id: table.id, version: 2, source_sha256: nextSource.asset.content_sha256 });
+    expect(applies(service).slice(initialWrites).filter(entry => entry.request.change.type === "upsert_measured_binding")).toHaveLength(5);
+    const history = await service.history(initial.id, initial.revision);
+    await service.close(); await service.start();
+    expect(await service.project(initial.id)).toEqual(final); expect(await service.history(initial.id, initial.revision)).toEqual(history);
+    observations.sourcePaths = [imported.path, nextSource.path]; observations.originalHeldReceipt = original; observations.journal = history;
+    await page.screenshot({ path: info.outputPath("measured-complete-output-editing.png"), fullPage: true });
+  } catch (reason) { primary = { reason }; }
+  finally { await finish(page, info, service, [], final, observations, hold ? [() => hold!.dispose()] : [], primary); }
+});
