@@ -1,3 +1,4 @@
+import { applyDeliverySettingPropagation } from "./deliveryFamily";
 import type { NativeAudioQcReceiptHint, NativeAudioQcReceiptInventoryResponse } from "./types";
 import { validateTranscriptEmphasis } from "./transcriptEmphasis";
 import type { OtioEditPreview } from "./otioCutReview";
@@ -2069,6 +2070,10 @@ async function simulateChange(project: Project, change: Change, requestId: strin
         throw new Error("resource not found: asset:" + change.asset_id);
       }
       next.assets = next.assets.filter((asset) => asset.id !== change.asset_id);
+      break;
+    }
+    case "propagate_delivery_setting": {
+      next.deliverables = applyDeliverySettingPropagation(next, change.propagation);
       break;
     }
     case "upsert_deliverable": {

@@ -147,6 +147,20 @@ export interface DeliverableProfile {
   color_space: OutputColorSpace; container: OutputContainer;
   adaptation_notes: string[];
 }
+export type SharedDeliverySetting =
+  | { field: "brand_profile"; value: string | null }
+  | { field: "frame_rate"; value: RationalTime }
+  | { field: "caption_format"; value: CaptionFormat }
+  | { field: "video_codec"; value: VideoCodec }
+  | { field: "audio_codec"; value: AudioCodec }
+  | { field: "audio_sample_rate_hz"; value: number }
+  | { field: "color_space"; value: OutputColorSpace }
+  | { field: "container"; value: OutputContainer };
+export interface DeliverySettingPropagation {
+  project_id: string; generation: string; branch_id: string; expected_revision: number;
+  source_profile_id: string; source: SharedDeliverySetting;
+  targets: { profile_id: string; expected: SharedDeliverySetting }[];
+}
 export interface CaptionExportResult {
   path: string; cue_count: number;
   project_id?: string; generation?: string; revision?: string; profile_id?: string;
@@ -908,6 +922,7 @@ export type Change =
   | { type: "add_asset"; asset: Asset }
   | { type: "remove_asset"; asset_id: string }
   | { type: "upsert_deliverable"; profile: DeliverableProfile }
+  | { type: "propagate_delivery_setting"; propagation: DeliverySettingPropagation }
   | { type: "remove_deliverable"; profile_id: string }
   | { type: "set_active_voice_track"; track_id: string }
   | { type: "upsert_transcript_segment"; segment: TranscriptSegment }

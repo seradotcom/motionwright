@@ -13,6 +13,7 @@ mod creative;
 mod creative_evaluator;
 mod creative_revisions;
 mod delivery;
+mod delivery_family;
 mod delivery_recipe;
 mod extensions;
 mod font_portability;
@@ -56,6 +57,7 @@ pub use creative::*;
 pub use creative_evaluator::*;
 pub use creative_revisions::*;
 pub use delivery::*;
+pub use delivery_family::*;
 pub use delivery_recipe::*;
 pub use extensions::*;
 pub use font_portability::*;
@@ -1278,6 +1280,7 @@ impl Project {
             change,
             Change::SetDeliveryRecipe { .. }
                 | Change::UpsertDeliverable { .. }
+                | Change::PropagateDeliverySetting { .. }
                 | Change::RemoveAsset { .. }
                 | Change::ImportNativeCapsuleSource { .. }
                 | Change::RelinkNativeCapsuleSource { .. }
@@ -2561,6 +2564,9 @@ impl Project {
                 }
                 validate_deliverables(&self.deliverables)?;
             }
+            Change::PropagateDeliverySetting { propagation } => {
+                self.propagate_delivery_setting(propagation)?;
+            }
             Change::RemoveDeliverable { profile_id } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 if self
@@ -3307,6 +3313,9 @@ pub enum Change {
     },
     UpsertDeliverable {
         profile: DeliverableProfile,
+    },
+    PropagateDeliverySetting {
+        propagation: DeliverySettingPropagation,
     },
     RemoveDeliverable {
         profile_id: Uuid,

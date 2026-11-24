@@ -9,6 +9,7 @@ import {
 } from "./firstNativeProduction";
 import VariantContinuityReview from "./VariantContinuityReview";
 import DeliveryVariantImpactReview from "./DeliveryVariantImpactReview";
+import DeliveryFamilyWorkbench from "./DeliveryFamilyWorkbench";
 import CaptionReadabilityReview from "./CaptionReadabilityReview";
 import { inspectCaptionReadability } from "./captionReadability";
 import { useDeliveryRecipeDraft } from "./deliveryRecipe";
@@ -1340,6 +1341,9 @@ export default function DeliveryProfiles({
             {!emptyCustomCut && <>
               <VariantContinuityReview project={project} profile={draft} saved={selected} />
               <DeliveryVariantImpactReview project={project} draft={draft} saved={selected} />
+              {selected && <DeliveryFamilyWorkbench key={JSON.stringify([project.id, project.generation, project.active_branch, project.revision, selected.id])}
+                project={project} source={selected} blocked={profileDraftBlocked || recipeDraftBlocked || busy !== null}
+                currentProjectState={currentProjectState} commit={change => { noteNativeInput(); liveFilm.current.ready = false; return commitRecipe(change); }} /> }
             </>}
 
             {(localizedVariant || Object.keys(draft.text_overrides).length > 0) && (
