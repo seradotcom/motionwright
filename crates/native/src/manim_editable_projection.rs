@@ -529,6 +529,139 @@ pub fn inspect_saved_manim_editable_source(
         imported_source_authority_used: false,
     })
 }
+/// A compiler-generated alternate carrier, not a committed Project or
+/// execution request. Its source remains bound to the exact current
+/// imported original and a single ordinary, lock-checked Canvas edit.
+pub struct CompiledEditableCandidate {
+    pub bytes: Vec<u8>,
+    pub original_source_sha256: String,
+    pub current_plan_sha256: String,
+    pub proposed_plan_sha256: String,
+}
+
+pub fn compile_saved_manim_editable_candidate(
+    service: &StudioService,
+    id: Uuid,
+    expected: &RevisionStamp,
+    original_id: Uuid,
+    selected_scene_id: Uuid,
+    deliverable_id: Uuid,
+    change: &Change,
+) -> NativeResult<CompiledEditableCandidate> {
+    let project = current(service, id, expected)?;
+    let original = inspect_saved_manim_editable_source(service, id, expected, original_id)?;
+    let (scene_id, node_id, property) = match change {
+        Change::TransformCanvasNode {
+            scene_id, node_id, ..
+        } => (*scene_id, *node_id, EditableProperty::Transform),
+        Change::UpdateCanvasText {
+            scene_id, node_id, ..
+        } => (*scene_id, *node_id, EditableProperty::Text),
+        Change::UpdateCanvasStyle {
+            scene_id, node_id, ..
+        } => (*scene_id, *node_id, EditableProperty::Style),
+        _ => {
+            return Err(reject(
+                "Editable candidate requires one transform, text or style Change",
+            ));
+        }
+    };
+    if scene_id != selected_scene_id
+        || scene_id != original.current_binding.scene_id
+        || deliverable_id != original.current_binding.deliverable_id
+        || current(service, id, expected)? != project
+    {
+        return Err(stale());
+    }
+    let index = original
+        .current_plan
+        .nodes
+        .iter()
+        .position(|node| node.node_id == node_id)
+        .ok_or_else(|| invalid("Editable candidate node is not in the original source"))?;
+    let mut candidate = project.clone();
+    candidate
+        .apply_change(change)
+        .map_err(|error| Error::new(ErrorCode::InvalidArgument, error.to_string()))?;
+    let proposed = build_manim_editable_plan(
+        &candidate,
+        &RevisionStamp::from(&candidate),
+        scene_id,
+        original.current_binding.deliverable_id,
+    )?;
+    let after = proposed
+        .nodes
+        .get(index)
+        .filter(|node| node.node_id == node_id)
+        .ok_or_else(|| reject("Editable candidate changes the original node roster"))?;
+    let mut allowed = original.current_plan.clone();
+    let before = &mut allowed.nodes[index];
+    if &*before == after {
+        return Err(invalid(
+            "Editable candidate does not change a compiled control",
+        ));
+    }
+    // Independently check the compiled plan's complete difference, rather
+    // than assuming one generic Change cannot affect another source control.
+    match property {
+        EditableProperty::Transform => {
+            before.x_px = after.x_px;
+            before.y_px = after.y_px;
+            before.width_px = after.width_px;
+            before.height_px = after.height_px;
+            before.rotation_deg = after.rotation_deg;
+            before.opacity = after.opacity;
+        }
+        EditableProperty::Text => {
+            let text = after
+                .typography
+                .as_ref()
+                .ok_or_else(|| reject("Edited text is absent"))?;
+            before
+                .typography
+                .as_mut()
+                .ok_or_else(|| reject("Original text is absent"))?
+                .text = text.text.clone();
+        }
+        EditableProperty::Style => {
+            before.fill_hex = after.fill_hex.clone();
+            match (&mut before.typography, &after.typography) {
+                (Some(old), Some(new)) => {
+                    old.font_asset_id = new.font_asset_id;
+                    old.font_size_px = new.font_size_px;
+                    old.weight = new.weight;
+                    old.line_height = new.line_height;
+                }
+                (None, None) => {}
+                _ => return Err(reject("Editable style cannot change text topology")),
+            }
+            allowed.fonts = proposed.fonts.clone();
+        }
+    }
+    // Only the selected property group's projected controls may differ.
+    // No clock, profile, scene identity, other nodes or hidden source changes.
+    if allowed != proposed {
+        return Err(reject(
+            "Editable candidate changes fields outside its one-node property group",
+        ));
+    }
+    let fonts = verified_fonts(service, id, expected, &proposed)?;
+    let bytes = profile::source_bundle(&proposed, &fonts)
+        .map_err(|_| reject("Editable candidate could not be compiled"))?;
+    let verified = profile::inspect_source_bundle(&bytes).map_err(|_| {
+        reject("Editable candidate does not round-trip through the closed compiler")
+    })?;
+    if verified.plan != proposed || current(service, id, expected)? != project {
+        return Err(stale());
+    }
+    Ok(CompiledEditableCandidate {
+        bytes,
+        original_source_sha256: original.source_sha256,
+        current_plan_sha256: original.current_closure.plan_sha256,
+        proposed_plan_sha256: verified.closure.plan_sha256,
+    })
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EditableProperty {

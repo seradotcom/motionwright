@@ -666,3 +666,268 @@ fn original_input_contract_rejects_missing_changed_or_ungranted_carriers_before_
     assert_eq!(service.project(p.id).unwrap(), p);
     assert!(service.production_receipts(p.id, 256).unwrap().is_empty());
 }
+
+#[test]
+fn compiled_manim_candidate_is_one_inert_source_edit_and_reopens_without_native_effect() {
+    for (index, property) in [
+        EditableProperty::Transform,
+        EditableProperty::Text,
+        EditableProperty::Style,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("candidate.sqlite3");
+        let service = StudioService::open(&db).unwrap();
+        let original_project = source(&service, temp.path());
+        let scene_id = original_project.scenes[1].id;
+        let deliverable_id = original_project.deliverables[0].id;
+        let node = original_project.scenes[1].nodes[0].clone();
+        let original_bytes = export_saved_manim_editable_source_bundle(
+            &service,
+            original_project.id,
+            &RevisionStamp::from(&original_project),
+            scene_id,
+            deliverable_id,
+        )
+        .unwrap();
+        let (saved, original_id) = attach(
+            &service,
+            temp.path(),
+            &original_project,
+            "candidate-original",
+            &original_bytes,
+            SOURCE_BUNDLE_MIME_V2,
+        );
+        let change = match property {
+            EditableProperty::Transform => Change::TransformCanvasNode {
+                scene_id,
+                node_id: node.id,
+                transform: motionwright_domain::CanvasTransform {
+                    x: node.x + 10.0,
+                    y: node.y,
+                    width: node.width,
+                    height: node.height,
+                    rotation_deg: node.rotation_deg - 2.0,
+                    opacity: node.opacity,
+                },
+            },
+            EditableProperty::Text => Change::UpdateCanvasText {
+                scene_id,
+                node_id: node.id,
+                text: Some("Reviewed native title\nSecond line".into()),
+            },
+            EditableProperty::Style => Change::UpdateCanvasStyle {
+                scene_id,
+                node_id: node.id,
+                style: NodeStyle {
+                    fill: Some("#86C8D1".into()),
+                    ..node.style.clone()
+                },
+            },
+        };
+        let expected = RevisionStamp::from(&saved);
+        let compiled = compile_saved_manim_editable_candidate(
+            &service,
+            saved.id,
+            &expected,
+            original_id,
+            scene_id,
+            deliverable_id,
+            &change,
+        )
+        .unwrap();
+        assert_ne!(compiled.current_plan_sha256, compiled.proposed_plan_sha256);
+        assert_eq!(
+            compiled.original_source_sha256,
+            saved
+                .assets
+                .iter()
+                .find(|asset| asset.id == original_id)
+                .unwrap()
+                .content_sha256
+                .clone()
+                .unwrap()
+        );
+        assert_eq!(service.project(saved.id).unwrap(), saved);
+        let package = profile::inspect_source_bundle(&compiled.bytes).unwrap();
+        assert_eq!(package.closure.plan_sha256, compiled.proposed_plan_sha256);
+        assert_eq!(package.plan.binding.scene_id, scene_id);
+        assert_eq!(package.plan.binding.deliverable_id, deliverable_id);
+        assert_eq!(package.plan.nodes[1], plan(&saved).nodes[1]);
+        let again = compile_saved_manim_editable_candidate(
+            &service,
+            saved.id,
+            &expected,
+            original_id,
+            scene_id,
+            deliverable_id,
+            &change,
+        )
+        .unwrap();
+        assert_eq!(again.bytes, compiled.bytes);
+        let (attached, edited_id) = attach(
+            &service,
+            temp.path(),
+            &saved,
+            "candidate-edited",
+            &compiled.bytes,
+            SOURCE_BUNDLE_MIME_V2,
+        );
+        let preview = preview_saved_manim_editable_edit(
+            &service,
+            attached.id,
+            &RevisionStamp::from(&attached),
+            original_id,
+            edited_id,
+            node.id,
+            property,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&preview.change).unwrap(),
+            serde_json::to_value(&change).unwrap()
+        );
+        assert_eq!(service.project(attached.id).unwrap(), attached);
+        let committed = service
+            .apply(
+                attached.id,
+                &RevisionStamp::from(&attached),
+                &format!("reviewed-candidate-{index}"),
+                &preview.change,
+            )
+            .unwrap()
+            .project;
+        assert_eq!(committed.revision, attached.revision + 1);
+        assert_eq!(committed.assets, attached.assets);
+        assert_eq!(committed.scenes[1].nodes[1], attached.scenes[1].nodes[1]);
+        drop(service);
+        let reopened = StudioService::open(&db).unwrap();
+        assert_eq!(reopened.project(committed.id).unwrap(), committed);
+        let inspected = inspect_saved_manim_editable_source(
+            &reopened,
+            committed.id,
+            &RevisionStamp::from(&committed),
+            edited_id,
+        )
+        .unwrap();
+        assert!(!inspected.native_execution_performed && !inspected.imported_source_authority_used);
+        assert!(
+            reopened
+                .production_receipts(committed.id, 100)
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn compiled_manim_candidate_refuses_unrelated_noop_stale_and_locked_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let service = StudioService::open(temp.path().join("candidate.sqlite3")).unwrap();
+    let original = source(&service, temp.path());
+    let scene_id = original.scenes[1].id;
+    let deliverable_id = original.deliverables[0].id;
+    let node = original.scenes[1].nodes[0].clone();
+    let bytes = export_saved_manim_editable_source_bundle(
+        &service,
+        original.id,
+        &RevisionStamp::from(&original),
+        scene_id,
+        deliverable_id,
+    )
+    .unwrap();
+    let (mut saved, original_id) = attach(
+        &service,
+        temp.path(),
+        &original,
+        "candidate-original",
+        &bytes,
+        SOURCE_BUNDLE_MIME_V2,
+    );
+    let expected = RevisionStamp::from(&saved);
+    for change in [
+        Change::UpdateCanvasText {
+            scene_id,
+            node_id: node.id,
+            text: node.text.clone(),
+        },
+        Change::UpdateCanvasText {
+            scene_id: original.scenes[0].id,
+            node_id: node.id,
+            text: Some("Not the selected scene".into()),
+        },
+        Change::AddScene {
+            name: "Unrelated scene".into(),
+            objective: "Must refuse".into(),
+            duration_seconds: 1,
+        },
+    ] {
+        assert!(
+            compile_saved_manim_editable_candidate(
+                &service,
+                saved.id,
+                &expected,
+                original_id,
+                scene_id,
+                deliverable_id,
+                &change
+            )
+            .is_err()
+        );
+    }
+    let change = Change::UpdateCanvasText {
+        scene_id,
+        node_id: node.id,
+        text: Some("New reviewed text".into()),
+    };
+    assert!(
+        compile_saved_manim_editable_candidate(
+            &service,
+            saved.id,
+            &expected,
+            original_id,
+            scene_id,
+            Uuid::now_v7(),
+            &change
+        )
+        .is_err()
+    );
+    assert_eq!(service.project(saved.id).unwrap(), saved);
+    apply(
+        &service,
+        &mut saved,
+        Change::SetNodePropertyLock {
+            scene_id,
+            node_id: node.id,
+            property: NodeProperty::Text,
+            locked: true,
+        },
+    );
+    assert!(
+        compile_saved_manim_editable_candidate(
+            &service,
+            saved.id,
+            &expected,
+            original_id,
+            scene_id,
+            deliverable_id,
+            &change
+        )
+        .is_err()
+    );
+    assert!(
+        compile_saved_manim_editable_candidate(
+            &service,
+            saved.id,
+            &RevisionStamp::from(&saved),
+            original_id,
+            scene_id,
+            deliverable_id,
+            &change
+        )
+        .is_err()
+    );
+    assert_eq!(service.project(saved.id).unwrap(), saved);
+}
