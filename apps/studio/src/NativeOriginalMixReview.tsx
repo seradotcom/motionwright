@@ -9,6 +9,9 @@ import type { Change, Project, VoiceTrack } from "./types";
 
 const explain = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
 const wavTypes = ["audio/wav", "audio/x-wav", "audio/wave"];
+const envelopeBuses = [
+  {key:"voice_envelope", label:"Voice"}, {key:"music_envelope", label:"Music"}, {key:"sfx_envelope", label:"SFX"},
+] as const;
 const numericFields = [
   { key: "sfx_gain_db", label: "SFX gain dB", help: "−80 to 12 dB; decimals are allowed." },
   { key: "duck_attenuation_db", label: "Music duck attenuation dB", help: "0 to 30 dB; decimals are allowed." },
@@ -69,7 +72,12 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
     ["music_asset_id", "Original music asset"],
     ["sfx_asset_id", "Original SFX asset"],
     ...numericFields.map(field => [field.key, field.label]),
-  ].map(([key, label]) => [key, { label, controlId: "mix-" + selectedProfile?.id + "-" + key }]));
+    ...envelopeBuses.flatMap(bus => [
+      [bus.key + ":muted", "Mute " + bus.label.toLowerCase() + " bus"],
+      [bus.key + ":fade_in_samples", bus.label + " fade-in samples"],
+      [bus.key + ":fade_out_samples", bus.label + " fade-out samples"],
+    ]),
+  ].map(([key, label]) => [key, { label, controlId: "mix-" + selectedProfile?.id + "-" + key.replaceAll(":", "-") }]));
 
   useEffect(() => {
     mounted.current = true;
@@ -101,8 +109,8 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
   if (!selectedProfile) blockers.push("Create a delivery profile before saving or auditioning an original mix recipe.");
   if (draftBlocksAudition) blockers.push("Save or resolve the pending original mix recipe before auditioning; playback uses only saved values.");
   if (!savedMix) blockers.push("Save an enabled original mix recipe for this profile before auditioning.");
-  if (selectedProfile && (selectedProfile.audio_sample_rate_hz !== 48_000 || !["en", "es", "de"].includes(selectedProfile.language))) {
-    blockers.push("This local audition supports saved 48-kHz delivery profiles with language en, es or de.");
+  if (selectedProfile && (selectedProfile.audio_sample_rate_hz !== 48_000 || !["en", "es", "de", "en-US", "es-MX", "es-ES", "de-DE"].includes(selectedProfile.language))) {
+    blockers.push("This local audition supports saved 48-kHz delivery profiles with language en, es, de, en-US, es-MX, es-ES or de-DE.");
   }
   if (selectedProfile && recipe) {
     try { validateDeliveryRecipe(project, selectedProfile.id, recipe); }
@@ -226,9 +234,37 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
         <small id={fields[field.key].controlId + "-help"} className="production-help">{field.help} Input is retained up to 128 characters.</small>
       </label>)}
     </div>
+    <section aria-label="Original mix bus automation">
+      <h4>Voice, music and SFX automation</h4>
+      <p className="production-help">Set mute and linear fades for each bus in the selected delivery cut.
+        Fade lengths use exact 48-kHz samples: 48,000 samples is one second. Zero disables a fade.
+        The two fades must fit without overlap. A muted voice does not duck the music.</p>
+      {envelopeBuses.map(bus => <section key={bus.key} className="production-notice" aria-label={bus.label + " bus automation"}>
+        <strong>{bus.label} bus</strong>
+        <label className="production-check">
+          <input id={fields[bus.key + ":muted"].controlId} type="checkbox"
+            checked={mixDraft.values[bus.key + ":muted"] === "true"}
+            disabled={inputsDisabled || mixDraft.values.enabled !== "true"}
+            onChange={event => setField(bus.key + ":muted", String(event.target.checked))} />
+          {fields[bus.key + ":muted"].label}
+        </label>
+        <div className="delivery-field-grid">
+          {(["fade_in_samples", "fade_out_samples"] as const).map(property => {
+            const key = bus.key + ":" + property, field = fields[key];
+            return <label key={key} className="production-field">
+              <span>{field.label}</span>
+              <input id={field.controlId} aria-label={field.label} type="text" inputMode="numeric" maxLength={128}
+                aria-invalid={mixDraft.conflicts.includes(key)}
+                value={mixDraft.values[key] ?? "0"} disabled={inputsDisabled || mixDraft.values.enabled !== "true"}
+                onChange={event => setField(key, event.target.value)} />
+            </label>;
+          })}
+        </div>
+      </section>)}
+    </section>
     {savedMix && originalMixEnvelopeKeys.some(key => savedMix[key]) && <section aria-label="Saved bus envelopes">
       <h4>Saved bus envelopes</h4>
-      <p className="production-help">Scalar recipe edits preserve these saved mute and fade decisions. Audition consumes them from this exact saved revision.</p>
+      <p className="production-help">These are the saved decisions used by audition and production. Editing the controls above keeps them pending until Save original mix recipe confirms the complete change.</p>
       <ul className="production-help">{originalMixEnvelopeKeys.map(key => {
         const envelope = savedMix[key];
         return envelope ? <li key={key}>{key.replace("_envelope", "")}: {envelope.muted ? "muted" : "audible"}; fade in {envelope.fade_in_samples} samples; fade out {envelope.fade_out_samples} samples.</li> : null;

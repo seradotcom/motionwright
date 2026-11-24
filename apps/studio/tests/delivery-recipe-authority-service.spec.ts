@@ -46,15 +46,16 @@ function hold(service: ScopedChangeService, phase: "before" | "after") {
   } };
 }
 async function revision(page: Page, value: number) {
-  await expect(page.locator(".revision-chip").first()).toHaveText("r" + value);
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + value);
   await page.evaluate(() => new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
 }
 async function open(page: Page, group: Group, profile: DeliverableProfile) {
   await button(page, group === "film" ? "Deliver" : "Audio").click();
   if (group === "film") await page.locator(".delivery-profile-row").filter({ hasText: profile.name }).click();
   else {
-    const panel = page.locator('details[aria-label="Original three-bus native PCM audition"]');
-    if (await panel.getAttribute("open") === null) await panel.locator("summary").first().click();
+    const panel = page.getByRole("region", { name: "Original three-bus native PCM audition", exact: true });
+    const toggle = panel.getByRole("button", { name: "Voice / music / SFX · original source mix", exact: true });
+    if (await toggle.getAttribute("aria-expanded") === "false") await toggle.click();
     await panel.getByRole("combobox", { name: "Delivery language / profile", exact: true }).selectOption(profile.id);
   }
   await expect(page.getByRole("region", { name: title(group) + " draft review", exact: true })).toBeVisible();
@@ -222,4 +223,59 @@ for (const area of ["data", "pointer"] as const) test(`silent recipe ${area} rec
     observations.noGrantBeforeReadback = true; observations.raw = raw;
   } catch (reason) { primary = { reason }; }
   finally { await finish(page, info, service, [], final, observations, [], primary); }
+});
+
+test("all three bus automation envelopes save together, reopen and continue on the original Service store", async ({page},info) => {
+  const service=await ScopedChangeService.create({databasePath:info.outputPath("service","studio.sqlite3"),desktopInvokeFixture:true});
+  const observations:Record<string,unknown>={};let final:Project|undefined,primary:Failure|undefined;
+  try {
+    const {project,profile}=await setup(service);final=project;
+    await attach(page,service,project,"mix",profile);
+    const before=structuredClone(savedRecipe(project,profile.id));
+    const grants=requestCount(service,"issue_effect_grant"),applies=requestCount(service,"apply_change");
+    await page.getByLabel("Voice fade-in samples",{exact:true}).fill("-");
+    await expect(button(page,saveLabel("mix"))).toBeDisabled();
+    await page.reload();await open(page,"mix",profile);
+    await expect(page.getByLabel("Voice fade-in samples",{exact:true})).toHaveValue("-");
+    expect(requestCount(service,"apply_change")).toBe(applies);
+    for(const [label,value] of [
+      ["Voice fade-in samples","00120"],["Voice fade-out samples","480"],
+      ["Music fade-in samples","2400"],["Music fade-out samples","9600"],
+      ["SFX fade-in samples","0"],["SFX fade-out samples","1200"],
+    ]) await page.getByLabel(label,{exact:true}).fill(value);
+    await page.getByLabel("Mute sfx bus",{exact:true}).check();
+    await button(page,saveLabel("mix")).click();await revision(page,project.revision+1);
+    final=await service.project(project.id);
+    const saved=savedRecipe(final,profile.id);
+    expect(saved.original_mix).toMatchObject({
+      voice_envelope:{muted:false,fade_in_samples:120,fade_out_samples:480},
+      music_envelope:{muted:false,fade_in_samples:2400,fade_out_samples:9600},
+      sfx_envelope:{muted:true,fade_in_samples:0,fade_out_samples:1200},
+    });
+    expect(saved.scene_intents).toEqual(before.scene_intents);
+    expect(saved.original_mix?.music_asset_id).toBe(before.original_mix?.music_asset_id);
+    expect(saved.original_mix?.sfx_asset_id).toBe(before.original_mix?.sfx_asset_id);
+    expect(requestCount(service,"issue_effect_grant")).toBe(grants+1);
+    expect(requestCount(service,"apply_change")).toBe(applies+1);
+    await page.reload();await open(page,"mix",profile);
+    await expect(page.getByLabel("Voice fade-in samples",{exact:true})).toHaveValue("120");
+    await expect(page.getByLabel("Music fade-out samples",{exact:true})).toHaveValue("9600");
+    await expect(page.getByLabel("Mute sfx bus",{exact:true})).toBeChecked();
+    await page.getByLabel("Music fade-out samples",{exact:true}).fill("4294967295");
+    await expect(button(page,saveLabel("mix"))).toBeDisabled();
+    expect(await service.project(project.id)).toEqual(final);
+    await page.getByLabel("Music fade-out samples",{exact:true}).fill("4800");
+    await page.getByLabel("Mute voice bus",{exact:true}).check();
+    await button(page,saveLabel("mix")).click();await revision(page,project.revision+2);
+    final=await service.project(project.id);
+    expect(savedRecipe(final,profile.id).original_mix?.voice_envelope?.muted).toBe(true);
+    expect(savedRecipe(final,profile.id).original_mix?.music_envelope?.fade_out_samples).toBe(4800);
+    expect(savedRecipe(final,profile.id).original_mix?.sfx_envelope).toEqual(saved.original_mix?.sfx_envelope);
+    expect((await service.history(project.id,project.revision)).map(event=>event.change.type))
+      .toEqual(["set_delivery_recipe","set_delivery_recipe"]);
+    expect(requestCount(service,"native_original_mix_audition")).toBe(0);
+    observations.automation=final.production_design?.delivery_recipes;
+    observations.noAuditionOrRenderInvoked=true;
+  } catch(reason) {primary={reason};}
+  finally {await finish(page,info,service,[],final,observations,[],primary);}
 });

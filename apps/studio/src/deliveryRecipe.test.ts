@@ -594,3 +594,64 @@ describe("recovery storage and editing-window ownership", () => {
     expect(recipe.loadRecipeDraft(key, scope, "mix", 20).draft.edits.sfx_gain_db.value).toBe("-4");
   });
 });
+
+describe("complete original mix bus automation authoring", () => {
+  it("edits all buses together while preserving source bindings, film intent and delivery targets", () => {
+    const {project,profileA,canonical,current,draft}=context("mix");
+    canonical.audio_targets={target_lufs:-16,target_true_peak_dbtp:-1};
+    let edited=draft;
+    for(const [field,raw] of [
+      ["voice_envelope:fade_in_samples","00120"],["voice_envelope:fade_out_samples","480"],
+      ["music_envelope:fade_in_samples","2400"],["music_envelope:fade_out_samples","9600"],
+      ["sfx_envelope:muted","true"],["sfx_envelope:fade_out_samples","1200"],
+    ]) edited=changed(edited,field,raw,current);
+    const proposal=recipe.proposedDeliveryRecipe(canonical,edited);
+    recipe.validateDeliveryRecipe(project,profileA,proposal);
+    expect(proposal.original_mix).toEqual({...canonical.original_mix,
+      voice_envelope:{muted:false,fade_in_samples:120,fade_out_samples:480},
+      music_envelope:{muted:false,fade_in_samples:2400,fade_out_samples:9600},
+      sfx_envelope:{muted:true,fade_in_samples:0,fade_out_samples:1200}});
+    expect(proposal.scene_intents).toEqual(canonical.scene_intents);
+    expect(proposal.audio_targets).toEqual(canonical.audio_targets);
+    const reopened=recipe.recipeFields(JSON.parse(JSON.stringify(proposal)),"mix");
+    expect(reopened["voice_envelope:fade_in_samples"]).toBe("120");
+    expect(reopened["sfx_envelope:muted"]).toBe("true");
+    expect(recipe.canonicalRecipeField("mix","voice_envelope:fade_in_samples","00120")).toBe("120");
+    expect(canonical.original_mix).not.toHaveProperty("voice_envelope");
+  });
+  it("preserves untouched envelopes, resolves overlapping bus edits and removes only an explicitly neutral bus", () => {
+    const {project,profileA,canonical,draft}=context("mix");
+    canonical.original_mix!.voice_envelope={muted:false,fade_in_samples:120,fade_out_samples:0};
+    canonical.original_mix!.music_envelope={muted:true,fade_in_samples:0,fade_out_samples:600};
+    const current=recipe.recipeFields(canonical,"mix");
+    const edited=changed(draft,"voice_envelope:fade_in_samples","0",current);
+    const peer=structuredClone(canonical);peer.original_mix!.sfx_envelope={muted:true,fade_in_samples:0,fade_out_samples:0};
+    const preserved=recipe.proposedDeliveryRecipe(peer,edited);
+    expect(preserved.original_mix).not.toHaveProperty("voice_envelope");
+    expect(preserved.original_mix!.music_envelope).toEqual(canonical.original_mix!.music_envelope);
+    expect(preserved.original_mix!.sfx_envelope).toEqual(peer.original_mix!.sfx_envelope);
+    peer.original_mix!.voice_envelope!.fade_in_samples=240;
+    expect(recipe.recipeConflicts(edited,recipe.recipeFields(peer,"mix"))).toEqual(["voice_envelope:fade_in_samples"]);
+    const resolved=recipe.resolveRecipeField(edited,"voice_envelope:fade_in_samples",recipe.recipeFields(peer,"mix"),"draft");
+    const proposed=recipe.proposedDeliveryRecipe(peer,resolved);
+    recipe.validateDeliveryRecipe(project,profileA,proposed);
+    expect(proposed.original_mix).not.toHaveProperty("voice_envelope");
+    expect(proposed.original_mix!.music_envelope).toEqual(peer.original_mix!.music_envelope);
+  });
+  it("retains incomplete exact sample input and refuses fractions, overflow and fades beyond the cut", () => {
+    const {project,profileA,canonical,current,draft,scope}=context("mix");
+    for(const raw of ["-","1.5","1e3","4294967296","0".repeat(129)]) {
+      if(raw.length<=128) {
+        const edited=changed(draft,"voice_envelope:fade_out_samples",raw,current);
+        const recovered=recipe.decodeRecipeDraft(JSON.stringify(edited),scope,"mix");
+        expect(recovered.edits["voice_envelope:fade_out_samples"].value).toBe(raw);
+        expect(()=>recipe.proposedDeliveryRecipe(canonical,recovered)).toThrow(/sample/);
+      } else expect(()=>changed(draft,"voice_envelope:fade_out_samples",raw,current)).toThrow(/bounded/);
+    }
+    const huge=changed(draft,"music_envelope:fade_in_samples","4294967295",current);
+    const proposal=recipe.proposedDeliveryRecipe(canonical,huge);
+    expect(()=>recipe.validateDeliveryRecipe(project,profileA,proposal)).toThrow(/overlap|exceed/);
+    expect(recipe.parseOriginalMixSamples("0000000000")).toBe(0);
+    expect(recipe.parseOriginalMixSamples("4294967295")).toBe(4294967295);
+  });
+});

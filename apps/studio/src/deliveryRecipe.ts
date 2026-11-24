@@ -1,4 +1,4 @@
-import { assertDeliveryAudioTargets, originalMixEnvelopeKeys, validateAudioRecipeCut } from "./audioRecipeContract";
+import { assertDeliveryAudioTargets, assertOriginalMixBusEnvelope, originalMixEnvelopeKeys, validateAudioRecipeCut } from "./audioRecipeContract";
 import type { DeliveryAudioTargets, OriginalMixBusEnvelope } from "./audioRecipeContract";
 import type { MotionCanvasArchetype, MotionCanvasNarrativeRole, Project } from "./types";
 
@@ -35,13 +35,26 @@ export const defaultOriginalMix = (): OriginalMixRecipe => ({ music_asset_id: nu
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const numberFields = ["sfx_gain_db", "duck_attenuation_db", "duck_attack_samples", "duck_release_samples"] as const;
 const decimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
-const mixKeys = ["enabled", "music_asset_id", "sfx_asset_id", ...numberFields] as const;
+export const mixEnvelopeFields = ["muted", "fade_in_samples", "fade_out_samples"] as const;
+const mixEnvelopeKeys = originalMixEnvelopeKeys.flatMap(bus => mixEnvelopeFields.map(field => bus + ":" + field));
+const mixKeys = ["enabled", "music_asset_id", "sfx_asset_id", ...numberFields, ...mixEnvelopeKeys];
 const ownKeys = (value: unknown, keys: readonly string[], label: string, optional: readonly string[] = []): Record<string, unknown> => {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid " + label + ".");
   const record = value as Record<string, unknown>;
   if (keys.some(key => !Object.hasOwn(record, key)) || Object.keys(record).some(key => !keys.includes(key) && !optional.includes(key))) throw new Error("Unknown or missing " + label + " fields.");
   return record;
 };
+
+/** Exact authored counts. Never round a fractional sample into a valid fade. */
+export function parseOriginalMixSamples(raw: string): number {
+  const text = raw.trim();
+  if (raw.length > 128 || !/^[0-9]+$/.test(text))
+    throw new Error("Enter a whole sample count from 0 to 4294967295 for each bus fade.");
+  const value = BigInt(text);
+  if (value > 4294967295n)
+    throw new Error("Bus fades must fit unsigned 32-bit sample counts.");
+  return Number(value);
+}
 
 export const deliveryAudioTargetFields = ["target_lufs", "target_true_peak_dbtp"] as const;
 /** Exact public milli-unit input. This is authoring validation, never measured QC. */
@@ -119,7 +132,16 @@ export function recipeFields(recipe: DeliveryRecipe | null, group: RecipeGroup):
     [intent.scene_id + ":role", intent.role ?? ""], [intent.scene_id + ":archetype", intent.archetype ?? ""],
   ]));
   const mix = recipe?.original_mix ?? defaultOriginalMix();
-  return { enabled: recipe?.original_mix ? "true" : "false", music_asset_id: mix.music_asset_id ?? "", sfx_asset_id: mix.sfx_asset_id ?? "", ...Object.fromEntries(numberFields.map(key => [key, String(mix[key])])) };
+  return {
+    enabled: recipe?.original_mix ? "true" : "false",
+    music_asset_id: mix.music_asset_id ?? "", sfx_asset_id: mix.sfx_asset_id ?? "",
+    ...Object.fromEntries(numberFields.map(key => [key, String(mix[key])])),
+    ...Object.fromEntries(originalMixEnvelopeKeys.flatMap(bus => [
+      [bus + ":muted", String(mix[bus]?.muted ?? false)],
+      [bus + ":fade_in_samples", String(mix[bus]?.fade_in_samples ?? 0)],
+      [bus + ":fade_out_samples", String(mix[bus]?.fade_out_samples ?? 0)],
+    ])),
+  };
 }
 export interface RecipeEdit { base: string; value: string; intent?: true }
 export interface RecipeDraft {
@@ -155,6 +177,9 @@ export function canonicalRecipeField(group: RecipeGroup, key: string, raw: strin
     try { const value = parseDeliveryAudioTarget(raw); return value === null ? "" : String(value); } catch { return raw; }
   }
   if (group === "mix" && (numberFields as readonly string[]).includes(key) && decimal.test(raw.trim()) && Number.isFinite(Number(raw))) return String(Number(raw));
+  if (group === "mix" && mixEnvelopeKeys.includes(key) && key.endsWith("_samples")) {
+    try { return String(parseOriginalMixSamples(raw)); } catch { return raw; }
+  }
   return raw;
 }
 /** A current value can agree with a draft without proving which request wrote it.
@@ -199,6 +224,21 @@ export function proposedDeliveryRecipe(current: DeliveryRecipe | null, draft: Re
   else {
     for (const key of numberFields) if (!decimal.test(fields[key]?.trim() ?? "")) throw new Error("Enter a decimal value for " + key.replaceAll("_", " ") + ".");
     recipe.original_mix = { ...recipe.original_mix, music_asset_id: fields.music_asset_id || null, sfx_asset_id: fields.sfx_asset_id || null, sfx_gain_db: Number(fields.sfx_gain_db), duck_attenuation_db: Number(fields.duck_attenuation_db), duck_attack_samples: Number(fields.duck_attack_samples), duck_release_samples: Number(fields.duck_release_samples) };
+    for (const bus of originalMixEnvelopeKeys) {
+      // Untouched buses retain their exact saved optional representation.
+      if (!mixEnvelopeFields.some(field => Object.hasOwn(draft.edits, bus + ":" + field))) continue;
+      const muted = fields[bus + ":muted"];
+      if (muted !== "true" && muted !== "false") throw new Error("Choose whether each original mix bus is muted.");
+      const envelope: OriginalMixBusEnvelope = {
+        muted: muted === "true",
+        fade_in_samples: parseOriginalMixSamples(fields[bus + ":fade_in_samples"]),
+        fade_out_samples: parseOriginalMixSamples(fields[bus + ":fade_out_samples"]),
+      };
+      assertOriginalMixBusEnvelope(envelope);
+      if (!envelope.muted && envelope.fade_in_samples === 0 && envelope.fade_out_samples === 0)
+        delete recipe.original_mix[bus];
+      else recipe.original_mix[bus] = envelope;
+    }
   }
   return recipe;
 }

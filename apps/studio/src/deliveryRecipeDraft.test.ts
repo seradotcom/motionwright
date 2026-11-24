@@ -284,3 +284,30 @@ describe("recipe recovery custody and bounds", () => {
     expect(recipeFingerprint(two)).not.toBe(recipeFingerprint(reversed));
   });
 });
+
+it("retains all bus automation fields before dispatch and preserves later typing after the exact recipe ACK", () => {
+  const f=sample();
+  let state=f.state;
+  for(const [field,raw] of [
+    ["voice_envelope:fade_in_samples","00120"],["voice_envelope:fade_out_samples","480"],
+    ["music_envelope:fade_in_samples","2400"],["music_envelope:fade_out_samples","9600"],
+    ["sfx_envelope:muted","true"],["sfx_envelope:fade_out_samples","1200"],
+  ]) state=editRecipeAuthorState(state,field,raw,f.current);
+  const submitted=prepareRecipeSubmission(state,f.project,id(400));
+  const copy=stored(submitted.state), raw=copy.local.getItem(copy.key)!;
+  const recovered=decodeRecipeRecovery(raw,state.input.scope,"mix",copy.custody.writerId);
+  expect(recovered.pending?.fields).toHaveProperty("voice_envelope:fade_in_samples","00120");
+  expect(()=>prepareRecipeSubmission(recovered,f.project,id(401))).toThrow(/saved recipe and history/);
+  const receipt=structuredClone(f.project);receipt.revision++;
+  receipt.production_design!.delivery_recipes![f.profileId]=submitted.change.recipe!;
+  const observation=observeRecipeAuthorState(recovered,receipt);
+  expect(observation.pending?.outcome).toBe("UNKNOWN");
+  const later=editRecipeAuthorState(observation,"music_envelope:fade_out_samples","-",recipeFields(submitted.change.recipe!,"mix"));
+  const confirmed=acknowledgeRecipeOriginal(later,id(400),receipt);
+  expect(confirmed.pending).toBeNull();
+  expect(confirmed.input.edits).toEqual({"music_envelope:fade_out_samples":{base:"9600",value:"-",intent:true}});
+  expect(()=>prepareRecipeSubmission(confirmed,receipt,id(401))).toThrow(/sample/);
+  const otherProfile=structuredClone(receipt);otherProfile.deliverables[0].id=id(499);
+  expect(()=>prepareRecipeSubmission(confirmed,otherProfile,id(401))).toThrow(/unavailable profile/);
+  expect(copy.local.getItem(copy.key)).toBe(raw);
+});
