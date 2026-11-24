@@ -6,8 +6,8 @@ import CompositionStudy from "./CompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { realizeProceduralField, validateProceduralAuthoringBounds } from "./proceduralField";
 import type { ProceduralConfig } from "./proceduralField";
-import { proceduralConfig, workbenchScope } from "./creativeWorkbenchDraft";
-import type { ProceduralRaw, WorkbenchInput } from "./creativeWorkbenchDraft";
+import { proceduralConfig, rawProceduralInfluence, workbenchScope } from "./creativeWorkbenchDraft";
+import type { InfluenceRaw, ProceduralRaw, WorkbenchInput } from "./creativeWorkbenchDraft";
 import { useCreativeWorkbenchDraft, WorkbenchDraftFeedback } from "./useCreativeWorkbenchDraft";
 
 const previewIdentity="00000000-0000-4000-8000-000000000095";
@@ -25,6 +25,11 @@ const dimensions=[
   ["reveal_step_frames","Entrance interval (frames; 0 disables)",0,10],
   ["reveal_duration_frames","Entrance fade length (frames)",1,60],
 ] as const;
+const influenceDimensions = [
+  ["center_x", "Influence center X"], ["center_y", "Influence center Y"], ["radius", "Influence radius (px)"],
+  ["offset_x", "Influence offset X"], ["offset_y", "Influence offset Y"], ["scale_percent", "Influence center scale (%)"],
+  ["rotation_deg", "Influence static orientation (degrees)"],
+] as const;
 export default function ProceduralFieldWorkbench(props: Props) {
   return <ProceduralEditor key={workbenchScope(props.project,{kind:"procedural",sceneId:props.scene?.id??null})} {...props}/>;
 }
@@ -33,6 +38,9 @@ function ProceduralEditor({project,scene,commit,busy,onOpenCanvas,displayProfile
   const editor=useCreativeWorkbenchDraft(project,{kind:"procedural",sceneId:scene?.id??null},commit,busy);
   const input=editor.draft.input as Extract<WorkbenchInput,{kind:"procedural"}>, draft=input.config;
   const setDraft=(update:(value:ProceduralRaw)=>ProceduralRaw)=>editor.edit({...input,config:update(draft)});
+  const influence = draft.influence ?? rawProceduralInfluence();
+  const patchInfluence = (patch: Partial<Omit<InfluenceRaw, "enabled">>) =>
+    setDraft(value => ({ ...value, influence: { ...(value.influence ?? rawProceduralInfluence()), ...patch } }));
   const [nodes,setNodes]=useState<CanvasNode[]>([]);
   const [previewError,setPreviewError]=useState<string|null>(null);
   const [previewLoading,setPreviewLoading]=useState(false);
@@ -88,6 +96,39 @@ function ProceduralEditor({project,scene,commit,busy,onOpenCanvas,displayProfile
           onChange={e=>setDraft(v=>({...v,[key]:e.target.value}))}/>
       </label>)}
     </div>
+    <section className="production-approval" aria-label="Procedural influence field">
+      <h3>Influence field</h3>
+      <p className="production-help">Shape a bounded region of the original object centers. Move, resize, orient and tint the affected objects together;
+        objects outside the region keep their generated values. Existing individual edits are checked before updating.</p>
+      <label className="production-check"><input type="checkbox" aria-label="Enable influence field" checked={draft.influence?.enabled ?? false}
+        onChange={event => setDraft(value => ({ ...value, influence: { ...(value.influence ?? rawProceduralInfluence()), enabled: event.target.checked } }))}/>
+        Apply an influence field</label>
+      {draft.influence && <>
+        <div className="production-plan-grid">
+          <label className="production-field"><span>Influence shape</span>
+            <select aria-label="Influence shape" value={influence.shape} disabled={!influence.enabled}
+              onChange={event => patchInfluence({ shape: event.target.value as InfluenceRaw["shape"] })}>
+              <option value="radial">Radial region</option><option value="horizontal">Horizontal distance from center</option><option value="vertical">Vertical distance from center</option>
+            </select>
+          </label>
+          <label className="production-field"><span>Influence falloff</span>
+            <select aria-label="Influence falloff" value={influence.falloff} disabled={!influence.enabled}
+              onChange={event => patchInfluence({ falloff: event.target.value as InfluenceRaw["falloff"] })}>
+              <option value="linear">Linear falloff</option><option value="smoothstep">Smooth falloff</option>
+            </select>
+          </label>
+          {influenceDimensions.map(([key, label]) => <label className="production-field" key={key}><span>{label}</span>
+            <input aria-label={label} type="text" inputMode="numeric" maxLength={128} disabled={!influence.enabled} value={influence[key]}
+              onChange={event => patchInfluence({ [key]: event.target.value })}/>
+          </label>)}
+          <label className="production-field"><span>Influence center fill</span><input aria-label="Influence center fill" value={influence.fill} maxLength={7}
+            disabled={!influence.enabled} onChange={event => patchInfluence({ fill: event.target.value })}/></label>
+        </div>
+        <p className="production-help">Center values fade toward the unchanged field at the radius. Objects must remain between 4 and 128 pixels and fit the authored stage.
+          Use zero orientation with entrances, or turn entrances off for a static rotated field.</p>
+        {!influence.enabled && <p className="production-help" role="status">Disabled influence values remain in this local draft. Saving removes the influence from the generator while preserving those fields for further editing.</p>}
+      </>}
+    </section>
     {previewError && <p className="production-error" role="alert">{previewError}</p>}
     <div className="production-button-row">
       <button className="primary-button" disabled={!scene || editor.blocked || previewLoading || !!previewError}

@@ -255,3 +255,79 @@ describe("procedural entrance authoring bounds without v1 migration",()=>{
     expect(detached.scenes[0].nodes).toEqual(baseline);
   });
 });
+
+import { defaultProceduralInfluence } from "./proceduralField";
+import type { ProceduralConfig, ProceduralInfluence } from "./proceduralField";
+
+const influence = (patch: Partial<ProceduralInfluence> = {}): ProceduralInfluence => ({
+  ...defaultProceduralInfluence(), center_x: 350, center_y: 250, radius: 200,
+  offset_x: 20, offset_y: -10, scale_percent: 150, rotation_deg: 30, fill: "#FFFFFF", ...patch,
+});
+const influenced = (field = influence()): ProceduralConfig => ({
+  ...defaultProceduralConfig(), distribution: "grid", count: 3, columns: 3,
+  origin_x: 200, origin_y: 200, area_width: 300, area_height: 100, size: 40, fill: "#000000", influence: field,
+});
+const poses = (nodes: Awaited<ReturnType<typeof realizeProceduralField>>) =>
+  nodes.map(node => [node.x, node.y, node.width, node.rotation_deg, node.style.fill]);
+
+describe("bounded procedural influence components", () => {
+  it("matches independently calculated complete pose/color fixtures and keeps original identities", async () => {
+    const config = influenced(), nodes = await realizeProceduralField(ID, config);
+    expect(poses(nodes)).toEqual([
+      [235, 220, 50, 15, "#7F7F7F"], [340, 210, 60, 30, "#FFFFFF"], [435, 220, 50, 15, "#7F7F7F"],
+    ]);
+    const smooth = await realizeProceduralField(ID, influenced(influence({ center_x: 400, falloff: "smoothstep" })));
+    expect(poses(smooth)).toEqual([
+      [231.5, 227.5, 43, 4, "#272727"], [338, 214, 56, 25, "#D7D7D7"], [438, 214, 56, 25, "#D7D7D7"],
+    ]);
+    const plain = { ...config }; delete plain.influence;
+    expect(nodes.map(node => node.id)).toEqual((await realizeProceduralField(ID, plain)).map(node => node.id));
+    const outside = await realizeProceduralField(ID, influenced(influence({ radius: 100 })));
+    expect(poses(outside)[0]).toEqual([230, 230, 40, 0, "#000000"]);
+    const descending = await realizeProceduralField(ID, { ...config, fill: "#FFFFFF", influence: influence({ fill: "#000000" }) });
+    expect(descending[0].style.fill).toBe("#808080");
+  });
+  it("retains neutral legacy realizations and sequences the influenced terminal geometry", async () => {
+    const base = defaultProceduralConfig();
+    expect(await realizeProceduralField(ID, { ...base, influence: defaultProceduralInfluence() })).toEqual(await realizeProceduralField(ID, base));
+    for (const distribution of ["grid", "staggered", "scatter", "radial", "spiral"] as const) {
+      const config = { ...base, distribution, shape: "circle" as const, reveal_step_frames: 3,
+        influence: { ...defaultProceduralInfluence(), scale_percent: 125, offset_x: 10, offset_y: -5, fill: "#D0AA80" } };
+      const nodes = await realizeProceduralField(ID, config);
+      expect(nodes).toHaveLength(base.count); validateProceduralAuthoringBounds(nodes);
+      for (const node of nodes) {
+        const y = node.keyframes.filter(key => key.property === "y");
+        expect(y[0].value).toBe(node.y + 12); expect(y.at(-1)?.value).toBe(node.y);
+        expect(node.rotation_deg).toBe(0); expect(node.kind).toBe("circle");
+      }
+    }
+  });
+  it("updates one persisted field with human overrides intact and refuses conflicting or out-of-bounds edits atomically", async () => {
+    let p = await upsert(project(), influenced());
+    const first = p.scenes[0].nodes[0], style = { ...first.style, stroke: "#123456", stroke_width: 2 };
+    p = await applyChange(p, { type: "update_canvas_style", scene_id: p.scenes[0].id, node_id: first.id, style });
+    p = await upsert(p, influenced(influence({ offset_x: -20, fill: "#40A0FF" })));
+    expect(p.scenes[0].nodes[0].style.stroke).toBe("#123456"); expect(p.scenes[0].nodes[0].style.stroke_width).toBe(2);
+    const reopened = JSON.parse(JSON.stringify(p)) as Project;
+    expect(reopened.production_design!.procedural_fields![0].config.influence!.offset_x).toBe(-20);
+    const current = reopened.scenes[0].nodes[0];
+    const custom = await applyChange(reopened, { type: "update_canvas_style", scene_id: current ? reopened.scenes[0].id : "", node_id: current.id,
+      style: { ...current.style, fill: "#010203" } });
+    const before = structuredClone(custom);
+    await expect(upsert(custom, influenced(influence({ fill: "#F0F0F0" })))).rejects.toThrow("override conflict"); expect(custom).toEqual(before);
+    await expect(upsert(custom, influenced(influence({ offset_x: 1920 })))).rejects.toThrow("stage"); expect(custom).toEqual(before);
+  });
+  it("rejects oversized, unsafe and unsupported coupled field parameters before publishing", async () => {
+    for (const field of [
+      influence({ radius: 0 }), influence({ center_y: 1081 }), influence({ scale_percent: 401 }),
+      influence({ rotation_deg: 361 }), influence({ fill: "red" }),
+      influence({ offset_x: 1920 }), influence({ scale_percent: 400 }),
+      { ...influence(), effect_grant: "not-an-authoring-field" } as ProceduralInfluence,
+    ]) await expect(realizeProceduralField(ID, influenced(field))).rejects.toThrow();
+    await expect(realizeProceduralField(ID, { ...influenced(), reveal_step_frames: 3 })).rejects.toThrow("zero orientation");
+    const base = await upsert(project(), influenced(influence({ rotation_deg: 0 })));
+    const lock = { ...fixtureProject.locks[0], id: crypto.randomUUID(), resource: "scene:" + base.scenes[0].id, kind: "timing" as const };
+    const locked = { ...base, locks: [lock] }, before = structuredClone(locked);
+    await expect(upsert(locked, influenced(influence({ rotation_deg: 0, offset_x: 0 })))).rejects.toThrow("locked"); expect(locked).toEqual(before);
+  });
+});

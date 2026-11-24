@@ -266,8 +266,9 @@ export function WorkbenchDraftFeedback({ editor, project }: { editor: WorkbenchE
       <button className="secondary-button" disabled={busy || editor.reviewing} onClick={() => void editor.readOutcome()}>Read saved {label} and history</button>
       {review && <div aria-label={label + " outcome review"}>
         <p>Read saved r{review.project.revision} and {review.events.length} consecutive history records. {review.matchingValueRevisions.length} contain matching values; this does not identify the original request.</p>
+        {project.revision <= draft.pending.revision && <p>The original attempt could still commit at this revision. Keep its copy until the saved project advances before starting another save.</p>}
         <details><summary>Submitted and saved parameters</summary><pre>{JSON.stringify({ submitted: draft.pending.submitted, saved: workbenchSavedInput(review.project, draft.target, draft.input) }, null, 2)}</pre></details>
-        <button className="secondary-button" disabled={busy || editor.reviewing || !workbenchOutcomeMatches(draft, project, review)} onClick={editor.continueEditing}>Keep earlier {label} attempt and continue editing</button>
+        <button className="secondary-button" disabled={busy || editor.reviewing || project.revision <= draft.pending!.revision || !workbenchOutcomeMatches(draft, project, review)} onClick={editor.continueEditing}>Keep earlier {label} attempt and continue editing</button>
       </div>}
     </section>}
     {conflict && !workbenchUnconfirmed(draft) && <section className="production-notice" role="region" aria-label={label + " conflict"}>

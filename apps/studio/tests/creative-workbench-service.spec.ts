@@ -293,3 +293,68 @@ for (const fault of ["data", "pointer"] as const) {
     finally { await finish(page, info, service, [], final, observations, [], primary); }
   });
 }
+
+test("procedural influence edits and reopens one source-bound field with independent human overrides and incomplete input retained", async ({ page }, info) => {
+  const service = await setup(info), observations: Record<string, unknown> = {};
+  let final: Project | undefined, primary: Failure | undefined;
+  try {
+    let initial = await unlocked(service);
+    const ids = new Set(initial.scenes.map(scene => scene.id));
+    initial = await service.apply(initial, { type: "add_scene", name: "Influence component", objective: "Bounded source-editable field", duration_seconds: 6 });
+    const sceneId = initial.scenes.find(scene => !ids.has(scene.id))!.id;
+    await service.attachFixturePage(page, initial.id); await page.goto("/");
+    const open = async () => { await openWorkbench(page, "procedural"); await page.getByLabel("Production working scene", { exact: true }).selectOption(sceneId); };
+    await open();
+    await page.getByLabel("Procedural distribution", { exact: true }).selectOption("grid");
+    for (const [label, value] of [["Number of objects", "3"], ["Columns", "3"], ["Stage X", "200"], ["Stage Y", "200"],
+      ["Field width", "300"], ["Field height", "100"], ["Object size", "40"], ["Procedural fill", "#000000"]] as const)
+      await page.getByLabel(label, { exact: true }).fill(value);
+    await page.getByLabel("Enable influence field", { exact: true }).check();
+    for (const [label, value] of [["Influence center X", "350"], ["Influence center Y", "250"], ["Influence radius (px)", "200"],
+      ["Influence offset X", "20"], ["Influence offset Y", "-10"], ["Influence center scale (%)", "150"],
+      ["Influence static orientation (degrees)", "30"], ["Influence center fill", "#FFFFFF"]] as const)
+      await page.getByLabel(label, { exact: true }).fill(value);
+    await button(page, "Add procedural field").click(); await revision(page, initial.revision + 1);
+    const saved = await service.project(initial.id), field = saved.production_design!.procedural_fields!.find(value => value.scene_id === sceneId)!;
+    const nodes = saved.scenes.find(scene => scene.id === sceneId)!.nodes;
+    expect(nodes.map(node => [node.x, node.y, node.width, node.rotation_deg, node.style.fill])).toEqual([
+      [235, 220, 50, 15, "#7F7F7F"], [340, 210, 60, 30, "#FFFFFF"], [435, 220, 50, 15, "#7F7F7F"],
+    ]);
+    const human = await service.apply(saved, { type: "update_canvas_style", scene_id: sceneId, node_id: nodes[0].id,
+      style: { ...nodes[0].style, stroke: "#123456", stroke_width: 2 } });
+    await page.reload(); await open();
+    await expect(page.getByLabel("Influence center scale (%)", { exact: true })).toHaveValue("150");
+    await page.getByLabel("Influence offset X", { exact: true }).fill("-20");
+    await page.getByLabel("Influence center fill", { exact: true }).fill("#40A0FF");
+    await button(page, "Update procedural field").click(); await revision(page, human.revision + 1);
+    const updated = await service.project(initial.id), updatedField = updated.production_design!.procedural_fields!.find(value => value.id === field.id)!;
+    expect(updatedField.config.influence?.offset_x).toBe(-20);
+    const updatedNodes = updated.scenes.find(scene => scene.id === sceneId)!.nodes;
+    expect(updatedNodes.map(node => node.id)).toEqual(nodes.map(node => node.id)); expect(updatedNodes[0].style.stroke).toBe("#123456");
+    await page.getByLabel("Influence offset X", { exact: true }).fill("-");
+    await page.reload(); await open();
+    await expect(page.getByLabel("Influence offset X", { exact: true })).toHaveValue("-");
+    await expect(button(page, "Update procedural field")).toBeDisabled();
+    expect(await service.project(initial.id)).toEqual(updated);
+    await page.getByLabel("Enable influence field", { exact: true }).uncheck();
+    await button(page, "Update procedural field").click(); await revision(page, updated.revision + 1);
+    final = await service.project(initial.id);
+    const finalField = final.production_design!.procedural_fields!.find(value => value.id === field.id)!;
+    expect(finalField.config.influence).toBeUndefined();
+    expect(final.scenes.find(scene => scene.id === sceneId)!.nodes.map(node => [node.x, node.y, node.width, node.rotation_deg, node.style.fill])).toEqual([
+      [230, 230, 40, 0, "#000000"], [330, 230, 40, 0, "#000000"], [430, 230, 40, 0, "#000000"],
+    ]);
+    expect(final.scenes.find(scene => scene.id === sceneId)!.nodes[0].style.stroke).toBe("#123456");
+    expect(final.assets).toEqual(initial.assets);
+    expect(final.scenes.filter(scene => scene.id !== sceneId)).toEqual(initial.scenes.filter(scene => scene.id !== sceneId));
+    const oracle = await service.observeStoredProject(final); await service.close(); await service.start();
+    expect(await service.project(final.id)).toEqual(final);
+    await page.reload(); await open();
+    await expect(page.getByLabel("Enable influence field", { exact: true })).not.toBeChecked();
+    await expect(page.getByLabel("Influence offset X", { exact: true })).toHaveValue("-");
+    const changes = oracle.journal.filter(event => event.revision > initial.revision).map(event => event.change.type);
+    expect(changes).toEqual(["upsert_procedural_field", "update_canvas_style", "upsert_procedural_field", "upsert_procedural_field"]);
+    Object.assign(observations, { initial, saved, updated, oracle, instanceId: field.id, changes });
+  } catch (reason) { primary = { reason }; }
+  finally { await finish(page, info, service, [], final, observations, [], primary); }
+});

@@ -117,3 +117,95 @@ fn native_radial_circles_preserve_unique_semantic_subjects_and_motion() {
         assert!(realize(&projected[0].film).is_ok());
     }
 }
+
+#[test]
+fn influence_geometry_and_color_remain_native_shapes_with_exact_static_rotations() {
+    let (p, options) = project(ProceduralConfig {
+        distribution: FieldDistribution::Grid,
+        count: 3,
+        columns: 3,
+        origin_x: 200,
+        origin_y: 200,
+        area_width: 300,
+        area_height: 100,
+        size: 40,
+        fill: "#000000".into(),
+        influence: Some(ProceduralInfluence {
+            shape: InfluenceShape::Radial,
+            falloff: InfluenceFalloff::Linear,
+            center_x: 350,
+            center_y: 250,
+            radius: 200,
+            offset_x: 20,
+            offset_y: -10,
+            scale_percent: 150,
+            rotation_deg: 30,
+            fill: "#FFFFFF".into(),
+        }),
+        ..Default::default()
+    });
+    let source = p.clone();
+    let film = build_motion_canvas_segments(&p, p.deliverables[0].id, &options).unwrap();
+    let shot = &film[0].film.sequences[0].beats[0].shots[0];
+    assert_eq!(shot.subjects.len(), 3);
+    assert_eq!(shot.layers.len(), 1);
+    let mut rotations = shot
+        .motion
+        .iter()
+        .filter_map(|motion| match &motion.primitive {
+            Primitive::GeometrySet {
+                channel: semwright_motion_authoring::Channel::Rotation,
+                value: semwright_motion_authoring::Operand::Number(value),
+                ..
+            } => Some(*value as i32),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    rotations.sort();
+    assert_eq!(rotations, vec![15, 15, 30]);
+    assert!(realize(&film[0].film).is_ok());
+    assert_eq!(p, source);
+}
+
+#[test]
+fn sequenced_influence_uses_the_original_native_y_opacity_path_without_baking() {
+    for shape in [
+        InfluenceShape::Radial,
+        InfluenceShape::Horizontal,
+        InfluenceShape::Vertical,
+    ] {
+        let (p, options) = project(ProceduralConfig {
+            count: 5,
+            columns: 5,
+            reveal_step_frames: 3,
+            influence: Some(ProceduralInfluence {
+                shape,
+                falloff: InfluenceFalloff::Smoothstep,
+                center_x: 630,
+                center_y: 450,
+                radius: 500,
+                offset_x: 10,
+                offset_y: -5,
+                scale_percent: 150,
+                rotation_deg: 0,
+                fill: "#D0AA80".into(),
+            }),
+            ..Default::default()
+        });
+        let film = build_motion_canvas_segments(&p, p.deliverables[0].id, &options).unwrap();
+        let shot = &film[0].film.sequences[0].beats[0].shots[0];
+        assert_eq!(shot.subjects.len(), 5);
+        assert_eq!(shot.motion.len(), 5);
+        assert!(
+            shot.motion
+                .iter()
+                .all(|motion| matches!(motion.primitive, Primitive::SlideIn { .. }))
+        );
+        assert!(
+            shot.subjects
+                .iter()
+                .all(|subject| !subject.initially_visible)
+        );
+        assert!(realize(&film[0].film).is_ok());
+    }
+}

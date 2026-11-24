@@ -663,3 +663,204 @@ fn historical_clipped_v1_baseline_reopens_validates_and_detaches_without_migrati
     assert_eq!(reopened.scenes[0].nodes, baseline);
     reopened.validate().unwrap();
 }
+
+fn influence() -> ProceduralInfluence {
+    ProceduralInfluence {
+        shape: InfluenceShape::Radial,
+        falloff: InfluenceFalloff::Linear,
+        center_x: 350,
+        center_y: 250,
+        radius: 200,
+        offset_x: 20,
+        offset_y: -10,
+        scale_percent: 150,
+        rotation_deg: 30,
+        fill: "#FFFFFF".into(),
+    }
+}
+fn influenced(field: ProceduralInfluence) -> ProceduralConfig {
+    ProceduralConfig {
+        distribution: FieldDistribution::Grid,
+        count: 3,
+        columns: 3,
+        origin_x: 200,
+        origin_y: 200,
+        area_width: 300,
+        area_height: 100,
+        size: 40,
+        fill: "#000000".into(),
+        influence: Some(field),
+        ..Default::default()
+    }
+}
+#[test]
+fn influence_has_exact_cross_language_geometry_color_and_original_identity() {
+    let config = influenced(influence());
+    let nodes = realize_procedural_field(instance_id(), &config).unwrap();
+    let poses = |nodes: &[CanvasNode]| {
+        nodes
+            .iter()
+            .map(|node| {
+                (
+                    node.x,
+                    node.y,
+                    node.width,
+                    node.rotation_deg,
+                    node.style.fill.clone().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        poses(&nodes),
+        vec![
+            (235.0, 220.0, 50.0, 15.0, "#7F7F7F".into()),
+            (340.0, 210.0, 60.0, 30.0, "#FFFFFF".into()),
+            (435.0, 220.0, 50.0, 15.0, "#7F7F7F".into()),
+        ]
+    );
+    let mut smooth = influence();
+    smooth.center_x = 400;
+    smooth.falloff = InfluenceFalloff::Smoothstep;
+    let nodes = realize_procedural_field(instance_id(), &influenced(smooth)).unwrap();
+    assert_eq!(
+        poses(&nodes),
+        vec![
+            (231.5, 227.5, 43.0, 4.0, "#272727".into()),
+            (338.0, 214.0, 56.0, 25.0, "#D7D7D7".into()),
+            (438.0, 214.0, 56.0, 25.0, "#D7D7D7".into()),
+        ]
+    );
+    let mut plain = config.clone();
+    plain.influence = None;
+    assert_eq!(
+        nodes.iter().map(|node| node.id).collect::<Vec<_>>(),
+        realize_procedural_field(instance_id(), &plain)
+            .unwrap()
+            .iter()
+            .map(|node| node.id)
+            .collect::<Vec<_>>()
+    );
+    let mut descending = config;
+    descending.fill = "#FFFFFF".into();
+    descending.influence.as_mut().unwrap().fill = "#000000".into();
+    assert_eq!(
+        realize_procedural_field(instance_id(), &descending).unwrap()[0]
+            .style
+            .fill
+            .as_deref(),
+        Some("#808080")
+    );
+    let legacy = serde_json::to_value(ProceduralConfig::default()).unwrap();
+    assert!(legacy.get("influence").is_none());
+    let recovered: ProceduralConfig = serde_json::from_value(legacy).unwrap();
+    assert_eq!(recovered, ProceduralConfig::default());
+}
+#[test]
+fn influence_reopens_and_updates_the_existing_instance_without_overwriting_independent_human_style()
+{
+    let mut p = project();
+    upsert(&mut p, influenced(influence())).unwrap();
+    let node_id = p.scenes[0].nodes[0].id;
+    let mut style = p.scenes[0].nodes[0].style.clone();
+    style.stroke = Some("#123456".into());
+    style.stroke_width = 2.0;
+    p.apply_change(&Change::UpdateCanvasStyle {
+        scene_id: p.scenes[0].id,
+        node_id,
+        style,
+    })
+    .unwrap();
+    let mut next = influence();
+    next.offset_x = -20;
+    next.fill = "#40A0FF".into();
+    upsert(&mut p, influenced(next)).unwrap();
+    let reopened: Project = serde_json::from_slice(&serde_json::to_vec(&p).unwrap()).unwrap();
+    reopened.validate().unwrap();
+    assert_eq!(
+        reopened.scenes[0].nodes[0].style.stroke.as_deref(),
+        Some("#123456")
+    );
+    assert_eq!(
+        reopened.production_design.procedural_fields[0]
+            .config
+            .influence
+            .as_ref()
+            .unwrap()
+            .offset_x,
+        -20
+    );
+    let mut bad = influence();
+    bad.offset_x = 1920;
+    let before = p.clone();
+    assert!(upsert(&mut p, influenced(bad)).is_err());
+    assert_eq!(p, before);
+    let mut sequence = influence();
+    sequence.rotation_deg = 0;
+    let config = ProceduralConfig {
+        reveal_step_frames: 3,
+        influence: Some(sequence),
+        ..influenced(influence())
+    };
+    upsert(&mut p, config).unwrap();
+    for node in &p.production_design.procedural_fields[0].baseline {
+        let keys = node
+            .keyframes
+            .iter()
+            .filter(|key| key.property == MotionProperty::Y)
+            .collect::<Vec<_>>();
+        assert_eq!(keys.first().unwrap().value, node.y + 12.0);
+        assert_eq!(keys.last().unwrap().value, node.y);
+    }
+}
+#[test]
+fn influence_rejects_unsafe_bounds_and_unadmitted_rotating_entrances() {
+    let mut p = project();
+    let before = p.clone();
+    let mut bad = influence();
+    bad.radius = 0;
+    assert!(upsert(&mut p, influenced(bad)).is_err());
+    assert_eq!(p, before);
+    let mut bad = influence();
+    bad.scale_percent = 400;
+    assert!(upsert(&mut p, influenced(bad)).is_err());
+    assert_eq!(p, before);
+    let config = ProceduralConfig {
+        reveal_step_frames: 3,
+        ..influenced(influence())
+    };
+    assert!(
+        upsert(&mut p, config)
+            .unwrap_err()
+            .to_string()
+            .contains("zero orientation")
+    );
+    assert_eq!(p, before);
+    let mut malformed = serde_json::to_value(influence()).unwrap();
+    malformed["effect_grant"] = serde_json::json!("forbidden");
+    assert!(serde_json::from_value::<ProceduralInfluence>(malformed).is_err());
+}
+
+#[test]
+fn influence_updates_honor_project_and_scene_timing_locks_before_any_source_mutation() {
+    for project_scope in [false, true] {
+        let mut p = project();
+        upsert(&mut p, influenced(influence())).unwrap();
+        let resource = if project_scope {
+            format!("project:{}", p.id)
+        } else {
+            format!("scene:{}", p.scenes[0].id)
+        };
+        p.apply_change(&Change::SetLock {
+            resource,
+            kind: LockKind::Timing,
+            note: "Keep authored timing".into(),
+        })
+        .unwrap();
+        let before = p.clone();
+        let mut field = influence();
+        field.offset_x = -20;
+        assert!(upsert(&mut p, influenced(field)).is_err());
+        assert_eq!(p, before);
+    }
+}

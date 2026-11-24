@@ -5,6 +5,16 @@ import type { ProductionDesign } from "./creativeProduction";
 
 export type FieldDistribution = "grid" | "staggered" | "scatter" | "radial" | "spiral";
 export type ProceduralShape = "square" | "circle";
+export interface ProceduralInfluence {
+  shape: "radial" | "horizontal" | "vertical"; falloff: "linear" | "smoothstep";
+  center_x: number; center_y: number; radius: number; offset_x: number; offset_y: number;
+  scale_percent: number; rotation_deg: number; fill: string;
+}
+export const defaultProceduralInfluence = (): ProceduralInfluence => ({
+  shape: "radial", falloff: "linear", center_x: 630, center_y: 450, radius: 450,
+  offset_x: 0, offset_y: 0, scale_percent: 100, rotation_deg: 0, fill: "#A5C8DF",
+});
+
 export interface ProceduralConfig {
   seed: number; count: number; columns: number; distribution: FieldDistribution;
   /** Optional on legacy version-1 projects, default square. */
@@ -12,6 +22,8 @@ export interface ProceduralConfig {
   origin_x: number; origin_y: number; area_width: number; area_height: number;
   size: number; opacity_percent: number; fill: string;
   reveal_step_frames: number; reveal_duration_frames: number;
+  /** Omitted on original v1 fields; their baseline remains identical. */
+  influence?: ProceduralInfluence;
 }
 export interface ProceduralFieldInstance {
   id: string; scene_id: string; generator_version: number;
@@ -44,6 +56,11 @@ export function validateProceduralConfig(input:ProceduralConfig):void {
   }
   if(c.origin_x+c.area_width>1920 || c.origin_y+c.area_height>1080)
     throw new Error("Procedural field exceeds 1920x1080 authored stage.");
+  if (c.influence !== undefined) {
+    validateProceduralInfluence(c.influence);
+    if (c.reveal_step_frames > 0 && c.influence.rotation_deg !== 0)
+      throw new Error("Sequenced influence fields require zero orientation; disable entrances for static orientation.");
+  }
   const columns=Math.min(c.columns,c.count), rows=Math.ceil(c.count/columns);
   if(c.distribution==="radial" || c.distribution==="spiral"){
     if(c.area_width<c.size*2 || c.area_height<c.size*2)
@@ -97,6 +114,53 @@ export async function proceduralNodeId(identity:string,index:number):Promise<str
   const h=Array.from(output.slice(0,16),v=>v.toString(16).padStart(2,"0")).join("");
   return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
 }
+export function validateProceduralInfluence(field: ProceduralInfluence): void {
+  const keys = ["shape", "falloff", "center_x", "center_y", "radius", "offset_x", "offset_y", "scale_percent", "rotation_deg", "fill"];
+  if (!field || typeof field !== "object" || Object.keys(field).length !== keys.length || keys.some(key => !Object.hasOwn(field, key))
+    || !["radial", "horizontal", "vertical"].includes(field.shape) || !["linear", "smoothstep"].includes(field.falloff)
+    || [field.center_x, field.center_y, field.radius, field.offset_x, field.offset_y, field.scale_percent, field.rotation_deg].some(value => !Number.isSafeInteger(value))
+    || field.center_x < 0 || field.center_x > 1920 || field.center_y < 0 || field.center_y > 1080
+    || field.radius < 1 || field.radius > 4096 || field.offset_x < -1920 || field.offset_x > 1920
+    || field.offset_y < -1080 || field.offset_y > 1080 || field.scale_percent < 25 || field.scale_percent > 400
+    || field.rotation_deg < -360 || field.rotation_deg > 360 || typeof field.fill !== "string" || !hex.test(field.fill))
+    throw new Error("Procedural influence exceeds its position, style or CPU bounds.");
+}
+/** Half-pixel distance and Q10_000 weights exactly match the Rust integer profile. */
+function influenceDistance(value: number): number {
+  let low = 0, high = 8192;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    if (middle * middle <= value) low = middle + 1; else high = middle - 1;
+  }
+  return high;
+}
+function influencedItem(x: number, y: number, config: ProceduralConfig) {
+  const item = { x, y, size: config.size, rotation: 0, fill: config.fill }, field = config.influence;
+  if (!field) return item;
+  const centerX2 = x * 2 + config.size, centerY2 = y * 2 + config.size;
+  const dx = centerX2 - field.center_x * 2, dy = centerY2 - field.center_y * 2;
+  const distance = field.shape === "horizontal" ? Math.abs(dx) : field.shape === "vertical" ? Math.abs(dy) : influenceDistance(dx * dx + dy * dy);
+  const radius = field.radius * 2;
+  let weight = Math.floor(Math.max(0, radius - distance) * 10000 / radius);
+  if (field.falloff === "smoothstep") weight = Math.floor(weight * weight * (30000 - 2 * weight) / 100000000);
+  if (weight === 0) return item;
+  const size = config.size + Math.trunc(config.size * (field.scale_percent - 100) * weight / 1000000);
+  if (size < 4 || size > 128) throw new Error("Procedural influence must keep every object between 4 and 128 pixels.");
+  item.size = size; item.rotation = Math.trunc(field.rotation_deg * weight / 10000);
+  item.x = (centerX2 - size) / 2 + Math.trunc(field.offset_x * weight / 10000);
+  item.y = (centerY2 - size) / 2 + Math.trunc(field.offset_y * weight / 10000);
+  if (config.fill.toUpperCase() !== field.fill.toUpperCase()) {
+    item.fill = "#" + [0, 1, 2].map(index => {
+      const from = parseInt(config.fill.slice(1 + index * 2, 3 + index * 2), 16), to = parseInt(field.fill.slice(1 + index * 2, 3 + index * 2), 16);
+      return (from + Math.trunc((to - from) * weight / 10000)).toString(16).padStart(2, "0").toUpperCase();
+    }).join("");
+  }
+  const half = (config.shape ?? "square") === "square" && item.rotation % 90 !== 0 ? Math.ceil(size * 141422 / 200000) : size / 2;
+  const centerX = item.x + size / 2, centerY = item.y + size / 2, entrance = config.reveal_step_frames > 0 ? 12 : 0;
+  if (centerX - half < 0 || centerY - half < 0 || centerX + half > 1920 || centerY + half + entrance > 1080)
+    throw new Error("Procedural influence or entrance exceeds the 1920x1080 authored stage; no clipping was applied.");
+  return item;
+}
 export async function realizeProceduralField(id:string,input:ProceduralConfig):Promise<CanvasNode[]> {
   const c=normalizedProceduralConfig(input);
   validateProceduralConfig(c); // reject cost and frame bounds before hashing/allocating
@@ -120,14 +184,16 @@ export async function realizeProceduralField(id:string,input:ProceduralConfig):P
       }
       x=c.origin_x+col*cellW+dx;y=c.origin_y+row*cellH+dy;
     }
+    const influenced = influencedItem(x, y, c);
+    x = influenced.x; y = influenced.y;
     nodes.push({
       id:await proceduralNodeId(id,index),
       name:`ProceduralField / item ${String(index).padStart(3,"0")}`,
       kind:c.shape==="circle"?"circle":"rectangle",parent_id:null,
       x,y,
-      width:c.size,height:c.size,rotation_deg:0,opacity:c.opacity_percent/100,text:null,
+      width:influenced.size,height:influenced.size,rotation_deg:influenced.rotation,opacity:c.opacity_percent/100,text:null,
       coordinate_space:"project_pixels",z_index:-32,
-      style:{fill:c.fill,stroke:null,stroke_width:0,font_family:null,font_size:null,font_weight:null,line_height:null,blend_mode:"normal"},
+      style:{fill:influenced.fill,stroke:null,stroke_width:0,font_family:null,font_size:null,font_weight:null,line_height:null,blend_mode:"normal"},
       relations:[],property_locks:[],keyframes: c.reveal_step_frames===0?[]:(()=>{
         const start=index*c.reveal_step_frames,end=start+c.reveal_duration_frames;
         const keys:CanvasNode["keyframes"]=[];
@@ -167,7 +233,7 @@ export async function applyProceduralChange(p:Project,change:ProceduralChange):P
     design.procedural_fields=fields.filter(field=>field.id!==change.instance_id);
     p.production_design=design;return; // nodes are still normal editable Canvas nodes
   }
-  assertUnlocked(p,change.scene_id,["content","position","style","renderer"]);
+  assertUnlocked(p,change.scene_id,["content","position","style","timing","renderer"]);
   const scene=p.scenes.find(s=>s.id===change.scene_id);
   if(!scene || scene.renderer!=="motion-canvas") throw new Error("Procedural fields require a Motion Canvas scene.");
   const config=normalizedProceduralConfig(change.config);

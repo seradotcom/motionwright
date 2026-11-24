@@ -5,8 +5,8 @@ import { sameProjectRevision } from "./projectMutation";
 import { sameValue } from "./creativeProduction";
 import { applyProductStageChange, defaultProductStageConfig, validateProductStageConfig } from "./productStage";
 import type { ProductStageConfig } from "./productStage";
-import { defaultProceduralConfig, normalizedProceduralConfig, realizeProceduralField, validateProceduralConfig } from "./proceduralField";
-import type { ProceduralConfig } from "./proceduralField";
+import { applyProceduralChange, defaultProceduralConfig, defaultProceduralInfluence, normalizedProceduralConfig, validateProceduralConfig } from "./proceduralField";
+import type { ProceduralConfig, ProceduralInfluence } from "./proceduralField";
 import { applyStageCaptureChange } from "./stageCapture";
 import { applyMeasuredBinding, applyMeasuredTable, detachMeasuredBinding, measuredOutput, validateMeasuredTable, validateMeasuredView } from "./measuredData";
 import type { MeasuredTable, MeasuredView } from "./measuredData";
@@ -16,7 +16,14 @@ export type WorkbenchTarget = { kind: WorkbenchKind; sceneId: string | null };
 export type StageRaw = Omit<ProductStageConfig, "focus_x_permille" | "focus_y_permille"> & { focus_x_permille: string; focus_y_permille: string };
 export const PROCEDURAL_NUMBERS = ["seed", "count", "columns", "origin_x", "origin_y", "area_width", "area_height", "size", "opacity_percent", "reveal_step_frames", "reveal_duration_frames"] as const;
 type ProceduralNumber = typeof PROCEDURAL_NUMBERS[number];
-export type ProceduralRaw = Omit<Required<ProceduralConfig>, ProceduralNumber> & Record<ProceduralNumber, string>;
+export const INFLUENCE_NUMBERS = ["center_x", "center_y", "radius", "offset_x", "offset_y", "scale_percent", "rotation_deg"] as const;
+type InfluenceNumber = typeof INFLUENCE_NUMBERS[number];
+export type InfluenceRaw = Omit<ProceduralInfluence, InfluenceNumber> & Record<InfluenceNumber, string> & { enabled: boolean };
+export type ProceduralRaw = Omit<Required<ProceduralConfig>, ProceduralNumber | "influence"> & Record<ProceduralNumber, string> & { influence?: InfluenceRaw };
+export function rawProceduralInfluence(config = defaultProceduralInfluence(), enabled = true): InfluenceRaw {
+  return { ...Object.fromEntries(Object.entries(config).map(([key, value]) =>
+    [key, INFLUENCE_NUMBERS.includes(key as InfluenceNumber) ? String(value) : value])), enabled } as InfluenceRaw;
+}
 export interface MeasuredRaw {
   draftId: string; label: string; assetId: string; rowsText: string;
   selectedNode: string; selectedKey: string; view: MeasuredView["kind"];
@@ -83,14 +90,21 @@ export function productStageCreationIssue(project: Project, sceneId: string | nu
   return null;
 }
 export function proceduralConfig(raw: ProceduralRaw): ProceduralConfig {
-  const result = { ...raw } as unknown as Required<ProceduralConfig>;
+  const { influence, ...fields } = raw, result = { ...fields } as unknown as ProceduralConfig;
   for (const key of PROCEDURAL_NUMBERS) result[key] = authoredInteger(raw[key], key, 0, key === "seed" ? 0xffffffff : 1920);
+  if (influence?.enabled) {
+    const { enabled: _enabled, ...values } = influence;
+    const parsed = { ...values } as unknown as ProceduralInfluence;
+    for (const key of INFLUENCE_NUMBERS) parsed[key] = authoredInteger(influence[key], "Influence " + key, -4096, 4096);
+    result.influence = parsed;
+  }
   validateProceduralConfig(result); return result;
 }
 function rawStage(config: ProductStageConfig): StageRaw { return { ...clone(config), focus_x_permille: String(config.focus_x_permille), focus_y_permille: String(config.focus_y_permille) }; }
 function rawProcedural(config: ProceduralConfig): ProceduralRaw {
-  const result = normalizedProceduralConfig(config) as Required<ProceduralConfig>;
-  return Object.fromEntries(Object.entries(result).map(([key, value]) => [key, PROCEDURAL_NUMBERS.includes(key as ProceduralNumber) ? String(value) : value])) as ProceduralRaw;
+  const { influence, ...result } = normalizedProceduralConfig(config);
+  return { ...Object.fromEntries(Object.entries(result).map(([key, value]) => [key, PROCEDURAL_NUMBERS.includes(key as ProceduralNumber) ? String(value) : value])),
+    ...(influence ? { influence: rawProceduralInfluence(influence) } : {}) } as ProceduralRaw;
 }
 function newMeasuredRaw(table?: MeasuredTable): MeasuredRaw {
   return { draftId: table?.id ?? crypto.randomUUID(), label: table?.label ?? "", assetId: table?.source_asset_id ?? "", rowsText: JSON.stringify(table?.rows ?? [], null, 2),
@@ -187,8 +201,10 @@ export async function prepareWorkbenchSubmission(draft: WorkbenchDraft, project:
   } else if (input.kind === "procedural") {
     const stored = project.production_design?.procedural_fields?.find(value => value.scene_id === scene!.id);
     if (operation === "save") {
-      const config = proceduralConfig(input.config), instanceId = stored?.id ?? crypto.randomUUID(); await realizeProceduralField(instanceId, config);
+      const config = proceduralConfig(input.config), instanceId = stored?.id ?? crypto.randomUUID();
       change = { type: "upsert_procedural_field", instance_id: instanceId, scene_id: scene!.id, config };
+      // Complete authoring preflight: duration, bounds, locks, overrides and count.
+      await applyProceduralChange(clone(project), change);
     } else if (operation === "detach" && stored) { change = { type: "detach_procedural_field", instance_id: stored.id }; nodesBefore = clone(scene!.nodes); }
     else throw new Error("Unsupported procedural action or missing field.");
   } else {
@@ -248,7 +264,8 @@ function remainingInput(input: WorkbenchInput, target: WorkbenchTarget, project:
     }
     if (input.kind === "procedural") {
       const saved = project.production_design?.procedural_fields?.find(value => value.scene_id === target.sceneId);
-      return !saved || !sameValue(normalizedProceduralConfig(proceduralConfig(input.config)), normalizedProceduralConfig(saved.config));
+      return !saved || input.config.influence?.enabled === false
+        || !sameValue(normalizedProceduralConfig(proceduralConfig(input.config)), normalizedProceduralConfig(saved.config));
     }
     return Object.values(input.tables).some(raw => {
       const table = project.production_design?.measured_tables?.find(value => value.id === raw.draftId);
@@ -309,6 +326,8 @@ export async function inspectWorkbenchOutcome(draft: WorkbenchDraft, selected: P
 }
 export function releaseWorkbenchOutcome(draft: WorkbenchDraft, project: Project, review: WorkbenchOutcomeReview): WorkbenchDraft {
   if (!workbenchOutcomeMatches(draft, project, review)) throw new Error("Read the current project and its complete history before a separate intent.");
+  if (project.revision <= draft.pending!.revision)
+    throw new Error("The unconfirmed workbench attempt could still commit at this revision. Keep its original copy until the saved project advances.");
   return { ...draft, baseRevision: project.revision, base: workbenchSavedInput(project, draft.target, draft.input), pending: null, intent: true };
 }
 
@@ -318,13 +337,19 @@ export interface WorkbenchCopy { schema: "motionwright.creative-workbench-recove
 export interface WorkbenchRecoveryEntry { key: string; writerId: string; raw: string; value: WorkbenchCopy | null }
 const allStrings = (value: Record<string, unknown>, keys: readonly string[]) => keys.every(key => typeof value[key] === "string");
 const stageTextKeys = ["screen_heading", "screen_detail", "action_label", "author_attestation", "screen_surface", "foreground", "accent", "focus_x_permille", "focus_y_permille"];
+function influenceRawShape(value: unknown): value is InfluenceRaw {
+  return record(value) && exact(value, ["enabled", "shape", "falloff", "fill", ...INFLUENCE_NUMBERS])
+    && typeof value.enabled === "boolean" && allStrings(value, ["fill", ...INFLUENCE_NUMBERS])
+    && ["radial", "horizontal", "vertical"].includes(String(value.shape)) && ["linear", "smoothstep"].includes(String(value.falloff));
+}
 function inputShape(value: unknown): value is WorkbenchInput {
   if (!record(value)) return false;
   if (value.kind === "stage") return exact(value, ["kind", "config", "captureId"]) && typeof value.captureId === "string" && record(value.config)
     && exact(value.config, ["frame", "animate_focus", ...stageTextKeys]) && allStrings(value.config, stageTextKeys)
     && ["browser", "flat_panel", "generic_handset"].includes(String(value.config.frame)) && typeof value.config.animate_focus === "boolean";
   if (value.kind === "procedural") return exact(value, ["kind", "config"]) && record(value.config)
-    && exact(value.config, [...PROCEDURAL_NUMBERS, "distribution", "shape", "fill"]) && allStrings(value.config, [...PROCEDURAL_NUMBERS, "fill"])
+    && exact(value.config, [...PROCEDURAL_NUMBERS, "distribution", "shape", "fill"], ["influence"])
+    && (value.config.influence === undefined || influenceRawShape(value.config.influence)) && allStrings(value.config, [...PROCEDURAL_NUMBERS, "fill"])
     && ["grid", "staggered", "scatter", "radial", "spiral"].includes(String(value.config.distribution)) && ["square", "circle"].includes(String(value.config.shape));
   if (value.kind !== "measured" || !exact(value, ["kind", "selectedTable", "tables"]) || typeof value.selectedTable !== "string" || !record(value.tables)
     || Object.keys(value.tables).length > 17 || !Object.hasOwn(value.tables, value.selectedTable)) return false;
@@ -351,7 +376,7 @@ function changeShape(value: unknown, kind: WorkbenchKind): value is WorkbenchCha
   if (kind === "procedural") {
     if (value.type === "detach_procedural_field") return exact(value, ["type", "instance_id"]) && uuid(value.instance_id);
     if (value.type !== "upsert_procedural_field" || !exact(value, ["type", "instance_id", "scene_id", "config"]) || !uuid(value.instance_id) || !uuid(value.scene_id) || !record(value.config)
-      || !exact(value.config, [...PROCEDURAL_NUMBERS, "distribution", "shape", "fill"])) return false;
+      || !exact(value.config, [...PROCEDURAL_NUMBERS, "distribution", "shape", "fill"], ["influence"])) return false;
     try { validateProceduralConfig(value.config as unknown as ProceduralConfig); return true; } catch { return false; }
   }
   if (value.type === "upsert_measured_table") return exact(value, ["type", "table"]) && tableShape(value.table);

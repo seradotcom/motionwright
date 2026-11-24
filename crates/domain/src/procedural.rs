@@ -26,6 +26,57 @@ pub enum ProceduralShape {
     Circle,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InfluenceShape {
+    Radial,
+    Horizontal,
+    Vertical,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InfluenceFalloff {
+    Linear,
+    Smoothstep,
+}
+/// A bounded static field over the original item centers. Integer sampling and
+/// Q10_000 weights are mirrored by Studio; no provider or runtime randomness.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProceduralInfluence {
+    pub shape: InfluenceShape,
+    pub falloff: InfluenceFalloff,
+    pub center_x: u16,
+    pub center_y: u16,
+    pub radius: u16,
+    pub offset_x: i16,
+    pub offset_y: i16,
+    pub scale_percent: u16,
+    pub rotation_deg: i16,
+    pub fill: String,
+}
+impl ProceduralInfluence {
+    fn validate(&self) -> Result<()> {
+        if self.center_x > 1920
+            || self.center_y > 1080
+            || self.radius == 0
+            || self.radius > 4096
+            || !(-1920..=1920).contains(&self.offset_x)
+            || !(-1080..=1080).contains(&self.offset_y)
+            || !(25..=400).contains(&self.scale_percent)
+            || !(-360..=360).contains(&self.rotation_deg)
+            || self.fill.len() != 7
+            || !self.fill.starts_with('#')
+            || !self.fill.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
+        {
+            return Err(DomainError::Invalid(
+                "procedural influence exceeds its position, style or CPU bounds".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProceduralConfig {
@@ -48,6 +99,9 @@ pub struct ProceduralConfig {
     pub reveal_step_frames: u8,
     #[serde(default = "default_reveal_duration")]
     pub reveal_duration_frames: u8,
+    /// Omitted legacy documents retain the exact original v1 baseline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub influence: Option<ProceduralInfluence>,
 }
 const fn default_reveal_duration() -> u8 {
     12
@@ -69,6 +123,7 @@ impl Default for ProceduralConfig {
             fill: "#A5C8DF".into(),
             reveal_step_frames: 0,
             reveal_duration_frames: default_reveal_duration(),
+            influence: None,
         }
     }
 }
@@ -100,6 +155,12 @@ impl ProceduralConfig {
             return Err(DomainError::Invalid(
                 "procedural field exceeds 1920x1080 authored stage".into(),
             ));
+        }
+        if let Some(field) = &self.influence {
+            field.validate()?;
+            if self.reveal_step_frames > 0 && field.rotation_deg != 0 {
+                return Err(DomainError::Invalid("sequenced influence fields require zero orientation; disable entrances for static orientation".into()));
+            }
         }
         let columns = u32::from(self.columns).min(u32::from(self.count));
         let rows = u32::from(self.count).div_ceil(columns);
@@ -187,6 +248,105 @@ fn orbit_position(index: u32, config: &ProceduralConfig) -> (u32, u32) {
     (x as u32, y as u32)
 }
 
+struct InfluencedItem {
+    x: f64,
+    y: f64,
+    size: u32,
+    rotation: f64,
+    fill: String,
+}
+/// All source centers lie in the 1920x1080 stage. A fixed 14-step integer
+/// square-root search samples radial distance in half-pixel units.
+fn influence_distance(value: i64) -> i64 {
+    let (mut low, mut high) = (0_i64, 8192_i64);
+    while low <= high {
+        let middle = (low + high) / 2;
+        if middle * middle <= value {
+            low = middle + 1;
+        } else {
+            high = middle - 1;
+        }
+    }
+    high
+}
+fn influenced_item(x: u32, y: u32, config: &ProceduralConfig) -> Result<InfluencedItem> {
+    let mut item = InfluencedItem {
+        x: f64::from(x),
+        y: f64::from(y),
+        size: u32::from(config.size),
+        rotation: 0.0,
+        fill: config.fill.clone(),
+    };
+    let Some(field) = &config.influence else {
+        return Ok(item);
+    };
+    let center_x2 = i64::from(x) * 2 + i64::from(config.size);
+    let center_y2 = i64::from(y) * 2 + i64::from(config.size);
+    let dx = center_x2 - i64::from(field.center_x) * 2;
+    let dy = center_y2 - i64::from(field.center_y) * 2;
+    let distance = match field.shape {
+        InfluenceShape::Radial => influence_distance(dx * dx + dy * dy),
+        InfluenceShape::Horizontal => dx.abs(),
+        InfluenceShape::Vertical => dy.abs(),
+    };
+    let radius = i64::from(field.radius) * 2;
+    let mut weight = (radius - distance).max(0) * 10_000 / radius;
+    if field.falloff == InfluenceFalloff::Smoothstep {
+        weight = weight * weight * (30_000 - 2 * weight) / 100_000_000;
+    }
+    if weight == 0 {
+        return Ok(item);
+    }
+    let size = i64::from(config.size)
+        + i64::from(config.size) * (i64::from(field.scale_percent) - 100) * weight / 1_000_000;
+    if !(4..=128).contains(&size) {
+        return Err(DomainError::Invalid(
+            "procedural influence must keep every object between 4 and 128 pixels".into(),
+        ));
+    }
+    item.size = size as u32;
+    item.rotation = (i64::from(field.rotation_deg) * weight / 10_000) as f64;
+    item.x = (center_x2 - size) as f64 / 2.0 + (i64::from(field.offset_x) * weight / 10_000) as f64;
+    item.y = (center_y2 - size) as f64 / 2.0 + (i64::from(field.offset_y) * weight / 10_000) as f64;
+    if !config.fill.eq_ignore_ascii_case(&field.fill) {
+        let mut channels = [0_i64; 3];
+        for (index, channel) in channels.iter_mut().enumerate() {
+            let from = i64::from(
+                u8::from_str_radix(&config.fill[1 + index * 2..3 + index * 2], 16)
+                    .expect("validated RGB channel"),
+            );
+            let to = i64::from(
+                u8::from_str_radix(&field.fill[1 + index * 2..3 + index * 2], 16)
+                    .expect("validated RGB channel"),
+            );
+            *channel = from + (to - from) * weight / 10_000;
+        }
+        item.fill = format!("#{:02X}{:02X}{:02X}", channels[0], channels[1], channels[2]);
+    }
+    // Non-right-angle squares use a conservative integer diagonal envelope.
+    // Nothing is clamped, clipped or scaled back into the stage.
+    let half = if config.shape == ProceduralShape::Square && item.rotation as i64 % 90 != 0 {
+        (u64::from(item.size) * 141_422).div_ceil(200_000) as f64
+    } else {
+        size as f64 / 2.0
+    };
+    let center_x = item.x + size as f64 / 2.0;
+    let center_y = item.y + size as f64 / 2.0;
+    let entrance = if config.reveal_step_frames > 0 {
+        12.0
+    } else {
+        0.0
+    };
+    if center_x - half < 0.0
+        || center_y - half < 0.0
+        || center_x + half > 1920.0
+        || center_y + half + entrance > 1080.0
+    {
+        return Err(DomainError::Invalid("procedural influence or entrance exceeds the 1920x1080 authored stage; no clipping was applied".into()));
+    }
+    Ok(item)
+}
+
 /// Generates real, individually editable native Canvas nodes.
 pub fn realize_procedural_field(id: Uuid, config: &ProceduralConfig) -> Result<Vec<CanvasNode>> {
     config.validate()?; // all limits checked before creating any nodes
@@ -232,6 +392,7 @@ pub fn realize_procedural_field(id: Uuid, config: &ProceduralConfig) -> Result<V
                 u32::from(config.origin_y) + row * cell_h + dy,
             )
         };
+        let influenced = influenced_item(x, y, config)?;
         let node = CanvasNode {
             id: procedural_node_id(id, index),
             name: format!("ProceduralField / item {index:03}"),
@@ -241,18 +402,18 @@ pub fn realize_procedural_field(id: Uuid, config: &ProceduralConfig) -> Result<V
             }
             .into(),
             parent_id: None,
-            x: f64::from(x),
-            y: f64::from(y),
-            width: f64::from(size),
-            height: f64::from(size),
-            rotation_deg: 0.0,
+            x: influenced.x,
+            y: influenced.y,
+            width: f64::from(influenced.size),
+            height: f64::from(influenced.size),
+            rotation_deg: influenced.rotation,
             opacity: f64::from(config.opacity_percent) / 100.0,
             text: None,
             coordinate_space: CoordinateSpace::ProjectPixels,
             // Native Film admits up to 32 layers: repetition shares one underlying layer.
             z_index: -32,
             style: NodeStyle {
-                fill: Some(config.fill.clone()),
+                fill: Some(influenced.fill),
                 ..Default::default()
             },
             relations: vec![],
@@ -268,7 +429,7 @@ pub fn realize_procedural_field(id: Uuid, config: &ProceduralConfig) -> Result<V
                 let mut keys = vec![];
                 for property in [MotionProperty::Y, MotionProperty::Opacity] {
                     let value = if property == MotionProperty::Y {
-                        f64::from(y) + 12.0
+                        influenced.y + 12.0
                     } else {
                         0.0
                     };
@@ -290,7 +451,7 @@ pub fn realize_procedural_field(id: Uuid, config: &ProceduralConfig) -> Result<V
                         at: RationalTime::new(i64::from(end), 30).expect("bounded timeline"),
                         property,
                         value: if property == MotionProperty::Y {
-                            f64::from(y)
+                            influenced.y
                         } else {
                             1.0
                         },
@@ -337,7 +498,13 @@ impl Project {
     ) -> Result<()> {
         self.ensure_unlocked(
             &self.resource_key(),
-            &[LockKind::Content, LockKind::Position, LockKind::Style],
+            &[
+                LockKind::Content,
+                LockKind::Position,
+                LockKind::Style,
+                LockKind::Timing,
+                LockKind::Renderer,
+            ],
         )?;
         self.ensure_unlocked(
             &format!("scene:{scene_id}"),
@@ -345,6 +512,7 @@ impl Project {
                 LockKind::Content,
                 LockKind::Position,
                 LockKind::Style,
+                LockKind::Timing,
                 LockKind::Renderer,
             ],
         )?;

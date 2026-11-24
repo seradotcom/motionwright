@@ -261,3 +261,48 @@ describe("ProductStage existing project eligibility before mutation dispatch", (
     expect(receipt.production_design!.stages![0].baseline.map(value => value.id)).toEqual(stored.baseline.map(value => value.id));
   });
 });
+
+import { proceduralConfig, rawProceduralInfluence } from "./creativeWorkbenchDraft";
+
+describe("complete procedural influence drafts", () => {
+  it("retains incomplete and disabled influence fields through copy, original ACK and later revisions", async () => {
+    const project = source(), draft = create(project, "procedural");
+    if (draft.input.kind !== "procedural") throw new Error("Expected procedural input");
+    const raw = { ...rawProceduralInfluence(), offset_x: "-", scale_percent: "150" };
+    let edited = editWorkbenchDraft(draft, { ...draft.input, config: { ...draft.input.config, influence: raw } });
+    const copy = () => decodeWorkbenchCopy(encodeWorkbenchCopy({ schema: "motionwright.creative-workbench-recovery/1",
+      scope: edited.scope, writerId: writer, updatedAt: 1, draft: edited }), edited.scope, writer).draft;
+    expect(copy().input).toEqual(edited.input);
+    await expect(prepareWorkbenchSubmission(edited, project, requestId, "save")).rejects.toThrow("complete integer");
+    if (edited.input.kind !== "procedural") throw new Error("Expected procedural input");
+    edited = editWorkbenchDraft(edited, { ...edited.input, config: { ...edited.input.config, influence: { ...raw, offset_x: "20" } } });
+    const first = await prepareWorkbenchSubmission(edited, project, requestId, "save"), saved = await applyChange(project, first.change);
+    const acknowledged = acknowledgeWorkbenchDraft(first.draft, requestId, saved);
+    if (acknowledged.input.kind !== "procedural") throw new Error("Expected procedural input");
+    edited = editWorkbenchDraft(acknowledged, { ...acknowledged.input, config: { ...acknowledged.input.config, influence: { ...raw, enabled: false } } });
+    expect(proceduralConfig(edited.input.kind === "procedural" ? edited.input.config : draft.input.config).influence).toBeUndefined();
+    const disabled = await prepareWorkbenchSubmission(edited, saved, fork, "save"), receipt = await applyChange(saved, disabled.change);
+    edited = acknowledgeWorkbenchDraft(disabled.draft, fork, receipt);
+    expect(edited.intent).toBe(true); expect(copy().input).toEqual(edited.input);
+    const peer = { ...receipt, revision: receipt.revision + 1 };
+    expect(reconcileWorkbenchDraft(edited, peer).input).toEqual(edited.input);
+    expect(receipt.production_design!.procedural_fields![0].config.influence).toBeUndefined();
+  });
+  it("refuses a new intent while the original UNKNOWN could still commit at the same revision", async () => {
+    const { project, prepared } = await armed("procedural");
+    const review = await inspectWorkbenchOutcome(prepared.draft, project, { readProject: async () => project, readHistory: async () => [] });
+    expect(review.events).toEqual([]);
+    expect(() => releaseWorkbenchOutcome(prepared.draft, project, review)).toThrow("could still commit");
+    expect(workbenchUnconfirmed(prepared.draft)).toBe(true);
+  });
+  it("validates the complete scene budget and timing locks before a procedural dispatch is prepared", async () => {
+    const project = source(), draft = create(project, "procedural");
+    if (draft.input.kind !== "procedural") throw new Error("Expected procedural input");
+    const long = editWorkbenchDraft(draft, { ...draft.input, config: { ...draft.input.config, count: "64", reveal_step_frames: "10", reveal_duration_frames: "60" } });
+    await expect(prepareWorkbenchSubmission(long, project, requestId, "save")).rejects.toThrow("scene duration");
+    const locked = { ...project, locks: [{ ...fixtureProject.locks[0], id: crypto.randomUUID(), resource: "scene:" + project.scenes[0].id, kind: "timing" as const }] };
+    const authored = editWorkbenchDraft(create(locked, "procedural"), { ...draft.input, config: { ...draft.input.config, influence: rawProceduralInfluence() } });
+    await expect(prepareWorkbenchSubmission(authored, locked, requestId, "save")).rejects.toThrow("locked");
+    expect(authored.pending).toBeNull();
+  });
+});
