@@ -75,9 +75,27 @@ pub(crate) fn guard_motion_scenes(
             role: closed_value(&intent.role)?,
             archetype: closed_value(&intent.archetype)?,
         };
-        project
+        if let Some(resolved) = project
             .resolve_scene_boundary_for_execution(scene_id, deliverable_id, &actual)
-            .map_err(|error| invalid(format!("Native SceneBoundary admission failed: {error}")))?;
+            .map_err(|error| invalid(format!("Native SceneBoundary admission failed: {error}")))?
+        {
+            let profile = project
+                .deliverables
+                .iter()
+                .find(|profile| profile.id == deliverable_id)
+                .ok_or_else(|| invalid("SceneBoundary deliverable is missing"))?;
+            let mut successor = resolved.boundary;
+            for predecessor in resolved.predecessors {
+                crate::film::film_boundary_appearance::validate_pair(
+                    project,
+                    profile,
+                    options.frame_rate,
+                    predecessor,
+                    successor,
+                )?;
+                successor = predecessor;
+            }
+        }
     }
     Ok(())
 }

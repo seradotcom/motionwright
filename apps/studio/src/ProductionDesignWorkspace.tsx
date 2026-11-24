@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpRight, Check, FileBox, Layers, Plus, RefreshCw, Save } from "lucide-react";
 import type { CanvasNode, Change, Project, Scene, DeliverableProfile, MotionCanvasRenderEvidence, SceneBoundaryContextRequest, SceneBoundaryEndpoint } from "./types";
 import { seconds } from "./types";
+import { reviewBoundaryAppearance } from "./boundaryAppearanceReview";
 import CompositionStudy from "./CompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { emptyProductionDesign, parseSceneBoundaryEndpoint, realizeProductHero, sameValue, sceneBoundaryNarrativeRoles, sceneBoundaryArchetypes } from "./creativeProduction";
@@ -696,6 +697,9 @@ function SceneBoundaryEditor({ project, scene, boundaryId, commitCamera, busy, o
   } catch { /* The complete raw mapping remains editable below. */ }
   const entry = readEndpointInput(input.entryJson).endpoint;
   const predecessorNodes = predecessor?.definition.exit?.nodes ?? [];
+  const appearanceReviews = scene && profile && predecessor && entry && appearances
+    ? appearances.map(appearance => reviewBoundaryAppearance(project, scene, profile, predecessor, entry, appearance))
+    : [];
   return <div className="production-split" aria-label="Scene boundary editor" role="region">
     <section className="production-inspector" style={{ minWidth: 0 }}>
       <div className="production-section-title"><Layers size={16}/><div><h2>Scene boundary</h2><p>Author the entry, exit and inherited appearances.</p></div></div>
@@ -742,6 +746,13 @@ function SceneBoundaryEditor({ project, scene, boundaryId, commitCamera, busy, o
               <option value="">Choose an object</option>{appearance[key] && !nodes.some(node => node.id === appearance[key]) && <option value={appearance[key]}>Unavailable · {appearance[key]}</option>}{nodes.map(node => <option key={node.id} value={node.id}>{node.name}</option>)}</select></label>)}
           <button className="text-button" onClick={() => patch({ appearancesJson: JSON.stringify(appearances!.filter((_, rowIndex) => rowIndex !== index), null, 2) })}>Remove appearance {index + 1}</button>
         </div>)}
+        {appearanceReviews.length > 0 && <div aria-label="Authored appearance continuity review" className="production-help">
+          <p>Cut review compares the saved exit and entry poses, including camera translation. This is not a morph, velocity or native-pixel verification.</p>
+          <ul>{appearanceReviews.map((review, index) => <li key={index} className={review.status === "loss" ? "production-error" : undefined}>
+            <strong>Appearance {index + 1}: {review.status === "matching_pose" ? "Pose match" : review.status === "loss" ? "Continuity loss" : "Unsupported"}</strong>
+            {" ? "}{review.detail}{review.displacement !== undefined && Number.isFinite(review.displacement) ? " Center displacement: " + review.displacement.toFixed(2) + " output px." : ""}
+          </li>)}</ul>
+        </div>}
         <button className="secondary-button" disabled={!appearances} onClick={() => patch({ appearancesJson: JSON.stringify([...appearances!, { predecessor_node_id: "", successor_node_id: "" }], null, 2) })}>Add inherited appearance</button>
         <label className="production-field"><span>Appearance mapping data</span><textarea aria-label="Boundary appearance mapping" rows={5} spellCheck={false} value={input.appearancesJson} onChange={event => patch({ appearancesJson: event.target.value })}/></label>
       </section>}

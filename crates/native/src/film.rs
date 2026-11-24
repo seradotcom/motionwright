@@ -1,3 +1,5 @@
+#[path = "film_boundary_appearance.rs"]
+pub(crate) mod film_boundary_appearance;
 #[path = "film_brand_fonts.rs"]
 mod film_brand_fonts;
 #[path = "film_captions.rs"]
@@ -6237,6 +6239,149 @@ mod tests {
         assert_eq!(error.code, ErrorCode::InvalidArgument);
         assert!(error.message.contains("SceneBoundary"));
         assert_eq!(project, before);
+    }
+
+    #[test]
+    fn mapped_boundary_checks_real_cut_pose_before_native_projection() {
+        use motionwright_domain::{
+            SceneBoundary, SceneBoundaryAppearance, SceneBoundaryArchetype,
+            SceneBoundaryDefinition, SceneBoundaryEndpoint, SceneBoundaryFilmOptions,
+            SceneBoundaryInput, SceneBoundaryNarrativeRole,
+        };
+        for case in [
+            "match",
+            "jump",
+            "appearance",
+            "invisible",
+            "snapshot",
+            "reordered",
+        ] {
+            let mut project = fixture_project();
+            let mut from = node("rectangle", None);
+            from.x = 650.0;
+            from.y = 350.0;
+            from.width = 250.0;
+            from.height = 180.0;
+            let mut to = from.clone();
+            to.id = Uuid::now_v7();
+            to.x += 80.0;
+            for (at, x, y) in [
+                (
+                    RationalTime::ZERO,
+                    from.x + if case == "jump" { 25.0 } else { 0.0 },
+                    from.y,
+                ),
+                (RationalTime::new(1, 2).unwrap(), to.x, to.y),
+            ] {
+                for (property, value) in [(MotionProperty::X, x), (MotionProperty::Y, y)] {
+                    to.keyframes.push(CanvasKeyframe {
+                        at,
+                        property,
+                        value,
+                        interpolation: MotionInterpolation::Linear,
+                    });
+                }
+            }
+            if case == "appearance" {
+                to.style.fill = Some("#f05a32".into());
+            }
+            if case == "invisible" {
+                for (at, value) in [
+                    (RationalTime::ZERO, 0.0),
+                    (RationalTime::new(1, 2).unwrap(), 1.0),
+                ] {
+                    to.keyframes.push(CanvasKeyframe {
+                        at,
+                        property: MotionProperty::Opacity,
+                        value,
+                        interpolation: MotionInterpolation::Linear,
+                    });
+                }
+            }
+            project.scenes[0].nodes = vec![from.clone()];
+            project.scenes[1].nodes = vec![to.clone()];
+            let options = fixture_options(&project);
+            let profile = project.deliverables[0].id;
+            let actual = SceneBoundaryFilmOptions {
+                frame_rate: options.frame_rate,
+                font_family: options.font_family.clone(),
+                mono_font_family: options.mono_font_family.clone(),
+                role: SceneBoundaryNarrativeRole::Mechanism,
+                archetype: SceneBoundaryArchetype::Statement,
+            };
+            let make = |project: &Project, index: usize| {
+                let scene = &project.scenes[index];
+                let endpoint = SceneBoundaryEndpoint {
+                    nodes: scene.nodes.clone(),
+                    camera: Some(scene.camera.clone()),
+                    assets: vec![],
+                };
+                SceneBoundary {
+                    version: motionwright_domain::SCENE_BOUNDARY_VERSION,
+                    id: Uuid::now_v7(),
+                    scene_id: scene.id,
+                    input: SceneBoundaryInput::SelfContained,
+                    definition: SceneBoundaryDefinition::Explicit {
+                        source: project
+                            .capture_scene_boundary_source(scene.id, profile, &actual)
+                            .unwrap(),
+                        entry: endpoint.clone(),
+                        exit: endpoint,
+                    },
+                }
+            };
+            let predecessor = make(&project, 0);
+            project
+                .apply_change(&Change::UpsertSceneBoundary {
+                    boundary: Box::new(predecessor.clone()),
+                })
+                .unwrap();
+            let mut successor = make(&project, 1);
+            successor.input = SceneBoundaryInput::Predecessor {
+                scene_id: Some(predecessor.scene_id),
+                boundary_id: Some(predecessor.id),
+                exit_sha256: Some(predecessor.bound_exit_sha256().unwrap()),
+                appearances: vec![SceneBoundaryAppearance {
+                    predecessor_node_id: from.id,
+                    successor_node_id: to.id,
+                }],
+            };
+            if case == "snapshot" {
+                let SceneBoundaryDefinition::Explicit { entry, .. } = &mut successor.definition
+                else {
+                    unreachable!()
+                };
+                entry.nodes[0].x += 10.0;
+            }
+            project
+                .apply_change(&Change::UpsertSceneBoundary {
+                    boundary: Box::new(successor),
+                })
+                .unwrap();
+            if case == "reordered" {
+                project.deliverables[0].included_scene_ids =
+                    vec![project.scenes[1].id, project.scenes[0].id];
+            }
+            let before = project.clone();
+            let result = build_motion_canvas_segments(&project, profile, &options);
+            if case == "match" {
+                let segments = result.unwrap();
+                assert!(
+                    segments
+                        .iter()
+                        .all(|segment| realize(&segment.film).is_ok())
+                );
+            } else {
+                let error = result.unwrap_err();
+                assert!(
+                    error
+                        .message
+                        .contains("SceneBoundary appearance continuity loss"),
+                    "{case}: {error:?}"
+                );
+            }
+            assert_eq!(project, before);
+        }
     }
 
     #[test]
