@@ -143,6 +143,15 @@ fn absolute_asset_path(value: &str) -> Result<PathBuf, FileImportError> {
 }
 
 fn infer_media_type(path: &std::path::Path) -> &'static str {
+    // This is a declared source format, not compiler or execution authority.
+    // The Manim inspector still verifies the complete attached CAS package.
+    if path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().ends_with(".mwedit.zip"))
+    {
+        return "application/vnd.motionwright.manim-source+zip";
+    }
     match path
         .extension()
         .and_then(|value| value.to_str())
@@ -955,6 +964,13 @@ mod tests {
             ("srt", "application/x-subrip"),
             ("vtt", "text/vtt"),
             ("txt", "text/plain"),
+            (
+                "mwedit.zip",
+                "application/vnd.motionwright.manim-source+zip",
+            ),
+            ("zip", "application/octet-stream"),
+            ("mwedit.zip.exe", "application/octet-stream"),
+            ("mwedit.zip.txt", "text/plain"),
             ("unknown", "application/octet-stream"),
         ];
         for (extension, expected) in mappings {

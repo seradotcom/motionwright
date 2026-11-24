@@ -523,18 +523,60 @@ mod tests {
         path: &Path,
         name: &str,
     ) -> (Project, Uuid) {
-        let next = service
-            .import_asset_file(
-                project.id,
-                &RevisionStamp::from(project),
-                name,
-                path,
-                name.into(),
-                MIME.into(),
+        use crate::file_import::{
+            FileImportDispatchRequest, FileImportKind, FileImportPrepareRequest, import_asset_file,
+            prepare_file_import,
+        };
+        // Follow the same metadata-only preparation and one-time grant used
+        // by Assets. The user need not supply an implementation MIME string.
+        let prepared = prepare_file_import(
+            service,
+            FileImportPrepareRequest {
+                project_id: project.id,
+                generation: project.generation,
+                revision: project.revision,
+                kind: FileImportKind::Asset,
+                path: path.to_str().unwrap().into(),
+                name: None,
+                media_type: None,
+                label: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            prepared.intent,
+            motionwright_service::FileImportIntent::Asset {
+                name: name.into(),
+                media_type: MIME.into(),
+            }
+        );
+        let grants = EffectGrantRegistry::default();
+        let grant = grants
+            .issue(
+                EffectKind::ImportLocal,
+                EffectScope::project(project.id, project.generation, project.revision),
+                &prepared.path,
             )
-            .unwrap()
-            .project;
-        let id = next.assets.iter().find(|a| a.name == name).unwrap().id;
+            .unwrap();
+        let receipt = import_asset_file(
+            service,
+            &grants,
+            FileImportDispatchRequest {
+                project_id: project.id,
+                generation: project.generation,
+                revision: project.revision,
+                request_id: Uuid::new_v4().to_string(),
+                effect_grant: grant.token,
+                path: prepared.path,
+                intent: prepared.intent,
+            },
+        )
+        .unwrap();
+        assert!(!receipt.replayed);
+        let next = receipt.project;
+        let asset = next.assets.iter().find(|a| a.name == name).unwrap();
+        assert_eq!(asset.media_type, MIME);
+        let id = asset.id;
         (next, id)
     }
 
@@ -561,7 +603,7 @@ mod tests {
         let changed = CanvasTransform {
             x: 640.0,
             rotation_deg: 12.0,
-            ..pose.clone()
+            ..pose
         };
         project = apply(
             &service,
@@ -569,7 +611,7 @@ mod tests {
             Change::TransformCanvasNode {
                 scene_id,
                 node_id,
-                transform: changed.clone(),
+                transform: changed,
             },
         );
         let edited = export_original(&service, &project, scene_id, &edited_path);

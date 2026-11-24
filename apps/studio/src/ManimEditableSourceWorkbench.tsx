@@ -170,7 +170,7 @@ export default function ManimEditableSourceWorkbench({project,scene,profile,busy
       <button type="button" className="secondary-button" disabled={blocked || !destination.trim()} onClick={publish}><Download size={14} aria-hidden="true"/> Export inspected Manim package</button>
     </div>}
     <h4>Review a returned editable package</h4>
-    <p className="production-help">Import the original and a separate edited .mwedit.zip through the source saver or Assets, using media type <code>{MANIM_EDITABLE_MIME}</code>. The returned package must match the trusted compiler, not an arbitrary edited scene.py file.</p>
+    <p className="production-help">Import the original and a separate edited .mwedit.zip from Assets. These files appear in the package selectors automatically. Comparing a package verifies its contents against the trusted compiler before any project edit.</p>
     <div className="production-plan-grid">
       <label className="production-field"><span>Original package</span><select disabled={blocked} value={originalId} onChange={event=>{setOriginalId(event.target.value);setAttached(null);setPreview(null);setNodeId("");}}><option value="">Choose original attached package</option>{assets.map(asset=><option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
       <label className="production-field"><span>Edited package</span><select disabled={blocked} value={editedId} onChange={event=>{setEditedId(event.target.value);setPreview(null);}}><option value="">Choose separately attached package</option>{assets.filter(asset=>asset.id!==originalId).map(asset=><option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>

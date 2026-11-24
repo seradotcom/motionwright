@@ -342,7 +342,10 @@ jobs:
         run: cargo test --locked -p motionwright-desktop av_delivery
       - name: Owner Manim source exchange and original SQLite reopen
         if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'desktop-compile'
-        run: cargo test --locked --jobs 2 -p motionwright-desktop manim_source_ -- --test-threads=1
+        run: |
+          set -euo pipefail
+          cargo test --locked --jobs 2 -p motionwright-desktop preparation_reuses_complete_mime_map_and_trims_only_supplied_metadata -- --test-threads=1
+          cargo test --locked --jobs 2 -p motionwright-desktop manim_source_ -- --test-threads=1
       - name: Clippy desktop boundary
         run: cargo clippy --locked --jobs 2 -p motionwright-desktop --keep-going --all-targets -- -D warnings
 
