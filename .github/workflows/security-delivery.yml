@@ -90,6 +90,12 @@ on:
           - native-film-geometry
           - native-film-hold
           - native-geometry-readback
+      desktop_compile_platform:
+        description: Operating system for the desktop-compile scope only; no installer or Native effects
+        type: choice
+        required: false
+        default: linux
+        options: [linux, windows]
       first_use_case:
         description: Impact selection; static-rotation groups exact Native rotation with original Service rotation and Follow flows
         type: choice
@@ -221,20 +227,27 @@ jobs:
   desktop-boundary:
     needs: source-boundary
     if: ${{ !cancelled() && (needs.source-boundary.result == 'success' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["desktop-source","desktop-compile","desktop-hyperframes"]'), inputs.verification_scope))) }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'desktop-compile' && inputs.desktop_compile_platform == 'windows' && 'windows-latest' || 'ubuntu-24.04' }}
     timeout-minutes: 30
     env:
       CARGO_BUILD_JOBS: '2'
       CARGO_TERM_COLOR: never
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
           toolchain: 1.98.1
           components: clippy
       - name: Check selected Desktop source policy
-        run: python3 -B tooling/source_policy.py
+        run: python -B tooling/source_policy.py
       - name: Tauri Linux prerequisites
+        if: runner.os == 'Linux'
         run: |
           # Regional EC2 mirrors stalled the original prerequisite download.
           # Change only that URI; suites, components and signed keyrings stay intact.
