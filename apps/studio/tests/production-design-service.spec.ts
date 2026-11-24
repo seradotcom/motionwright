@@ -1045,3 +1045,74 @@ test("Scene boundary keeps invalid raw endpoint JSON and its prior source when a
   } catch (reason) { primary = { reason }; }
   finally { await finish(page, info, service, peers, final, observations, [], primary); }
 });
+
+test("native property review edits a complete source-bound batch, retains later input and reopens the same SQLite capsule", async ({ page }, info) => {
+  const service = await setup(info), observations: Record<string, unknown> = {};
+  let final: Project | undefined, primary: Failure | undefined, hold: ReturnType<typeof holdReply> | undefined;
+  try {
+    const initial = await unlocked(service), sceneId = initial.scenes[0].id;
+    await attachSources(page, service, initial, sceneId); await fillAttachment(page, attachmentFields(initial));
+    await button(page, "Attach source to scene").click(); await revision(page, initial.revision + 1);
+    const attached = await service.project(initial.id), capsule = attachmentFrom(applies(service).at(-1)!);
+    const panel = page.getByRole("region", { name: "Native per-property fidelity review", exact: true });
+    const select = () => panel.getByLabel("Native capsule for property negotiation").selectOption(capsule.id);
+    await select();
+    const writes = applies(service).length, grants = requests(service, "issue_effect_grant").length;
+    const firstNote = "The preserved source retains lens controls; the target edit has a declared loss.";
+    await panel.getByLabel("Native property path", { exact: true }).fill("camera.focal_length");
+    await panel.getByLabel("Native property fidelity", { exact: true }).selectOption("baked");
+    await panel.getByLabel("Native property loss note", { exact: true }).fill(firstNote);
+    await panel.getByRole("button", { name: "Add property to review", exact: true }).click();
+    await panel.getByLabel("Native property path", { exact: true }).fill("geometry.mesh");
+    await panel.getByLabel("Native property fidelity", { exact: true }).selectOption("native");
+    await panel.getByRole("button", { name: "Add property to review", exact: true }).click();
+    await panel.getByLabel("Native property path", { exact: true }).fill("animation.");
+    await expect(panel.getByRole("button", { name: "Save property review", exact: true })).toBeDisabled();
+    await page.reload(); await openAttachments(page, sceneId); await select();
+    await expect(panel.getByLabel("Native property path", { exact: true })).toHaveValue("animation.");
+    await expect(panel.getByLabel("Property classifications before and after")).toContainText("camera.focal_length");
+    expect(await service.project(initial.id)).toEqual(attached); expect(applies(service)).toHaveLength(writes);
+    expect(requests(service, "issue_effect_grant")).toHaveLength(grants);
+    await panel.getByRole("button", { name: "Clear property fields", exact: true }).click();
+    await panel.getByRole("button", { name: "Save property review", exact: true }).click(); await revision(page, attached.revision + 1);
+    await expect(page.getByRole("region", { name: "Unconfirmed Property review", exact: true })).toHaveCount(0);
+    const saved = await service.project(initial.id);
+    const first = saved.production_design!.capsules.find(value => value.id === capsule.id)!;
+    expect(first).toEqual({ ...capsule, property_fidelity: [
+      { path: "camera.focal_length", fidelity: "baked", loss_note: firstNote }, { path: "geometry.mesh", fidelity: "native", loss_note: null },
+    ] });
+    expect(applies(service)).toHaveLength(writes + 1); expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 1);
+    await panel.getByRole("button", { name: "Edit property review camera.focal_length", exact: true }).click();
+    await panel.getByLabel("Native property fidelity", { exact: true }).selectOption("translated");
+    await panel.getByLabel("Native property loss note", { exact: true }).fill("Explicit translated review; native execution remains unverified.");
+    await panel.getByRole("button", { name: "Update property in review", exact: true }).click();
+    await panel.getByRole("button", { name: "Remove property from review geometry.mesh", exact: true }).click();
+    hold = holdReply(service, "upsert_native_capsule");
+    await panel.getByRole("button", { name: "Save property review", exact: true }).click(); const observed = await hold.observed;
+    await panel.getByLabel("Native property path", { exact: true }).fill("camera.");
+    await panel.getByLabel("Native property loss note", { exact: true }).fill("  Later review input  ");
+    hold.release(); await revision(page, observed.revision);
+    await expect(page.getByRole("region", { name: "Unconfirmed Property review", exact: true })).toHaveCount(0);
+    await expect(panel.getByLabel("Native property path", { exact: true })).toHaveValue("camera.");
+    final = await service.project(initial.id);
+    const result = final.production_design!.capsules.find(value => value.id === capsule.id)!;
+    expect(result).toEqual({ ...capsule, property_fidelity: [
+      { path: "camera.focal_length", fidelity: "translated", loss_note: "Explicit translated review; native execution remains unverified." },
+    ] });
+    expect(unrelated(final)).toEqual(unrelated(attached)); expect(final.scenes).toEqual(attached.scenes);
+    expect(final.production_design).toEqual({ ...attached.production_design,
+      capsules: attached.production_design!.capsules.map(value => value.id === capsule.id ? result : value) });
+    expect(applies(service)).toHaveLength(writes + 2); expect(requests(service, "issue_effect_grant")).toHaveLength(grants + 2);
+    await hold.dispose(); hold = undefined;
+    const oracle = await service.observeStoredProject(final); await service.close(); await service.start();
+    expect(await service.project(final.id)).toEqual(final); expect(await service.history(final.id, 0)).toEqual(oracle.journal);
+    await page.reload(); await openAttachments(page, sceneId); await select();
+    await expect(panel.getByLabel("Native property path", { exact: true })).toHaveValue("camera.");
+    await expect(panel.getByLabel("Native property loss note", { exact: true })).toHaveValue("  Later review input  ");
+    await expect(panel.locator(".native-fidelity-source code")).toHaveText(capsule.source_sha256);
+    await expect(panel.getByRole("button", { name: "Save property review", exact: true })).toBeDisabled();
+    Object.assign(observations, { attached, first, result, oracle, additionalPropertyMutations: 2, additionalPropertyGrants: 2 });
+    await page.screenshot({ path: info.outputPath("native-property-review-reopened.png"), fullPage: true });
+  } catch (reason) { primary = { reason }; }
+  finally { await finish(page, info, service, [], final, observations, hold ? [() => hold!.dispose()] : [], primary); }
+});

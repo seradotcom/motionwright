@@ -1,11 +1,14 @@
 import { sameProjectRevision } from "./projectMutation";
+import { assertNativeFidelitySource, nativeFidelityCapsuleShape, nativeFidelityInput, nativeFidelityInputShape, nativeFidelityValue, nativePropertyEditorHasInput, proposeNativeFidelity } from "./nativePropertyFidelityDraft";
+import type { ProductionFidelityInput } from "./nativePropertyFidelityDraft";
 import { applyProductionDesignChange, defaultHeroConfig, parseSceneBoundary, parseSceneBoundaryAppearances, parseSceneBoundaryFilmOptions,
   parseSceneBoundaryPredecessorContext, parseSceneBoundarySource, planContentDigest, realizeProductHero, sameValue, validateProductionPlan } from "./creativeProduction";
 import type { HeroConfig, NativeCapsule, ProductHeroInstance, ProductionPlan } from "./creativeProduction";
 import type { CanvasNode, Change, Project, ProjectEvent, SceneBoundary, SceneBoundaryFilmOptions, SceneBoundaryPredecessorContext, SceneBoundarySource } from "./types";
 
 export type ProductionTarget = { kind: "hero"; sceneId: string | null } | { kind: "plan" } | { kind: "source"; sceneId: string | null }
-  | { kind: "boundary"; sceneId: string | null; boundaryId: string | null };
+  | { kind: "boundary"; sceneId: string | null; boundaryId: string | null }
+  | { kind: "fidelity"; sceneId: string | null; capsuleId: string | null };
 export interface ProductionBoundaryInput {
   kind: "boundary"; boundaryId: string; profileId: string; frameRateNum: string; frameRateDen: string;
   fontFamily: string; monoFontFamily: string; role: string; archetype: string;
@@ -14,7 +17,7 @@ export interface ProductionBoundaryInput {
 }
 export type ProductionInput = { kind: "hero"; config: HeroConfig }
   | { kind: "plan"; plan: ProductionPlan; reviewer: string; note: string }
-  | { kind: "source"; assetId: string; renderer: string; version: string } | ProductionBoundaryInput;
+  | { kind: "source"; assetId: string; renderer: string; version: string } | ProductionBoundaryInput | ProductionFidelityInput;
 export type ProductionValue = ProductHeroInstance | ProductionPlan | NativeCapsule | SceneBoundary | null;
 export type ProductionOperation = "save" | "approve" | "detach" | "remove";
 export type ProductionChange = Extract<Change, { type: "upsert_product_hero" | "detach_product_hero" | "set_production_plan" | "upsert_native_capsule" | "upsert_scene_boundary" | "remove_scene_boundary" }>;
@@ -45,11 +48,11 @@ const SOURCE_LOSS = "Source preserved as an opaque attachment. Parameter editing
 const SOURCE_EDITOR_HINT = "Open with the original application's trusted environment";
 export const productionScope = (project: Project, target: ProductionTarget) => JSON.stringify([
   project.id, project.generation, project.active_branch, target.kind, target.kind === "plan" ? null : target.sceneId,
-  ...(target.kind === "boundary" ? [target.boundaryId] : []),
+  ...(target.kind === "boundary" ? [target.boundaryId] : target.kind === "fidelity" ? [target.capsuleId] : []),
 ]);
 export const productionCopyKey = (scope: string, writer: string) => PRODUCTION_RECOVERY_PREFIX + encodeURIComponent(scope) + ":" + writer;
 export const productionPointerKey = (scope: string) => PRODUCTION_POINTER_PREFIX + encodeURIComponent(scope);
-export const productionLabel = (target: ProductionTarget) => target.kind === "hero" ? "Component" : target.kind === "source" ? "Source attachment" : target.kind === "boundary" ? "Scene boundary" : "Production plan";
+export const productionLabel = (target: ProductionTarget) => target.kind === "hero" ? "Component" : target.kind === "source" ? "Source attachment" : target.kind === "boundary" ? "Scene boundary" : target.kind === "fidelity" ? "Property review" : "Production plan";
 export const productionHasInput = (draft: ProductionDraft) => draft.intent;
 export const productionHasWork = (draft: ProductionDraft) => draft.intent || draft.pending !== null;
 export const productionUnconfirmed = (draft: ProductionDraft) => draft.pending?.outcome === "UNKNOWN";
@@ -72,6 +75,12 @@ export function productionValue(project: Project, target: ProductionTarget): Pro
   // is chosen implicitly as its base, even when the scene already has sources.
   if (target.kind === "source") return null;
   if (target.kind === "plan") return clone(project.production_design?.plan ?? null);
+  if (target.kind === "fidelity") {
+    const capsules = project.production_design?.capsules.filter(capsule => capsule.id === target.capsuleId) ?? [];
+    if (capsules.length > 1 || capsules.some(capsule => capsule.scene_id !== target.sceneId))
+      throw new Error("The native capsule identity is ambiguous or belongs to another scene.");
+    return clone(capsules[0] ?? null);
+  }
   if (target.sceneId !== null && project.scenes.filter(scene => scene.id === target.sceneId).length !== 1)
     throw new Error(target.kind === "boundary" ? "The boundary scene is unavailable or ambiguous in the current project."
       : "The component scene is unavailable or ambiguous in the current project.");
@@ -92,6 +101,7 @@ export function productionDraftValue(draft: ProductionDraft, project: Project): 
 }
 function inputFromSaved(project: Project, target: ProductionTarget, stableBoundaryId?: string): ProductionInput {
   if (target.kind === "source") return { kind: "source", assetId: "", renderer: "hyperframes", version: "unverified" };
+  if (target.kind === "fidelity") return nativeFidelityInput(productionValue(project, target) as NativeCapsule | null);
   if (target.kind === "boundary") {
     const boundaryId = target.boundaryId ?? stableBoundaryId ?? crypto.randomUUID();
     const boundary = productionValue(project, { ...target, boundaryId }) as SceneBoundary | null;
@@ -151,6 +161,9 @@ export function editProductionDraft(draft: ProductionDraft, input: ProductionInp
   if (input.kind !== draft.target.kind) throw new Error("Production input cannot cross editor targets.");
   if (input.kind === "boundary" && draft.input.kind === "boundary" && input.boundaryId !== draft.input.boundaryId)
     throw new Error("Start a separate explicit scene boundary intent to choose another declaration identity.");
+  if (input.kind === "fidelity" && draft.input.kind === "fidelity"
+    && (input.sourceAssetId !== draft.input.sourceAssetId || input.sourceSha256 !== draft.input.sourceSha256))
+    throw new Error("Property review edits cannot retarget the preserved source. Use saved values explicitly.");
   if (!integer(draft.sequence) || draft.sequence === Number.MAX_SAFE_INTEGER)
     throw new Error("The Production edit sequence cannot advance safely. Download the current input before continuing.");
   return { ...draft, input: clone(input), sequence: draft.sequence + 1, intent: true };
@@ -159,9 +172,9 @@ export interface ProductionPointerObservation { observed: boolean; expectedPoint
 export function readProductionRecoveryPointer(storage: Pick<Storage, "getItem">, scope: string,
   prior: ProductionPointerObservation): ProductionPointerObservation {
   const identity: unknown = JSON.parse(scope);
-  if (!Array.isArray(identity) || identity.length !== (identity[3] === "boundary" ? 6 : 5) || identity.slice(0, 3).some(value => typeof value !== "string" || !value)
-    || !["hero", "plan", "source", "boundary"].includes(identity[3]) || (identity[3] === "plan" ? identity[4] !== null : identity[4] !== null && (typeof identity[4] !== "string" || !identity[4]))
-    || (identity[3] === "boundary" && identity[5] !== null && !uuid(identity[5])))
+  if (!Array.isArray(identity) || identity.length !== (identity[3] === "boundary" || identity[3] === "fidelity" ? 6 : 5) || identity.slice(0, 3).some(value => typeof value !== "string" || !value)
+    || !["hero", "plan", "source", "boundary", "fidelity"].includes(identity[3]) || (identity[3] === "plan" ? identity[4] !== null : identity[4] !== null && (typeof identity[4] !== "string" || !identity[4]))
+    || ((identity[3] === "boundary" || identity[3] === "fidelity") && identity[5] !== null && !uuid(identity[5])))
     throw new Error("The Production recovery owner is invalid.");
   const pointer = storage.getItem(productionPointerKey(scope));
   if (prior.observed && pointer !== prior.expectedPointer) throw new Error("The earlier Production recovery pointer changed.");
@@ -177,6 +190,9 @@ export function recoverProductionAfterReadFailure(recovered: ProductionDraft, cu
   if (editedWhileBlocked && recovered.input.kind === "boundary" && current.input.kind === "boundary"
     && recovered.input.boundaryId !== current.input.boundaryId)
     throw new Error("The recovered and current scene boundary inputs have different declaration identities. Preserve both copies before choosing an intent.");
+  if (editedWhileBlocked && recovered.input.kind === "fidelity" && current.input.kind === "fidelity"
+    && (recovered.input.sourceAssetId !== current.input.sourceAssetId || recovered.input.sourceSha256 !== current.input.sourceSha256))
+    throw new Error("The recovered and current property reviews refer to different preserved sources. Keep both copies before choosing a source.");
   if (current.pending && (!recovered.pending || !sameValue(productionAttempt(current.pending), productionAttempt(recovered.pending))))
     throw new Error("The current and recovered Production attempts differ.");
   if (![current.sequence, recovered.sequence].every(integer)) throw new Error("The recovered Production edit sequence is invalid.");
@@ -213,6 +229,8 @@ export function productionConflict(draft: ProductionDraft, project: Project): bo
 export function resolveProductionDraft(draft: ProductionDraft, project: Project, choice: "saved" | "draft"): ProductionDraft {
   checkScope(draft, project);
   if (productionUnconfirmed(draft)) throw new Error("Inspect the unconfirmed Production outcome before choosing another base.");
+  if (choice === "draft" && draft.input.kind === "fidelity")
+    assertNativeFidelitySource(project, productionDraftValue(draft, project) as NativeCapsule | null, draft.input);
   return { ...draft, base: productionDraftValue(draft, project), baseRevision: project.revision,
     input: choice === "saved" ? inputFromSaved(project, draft.target, draft.input.kind === "boundary" ? draft.input.boundaryId : undefined) : draft.input,
     intent: choice === "draft", pending: null };
@@ -269,6 +287,11 @@ export async function prepareProductionSubmission(draft: ProductionDraft, projec
     // Reuse the existing validation on a temporary copy. This is neither a
     // service result nor renderer/native admission, and never updates the UI.
     await applyProductionDesignChange(clone(project), change);
+  } else if (target.kind === "fidelity" && input.kind === "fidelity") {
+    if (operation !== "save" || !draft.intent) throw new Error("A property review requires an explicit save of authored changes.");
+    const capsule = proposeNativeFidelity(project, productionValue(project, target) as NativeCapsule | null, input);
+    change = { type: "upsert_native_capsule", capsule }; value = clone(capsule);
+    await applyProductionDesignChange(clone(project), change);
   } else if (target.kind === "boundary" && input.kind === "boundary") {
     if (operation !== "save" && operation !== "remove") throw new Error("A scene boundary supports only an explicit save or removal.");
     if (draft.removedBoundaryId) throw new Error("This declaration was removed. Start a separate boundary with a new identity; retained input remains exportable.");
@@ -303,7 +326,7 @@ export function productionPreparationMatches(source: ProductionDraft, preparedFr
     && sameValue(source.pending, current.pending) && sameProjectRevision(preparedFrom, project)
     && sameValue(source.removedBoundaryId, current.removedBoundaryId)
     && productionScope(project, source.target) === source.scope
-    && (source.target.kind === "source" || source.target.kind === "boundary" ? sameValue(preparedFrom, project)
+    && (source.target.kind === "source" || source.target.kind === "boundary" || source.target.kind === "fidelity" ? sameValue(preparedFrom, project)
       : sameValue(productionDraftValue(source, preparedFrom), productionDraftValue(source, project)));
 }
 export function retainProductionFailure(draft: ProductionDraft, id: string, diagnostic: string, notSent = false): ProductionDraft {
@@ -315,6 +338,8 @@ export function acknowledgeProductionDraft(draft: ProductionDraft, id: string, r
   if (!pending || pending.id !== id) return draft;
   checkScope(draft, receipt);
   const saved = productionDraftValue(draft, receipt);
+  if (draft.target.kind === "fidelity" && pending.input.kind === "fidelity")
+    assertNativeFidelitySource(receipt, saved as NativeCapsule | null, pending.input);
   const sourceMatches = draft.target.kind === "source" ? receipt.production_design?.capsules.filter(capsule => capsule.id === pending.id) ?? [] : [];
   const matches = draft.target.kind === "source"
     ? pending.operation === "save" && sourceMatches.length === 1 && sourceMatches[0].scene_id === draft.target.sceneId
@@ -349,7 +374,7 @@ export interface ProductionOutcomeTransport {
 }
 export interface ProductionOutcomeReview { scope: string; pending: ProductionPending; project: Project; events: ProjectEvent[]; matchingValueRevisions: number[] }
 const sameObserved = (left: Project, right: Project, target: ProductionTarget) => sameProjectRevision(left, right)
-  && (target.kind === "source" || target.kind === "boundary" ? sameValue(left, right) : sameValue(productionValue(left, target), productionValue(right, target)));
+  && (target.kind === "source" || target.kind === "boundary" || target.kind === "fidelity" ? sameValue(left, right) : sameValue(productionValue(left, target), productionValue(right, target)));
 export function productionOutcomeMatches(draft: ProductionDraft, project: Project, review: ProductionOutcomeReview | null): boolean {
   return !!review && productionUnconfirmed(draft) && review.scope === draft.scope && productionScope(project, draft.target) === draft.scope
     && sameValue(draft.pending, review.pending) && sameObserved(project, review.project, draft.target);
@@ -380,6 +405,8 @@ export async function inspectProductionOutcome(draft: ProductionDraft, selected:
       if (draft.target.kind === "plan") return event.change.type === "set_production_plan" && sameValue(event.change.plan, pending.value);
       if (draft.target.kind === "source") return event.change.type === "upsert_native_capsule" && record(event.change.capsule)
         && event.change.capsule.id === pending.id && sameValue(event.change.capsule, pending.value);
+      if (draft.target.kind === "fidelity") return event.change.type === "upsert_native_capsule" && record(event.change.capsule)
+        && event.change.capsule.id === draft.target.capsuleId && sameValue(event.change.capsule, pending.value);
       if (draft.target.kind === "boundary") return pending.operation === "remove"
         ? event.change.type === "remove_scene_boundary" && pending.input.kind === "boundary" && event.change.boundary_id === pending.input.boundaryId
         : event.change.type === "upsert_scene_boundary" && sameValue(event.change.boundary, pending.value);
@@ -406,6 +433,7 @@ export interface ProductionRecoveryEntry { key: string; writerId: string; raw: s
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(part => typeof part === "string");
 function inputShape(value: unknown): value is ProductionInput {
   if (!record(value)) return false;
+  if (value.kind === "fidelity") return nativeFidelityInputShape(value);
   if (value.kind === "boundary") {
     if (!exact(value, ["kind", "boundaryId", "profileId", "frameRateNum", "frameRateDen", "fontFamily", "monoFontFamily", "role", "archetype",
       "inputKind", "predecessorBoundaryId", "appearancesJson", "entryJson", "exitJson", "definitionKind", "boundSource", "boundPredecessor"])
@@ -457,6 +485,7 @@ function nodesShape(value: unknown): boolean {
 function valueShape(value: unknown, kind: ProductionTarget["kind"]): boolean {
   if (value === null) return true;
   if (!record(value)) return false;
+  if (kind === "fidelity") return nativeFidelityCapsuleShape(value);
   if (kind === "boundary") {
     try { parseSceneBoundary(value); return true; } catch { return false; }
   }
@@ -488,12 +517,13 @@ function cleanDraft(value: unknown, scope: string, originDepth = 0): ProductionD
     || !integer(value.baseRevision) || !integer(value.sequence) || typeof value.intent !== "boolean" || !inputShape(value.input))
     throw new Error("This Production recovery has an unsupported shape.");
   const target = value.target, identity: unknown = JSON.parse(scope);
-  if ((target.kind !== "hero" && target.kind !== "plan" && target.kind !== "source" && target.kind !== "boundary") || value.input.kind !== target.kind
-    || !exact(target, target.kind === "plan" ? ["kind"] : target.kind === "boundary" ? ["kind", "sceneId", "boundaryId"] : ["kind", "sceneId"])
+  if ((target.kind !== "hero" && target.kind !== "plan" && target.kind !== "source" && target.kind !== "boundary" && target.kind !== "fidelity") || value.input.kind !== target.kind
+    || !exact(target, target.kind === "plan" ? ["kind"] : target.kind === "boundary" ? ["kind", "sceneId", "boundaryId"] : target.kind === "fidelity" ? ["kind", "sceneId", "capsuleId"] : ["kind", "sceneId"])
     || (target.kind !== "plan" && target.sceneId !== null && (typeof target.sceneId !== "string" || !target.sceneId))
-    || !Array.isArray(identity) || identity.length !== (target.kind === "boundary" ? 6 : 5) || identity.slice(0, 3).some(item => typeof item !== "string" || !item)
+    || !Array.isArray(identity) || identity.length !== (target.kind === "boundary" || target.kind === "fidelity" ? 6 : 5) || identity.slice(0, 3).some(item => typeof item !== "string" || !item)
     || identity[3] !== target.kind || identity[4] !== (target.kind === "plan" ? null : target.sceneId)
-    || (target.kind === "boundary" && (identity[5] !== target.boundaryId || target.boundaryId !== null && !uuid(target.boundaryId))))
+    || (target.kind === "boundary" && (identity[5] !== target.boundaryId || target.boundaryId !== null && !uuid(target.boundaryId)))
+    || (target.kind === "fidelity" && (identity[5] !== target.capsuleId || target.capsuleId !== null && !uuid(target.capsuleId))))
     throw new Error("This Production recovery belongs to another editor identity.");
   // Closed shapes keep grants and execution authority out of portable copies.
   // Saved values are comparison data only; they never enter a Project mutation.
@@ -503,6 +533,9 @@ function cleanDraft(value: unknown, scope: string, originDepth = 0): ProductionD
       || value.base !== null && (!record(value.base) || value.base.id !== value.input.boundaryId || value.base.scene_id !== target.sceneId))
       throw new Error("The scene boundary recovery changed its stable declaration identity.");
   }
+  if (target.kind === "fidelity" && value.base !== null
+    && (!record(value.base) || value.base.id !== target.capsuleId || value.base.scene_id !== target.sceneId))
+    throw new Error("The property review snapshot belongs to another capsule.");
   if (value.removedBoundaryId !== undefined && (target.kind !== "boundary" || value.input.kind !== "boundary"
     || !uuid(value.removedBoundaryId) || value.removedBoundaryId !== value.input.boundaryId || value.pending !== null))
     throw new Error("Unreadable removed scene boundary identity.");
@@ -523,6 +556,13 @@ function cleanDraft(value: unknown, scope: string, originDepth = 0): ProductionD
         || capsule.id !== sent.id || capsule.scene_id !== target.sceneId || capsule.source_asset_id !== sent.input.assetId
         || !record(capsule.fidelity) || capsule.fidelity.renderer !== sent.input.renderer || capsule.fidelity.renderer_version !== sent.input.version)
         throw new Error("The source attachment snapshot does not match its exact creation intent.");
+    }
+    if (target.kind === "fidelity") {
+      if (sent.revision !== value.baseRevision || sent.operation !== "save" || sent.input.kind !== "fidelity"
+        || !nativeFidelityCapsuleShape(value.base) || sent.input.sourceAssetId !== value.base.source_asset_id
+        || sent.input.sourceSha256 !== value.base.source_sha256 || nativePropertyEditorHasInput(sent.input)
+        || !sameValue(sent.value, nativeFidelityValue(value.base, sent.input)))
+        throw new Error("The property review attempt does not match its original source and exact submitted classifications.");
     }
     if (target.kind === "boundary") {
       if (sent.revision !== value.baseRevision || value.input.kind !== "boundary" || sent.input.kind !== "boundary"

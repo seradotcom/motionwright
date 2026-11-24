@@ -1,148 +1,104 @@
-import { useEffect, useState } from "react";
+import { useState, type ReactNode } from "react";
 import { GitCompareArrows, ShieldAlert } from "lucide-react";
-import type { Change, Project } from "./types";
-import type { Fidelity, NativeCapsule, NativePropertyFidelity } from "./creativeProduction";
-import { validateNativePropertyFidelity } from "./creativeProduction";
+import type { Project } from "./types";
+import type { Fidelity } from "./creativeProduction";
+import { sameValue } from "./creativeProduction";
+import { assertNativeFidelitySource, clearNativePropertyEditor, editNativePropertyReview, nativePropertyEditorHasInput,
+  nativePropertyStatuses, removeNativePropertyReview, stageNativePropertyReview, type ProductionFidelityInput } from "./nativePropertyFidelityDraft";
 
-type Commit = (change: Change) => Promise<void>;
-const STATUSES: Fidelity[] = ["native", "translated", "baked", "approximate", "unavailable"];
-const EXAMPLES = [
-  "camera.focal_length", "camera.center_x", "geometry.mesh",
-  "materials.base_color", "animation.keyframes", "text.content",
-];
+const EXAMPLES = ["camera.focal_length", "camera.center_x", "geometry.mesh", "materials.base_color", "animation.keyframes", "text.content"];
 
 export default function NativePropertyFidelityWorkbench({
-  project, commit, busy,
-}: {project:Project;commit:Commit;busy:boolean}) {
-  const capsules = project.production_design?.capsules ?? [];
-  const [selectedId,setSelectedId] = useState("");
-  const selected = capsules.find(c=>c.id===selectedId) ?? capsules[0] ?? null;
-  const [path,setPath] = useState("camera.focal_length");
-  const [fidelity,setFidelity] = useState<Fidelity>("unavailable");
-  const [note,setNote] = useState("The original value is preserved in the native source; no parameter edit or renderer readback was verified.");
-  const [error,setError] = useState<string|null>(null);
-  const [result,setResult] = useState<string|null>(null);
-  const source = selected && project.assets.find(asset=>asset.id===selected.source_asset_id);
-  const sourceMatches = !!selected && source?.content_sha256 === selected.source_sha256;
-  const existing = selected?.property_fidelity ?? [];
-  const lossy = ["baked", "approximate", "unavailable"].includes(fidelity);
-  useEffect(()=>{setError(null);setResult(null);},[selected?.id,project.revision]);
-
-  const persist = async (capsule:NativeCapsule,entries:NativePropertyFidelity[]) => {
-    if (!sourceMatches || busy) return;
-    try {
-      validateNativePropertyFidelity(entries);
-      setError(null);setResult(null);
-      await commit({
-        type:"upsert_native_capsule",
-        capsule:{...structuredClone(capsule),property_fidelity:entries},
-      });
-      setResult("Source-bound property classifications committed. The original asset is unchanged; no native property edit was performed.");
-    } catch (e) {
-      setError(e instanceof Error?e.message:"Property negotiation was rejected.");
-    }
+  project, capsuleId, select, input, edit, save, busy, blocked, feedback,
+}: {
+  project: Project; capsuleId: string | null; select: (id: string) => void;
+  input: ProductionFidelityInput; edit: (input: ProductionFidelityInput) => void; save: () => void;
+  busy: boolean; blocked: boolean; feedback: ReactNode;
+}) {
+  const capsules = project.production_design?.capsules ?? [], matches = capsules.filter(capsule => capsule.id === capsuleId);
+  const selected = matches.length === 1 ? matches[0] : null, saved = selected?.property_fidelity ?? [];
+  const [error, setError] = useState<string | null>(null);
+  let sourceProblem: string | null = null;
+  try { assertNativeFidelitySource(project, selected, input); } catch (reason) { sourceProblem = reason instanceof Error ? reason.message : "The source is unavailable."; }
+  const hasChanges = !sameValue(saved, input.entries), editing = nativePropertyEditorHasInput(input);
+  const paths = [...new Set([...saved.map(entry => entry.path), ...input.entries.map(entry => entry.path)])];
+  const patch = (value: Partial<Omit<ProductionFidelityInput, "kind" | "sourceAssetId" | "sourceSha256" | "entries">>) => {
+    setError(null); edit({ ...input, ...value });
   };
-  const save = async () => {
-    if (!selected || !sourceMatches) return;
-    const name=path.trim();
-    const declaration:NativePropertyFidelity={
-      path:name,fidelity,loss_note:note.trim() || null,
-    };
-    const next=existing.filter(entry=>entry.path!==name).map(entry=>structuredClone(entry));
-    next.push(declaration);
-    await persist(selected,next);
-  };
-  const remove = async (name:string) => {
-    if (!selected) return;
-    await persist(selected,existing.filter(entry=>entry.path!==name));
-  };
-  return <section className="native-fidelity-workbench"
-    aria-label="Native per-property fidelity review">
+  function update(action: (input: ProductionFidelityInput) => ProductionFidelityInput) {
+    try { const next = action(input); setError(null); edit(next); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "The property review was rejected."); }
+  }
+  return <section className="native-fidelity-workbench" aria-label="Native per-property fidelity review">
     <div className="production-section-title">
       <GitCompareArrows size={18} aria-hidden="true"/>
-      <div>
-        <h2>Property-level fidelity negotiation</h2>
-        <p>Describe intended translation or loss before editing a preserved native source.</p>
-      </div>
+      <div><h2>Property-level fidelity negotiation</h2><p>Review translation and loss across the preserved source before saving the complete review.</p></div>
     </div>
-    <p className="production-help">
-      These are <strong>operator-authored classifications</strong>, not measured renderer fidelity.
-      Even a property labeled native does not authorize execution or imply that a Blender,
-      HyperFrames or other source format has been independently converted.
-    </p>
-    {capsules.length===0?<p className="production-help">
-      Attach a digest-bound native source above before reviewing individual properties.
-    </p>:<>
-      <label className="production-field">
-        <span>Stored source capsule</span>
-        <select aria-label="Native capsule for property negotiation"
-          value={selected?.id??""} onChange={e=>setSelectedId(e.target.value)}>
-          {capsules.map(c=><option key={c.id} value={c.id}>{c.label} · {c.scene_id.slice(0,8)}</option>)}
-        </select>
-      </label>
-      <div className="native-fidelity-source">
-        <span>Source identity</span>
-        <code>{selected?.source_sha256.slice(0,16)}…</code>
-        <span>Project r{project.revision}</span>
-      </div>
-      {!sourceMatches && <p className="production-error" role="alert">
-        The imported asset is unavailable or its SHA-256 no longer matches this capsule. Property classifications are read-only.
-      </p>}
+    <p className="production-help">These are <strong>operator-authored classifications</strong>, not measured renderer fidelity.
+      A property labeled native does not authorize execution or confirm conversion by Blender, HyperFrames or another renderer.</p>
+    {!capsules.length && !capsuleId && <p className="production-help">Attach a digest-bound native source above before reviewing individual properties.</p>}
+    <label className="production-field"><span>Stored source capsule</span>
+      <select aria-label="Native capsule for property negotiation" value={capsuleId ?? ""} disabled={busy} onChange={event => select(event.target.value)}>
+        {!capsuleId && <option value="">Choose a preserved source</option>}
+        {capsuleId && !selected && <option value={capsuleId}>Earlier source capsule unavailable</option>}
+        {capsules.map(capsule => <option key={capsule.id} value={capsule.id}>{capsule.label} · {capsule.scene_id.slice(0, 8)}</option>)}
+      </select>
+    </label>
+    {capsuleId && <>
+      <div className="native-fidelity-source"><span>Review source identity</span><code>{input.sourceSha256 || "Unavailable"}</code><span>Project r{project.revision}</span></div>
+      {sourceProblem && <p className="production-error" role="alert">{sourceProblem}</p>}
       <div className="native-fidelity-editor">
-        <label className="production-field">
-          <span>Semantic property path</span>
-          <input aria-label="Native property path" maxLength={128}
-            value={path} onChange={e=>setPath(e.target.value)}
+        <label className="production-field"><span>Semantic property path</span>
+          <input aria-label="Native property path" maxLength={128} value={input.path} onChange={event => patch({ path: event.target.value })}
             list="native-property-fidelity-path-examples"/>
-          <datalist id="native-property-fidelity-path-examples">
-            {EXAMPLES.map(v=><option key={v} value={v}/>)}
-          </datalist>
-          <small>Use a bounded, dotted property identity, not a file path or executable command.</small>
+          <datalist id="native-property-fidelity-path-examples">{EXAMPLES.map(value => <option key={value} value={value}/>)}</datalist>
+          <small>Use a bounded dotted property identity. Incomplete input is retained until you add it to the review.</small>
         </label>
-        <label className="production-field">
-          <span>Declared translation outcome</span>
-          <select aria-label="Native property fidelity" value={fidelity}
-            onChange={e=>setFidelity(e.target.value as Fidelity)}>
-            {STATUSES.map(status=><option key={status} value={status}>{status}</option>)}
+        <label className="production-field"><span>Declared translation outcome</span>
+          <select aria-label="Native property fidelity" value={input.fidelity} onChange={event => patch({ fidelity: event.target.value as Fidelity })}>
+            {nativePropertyStatuses.map(value => <option key={value} value={value}>{value}</option>)}
           </select>
         </label>
-        <label className="production-field native-fidelity-note">
-          <span>{lossy?"Required description of the loss or unavailable edit":"Operator notes (optional)"}</span>
-          <textarea aria-label="Native property loss explanation" maxLength={500}
-            rows={3} value={note} onChange={e=>setNote(e.target.value)}
-            placeholder="Describe the exact property behavior that is missing or approximated."/>
+        <label className="production-field native-fidelity-note"><span>Loss or translation note</span>
+          <textarea aria-label="Native property loss note" maxLength={500} value={input.note} onChange={event => patch({ note: event.target.value })}/>
+          <small>Baked, approximate and unavailable properties require a specific loss note.</small>
         </label>
-        <button type="button" className="secondary-button"
-          onClick={()=>void save()} disabled={busy || !sourceMatches || (lossy&&!note.trim())}>
-          Record property classification
-        </button>
-      </div>
-      <div className="native-fidelity-report" aria-label="Saved property fidelity classifications">
-        <div className="native-fidelity-report-head">
-          <strong>Declared source properties</strong><span>{existing.length}/64 recorded</span>
+        <div className="production-actions">
+          <button type="button" className="secondary-button" disabled={busy || !input.path.trim()}
+            onClick={() => update(stageNativePropertyReview)}>{input.editingPath ? "Update property in review" : "Add property to review"}</button>
+          <button type="button" className="text-button" disabled={busy || !editing}
+            onClick={() => update(clearNativePropertyEditor)}>Clear property fields</button>
         </div>
-        {existing.map(entry=><article key={entry.path} className="native-fidelity-property">
-          <div>
-            <strong className="mono">{entry.path}</strong>
-            <span>{entry.fidelity}</span>
-            <button type="button" className="secondary-button"
-              aria-label={"Remove property classification "+entry.path}
-              onClick={()=>void remove(entry.path)} disabled={busy || !sourceMatches}>
-              Remove
-            </button>
-          </div>
-          {entry.loss_note && <p>{entry.loss_note}</p>}
-        </article>)}
-        {existing.length===0 && <p className="production-help">No property-by-property claims have been recorded for this native source.</p>}
       </div>
-      {error&&<p className="production-error" role="alert">{error}</p>}
-      {result&&<p className="production-help" role="status">{result}</p>}
+      {error && <p className="production-error" role="alert">{error}</p>}
+      <div className="native-fidelity-properties" aria-label="Property classifications before and after">
+        {paths.map(path => {
+          const before = saved.find(entry => entry.path === path), after = input.entries.find(entry => entry.path === path);
+          return <article key={path} className="native-fidelity-property">
+            <div><strong className="mono">{path}</strong><span>{!after ? "Removed in draft" : sameValue(before, after) ? "Unchanged" : before ? "Edited in draft" : "Added in draft"}</span></div>
+            <div className="production-plan-grid">
+              <div><h4>Saved classification</h4><p>{before?.fidelity ?? "Not recorded"}</p>{before?.loss_note && <p>{before.loss_note}</p>}</div>
+              <div><h4>Review draft</h4><p>{after?.fidelity ?? "Remove this classification"}</p>{after?.loss_note && <p>{after.loss_note}</p>}</div>
+            </div>
+            {after && <div className="production-actions">
+              <button type="button" className="secondary-button" aria-label={"Edit property review " + path}
+                disabled={busy || editing} onClick={() => update(value => editNativePropertyReview(value, path))}>Edit</button>
+              <button type="button" className="text-button" aria-label={"Remove property from review " + path}
+                disabled={busy || input.editingPath === path} onClick={() => update(value => removeNativePropertyReview(value, path))}>Remove from review</button>
+            </div>}
+          </article>;
+        })}
+        {!paths.length && <p className="production-help">No property classifications are recorded or staged for this source.</p>}
+      </div>
+      {editing && <p className="production-help" role="status">The property fields are retained locally. Add them to the review or clear them before saving the complete review.</p>}
+      <button type="button" className="primary-button" disabled={blocked || !!sourceProblem || !hasChanges || editing}
+        onClick={save}>Save property review</button>
+      <p className="production-help">Save all additions, edits and removals together. Source bytes and the capsule's existing metadata are preserved.</p>
     </>}
-    <div className="native-fidelity-boundary">
-      <ShieldAlert size={16} aria-hidden="true"/>
-      <p>Source bytes, canvas objects, and existing editable parameter grants remain unchanged.
-        This is an audit of intended property translation, not proof that a provider can render,
-        preserve or edit a property. Recheck the original source and the rendered result independently.</p>
+    {feedback}
+    <div className="native-fidelity-boundary"><ShieldAlert size={16} aria-hidden="true"/>
+      <p>Review the original source and rendered result independently. These declarations preserve the distinction between native,
+        translated, baked, approximate and unavailable properties; they do not confer parameter edit permissions or renderer approval.</p>
     </div>
   </section>;
 }

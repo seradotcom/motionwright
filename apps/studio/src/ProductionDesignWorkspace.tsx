@@ -35,6 +35,7 @@ import IdentityOriginWorkbench from "./IdentityOriginWorkbench";
 import MeasuredDataWorkbench from "./MeasuredDataWorkbench";
 import RenderTailWorkbench from "./RenderTailWorkbench";
 import NativePropertyFidelityWorkbench from "./NativePropertyFidelityWorkbench";
+import type { ProductionFidelityInput } from "./nativePropertyFidelityDraft";
 import NativeSourceWorkbench, { type NativeSourceServices } from "./NativeSourceWorkbench";
 import ManimEditableSourceWorkbench from "./ManimEditableSourceWorkbench";
 import ComponentDistillationWorkbench from "./ComponentDistillationWorkbench";
@@ -576,7 +577,31 @@ function SourceAttachmentEditor({project,scene,commitCamera,busy}:{project:Proje
   </>;
 }
 
-function SourcesWorkbench({project,scene,commit,commitCamera,busy,sourceServices,displayProfile}:{project:Project;scene:Scene|null;commit:Commit;commitCamera:ProductionCommit;busy:boolean;sourceServices:NativeSourceServices;displayProfile:DeliverableProfile|null}) {
+function NativePropertyReviewEditor({ project, target, select, commit, busy }: {
+  project: Project; target: Extract<ProductionTarget, { kind: "fidelity" }>; select: (id: string) => void; commit: ProductionCommit; busy: boolean;
+}) {
+  const editor = useProductionEditor(project, target, commit, busy);
+  return <NativePropertyFidelityWorkbench project={project} capsuleId={target.capsuleId} select={select}
+    input={editor.draft.input as ProductionFidelityInput} edit={editor.edit} save={() => void editor.send()}
+    busy={editor.busy} blocked={editor.blocked} feedback={<ProductionDraftFeedback editor={editor} project={project}/>}/>;
+}
+function NativePropertyReview({ project, commit, busy }: { project: Project; commit: ProductionCommit; busy: boolean }) {
+  const [target, setTarget] = useState<Extract<ProductionTarget, { kind: "fidelity" }>>(() => {
+    const capsule = project.production_design?.capsules[0];
+    return { kind: "fidelity", sceneId: capsule?.scene_id ?? null, capsuleId: capsule?.id ?? null };
+  });
+  useEffect(() => {
+    const capsule = project.production_design?.capsules[0];
+    if (target.capsuleId === null && capsule)
+      setTarget({ kind: "fidelity", sceneId: capsule.scene_id, capsuleId: capsule.id });
+  }, [project, target.capsuleId]);
+  const select = (id: string) => {
+    const capsule = project.production_design?.capsules.find(value => value.id === id);
+    if (capsule) setTarget({ kind: "fidelity", sceneId: capsule.scene_id, capsuleId: capsule.id });
+  };
+  return <NativePropertyReviewEditor key={productionScope(project, target)} project={project} target={target} select={select} commit={commit} busy={busy}/>;
+}
+function SourcesWorkbench({project,scene,commitCamera,busy,sourceServices,displayProfile}:{project:Project;scene:Scene|null;commitCamera:ProductionCommit;busy:boolean;sourceServices:NativeSourceServices;displayProfile:DeliverableProfile|null}) {
   const capsules = project.production_design?.capsules ?? [];
   return <div className="production-sources"><div className="production-section-title"><FileBox size={18}/><div><h2>Native source capsules</h2><p>Attach first. Preserve source bytes before considering translation or baking.</p></div></div>
     <NativeSourceWorkbench project={project} scene={scene} busy={busy} {...sourceServices}/>
@@ -587,7 +612,7 @@ function SourcesWorkbench({project,scene,commit,commitCamera,busy,sourceServices
     <div className="production-capsule-list">{capsules.map(c=><article key={c.id}><header><strong>{c.label}</strong><span>{c.fidelity.renderer} / {c.fidelity.renderer_version}</span></header>
       <p className="mono">sha256:{c.source_sha256}</p><dl>{(["visual","temporal","structural","editable"] as const).map(d=><div key={d}><dt>{d}</dt><dd>{c.fidelity[d]}</dd></div>)}</dl>
       {c.fidelity.losses.map(loss=><p key={loss}>{loss}</p>)}<small>Declared support metadata, not an independently verified renderer receipt.</small></article>)}</div>
-    <NativePropertyFidelityWorkbench project={project} commit={commit} busy={busy}/>
+    <NativePropertyReview key={JSON.stringify([project.id, project.generation, project.active_branch])} project={project} commit={commitCamera} busy={busy}/>
   </div>;
 }
 
