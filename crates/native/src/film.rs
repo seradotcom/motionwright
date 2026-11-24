@@ -6373,12 +6373,24 @@ mod tests {
                 );
             } else {
                 let error = result.unwrap_err();
-                assert!(
-                    error
-                        .message
-                        .contains("SceneBoundary appearance continuity loss"),
-                    "{case}: {error:?}"
-                );
+                if case == "reordered" {
+                    // Domain rejects a reversed approved cut before Native
+                    // continuity projection. Preserve that earlier fence.
+                    assert_eq!(error.code, ErrorCode::InvalidArgument);
+                    assert!(
+                        error
+                            .message
+                            .contains("deliverable cut must preserve approved project scene order"),
+                        "{case}: {error:?}"
+                    );
+                } else {
+                    assert!(
+                        error
+                            .message
+                            .contains("SceneBoundary appearance continuity loss"),
+                        "{case}: {error:?}"
+                    );
+                }
             }
             assert_eq!(project, before);
         }

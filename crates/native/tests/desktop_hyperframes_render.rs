@@ -582,6 +582,10 @@ mod desktop_render_tests {
             Some("source") => {
                 completed["result"]["data"]["receipt"]["source_sha256"] = json!("5".repeat(64))
             }
+            Some("nested_result") => {
+                let misplaced = completed["result"]["data"].take();
+                completed["result"]["result"] = json!({"data":misplaced});
+            }
             _ => {}
         }
         let input = ProductionReceiptInput {
@@ -786,6 +790,7 @@ mod desktop_render_tests {
             "digest",
             "nonce",
             "revision",
+            "nested_result",
         ] {
             let (dir, service, p) = fixture();
             let grants = EffectGrantRegistry::default();
@@ -810,15 +815,15 @@ mod desktop_render_tests {
                 observation.observed_revision += 1;
             }
             let before = service.production_receipt_watermark(p.id).unwrap();
-            assert!(
-                read_recorded_hyperframes_job_observation(
-                    &service,
-                    &job_binding(&intent),
-                    &observation
-                )
-                .is_err(),
-                "{tamper}"
+            let rejected = read_recorded_hyperframes_job_observation(
+                &service,
+                &job_binding(&intent),
+                &observation,
             );
+            assert!(rejected.is_err(), "{tamper}");
+            if tamper == "nested_result" {
+                assert!(!rejected.err().unwrap().outcome_known);
+            }
             assert!(
                 record_job_observation(
                     &service,

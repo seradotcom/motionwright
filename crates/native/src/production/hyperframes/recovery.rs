@@ -110,7 +110,10 @@ fn receipt_generation(receipt: &ProductionReceipt) -> NativeResult<u64> {
         .ok_or_else(uncertain)
 }
 fn receipt_data(receipt: &ProductionReceipt) -> NativeResult<&Value> {
-    response_data(receipt.payload.get("result").ok_or_else(uncertain)?)
+    // ProductionCoordinator retains the complete response under payload:
+    // { result: { data, execution, ... }, ... }. response_data owns the
+    // single result boundary; unwrapping it here again loses valid data.
+    response_data(&receipt.payload).map_err(Error::uncertain)
 }
 fn completed(
     service: &StudioService,

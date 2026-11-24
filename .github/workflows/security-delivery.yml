@@ -407,7 +407,7 @@ jobs:
       - name: Grouped A4 source projections for hierarchy, camera, cut continuity and editable Manim
         run: |
           set -euo pipefail
-          cargo test --locked --jobs 2 -p motionwright-domain --lib camera_reframe::tests:: -- --test-threads=1
+          cargo test --locked --jobs 2 -p motionwright-domain --lib camera_reframe:: -- --test-threads=1
           cargo test --locked --jobs 2 -p motionwright-domain --lib exact_native_position_move_inside_static_clip_saves_four_editable_keys_once -- --test-threads=1
           cargo test --locked --jobs 2 -p motionwright-domain --lib scene_boundary -- --test-threads=1
           cargo test --locked --jobs 2 -p motionwright-native --lib film::tests:: -- --test-threads=1
