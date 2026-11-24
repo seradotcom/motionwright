@@ -1,5 +1,6 @@
 import { Link2, Trash2 } from "lucide-react";
 import { useMemo } from "react";
+import { resolveCanvasAlignments } from "./canvasAlignment";
 import { CANVAS_STYLE_FIELDS, CANVAS_HIERARCHY_FIELDS, CANVAS_TRANSFORM_FIELDS, CANVAS_FIELD_LABELS,
   canvasDraftHasWork, canvasDraftReparentProposal, canvasFieldHasInput, canvasFieldIssue } from "./canvasWorkspaceDraft";
 import type { CanvasDraftField, CanvasWorkspaceDraft } from "./canvasWorkspaceDraft";
@@ -53,6 +54,10 @@ export default function CanvasStructureEditor({
   const parentLocked = node.property_locks.includes("parent");
   const orderLocked = node.property_locks.includes("order");
   const positionLocked = node.property_locks.includes("position");
+  const aligned = scene.renderer === "motion-canvas" ? resolveCanvasAlignments(scene.nodes, undefined,
+    project.locks.some(lock => lock.kind === "position" &&
+      (lock.resource === "project:" + project.id || lock.resource === "scene:" + scene.id))) : null;
+  const effective = aligned?.positions.get(node.id);
   const proposed = useMemo(() => {
     if (!hierarchyDirty || (draft.awaiting?.group === "hierarchy" && !draft.reparent)) return null;
     try { return { pose: canvasDraftReparentProposal(draft, project).pose, error: null }; }
@@ -168,7 +173,12 @@ export default function CanvasStructureEditor({
 
       <div className="canvas-editor-section">
         <span className="field-label">Relations</span>
-        <p className="semantic-footnote">Relation choices are local until Add or Remove commits the exact saved list.</p>
+        <p className="semantic-footnote">Relation choices are local until Add or Remove commits the exact saved list. Static alignments resolve authored boxes without rewriting their saved coordinates; Follow and Attach remain unsupported by this Native projection.</p>
+        {node.relations.length > 0 && aligned && <p className={aligned.issue ? "production-error" : "semantic-footnote"} role="status">
+          {aligned.issue ? "Native alignment unresolved: " + aligned.issue : effective
+            ? "Resolved source position: X " + effective.x.toFixed(2) + ", Y " + effective.y.toFixed(2) + ". Saved base coordinates remain editable."
+            : "No resolved alignment for this object."}
+        </p>}
         <div className="relation-composer">
           <select aria-label="Canvas relation kind" value={draft.fields.relation_kind.raw}
             disabled={pending || positionLocked || otherNodes.length === 0}

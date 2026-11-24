@@ -227,6 +227,80 @@ fn scene_span_cost(scene: &Scene) -> usize {
             .sum::<usize>()
 }
 
+/// Resolve only relations that the exact static authored-box solver supports.
+/// This is a Film-only copy; the full original relation graph remains in
+/// Project/SQLite, including unsupported and historically authored inputs.
+fn aligned_motion_canvas_scene(
+    project: &Project,
+    source: &Scene,
+    mut projected: Scene,
+    profile: &DeliverableProfile,
+) -> NativeResult<Scene> {
+    let participants = source
+        .nodes
+        .iter()
+        .flat_map(|node| {
+            node.relations
+                .iter()
+                .flat_map(move |relation| [node.id, relation.target_id])
+        })
+        .collect::<BTreeSet<_>>();
+    if participants.is_empty()
+        && !projected
+            .nodes
+            .iter()
+            .any(|node| !node.relations.is_empty())
+    {
+        return Ok(projected);
+    }
+    // Component replanning must not silently remove or rewrite relation
+    // authority, including an unconstrained target of a linked object.
+    for id in &participants {
+        let original = source.nodes.iter().find(|node| node.id == *id);
+        let actual = projected.nodes.iter().find(|node| node.id == *id);
+        if original.is_none() || original != actual {
+            return Err(unsupported(
+                "Responsive layout changed an authored alignment participant",
+            ));
+        }
+    }
+    if projected
+        .nodes
+        .iter()
+        .any(|node| !node.relations.is_empty() && !participants.contains(&node.id))
+    {
+        return Err(unsupported(
+            "Responsive layout introduced a relation without an authored source",
+        ));
+    }
+    let locked = project.locks.iter().any(|lock| {
+        lock.kind == motionwright_domain::LockKind::Position
+            && (lock.resource == project.resource_key()
+                || lock.resource == format!("scene:{}", source.id))
+    });
+    let projection = layout_projection(profile);
+    let positions = motionwright_domain::resolve_canvas_alignments(
+        &projected,
+        motionwright_domain::AlignmentScale {
+            x: projection.position_scale_x,
+            y: projection.position_scale_y,
+            object: projection.object_scale,
+        },
+        locked,
+    )
+    .map_err(|error| unsupported(error.to_string()))?;
+    for node in &mut projected.nodes {
+        if let Some(position) = positions.get(&node.id) {
+            node.x = position.x;
+            node.y = position.y;
+            // Every consumed relation has been resolved into this equivalent
+            // fixed native box. Never clear an unresolved relation.
+            node.relations.clear();
+        }
+    }
+    Ok(projected)
+}
+
 fn motion_canvas_runs(
     project: &Project,
     profile: &DeliverableProfile,
@@ -242,6 +316,12 @@ fn motion_canvas_runs(
             flush_run(&mut runs, &mut current);
             continue;
         }
+        let source = project
+            .scenes
+            .iter()
+            .find(|source| source.id == scene.id)
+            .ok_or_else(|| invalid("Motion Canvas source scene is missing"))?;
+        let scene = aligned_motion_canvas_scene(project, source, scene, profile)?;
         if project
             .production_design
             .semantic_graphs
@@ -2779,6 +2859,119 @@ mod tests {
             })
             .unwrap();
         project
+    }
+
+    #[test]
+    fn authored_static_alignment_preserves_exact_output_box_edges_and_source() {
+        use motionwright_domain::{NodeRelation, RelationKind};
+        for (width, height) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
+            let mut project = fixture_project();
+            let mut a = node("rectangle", None);
+            a.x = 650.0;
+            a.y = 350.0;
+            a.width = 300.0;
+            a.height = 200.0;
+            let mut b = a.clone();
+            b.id = Uuid::now_v7();
+            b.x = 1000.0;
+            b.y = 430.0;
+            b.width = 150.0;
+            b.height = 100.0;
+            let mut c = b.clone();
+            c.id = Uuid::now_v7();
+            c.width = 100.0;
+            c.height = 80.0;
+            b.relations = [RelationKind::AlignRight, RelationKind::AlignBottom]
+                .into_iter()
+                .map(|kind| NodeRelation {
+                    id: Uuid::now_v7(),
+                    kind,
+                    target_id: a.id,
+                })
+                .collect();
+            c.relations = [RelationKind::AlignCenterX, RelationKind::AlignTop]
+                .into_iter()
+                .map(|kind| NodeRelation {
+                    id: Uuid::now_v7(),
+                    kind,
+                    target_id: b.id,
+                })
+                .collect();
+            project.scenes[0].nodes = vec![c.clone(), b.clone(), a.clone()];
+            project.deliverables[0].width = width;
+            project.deliverables[0].height = height;
+            project.deliverables[0].framing_strategy = FramingStrategy::Replan;
+            let before = project.clone();
+            let options = fixture_options(&project);
+            let segments =
+                build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
+                    .unwrap();
+            let shot = &segments[0].film.sequences[0].beats[0].shots[0];
+            let actual = |id| {
+                let subject = shot
+                    .subjects
+                    .iter()
+                    .find(|item| item.id == subject_id(id, None))
+                    .unwrap();
+                match &subject.layout {
+                    SpatialIntent::Fixed { position, size } => {
+                        (position.x, position.y, size.width, size.height)
+                    }
+                    _ => panic!("Alignment must compile to an actual fixed native box"),
+                }
+            };
+            let (ax, ay, aw, ah) = actual(a.id);
+            let (bx, by, bw, bh) = actual(b.id);
+            let (cx, cy, _cw, ch) = actual(c.id);
+            assert!(((bx + bw / 2.0) - (ax + aw / 2.0)).abs() <= 1e-6);
+            assert!(((by + bh / 2.0) - (ay + ah / 2.0)).abs() <= 1e-6);
+            assert!((cx - bx).abs() <= 1e-6);
+            assert!(((cy - ch / 2.0) - (by - bh / 2.0)).abs() <= 1e-6);
+            realize(&segments[0].film).unwrap();
+            assert_eq!(project, before);
+
+            // Every failure must be resolved or refused before a Native effect.
+            for case in ["cycle", "competing", "follow", "animated", "locked"] {
+                let mut invalid_project = before.clone();
+                let nodes = &mut invalid_project.scenes[0].nodes;
+                match case {
+                    "cycle" => nodes[2].relations.push(NodeRelation {
+                        id: Uuid::now_v7(),
+                        kind: RelationKind::AlignLeft,
+                        target_id: b.id,
+                    }),
+                    "competing" => nodes[1].relations.push(NodeRelation {
+                        id: Uuid::now_v7(),
+                        kind: RelationKind::AlignLeft,
+                        target_id: a.id,
+                    }),
+                    "follow" => nodes[1].relations[0].kind = RelationKind::Follow,
+                    "animated" => nodes[2].keyframes.push(CanvasKeyframe {
+                        at: RationalTime::ZERO,
+                        property: MotionProperty::X,
+                        value: a.x,
+                        interpolation: MotionInterpolation::Linear,
+                    }),
+                    "locked" => {
+                        nodes[1]
+                            .property_locks
+                            .insert(motionwright_domain::NodeProperty::Position);
+                    }
+                    _ => unreachable!(),
+                }
+                let invalid_before = invalid_project.clone();
+                assert!(
+                    build_motion_canvas_segments(
+                        &invalid_project,
+                        invalid_project.deliverables[0].id,
+                        &options
+                    )
+                    .is_err(),
+                    "{case}"
+                );
+                assert_eq!(invalid_project, invalid_before);
+            }
+        }
     }
 
     #[test]
