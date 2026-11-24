@@ -113,13 +113,13 @@ export default function BranchCombinationEditor({project,commit,capability=unava
           {project.deliverables.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}
         </select></label>
         <div className="production-compare-grid">
-          <figure><figcaption>BASE · current editable source</figcaption><SceneCompositionStudy scene={scene} cameraReframes={project.production_design?.camera_reframes}
+          <figure><figcaption>BASE · current editable source</figcaption><SceneCompositionStudy scene={scene} frameRate={profile.frame_rate} cameraReframes={project.production_design?.camera_reframes}
             time={time} background={surface(project.visual_language.palette)} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={profile.text_overrides}
             label="Combination base source study"/></figure>
-          <figure><figcaption>DONOR · saved editable source</figcaption><SceneCompositionStudy scene={other} cameraReframes={saved?.production_design?.camera_reframes}
+          <figure><figcaption>DONOR · saved editable source</figcaption><SceneCompositionStudy scene={other} frameRate={profile.frame_rate} cameraReframes={saved?.production_design?.camera_reframes}
             time={time} background={surface(saved!.visual_language.palette)} ink={inheritedTextInk(saved!.visual_language.palette)} textOverrides={profile.text_overrides}
             label="Combination donor source study"/></figure>
-          {candidateNodes&&<figure><figcaption>CANDIDATE · canonical source diff</figcaption><SceneCompositionStudy scene={scene} nodes={candidateNodes} cameraReframes={project.production_design?.camera_reframes}
+          {candidateNodes&&<figure><figcaption>CANDIDATE · canonical source diff</figcaption><SceneCompositionStudy scene={scene} frameRate={profile.frame_rate} nodes={candidateNodes} cameraReframes={project.production_design?.camera_reframes}
             time={time} background={surface(project.visual_language.palette)} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={profile.text_overrides}
             label="Combination candidate source study"/></figure>}
         </div>

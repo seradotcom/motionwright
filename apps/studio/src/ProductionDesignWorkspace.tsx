@@ -529,7 +529,7 @@ function HeroWorkbench({ project, scene, commit, commitCamera, busy, playhead, o
         <p>{instance ? "This study includes the complete proposed scene, compatible object edits and the sampled scene camera. Aspect changes use the existing Replan layout and report conflicts." : "This parameter study previews the new component before it is attached to the scene."} Use the native frame stage and Deliver for renderer frames and export verification. Font fallback, glyph metrics, full motion admission and creative approval require separate review.</p>
         {sampled.boundaryIssues.length > 0 && <p role="status">{sampled.boundaryIssues.length} sampled object bounds cross the output safe area. No geometry was clamped or shrunk.</p>}</div>
       {instance && scene && <ComponentRevisionReview review={revisionReview} renderScene={(reviewNodes, label) =>
-        <div className="production-preview-mat"><SceneCompositionStudy scene={scene} nodes={reviewNodes} cameraReframes={project.production_design?.camera_reframes}
+        <div className="production-preview-mat"><SceneCompositionStudy scene={scene} frameRate={displayProfile?.frame_rate} nodes={reviewNodes} cameraReframes={project.production_design?.camera_reframes}
           time={localTime} background={background} ink={inheritedTextInk(project.visual_language.palette)} label={label}/></div>}/>}
     </section>
     {expanded && scene && !viewLoading && !viewIssue && <ExpandedStudy nodes={nodes} width={aspect.width} height={aspect.height} time={localTime} duration={seconds(scene.duration)} background={background}

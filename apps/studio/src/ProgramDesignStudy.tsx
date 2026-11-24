@@ -35,7 +35,7 @@ export default function ProgramDesignStudy({
   return <div className="program-design-study" aria-label="Saved Canvas editorial design monitor"
     data-source-revision={project.revision} data-selected-profile-id={profile?.id ?? ""}
     data-output-cut-scope={cutScope}>
-    <SceneCompositionStudy scene={scene} cameraReframes={project.production_design?.camera_reframes} time={time}
+    <SceneCompositionStudy scene={scene} frameRate={profile?.frame_rate} cameraReframes={project.production_design?.camera_reframes} time={time}
       background={surface} ink={ink} textOverrides={cutScope === "excluded" ? undefined : profile?.text_overrides}
       label="Program Canvas editorial study: not native output"/>
     {caption && <div className="program-caption-study" aria-label="Program caption source study" data-source-revision={project.revision}

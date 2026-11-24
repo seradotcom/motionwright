@@ -10,6 +10,7 @@ import { savedNativePoseDraft, type PoseGeometry } from "./nativePoseDraft";
 import { isStaticNativeGroup, nativeGroupOrderIssue, staticNativeGroupParent } from "./nativeGroupHierarchy";
 import { nativeShapeRotation, nativeStaticShapeRotation } from "./canvasMotion";
 import { exactCanvasOpacitySpans } from "./canvasOpacity";
+import { resolveCanvasRelations } from "./canvasFollow";
 
 export const CAMERA_REFRAME_VERSION=1;
 export const CAMERA_REFRAME_MANIM_VERSION=2;
@@ -43,7 +44,9 @@ function cameraMotionStart(node: Scene["nodes"][number], scene: Scene): Scene["n
   }
   if ((node.rotation_deg !== 0 && !nativeShapeRotation(node)) || node.opacity !== 1 || scene.nodes.some(child => child.parent_id === node.id)) fail();
   const geometry = node.keyframes.some(key => key.property !== "opacity");
-  if (geometry && !["shape", "rectangle", "circle"].includes(node.kind)) fail();
+  if (geometry && !["shape", "rectangle", "circle", "text"].includes(node.kind)) fail();
+  if (node.kind === "text" && (node.parent_id !== null || node.rotation_deg !== 0 ||
+    node.keyframes.some(key => ["width", "height", "rotation_deg"].includes(key.property) && key.value !== node[key.property]))) fail();
   if (node.keyframes.some(key => key.property === "x") !== node.keyframes.some(key => key.property === "y")) fail();
   try { exactCanvasOpacitySpans(node, scene, {num: "30", den: "1"}); } catch { fail(); }
   let geometryEnd: string | null = null;
@@ -69,13 +72,15 @@ function cameraMotionPoses(node: Scene["nodes"][number], scene: Scene): PoseGeom
   const times = new Set(node.keyframes.filter(key => key.property !== "opacity").map(key => JSON.stringify(key.at)));
   if (times.size <= 2) return [cameraMotionStart(node, scene), node];
   const fail = (): never => invalid("composition requires complete frame-aligned waypoint poses and unchanged Clip or Group ancestors for node " + node.id);
-  if (!["shape", "rectangle", "circle"].includes(node.kind) || node.opacity !== 1 ||
+  if (!["shape", "rectangle", "circle", "text"].includes(node.kind) || node.opacity !== 1 ||
       scene.nodes.some(child => child.parent_id === node.id)) fail();
   if (node.parent_id !== null && scene.nodes.find(parent => parent.id === node.parent_id)?.style.blend_mode !== "normal") fail();
   cameraMotionStart({...node, keyframes: node.keyframes.filter(key => key.property === "opacity")}, scene);
   const draft = savedNativePoseDraft({...node, keyframes: node.keyframes.filter(key => key.property !== "opacity")},
     {frame_rate: {num: "30", den: "1"}});
   if (!draft || !draft.waypoints?.length) return fail();
+  if (node.kind === "text" && [draft.start, ...draft.waypoints.map(point => point.pose), node]
+    .some(pose => pose.width !== node.width || pose.height !== node.height || pose.rotation_deg !== 0)) fail();
   const points = [...draft.waypoints, {frame: draft.endFrame, curve: draft.curve}];
   try {
     const den = BigInt(scene.duration.den), end = BigInt(scene.duration.num) * 30n;
@@ -130,6 +135,12 @@ export function validateCameraReframeSource(source:CameraReframe,scene:Scene):vo
 }
 
 export function validateCameraReframe(source:CameraReframe,scene:Scene):void{
+  if(source.component_version===CAMERA_REFRAME_VERSION && scene.nodes.some(node=>node.relations.length)){
+    const resolved=resolveCanvasRelations(scene.nodes,undefined,false,{duration:scene.duration,fps:{num:"30",den:"1"},continuous:!scene.beats.length});
+    if(resolved.issue) invalid(resolved.issue);
+    scene={...scene,nodes:scene.nodes.map(node=>({...node,...resolved.positions.get(node.id),
+      keyframes:resolved.tracks.get(node.id)??node.keyframes,relations:[]}))};
+  }
   validateCameraReframeCoordinates(source,scene);
   if(scene.nodes.length<1 || scene.nodes.length>32 ||
     scene.beats.length ||

@@ -164,11 +164,13 @@ fn composed_shape_motion(node: &CanvasNode) -> Option<(CanvasNode, CanvasNode)> 
     if matches!(entry_motion(node), Ok(Some(_))) {
         return None;
     }
-    if !matches!(node.kind.as_str(), "shape" | "rectangle" | "circle")
-        || !node
-            .keyframes
-            .iter()
-            .any(|key| key.property == MotionProperty::Opacity)
+    if !matches!(
+        node.kind.as_str(),
+        "shape" | "rectangle" | "circle" | "text"
+    ) || !node
+        .keyframes
+        .iter()
+        .any(|key| key.property == MotionProperty::Opacity)
         || !node
             .keyframes
             .iter()
@@ -978,7 +980,13 @@ fn validate_pose_track_safety(
             "Waypoint dimensions exceed native geometry bounds",
         ));
     }
-    let radius = width.hypot(height) / 2.0;
+    let rotated = points.iter().any(|point| point.pose.rotation_deg != 0.0);
+    let half_width = if rotated {
+        width.hypot(height) / 2.0
+    } else {
+        width / 2.0
+    };
+    let half_height = if rotated { half_width } else { height / 2.0 };
     for point in points {
         // Anchor every literal pose to the same canonical terminal layout.
         // Re-anchoring each interval would drift on nonuniform replans.
@@ -991,10 +999,10 @@ fn validate_pose_track_safety(
         let x = center.x + f64::from(output.width) / 2.0;
         let y = center.y + f64::from(output.height) / 2.0;
         if projection.enforce_safe_area
-            && (x - radius < output.safe_area.left - 1e-6
-                || y - radius < output.safe_area.top - 1e-6
-                || x + radius > f64::from(output.width) - output.safe_area.right + 1e-6
-                || y + radius > f64::from(output.height) - output.safe_area.bottom + 1e-6)
+            && (x - half_width < output.safe_area.left - 1e-6
+                || y - half_height < output.safe_area.top - 1e-6
+                || x + half_width > f64::from(output.width) - output.safe_area.right + 1e-6
+                || y + half_height > f64::from(output.height) - output.safe_area.bottom + 1e-6)
         {
             return Err(unsupported(format!(
                 "Canvas node {} waypoint path exceeds the Film safe area",
@@ -1110,6 +1118,11 @@ fn append_native_pose_track(
             ),
         ];
         for (name, channel, start, end) in operands {
+            // Text follows by position alone. Keep FixedTxt shaping, line
+            // layout, dimensions and orientation untouched at every pose.
+            if node.kind == "text" && name != "position" {
+                continue;
+            }
             let primitive = if held {
                 Primitive::GeometrySet {
                     target: target.clone(),
@@ -3154,6 +3167,205 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn contextual_text_follows_curves_holds_and_own_opacity_without_metric_or_source_writes() {
+        use motionwright_domain::{
+            CAMERA_REFRAME_VERSION, CameraReframe, NodeRelation, RelationKind,
+        };
+        for camera in [false, true] {
+            let mut project = fixture_project();
+            let mut root = node("rectangle", None);
+            root.x = 720.0;
+            root.y = 400.0;
+            root.width = 240.0;
+            root.height = 160.0;
+            for (at, x, y, interpolation) in [
+                (
+                    RationalTime::ZERO,
+                    520.0,
+                    380.0,
+                    MotionInterpolation::Linear,
+                ),
+                (
+                    RationalTime::new(1, 2).unwrap(),
+                    620.0,
+                    420.0,
+                    MotionInterpolation::EaseOutCubic,
+                ),
+                (RationalTime::ONE, 580.0, 390.0, MotionInterpolation::Hold),
+                (
+                    RationalTime::new(3, 2).unwrap(),
+                    root.x,
+                    root.y,
+                    MotionInterpolation::Linear,
+                ),
+            ] {
+                for (property, value) in [
+                    (MotionProperty::X, x),
+                    (MotionProperty::Y, y),
+                    (MotionProperty::Width, root.width),
+                    (MotionProperty::Height, root.height),
+                    (MotionProperty::RotationDeg, 0.0),
+                ] {
+                    root.keyframes.push(CanvasKeyframe {
+                        at,
+                        property,
+                        value,
+                        interpolation,
+                    });
+                }
+            }
+            let mut label = node("text", Some("Measured\nsource"));
+            label.x = 860.0;
+            label.y = 500.0;
+            label.width = 320.0;
+            label.height = 100.0;
+            label.z_index = 2;
+            label.style.font_size = Some(24.0);
+            label.relations.push(NodeRelation {
+                id: Uuid::now_v7(),
+                target_id: root.id,
+                kind: RelationKind::Follow,
+            });
+            for (at, value, interpolation) in [
+                (RationalTime::ZERO, 0.0, MotionInterpolation::Linear),
+                (
+                    RationalTime::new(1, 2).unwrap(),
+                    1.0,
+                    MotionInterpolation::Linear,
+                ),
+                (RationalTime::ONE, 1.0, MotionInterpolation::Hold),
+                (
+                    RationalTime::new(9, 5).unwrap(),
+                    0.0,
+                    MotionInterpolation::EaseOutCubic,
+                ),
+            ] {
+                label.keyframes.push(CanvasKeyframe {
+                    at,
+                    property: MotionProperty::Opacity,
+                    value,
+                    interpolation,
+                });
+            }
+            project.scenes[0].nodes = vec![root.clone(), label.clone()];
+            if camera {
+                project
+                    .production_design
+                    .camera_reframes
+                    .push(CameraReframe {
+                        id: Uuid::now_v7(),
+                        scene_id: project.scenes[0].id,
+                        component_version: CAMERA_REFRAME_VERSION,
+                        start_center_x: 920.0,
+                        start_center_y: 540.0,
+                        end_center_x: 960.0,
+                        end_center_y: 540.0,
+                        duration_frames: 30,
+                    });
+            }
+            let id = project.deliverables[0].id;
+            for (width, height) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
+                project.deliverables[0].width = width;
+                project.deliverables[0].height = height;
+                project.deliverables[0].framing_strategy = FramingStrategy::Replan;
+                let before = project.clone();
+                let segments =
+                    build_motion_canvas_segments(&project, id, &fixture_options(&project)).unwrap();
+                let film = &segments[0].film;
+                let shot = &film.sequences[0].beats[0].shots[0];
+                let target = subject_id(label.id, None);
+                let mut tweens = 0;
+                let mut sets = 0;
+                let mut fades = 0;
+                for motion in &shot.motion {
+                    match &motion.primitive {
+                        Primitive::GeometryTween {
+                            target: actual,
+                            channel,
+                            ..
+                        } if actual == &target => {
+                            assert_eq!(*channel, Channel::Position);
+                            tweens += 1;
+                        }
+                        Primitive::GeometrySet {
+                            target: actual,
+                            channel,
+                            ..
+                        } if actual == &target => {
+                            assert_eq!(*channel, Channel::Position);
+                            sets += 1;
+                        }
+                        Primitive::FadeIn { target: actual }
+                        | Primitive::FadeOut { target: actual }
+                            if actual == &target =>
+                        {
+                            fades += 1
+                        }
+                        Primitive::Settle { target: actual, .. } if actual == &target => {
+                            panic!("Follow must not reset text orientation")
+                        }
+                        _ => {}
+                    }
+                }
+                assert_eq!((tweens, sets, fades), (2, 1, 2));
+                realize(film).unwrap();
+                assert_eq!(project, before);
+                assert_eq!(project.scenes[0].nodes[1], label);
+            }
+        }
+    }
+
+    #[test]
+    fn paired_hold_text_follow_sets_exact_frames_without_resizing_fixed_text() {
+        use motionwright_domain::{NodeRelation, RelationKind};
+        let mut project = fixture_project();
+        let mut root = node("rectangle", None);
+        root.x = 720.0;
+        root.y = 400.0;
+        root.width = 160.0;
+        root.height = 100.0;
+        for (at, x, curve) in [
+            (RationalTime::ZERO, 620.0, MotionInterpolation::Linear),
+            (RationalTime::ONE, 720.0, MotionInterpolation::Hold),
+        ] {
+            for (property, value) in [(MotionProperty::X, x), (MotionProperty::Y, root.y)] {
+                root.keyframes.push(CanvasKeyframe {
+                    at,
+                    property,
+                    value,
+                    interpolation: curve,
+                });
+            }
+        }
+        let mut label = node("text", Some("Exact hold"));
+        label.x = 920.0;
+        label.y = 500.0;
+        label.width = 240.0;
+        label.height = 80.0;
+        label.style.font_size = Some(24.0);
+        label.relations.push(NodeRelation {
+            id: Uuid::now_v7(),
+            target_id: root.id,
+            kind: RelationKind::Follow,
+        });
+        project.scenes[0].nodes = vec![root, label.clone()];
+        let before = project.clone();
+        let segments = build_motion_canvas_segments(
+            &project,
+            project.deliverables[0].id,
+            &fixture_options(&project),
+        )
+        .unwrap();
+        let film = &segments[0].film;
+        let target = subject_id(label.id, None);
+        let sets=film.sequences[0].beats[0].shots[0].motion.iter().filter(|motion|
+            matches!(&motion.primitive,Primitive::GeometrySet {target:actual,channel:Channel::Position,..} if actual==&target)).count();
+        assert_eq!(sets, 2);
+        realize(film).unwrap();
+        assert_eq!(project, before);
     }
 
     #[test]

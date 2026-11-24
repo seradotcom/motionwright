@@ -217,12 +217,12 @@ function ProceduralEditor({project,scene,commit,busy,onOpenCanvas,displayProfile
       <p className="production-help">Compare the saved scene with the proposed scene at the same playhead. The proposal includes compatible individual edits and surrounding objects.
         These studies show the authored 1920 × 1080 scene and its saved camera at this time. Output profile adaptation and rendered pixels are reviewed in Native preview.</p>
       <div className="production-plan-grid">
-        <div><h4>Saved scene</h4>{scene ? <SceneCompositionStudy scene={scene} cameraReframes={project.production_design?.camera_reframes} time={renderedTime} background="#0C1723"
+        <div><h4>Saved scene</h4>{scene ? <SceneCompositionStudy scene={scene} frameRate={displayProfile?.frame_rate} cameraReframes={project.production_design?.camera_reframes} time={renderedTime} background="#0C1723"
           ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides} label="Saved procedural scene"/> : <p>Choose a working scene.</p>}</div>
         <div><h4>Proposed scene</h4>
           {previewLoading?<p role="status">Evaluating bounded procedural preview…</p>
            :previewError || !scene?<p role="status">No preview until the field constraints are valid.</p>
-           :<SceneCompositionStudy scene={scene} nodes={nodes} cameraReframes={project.production_design?.camera_reframes} time={renderedTime} background="#0C1723" ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
+           :<SceneCompositionStudy scene={scene} frameRate={displayProfile?.frame_rate} nodes={nodes} cameraReframes={project.production_design?.camera_reframes} time={renderedTime} background="#0C1723" ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
               label={`Procedural editorial preview, ${draft.distribution} distribution, ${draft.count} editable objects`}/>}
         </div>
       </div>

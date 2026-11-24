@@ -4,19 +4,20 @@ import { cameraSvgTransform } from "./canvasCamera";
 import { isStaticNativeGroup, nativeGroupOrderIssue, staticNativeGroupAncestors } from "./nativeGroupHierarchy";
 import { intersectRectangularClips } from "./canvasClip";
 import { previewTransform } from "./canvasMotion";
-import { resolveCanvasRelations } from "./canvasFollow";
+import { resolveCanvasRelations, type FollowClock } from "./canvasFollow";
 function safePaint(value: string | null, fallback: string): string { return value && /^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(value) ? value : fallback; }
 
 /** A DOM/SVG editorial study. Raster/native evidence is shown by the existing native frame stage. */
-export default function CompositionStudy({ nodes, width=1920, height=1080, time, background, label, ink=null, textOverrides, camera }: {
+export default function CompositionStudy({ nodes, width=1920, height=1080, time, background, label, ink=null, textOverrides, camera, relationClock }: {
   nodes: CanvasNode[]; width?:number; height?:number; time:number; background:string; label:string; ink?:string|null;
-  textOverrides?: Readonly<Record<string,string>>; camera?: CameraState;
+  textOverrides?: Readonly<Record<string,string>>; camera?: CameraState; relationClock?: FollowClock;
 }) {
   const prefix = "study-clip-" + useId().replace(/[^a-zA-Z0-9_-]/g, "_");
   const clipGroups = nodes.filter(node => node.kind === "clip_group" && isStaticNativeGroup(node));
   const clipIds = new Map(clipGroups.map((group, index) => [group.id, prefix + "-" + index]));
   const hierarchyIssue = nativeGroupOrderIssue({nodes});
-  const alignment = resolveCanvasRelations(nodes);
+  const alignment = resolveCanvasRelations(nodes, undefined, false, relationClock);
+  if (alignment.issue) return <p className="production-error" role="alert" aria-label={label + " relation unavailable"}>The saved relation cannot be displayed: {alignment.issue}</p>;
   const cameraTransform = camera ? cameraSvgTransform(camera, width, height) : null;
   if (camera && cameraTransform === null) return <p className="production-error" role="alert" aria-label={label + " camera unavailable"}>The saved camera cannot be displayed. No terminal-pose fallback was drawn.</p>;
   return <svg className="production-study" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={label}
@@ -51,7 +52,7 @@ export default function CompositionStudy({ nodes, width=1920, height=1080, time,
         {node.kind === "text" ? <text data-text-origin={fromProfile ? "profile" : "source"} x={t.x} y={t.y+size*.88} fill={node.style.fill == null ? safePaint(ink, "#F2F4F3") : safePaint(node.style.fill, "#F2F4F3")}
           fontFamily={node.style.font_family === "IBM Plex Mono" ? '"IBM Plex Mono", ui-monospace, monospace' : '"Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif'} fontSize={size} fontWeight={node.style.font_weight ?? 400}>
           {textValue.split("\n").map((line,i) => <tspan key={i} x={t.x} dy={i===0?0:size*(node.style.line_height ?? 1.12)}>{line}</tspan>)}
-        </text> : node.kind === "circle" ? <ellipse cx={t.x+t.width/2} cy={t.y+t.height/2} rx={t.width/2} ry={t.height/2} fill={safePaint(node.style.fill, "none")}/>
+        </text> : node.kind === "circle" ? <ellipse cx={t.x+t.width/2} cy={t.y+t.height/2} rx={t.width/2} ry={t.height/2} fill={safePaint(node.style.fill, "none")} stroke={safePaint(node.style.stroke, "none")} strokeWidth={node.style.stroke_width}/>
           : ["shape","rectangle"].includes(node.kind) ? <rect x={t.x} y={t.y} width={t.width} height={t.height} fill={safePaint(node.style.fill, "none")} stroke={safePaint(node.style.stroke, "none")} strokeWidth={node.style.stroke_width}/>
           : null}
       </g></g>;

@@ -2,6 +2,10 @@ import { previewTransform } from "./canvasMotion";
 import { rectangularAncestorClip } from "./canvasClip";
 import { alignmentScale } from "./canvasAlignment";
 import { resolveCanvasRelations } from "./canvasFollow";
+import { contextLabelNode } from "./contextLabel";
+import CompositionStudy from "./CompositionStudy";
+import { inheritedTextInk } from "./canvasInheritedInk";
+import "./canvas-source-study.css";
 import { sampledSceneCamera } from "./cameraReframe";
 import { isStaticNativeGroup, nativeGroupOrderIssue, nativeGroupTreeRows, staticNativeGroupAncestors, staticNativeGroupParent } from "./nativeGroupHierarchy";
 import NativePoseMotion from "./NativePoseMotion";
@@ -789,14 +793,16 @@ export default function CanvasWorkspace({
     onSeek(sceneStartSeconds + Math.max(0, Math.min(relativeSeconds, maxPlayhead)));
   };
 
-  const addNode = async (kind: "text" | "shape" | "group" | "clip_group") => {
+  const addNode = async (kind: "text" | "shape" | "group" | "clip_group" | "context_label") => {
     if (addPending.current) return;
     addPending.current = true;
     setAddBusy(true);
     setAddError(null);
     const submittedScope = creationScope;
     const submittedInteraction = localInteractionVersion.current;
-    const node = createNode(scene, kind);
+    try {
+    const source = createNode(scene, kind === "context_label" ? "text" : kind);
+    const node = kind === "context_label" ? contextLabelNode(scene, selectedNode ?? null, source, profile) : source;
     // Creating a text/shape while a clipping group is selected should produce
     // a usable editable child inside that exact saved group, not a visually
     // vanished object somewhere outside its original clipping rectangle.
@@ -813,7 +819,6 @@ export default function CanvasWorkspace({
       if (chain.some(scope => scene.nodes.some(other => other.parent_id === scope.parent_id
         && other.id !== scope.id && other.z_index > scope.z_index))) node.z_index = top;
     }
-    try {
       await commitRequired({ type: "add_canvas_node", scene_id: scene.id, node });
       // Canonical publication is independent of the local inspector. Even in
       // this same scene, a later selection or edit supersedes auto-selection.
@@ -1057,6 +1062,10 @@ export default function CanvasWorkspace({
                 {kind.replace("_", " ")}
               </button>
             ))}
+            <button type="button" className="canvas-create-button" disabled={!selectedNode || sceneContentLocked || scenePositionLocked || addBusy}
+              title="Create an editable label linked to the selected object" onClick={() => void addNode("context_label")}>
+              <Plus size={10}/>context label
+            </button>
           </div>
           {addError && <p className="production-error" role="alert">{addError}</p>}
           {scene.nodes.length === 0 ? (
@@ -1104,7 +1113,15 @@ export default function CanvasWorkspace({
                 : "Static box alignment is resolved in the source preview. The selected delivery resolves the same relations at its own aspect."}
           </p>}
           {viewCamera.issue && <p className="production-error" role="alert">Camera preview unavailable: {viewCamera.issue}</p>}
+          <div className="canvas-stage-viewport">
           <div className="canvas-stage">
+            {viewCamera.camera && !alignment?.issue && !groupProjectionIssue && <div className="canvas-source-study">
+              <CompositionStudy nodes={scene.nodes.map(node => ({...node,...stageTransform(node),
+                keyframes: ["group","clip_group"].includes(node.kind) ? node.keyframes : [], relations: []}))}
+                time={viewTime} camera={viewCamera.camera}
+                background={project.visual_language.palette.find(token => ["surface","background"].includes(token.name.toLowerCase()))?.value ?? "#0F1216"}
+                ink={inheritedTextInk(project.visual_language.palette)} label="Editable Canvas source composition"/>
+            </div>}
             <div className="canvas-safe-area" style={{ inset: (scene.camera.safe_margin * 100) + "%" }}>
               <span>SAFE</span>
             </div>
@@ -1123,8 +1140,10 @@ export default function CanvasWorkspace({
                   type="button"
                   key={node.id}
                   aria-label={"Canvas object " + node.name}
+                  title={node.name}
                   className={[
                     "canvas-object",
+                    ["text","shape","rectangle","circle","group","clip_group"].includes(node.kind) ? "canvas-source-painted-object" : "",
                     node.kind === "text" ? "text-object" : "",
                     node.kind === "clip_group" ? "clip-group-object" : "",
                     selectedNodeId === node.id ? "selected" : "",
@@ -1162,6 +1181,7 @@ export default function CanvasWorkspace({
                 <span>The renderer preview is intentionally not fabricated.</span>
               </div>
             )}
+          </div>
           </div>
         </section>
 
@@ -1269,7 +1289,7 @@ export default function CanvasWorkspace({
                     ))}
                 </div>
                 <p className="inspector-note">
-                  Editorial preview. Native Film supports frame-aligned shape geometry, exact fades and their composition inside a static Clip. Preflight identifies unsupported curves.
+                  Editorial source preview. Native Film supports frame-aligned shape geometry, text translation, exact fades and their composition inside a static Clip. Preflight identifies unsupported curves.
                 </p>
               </section>
 

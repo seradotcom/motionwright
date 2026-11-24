@@ -1,6 +1,7 @@
 /** A real source transaction stores Follow, not the derived renderer keys. */
 import { expect, test } from "@playwright/test";
 import { ScopedChangeService } from "./support/scopedChangeService";
+import { createContextLabelJourney, verifyContextLabelJourney } from "./support/contextLabelJourney";
 
 test.skip(!process.env.MOTIONWRIGHT_SERVICE_TEST_BIN,"An exact-source StudioService binary is required");
 test.describe.configure({timeout:90_000,retries:0});
@@ -94,4 +95,50 @@ test("saved Follow inherits translation at each playhead and retains original so
     if(!page.isClosed()) await page.close();
     if(!closed) await service.close();
   }
+});
+
+test("context label retains authored pose relations, own fades and editability through actual Service and SQLite reopen",async({page},info)=>{
+  const databasePath=info.outputPath("context-label","source.sqlite3");
+  const service=await ScopedChangeService.create({databasePath,desktopInvokeFixture:true});
+  let closed=false;
+  try{
+    const original=(await service.fixtureBootstrap()).project;
+    const scene=original.scenes.find(item=>item.name==="Independent synthetic scene")!;
+    expect(scene).toBeDefined();
+    await service.attachFixturePage(page,original.id);await page.goto("/");
+    await page.getByRole("button",{name:"Canvas",exact:true}).click();
+    await page.locator(".tree-row").filter({hasText:scene.name}).click();
+    const created=await createContextLabelJourney(page);
+    await verifyContextLabelJourney(page,created.labelName,created.sourceName);
+    const saved=await service.project(original.id);
+    const nodes=saved.scenes.find(item=>item.id===scene.id)!.nodes;
+    const target=nodes.find(node=>node.id===created.sourceId)!,label=nodes.find(node=>node.id===created.labelId)!;
+    expect(target.keyframes).toHaveLength(15);
+    expect(target.keyframes.some(key=>key.interpolation==="ease_out_cubic")).toBe(true);
+    expect(target.keyframes.some(key=>key.interpolation==="hold")).toBe(true);
+    expect(label.text).toBe("Measured result");expect(label.keyframes).toHaveLength(2);
+    expect(label.keyframes.every(key=>key.property==="opacity")).toBe(true);
+    expect(label.relations).toHaveLength(1);
+    expect(label.relations[0]).toMatchObject({kind:"follow",target_id:target.id});
+    const history=await service.history(original.id,original.revision,16);
+    expect(history.map(event=>event.change.type)).toEqual(["add_canvas_node","set_canvas_transform",
+      "set_canvas_motion_keyframes","add_canvas_node","set_canvas_text","set_canvas_keyframe","set_canvas_keyframe"]);
+    await page.reload();await page.getByRole("button",{name:"Canvas",exact:true}).click();
+    await page.locator(".tree-row").filter({hasText:scene.name}).click();
+    await page.locator(".canvas-tree-row").filter({hasText:label.name}).click();
+    await verifyContextLabelJourney(page,label.name,target.name);
+    const inspector=page.locator(".canvas-draft-inspector").filter({has:page.locator('[id="canvas-draft-'+label.id+'-x"]')});
+    await expect(inspector).toHaveCount(1);
+    await inspector.getByLabel("Canvas text",{exact:true}).fill("Continued after reopening");
+    await inspector.getByRole("button",{name:"Commit text",exact:true}).click();
+    await expect(page.locator(".command-bar .revision-chip")).toHaveText("r"+(saved.revision+1));
+    const continued=await service.project(original.id),continuedNodes=continued.scenes.find(item=>item.id===scene.id)!.nodes;
+    expect(continuedNodes.find(node=>node.id===label.id)).toEqual({...label,text:"Continued after reopening"});
+    expect(continuedNodes.find(node=>node.id===target.id)).toEqual(target);
+    await page.close();
+    expect(await service.rawRequest({command:"prepare_read_only_handoff",args:null})).toMatchObject({ok:true,result:{read_only_handoff:true,journal_mode:"delete"}});
+    await service.close();closed=true;expect(service.lifecycleTaints).toEqual([]);
+    const reader=await ScopedChangeService.createReadOnly({binaryPath:service.binaryPath,databasePath,seedFixture:false,desktopInvokeFixture:false});
+    try{expect(await reader.project(original.id)).toEqual(continued);}finally{await reader.close();}
+  }finally{if(!page.isClosed())await page.close();if(!closed)await service.close();}
 });

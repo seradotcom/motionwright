@@ -69,7 +69,15 @@ pub fn exact_canvas_pose_waypoints(
         key.validate()?;
         slots.entry(key.at).or_default().push(key);
     }
-    if slots.len() <= 2 {
+    let text_pose = node.kind == "text"
+        && slots.len() == 2
+        && (slots.values().all(|keys| keys.len() == 5)
+            || slots
+                .values()
+                .flatten()
+                .any(|key| key.interpolation == MotionInterpolation::Hold));
+    let paired_text = text_pose && slots.values().all(|keys| keys.len() == 2);
+    if slots.len() <= 2 && !text_pose {
         return Ok(None);
     }
     let fail = || {
@@ -78,12 +86,16 @@ pub fn exact_canvas_pose_waypoints(
             node.id
         ))
     };
-    if !(3..=6).contains(&slots.len())
+    if (!(3..=6).contains(&slots.len()) && !text_pose)
         || fps.validate().is_err()
         || fps.num <= 0
         || fps.den <= 0
         || !scene.beats.is_empty()
-        || !matches!(node.kind.as_str(), "shape" | "rectangle" | "circle")
+        || !matches!(
+            node.kind.as_str(),
+            "shape" | "rectangle" | "circle" | "text"
+        )
+        || (node.kind == "text" && node.parent_id.is_some())
         || node.coordinate_space != CoordinateSpace::ProjectPixels
         || node.style.blend_mode != BlendMode::Normal
         || !node.relations.is_empty()
@@ -108,7 +120,7 @@ pub fn exact_canvas_pose_waypoints(
             || numerator < 0
             || numerator % denominator != 0
             || numerator / denominator > 36000
-            || keys.len() != 5
+            || keys.len() != if paired_text { 2 } else { 5 }
         {
             return Err(fail());
         }
@@ -141,11 +153,20 @@ pub fn exact_canvas_pose_waypoints(
                 MotionProperty::Opacity => return Err(fail()),
             }
         }
+        if paired_text && (!seen.contains(&MotionProperty::X) || !seen.contains(&MotionProperty::Y))
+        {
+            return Err(fail());
+        }
         if pose.width <= 0.0
             || pose.height <= 0.0
             || pose.width > 16384.0
             || pose.height > 16384.0
             || pose.rotation_deg.abs() > 360.0
+            || (node.kind == "text"
+                && (node.rotation_deg != 0.0
+                    || pose.rotation_deg != 0.0
+                    || pose.width != node.width
+                    || pose.height != node.height))
         {
             return Err(fail());
         }
@@ -204,7 +225,24 @@ fn camera_motion_start(node: &CanvasNode, scene: &Scene) -> Result<CanvasNode> {
         .keyframes
         .iter()
         .any(|key| key.property != MotionProperty::Opacity);
-    if geometry && !matches!(node.kind.as_str(), "shape" | "rectangle" | "circle") {
+    if geometry
+        && !matches!(
+            node.kind.as_str(),
+            "shape" | "rectangle" | "circle" | "text"
+        )
+    {
+        return Err(fail());
+    }
+    if node.kind == "text"
+        && (node.parent_id.is_some()
+            || node.rotation_deg != 0.0
+            || node.keyframes.iter().any(|key| match key.property {
+                MotionProperty::Width => key.value != node.width,
+                MotionProperty::Height => key.value != node.height,
+                MotionProperty::RotationDeg => key.value != 0.0,
+                _ => false,
+            }))
+    {
         return Err(fail());
     }
     let x = node
@@ -286,6 +324,42 @@ fn camera_motion_start(node: &CanvasNode, scene: &Scene) -> Result<CanvasNode> {
 
 impl CameraReframe {
     pub fn validate(&self, scene: &Scene) -> Result<()> {
+        // Resolve the existing source relations once for the source camera
+        // envelope. Native repeats projection with the selected output scale;
+        // neither consumer mutates the original relation or keyframe list.
+        let mut resolved;
+        let scene = if self.component_version == CAMERA_REFRAME_VERSION
+            && scene.nodes.iter().any(|node| !node.relations.is_empty())
+        {
+            resolved = scene.clone();
+            let tracks =
+                crate::resolve_canvas_follow_tracks(scene, RationalTime::new(30, 1)?, false)?;
+            for node in &mut resolved.nodes {
+                if let Some(keys) = tracks.get(&node.id) {
+                    node.keyframes = keys.clone();
+                    node.relations.clear();
+                }
+            }
+            let positions = crate::resolve_canvas_alignments(
+                &resolved,
+                crate::AlignmentScale {
+                    x: 1.0,
+                    y: 1.0,
+                    object: 1.0,
+                },
+                false,
+            )?;
+            for node in &mut resolved.nodes {
+                if let Some(position) = positions.get(&node.id) {
+                    node.x = position.x;
+                    node.y = position.y;
+                    node.relations.clear();
+                }
+            }
+            &resolved
+        } else {
+            scene
+        };
         let admitted_pair = (self.component_version == CAMERA_REFRAME_VERSION
             && scene.renderer == RendererKind::MotionCanvas)
             || (self.component_version == CAMERA_REFRAME_MANIM_VERSION

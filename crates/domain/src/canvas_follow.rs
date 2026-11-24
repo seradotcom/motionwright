@@ -1,5 +1,5 @@
 //! Exact, non-persisting projection of a saved Follow relation onto the
-//! target's paired translation. The follower's terminal relative offset is
+//! target's exact translation poses. The follower's terminal relative offset is
 //! authored by its ordinary saved pose; no new source keys are saved.
 use crate::{
     BlendMode, CanvasKeyframe, CanvasNode, CoordinateSpace, DomainError, MotionInterpolation,
@@ -15,12 +15,13 @@ fn invalid(message: &str) -> DomainError {
 }
 
 #[derive(Clone, Copy)]
-struct Translation {
-    start_x: f64,
-    start_y: f64,
-    end: RationalTime,
+struct TranslationPoint {
+    x: f64,
+    y: f64,
+    at: RationalTime,
     curve: MotionInterpolation,
 }
+type Translation = Vec<TranslationPoint>;
 
 fn admitted(node: &CanvasNode, parents: &BTreeSet<Uuid>) -> bool {
     matches!(
@@ -34,6 +35,8 @@ fn admitted(node: &CanvasNode, parents: &BTreeSet<Uuid>) -> bool {
         && node.style.blend_mode == BlendMode::Normal
         && node.width > 0.0
         && node.height > 0.0
+        && node.width <= 16384.0
+        && node.height <= 16384.0
         && [node.x, node.y, node.width, node.height]
             .iter()
             .all(|value| value.is_finite())
@@ -41,64 +44,93 @@ fn admitted(node: &CanvasNode, parents: &BTreeSet<Uuid>) -> bool {
 
 fn root_translation(node: &CanvasNode, scene: &Scene, fps: RationalTime) -> Result<Translation> {
     let fail = || {
-        invalid("the root target needs one exact paired linear or ease-out-cubic X/Y translation")
+        invalid(
+            "the root needs 2 to 6 exact translation poses with common linear, ease-out-cubic or Hold curves and unchanged size and orientation",
+        )
     };
-    if !node.relations.is_empty() || node.keyframes.len() != 4 || !scene.beats.is_empty() {
+    if !node.relations.is_empty() || !scene.beats.is_empty() {
         return Err(fail());
     }
-    let mut x = Vec::new();
-    let mut y = Vec::new();
+    let _ = crate::exact_canvas_opacity_spans(node, scene, fps)?;
+    let mut slots = BTreeMap::<RationalTime, Vec<&CanvasKeyframe>>::new();
     for key in &node.keyframes {
         key.validate()?;
-        match key.property {
-            MotionProperty::X => x.push(key),
-            MotionProperty::Y => y.push(key),
-            _ => return Err(fail()),
+        if key.property != MotionProperty::Opacity {
+            slots.entry(key.at).or_default().push(key);
         }
     }
-    x.sort_by_key(|key| key.at);
-    y.sort_by_key(|key| key.at);
-    if x.len() != 2 || y.len() != 2 {
+    if !(2..=6).contains(&slots.len()) {
         return Err(fail());
     }
-    let end = x[1].at;
-    let curve = x[1].interpolation;
-    let numerator = i128::from(end.num) * i128::from(fps.num);
-    let denominator = i128::from(end.den) * i128::from(fps.den);
-    if x[0].at != RationalTime::ZERO
-        || y[0].at != RationalTime::ZERO
-        || end <= RationalTime::ZERO
-        || end >= scene.duration
-        || y[1].at != end
-        || x[0].interpolation != MotionInterpolation::Linear
-        || y[0].interpolation != MotionInterpolation::Linear
-        || curve != y[1].interpolation
-        || !matches!(
+    let multiple = slots.len() > 2;
+    let mut points = Vec::with_capacity(slots.len());
+    let mut grammar = None;
+    let frame = RationalTime::new(fps.den, fps.num)?;
+    for (at, keys) in slots {
+        let count = keys.len();
+        let curve = keys[0].interpolation;
+        let numerator = i128::from(at.num) * i128::from(fps.num);
+        let denominator = i128::from(at.den) * i128::from(fps.den);
+        if !matches!(count, 2 | 5)
+            || (multiple && count != 5)
+            || grammar.is_some_and(|previous| previous != count)
+            || at >= scene.duration
+            || numerator < 0
+            || denominator <= 0
+            || numerator % denominator != 0
+            || numerator / denominator > 36_000
+            || !matches!(
+                curve,
+                MotionInterpolation::Linear
+                    | MotionInterpolation::EaseOutCubic
+                    | MotionInterpolation::Hold
+            )
+            || (points.is_empty()
+                && (at != RationalTime::ZERO || curve != MotionInterpolation::Linear))
+            || (curve == MotionInterpolation::Hold && at.checked_add(frame)? > scene.duration)
+        {
+            return Err(fail());
+        }
+        grammar = Some(count);
+        let mut properties = BTreeSet::new();
+        let mut x = None;
+        let mut y = None;
+        for key in keys {
+            if !properties.insert(key.property) || key.interpolation != curve {
+                return Err(fail());
+            }
+            match key.property {
+                MotionProperty::X => x = Some(key.value),
+                MotionProperty::Y => y = Some(key.value),
+                MotionProperty::Width if key.value == node.width => {}
+                MotionProperty::Height if key.value == node.height => {}
+                MotionProperty::RotationDeg if key.value == node.rotation_deg => {}
+                _ => return Err(fail()),
+            }
+        }
+        points.push(TranslationPoint {
+            at,
             curve,
-            MotionInterpolation::Linear | MotionInterpolation::EaseOutCubic
-        )
-        || x[1].value != node.x
-        || y[1].value != node.y
-        || (x[0].value == node.x && y[0].value == node.y)
-        || numerator <= 0
-        || denominator <= 0
-        || numerator % denominator != 0
-        || numerator / denominator > 36_000
+            x: x.ok_or_else(&fail)?,
+            y: y.ok_or_else(&fail)?,
+        });
+    }
+    let end = points.last().expect("bounded nonempty translation");
+    if end.x != node.x
+        || end.y != node.y
+        || !points
+            .iter()
+            .any(|point| point.x != node.x || point.y != node.y)
     {
         return Err(fail());
     }
-    Ok(Translation {
-        start_x: x[0].value,
-        start_y: y[0].value,
-        end,
-        curve,
-    })
+    Ok(points)
 }
 
-/// The exact source subset: one Follow per independent static follower,
-/// a nonzero original paired translation at its root, and a DAG of followers.
-/// Static alignments may coexist only on disjoint participants. No guessed
-/// Attach semantics, parent transforms, mixed clocks, or independent keys.
+/// One Follow per independent follower, a nonzero exact translation at its
+/// root, and a DAG of followers. Independent opacity stays on each original
+/// object. Static alignments may coexist only on disjoint participants.
+/// No Attach, inherited scale/rotation, parent transforms or mixed clocks.
 pub fn resolve_canvas_follow_tracks(
     scene: &Scene,
     fps: RationalTime,
@@ -140,15 +172,19 @@ pub fn resolve_canvas_follow_tracks(
             .any(|relation| relation.kind == RelationKind::Follow)
         {
             if node.relations.len() != 1
-                || !node.keyframes.is_empty()
+                || node
+                    .keyframes
+                    .iter()
+                    .any(|key| key.property != MotionProperty::Opacity)
                 || !admitted(node, &parents)
                 || position_locked
                 || node.property_locks.contains(&NodeProperty::Position)
             {
                 return Err(invalid(
-                    "each follower needs one Follow, an unlocked independent static pose and no authored keys",
+                    "each follower needs one Follow, an unlocked independent pose and no authored geometry keys",
                 ));
             }
+            let _ = crate::exact_canvas_opacity_spans(node, scene, fps)?;
             let target = node.relations[0].target_id;
             if target == node.id {
                 return Err(invalid("a follower cannot target itself"));
@@ -195,55 +231,56 @@ pub fn resolve_canvas_follow_tracks(
             let target_id = remaining.remove(&id).expect("ready target");
             let target = all[&target_id];
             let node = all[&id];
-            let inherited = tracks[&target_id];
-            let translation = Translation {
-                start_x: node.x + (inherited.start_x - target.x),
-                start_y: node.y + (inherited.start_y - target.y),
-                end: inherited.end,
-                curve: inherited.curve,
-            };
-            if !translation.start_x.is_finite()
-                || !translation.start_y.is_finite()
-                || (translation.start_x == node.x && translation.start_y == node.y)
+            let translation: Translation = tracks[&target_id]
+                .iter()
+                .map(|point| TranslationPoint {
+                    x: node.x + (point.x - target.x),
+                    y: node.y + (point.y - target.y),
+                    at: point.at,
+                    curve: point.curve,
+                })
+                .collect();
+            if translation
+                .iter()
+                .any(|point| !point.x.is_finite() || !point.y.is_finite())
+                || !translation
+                    .iter()
+                    .any(|point| point.x != node.x || point.y != node.y)
             {
                 return Err(invalid(
                     "derived translation is not representable at the follower's saved coordinates",
                 ));
             }
-            let keys = [
-                (
-                    RationalTime::ZERO,
-                    MotionProperty::X,
-                    translation.start_x,
-                    MotionInterpolation::Linear,
-                ),
-                (
-                    RationalTime::ZERO,
-                    MotionProperty::Y,
-                    translation.start_y,
-                    MotionInterpolation::Linear,
-                ),
-                (
-                    translation.end,
-                    MotionProperty::X,
-                    node.x,
-                    translation.curve,
-                ),
-                (
-                    translation.end,
-                    MotionProperty::Y,
-                    node.y,
-                    translation.curve,
-                ),
-            ]
-            .into_iter()
-            .map(|(at, property, value, interpolation)| CanvasKeyframe {
-                at,
-                property,
-                value,
-                interpolation,
-            })
-            .collect::<Vec<_>>();
+            let mut keys = Vec::new();
+            for point in &translation {
+                let values = [
+                    (MotionProperty::X, point.x),
+                    (MotionProperty::Y, point.y),
+                    (MotionProperty::Width, node.width),
+                    (MotionProperty::Height, node.height),
+                    (MotionProperty::RotationDeg, node.rotation_deg),
+                ];
+                // Preserve the legacy paired two-pose route; full waypoint
+                // geometry exists only in this read-only projection.
+                for (property, value) in
+                    values
+                        .into_iter()
+                        .take(if translation.len() > 2 { 5 } else { 2 })
+                {
+                    keys.push(CanvasKeyframe {
+                        at: point.at,
+                        property,
+                        value,
+                        interpolation: point.curve,
+                    });
+                }
+            }
+            keys.extend(
+                node.keyframes
+                    .iter()
+                    .filter(|key| key.property == MotionProperty::Opacity)
+                    .cloned(),
+            );
             for key in &keys {
                 key.validate()?;
             }

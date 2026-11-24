@@ -174,7 +174,7 @@ export default function CanvasStructureEditor({
 
       <div className="canvas-editor-section">
         <span className="field-label">Relations</span>
-        <p className="semantic-footnote">Relation choices are local until Add or Remove commits the exact saved list. Static alignments resolve saved boxes. Follow inherits one exact paired X/Y translation, keeping the relative terminal offset. Attach is not yet representable. No derived motion is saved.</p>
+        <p className="semantic-footnote">Relation choices are local until Add or Remove commits the exact saved list. Static alignments resolve saved boxes. Follow inherits 2 to 6 exact translation poses, including curves and holds, keeping the relative terminal offset and each object's own visibility. Attach is not yet representable. No derived motion is saved.</p>
         {node.relations.length > 0 && aligned && <p className={aligned.issue ? "production-error" : "semantic-footnote"} role="status">
           {aligned.issue ? "Native relation unresolved: " + aligned.issue : effective
             ? "Resolved source position: X " + effective.x.toFixed(2) + ", Y " + effective.y.toFixed(2) + ". Saved base coordinates remain editable."

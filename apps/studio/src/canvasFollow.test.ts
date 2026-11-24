@@ -73,3 +73,82 @@ describe("Follow preserves saved terminal offsets on exact native translation",(
     }
   });
 });
+
+describe("Follow composition with complete poses and independent text visibility",()=>{
+  const properties=["x","y","width","height","rotation_deg"] as const;
+  function route(){
+    const result=fixture(),{a,b,c}=result;
+    a.keyframes=[
+      [{num:"0",den:"1"},420,240,"linear"],
+      [{num:"1",den:"2"},520,300,"ease_out_cubic"],
+      [{num:"1",den:"1"},480,350,"hold"],
+      [{num:"3",den:"2"},a.x,a.y,"linear"],
+    ].flatMap(([at,x,y,curve])=>properties.map(property=>({
+      at:at as {num:string;den:string},property,
+      value:property==="x"?x as number:property==="y"?y as number:a[property],
+      interpolation:curve as MotionInterpolation,
+    })));
+    c.kind="text";c.text="Temperature\nMeasured at source";
+    b.keyframes=[
+      {at:{num:"0",den:"1"},property:"opacity",value:0,interpolation:"linear"},
+      {at:{num:"1",den:"3"},property:"opacity",value:1,interpolation:"linear"},
+      {at:{num:"1",den:"1"},property:"opacity",value:1,interpolation:"hold"},
+      {at:{num:"5",den:"3"},property:"opacity",value:0,interpolation:"ease_out_cubic"},
+    ];
+    c.keyframes=[
+      {at:{num:"0",den:"1"},property:"opacity",value:1,interpolation:"linear"},
+      {at:{num:"3",den:"2"},property:"opacity",value:0,interpolation:"linear"},
+    ];
+    return result;
+  }
+  it("keeps chained literal offsets through a curved leg, exact Hold jump and linear return, with independent alpha",()=>{
+    const {a,b,c,nodes}=route(),before=structuredClone(nodes);
+    for(const [w,h] of [[1920,1080],[1080,1080],[1080,1920]]){
+      const result=resolveCanvasRelations(nodes,alignmentScale(w,h,"replan"),false,clock);
+      expect(result.issue).toBeNull();
+      const B={...b,keyframes:result.tracks.get(b.id)!},C={...c,keyframes:result.tracks.get(c.id)!};
+      expect(previewTransform(B,.25).x).toBe(807.5);
+      expect(previewTransform(B,.999).x).toBe(820);
+      expect(previewTransform(B,1).x).toBe(780);
+      expect(previewTransform(B,1.25).x).toBe(850);
+      for(const t of [0,.125,.25,.5,.999,1,1.25,1.5,1.999]){
+        const A=previewTransform(a,t),bt=previewTransform(B,t),ct=previewTransform(C,t);
+        expect(bt.x-A.x).toBeCloseTo(300,9);expect(bt.y-A.y).toBeCloseTo(140,9);
+        expect(ct.x-bt.x).toBeCloseTo(280,9);expect(ct.y-bt.y).toBeCloseTo(110,9);
+        expect(bt.opacity).toBe(previewTransform(b,t).opacity);
+        expect(ct.opacity).toBe(previewTransform(c,t).opacity);
+        expect(ct.width).toBe(c.width);expect(ct.height).toBe(c.height);expect(ct.rotation_deg).toBe(0);
+      }
+      expect(C.text).toBe("Temperature\nMeasured at source");
+      expect(nodes).toEqual(before);
+    }
+  });
+  it("preserves an exact two-pose held text follower without adding saved keys",()=>{
+    const {a,b,nodes}=fixture("hold");b.kind="text";b.text="Step boundary";
+    const result=resolveCanvasRelations(nodes,undefined,false,clock);
+    expect(result.issue).toBeNull();
+    const projected={...b,keyframes:result.tracks.get(b.id)!};
+    expect(previewTransform(projected,.999).x).toBe(720);
+    expect(previewTransform(projected,1).x).toBe(920);
+    expect(b.keyframes).toEqual([]);expect(a.keyframes).toHaveLength(4);
+  });
+  it("rejects inherited scaling, rotation, mismatched channels, invalid own fades and missing exact opacity clocks",()=>{
+    for(const invalid of ["size","rotation","incomplete","mixed_curve","partial_alpha","jump_alpha","own_geometry","off_frame","clock"]){
+      const {a,b,nodes}=route();
+      switch(invalid){
+        case "size":a.keyframes.find(key=>key.property==="width")!.value=200;break;
+        case "rotation":a.keyframes.find(key=>key.property==="rotation_deg")!.value=10;break;
+        case "incomplete":a.keyframes.splice(3,1);break;
+        case "mixed_curve":a.keyframes[5].interpolation="linear";break;
+        case "partial_alpha":b.keyframes[1].value=.5;break;
+        case "jump_alpha":b.keyframes[1].interpolation="hold";break;
+        case "own_geometry":b.keyframes.push({...a.keyframes[0]});break;
+        case "off_frame":a.keyframes.slice(5,10).forEach(key=>key.at={num:"1",den:"31"});break;
+      }
+      const before=structuredClone(nodes);
+      const result=resolveCanvasRelations(nodes,undefined,false,invalid==="clock"?undefined:clock);
+      expect(result.issue,invalid).not.toBeNull();expect(result.tracks.size,invalid).toBe(0);
+      expect(result.positions.size,invalid).toBe(0);expect(nodes).toEqual(before);
+    }
+  });
+});

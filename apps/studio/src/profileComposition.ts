@@ -4,6 +4,7 @@ import { realizeProceduralFieldForOutput } from "./proceduralField";
 import { sampledSceneCamera } from "./cameraReframe";
 import { previewTransform } from "./canvasMotion";
 import { resolveCanvasRelations } from "./canvasFollow";
+import { alignmentScale } from "./canvasAlignment";
 
 /** Source-only counterpart of native expressive::responsive_scene. It never
  * changes the Project or authorizes a render. Film still admits every property. */
@@ -44,7 +45,8 @@ export function sampleProfileLayout(project: Project, scene: Scene, profile: Del
     throw new Error("This output study requires the planar camera profile. Review other camera poses in Native.");
   if (![profile.width, profile.height].every(value => Number.isInteger(value) && value >= 320 && value <= 7680))
     throw new Error("Output layout dimensions are out of bounds.");
-  const alignment = resolveCanvasRelations(scene.nodes);
+  const alignment = resolveCanvasRelations(scene.nodes, alignmentScale(profile.width, profile.height, profile.framing_strategy), false,
+    {duration:scene.duration,fps:profile.frame_rate,continuous:!scene.beats.length});
   if (alignment.issue) throw new Error("Output layout relation is unresolved: " + alignment.issue);
   const replan = profile.framing_strategy === "replan";
   if (!replan && profile.framing_strategy !== "crop") throw new Error("Unknown output framing strategy.");

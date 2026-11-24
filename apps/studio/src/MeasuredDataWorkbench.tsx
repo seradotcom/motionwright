@@ -216,9 +216,9 @@ function MeasuredEditor({project,scene,busy,commit,onOpenCanvas}:Props){
         <input aria-label="Measured preview playhead" type="range" min={0} max={previewMax} step={1/30}
           value={renderedTime} onChange={event=>setPreviewTime(Number(event.target.value))}/></label>
       <div className="production-plan-grid">
-        <SceneCompositionStudy scene={scene} cameraReframes={project.production_design?.camera_reframes} time={renderedTime} background="#0C1723" ink={inheritedTextInk(project.visual_language.palette)}
+        <SceneCompositionStudy scene={scene} frameRate={project.deliverables[0]?.frame_rate} cameraReframes={project.production_design?.camera_reframes} time={renderedTime} background="#0C1723" ink={inheritedTextInk(project.visual_language.palette)}
           label="Measured output before · saved Canvas"/>
-        <SceneCompositionStudy scene={bindingStudy.scene} cameraReframes={project.production_design?.camera_reframes} time={renderedTime} background="#0C1723" ink={inheritedTextInk(project.visual_language.palette)}
+        <SceneCompositionStudy scene={bindingStudy.scene} frameRate={project.deliverables[0]?.frame_rate} cameraReframes={project.production_design?.camera_reframes} time={renderedTime} background="#0C1723" ink={inheritedTextInk(project.visual_language.palette)}
           label="Measured output after · proposed Canvas"/>
       </div>
       <p className="production-help">Source geometry and styling at the same scene time. This editorial study is not a Native rendering or a measurement certificate.</p>

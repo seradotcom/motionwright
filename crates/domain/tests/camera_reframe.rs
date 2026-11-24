@@ -221,3 +221,232 @@ fn old_serialized_production_designs_without_camera_moves_remain_readable() {
     assert!(restored.production_design.camera_reframes.is_empty());
     assert_eq!(restored.scenes, p.scenes);
 }
+
+#[test]
+fn contextual_follow_projects_complete_paths_and_own_visibility_across_source_reopen() {
+    let (mut project, scene_id) = setup();
+    let root = project.scenes[0].nodes[0].clone();
+    let mut keys = Vec::new();
+    for (at, x, curve) in [
+        (RationalTime::ZERO, 300.0, MotionInterpolation::Linear),
+        (RationalTime::ONE, 360.0, MotionInterpolation::EaseOutCubic),
+        (
+            RationalTime::new(2, 1).unwrap(),
+            root.x,
+            MotionInterpolation::Hold,
+        ),
+    ] {
+        for (property, value) in [
+            (MotionProperty::X, x),
+            (MotionProperty::Y, root.y),
+            (MotionProperty::Width, root.width),
+            (MotionProperty::Height, root.height),
+            (MotionProperty::RotationDeg, 0.0),
+        ] {
+            keys.push(CanvasKeyframe {
+                at,
+                property,
+                value,
+                interpolation: curve,
+            });
+        }
+    }
+    project
+        .apply_change(&Change::SetCanvasMotionKeyframes {
+            scene_id,
+            node_id: root.id,
+            keyframes: keys,
+        })
+        .unwrap();
+    let mut label = node("Editable contextual label", 780.0, 560.0);
+    label.kind = "text".into();
+    label.text = Some("Authored context".into());
+    label.width = 320.0;
+    label.height = 96.0;
+    label.style.font_family = Some("Instrument Sans Variable".into());
+    label.style.font_size = Some(32.0);
+    label.relations.push(NodeRelation {
+        id: Uuid::new_v4(),
+        target_id: root.id,
+        kind: RelationKind::Follow,
+    });
+    label.keyframes = vec![
+        CanvasKeyframe {
+            at: RationalTime::ZERO,
+            property: MotionProperty::Opacity,
+            value: 0.0,
+            interpolation: MotionInterpolation::Linear,
+        },
+        CanvasKeyframe {
+            at: RationalTime::ONE,
+            property: MotionProperty::Opacity,
+            value: 1.0,
+            interpolation: MotionInterpolation::Linear,
+        },
+    ];
+    project
+        .apply_change(&Change::AddCanvasNode {
+            scene_id,
+            node: label.clone(),
+        })
+        .unwrap();
+    project
+        .apply_change(&Change::UpsertCameraReframe {
+            reframe: reframe(scene_id),
+        })
+        .unwrap();
+    let serialized = serde_json::to_vec(&project).unwrap();
+    let mut reopened: Project = serde_json::from_slice(&serialized).unwrap();
+    let before = reopened.clone();
+    let tracks = resolve_canvas_follow_tracks(
+        &reopened.scenes[0],
+        RationalTime::new(30, 1).unwrap(),
+        false,
+    )
+    .unwrap();
+    let derived = &tracks[&label.id];
+    assert_eq!(derived.len(), 17);
+    let mut projected_label = label.clone();
+    projected_label.keyframes = derived.clone();
+    projected_label.relations.clear();
+    let points = exact_canvas_pose_waypoints(
+        &projected_label,
+        &reopened.scenes[0],
+        RationalTime::new(30, 1).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        points.iter().map(|point| point.pose.x).collect::<Vec<_>>(),
+        vec![640.0, 700.0, 780.0]
+    );
+    assert_eq!(points[1].curve, MotionInterpolation::EaseOutCubic);
+    assert_eq!(points[2].curve, MotionInterpolation::Hold);
+    assert!(points.iter().all(|point| point.pose.width == 320.0
+        && point.pose.height == 96.0
+        && point.pose.rotation_deg == 0.0));
+    assert_eq!(
+        derived
+            .iter()
+            .filter(|key| key.property == MotionProperty::Opacity)
+            .cloned()
+            .collect::<Vec<_>>(),
+        label.keyframes
+    );
+    assert_eq!(reopened, before);
+    let changed = vec![
+        CanvasKeyframe {
+            at: RationalTime::ZERO,
+            property: MotionProperty::Opacity,
+            value: 1.0,
+            interpolation: MotionInterpolation::Linear,
+        },
+        CanvasKeyframe {
+            at: RationalTime::ONE,
+            property: MotionProperty::Opacity,
+            value: 0.0,
+            interpolation: MotionInterpolation::EaseOutCubic,
+        },
+    ];
+    reopened
+        .apply_change(&Change::SetCanvasMotionKeyframes {
+            scene_id,
+            node_id: label.id,
+            keyframes: changed.clone(),
+        })
+        .unwrap();
+    let saved = reopened.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == label.id)
+        .unwrap();
+    assert_eq!(saved.keyframes, changed);
+    assert_eq!(saved.relations, label.relations);
+    assert_eq!(saved.text, label.text);
+    assert_eq!(reopened.scenes[0].nodes[0], before.scenes[0].nodes[0]);
+}
+
+#[test]
+fn contextual_follow_refuses_non_translation_and_never_rewrites_original_source() {
+    let (mut project, _) = setup();
+    let root = project.scenes[0].nodes[0].clone();
+    let target_id = root.id;
+    project.scenes[0].nodes[0].keyframes = vec![
+        CanvasKeyframe {
+            at: RationalTime::ZERO,
+            property: MotionProperty::X,
+            value: 300.0,
+            interpolation: MotionInterpolation::Linear,
+        },
+        CanvasKeyframe {
+            at: RationalTime::ZERO,
+            property: MotionProperty::Y,
+            value: root.y,
+            interpolation: MotionInterpolation::Linear,
+        },
+        CanvasKeyframe {
+            at: RationalTime::ONE,
+            property: MotionProperty::X,
+            value: root.x,
+            interpolation: MotionInterpolation::Hold,
+        },
+        CanvasKeyframe {
+            at: RationalTime::ONE,
+            property: MotionProperty::Y,
+            value: root.y,
+            interpolation: MotionInterpolation::Hold,
+        },
+    ];
+    project.scenes[0].nodes[1].relations = vec![NodeRelation {
+        id: Uuid::new_v4(),
+        target_id,
+        kind: RelationKind::Follow,
+    }];
+    for issue in [
+        "curve",
+        "time",
+        "size",
+        "own_geometry",
+        "opacity",
+        "cycle",
+        "locked",
+    ] {
+        let mut scene = project.scenes[0].clone();
+        match issue {
+            "curve" => scene.nodes[0].keyframes[2].interpolation = MotionInterpolation::EaseInOut,
+            "time" => scene.nodes[0].keyframes[2].at = RationalTime::new(1, 31).unwrap(),
+            "size" => scene.nodes[0].keyframes.push(CanvasKeyframe {
+                at: RationalTime::ZERO,
+                property: MotionProperty::Width,
+                value: root.width + 1.0,
+                interpolation: MotionInterpolation::Linear,
+            }),
+            "own_geometry" => scene.nodes[1].keyframes = scene.nodes[0].keyframes.clone(),
+            "opacity" => {
+                scene.nodes[1].keyframes = vec![CanvasKeyframe {
+                    at: RationalTime::ZERO,
+                    property: MotionProperty::Opacity,
+                    value: 0.5,
+                    interpolation: MotionInterpolation::Linear,
+                }]
+            }
+            "cycle" => {
+                scene.nodes[0].relations = vec![NodeRelation {
+                    id: Uuid::new_v4(),
+                    target_id: scene.nodes[1].id,
+                    kind: RelationKind::Follow,
+                }];
+            }
+            "locked" => {
+                scene.nodes[1].property_locks.insert(NodeProperty::Position);
+            }
+            _ => unreachable!(),
+        }
+        let before = scene.clone();
+        assert!(
+            resolve_canvas_follow_tracks(&scene, RationalTime::new(30, 1).unwrap(), false).is_err(),
+            "{issue}"
+        );
+        assert_eq!(scene, before);
+    }
+}
