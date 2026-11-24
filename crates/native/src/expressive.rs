@@ -1,8 +1,9 @@
 //! Lossless admission of a deliberately bounded editable entrance grammar.
 //! Unsupported keyframes remain errors; this is not a universal keyframe translator.
 use motionwright_domain::{
-    CanvasNode, DeliverableProfile, DomainError, FramingStrategy, MotionInterpolation,
-    MotionProperty, Project, RationalTime, Scene, merge_component_nodes, realize_product_hero,
+    CanvasNode, DeliverableProfile, DomainError, FieldDistribution, FramingStrategy,
+    MotionInterpolation, MotionProperty, Project, RationalTime, Scene, merge_component_nodes,
+    realize_procedural_field_for_output, realize_product_hero,
 };
 use semwright_native_sdk::{Error, ErrorCode, Result};
 
@@ -120,42 +121,61 @@ pub(crate) fn responsive_scene(
     if profile.framing_strategy != FramingStrategy::Replan {
         return Ok(output);
     }
-    let Some(hero) = project
+    if profile.width == 1920 && profile.height == 1080 {
+        return Ok(output);
+    }
+    if let Some(hero) = project
         .production_design
         .heroes
         .iter()
         .find(|hero| hero.scene_id == scene.id)
-    else {
-        return Ok(output);
-    };
-    if profile.width == 1920 && profile.height == 1080 {
-        return Ok(output);
-    }
-    let mut incoming = realize_product_hero(hero.id, &hero.config, profile.width, profile.height)
-        .map_err(domain)?;
-    let sx = f64::from(profile.width) / 1920.0;
-    let sy = f64::from(profile.height) / 1080.0;
-    let size_scale = sx.min(sy);
-    // Invert the existing Film projection, so its transform stays authoritative.
-    for node in &mut incoming {
-        let destination_y = node.y;
-        let center_x = node.x + node.width / 2.0;
-        let center_y = node.y + node.height / 2.0;
-        node.width /= size_scale;
-        node.height /= size_scale;
-        node.x = center_x / sx - node.width / 2.0;
-        node.y = center_y / sy - node.height / 2.0;
-        if let Some(size) = &mut node.style.font_size {
-            *size /= size_scale;
-        }
-        node.style.stroke_width /= size_scale;
-        for key in &mut node.keyframes {
-            if key.property == MotionProperty::Y {
-                key.value = node.y + (key.value - destination_y) / sy;
+    {
+        let mut incoming =
+            realize_product_hero(hero.id, &hero.config, profile.width, profile.height)
+                .map_err(domain)?;
+        let sx = f64::from(profile.width) / 1920.0;
+        let sy = f64::from(profile.height) / 1080.0;
+        let size_scale = sx.min(sy);
+        // Invert the existing Film projection, so its transform stays authoritative.
+        for node in &mut incoming {
+            let destination_y = node.y;
+            let center_x = node.x + node.width / 2.0;
+            let center_y = node.y + node.height / 2.0;
+            node.width /= size_scale;
+            node.height /= size_scale;
+            node.x = center_x / sx - node.width / 2.0;
+            node.y = center_y / sy - node.height / 2.0;
+            if let Some(size) = &mut node.style.font_size {
+                *size /= size_scale;
+            }
+            node.style.stroke_width /= size_scale;
+            for key in &mut node.keyframes {
+                if key.property == MotionProperty::Y {
+                    key.value = node.y + (key.value - destination_y) / sy;
+                }
             }
         }
+        output.nodes =
+            merge_component_nodes(&hero.baseline, &output.nodes, &incoming).map_err(domain)?;
     }
-    output.nodes =
-        merge_component_nodes(&hero.baseline, &scene.nodes, &incoming).map_err(domain)?;
+    if let Some(field) = project
+        .production_design
+        .procedural_fields
+        .iter()
+        .find(|field| {
+            field.scene_id == scene.id
+                && field.config.distribution == FieldDistribution::AdaptiveGrid
+        })
+    {
+        let incoming = realize_procedural_field_for_output(
+            field.id,
+            &field.config,
+            profile.width,
+            profile.height,
+        )
+        .map_err(domain)?;
+        output.nodes =
+            merge_component_nodes(&field.baseline, &output.nodes, &incoming).map_err(domain)?;
+    }
     Ok(output)
 }

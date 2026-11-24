@@ -3,6 +3,7 @@ import { Save, ExternalLink, Unlink } from "lucide-react";
 import type { CanvasNode, Change, Project, Scene } from "./types";
 import { seconds } from "./types";
 import SceneCompositionStudy from "./SceneCompositionStudy";
+import ProfileCompositionStudy from "./ProfileCompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { applyProceduralChange, proceduralGridDimensions } from "./proceduralField";
 import type { ProceduralConfig } from "./proceduralField";
@@ -42,6 +43,7 @@ function ProceduralEditor({project,scene,commit,busy,onOpenCanvas,displayProfile
   const patchInfluence = (patch: Partial<Omit<InfluenceRaw, "enabled">>) =>
     setDraft(value => ({ ...value, influence: { ...(value.influence ?? rawProceduralInfluence()), ...patch } }));
   const [nodes,setNodes]=useState<CanvasNode[]>([]);
+  const [proposedProject, setProposedProject] = useState<Project | null>(null);
   const [previewError,setPreviewError]=useState<string|null>(null);
   const [previewLoading,setPreviewLoading]=useState(false);
   const [previewTime,setPreviewTime]=useState(2);
@@ -56,7 +58,7 @@ function ProceduralEditor({project,scene,commit,busy,onOpenCanvas,displayProfile
     return { ...config, path: { ...path, points } };
   });
   useEffect(()=>{
-    let active=true;setPreviewLoading(true);setPreviewError(null);
+    let active=true;setPreviewLoading(true);setPreviewError(null);setProposedProject(null);
     Promise.resolve().then(async()=>{
       if (!scene) throw new Error("Choose a working scene to author a field.");
       const config = proceduralConfig(draft), proposed = structuredClone(project);
@@ -68,7 +70,7 @@ function ProceduralEditor({project,scene,commit,busy,onOpenCanvas,displayProfile
       const summary = config.distribution === "adaptive_grid" ? `${grid.columns} columns × ${grid.rows} rows, chosen from count and field size; object size is unchanged.`
         : config.distribution === "path" ? `${config.path!.points.length} control points · ${config.path!.closed ? "closed loop without a repeated endpoint" : "open path including both ends"} · whole-pixel placement.`
         : "";
-      if(active){setNodes(proposed.scenes.find(value => value.id === scene.id)!.nodes);setLayoutSummary(summary);setPreviewLoading(false);}
+      if(active){setNodes(proposed.scenes.find(value => value.id === scene.id)!.nodes);setProposedProject(proposed);setLayoutSummary(summary);setPreviewLoading(false);}
     }).catch(e=>{
       if(active){setNodes([]);setLayoutSummary("");setPreviewError(e instanceof Error?e.message:String(e));setPreviewLoading(false);}
     });
@@ -119,6 +121,7 @@ function ProceduralEditor({project,scene,commit,busy,onOpenCanvas,displayProfile
       </label>)}
     </div>
     {draft.distribution === "adaptive_grid" && <p className="production-help">Rows and columns adapt together to the number of objects and the field width and height.
+      Replan delivery profiles also choose the row and column rhythm for their output aspect. Crop profiles retain the source arrangement.
       The manual Columns value is retained for Grid, Staggered and Scatter. An arrangement that cannot fit the requested object size is refused.</p>}
     {draft.path && <section className="production-approval" aria-label="Procedural editable path">
       <h3>Editable path</h3>
@@ -223,6 +226,11 @@ function ProceduralEditor({project,scene,commit,busy,onOpenCanvas,displayProfile
               label={`Procedural editorial preview, ${draft.distribution} distribution, ${draft.count} editable objects`}/>}
         </div>
       </div>
+      {proposedProject && scene && displayProfile && !previewLoading && !previewError && <section className="production-approval" aria-label="Procedural output layout">
+        <h4>Selected output profile</h4>
+        <ProfileCompositionStudy project={proposedProject} scene={proposedProject.scenes.find(value => value.id === scene.id)!}
+          profile={displayProfile} time={renderedTime} label="Procedural output profile study"/>
+      </section>}
       <p className="mono">{draft.count} authored objects · seed {draft.seed} ·
         {stored?` attached field ${stored.id.slice(0,8)}…`:" not yet attached"} · no native render receipt</p>
     </section>

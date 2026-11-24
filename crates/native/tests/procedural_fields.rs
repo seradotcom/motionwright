@@ -341,3 +341,112 @@ fn authored_paths_and_adaptive_grids_remain_editable_native_subjects_with_exact_
         }
     }
 }
+
+#[test]
+fn adaptive_variants_keep_native_shapes_entrances_and_human_appearance_across_aspects() {
+    use semwright_motion_authoring::{SpatialIntent, SubjectContent};
+    use std::collections::BTreeSet;
+    let (mut p, options) = project(ProceduralConfig {
+        distribution: FieldDistribution::AdaptiveGrid,
+        count: 24,
+        reveal_step_frames: 3,
+        ..Default::default()
+    });
+    let first = p.scenes[0].nodes[0].clone();
+    let mut style = first.style.clone();
+    style.fill = Some("#FFAA22".into());
+    p.apply_change(&Change::UpdateCanvasStyle {
+        scene_id: p.scenes[0].id,
+        node_id: first.id,
+        style,
+    })
+    .unwrap();
+    let source_nodes = p.scenes[0].nodes.clone();
+    let field = p.production_design.procedural_fields[0].clone();
+    for (width, height, columns, rows) in
+        [(1920, 1080, 6, 4), (1080, 1080, 5, 5), (1080, 1920, 4, 6)]
+    {
+        p.deliverables[0].width = width;
+        p.deliverables[0].height = height;
+        p.deliverables[0].framing_strategy = FramingStrategy::Replan;
+        let source = p.clone();
+        let segments = build_motion_canvas_segments(&p, p.deliverables[0].id, &options).unwrap();
+        let shot = &segments[0].film.sequences[0].beats[0].shots[0];
+        assert_eq!(shot.subjects.len(), 24);
+        assert_eq!(shot.motion.len(), 24);
+        assert_eq!(shot.layers.len(), 1);
+        let (mut xs, mut ys) = (BTreeSet::new(), BTreeSet::new());
+        for subject in &shot.subjects {
+            match &subject.layout {
+                SpatialIntent::Fixed { position, size } => {
+                    xs.insert((position.x * 1000.0).round() as i64);
+                    ys.insert((position.y * 1000.0).round() as i64);
+                    assert_eq!(size.width, if width == 1920 { 32.0 } else { 18.0 });
+                    assert_eq!(size.width, size.height);
+                }
+                _ => panic!("Every field item must retain its real native geometry"),
+            }
+        }
+        assert_eq!((xs.len(), ys.len()), (columns, rows));
+        let original = shot
+            .subjects
+            .iter()
+            .find(|item| item.id == format!("node-{}", first.id.simple()))
+            .unwrap();
+        assert!(
+            matches!(&original.content, SubjectContent::Rectangle { fill, .. } if fill == "#FFAA22")
+        );
+        assert!(realize(&segments[0].film).is_ok());
+        assert_eq!(p, source);
+    }
+    assert_eq!(p.scenes[0].nodes, source_nodes);
+    assert_eq!(p.production_design.procedural_fields[0], field);
+}
+
+#[test]
+fn responsive_native_composition_keeps_both_hero_and_field_and_refuses_conflicting_overrides() {
+    let (mut p, options) = project(ProceduralConfig {
+        distribution: FieldDistribution::AdaptiveGrid,
+        count: 24,
+        ..Default::default()
+    });
+    let field_nodes = p.scenes[0].nodes.clone();
+    p.apply_change(&Change::UpsertProductHero {
+        instance_id: Uuid::parse_str("00000000-0000-4000-8000-000000000005").unwrap(),
+        scene_id: p.scenes[0].id,
+        config: HeroConfig {
+            motion: false,
+            ..Default::default()
+        },
+    })
+    .unwrap();
+    p.deliverables[0].width = 1080;
+    p.deliverables[0].height = 1920;
+    let source = p.clone();
+    let film = build_motion_canvas_segments(&p, p.deliverables[0].id, &options).unwrap();
+    let subjects = &film[0].film.sequences[0].beats[0].shots[0].subjects;
+    for node in &field_nodes {
+        assert!(
+            subjects
+                .iter()
+                .any(|subject| subject.id == format!("node-{}", node.id.simple()))
+        );
+    }
+    assert!(
+        subjects
+            .iter()
+            .any(|subject| subject.role == "component-text-container")
+    );
+    assert!(realize(&film[0].film).is_ok());
+    assert_eq!(p, source);
+    p.scenes[0]
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == field_nodes[0].id)
+        .unwrap()
+        .x += 5.0;
+    let source = p.clone();
+    let error = build_motion_canvas_segments(&p, p.deliverables[0].id, &options).unwrap_err();
+    assert!(error.message.contains("override conflict"));
+    assert_eq!(p, source);
+}

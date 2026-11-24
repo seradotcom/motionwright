@@ -168,3 +168,67 @@ test("editable procedural paths and adaptive grid preserve human objects through
   await page.getByRole("button", { name: "Edit individual objects", exact: true }).click();
   await expect(page.getByRole("button", { name: "Canvas object ProceduralField / item 011", exact: true })).toBeVisible();
 });
+
+test("adaptive field output profiles reflow the same editable objects and expose human position conflicts", async ({ page }, info) => {
+  const button = (name: string) => page.getByRole("button", { name, exact: true });
+  await page.goto("/");
+  await button("Add scene").click(); await page.getByLabel("New scene name").fill("Adaptive output composition"); await button("Add").click();
+  const open = async () => {
+    await button("Production").click();
+    await page.getByLabel("Production working scene", { exact: true }).selectOption({ label: "Adaptive output composition" });
+    await button("Procedural").click();
+  };
+  await open(); await page.getByLabel("Procedural distribution", { exact: true }).selectOption("adaptive_grid");
+  await page.getByLabel("Number of objects", { exact: true }).fill("24");
+  await page.getByLabel("Entrance interval (frames; 0 disables)", { exact: true }).fill("3");
+  await button("Add procedural field").click(); await expect(button("Update procedural field")).toBeVisible();
+  const source = page.getByRole("img", { name: "Saved procedural scene", exact: true });
+  const ids = await source.locator("[data-canvas-node-id]").evaluateAll(nodes => nodes.map(node => node.getAttribute("data-canvas-node-id")));
+  expect(ids).toHaveLength(24);
+  await button("Edit individual objects").click();
+  await page.getByRole("button", { name: "Canvas object ProceduralField / item 000", exact: true }).click();
+  await page.getByLabel("Canvas fill", { exact: true }).fill("#FFAA22");
+  const beforePaint = await page.locator(".command-bar .revision-chip").innerText();
+  await button("Commit style").click(); await expect(page.locator(".command-bar .revision-chip")).not.toHaveText(beforePaint);
+  await open();
+  const savedRevision = await page.locator(".command-bar .revision-chip").innerText();
+  const time = page.getByLabel("Procedural preview playhead", { exact: true });
+  await time.focus(); await time.press("End");
+  const selector = page.getByLabel("Editor preview timebase", { exact: true });
+  const choices = await selector.locator("option").evaluateAll(options => options.map(option => ({
+    value: (option as HTMLOptionElement).value, text: option.textContent ?? "",
+  })));
+  for (const [name, viewBox, columns, rows] of [
+    ["Master 16:9", "0 0 1920 1080", 6, 4], ["Square 1:1", "0 0 1080 1080", 5, 5], ["Vertical 9:16", "0 0 1080 1920", 4, 6],
+  ] as const) {
+    const choice = choices.find(option => option.text.startsWith(name));
+    if (!choice) throw new Error("The authored profile is unavailable: " + name);
+    await selector.selectOption(choice.value);
+    const output = page.getByRole("img", { name: "Procedural output profile study", exact: true });
+    await expect(output).toHaveAttribute("viewBox", viewBox);
+    await expect(output.locator("[data-canvas-node-id] > rect")).toHaveCount(24);
+    const dimensions = await output.locator("[data-canvas-node-id] > rect").evaluateAll(rects => ({
+      columns: new Set(rects.map(rect => rect.getAttribute("x"))).size,
+      rows: new Set(rects.map(rect => rect.getAttribute("y"))).size,
+    }));
+    expect(dimensions).toEqual({ columns, rows });
+    expect(await output.locator("[data-canvas-node-id]").evaluateAll(nodes => nodes.map(node => node.getAttribute("data-canvas-node-id")))).toEqual(ids);
+    await expect(output.locator('[data-canvas-node-id="' + ids[0] + '"] > rect')).toHaveAttribute("fill", "#FFAA22");
+    await expect(page.locator(".command-bar .revision-chip")).toHaveText(savedRevision);
+  }
+  await page.getByRole("img", { name: "Procedural output profile study", exact: true })
+    .screenshot({ path: info.outputPath("adaptive-output-portrait-preserved-objects.png") });
+  await button("Edit individual objects").click();
+  await page.getByRole("button", { name: "Canvas object ProceduralField / item 000", exact: true }).click();
+  const inspector = page.locator(".canvas-draft-inspector").filter({ has: page.locator('[id="canvas-draft-' + ids[0] + '-x"]') });
+  await expect(inspector).toHaveCount(1);
+  const x = inspector.getByLabel("Canvas X", { exact: true }), originalX = Number(await x.inputValue());
+  await x.fill(String(originalX + 5)); await inspector.getByRole("button", { name: "Commit transform", exact: true }).click();
+  await expect(page.locator(".command-bar .revision-chip")).not.toHaveText(savedRevision);
+  const editedRevision = await page.locator(".command-bar .revision-chip").innerText();
+  await open();
+  await expect(page.getByRole("alert", { name: "Procedural output profile study unavailable", exact: true })).toContainText("override conflict");
+  await expect(source.locator('[data-canvas-node-id="' + ids[0] + '"] > rect')).toHaveAttribute("x", String(originalX + 5));
+  await expect(page.getByRole("img", { name: "Procedural output profile study", exact: true })).toHaveCount(0);
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText(editedRevision);
+});

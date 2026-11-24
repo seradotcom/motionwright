@@ -1104,3 +1104,97 @@ fn adaptive_grid_reflows_count_and_field_aspect_without_reducing_size_or_overrid
     );
     assert_eq!(p, before);
 }
+
+#[test]
+fn adaptive_output_grid_reflows_original_ids_without_rewriting_the_source() {
+    let config = ProceduralConfig {
+        distribution: FieldDistribution::AdaptiveGrid,
+        count: 24,
+        reveal_step_frames: 3,
+        ..Default::default()
+    };
+    let original = realize_procedural_field(instance_id(), &config).unwrap();
+    for (width, height, columns, rows) in
+        [(1920, 1080, 6, 4), (1080, 1080, 5, 5), (1080, 1920, 4, 6)]
+    {
+        assert_eq!(
+            procedural_grid_dimensions_for_output(&config, width, height).unwrap(),
+            (columns, rows)
+        );
+        let nodes =
+            realize_procedural_field_for_output(instance_id(), &config, width, height).unwrap();
+        assert_eq!(
+            nodes.iter().map(|node| node.id).collect::<Vec<_>>(),
+            original.iter().map(|node| node.id).collect::<Vec<_>>()
+        );
+        assert!(
+            nodes
+                .iter()
+                .all(|node| node.width == 32.0 && node.height == 32.0)
+        );
+        for (node, base) in nodes.iter().zip(&original) {
+            assert_eq!(
+                node.keyframes
+                    .iter()
+                    .map(|key| (key.at, key.property, key.interpolation))
+                    .collect::<Vec<_>>(),
+                base.keyframes
+                    .iter()
+                    .map(|key| (key.at, key.property, key.interpolation))
+                    .collect::<Vec<_>>()
+            );
+        }
+        if width == 1920 {
+            assert_eq!(nodes, original);
+        }
+        if height == 1920 {
+            assert_eq!((nodes[0].x, nodes[0].y), (276.0, 200.0));
+        }
+    }
+    let mut p = project();
+    upsert(&mut p, config).unwrap();
+    let before = p.clone();
+    let roundtrip: Project = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+    assert_eq!(roundtrip, p);
+    assert_eq!(p.production_design.procedural_fields[0].baseline, original);
+    let field = &roundtrip.production_design.procedural_fields[0];
+    realize_procedural_field_for_output(field.id, &field.config, 1080, 1920).unwrap();
+    assert_eq!(p, before);
+}
+
+#[test]
+fn output_layout_keeps_legacy_distributions_and_rejects_invalid_dimensions_and_cost() {
+    for distribution in [
+        FieldDistribution::Grid,
+        FieldDistribution::Scatter,
+        FieldDistribution::Staggered,
+        FieldDistribution::Radial,
+        FieldDistribution::Spiral,
+    ] {
+        let config = ProceduralConfig {
+            distribution,
+            ..Default::default()
+        };
+        assert_eq!(
+            realize_procedural_field_for_output(instance_id(), &config, 1080, 1920).unwrap(),
+            realize_procedural_field(instance_id(), &config).unwrap()
+        );
+    }
+    for (width, height) in [(319, 1080), (1080, 7681), (u32::MAX, 1080)] {
+        assert!(
+            realize_procedural_field_for_output(
+                instance_id(),
+                &ProceduralConfig::default(),
+                width,
+                height
+            )
+            .is_err()
+        );
+    }
+    let config = ProceduralConfig {
+        count: 65,
+        distribution: FieldDistribution::AdaptiveGrid,
+        ..Default::default()
+    };
+    assert!(realize_procedural_field_for_output(instance_id(), &config, 1080, 1920).is_err());
+}

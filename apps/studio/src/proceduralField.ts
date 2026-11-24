@@ -92,6 +92,33 @@ export function proceduralGridDimensions(config: ProceduralConfig): { columns: n
   const columns = fieldColumns(config);
   return { columns, rows: Math.ceil(config.count / columns) };
 }
+/** Replan keeps each object's requested size and chooses a rhythm for the
+ * physical output cells. Integer scores match Rust and keep the v1 source intact. */
+export function proceduralGridDimensionsForOutput(config: ProceduralConfig, width: number, height: number): { columns: number; rows: number } {
+  validateProceduralConfig(config);
+  if (![width, height].every(value => Number.isInteger(value) && value >= 320 && value <= 7680))
+    throw new Error("Procedural output dimensions are out of bounds.");
+  if (config.distribution !== "adaptive_grid") return proceduralGridDimensions(config);
+  let best = { cell: -1, unused: Infinity, columns: 1 };
+  for (let columns = 1; columns <= Math.min(config.count, 16); columns++) {
+    const rows = Math.ceil(config.count / columns);
+    const cellWidth = Math.floor(config.area_width / columns), cellHeight = Math.floor(config.area_height / rows);
+    if (cellWidth < config.size || cellHeight < config.size) continue;
+    // Common denominator 1920 * 1080; no floating aspect-ratio tie decisions.
+    const cell = Math.min(cellWidth * width * 1080, cellHeight * height * 1920);
+    const unused = columns * rows - config.count;
+    if (cell > best.cell || (cell === best.cell && unused < best.unused)) best = { cell, unused, columns };
+  }
+  if (best.cell < 0) throw new Error("Procedural output has no arrangement that preserves the requested object size.");
+  return { columns: best.columns, rows: Math.ceil(config.count / best.columns) };
+}
+/** Returns source-coordinate nodes for the existing Film projection. No source
+ * config, baseline, identity, time or per-object override is rewritten. */
+export async function realizeProceduralFieldForOutput(id: string, config: ProceduralConfig, width: number, height: number): Promise<CanvasNode[]> {
+  const grid = proceduralGridDimensionsForOutput(config, width, height);
+  return realizeProceduralField(id, config.distribution === "adaptive_grid"
+    ? { ...config, distribution: "grid", columns: grid.columns } : config);
+}
 function pathVertices(config: ProceduralConfig): { x: number; y: number }[] {
   const path = config.path;
   if (!path) throw new Error("Path distribution requires an editable polyline.");

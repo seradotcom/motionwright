@@ -232,6 +232,65 @@ fn field_columns(config: &ProceduralConfig) -> u32 {
     }
     best.2
 }
+/// Replan evaluates physical output cells without changing the authored size or
+/// baseline. Scores share one integer denominator with the Studio implementation.
+pub fn procedural_grid_dimensions_for_output(
+    config: &ProceduralConfig,
+    width: u32,
+    height: u32,
+) -> Result<(u32, u32)> {
+    config.validate()?;
+    if !(320..=7680).contains(&width) || !(320..=7680).contains(&height) {
+        return Err(DomainError::Invalid(
+            "procedural output dimensions are out of bounds".into(),
+        ));
+    }
+    let count = u32::from(config.count);
+    if config.distribution != FieldDistribution::AdaptiveGrid {
+        let columns = field_columns(config);
+        return Ok((columns, count.div_ceil(columns)));
+    }
+    let mut best: Option<(u64, u32, u32)> = None;
+    for columns in 1..=count.min(16) {
+        let rows = count.div_ceil(columns);
+        let cell_width = u32::from(config.area_width) / columns;
+        let cell_height = u32::from(config.area_height) / rows;
+        if cell_width < u32::from(config.size) || cell_height < u32::from(config.size) {
+            continue;
+        }
+        let cell = (u64::from(cell_width) * u64::from(width) * 1080)
+            .min(u64::from(cell_height) * u64::from(height) * 1920);
+        let unused = columns * rows - count;
+        if best
+            .is_none_or(|previous| cell > previous.0 || (cell == previous.0 && unused < previous.1))
+        {
+            best = Some((cell, unused, columns));
+        }
+    }
+    let (_, _, columns) = best.ok_or_else(|| {
+        DomainError::Invalid(
+            "procedural output has no arrangement that preserves the requested object size".into(),
+        )
+    })?;
+    Ok((columns, count.div_ceil(columns)))
+}
+/// Source-coordinate realization for the existing Film projection. The derived
+/// arrangement is never persisted as a new source config or generator baseline.
+pub fn realize_procedural_field_for_output(
+    id: Uuid,
+    config: &ProceduralConfig,
+    width: u32,
+    height: u32,
+) -> Result<Vec<CanvasNode>> {
+    let (columns, _) = procedural_grid_dimensions_for_output(config, width, height)?;
+    let mut derived = config.clone();
+    if config.distribution == FieldDistribution::AdaptiveGrid {
+        derived.distribution = FieldDistribution::Grid;
+        derived.columns = columns as u8;
+    }
+    realize_procedural_field(id, &derived)
+}
+
 fn path_vertices(config: &ProceduralConfig) -> Result<Vec<(u32, u32)>> {
     let path = config.path.as_ref().ok_or_else(|| {
         DomainError::Invalid("path distribution requires an editable polyline".into())

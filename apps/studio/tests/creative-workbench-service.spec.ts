@@ -486,6 +486,21 @@ test("editable procedural path and count reflow preserve original source, late i
     expect(finalNodes).toHaveLength(12);
     expect(finalNodes.slice(0, 4).map(node => node.id)).toEqual(originalNodes.map(node => node.id));
     expect(finalNodes[0].style.fill).toBe("#FFAA22");
+    const outputWrites = applies(service).length;
+    const portrait = final.deliverables.find(profile => profile.width === 1080 && profile.height === 1920 && profile.framing_strategy === "replan");
+    if (!portrait) throw new Error("The actual Service fixture must retain its authored vertical delivery profile.");
+    const inspectOutput = async () => {
+      await page.getByLabel("Editor preview timebase", { exact: true }).selectOption(portrait.id);
+      const output = page.getByRole("img", { name: "Procedural output profile study", exact: true });
+      await expect(output).toHaveAttribute("viewBox", "0 0 1080 1920");
+      await expect(output.locator("[data-canvas-node-id] > rect")).toHaveCount(12);
+      await expect(output.locator('[data-canvas-node-id="' + originalNodes[0].id + '"] > rect')).toHaveAttribute("fill", "#FFAA22");
+      const columns = await output.locator("[data-canvas-node-id] > rect").evaluateAll(rects => new Set(rects.map(rect => rect.getAttribute("x"))).size);
+      expect(columns).toBe(1);
+      expect(applies(service)).toHaveLength(outputWrites);
+      expect(await service.project(initial.id)).toEqual(final);
+    };
+    await inspectOutput();
     expect(final.assets).toEqual(initial.assets);
     expect(final.scenes.filter(scene => scene.id !== sceneId)).toEqual(initial.scenes.filter(scene => scene.id !== sceneId));
     const oracle = await service.observeStoredProject(final); await service.close(); await service.start();
@@ -494,6 +509,7 @@ test("editable procedural path and count reflow preserve original source, late i
     await expect(page.getByLabel("Procedural distribution", { exact: true })).toHaveValue("adaptive_grid");
     await expect(page.getByLabel("Path point 2 X (%)", { exact: true })).toHaveValue("-");
     await expect(page.getByLabel("Path point 2 X (%)", { exact: true })).toBeDisabled();
+    await inspectOutput();
     const changes = oracle.journal.filter(event => event.revision > initial.revision).map(event => event.change.type);
     expect(changes).toEqual(["upsert_procedural_field", "update_canvas_style", "upsert_procedural_field", "upsert_procedural_field"]);
     Object.assign(observations, { initial, saved, changed, oracle, instanceId: field.id, originalNodes, changes });
