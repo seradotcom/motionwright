@@ -1156,7 +1156,7 @@ export default function CanvasWorkspace({
                 {selectedNode.property_locks.length > 0 && <span className="status-pill status-review">LOCKED FIELDS</span>}
               </div>
 
-              <CanvasDraftInspector key={canvasDraftScope(project, scene.id, selectedNode.id)}
+              <CanvasDraftInspector key={"canvas-draft:" + canvasDraftScope(project, scene.id, selectedNode.id)}
                 project={project} scene={scene} node={selectedNode} commit={commitRequired}
                 dragPreview={draftTransforms[selectedNode.id]}/>
 
@@ -1320,7 +1320,7 @@ export default function CanvasWorkspace({
                 </p>
               </section>
 
-              <NativePoseMotion key={canvasDraftScope(project, scene.id, selectedNode.id)}
+              <NativePoseMotion key={"native-pose:" + canvasDraftScope(project, scene.id, selectedNode.id)}
                 project={project} scene={scene} node={selectedNode} profile={profile} commit={commitRequired} />
 
               <div className="property-locks">

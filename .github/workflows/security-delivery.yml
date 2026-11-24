@@ -91,7 +91,7 @@ on:
           - native-film-hold
           - native-geometry-readback
       first_use_case:
-        description: Impact selection within first-use-example; static layout choices reuse valid first-use and portable results
+        description: Impact selection; individual static choices run Service UI, static-layout also checks Native projection
         type: choice
         required: false
         default: all
@@ -389,7 +389,7 @@ jobs:
             fi
           done
       - name: Native source prerequisites
-        if: inputs.first_use_case != 'static-group'
+        if: inputs.first_use_case != 'static-group' && inputs.first_use_case != 'static-alignment'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev pkg-config clang
@@ -429,7 +429,7 @@ jobs:
           cargo test --locked --jobs 2 -p motionwright-native --lib film::tests:: -- --test-threads=1
           cargo test --locked --jobs 2 -p motionwright-native --test manim_editable_projection -- --test-threads=1
       - name: Exact static alignment projection for landscape, portrait and square
-        if: inputs.first_use_case == 'static-alignment' || inputs.first_use_case == 'static-layout'
+        if: inputs.first_use_case == 'static-layout'
         run: |
           set -euo pipefail
           cargo clippy --locked --jobs 2 -p motionwright-native --lib -- -D warnings

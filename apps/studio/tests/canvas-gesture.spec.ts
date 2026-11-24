@@ -85,3 +85,52 @@ test("a second pointer cannot cancel or release the active Canvas gesture", asyn
   await expect(revision).toHaveText("r" + (initialRevision + 1));
   await expect(page.getByLabel("Canvas X", { exact: true })).not.toHaveValue(originalX);
 });
+
+
+// Browser-demo regression for React component identity only. Real saved
+// alignment and original SQLite reopen remain in the Service-backed case.
+test("Canvas object selection keeps one inspector and independent local drafts", async ({ page }) => {
+  const keyErrors:string[]=[];
+  page.on("console", message => {
+    if (message.type()==="error" && /same key|two children/.test(message.text())) keyErrors.push(message.text());
+  });
+  await page.goto("/");
+  await page.getByRole("button",{name:"Canvas",exact:true}).click();
+  const inspector=page.locator(".canvas-draft-inspector");
+  const x=page.getByLabel("Canvas X",{exact:true});
+  const pose=page.getByRole("region",{name:"Native pose animation",exact:true});
+  const revision=page.locator(".command-bar .revision-chip");
+  let expected=Number((await revision.innerText()).slice(1));
+  async function uniqueInspector() {
+    await expect(inspector).toHaveCount(1);
+    await expect(x).toHaveCount(1);
+    await expect(pose).toHaveCount(1);
+    const ids=await inspector.locator("[id]").evaluateAll(elements=>elements.map(element=>element.id));
+    expect(new Set(ids).size).toBe(ids.length);
+  }
+  async function addShape() {
+    await page.locator(".canvas-create-row").getByRole("button",{name:"shape",exact:true}).click();
+    await expect(revision).toHaveText("r"+(++expected));
+    await uniqueInspector();
+    return await page.locator(".canvas-selection-title strong").innerText();
+  }
+  async function select(name:string) {
+    await page.locator(".canvas-tree-row").filter({has:page.getByText(name,{exact:true})}).click();
+    await expect(page.locator(".canvas-selection-title strong")).toHaveText(name);
+    await uniqueInspector();
+  }
+  await uniqueInspector();
+  const first=await addShape();
+  await x.fill("321.125");
+  const second=await addShape();
+  expect(second).not.toBe(first);
+  await x.fill("654.5");
+  await select(first);
+  await expect(x).toHaveValue("321.125");
+  await select(second);
+  await expect(x).toHaveValue("654.5");
+  await select(first);
+  await expect(x).toHaveValue("321.125");
+  await expect(revision).toHaveText("r"+expected);
+  expect(keyErrors).toEqual([]);
+});
