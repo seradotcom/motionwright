@@ -105,7 +105,8 @@ fn motion_study(title: impl Into<String>) -> Result<Project> {
     .enumerate()
     {
         let panel = rectangle("Backdrop", 96.0, 96.0, 1728.0, 888.0, "#1B2D3A");
-        let mut card = rectangle("Moving card", from.0, from.1, 336.0, 216.0, "#59C7B5");
+        // Settle retains the destination in the saved base pose; t=0 keys preserve the entry.
+        let mut card = rectangle("Moving card", to.0, to.1, 336.0, 216.0, "#59C7B5");
         card.z_index = 1;
         for (at, point) in [
             (RationalTime::ZERO, from),

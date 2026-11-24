@@ -46,7 +46,10 @@ pub use file_import::{FileImportIntent, RecordedFileImport, StagedFileImport};
 pub use integrity::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, MAX_ASSET_INTEGRITY_PAGE,
 };
-pub use portability::{BundleAssetAdmission, BundleFingerprint, InspectedProjectBundle};
+pub use portability::{
+    BundleAssetAdmission, BundleFingerprint, BundleImportCommit, BundleImportRecoveryRequest,
+    InspectedProjectBundle,
+};
 pub use production::{
     ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark,
     voice_alignment_receipt_sha256_v1,

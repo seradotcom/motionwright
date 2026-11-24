@@ -1259,6 +1259,87 @@ pub(super) fn load_store_id(conn: &Connection) -> Result<Uuid> {
     Uuid::parse_str(&value).map_err(|_| invalid("store identity is malformed"))
 }
 
+impl Store {
+    /// Read the durable commit written by the existing import transaction.
+    /// A missing marker is uncertainty, never proof that retry is safe.
+    pub fn recover_project_bundle_import(
+        &mut self,
+        request: &super::BundleImportRecoveryRequest,
+    ) -> Result<Option<super::BundleImportCommit>> {
+        if request.project_id.is_nil() {
+            return Err(invalid(
+                "import recovery requires an exact project identity",
+            ));
+        }
+        let root = discover(&self.blob_root)?
+            .ok_or_else(|| invalid("import recovery requires the original managed CAS root"))?;
+        if database_identity(&self.path)? != self.cas_database_id {
+            return Err(invalid("database physical identity changed"));
+        }
+        let tx = self.conn.transaction()?;
+        let version: u32 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        validate_schema(&tx, version)?;
+        if load_store_id(&tx)? != self.cas_store_id {
+            return Err(invalid("import recovery Store identity changed"));
+        }
+        let markers: Vec<(String, String, String, String)> = {
+            let mut query = tx.prepare(
+                "SELECT operation_id,root_id,store_id,generation FROM cas_import_commits
+                 WHERE project_id=?1 AND request_sha256=?2 LIMIT 2",
+            )?;
+            query
+                .query_map(
+                    params![request.project_id.to_string(), request.fingerprint.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        let result = match markers.as_slice() {
+            [] => None,
+            [(operation, root_id, store_id, generation)] => {
+                let operation_id = Uuid::parse_str(operation)
+                    .map_err(|_| invalid("import commit identity is malformed"))?;
+                let generation_id = Uuid::parse_str(generation)
+                    .map_err(|_| invalid("import generation is malformed"))?;
+                if operation_id.is_nil()
+                    || operation_id.to_string() != *operation
+                    || generation_id.is_nil()
+                    || generation_id.to_string() != *generation
+                    || root_id != &root.root_id.to_string()
+                    || store_id != &self.cas_store_id.to_string()
+                {
+                    return Err(invalid("import commit belongs to another root or Store"));
+                }
+                let current = super::load_project_from_row(&tx, request.project_id)?;
+                if current.generation != generation_id {
+                    return Err(StorageError::GenerationConflict);
+                }
+                Some(super::BundleImportCommit {
+                    operation_id,
+                    project_id: request.project_id,
+                    generation: generation_id,
+                    fingerprint: request.fingerprint.clone(),
+                })
+            }
+            _ => {
+                return Err(invalid(
+                    "multiple original imports match this manifest; recovery is ambiguous",
+                ));
+            }
+        };
+        let current_root = discover(&self.blob_root)?
+            .ok_or_else(|| invalid("import recovery CAS root disappeared"))?;
+        if current_root.root_id != root.root_id
+            || current_root.directory_id != root.directory_id
+            || database_identity(&self.path)? != self.cas_database_id
+        {
+            return Err(invalid("import recovery custody changed during the read"));
+        }
+        tx.commit()?;
+        Ok(result)
+    }
+}
+
 fn committed(
     conn: &Connection,
     root: &ManagedRoot,
@@ -2186,5 +2267,95 @@ mod namespace_tests {
             fs::read(retained.control.join("catalog.json")).unwrap(),
             catalog_bytes
         );
+    }
+    #[test]
+    fn imported_project_recovery_rejects_tampered_or_ambiguous_original_markers() {
+        for changed in [
+            "root",
+            "store",
+            "generation",
+            "operation",
+            "duplicate",
+            "deleted",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut source = Store::open(dir.path().join("source.sqlite3")).unwrap();
+            let original = source.create_named_project("Original binding").unwrap();
+            let bundle = dir.path().join("bundle");
+            source.export_project_bundle(original.id, &bundle).unwrap();
+            let mut target = Store::open(dir.path().join("target.sqlite3")).unwrap();
+            let inspected = target
+                .inspect_project_bundle_with_fingerprint(&bundle)
+                .unwrap();
+            let request = super::super::BundleImportRecoveryRequest {
+                project_id: original.id,
+                fingerprint: inspected.fingerprint,
+            };
+            target
+                .import_project_bundle_inspected(&bundle, &request.fingerprint)
+                .unwrap();
+            assert!(
+                target
+                    .recover_project_bundle_import(&request)
+                    .unwrap()
+                    .is_some()
+            );
+            match changed {
+                "root" => {
+                    target
+                        .conn
+                        .execute(
+                            "UPDATE cas_import_commits SET root_id=?1",
+                            [Uuid::new_v4().to_string()],
+                        )
+                        .unwrap();
+                }
+                "store" => {
+                    target
+                        .conn
+                        .execute(
+                            "UPDATE cas_import_commits SET store_id=?1",
+                            [Uuid::new_v4().to_string()],
+                        )
+                        .unwrap();
+                }
+                "generation" => {
+                    target
+                        .conn
+                        .execute(
+                            "UPDATE cas_import_commits SET generation=?1",
+                            [Uuid::new_v4().to_string()],
+                        )
+                        .unwrap();
+                }
+                "operation" => {
+                    target
+                        .conn
+                        .execute(
+                            "UPDATE cas_import_commits SET operation_id=?1",
+                            [Uuid::nil().to_string()],
+                        )
+                        .unwrap();
+                }
+                "duplicate" => {
+                    target.conn.execute("INSERT INTO cas_import_commits SELECT ?1,root_id,store_id,request_sha256,project_id,generation FROM cas_import_commits",
+                    [Uuid::new_v4().to_string()]).unwrap();
+                }
+                "deleted" => {
+                    target
+                        .conn
+                        .execute(
+                            "DELETE FROM projects WHERE id=?1",
+                            [original.id.to_string()],
+                        )
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                target.recover_project_bundle_import(&request).is_err(),
+                "{changed}"
+            );
+        }
     }
 }

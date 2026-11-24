@@ -1331,3 +1331,131 @@ fn service_rejects_changed_blob_with_unchanged_manifest_and_publishes_no_member(
     let staging = store.blob_root().join(".staging");
     assert!(!staging.exists() || fs::read_dir(staging).unwrap().next().is_none());
 }
+
+#[test]
+fn portable_import_recovery_preserves_later_edits_and_original_cas_after_reopen() {
+    use motionwright_service::{BundleImportRecoveryRequest, StudioService};
+    let dir = tempfile::tempdir().unwrap();
+    let mut source = fixture_store(dir.path(), "recovery-source");
+    let original = Project::new("Original portable recovery").unwrap();
+    source.create_project(&original).unwrap();
+    let file = dir.path().join("original.txt");
+    let bytes = b"First-party source bytes for portable import recovery.";
+    fs::write(&file, bytes).unwrap();
+    let (original, digest) = add_asset(&mut source, &original, &file, "original-media");
+    let bundle = dir.path().join("original-bundle");
+    source.export_project_bundle(original.id, &bundle).unwrap();
+    let destination = dir.path().join("recovery-destination");
+    fs::create_dir(&destination).unwrap();
+    let database = destination.join("state.sqlite3");
+    let service = StudioService::open(&database).unwrap();
+    let inspected = service
+        .inspect_project_bundle_with_fingerprint(&bundle)
+        .unwrap();
+    let request = BundleImportRecoveryRequest {
+        project_id: original.id,
+        fingerprint: inspected.fingerprint,
+    };
+    assert!(
+        service
+            .recover_project_bundle_import(&request)
+            .unwrap()
+            .is_none()
+    );
+    assert!(service.projects(100).unwrap().is_empty());
+    let imported = service
+        .import_project_bundle_inspected(&bundle, &request.fingerprint)
+        .unwrap();
+    let committed = service
+        .recover_project_bundle_import(&request)
+        .unwrap()
+        .unwrap();
+    assert_eq!(committed.project_id, original.id);
+    assert_eq!(committed.generation, imported.generation);
+    assert_ne!(committed.generation, original.generation);
+    assert_eq!(committed.fingerprint, request.fingerprint);
+    let edited = service
+        .apply(
+            imported.id,
+            &imported.stamp(),
+            "later-original-edit",
+            &Change::RenameProject {
+                title: "Preserved later decision".into(),
+            },
+        )
+        .unwrap()
+        .project;
+    drop(service);
+    // The recovery reader has no source pathname and cannot reopen this folder.
+    fs::rename(&bundle, dir.path().join("archived-original-bundle")).unwrap();
+    let reopened = StudioService::open(&database).unwrap();
+    assert_eq!(
+        reopened.recover_project_bundle_import(&request).unwrap(),
+        Some(committed)
+    );
+    assert_eq!(reopened.project(edited.id).unwrap(), edited);
+    assert_eq!(reopened.projects(100).unwrap().len(), 1);
+    assert!(
+        reopened
+            .production_receipts(edited.id, 100)
+            .unwrap()
+            .is_empty()
+    );
+    drop(reopened);
+    let store = Store::open(&database).unwrap();
+    assert_eq!(
+        fs::read(store.verified_blob_path(&digest).unwrap()).unwrap(),
+        bytes
+    );
+}
+
+#[test]
+fn portable_import_recovery_never_adopts_an_unrelated_manifest_or_project() {
+    use motionwright_service::{BundleFingerprint, BundleImportRecoveryRequest, StudioService};
+    let dir = tempfile::tempdir().unwrap();
+    let mut source = fixture_store(dir.path(), "binding-source");
+    let original = Project::new("Portable recovery binding").unwrap();
+    source.create_project(&original).unwrap();
+    let bundle = dir.path().join("bundle");
+    source.export_project_bundle(original.id, &bundle).unwrap();
+    let destination = dir.path().join("binding-destination");
+    fs::create_dir(&destination).unwrap();
+    let service = StudioService::open(destination.join("state.sqlite3")).unwrap();
+    let inspected = service
+        .inspect_project_bundle_with_fingerprint(&bundle)
+        .unwrap();
+    let request = BundleImportRecoveryRequest {
+        project_id: original.id,
+        fingerprint: inspected.fingerprint,
+    };
+    let imported = service
+        .import_project_bundle_inspected(&bundle, &request.fingerprint)
+        .unwrap();
+    for wrong in [
+        BundleImportRecoveryRequest {
+            project_id: Uuid::new_v4(),
+            ..request.clone()
+        },
+        BundleImportRecoveryRequest {
+            fingerprint: BundleFingerprint::from_sha256("af".repeat(32)).unwrap(),
+            ..request.clone()
+        },
+    ] {
+        assert!(
+            service
+                .recover_project_bundle_import(&wrong)
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert!(
+        service
+            .recover_project_bundle_import(&BundleImportRecoveryRequest {
+                project_id: Uuid::nil(),
+                ..request
+            })
+            .is_err()
+    );
+    assert_eq!(service.project(imported.id).unwrap(), imported);
+    assert_eq!(service.projects(100).unwrap().len(), 1);
+}

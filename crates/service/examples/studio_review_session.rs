@@ -875,6 +875,13 @@ impl Session {
                     "fingerprint": inspected.fingerprint,
                 }))
             }
+            "recover_project_bundle_import" => encoded(
+                self.service
+                    .recover_project_bundle_import(&request::<
+                        motionwright_service::BundleImportRecoveryRequest,
+                    >(args)?)
+                    .map_err(|error| error.to_string())?,
+            ),
             "import_project_bundle" => {
                 let request: ImportBundleRequest = request(args)?;
                 self.grants.consume(

@@ -71,6 +71,7 @@ fn main() {
             "export_portable_otio_media_bundle",
             "preview_otio_media_cut",
             "inspect_project_bundle",
+            "recover_project_bundle_import",
             "import_project_bundle",
             "native_original_mix_audition",
             "native_narration_take_snapshot",

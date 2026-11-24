@@ -53,6 +53,26 @@ pub struct InspectedProjectBundle {
     pub fingerprint: BundleFingerprint,
 }
 
+/// A read-only lookup of the exact inspected manifest in this Store.
+/// It does not retain a source path, replay an import or authorize any effect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleImportRecoveryRequest {
+    pub project_id: Uuid,
+    pub fingerprint: BundleFingerprint,
+}
+
+/// Existing SQLite/CAS commit identity. The current document is read separately,
+/// so recovering an import cannot replace edits saved after that commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleImportCommit {
+    pub operation_id: Uuid,
+    pub project_id: Uuid,
+    pub generation: Uuid,
+    pub fingerprint: BundleFingerprint,
+}
+
 /// Product content admission over the exact bytes that storage has hashed.
 /// The prefix is bounded, immutable, and from that same complete credential
 /// scan. Every asset alias comes from the captured manifest. Implementations

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
-import { expect, test as base, type Page } from "@playwright/test";
+import { readFile, writeFile, rename } from "node:fs/promises";
+import { expect, test as base, type Page, type TestInfo } from "@playwright/test";
 import type { Project } from "../src/types";
 import { ScopedChangeService } from "./support/scopedChangeService";
 
@@ -385,4 +385,108 @@ test("lost example creation response reopens the same story and later edits with
     expect(calls(service, "recover_project_creation")).toHaveLength(1);
     expect(await creationCopies(page)).toEqual([]);
   } finally { service.invoke = originalInvoke; }
+});
+
+
+const BUNDLE_PREFIX = "motionwright.bundle-import-continuity/1/";
+async function bundleCopies(page: Page) {
+  return page.evaluate(prefix => Object.keys(localStorage).filter(key => key.startsWith(prefix))
+    .map(key => ({ key, raw: localStorage.getItem(key)! })), BUNDLE_PREFIX);
+}
+async function originalPortableFixture(testInfo: TestInfo) {
+  const origin = await ScopedChangeService.create({
+    databasePath: testInfo.outputPath("portable-origin", "studio.sqlite3"), seedFixture: false, desktopInvokeFixture: true,
+  });
+  let project: Project | undefined;
+  const path = testInfo.outputPath("portable-original");
+  try {
+    project = await createStored(origin, "Portable original scene and source");
+    project = await origin.apply(project, { type: "add_scene", name: "Original scene", objective: "Keep original editorial intent", duration_seconds: 3 });
+    const media = testInfo.outputPath("first-party-note.txt");
+    await writeFile(media, "First-party original media for library import.");
+    project = await origin.importAsset(project, media, "First-party original", "text/plain");
+    await origin.exportBundle(project, path);
+    return { project, path };
+  } finally {
+    const closed = await origin.finalizeClosedStore(testInfo.outputPath("portable-origin-closed"), project);
+    expect(closed.errors).toEqual([]);
+  }
+}
+async function inspectPortableFromLibrary(page: Page, path: string) {
+  await page.goto("/"); await openLibrary(page);
+  await dialog(page).getByLabel("Portable project folder", { exact: true }).fill(path);
+  await dialog(page).getByRole("button", { name: "Inspect portable project", exact: true }).click();
+  await expect(dialog(page).getByLabel("Portable project inspection", { exact: true })).toBeVisible();
+}
+
+test("portable library imports original media into an empty Store, edits and reopens without a placeholder project", async ({ page, lifecycle }, testInfo) => {
+  const { service } = lifecycle;
+  const original = await originalPortableFixture(testInfo);
+  await inspectPortableFromLibrary(page, original.path);
+  await dialog(page).getByRole("button", { name: "Import inspected project", exact: true }).click();
+  await revision(page, original.project.revision);
+  const imported = await service.project(original.project.id);
+  expect(imported.generation).not.toBe(original.project.generation);
+  expect(imported.scenes).toEqual(original.project.scenes); expect(imported.assets).toEqual(original.project.assets);
+  expect(calls(service, "create_project")).toHaveLength(0);
+  expect(calls(service, "import_project_bundle")).toHaveLength(1);
+  await button(page, "Brief").click();
+  await page.getByLabel("Production objective", { exact: true }).fill("Continue the imported original.");
+  await button(page, "Commit brief").click(); await revision(page, imported.revision + 1);
+  const edited = await service.project(imported.id);
+  await service.close(); await service.start(); await page.reload();
+  await revision(page, edited.revision); expect(await service.project(edited.id)).toEqual(edited);
+  expect(await bundleCopies(page)).toEqual([]);
+  const index = await service.invoke<{ items: { id: string }[] }>("list_projects", { request: { cursor: null, limit: 100 } });
+  expect(index.items.map(item => item.id)).toEqual([original.project.id]);
+});
+
+test("portable library recovers a lost import reply from its original commit and preserves a later author", async ({ page, lifecycle }, testInfo) => {
+  const { service, peers } = lifecycle;
+  const original = await originalPortableFixture(testInfo);
+  const invoke = service.invoke.bind(service); let imported: Project | undefined, interrupted = false;
+  service.invoke = async <T>(command: string, args: Record<string, unknown> = {}) => {
+    const result = await invoke<T>(command, args);
+    if (command === "import_project_bundle" && !interrupted) {
+      interrupted = true; imported = result as Project;
+      throw new Error("Injected browser response loss after real portable import commit");
+    }
+    return result;
+  };
+  try {
+    await inspectPortableFromLibrary(page, original.path);
+    await dialog(page).getByRole("button", { name: "Import inspected project", exact: true }).click();
+    await expect(dialog(page).getByRole("alert")).toContainText("response loss");
+    const retained = await bundleCopies(page); expect(retained).toHaveLength(1); expect(imported).toBeDefined();
+    const peer = await service.peer(); peers.push(peer);
+    const later = await peer.apply(imported!, { type: "rename_project", title: "Later saved imported project" });
+    await rename(original.path, testInfo.outputPath("portable-original-retained-elsewhere"));
+    await page.reload(); await openLibrary(page);
+    await dialog(page).getByRole("button", { name: "Check original import", exact: true }).click();
+    await revision(page, later.revision); await expect(page.locator(".project-title")).toHaveText(later.title);
+    expect(await service.project(later.id)).toEqual(later);
+    expect(calls(service, "import_project_bundle")).toHaveLength(1);
+    expect(calls(service, "recover_project_bundle_import")).toHaveLength(1);
+    expect(calls(service, "issue_effect_grant")).toHaveLength(1);
+    expect(await bundleCopies(page)).toEqual([]);
+  } finally { service.invoke = invoke; }
+});
+
+test("portable library leaves an unknown import untouched and never repeats it from a retained copy", async ({ page, lifecycle }, testInfo) => {
+  const { service } = lifecycle;
+  const original = await originalPortableFixture(testInfo);
+  const plan = await service.inspectBundle(original.path);
+  const copyId = randomUUID(), key = BUNDLE_PREFIX + copyId;
+  const raw = JSON.stringify({ schema: "motionwright.bundle-import-continuity/1", copyId, createdAt: Date.now(), path: original.path, plan });
+  await page.addInitScript(({ key, raw }) => localStorage.setItem(key, raw), { key, raw });
+  await page.goto("/"); await openLibrary(page);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await dialog(page).getByRole("button", { name: "Check original import", exact: true }).click();
+    await expect(dialog(page).getByRole("status").filter({ hasText: "No original import commit was found" })).toBeVisible();
+    expect(await bundleCopies(page)).toEqual([{ key, raw }]);
+  }
+  expect(calls(service, "recover_project_bundle_import")).toHaveLength(2);
+  expect(calls(service, "import_project_bundle")).toHaveLength(0); expect(calls(service, "issue_effect_grant")).toHaveLength(0);
+  const index = await service.invoke<{ items: unknown[] }>("list_projects", { request: { cursor: null, limit: 100 } });
+  expect(index.items).toEqual([]);
 });

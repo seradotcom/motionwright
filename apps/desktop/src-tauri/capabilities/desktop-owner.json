@@ -76,6 +76,7 @@
     "allow-export-portable-otio-media-bundle",
     "allow-preview-otio-media-cut",
     "allow-inspect-project-bundle",
+    "allow-recover-project-bundle-import",
     "allow-import-project-bundle",
     "allow-native-original-mix-audition",
     "allow-native-narration-take-snapshot",

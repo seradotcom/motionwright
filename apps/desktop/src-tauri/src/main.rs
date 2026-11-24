@@ -3087,6 +3087,18 @@ fn inspect_project_bundle(
 }
 
 #[tauri::command]
+fn recover_project_bundle_import(
+    _owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: motionwright_service::BundleImportRecoveryRequest,
+) -> Result<Option<motionwright_service::BundleImportCommit>, String> {
+    state
+        .service
+        .recover_project_bundle_import(&request)
+        .map_err(sanitized)
+}
+
+#[tauri::command]
 fn import_project_bundle(
     _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
@@ -3754,6 +3766,7 @@ fn main() {
             export_portable_otio_media_bundle,
             preview_otio_media_cut,
             inspect_project_bundle,
+            recover_project_bundle_import,
             import_project_bundle,
             original_mix_native::native_original_mix_audition,
             narration_native::native_narration_take_snapshot,

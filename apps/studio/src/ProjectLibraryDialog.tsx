@@ -1,3 +1,4 @@
+import { checkedBundlePlan, type BundleImportCopy } from "./projectBundleImport";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import {
   appendProjectLibraryItems,
@@ -9,7 +10,7 @@ import {
   type ProjectCreationCopy,
   type ProjectTemplate,
 } from "./projectLibrary";
-import type { Project } from "./types";
+import type { Project, PortableBundlePlan } from "./types";
 import "./project-library.css";
 
 export interface ProjectLibraryDialogProps {
@@ -29,9 +30,17 @@ export interface ProjectLibraryDialogProps {
   onDiscardCreation?: (copy: ProjectCreationCopy) => void;
   onRefreshCreations?: () => void;
   notice?: string | null;
+  onInspectBundle?: (path: string) => Promise<PortableBundlePlan>;
+  onImportBundle?: (path: string, plan: PortableBundlePlan) => Promise<Pick<Project, "id">>;
+  bundleCopies?: BundleImportCopy[];
+  bundleLimited?: boolean;
+  bundleError?: string | null;
+  onRecoverBundle?: (copy: BundleImportCopy) => Promise<Pick<Project, "id"> | null>;
+  onDiscardBundle?: (copy: BundleImportCopy) => void;
+  onRefreshBundles?: () => void;
 }
 
-type Opening = { kind: "open"; projectId: string; title: string } | { kind: "create" } | { kind: "recover"; title: string };
+type Opening = { kind: "open"; projectId: string; title: string } | { kind: "create" } | { kind: "recover"; title: string } | { kind: "bundle"; title: string };
 type PageFailure = { message: string; cursor: ProjectLibraryCursor | null; append: boolean };
 
 function errorMessage(reason: unknown): string {
@@ -54,6 +63,8 @@ export function ProjectLibraryDialog({
   open, currentProjectId, onClose, onList, onOpen, onBrowse, onCreate, notice,
   creationCopies = [], creationLimited = false, creationError = null,
   onRecoverCreation, onDiscardCreation, onRefreshCreations,
+  onInspectBundle, onImportBundle, bundleCopies = [], bundleLimited = false, bundleError = null,
+  onRecoverBundle, onDiscardBundle, onRefreshBundles,
 }: ProjectLibraryDialogProps) {
   const titleId = useId();
   const descriptionId = useId();
@@ -80,6 +91,10 @@ export function ProjectLibraryDialog({
   const [operationError, setOperationError] = useState<string | null>(null);
   const [closeNotice, setCloseNotice] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState("");
+  const [bundlePath, setBundlePath] = useState("");
+  const [inspectedBundle, setInspectedBundle] = useState<{ path: string; plan: PortableBundlePlan } | null>(null);
+  const unresolvedBundle = bundleLimited || Boolean(bundleError) || bundleCopies.length > 0;
+  const bundlePlan = inspectedBundle?.path === bundlePath.trim() ? inspectedBundle.plan : null;
   const titleInputVersion = useRef(0);
   const busy = opening !== null;
   const unresolvedCreation = creationLimited || Boolean(creationError)
@@ -231,6 +246,42 @@ export function ProjectLibraryDialog({
     if (accepted && current()) callbacks.current.onClose();
   }
 
+  async function bundleOperation(kind: "inspect" | "import" | "recover", copy?: BundleImportCopy) {
+    if (operationRef.current) return;
+    const path = bundlePath.trim();
+    if (kind === "inspect" && (!path || !onInspectBundle)) return;
+    if (kind === "import" && (!bundlePlan || !onImportBundle || unresolvedBundle)) return;
+    if (kind === "recover" && (!copy?.value || !onRecoverBundle)) return;
+    const startedSession = session.current, request = ++operationRequest.current;
+    const operation: Opening = { kind: "bundle", title: kind === "inspect" ? "Inspecting the portable project"
+      : kind === "import" ? "Importing the portable project" : "Checking the original import" };
+    operationRef.current = operation; setOpening(operation); setOperationError(null); setCloseNotice(null);
+    const current = () => visibleRef.current && session.current === startedSession && operationRequest.current === request;
+    let accepted = false;
+    try {
+      if (kind === "inspect") {
+        setInspectedBundle(null);
+        const plan = checkedBundlePlan(await onInspectBundle!(path));
+        if (current()) setInspectedBundle({ path, plan });
+      } else {
+        const opened = kind === "import" ? await onImportBundle!(path, bundlePlan!)
+          : await onRecoverBundle!(copy!);
+        if (!current()) return;
+        const expected = kind === "import" ? bundlePlan!.project_id : copy!.value!.plan.project_id;
+        if (opened && opened.id !== expected) throw new Error("The opened project does not match the portable import.");
+        accepted = opened !== null;
+        if (accepted) setInspectedBundle(null);
+      }
+    } catch (reason) { if (current()) setOperationError(errorMessage(reason)); }
+    finally { if (current()) { operationRef.current = null; setOpening(null); setCloseNotice(null); } }
+    if (accepted && current()) callbacks.current.onClose();
+  }
+  function removeBundleCopy(copy: BundleImportCopy) {
+    if (!onDiscardBundle || operationRef.current) return;
+    if (!window.confirm("Remove only this local import copy? This does not undo an import or prove that repeating it is safe. Download the copy first if you need to keep it.")) return;
+    try { onDiscardBundle(copy); } catch (reason) { setOperationError(errorMessage(reason)); }
+  }
+
   function discardCreation(copy: ProjectCreationCopy) {
     if (!onDiscardCreation || operationRef.current) return;
     try { onDiscardCreation(copy); setOperationError(null); }
@@ -337,6 +388,47 @@ export function ProjectLibraryDialog({
             {loading === "more" ? "Loading…" : "Load more projects"}
           </button>
         )}
+        {onInspectBundle && onImportBundle && <section className="project-library-create" aria-label="Import portable project">
+          <h3>Import a portable project</h3>
+          <p>Restore an exported Motionwright folder directly into this library. Its saved scenes and original media are checked before import.</p>
+          <label htmlFor={createId + "-bundle"}>Portable project folder</label>
+          <input id={createId + "-bundle"} value={bundlePath} autoComplete="off"
+            disabled={busy} onChange={event => { setBundlePath(event.target.value); setInspectedBundle(null); }} />
+          <button type="button" className="project-library-button" disabled={busy || !bundlePath.trim() || unresolvedBundle}
+            onClick={() => void bundleOperation("inspect")}>Inspect portable project</button>
+          {bundlePlan && <div role="status" aria-label="Portable project inspection">
+            <strong>{bundlePlan.title}</strong>
+            <p>Saved revision {bundlePlan.revision} · {bundlePlan.event_count} changes · {bundlePlan.blob_count} original media files · {bundlePlan.total_blob_bytes} bytes</p>
+            <p>Import preserves the project identity and creates a fresh execution generation. An existing project is never overwritten.</p>
+            <button type="button" className="project-library-button project-library-primary" disabled={busy || unresolvedBundle}
+              onClick={() => void bundleOperation("import")}>Import inspected project</button>
+          </div>}
+          {unresolvedBundle && <p role="status">Check the retained import below before importing another project. Existing saved projects remain available.</p>}
+        </section>}
+        {(bundleCopies.length > 0 || bundleError || bundleLimited) && <section className="project-library-creations" aria-label="Retained portable imports">
+          <div className="project-library-list-heading"><h3>Retained portable imports</h3>
+            {onRefreshBundles && <button type="button" className="project-library-button" disabled={busy} onClick={onRefreshBundles}>Refresh portable imports</button>}
+          </div>
+          <p>Check the original saved result after a missing reply. Recovery reads the existing commit and opens current saved edits.</p>
+          {bundleError && <p className="project-library-error" role="alert">{bundleError}</p>}
+          {bundleLimited && <p role="status">The retained import list exceeded its reading limit. Its original copies were kept.</p>}
+          {bundleCopies.map((copy, index) => <article key={copy.key} aria-label={"Retained portable import " + (index + 1)}>
+            <h4>{copy.value?.plan.title ?? "Unreadable portable import"}</h4>
+            <p>{copy.value ? "Result unconfirmed · " + copy.value.path : "The original local bytes were preserved."}</p>
+            {copy.error && <p className="project-library-error">{copy.error}</p>}
+            <div className="project-library-creation-actions">
+              {copy.value && onRecoverBundle && <button type="button" className="project-library-button" disabled={busy}
+                onClick={() => void bundleOperation("recover", copy)}>Check original import</button>}
+              <button type="button" className="project-library-button" disabled={busy} onClick={() => {
+                const url = URL.createObjectURL(new Blob([copy.raw], { type: "application/json" }));
+                const anchor = document.createElement("a"); anchor.href = url; anchor.download = "motionwright-portable-import.json";
+                anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+              }}>Download import copy</button>
+              {onDiscardBundle && <button type="button" className="project-library-button" disabled={busy}
+                onClick={() => removeBundleCopy(copy)}>Remove local import copy</button>}
+            </div>
+          </article>)}
+        </section>}
         {onCreate && (
           <form className="project-library-create" onSubmit={event => void createProject(event)}>
             <h3>Create a project</h3>
@@ -386,7 +478,7 @@ export function ProjectLibraryDialog({
         {operationError && <p className="project-library-error" role="alert">{operationError}</p>}
         {(opening || closeNotice) && (
           <p className="project-library-operation-status" role="status" aria-live="polite">
-            {closeNotice ?? (opening?.kind === "recover" ? "Checking the original creation request…" : opening?.kind === "create" ? "Creating the new project…"
+            {closeNotice ?? (opening?.kind === "bundle" ? opening.title + "…" : opening?.kind === "recover" ? "Checking the original creation request…" : opening?.kind === "create" ? "Creating the new project…"
               : `Opening “${opening?.title}”…`)}
           </p>
         )}

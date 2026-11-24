@@ -87,6 +87,13 @@ impl StudioService {
             .inspect_project_bundle_with_fingerprint_and_admission(source, &SvgBundleAdmission)
     }
 
+    pub fn recover_project_bundle_import(
+        &self,
+        request: &BundleImportRecoveryRequest,
+    ) -> StorageResult<Option<BundleImportCommit>> {
+        self.store.lock().recover_project_bundle_import(request)
+    }
+
     pub fn import_project_bundle_inspected(
         &self,
         source: impl AsRef<Path>,

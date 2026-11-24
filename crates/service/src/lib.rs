@@ -69,12 +69,13 @@ use motionwright_domain::{Change, DomainError, Project, RenderTailInspectRequest
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, StorageError, Store};
 pub use motionwright_storage::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, BlobDescriptor,
-    BundleFingerprint, BundleImportPlan, DerivedCacheHit, DerivedCacheRecord, FileImportIntent,
-    ImportPlan, InspectedProjectBundle, PortableBlob, ProductionReceipt, ProductionReceiptInput,
-    ProductionReceiptWatermark, ProjectBackup, ProjectBundleManifest, ProjectCreationIntent,
-    ProjectCreationOutcome, ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
-    RenderWindowCacheKey, RenderWindowEvictionDrainReport, RenderWindowPurgeReport,
-    RootBudgetUnits, RootDispatchBudgetInput, RootDispatchBudgetOutcome, RootOperationBudget,
+    BundleFingerprint, BundleImportCommit, BundleImportPlan, BundleImportRecoveryRequest,
+    DerivedCacheHit, DerivedCacheRecord, FileImportIntent, ImportPlan, InspectedProjectBundle,
+    PortableBlob, ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark,
+    ProjectBackup, ProjectBundleManifest, ProjectCreationIntent, ProjectCreationOutcome,
+    ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary, RenderWindowCacheKey,
+    RenderWindowEvictionDrainReport, RenderWindowPurgeReport, RootBudgetUnits,
+    RootDispatchBudgetInput, RootDispatchBudgetOutcome, RootOperationBudget,
     RootOperationBudgetInput,
 };
 use parking_lot::Mutex;

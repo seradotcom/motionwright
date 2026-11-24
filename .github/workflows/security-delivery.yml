@@ -232,9 +232,11 @@ jobs:
         run: |
           # Regional EC2 mirrors stalled the original prerequisite download.
           # Change only that URI; suites, components and signed keyrings stay intact.
-          if test -f /etc/apt/sources.list.d/ubuntu.sources; then
-            sudo sed -i -E 's@https?://[a-z0-9-]+\.ec2\.archive\.ubuntu\.com/ubuntu/?@https://archive.ubuntu.com/ubuntu/@g' /etc/apt/sources.list.d/ubuntu.sources
-          fi
+          for apt_source in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt; do
+            if test -f "$apt_source"; then
+              sudo sed -i -E 's@https?://[a-z0-9-]+\.ec2\.archive\.ubuntu\.com/ubuntu/?@https://archive.ubuntu.com/ubuntu/@g' "$apt_source"
+            fi
+          done
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libpipewire-0.3-dev pkg-config clang
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -361,13 +363,17 @@ jobs:
           set -euo pipefail
           python3 -B tooling/source_policy.py
           cargo test --locked --jobs 2 -p motionwright-storage --lib project_creation::tests:: -- --test-threads=1
+          cargo test --locked --jobs 2 -p motionwright-storage --lib imported_project_recovery_rejects_tampered_or_ambiguous_original_markers -- --test-threads=1
+          cargo test --locked --jobs 2 -p motionwright-service --test project_portability_authority portable_import_recovery_ -- --test-threads=1
       - name: Native source prerequisites
         run: |
           # Regional EC2 mirrors stalled the original prerequisite download.
           # Change only that URI; suites, components and signed keyrings stay intact.
-          if test -f /etc/apt/sources.list.d/ubuntu.sources; then
-            sudo sed -i -E 's@https?://[a-z0-9-]+\.ec2\.archive\.ubuntu\.com/ubuntu/?@https://archive.ubuntu.com/ubuntu/@g' /etc/apt/sources.list.d/ubuntu.sources
-          fi
+          for apt_source in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt; do
+            if test -f "$apt_source"; then
+              sudo sed -i -E 's@https?://[a-z0-9-]+\.ec2\.archive\.ubuntu\.com/ubuntu/?@https://archive.ubuntu.com/ubuntu/@g' "$apt_source"
+            fi
+          done
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev pkg-config clang
       - name: First-use original example, creation custody and free portable source
@@ -401,7 +407,7 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: apps/studio/package-lock.json
-      - name: Two first-use Studio flows through actual creation authority and closed Store
+      - name: Five first-use and portable-library Studio flows through the actual closed Store
         working-directory: apps/studio
         env:
           MOTIONWRIGHT_SERVICE_TEST_BIN: ${{ github.workspace }}/target/debug/examples/studio_review_session
@@ -414,7 +420,7 @@ jobs:
           npx tsc -b
           npx playwright install --with-deps chromium
           npx playwright test tests/project-lifecycle-service.spec.ts \
-            --grep 'editable bundled example|lost example creation response' \
+            --grep 'editable bundled example|lost example creation response|portable library' \
             --project=chromium --workers=1 --retries=0 --reporter=line,json \
             --output="$MOTIONWRIGHT_SERVICE_TEST_TMPDIR/browser"
           python3 -B - <<'PY_FIRST_USE_STUDIO'
@@ -422,9 +428,9 @@ jobs:
           from pathlib import Path
           result = json.loads(Path(os.environ["PLAYWRIGHT_JSON_OUTPUT_FILE"]).read_text(encoding="utf-8"))
           stats = result["stats"]
-          assert stats["expected"] == 2, stats
+          assert stats["expected"] == 5, stats
           assert all(stats.get(key, 0) == 0 for key in ("unexpected","flaky","skipped")), stats
-          print("FIRST_USE_EXAMPLE_STUDIO=PASS; cases=2; SQLite=REAL; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+          print("FIRST_USE_EXAMPLE_AND_LIBRARY_STUDIO=PASS; cases=5; SQLite=REAL; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           PY_FIRST_USE_STUDIO
 
   dependency-review:

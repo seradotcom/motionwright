@@ -1,3 +1,7 @@
+import {
+  BUNDLE_IMPORT_PREFIX, readBundleImports, importBundleWithRetainedPlan,
+  recoverRetainedBundleImport, discardBundleImportCopy, type BundleImportCopy,
+} from "./projectBundleImport";
 import CommandPalette, { type EditorCommand } from "./CommandPalette";
 import { assertPortableExportReceipt, inspectPortableMaterials } from "./portableMaterialReport";
 import SceneInspector from "./SceneInspector";
@@ -901,7 +905,7 @@ function DeliverView({
   commit: (change: Change) => Promise<void>;
   commitRecipe: (change: Change) => Promise<Project>;
   desktopMode: boolean;
-  onImportBundle: (path: string, fingerprint: string) => Promise<Project>;
+  onImportBundle: (path: string, plan: PortableBundlePlan) => Promise<Project>;
   onOpenAudio: () => void;
   currentProjectState: () => DeliveryProjectState;
   renderEvidence: MotionCanvasRenderEvidence | null;
@@ -974,7 +978,7 @@ function DeliverView({
     setPortableStatus(null);
     setPortableError(null);
     try {
-      const imported = await onImportBundle(inspected.path, inspected.plan.fingerprint);
+      const imported = await onImportBundle(inspected.path, inspected.plan);
       setPortableStatus(
         "Imported " + imported.title + " at revision " + imported.revision +
         " with a fresh execution generation.",
@@ -1792,6 +1796,9 @@ export default function App() {
   const [creationCopies, setCreationCopies] = useState<ProjectCreationCopy[]>([]);
   const [creationLimited, setCreationLimited] = useState(false);
   const [creationError, setCreationError] = useState<string | null>(null);
+  const [bundleCopies, setBundleCopies] = useState<BundleImportCopy[]>([]);
+  const [bundleLimited, setBundleLimited] = useState(false);
+  const [bundleError, setBundleError] = useState<string | null>(null);
   const shellSdkRef = useRef<Bootstrap["native_sdk"] | null>(null);
   const selectionRef = useRef<ProjectSelectionRead | null>(null);
   const desktopBridge = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -2282,35 +2289,73 @@ export default function App() {
     return found;
   }, [transactProject, cleanConfirmedFileImport]);
 
-  const importPortableBundle = useCallback(async (path: string, fingerprint: string): Promise<Project> => {
-    const source = boot?.project;
-    if (!source) throw new Error("Project is not ready.");
-    const saved = readProjectSelection();
-    const imported = await mutationGate.current.run(
-      source,
-      () => bootRef.current?.project ?? null,
-      () => importProjectBundle(path, fingerprint),
-      imported => {
-        const current = bootRef.current;
-        if (!current) throw new Error("The current project is unavailable. Reopen to reconcile the import.");
-        const updated = { ...current, project: imported };
-        bootRef.current = updated;
-        setBoot(updated);
-        setNativeRenderReceipt(null);
-        setNativeAvReceipt(null);
-        setNativeExportReceipt(null);
-        setSelectedSceneId(imported.scenes[0]?.id ?? null);
-        setPlayhead(0);
-        setPlaying(false);
-        setTimebaseProfileId(imported.deliverables[0]?.id ?? null);
-        setTimecodeMode("ndf");
-      },
-      setBusy,
-      "replace",
-    );
-    rememberSelection(imported, saved);
-    return imported;
-  }, [boot, rememberSelection]);
+  const refreshBundleImports = useCallback(() => {
+    try {
+      const retained = readBundleImports();
+      setBundleCopies(retained.copies); setBundleLimited(retained.limited); setBundleError(null);
+    } catch (reason) { setBundleError("Portable import continuity could not be read. " + String(reason)); }
+  }, []);
+  useEffect(() => {
+    if (!desktopBridge) return;
+    refreshBundleImports();
+    const changed = (event: StorageEvent) => {
+      if (event.key === null || event.key.startsWith(BUNDLE_IMPORT_PREFIX)) refreshBundleImports();
+    };
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, [desktopBridge, refreshBundleImports]);
+  const finishBundleImport = useCallback((copy: BundleImportCopy) => {
+    try { discardBundleImportCopy(copy); }
+    catch (reason) { setLibraryNotice("The project is open; its portable import copy was retained. " + String(reason)); }
+  }, []);
+  const importPortableBundle = useCallback(async (path: string, plan: PortableBundlePlan): Promise<Project> => {
+    const nativeSdk = bootRef.current?.native_sdk ?? shellSdkRef.current;
+    if (!nativeSdk) throw new Error("Studio information is not ready. Retry opening the library.");
+    const saved = readProjectSelection(), source = projectViewRevision(viewRef.current);
+    let observed: Awaited<ReturnType<typeof importBundleWithRetainedPlan>> | undefined;
+    try {
+      const opened = await mutationGate.current.create<Project>(
+        bootRef.current?.project ?? null, () => bootRef.current?.project ?? null,
+        async () => {
+          observed = await importBundleWithRetainedPlan(path, plan, importProjectBundle);
+          const current = await openSavedProjectView(observed.project.id, "editor");
+          if (current.kind !== "full" || current.boot.project.generation !== observed.project.generation) {
+            throw new Error("The imported project changed or needs the saved-page view. Check its original import result in the library.");
+          }
+          return current.boot.project;
+        }, value => publishOpenedProject(value, nativeSdk), setBusy,
+        { source, current: () => projectViewRevision(viewRef.current) });
+      rememberSelection(opened, saved);
+      if (observed) finishBundleImport(observed.copy);
+      return opened;
+    } finally { refreshBundleImports(); }
+  }, [publishOpenedProject, rememberSelection, finishBundleImport, refreshBundleImports]);
+  const recoverLibraryBundle = useCallback(async (copy: BundleImportCopy): Promise<Pick<Project, "id"> | null> => {
+    const source = projectViewRevision(viewRef.current), saved = readProjectSelection();
+    try {
+      const committed = await recoverRetainedBundleImport(copy);
+      if (!committed) {
+        setLibraryNotice("No original import commit was found. The result remains unconfirmed; the bundle was not imported again.");
+        return null;
+      }
+      const opened = await mutationGate.current.readView({
+        source, current: () => projectViewRevision(viewRef.current), requestedProjectId: committed.project_id,
+        load: async () => {
+          const current = await openSavedProjectView(committed.project_id);
+          const generation = current.kind === "full" ? current.boot.project.generation : current.head.identity.generation;
+          if (generation !== committed.generation) throw new Error("The saved project no longer belongs to the original import generation.");
+          return current;
+        },
+        view: projectViewRevision, publish: publishOpenedView, pending: setBusy,
+      });
+      const identity = { id: projectViewId(opened) };
+      rememberSelection(identity, saved); finishBundleImport(copy);
+      return identity;
+    } finally { refreshBundleImports(); }
+  }, [publishOpenedView, rememberSelection, finishBundleImport, refreshBundleImports]);
+  const discardLibraryBundle = useCallback((copy: BundleImportCopy) => {
+    try { discardBundleImportCopy(copy); } finally { refreshBundleImports(); }
+  }, [refreshBundleImports]);
 
   const libraryDialog = desktopBridge ? (
     <ProjectLibraryDialog key="project-library" open={libraryOpen}
@@ -2321,6 +2366,10 @@ export default function App() {
       creationLimited={creationLimited} creationError={creationError}
       onRecoverCreation={recoverLibraryCreation} onDiscardCreation={discardLibraryCreation}
       onRefreshCreations={refreshCreations}
+      onInspectBundle={inspectProjectBundle} onImportBundle={importPortableBundle}
+      bundleCopies={bundleCopies} bundleLimited={bundleLimited} bundleError={bundleError}
+      onRecoverBundle={recoverLibraryBundle} onDiscardBundle={discardLibraryBundle}
+      onRefreshBundles={refreshBundleImports}
       notice={[bootError, libraryNotice].filter(Boolean).join(" ") || null} />
   ) : null;
 

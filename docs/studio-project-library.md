@@ -132,3 +132,23 @@ These automated revisions establish technical regression coverage. They do not
 constitute an installed-desktop run, a native audiovisual realization, or a
 human creative review. Those evaluations must be recorded against their actual
 source and artifacts separately.
+
+
+## Import directly from the library
+
+The installed desktop library can inspect an exported portable project folder
+and import it into an empty Store without creating a placeholder project.
+Inspection retains the exact manifest fingerprint; import still consumes the
+existing one-time local import grant, rechecks original media and refuses an
+occupied project identity. The imported generation is fresh.
+
+Studio saves a bounded local continuity copy before requesting the grant.
+If a reply is lost, **Check original import** reads the existing SQLite/CAS
+commit marker and opens the current saved project, including subsequent edits.
+It neither reads the source folder again nor repeats import. No matching
+marker remains unconfirmed. Multiple matching commits, changed Store/CAS
+identity, a foreign generation, and a malformed local copy are not accepted
+as a successful recovery. Explicit removal affects only the local copy.
+
+Recovery reuses the original transactional cas_import_commits table. It adds
+no migration, imported operational receipt or native authorization.

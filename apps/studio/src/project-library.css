@@ -257,7 +257,7 @@
 
 .project-library-create {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
   gap: 9px 12px;
   margin-top: 26px;
@@ -287,7 +287,7 @@
 }
 
 .project-library-create p {
-  grid-row: 4;
+  grid-row: auto;
   margin: 0;
   color: var(--muted);
   font-size: 11px;
@@ -295,8 +295,8 @@
 }
 
 .project-library-primary {
-  grid-column: 2;
-  grid-row: 3;
+  grid-column: 1;
+  grid-row: auto;
   padding: 10px 14px;
   border-color: var(--accent);
   background: var(--accent-wash);
@@ -354,7 +354,23 @@
 
   .project-library-primary {
     grid-column: 1;
-    grid-row: 5;
+    grid-row: auto;
     justify-self: start;
   }
 }
+
+
+.project-library-create > .project-library-button {
+  justify-self: start;
+  max-width: 100%;
+  white-space: normal;
+}
+.project-library-bundle-plan {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.project-library-creations article p { overflow-wrap: anywhere; }
