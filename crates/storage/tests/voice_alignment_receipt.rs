@@ -113,6 +113,7 @@ impl Fixture {
         ]
         .into_iter()
         .map(|(text, start, end)| TranscriptSegment {
+            emphasis: Vec::new(),
             id: Uuid::new_v4(),
             voice_track_id,
             start,

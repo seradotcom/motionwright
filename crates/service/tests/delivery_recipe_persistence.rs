@@ -740,6 +740,7 @@ fn consumed_voice_and_transcript_windows_invalidate_only_the_selected_mix() {
         );
     }
     let mut segment = TranscriptSegment {
+        emphasis: Vec::new(),
         id: Uuid::new_v4(),
         voice_track_id: voice,
         start: RationalTime::ZERO,

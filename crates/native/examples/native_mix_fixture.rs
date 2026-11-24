@@ -99,6 +99,7 @@ fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .enumerate()
     {
         project.audio.transcript.push(domain::TranscriptSegment {
+            emphasis: Vec::new(),
             id: id(330 + index as u128),
             voice_track_id: id(301),
             start: time(start as i64, 48000),

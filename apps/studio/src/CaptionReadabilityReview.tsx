@@ -17,6 +17,7 @@ const LABEL:Record<string,string>={
   MANY_LINES:"Too many lines", LONG_LINE:"Long line",
   FAST_READING:"Fast reading", OVERLAPPING_CAPTIONS:"Caption overlap",
   BURN_IN_NOT_REVIEWED:"Native burn-in needed",
+  EMPHASIS_FORMAT_UNSUPPORTED:"Caption style format", EMPHASIS_SOURCE_CONFLICT:"Caption emphasis source",
 };
 
 export default function CaptionReadabilityReview({

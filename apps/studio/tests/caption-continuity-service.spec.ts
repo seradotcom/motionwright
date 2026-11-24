@@ -247,3 +247,77 @@ test("caption export refuses stale authority, replay, unknown alignment and exis
     observations.confirmed = written; observations.final = project; observations.existing_file_sha256 = hash(originalBytes);
   } finally { await finish(info, services, [], observations); }
 });
+
+test("caption emphasis keeps source words and exact cue identity through WebVTT export and portable reopen", async ({ page, context }, info) => {
+  test.setTimeout(120_000);
+  const source = await ScopedChangeService.create({ databasePath: info.outputPath("original", "studio.sqlite3"), seedFixture: false, desktopInvokeFixture: true });
+  const services = [source], pages = [page], observations: Record<string, unknown> = {};
+  try {
+    await source.attachPage(page, null); await page.goto("/");
+    const library = page.getByRole("dialog", { name: "Project library", exact: true });
+    await library.getByLabel("Project title", { exact: true }).fill("Caption emphasis — original editable source");
+    await library.getByRole("button", { name: "Create project", exact: true }).click(); await revision(page, 0);
+    await button(page, "Add scene").click(); await field(page, "New scene name").fill("Caption emphasis scene");
+    await page.locator(".add-scene-form").getByRole("button", { name: "Add", exact: true }).click(); await revision(page, 1);
+    await button(page, "Audio").click();
+    const pcmPath = info.outputPath("authored-timing-pcm.wav"), bytes = timingPcm();
+    await writeFile(pcmPath, bytes); await field(page, "Voice file absolute path").fill(pcmPath);
+    await field(page, "Voice take label").fill("Synthetic timing PCM — not recorded speech");
+    await button(page, "Import + measure").click(); await revision(page, 2);
+    let project = (await source.fixtureBootstrap()).project;
+    const track = project.audio.voice_tracks[0];
+    expect(track.source_sha256).toBe(hash(bytes)); await rm(pcmPath);
+    const text = "Una decisión <clara>";
+    await field(page, "New transcript start").fill("0.5"); await field(page, "New transcript end").fill("1.5");
+    await field(page, "New transcript text").fill(text);
+    await page.getByRole("group", { name: "Caption emphasis new-transcript-emphasis", exact: true })
+      .getByRole("button", { name: "Emphasis word 2: decisión", exact: true }).click();
+    await button(page, "Add manual segment").click(); await revision(page, 3);
+    await button(page, "Deliver").click();
+    const sidecarPanel = page.getByRole("region", { name: "Caption sidecar export", exact: true });
+    await sidecarPanel.getByLabel("Sidecar", { exact: true }).check();
+    await sidecarPanel.getByRole("combobox", { name: "Format", exact: true }).selectOption("web_vtt");
+    await page.getByRole("combobox", { name: "Voice take", exact: true }).selectOption(track.id);
+    await field(page, "Language / locale").fill("es-MX");
+    await button(page, "Save profile").click(); await revision(page, 4);
+    project = await source.project(project.id);
+    const segment = project.audio.transcript[0], profile = project.deliverables[0];
+    expect(segment).toMatchObject({ voice_track_id: track.id, start: { num: "1", den: "2" }, end: { num: "3", den: "2" },
+      text, emphasis: [{ start: 4, end: 12, text: "decisión" }], alignment: { kind: "manual" } });
+    const vttPath = info.outputPath("emphasized-original.vtt"), originalReceipt = await exportSidecar(source, project, vttPath);
+    const originalVtt = await readFile(vttPath, "utf8");
+    expect(originalVtt).toBe("WEBVTT\n\n00:00:00.500 --> 00:00:01.500\nUna <b>decisión</b> &lt;clara&gt;\n\n");
+    expect(originalReceipt.sidecar_sha256).toBe(hash(Buffer.from(originalVtt)));
+    expect(await source.reopen(project.id)).toEqual(project);
+    const bundlePath = info.outputPath("portable-emphasized-caption");
+    await source.exportBundle(project, bundlePath);
+    const target = await ScopedChangeService.create({ databasePath: info.outputPath("restored", "studio.sqlite3"), seedFixture: false, desktopInvokeFixture: true });
+    services.push(target);
+    const inspected = await target.inspectBundle(bundlePath), imported = await target.importBundle(bundlePath, inspected.fingerprint);
+    expect(imported.id).toBe(project.id); expect(imported.generation).not.toBe(project.generation);
+    expect(imported.audio).toEqual(project.audio); expect(imported.deliverables).toEqual(project.deliverables);
+    const casPath = join(target.directory, "blobs", "sha256", track.source_sha256.slice(0, 2), track.source_sha256);
+    expect(hash(await readFile(casPath))).toBe(track.source_sha256);
+    const restoredPage = await context.newPage(); pages.push(restoredPage);
+    await target.attachPage(restoredPage, imported.id); await restoredPage.goto("/"); await button(restoredPage, "Audio").click();
+    const row = restoredPage.locator(".audio-transcript-row").filter({ has: field(restoredPage, "Transcript " + segment.id) });
+    const editor = row.getByRole("group", { name: "Caption emphasis audio-transcript-" + segment.id + "-emphasis", exact: true });
+    await expect(editor.getByRole("button", { name: "Emphasis word 2: decisión", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await editor.getByRole("button", { name: "Emphasize entire cue", exact: true }).click();
+    await row.getByTitle("Save transcript segment as explicit manual alignment", { exact: true }).click();
+    await revision(restoredPage, imported.revision + 1);
+    let edited = await target.project(imported.id);
+    expect(edited.audio.transcript[0]).toEqual({ ...segment, emphasis: [{ start: 0, end: Array.from(text).length, text }] });
+    const restoredPath = info.outputPath("emphasized-restored.vtt"), restoredReceipt = await exportSidecar(target, edited, restoredPath);
+    expect(await readFile(restoredPath, "utf8")).toBe("WEBVTT\n\n00:00:00.500 --> 00:00:01.500\n<b>Una decisión &lt;clara&gt;</b>\n\n");
+    edited = await target.apply(edited, { type: "upsert_deliverable", profile: { ...profile, caption_format: "srt" } });
+    const refusedPath = info.outputPath("unapproved-plain-replacement.srt");
+    await expect(exportSidecar(target, edited, refusedPath)).rejects.toThrow("SubRip styling is not admitted");
+    await expect(access(refusedPath)).rejects.toThrow();
+    expect(await target.reopen(edited.id)).toEqual(edited);
+    expect(await source.project(project.id)).toEqual(project);
+    await row.scrollIntoViewIfNeeded(); await restoredPage.screenshot({ path: info.outputPath("caption-emphasis-after-portable-reopen.png") });
+    observations.original = project; observations.imported = imported; observations.final = edited;
+    observations.sidecars = { original: originalReceipt, restored: restoredReceipt };
+  } finally { await finish(info, services, pages, observations); }
+});

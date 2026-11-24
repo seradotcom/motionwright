@@ -94,3 +94,47 @@
   .audio-draft-conflict dd:nth-of-type(2) { grid-area: 2 / 2; }
   .audio-draft-conflict dd:nth-of-type(3) { grid-area: 2 / 3; }
 }
+
+.transcript-emphasis-editor {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin: 4px 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 8px;
+}
+.transcript-emphasis-editor legend { font-size: 12px; font-weight: 600; padding: 0 5px; }
+.transcript-emphasis-editor p,
+.transcript-emphasis-editor small { font-size: 11px; line-height: 1.5; }
+.transcript-emphasis-words,
+.transcript-emphasis-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 8px 0; }
+.transcript-emphasis-words button {
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-radius: 5px; padding: 4px 8px; color: inherit;
+  background: transparent; font: inherit; font-size: 12px; cursor: pointer;
+}
+.transcript-emphasis-words button[aria-pressed="true"] {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border-color: currentColor; font-weight: 700;
+}
+.transcript-emphasis-words button:disabled { opacity: .5; cursor: default; }
+.transcript-emphasis-actions span { font-size: 10px; opacity: .7; margin-left: auto; }
+.transcript-emphasis-editor .transcript-emphasis-preview {
+  white-space: pre-wrap; overflow-wrap: anywhere; font-size: 16px; font-weight: 500;
+  padding: 10px; border-left: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+}
+.transcript-emphasis-preview strong { font-weight: 700; }
+
+.audio-transcript-section { container-type: inline-size; container-name: transcript-editor; min-width: 0; }
+@container transcript-editor (max-width: 760px) {
+  .audio-transcript-section .audio-transcript-row,
+  .audio-transcript-section .audio-transcript-new { grid-template-columns: minmax(0, 1fr) minmax(100px, 1fr); }
+  .audio-transcript-section textarea,
+  .audio-transcript-section .audio-transcript-new > span { grid-column: 1 / -1; }
+  .audio-transcript-section .audio-row-actions { justify-self: end; }
+}
+@container transcript-editor (max-width: 420px) {
+  .audio-transcript-section .audio-transcript-row,
+  .audio-transcript-section .audio-transcript-new { grid-template-columns: minmax(0, 1fr); }
+  .audio-transcript-section .audio-row-actions { justify-self: start; }
+}

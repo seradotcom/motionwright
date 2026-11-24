@@ -1,0 +1,6 @@
+.program-caption-study { padding: 10px 16px; background: #161b21; color: #f3f4f6; border-top: 1px solid #34404c; }
+.program-caption-study small { display: block; font-size: 10px; opacity: .7; line-height: 1.5; }
+.program-caption-study p { margin: 5px 0; }
+.program-caption-study .program-caption-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 16px; line-height: 1.4; font-weight: 500; }
+.program-caption-text strong { font-weight: 700; }
+.program-caption-empty { font-size: 11px; opacity: .7; }

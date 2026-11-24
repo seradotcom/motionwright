@@ -215,6 +215,7 @@ mod production {
                     "fixture-unresolved-words",
                     Change::AddTranscriptSegment {
                         segment: TranscriptSegment {
+                            emphasis: Vec::new(),
                             id: Uuid::now_v7(),
                             voice_track_id,
                             // Candidate interval remains UNKNOWN; no aligner runs.

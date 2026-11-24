@@ -60,6 +60,7 @@ fn fixture() -> (domain::Project, OriginalMixPlan, [Vec<u8>; 3]) {
     });
     p.audio.active_voice_track_id = Some(id(40));
     p.audio.transcript.push(domain::TranscriptSegment {
+        emphasis: Vec::new(),
         id: id(50),
         voice_track_id: id(40),
         start: time(1, 2),
@@ -300,6 +301,7 @@ fn bounded_duck_scan_matches_full_window_reference_with_overlapping_releases() {
         .iter()
         .enumerate()
         .map(|(i, window)| domain::TranscriptSegment {
+            emphasis: Vec::new(),
             id: id(1_000 + i as u128),
             voice_track_id: id(40),
             start: domain::RationalTime::new(window.start_sample as i64, 48_000).unwrap(),

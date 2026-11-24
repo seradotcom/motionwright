@@ -1,4 +1,5 @@
 import "./audioDraft.css";
+import TranscriptEmphasisEditor from "./TranscriptEmphasisEditor";
 import {
   AudioLines,
   Check,
@@ -263,6 +264,8 @@ function TranscriptRow({ segment, project, commit, playhead, onSeek }: {
       <button type="button" className="icon-action" title="Save transcript segment as explicit manual alignment" disabled={!editor.canSave} onClick={() => void editor.save()}><Save size={14}/></button>
       <button type="button" className="icon-action" title="Remove transcript segment" disabled={editor.locked || editor.pending || editor.blocked} onClick={() => void editor.remove({ type: "remove_transcript_segment", segment_id: segment.id })}><Trash2 size={14}/></button>
     </div>
+    <TranscriptEmphasisEditor id={fieldId("emphasis")} text={editor.fields.text.raw} raw={editor.fields.emphasis.raw}
+      disabled={editor.sourceProtected} onChange={raw => editor.edit("emphasis", raw)}/>
     <AudioDraftFeedback editor={editor} group={group} fieldId={fieldId}/>
   </div>;
 }
@@ -292,6 +295,8 @@ function NewTranscript({ project, commit, voiceId }: { project: Project; commit:
       <input id={fieldId("end")} aria-label="New transcript end" disabled={editor.sourceProtected} value={editor.fields.end.raw} inputMode="decimal" placeholder="end s" onChange={event => editor.edit("end", event.target.value)}/></div>
     <input id={fieldId("speaker")} aria-label="New transcript speaker" disabled={editor.sourceProtected} value={editor.fields.speaker.raw} maxLength={256} placeholder="Speaker" onChange={event => editor.edit("speaker", event.target.value)}/>
     <textarea id={fieldId("text")} aria-label="New transcript text" disabled={editor.sourceProtected} value={editor.fields.text.raw} maxLength={8000} placeholder={voiceId ? "Enter transcript text" : "Select a measured take before saving"} onChange={event => editor.edit("text", event.target.value)}/>
+    <TranscriptEmphasisEditor id={fieldId("emphasis")} text={editor.fields.text.raw} raw={editor.fields.emphasis.raw}
+      disabled={editor.sourceProtected} onChange={raw => editor.edit("emphasis", raw)}/>
     <button type="button" className="button" disabled={!editor.canSave} onClick={() => void editor.save()}><Plus size={14}/> Add manual segment</button>
     <span>Edited times use milliseconds. Existing unedited rational timings remain exact.</span>
     <AudioDraftFeedback editor={editor} group={group} fieldId={fieldId}/>
@@ -638,7 +643,7 @@ function AudioWorkspaceEditor({
             )}
           </section>
 
-          <section className="audio-editor-section">
+          <section className="audio-editor-section audio-transcript-section">
             <header>
               <div><strong>Transcript alignment</strong><span>Saving edited timing records manual evidence.</span></div>
               <span className="mono">{active ? "take:" + active.id.slice(0, 8) : "no-active-take"}</span>

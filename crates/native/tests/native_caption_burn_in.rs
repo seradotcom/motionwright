@@ -87,6 +87,7 @@ fn fixture() -> Project {
         ),
     ] {
         p.audio.transcript.push(TranscriptSegment {
+            emphasis: Vec::new(),
             id: Uuid::new_v4(),
             voice_track_id: voice_id,
             start,
@@ -336,4 +337,71 @@ fn bundled_primary_font_rechecks_weight_after_real_caption_projection() {
         "The real late caption weight must fail source preflight: {error:?}"
     );
     assert_eq!(serde_json::to_vec(&project).unwrap(), original);
+}
+
+#[test]
+fn word_emphasis_reaches_native_runs_across_locales_and_aspects_without_new_timing() {
+    for (text, start, end, selected) in [
+        ("An original thought", 3, 11, "original"),
+        ("Una decisión clara", 4, 12, "decisión"),
+        ("Une décision claire", 4, 12, "décision"),
+    ] {
+        for (width, height) in [(1920, 1080), (1080, 1080), (1080, 1920)] {
+            let mut p = fixture();
+            p.deliverables[0].width = width;
+            p.deliverables[0].height = height;
+            p.audio.transcript[0].text = text.into();
+            p.audio.transcript[0].emphasis = vec![motionwright_domain::TranscriptEmphasis {
+                start,
+                end,
+                text: selected.into(),
+            }];
+            let before = serde_json::to_value(&p).unwrap();
+            let segments = output(&p).unwrap();
+            let film = &segments[0].film;
+            let wanted = format!("mw-caption-subject-{}", p.audio.transcript[0].id.simple());
+            let subject = film
+                .sequences
+                .iter()
+                .flat_map(|s| &s.beats)
+                .flat_map(|b| &b.shots)
+                .flat_map(|shot| &shot.subjects)
+                .find(|subject| subject.id == wanted)
+                .unwrap();
+            let SubjectContent::Text {
+                runs,
+                wrap,
+                truncate,
+                ..
+            } = &subject.content
+            else {
+                panic!("The caption must remain editable semantic text");
+            };
+            assert!(*wrap);
+            assert!(!truncate);
+            assert_eq!(
+                runs.iter().map(|run| run.text.as_str()).collect::<String>(),
+                text
+            );
+            let emphasized = runs.iter().filter(|run| run.emphasis).collect::<Vec<_>>();
+            assert_eq!(emphasized.len(), 1);
+            assert_eq!(emphasized[0].text, selected);
+            assert_eq!(emphasized[0].weight, 700);
+            assert!(
+                runs.iter()
+                    .filter(|run| !run.emphasis)
+                    .all(|run| run.weight == 600)
+            );
+            assert_eq!(film.cues.cues.len(), 2);
+            assert_eq!(
+                realize(film)
+                    .unwrap()
+                    .schedule
+                    .frame_count(&film.output)
+                    .unwrap(),
+                120
+            );
+            assert_eq!(serde_json::to_value(&p).unwrap(), before);
+        }
+    }
 }

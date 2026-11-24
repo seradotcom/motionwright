@@ -15,6 +15,7 @@ fn sha(text: &str) -> String {
 }
 fn segment(value: u128, text: &str, start: i64, end: i64) -> TranscriptSegment {
     TranscriptSegment {
+        emphasis: Vec::new(),
         id: id(value),
         voice_track_id: id(20),
         start: seconds(start),

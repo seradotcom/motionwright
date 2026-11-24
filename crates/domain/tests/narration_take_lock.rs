@@ -34,6 +34,7 @@ fn fixture() -> Project {
     project.audio.active_voice_track_id = Some(id(20));
     project.audio.transcript.extend([
         domain::TranscriptSegment {
+            emphasis: Vec::new(),
             id: id(30),
             voice_track_id: id(20),
             start: sec(0),
@@ -43,6 +44,7 @@ fn fixture() -> Project {
             alignment: domain::AlignmentEvidence::Manual,
         },
         domain::TranscriptSegment {
+            emphasis: Vec::new(),
             id: id(31),
             voice_track_id: id(20),
             start: sec(1),
@@ -114,6 +116,7 @@ fn a_recorded_take_refuses_mutating_voice_words_and_cues_but_allows_new_mix() {
         Change::UpsertTranscriptSegment { segment },
         Change::AddTranscriptSegment {
             segment: domain::TranscriptSegment {
+                emphasis: Vec::new(),
                 id: id(32),
                 voice_track_id: id(20),
                 start: sec(2),

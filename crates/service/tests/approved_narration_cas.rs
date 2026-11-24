@@ -71,6 +71,7 @@ fn exact_approved_narration_is_persistent_and_cannot_be_changed_silently() {
             &format!("approved:segment:{index}"),
             Change::AddTranscriptSegment {
                 segment: domain::TranscriptSegment {
+                    emphasis: Vec::new(),
                     id,
                     voice_track_id: active,
                     start: time(start),

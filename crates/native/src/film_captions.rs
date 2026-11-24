@@ -91,6 +91,13 @@ pub(super) fn attach_native_caption_cues(
         .iter()
         .map(|cue| bounded_caption_text(&cue.text))
         .collect::<NativeResult<Vec<_>>>()?;
+    let styled_text = cues
+        .iter()
+        .map(|cue| {
+            cue.caption_runs()
+                .map_err(|err| contract("Caption emphasis no longer matches its source", err))
+        })
+        .collect::<NativeResult<Vec<_>>>()?;
     for (index, cue) in cues.iter().enumerate() {
         if cue.voice_track_id != track_id {
             return Err(invalid("Caption source voice identity changed"));
@@ -219,12 +226,15 @@ pub(super) fn attach_native_caption_cues(
                             parent: Some(overlay_id),
                             layer: CAPTION_LAYER.to_owned(),
                             content: SubjectContent::Text {
-                                runs: vec![TextRun {
-                                    text: text[index].clone(),
-                                    weight: 600,
-                                    color: Some(color),
-                                    emphasis: false,
-                                }],
+                                runs: styled_text[index]
+                                    .iter()
+                                    .map(|(text, emphasis)| TextRun {
+                                        text: text.clone(),
+                                        weight: if *emphasis { 700 } else { 600 },
+                                        color: Some(color.clone()),
+                                        emphasis: *emphasis,
+                                    })
+                                    .collect(),
                                 style: CAPTION_STYLE.to_owned(),
                                 line_height: None,
                                 direction: TextDirection::Auto,

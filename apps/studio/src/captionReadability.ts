@@ -3,6 +3,7 @@
  * admits an audio source, checks rendered pixels, or changes project state.
  */
 import type { DeliverableProfile, Project, RationalTime, TranscriptSegment } from "./types";
+import { validateTranscriptEmphasis } from "./transcriptEmphasis";
 
 export type CaptionFindingSeverity = "block" | "review";
 export interface CaptionReadingFinding {
@@ -205,6 +206,13 @@ export function inspectCaptionReadability(
     }
 
     inspected++;
+    try {
+      const emphasis = validateTranscriptEmphasis(segment.text, segment.emphasis);
+      if (emphasis.length && profile.caption_format === "srt") flag("EMPHASIS_FORMAT_UNSUPPORTED", "block",
+        "SubRip styling is not admitted for this caption emphasis. Choose WebVTT or explicitly clear emphasis in Audio; no plain-text replacement is exported silently.", segment, from);
+    } catch {
+      flag("EMPHASIS_SOURCE_CONFLICT", "block", "Caption emphasis no longer matches the exact source words. Select it again in Audio before delivery.", segment, from);
+    }
     if(!segment.text.trim())
       flag("EMPTY_CAPTION","block","Caption text is blank.",segment,from);
     if(segment.alignment.kind==="unknown")

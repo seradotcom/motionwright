@@ -1,5 +1,6 @@
 import type { Change, Project, ProjectEvent, RationalTime } from "./types";
 import { rationalSeconds } from "./types";
+import { decodeTranscriptEmphasis, encodeTranscriptEmphasis, sameTranscriptEmphasis, trimTranscriptEmphasis, validateTranscriptEmphasis } from "./transcriptEmphasis";
 
 /** Editor buffers only. The Project, service grants and SQLite CAS retain authority. */
 export type AudioDraftGroup =
@@ -29,14 +30,14 @@ const decimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
 export const audioFieldLabels: Record<string, string> = {
   voiceGain: "Voice gain dB", musicGain: "Music gain dB", targetLufs: "Target LUFS",
   targetPeak: "Target true peak dBFS", start: "Start", end: "End", speaker: "Speaker",
-  text: "Transcript", at: "Cue time", label: "Cue label", trackId: "Active voice",
+  text: "Transcript", emphasis: "Caption emphasis", at: "Cue time", label: "Cue label", trackId: "Active voice",
 };
 export const audioGroupName = (group: AudioDraftGroup) => group.kind === "active-voice" ? "Active voice" : group.kind === "mix" ? "Mix intent"
   : group.kind === "new-transcript" ? "New transcript" : group.kind === "new-cue" ? "New cue"
   : group.kind === "transcript" ? "Transcript " + group.id : "Cue " + group.id;
 export const audioFields = (group: AudioDraftGroup): string[] => group.kind === "active-voice" ? ["trackId"] : group.kind === "mix"
   ? ["voiceGain", "musicGain", "targetLufs", "targetPeak"]
-  : group.kind === "transcript" || group.kind === "new-transcript" ? ["start", "end", "speaker", "text"]
+  : group.kind === "transcript" || group.kind === "new-transcript" ? ["start", "end", "speaker", "text", "emphasis"]
   : ["at", "label"];
 export const audioDraftScope = (project: Project, group: AudioDraftGroup) =>
   JSON.stringify([project.id, project.generation, project.active_branch, group]);
@@ -52,7 +53,8 @@ export function audioCanonicalFields(project: Project, group: AudioDraftGroup): 
   };
   if (group.kind === "transcript") {
     const segment = project.audio.transcript.find(item => item.id === group.id && item.voice_track_id === group.voiceId);
-    return segment ? { start: seconds(segment.start), end: seconds(segment.end), speaker: segment.speaker ?? "", text: segment.text } : null;
+    return segment ? { start: seconds(segment.start), end: seconds(segment.end), speaker: segment.speaker ?? "", text: segment.text,
+      emphasis: encodeTranscriptEmphasis(validateTranscriptEmphasis(segment.text, segment.emphasis)) } : null;
   }
   const cue = project.audio.cues.find(item => group.kind === "cue" && item.id === group.id);
   return cue ? { at: seconds(cue.at), label: cue.label } : null;
@@ -63,6 +65,9 @@ export function parseAudioNumber(raw: string): number {
   return Number(value);
 }
 function comparable(field: string, raw: string): string {
+  if (field === "emphasis") {
+    try { return JSON.stringify(raw.trim() ? JSON.parse(raw) : []); } catch { return "invalid:" + raw; }
+  }
   if (["text", "speaker", "label", "trackId"].includes(field)) return raw.trim();
   if (["targetLufs", "targetPeak"].includes(field) && !raw.trim()) return "";
   try {
@@ -166,9 +171,12 @@ export function prepareAudioSubmission(input: AudioDraft, project: Project): Aud
     const start = old && !audioFieldHasInput(draft.fields.start) ? old.start : authoredTime(raw.start);
     const end = old && !audioFieldHasInput(draft.fields.end) ? old.end : authoredTime(raw.end);
     if (!timeBefore(start, end)) throw new Error("Transcript end must be after its start at millisecond precision.");
+    const text = bounded(raw.text, 8000, true, "Transcript");
+    const emphasis = trimTranscriptEmphasis(raw.text, decodeTranscriptEmphasis(raw.emphasis, raw.text));
     change = { type: "upsert_transcript_segment", segment: { id: old?.id ?? draft.creationId, voice_track_id: voiceId,
-      start: structuredClone(start), end: structuredClone(end), text: bounded(raw.text, 8000, true, "Transcript"),
-      speaker: bounded(raw.speaker, 256, false, "Speaker") || null, alignment: { kind: "manual" } } };
+      start: structuredClone(start), end: structuredClone(end), text,
+      speaker: bounded(raw.speaker, 256, false, "Speaker") || null, alignment: { kind: "manual" },
+      ...(emphasis.length ? { emphasis } : {}) } };
   } else {
     const old = group.kind === "cue" ? project.audio.cues.find(cue => cue.id === group.id)! : null;
     if (!old && project.audio.cues.some(cue => cue.id === draft.creationId)) throw new Error("The pending cue already exists in the saved project. Review that cue; this draft cannot silently overwrite it.");
@@ -197,6 +205,7 @@ export function audioSubmissionMatches(project: Project, group: AudioDraftGroup,
     const expected = change.segment, actual = project.audio.transcript.find(item => item.id === expected.id);
     return !!actual && actual.voice_track_id === expected.voice_track_id && actual.text === expected.text
       && actual.speaker === expected.speaker && actual.alignment.kind === "manual"
+      && sameTranscriptEmphasis(expected.text, actual.emphasis, expected.emphasis)
       && timeEqual(actual.start, expected.start) && timeEqual(actual.end, expected.end);
   }
   const expected = change.cue, actual = project.audio.cues.find(item => item.id === expected.id);
@@ -251,6 +260,7 @@ function validateStoredAudioAttempt(attempt: AudioSubmission, group: AudioDraftG
       || typeof segment.text !== "string" || !segment.text.trim() || bytes(segment.text) > 8000
       || (segment.speaker !== null && (typeof segment.speaker !== "string" || bytes(segment.speaker) > 256))
       || segment.alignment?.kind !== "manual") throw new Error("Invalid stored transcript values.");
+    validateTranscriptEmphasis(segment.text, segment.emphasis);
   } else {
     if (change.type !== "upsert_audio_cue" || !change.cue) throw new Error("Invalid stored cue snapshot.");
     const cue = change.cue;
@@ -265,6 +275,17 @@ export function decodeAudioRecovery(raw: string, scope: string, group: AudioDraf
   if (!value || value.schema !== "motionwright.audio-recovery/1" || value.scope !== scope || value.writer !== writer
     || !uuid.test(writer) || !Number.isSafeInteger(value.updatedAt) || value.updatedAt < 0) throw new Error("Invalid audio recovery identity.");
   const draft = value.draft, keys = audioFields(group);
+  // Old recovery records carried no caption styling. Add only the neutral field;
+  // never reconstruct, resend or acknowledge the retained operation here.
+  if ((group.kind === "transcript" || group.kind === "new-transcript") && draft?.fields
+    && Object.keys(draft.fields).sort().join() === "end,speaker,start,text") {
+    if (draft.awaiting && (draft.awaiting.change?.type !== "upsert_transcript_segment"
+      || draft.awaiting.change.segment?.emphasis !== undefined
+      || !draft.awaiting.raw || Object.keys(draft.awaiting.raw).sort().join() !== "end,speaker,start,text"))
+      throw new Error("Invalid legacy caption recovery.");
+    draft.fields.emphasis = { raw: "", base: "", baseRevision: draft.fields.text?.baseRevision };
+    if (draft.awaiting) draft.awaiting.raw.emphasis = "";
+  }
   if (!draft || draft.schema !== "motionwright.audio-draft/1" || draft.scope !== scope || !uuid.test(draft.creationId)
     || JSON.stringify(draft.group) !== JSON.stringify(group) || !draft.fields || Object.keys(draft.fields).sort().join() !== [...keys].sort().join()) throw new Error("Invalid audio recovery scope or fields.");
   for (const key of keys) {

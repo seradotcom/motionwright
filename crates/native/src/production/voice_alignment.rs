@@ -456,6 +456,7 @@ impl ProductionCoordinator {
                 .frames
                 .ok_or_else(|| rejected("Unknown word has no interval"))?;
             segments.push(TranscriptSegment {
+                emphasis: Vec::new(),
                 id: Uuid::now_v7(),
                 voice_track_id: prepared.intent.voice_track_id,
                 start: rational(start as u64, 50)?,

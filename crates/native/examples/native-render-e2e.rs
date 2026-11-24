@@ -1056,6 +1056,7 @@ fn prepare_caption_source(
                 &format!("caption-source-interval-{index}"),
                 &Change::AddTranscriptSegment {
                     segment: TranscriptSegment {
+                        emphasis: Vec::new(),
                         id: Uuid::now_v7(),
                         voice_track_id: track.id,
                         start,

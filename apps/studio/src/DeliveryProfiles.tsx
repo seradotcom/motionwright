@@ -10,6 +10,7 @@ import {
 import VariantContinuityReview from "./VariantContinuityReview";
 import DeliveryVariantImpactReview from "./DeliveryVariantImpactReview";
 import CaptionReadabilityReview from "./CaptionReadabilityReview";
+import { inspectCaptionReadability } from "./captionReadability";
 import { useDeliveryRecipeDraft } from "./deliveryRecipe";
 import { recipeHasWork } from "./deliveryRecipeDraft";
 import {
@@ -518,6 +519,13 @@ export default function DeliveryProfiles({
     () => profileTranscript.filter((segment) => segment.alignment.kind === "unknown").length,
     [profileTranscript],
   );
+  const captionStyleIssue = useMemo(() => {
+    if (!draft?.captions) return null;
+    try { return inspectCaptionReadability(project, draft).findings.find(finding =>
+      finding.code === "EMPHASIS_FORMAT_UNSUPPORTED" || finding.code === "EMPHASIS_SOURCE_CONFLICT")?.detail ?? null; }
+    catch { return profileTranscript.some(segment => (segment.emphasis?.length ?? 0) > 0)
+      ? "Caption emphasis cannot be checked against this source clock. Resolve caption timing before exporting." : null; }
+  }, [project, draft, profileTranscript]);
   const parentProfile = draft?.parent_profile_id
     ? project.deliverables.find((profile) => profile.id === draft.parent_profile_id) ?? null
     : null;
@@ -528,7 +536,7 @@ export default function DeliveryProfiles({
   const captionReady = Boolean(
     draft?.captions &&
     profileTranscript.length > 0 &&
-    unknownTimings === 0 &&
+    unknownTimings === 0 && !captionStyleIssue &&
     (draft.voice_track_id !== null || transcriptTrackCount <= 1),
   );
   const filmDraftBlocked = filmDraft.dirty || filmDraft.awaiting || filmDraft.pending
@@ -822,7 +830,7 @@ export default function DeliveryProfiles({
   };
 
   const exportCaptions = () => {
-    if (!draft || profileDraftBlocked || !sidecarPath.trim()) return;
+    if (!draft || !captionReady || profileDraftBlocked || !sidecarPath.trim()) return;
     const source = { project, profileId: draft.id, profileName: draft.name };
     void run("caption", async () => {
       const result = await exportCaptionSidecar(source.project, source.profileId, sidecarPath.trim());
@@ -1939,6 +1947,7 @@ export default function DeliveryProfiles({
               {draft.captions && unknownTimings > 0 && (
                 <div className="delivery-truth-note warning"><CircleDashed size={14} /> {unknownTimings} transcript segment{unknownTimings === 1 ? "" : "s"} still have UNKNOWN timing.</div>
               )}
+              {captionStyleIssue && <div className="delivery-truth-note warning" role="status" aria-label="Caption style format conflict">{captionStyleIssue}</div>}
               {profileDraftBlocked && <div className="delivery-truth-note">Save or resolve the profile before exporting its sidecar.</div>}
               <CaptionReadabilityReview
                 project={project} profile={draft} saved={selected}

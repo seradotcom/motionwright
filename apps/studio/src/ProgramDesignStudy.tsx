@@ -1,4 +1,6 @@
 import SceneCompositionStudy from "./SceneCompositionStudy";
+import { sampleProgramCaption } from "./programCaption";
+import "./program-caption.css";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import type { DeliverableProfile, Project, Scene } from "./types";
 
@@ -29,12 +31,21 @@ export default function ProgramDesignStudy({
     ["surface", "background"].includes(token.name.toLowerCase()))?.value ?? "#0F1216";
   const ink = inheritedTextInk(project.visual_language.palette);
   const cutScope = programSceneCutScope(scene, profile);
+  const caption = sampleProgramCaption(project, scene, time, profile);
   return <div className="program-design-study" aria-label="Saved Canvas editorial design monitor"
     data-source-revision={project.revision} data-selected-profile-id={profile?.id ?? ""}
     data-output-cut-scope={cutScope}>
     <SceneCompositionStudy scene={scene} cameraReframes={project.production_design?.camera_reframes} time={time}
       background={surface} ink={ink} textOverrides={cutScope === "excluded" ? undefined : profile?.text_overrides}
       label="Program Canvas editorial study: not native output"/>
+    {caption && <div className="program-caption-study" aria-label="Program caption source study" data-source-revision={project.revision}
+      data-caption-id={caption.cue?.id ?? ""} data-caption-voice-id={caption.cue?.voice_track_id ?? ""}>
+      <small>Caption source · {profile?.burn_in_captions ? "burn-in" : "sidecar"} · shared playhead</small>
+      {caption.issue ? <p role="status">{caption.issue}</p> : caption.cue ? <p className="program-caption-text">
+        {caption.runs.map((run, index) => run.emphasis ? <strong key={index}>{run.text}</strong> : <span key={index}>{run.text}</span>)}
+      </p> : <p className="program-caption-empty">No cue at this source time.</p>}
+      {caption.cue && <small>Source style · final font layout and placement follow the native preview</small>}
+    </div>}
     <p className="program-design-disclosure">
       DESIGN_PREVIEW · EDITORIAL SOURCE CANVAS · {profile ? profile.name : "No selected output profile"}
       {cutScope === "excluded" &&

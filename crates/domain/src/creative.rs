@@ -267,6 +267,15 @@ impl VoiceTrack {
     }
 }
 
+/// Whole-word Unicode scalar offsets bound to the exact transcript fragment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TranscriptEmphasis {
+    pub start: u16,
+    pub end: u16,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TranscriptSegment {
@@ -277,6 +286,8 @@ pub struct TranscriptSegment {
     pub text: String,
     pub speaker: Option<String>,
     pub alignment: AlignmentEvidence,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub emphasis: Vec<TranscriptEmphasis>,
 }
 
 impl TranscriptSegment {
@@ -285,11 +296,73 @@ impl TranscriptSegment {
             return Err(DomainError::Invalid("invalid transcript interval".into()));
         }
         nonempty_bounded_text(&self.text, 8_000, "transcript text")?;
+        validate_transcript_emphasis(&self.text, &self.emphasis)?;
         if self.speaker.as_ref().is_some_and(|value| value.len() > 256) {
             return Err(DomainError::Invalid("speaker label is too long".into()));
         }
         self.alignment.validate()
     }
+
+    /// Source-bound styling for the whole cue interval. No word timing is inferred.
+    /// Outer whitespace follows the existing caption projection; inner text is exact.
+    pub fn caption_runs(&self) -> Result<Vec<(String, bool)>> {
+        validate_transcript_emphasis(&self.text, &self.emphasis)?;
+        let chars = self.text.chars().collect::<Vec<_>>();
+        let mut cursor = chars
+            .iter()
+            .take_while(|value| value.is_whitespace())
+            .count();
+        let end = chars.len()
+            - chars
+                .iter()
+                .rev()
+                .take_while(|value| value.is_whitespace())
+                .count();
+        let mut runs = Vec::new();
+        for range in &self.emphasis {
+            let start = usize::from(range.start);
+            if cursor < start {
+                runs.push((chars[cursor..start].iter().collect(), false));
+            }
+            runs.push((range.text.clone(), true));
+            cursor = usize::from(range.end);
+        }
+        if cursor < end {
+            runs.push((chars[cursor..end].iter().collect(), false));
+        }
+        Ok(runs)
+    }
+}
+
+fn validate_transcript_emphasis(text: &str, ranges: &[TranscriptEmphasis]) -> Result<()> {
+    let invalid = || {
+        DomainError::Invalid(
+        "caption emphasis requires at most eight ordered whole-word ranges matching the current transcript".into(),
+    )
+    };
+    if ranges.len() > 8 || (!ranges.is_empty() && text.chars().any(|c| c.is_control() && c != '\n'))
+    {
+        return Err(invalid());
+    }
+    let chars = text.chars().collect::<Vec<_>>();
+    let mut previous = 0;
+    for range in ranges {
+        let start = usize::from(range.start);
+        let end = usize::from(range.end);
+        if start < previous
+            || start >= end
+            || end > chars.len()
+            || chars[start].is_whitespace()
+            || chars[end - 1].is_whitespace()
+            || (start > 0 && !chars[start - 1].is_whitespace())
+            || (end < chars.len() && !chars[end].is_whitespace())
+            || !range.text.chars().eq(chars[start..end].iter().copied())
+        {
+            return Err(invalid());
+        }
+        previous = end;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

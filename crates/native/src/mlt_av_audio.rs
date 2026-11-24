@@ -947,6 +947,7 @@ mod tests {
         .into_iter()
         .map(
             |(start_num, start_den, end_num, end_den, text)| TranscriptSegment {
+                emphasis: Vec::new(),
                 id: Uuid::now_v7(),
                 voice_track_id,
                 start: RationalTime::new(start_num, start_den).unwrap(),

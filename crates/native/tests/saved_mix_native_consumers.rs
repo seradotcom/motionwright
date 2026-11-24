@@ -477,6 +477,7 @@ impl Fixture {
             "manual-window",
             Change::AddTranscriptSegment {
                 segment: TranscriptSegment {
+                    emphasis: Vec::new(),
                     id: Uuid::now_v7(),
                     voice_track_id: voice_id,
                     start: RationalTime::new(1, 10).unwrap(),

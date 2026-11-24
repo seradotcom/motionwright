@@ -467,6 +467,7 @@ fn seed_original(database: &Path, wav_path: &Path, project_json: &Path) -> Fixtu
             &format!("film180:source-cue:{i}"),
             Change::AddTranscriptSegment {
                 segment: TranscriptSegment {
+                    emphasis: Vec::new(),
                     id: Uuid::now_v7(),
                     voice_track_id: voice.id,
                     start: RationalTime::new(first, i64::from(FRAME_RATE))?,

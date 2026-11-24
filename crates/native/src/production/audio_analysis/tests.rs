@@ -821,6 +821,7 @@ mod persisted {
             "manual-window",
             Change::AddTranscriptSegment {
                 segment: TranscriptSegment {
+                    emphasis: Vec::new(),
                     id: Uuid::new_v4(),
                     voice_track_id: voice_id,
                     start: RationalTime::new(1, 2).unwrap(),

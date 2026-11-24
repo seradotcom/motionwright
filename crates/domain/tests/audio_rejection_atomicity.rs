@@ -35,6 +35,7 @@ fn measured_track(track_id: u128, asset_id: u128, digest_byte: &str) -> VoiceTra
 
 fn manual_segment(segment_id: u128, track_id: u128, start: i64, end: i64) -> TranscriptSegment {
     TranscriptSegment {
+        emphasis: Vec::new(),
         id: id(segment_id),
         voice_track_id: id(track_id),
         start: seconds(start),

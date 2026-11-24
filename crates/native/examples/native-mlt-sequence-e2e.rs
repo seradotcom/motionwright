@@ -315,6 +315,7 @@ fn seeded_database(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                         &format!("native-captioned-master-cue-{index}"),
                         &Change::AddTranscriptSegment {
                             segment: TranscriptSegment {
+                                emphasis: Vec::new(),
                                 id: Uuid::now_v7(),
                                 voice_track_id: track_id,
                                 start,

@@ -1,4 +1,5 @@
 import type { NativeAudioQcReceiptHint, NativeAudioQcReceiptInventoryResponse } from "./types";
+import { validateTranscriptEmphasis } from "./transcriptEmphasis";
 import type { OtioEditPreview } from "./otioCutReview";
 import { savedOriginalMixAuditionRequest } from "./audioRecipeContract";
 import { readNativeAvAudioQcResponse, readNativeAudioQcReceiptInventoryResponse } from "./nativeAvAudioQc";
@@ -2177,6 +2178,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
     case "upsert_transcript_segment": {
       assertUnlocked(next, projectResource(next), ["content", "timing"]);
       const segment = structuredClone(change.segment);
+      validateTranscriptEmphasis(segment.text, segment.emphasis);
       const start = Number(segment.start.num) / Number(segment.start.den);
       const end = Number(segment.end.num) / Number(segment.end.den);
       if (

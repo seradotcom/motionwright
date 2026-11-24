@@ -858,6 +858,11 @@ pub fn caption_sidecar(project: &Project, profile_id: Uuid) -> Result<CaptionSid
         ));
     }
     let segments = transcript_for_profile(project, profile)?;
+    if profile.caption_format == CaptionFormat::SubRip
+        && segments.iter().any(|segment| !segment.emphasis.is_empty())
+    {
+        return Err(DomainError::Invalid("SubRip styling is not admitted for source-bound caption emphasis; choose WebVTT or explicitly remove emphasis".into()));
+    }
 
     let mut body = String::new();
     if profile.caption_format == CaptionFormat::WebVtt {
@@ -883,8 +888,25 @@ pub fn caption_sidecar(project: &Project, profile_id: Uuid) -> Result<CaptionSid
             profile.caption_format == CaptionFormat::SubRip,
         ));
         body.push('\n');
-        let text = segment.text.replace(['\0', '\r'], "").trim().to_owned();
-        body.push_str(&text);
+        if profile.caption_format == CaptionFormat::WebVtt {
+            for (text, emphasized) in segment.caption_runs()? {
+                let escaped = text
+                    .replace(['\0', '\r'], "")
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;");
+                if emphasized {
+                    body.push_str("<b>");
+                }
+                body.push_str(&escaped);
+                if emphasized {
+                    body.push_str("</b>");
+                }
+            }
+        } else {
+            let text = segment.text.replace(['\0', '\r'], "").trim().to_owned();
+            body.push_str(&text);
+        }
         body.push_str("\n\n");
     }
 
@@ -1092,6 +1114,7 @@ mod tests {
             true_peak_dbfs: None,
         });
         project.audio.transcript.push(TranscriptSegment {
+            emphasis: Vec::new(),
             id: Uuid::now_v7(),
             voice_track_id: track_id,
             start: RationalTime { num: 1, den: 2 },
@@ -1234,6 +1257,7 @@ mod tests {
             true_peak_dbfs: None,
         });
         project.audio.transcript.push(TranscriptSegment {
+            emphasis: Vec::new(),
             id: Uuid::now_v7(),
             voice_track_id: second_track,
             start: RationalTime { num: 1, den: 1 },
@@ -1392,6 +1416,7 @@ mod tests {
         project
             .apply_change(&crate::Change::UpsertTranscriptSegment {
                 segment: TranscriptSegment {
+                    emphasis: Vec::new(),
                     id: Uuid::now_v7(),
                     voice_track_id: voice_id,
                     start: RationalTime { num: 1, den: 2 },
@@ -1405,6 +1430,7 @@ mod tests {
         project
             .apply_change(&crate::Change::UpsertTranscriptSegment {
                 segment: TranscriptSegment {
+                    emphasis: Vec::new(),
                     id: Uuid::now_v7(),
                     voice_track_id: voice_id,
                     start: RationalTime { num: 7, den: 2 },

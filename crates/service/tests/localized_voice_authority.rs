@@ -85,6 +85,7 @@ fn assert_source(service: &StudioService, project: &Project, track_id: Uuid, byt
 
 fn transcript(track_id: Uuid, text: &str) -> TranscriptSegment {
     TranscriptSegment {
+        emphasis: Vec::new(),
         id: Uuid::new_v4(),
         voice_track_id: track_id,
         start: RationalTime { num: 1, den: 10 },

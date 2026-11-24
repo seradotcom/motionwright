@@ -34,6 +34,7 @@ fn project() -> d::Project {
     p.audio.active_voice_track_id = Some(id(20));
     p.audio.transcript = [
         d::TranscriptSegment {
+            emphasis: Vec::new(),
             id: id(30),
             voice_track_id: id(20),
             start: time(0, 1),
@@ -43,6 +44,7 @@ fn project() -> d::Project {
             alignment: d::AlignmentEvidence::Manual,
         },
         d::TranscriptSegment {
+            emphasis: Vec::new(),
             id: id(31),
             voice_track_id: id(20),
             start: time(1, 1),

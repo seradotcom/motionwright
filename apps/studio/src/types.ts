@@ -285,9 +285,12 @@ export type AlignmentEvidence =
   | { kind: "manual" }
   | { kind: "measured"; engine: string; source_sha256: string; confidence_millis: number | null }
   | { kind: "unknown" };
+/** Unicode scalar offsets into the exact source text, including a source fragment. */
+export interface TranscriptEmphasis { start: number; end: number; text: string }
 export interface TranscriptSegment {
   id: string; voice_track_id: string; start: RationalTime; end: RationalTime;
   text: string; speaker: string | null; alignment: AlignmentEvidence;
+  emphasis?: TranscriptEmphasis[];
 }
 export type CueEvidence = "manual" | "transcript_aligned" | "measured" | "unknown";
 export interface AudioCue {
