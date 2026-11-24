@@ -423,9 +423,27 @@ pub fn build_blender_original_scene_plan(
             "Original Blender source supports a static scene without authored beats or camera transitions",
         ));
     }
-    if scene.camera.zoom != 1.0 || scene.camera.rotation_deg != 0.0 {
+    // Canvas stores a camera roll in clockwise screen-space degrees. The
+    // Blender world reverses Y, so the camera's world-space Z rotation has
+    // the opposite sign. VERTICAL sensor fit uses the height of the viewport.
+    // Keep the historical default plan byte-compatible (including positive 0).
+    let ortho_scale = PROJECT_HEIGHT * BLENDER_SCALE / scene.camera.zoom;
+    let roll = if scene.camera.rotation_deg == 0.0 {
+        0.0
+    } else {
+        -scene.camera.rotation_deg.to_radians()
+    };
+    // The original and lit consumers compare observed RNA floats with an
+    // absolute 1e-6 tolerance. Refuse an unrepresentable scale before any
+    // native effect rather than weakening that observation requirement.
+    if !(-180.0..=180.0).contains(&scene.camera.rotation_deg)
+        || !ortho_scale.is_finite()
+        || ortho_scale <= 0.0
+        || (f64::from(ortho_scale as f32) - ortho_scale).abs() > 1e-6
+        || (f64::from(roll as f32) - roll).abs() > 1e-6
+    {
         return Err(unsupported(
-            "Original Blender source requires unit camera zoom and zero camera rotation; unsupported camera state is not discarded",
+            "Original Blender camera requires a single-turn roll from -180 to 180 degrees and an orthographic scale representable within the existing RNA readback tolerance",
         ));
     }
     let mut object_names = BTreeSet::new();
@@ -479,10 +497,10 @@ pub fn build_blender_original_scene_plan(
         data_name: format!("mw-camera-data-{}", scene_id.simple()),
         source: scene.camera.clone(),
         location: camera_location,
-        rotation_euler: [0.0; 3],
+        rotation_euler: [0.0, 0.0, roll],
         projection: "ORTHO".into(),
         sensor_fit: "VERTICAL".into(),
-        ortho_scale: PROJECT_HEIGHT * BLENDER_SCALE,
+        ortho_scale,
         clip_start: 0.1,
         clip_end,
         resolution: [PROJECT_WIDTH as u32, PROJECT_HEIGHT as u32],
@@ -1142,14 +1160,57 @@ mod tests {
     }
 
     #[test]
-    fn original_blender_plan_refuses_unsupported_zoom_and_rotation() {
-        for (zoom, rotation) in [(1.1, 0.0), (1.0, 15.0)] {
+    fn original_blender_plan_projects_zoom_and_roll_without_baking_geometry() {
+        let mut project = project_with_renderer(RendererKind::Blender);
+        let scene_id = project.scenes[0].id;
+        let before = build_blender_original_scene_plan(&project, scene_id).unwrap();
+        // Compare projected coordinates independently in both coordinate bases
+        // at multiple points, including an off-axis non-symmetric sample.
+        for (zoom, rotation) in [(1.25, 30.0), (2.0, 90.0), (0.5, -45.0)] {
+            let camera = &mut project.scenes[0].camera;
+            camera.center_x = 1000.0;
+            camera.center_y = 600.0;
+            camera.zoom = zoom;
+            camera.rotation_deg = rotation;
+            let plan = build_blender_original_scene_plan(&project, scene_id).unwrap();
+            assert_eq!(plan.contribution.objects, before.contribution.objects);
+            assert_eq!(plan.camera.source, project.scenes[0].camera);
+            assert_eq!(plan.camera.ortho_scale, 10.8 / zoom);
+            assert_eq!(
+                plan.camera.rotation_euler,
+                [0.0, 0.0, -rotation.to_radians()]
+            );
+            assert_ne!(plan.project_json_sha256, before.project_json_sha256);
+            let (canvas_sin, canvas_cos) = rotation.to_radians().sin_cos();
+            let (native_sin, native_cos) = plan.camera.rotation_euler[2].sin_cos();
+            for (x, y) in [(1000.0, 600.0), (1230.0, 651.0), (830.0, 740.0)] {
+                let dx = x - 1000.0;
+                let dy = y - 600.0;
+                let expected_x = 960.0 + zoom * (canvas_cos * dx + canvas_sin * dy);
+                let expected_y = 540.0 + zoom * (-canvas_sin * dx + canvas_cos * dy);
+                let world_x = (x - 960.0) * BLENDER_SCALE - plan.camera.location[0];
+                let world_y = (540.0 - y) * BLENDER_SCALE - plan.camera.location[1];
+                let pixels_per_unit = 1080.0 / plan.camera.ortho_scale;
+                let actual_x =
+                    960.0 + pixels_per_unit * (native_cos * world_x + native_sin * world_y);
+                let actual_y =
+                    540.0 - pixels_per_unit * (-native_sin * world_x + native_cos * world_y);
+                assert!((actual_x - expected_x).abs() < 1e-9);
+                assert!((actual_y - expected_y).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn original_blender_plan_refuses_out_of_profile_roll_and_unrepresentable_scale() {
+        for (zoom, rotation) in [(1.0, 181.0), (0.013, 0.0)] {
             let mut project = project_with_renderer(RendererKind::Blender);
             project.scenes[0].camera.zoom = zoom;
             project.scenes[0].camera.rotation_deg = rotation;
             let error =
                 build_blender_original_scene_plan(&project, project.scenes[0].id).unwrap_err();
             assert_eq!(error.code, ErrorCode::Unsupported);
+            assert!(error.message.contains("RNA readback tolerance"));
         }
     }
 

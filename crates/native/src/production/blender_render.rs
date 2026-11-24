@@ -2306,6 +2306,50 @@ mod tests {
     }
 
     #[test]
+    fn lit_scene_projects_the_saved_orthographic_zoom_and_roll_into_native_camera() {
+        let mut project = fixture();
+        let scene_id = project.scenes[0].id;
+        let default = build_blender_lit_still_plan(&project, scene_id).unwrap();
+        project.scenes[0].camera.center_x = 1000.0;
+        project.scenes[0].camera.center_y = 600.0;
+        project.scenes[0].camera.zoom = 2.0;
+        project.scenes[0].camera.rotation_deg = 30.0;
+        let before = project.clone();
+        let plan = build_blender_lit_still_plan(&project, scene_id).unwrap();
+        assert_eq!(
+            plan.source.contribution.objects,
+            default.source.contribution.objects
+        );
+        assert_eq!(plan.source.camera.ortho_scale, 5.4);
+        assert_eq!(
+            plan.source.camera.rotation_euler,
+            [0.0, 0.0, -30.0_f64.to_radians()]
+        );
+        assert_eq!(
+            plan.composition_spec["entities"][1]["transform"]["translation"],
+            json!(plan.source.camera.location)
+        );
+        assert_eq!(
+            plan.composition_spec["entities"][1]["transform"]["rotation"],
+            json!(plan.source.camera.rotation_euler)
+        );
+        let observed = synthetic_snapshot(&plan);
+        assert!(snapshot_roster(&plan, &observed, "test-island", None, false).is_ok());
+        let groups = render_groups(&plan, &observed, false).unwrap();
+        assert!(groups.iter().any(|group| {
+            group.write
+                && group
+                    .properties
+                    .iter()
+                    .any(|(key, value)| *key == "ortho_scale" && *value == json!(5.4))
+        }));
+        let mut wrong = observed.clone();
+        wrong["items"][1]["rotation"] = json!([0.0, 0.0, 0.0]);
+        assert!(snapshot_roster(&plan, &wrong, "test-island", None, false).is_err());
+        assert_eq!(project, before);
+    }
+
+    #[test]
     fn lit_limit_reserves_camera_and_light_without_changing_original_profile() {
         let mut project = fixture();
         let template = project.scenes[0].nodes[0].clone();
