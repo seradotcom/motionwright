@@ -101,12 +101,23 @@ fn cut_pose(
     let opacity = if alpha.keyframes.is_empty() {
         node.opacity
     } else {
-        let fade = native_exact_opacity_fade(&alpha, scene, rate)?
+        // Validate every authored span, including a constant envelope with no
+        // native fades. The cut uses the actual first/last saved alpha, not
+        // the direction of an arbitrarily selected interval.
+        native_exact_opacity_fade(&alpha, scene, rate)?
             .ok_or_else(|| loss("opacity has no exact boundary projection"))?;
-        match (entering, fade.direction) {
-            (true, NativeOpacityDirection::In) | (false, NativeOpacityDirection::Out) => 0.0,
-            _ => 1.0,
-        }
+        alpha.keyframes.sort_by(|a, b| {
+            (i128::from(a.at.num) * i128::from(b.at.den))
+                .cmp(&(i128::from(b.at.num) * i128::from(a.at.den)))
+        });
+        let endpoint = if entering {
+            alpha.keyframes.first()
+        } else {
+            alpha.keyframes.last()
+        };
+        endpoint
+            .ok_or_else(|| loss("opacity envelope is empty"))?
+            .value
     };
     let pose = if entering { &initial } else { node };
     let terminal_projection = scene_layout_projection(scene, projection);

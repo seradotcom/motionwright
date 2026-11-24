@@ -7808,6 +7808,11 @@ mod tests {
         for case in [
             "match",
             "editorial",
+            "envelope_visible",
+            "constant_visible",
+            "envelope_exit_invisible",
+            "envelope_entry_invisible",
+            "constant_invisible",
             "jump",
             "appearance",
             "invisible",
@@ -7855,6 +7860,30 @@ mod tests {
                         interpolation: MotionInterpolation::Linear,
                     });
                 }
+            }
+            let opacity = |target: &mut CanvasNode, values: [f64; 3]| {
+                for (frame, value) in [0, 15, 30].into_iter().zip(values) {
+                    target.keyframes.push(CanvasKeyframe {
+                        at: RationalTime::new(frame, 30).unwrap(),
+                        property: MotionProperty::Opacity,
+                        value,
+                        interpolation: MotionInterpolation::Linear,
+                    });
+                }
+            };
+            match case {
+                "envelope_visible" => {
+                    opacity(&mut from, [1.0, 0.0, 1.0]);
+                    opacity(&mut to, [1.0, 0.0, 1.0]);
+                }
+                "constant_visible" => {
+                    opacity(&mut from, [1.0; 3]);
+                    opacity(&mut to, [1.0; 3]);
+                }
+                "envelope_exit_invisible" => opacity(&mut from, [0.0, 1.0, 0.0]),
+                "envelope_entry_invisible" => opacity(&mut to, [0.0, 1.0, 0.0]),
+                "constant_invisible" => opacity(&mut from, [0.0; 3]),
+                _ => {}
             }
             project.scenes[0].nodes = vec![from.clone()];
             project.scenes[1].nodes = vec![to.clone()];
@@ -7938,7 +7967,10 @@ mod tests {
             }
             let before = project.clone();
             let result = build_motion_canvas_segments(&project, profile, &options);
-            if matches!(case, "match" | "editorial") {
+            if matches!(
+                case,
+                "match" | "editorial" | "envelope_visible" | "constant_visible"
+            ) {
                 let segments = result.unwrap();
                 assert!(
                     segments
