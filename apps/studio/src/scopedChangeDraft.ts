@@ -7,6 +7,8 @@ import { CANVAS_STYLE_FIELDS, cleanScopedMotion, cleanScopedStyle, parseScopedMo
 import type { ScopedMotionRow, ScopedStyleRaw } from "./scopedPaintMotion";
 import { arrangeCanvasFrames, emptyArrangementSelection, validArrangementSelection } from "./canvasArrangement";
 import type { ArrangementSelection } from "./canvasArrangement";
+import { defaultMotionRangeInput, retimeMotionRows, validMotionRangeInput } from "./timelineMotionRange";
+import type { MotionRangeInput } from "./timelineMotionRange";
 
 export type DraftEdit = Extract<ScopedCanvasEdit, { kind: "text" | "transform" | "style" | "motion" }>;
 type SourceNode = Pick<CanvasNode, "id" | "kind" | "parent_id" | "text"> & CanvasTransform &
@@ -19,10 +21,11 @@ interface DraftEditor {
   transformRaw?: Record<keyof CanvasTransform, string>;
   styleRaw?: ScopedStyleRaw;
   motionRaw?: ScopedMotionRow[];
+  motionRangeRaw?: MotionRangeInput;
   source: SourceNode | null;
 }
 export interface ScopedChangeDraft {
-  schema: "motionwright.scoped-change-draft/4";
+  schema: "motionwright.scoped-change-draft/5";
   scope: string;
   baseRevision: number;
   rationale: string;
@@ -99,6 +102,16 @@ export function updateDraftMotionInput(draft: ScopedChangeDraft, rows: ScopedMot
   if (!validScopedMotionRows(rows)) throw new Error("A motion draft is limited to 128 typed keyframe rows.");
   return { ...draft, editor: { ...draft.editor, motionRaw: rows.map(row => ({ ...row })) } };
 }
+export function updateDraftMotionRangeInput(draft: ScopedChangeDraft, input: MotionRangeInput): ScopedChangeDraft {
+  if (!validMotionRangeInput(input)) throw new Error("Animation timing inputs exceed their bounded draft.");
+  return {...draft,editor:{...draft.editor,motionRangeRaw:{mode:input.mode,start:input.start,end:input.end}}};
+}
+export function applyDraftMotionRange(draft: ScopedChangeDraft, duration: Scene["duration"]): ScopedChangeDraft {
+  const rows=draftMotionInput(draft);
+  const next=updateDraftMotionInput(draft,retimeMotionRows(rows,draft.editor.motionRangeRaw??defaultMotionRangeInput(rows),duration));
+  delete next.editor.motionRangeRaw;
+  return next;
+}
 function sourceHasKind(source: SourceNode | null | undefined, kind: DraftEdit["kind"]): boolean {
   return Boolean(source && (kind === "style" ? source.style !== undefined : kind === "motion" ? source.keyframes !== undefined : true));
 }
@@ -131,7 +144,7 @@ export function selectDraftNode(draft: ScopedChangeDraft, node: CanvasNode | und
 }
 export function createScopedDraft(project: Project, scene: Scene | null): ScopedChangeDraft {
   return selectDraftNode({
-    schema: "motionwright.scoped-change-draft/4", scope: scopedDraftScope(project, scene),
+    schema: "motionwright.scoped-change-draft/5", scope: scopedDraftScope(project, scene),
     baseRevision: project.revision, rationale: "", edits: [], origins: [], parkedEditors: [], nativeSource: null,
     arrangement: emptyArrangementSelection(),
     editor: { nodeId: "", kind: "text", text: "", transform: { ...emptyTransform }, source: null },
@@ -198,6 +211,7 @@ export function draftEditorDirty(draft: ScopedChangeDraft): boolean {
   return draft.editor.source !== null && !sameValue(editorValue(draft.editor, draft.editor.kind), sourceValue(draft.editor.source, draft.editor.kind));
 }
 function editorFieldHasInput(draft: ScopedChangeDraft, editor: DraftEditor, kind: DraftEdit["kind"]): boolean {
+  if (kind === "motion" && editor.motionRangeRaw) return true;
   // Without original values, recovered raw input cannot be classified as
   // unchanged. Keep it recoverable; queueing still requires its source.
   if (!sourceHasKind(editor.source, kind)) return kind === "transform" ? editor.transformRaw !== undefined
@@ -215,9 +229,9 @@ export function scopedDraftHasWork(draft: ScopedChangeDraft): boolean {
 }
 export function unqueuedInputCount(draft: ScopedChangeDraft): number {
   return [draft.editor, ...draft.parkedEditors].flatMap(editor => draftKinds
-    .filter(kind => editorFieldHasInput(draft, editor, kind) && !draft.edits.some(edit =>
+    .filter(kind => editorFieldHasInput(draft, kind === "motion" ? { ...editor, motionRangeRaw: undefined } : editor, kind) && !draft.edits.some(edit =>
       edit.node_id === editor.nodeId && edit.kind === kind && sameValue(editValue(edit), editorValue(editor, kind))))).length +
-    (draft.arrangement?.nodeIds.length ? 1 : 0);
+    (draft.arrangement?.nodeIds.length ? 1 : 0) + [draft.editor,...draft.parkedEditors].filter(editor=>editor.motionRangeRaw).length;
 }
 export function queueDraftEdit(draft: ScopedChangeDraft): ScopedChangeDraft {
   const source = draft.editor.source;
@@ -331,7 +345,7 @@ export function keepCurrentDraftValue(draft: ScopedChangeDraft, conflict: DraftC
     if (conflict.kind === "motion") {
       const keyframes = current?.keyframes ?? editor.source.keyframes;
       const next = { ...editor, source: { ...editor.source, ...(keyframes ? { keyframes: cleanScopedMotion(keyframes) } : {}) } };
-      delete next.motionRaw;
+      delete next.motionRaw; delete next.motionRangeRaw;
       return next;
     }
     const transform = nodeTransform(current ?? editor.source);
@@ -371,7 +385,7 @@ function refreshEditors(draft: ScopedChangeDraft, scene: Scene): Pick<ScopedChan
   const selected = scene.nodes.find(node => node.id === draft.editor.nodeId);
   const editor = selected ? refreshEditor(draft, draft.editor, selected)
     : { ...draft.editor, nodeId: "", source: null, text: "", transform: { ...emptyTransform } };
-  if (!selected) { delete editor.transformRaw; delete editor.styleRaw; delete editor.motionRaw; }
+  if (!selected) { delete editor.transformRaw; delete editor.styleRaw; delete editor.motionRaw; delete editor.motionRangeRaw; }
   const parkedEditors = draft.parkedEditors.flatMap(buffer => {
     const node = scene.nodes.find(item => item.id === buffer.nodeId);
     return node ? [refreshEditor(draft, buffer, node)] : [];
@@ -438,11 +452,13 @@ const validEditor = (value: unknown): value is DraftEditor => record(value) && t
   (value.transformRaw === undefined || validTransformRaw(value.transformRaw)) &&
   (value.styleRaw === undefined || validScopedStyleRaw(value.styleRaw)) &&
   (value.motionRaw === undefined || validScopedMotionRows(value.motionRaw)) &&
+  (value.motionRangeRaw === undefined || validMotionRangeInput(value.motionRangeRaw)) &&
   (value.source === null || (validSource(value.source) && value.source.id === value.nodeId));
 const cleanEditor = (editor: DraftEditor): DraftEditor => ({ nodeId: editor.nodeId, kind: editor.kind,
   text: editor.text, transform: nodeTransform(editor.transform), source: editor.source ? sourceNode(editor.source) : null,
   ...(editor.transformRaw ? { transformRaw: Object.fromEntries(transformFields.map(field => [field, editor.transformRaw![field]])) as Record<keyof CanvasTransform, string> } : {}),
   ...(editor.styleRaw ? { styleRaw: Object.fromEntries(CANVAS_STYLE_FIELDS.map(field => [field, editor.styleRaw![field]])) as ScopedStyleRaw } : {}),
+  ...(editor.motionRangeRaw ? { motionRangeRaw: {mode:editor.motionRangeRaw.mode,start:editor.motionRangeRaw.start,end:editor.motionRangeRaw.end} } : {}),
   ...(editor.motionRaw ? { motionRaw: editor.motionRaw.map(row => ({ at: row.at, property: row.property, value: row.value, interpolation: row.interpolation })) } : {}) });
 function validNativeSource(value: unknown): value is NativeReviewRepairDraft | null {
   return value === null || (record(value) && value.schema === "motionwright.native-review-repair-draft/1" &&
@@ -454,7 +470,7 @@ function validNativeSource(value: unknown): value is NativeReviewRepairDraft | n
 export function decodeScopedDraft(raw: string, scope: string): ScopedChangeDraft {
   if (new TextEncoder().encode(raw).length > MAX_DRAFT_BYTES) throw new Error("Saved proposal exceeds the local draft budget.");
   const value: unknown = JSON.parse(raw);
-  if (!record(value) || !["motionwright.scoped-change-draft/1", "motionwright.scoped-change-draft/2", "motionwright.scoped-change-draft/3", "motionwright.scoped-change-draft/4"].includes(String(value.schema)) || value.scope !== scope ||
+  if (!record(value) || !["motionwright.scoped-change-draft/1", "motionwright.scoped-change-draft/2", "motionwright.scoped-change-draft/3", "motionwright.scoped-change-draft/4", "motionwright.scoped-change-draft/5"].includes(String(value.schema)) || value.scope !== scope ||
       !Number.isSafeInteger(value.baseRevision) || Number(value.baseRevision) < 0 || typeof value.rationale !== "string" ||
       !Array.isArray(value.edits) || value.edits.length > 128 || !value.edits.every(edit => record(edit) && typeof edit.node_id === "string" &&
         (edit.kind === "text" ? typeof edit.text === "string" : edit.kind === "transform" ? validTransform(edit.transform)
@@ -467,7 +483,7 @@ export function decodeScopedDraft(raw: string, scope: string): ScopedChangeDraft
   // Project validation and permission checks belong to the service. Only restore
   // the typed editor fields; unknown fields cannot become a command or grant.
   return {
-    schema: "motionwright.scoped-change-draft/4", scope, baseRevision: value.baseRevision as number,
+    schema: "motionwright.scoped-change-draft/5", scope, baseRevision: value.baseRevision as number,
     rationale: value.rationale, edits: (value.edits as DraftEdit[]).map(edit => edit.kind === "text"
       ? { kind: "text", node_id: edit.node_id, text: edit.text }
       : edit.kind === "transform" ? { kind: "transform", node_id: edit.node_id, transform: nodeTransform(edit.transform) }

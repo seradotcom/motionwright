@@ -1,0 +1,73 @@
+import { expect,test } from "@playwright/test";
+import { createArrangementScene } from "./support/canvasArrangementJourney";
+import { openTimelineAnimation,leaveMotionRangeInput,applyMotionRangeProposal } from "./support/timelineMotionJourney";
+import { proposalButton as button,readStudioProject } from "./support/scopedPaintMotionJourney";
+import { graphFrameTime } from "../src/semanticGraph";
+
+test("Timeline opens the selected complete animation and fits its range through review, one revision and undo",async({page},info)=>{
+  test.setTimeout(120_000);
+  await page.goto("/");
+  const context=await createArrangementScene(page),base=await readStudioProject(page),nodeId=context.ids[1];
+  await button(page,"Fit scene").click();
+  await openTimelineAnimation(page,nodeId);
+  await leaveMotionRangeInput(page);
+  await button(page,"Back to object editing").click();
+  await openTimelineAnimation(page,nodeId);
+  await applyMotionRangeProposal(page,nodeId);
+  expect(await readStudioProject(page)).toEqual(base);
+  await button(page,"Apply as one revision").click();
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r"+(base.revision+1));
+  const saved=await readStudioProject(page);
+  const source=base.scenes.find(scene=>scene.id===context.sceneId)!.nodes.find(node=>node.id===nodeId)!;
+  const actual=saved.scenes.find(scene=>scene.id===context.sceneId)!.nodes.find(node=>node.id===nodeId)!;
+  expect(actual).toEqual({...source,keyframes:source.keyframes.map(key=>({...key,at:key.at.num==="0"?key.at:{num:"3",den:"1"}}))});
+  expect(saved.production_design!.camera_reframes).toEqual(base.production_design!.camera_reframes);
+  await expect(page.locator('.timeline-object-track [data-source-id="'+nodeId+'"]')).toHaveAttribute("data-end",String(BigInt(base.scenes.find(scene=>scene.id===context.sceneId)!.start.num)+3n*BigInt(base.scenes.find(scene=>scene.id===context.sceneId)!.start.den))+"/"+base.scenes.find(scene=>scene.id===context.sceneId)!.start.den);
+  await page.locator(".production-compare-grid").screenshot({path:info.outputPath("retimed-animation-comparison.png")});
+  const history=page.getByRole("region",{name:"Reversible scoped changes",exact:true});
+  await history.getByRole("button",{name:"Preview undo",exact:true}).click();
+  await button(page,"Apply undo as new revision").click();
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r"+(saved.revision+1));
+  expect((await readStudioProject(page)).scenes).toEqual(base.scenes);
+  await page.locator('.timeline-camera-track [data-source-id]').click();
+  await button(page,"Edit camera").click();
+  await expect(button(page,"Update camera reframe")).toBeVisible();
+  await expect(page.getByLabel("Production working scene",{exact:true})).toHaveValue(context.sceneId);
+  await button(page,"Canvas").click();
+  await expect(page.getByRole("region",{name:"Semantic canvas",exact:true})).toBeVisible();
+  await expect(page.getByRole("region",{name:"Canvas animation workspace",exact:true})).toHaveCount(0);
+});
+
+test("Timeline zoom, keyboard pan, recovery and exact frame markers share one source clock without incidental project writes",async({page},info)=>{
+  await page.goto("/");
+  const base=await readStudioProject(page);
+  const area=page.getByRole("group",{name:"Timeline navigation surface",exact:true});
+  await page.getByLabel("Timeline zoom",{exact:true}).selectOption("4");
+  const span=Number(await area.getAttribute("data-view-end"));
+  await button(page,"Pan timeline later").click();
+  await expect(area).toHaveAttribute("data-view-start",String(span/2));
+  await area.focus(); await page.keyboard.press("PageDown");
+  await expect(area).toHaveAttribute("data-view-start",String(span));
+  expect(await readStudioProject(page)).toEqual(base);
+  await page.reload();
+  await expect(page.getByLabel("Timeline zoom",{exact:true})).toHaveValue("4");
+  await expect(area).toHaveAttribute("data-view-start",String(span));
+  const reloaded=await readStudioProject(page),profile=reloaded.deliverables[0];
+  const fps=Number(profile.frame_rate.num)/Number(profile.frame_rate.den);
+  const frame=Math.ceil(span*fps)+20, target=frame/fps;
+  const bounds=await area.boundingBox();expect(bounds).not.toBeNull();
+  await area.click({position:{x:(target-span)/span*bounds!.width,y:8}});
+  await button(page,"Marker").click();
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r"+(reloaded.revision+1));
+  const saved=await readStudioProject(page);
+  expect(saved.markers.at(-1)!.at).toEqual(graphFrameTime(frame,profile.frame_rate));
+  expect(saved.scenes).toEqual(reloaded.scenes);
+  await expect(area).toHaveAttribute("data-view-start",String(span));
+  for(const width of [1440,1024]){
+    await page.setViewportSize({width,height:940});
+    const nav=page.getByLabel("Timeline view controls",{exact:true});
+    const box=await nav.boundingBox();expect(box).not.toBeNull();
+    expect(box!.x+box!.width).toBeLessThanOrEqual(width+1);
+    await page.getByRole("region",{name:"Timeline",exact:true}).screenshot({path:info.outputPath("timeline-navigation-"+width+".png")});
+  }
+});

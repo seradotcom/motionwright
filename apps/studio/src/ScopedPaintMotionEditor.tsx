@@ -1,14 +1,16 @@
+import MotionRangeEditor from "./MotionRangeEditor";
+import type { RationalTime } from "./types";
 import type { ScopedChangeDraft } from "./scopedChangeDraft";
 import { draftMotionInput, draftStyleInput, updateDraftMotionInput, updateDraftStyleInput } from "./scopedChangeDraft";
 import { CANVAS_FIELD_LABELS } from "./canvasWorkspaceDraft";
 import { CANVAS_STYLE_FIELDS, SCOPED_MOTION_CURVES, SCOPED_MOTION_PROPERTIES, scopedStyleIssues } from "./scopedPaintMotion";
 import "./scoped-paint-motion.css";
 
-interface Props { draft: ScopedChangeDraft; disabled: boolean; onChange: (draft: ScopedChangeDraft) => void }
+interface Props { draft: ScopedChangeDraft; duration?: RationalTime; disabled: boolean; onChange: (draft: ScopedChangeDraft) => void }
 const propertyLabels = { x: "Position X", y: "Position Y", width: "Width", height: "Height", rotation_deg: "Rotation (deg)", opacity: "Opacity" };
 const curveLabels = { linear: "Linear", ease_in_out: "Ease in / out", ease_out_cubic: "Out cubic", hold: "Hold" };
 
-export default function ScopedPaintMotionEditor({ draft, disabled, onChange }: Props) {
+export default function ScopedPaintMotionEditor({ draft, duration, disabled, onChange }: Props) {
   if (draft.editor.kind === "style") {
     const values = draftStyleInput(draft), errors = scopedStyleIssues(values);
     return <div className="scoped-paint-editor">
@@ -31,6 +33,7 @@ export default function ScopedPaintMotionEditor({ draft, disabled, onChange }: P
     onChange(updateDraftMotionInput(draft, rows.map((row, i) => i === index ? { ...row, ...patch } : row)));
   return <section className="scoped-motion-editor" aria-label="Complete animation proposal">
     <p className="production-help">This edit replaces the complete animation track. Times are scene-relative seconds or exact fractions. A curve controls arrival at its keyframe; Hold keeps the preceding value until that time.</p>
+    <MotionRangeEditor draft={draft} duration={duration} disabled={disabled} onChange={onChange}/>
     <div className="scoped-motion-keys">{rows.map((row, index) => <fieldset className="scoped-motion-row" key={index}>
       <legend>Keyframe {index + 1}</legend>
       <label className="production-field"><span>Time</span><input aria-label={`Keyframe ${index + 1} time`} type="text" value={row.at} disabled={disabled}

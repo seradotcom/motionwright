@@ -5,6 +5,7 @@ import { resolveCanvasRelations } from "./canvasFollow";
 import { contextLabelNode } from "./contextLabel";
 import CompositionStudy from "./CompositionStudy";
 import CreativePatchWorkbench from "./CreativePatchWorkbench";
+import { timelineSelectionScope, type TimelineEditorRequest } from "./timelineSelection";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import "./canvas-source-study.css";
 import { sampledSceneCamera } from "./cameraReframe";
@@ -636,6 +637,8 @@ export default function CanvasWorkspace({
   onSeek,
   profile,
   busy = false,
+  timelineRequest,
+  onTimelineRequestHandled,
 }: {
   project: Project;
   scene: Scene | null;
@@ -645,10 +648,14 @@ export default function CanvasWorkspace({
   onSeek: (absoluteSeconds: number) => void;
   profile: Project["deliverables"][number] | null;
   busy?: boolean;
+  timelineRequest?: TimelineEditorRequest | null;
+  onTimelineRequestHandled?: (nonce:number)=>void;
 }) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(scene?.nodes[0]?.id ?? null);
   const [addBusy, setAddBusy] = useState(false);
   const [showArrangement, setShowArrangement] = useState(false);
+  const [scopedToolMode,setScopedToolMode] = useState<"arrange"|"motion">("arrange");
+  const [scopedSelectionRequest,setScopedSelectionRequest] = useState<{nonce:number;nodeId:string}|undefined>(undefined);
   const addPending = useRef(false);
   const [addError, setAddError] = useState<string | null>(null);
   const creationScope = JSON.stringify([project.id, project.generation, project.active_branch, scene?.id ?? null]);
@@ -700,8 +707,7 @@ export default function CanvasWorkspace({
     setGestureStatus(message);
   };
 
-  useEffect(() => { setAddError(null); setGestureStatus(null); setShowArrangement(false); }, [creationScope]);
-
+  useEffect(() => { setAddError(null); setGestureStatus(null); setShowArrangement(false); setScopedSelectionRequest(undefined); }, [creationScope]);
   useEffect(() => {
     const next = scene?.nodes[0] ?? null;
     setSelectedNodeId(next?.id ?? null);
@@ -711,6 +717,17 @@ export default function CanvasWorkspace({
     setAutoKeyPosition(false);
     drag.current = null;
   }, [creationScope]);
+
+  useEffect(()=>{
+    if (!timelineRequest || timelineRequest.scope!==timelineSelectionScope(project) || timelineRequest.sceneId!==scene?.id
+      || timelineRequest.selection.kind!=="object" || !scene.nodes.some(node=>node.id===timelineRequest.selection.id)) return;
+    setSelectedNodeId(timelineRequest.selection.id); setScopedToolMode("motion"); setShowArrangement(true);
+    setScopedSelectionRequest({nonce:timelineRequest.nonce,nodeId:timelineRequest.selection.id});
+    onTimelineRequestHandled?.(timelineRequest.nonce);
+    // A navigation request is consumed once; ordinary source revisions do not reopen this panel.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[timelineRequest?.nonce,creationScope]);
+
 
   useEffect(() => {
     const active = drag.current;
@@ -1004,12 +1021,13 @@ export default function CanvasWorkspace({
     });
   };
 
-  if (showArrangement) return <section className="production-workspace canvas-arrange-workspace" aria-label="Canvas arrangement workspace">
-    <header><div><h2>Arrange canvas objects</h2><span>{scene.name}</span></div>
+  if (showArrangement) return <section className="production-workspace canvas-arrange-workspace" aria-label={scopedToolMode==="motion"?"Canvas animation workspace":"Canvas arrangement workspace"}>
+    <header><div><h2>{scopedToolMode==="motion"?"Edit canvas animation":"Arrange canvas objects"}</h2><span>{scene.name}</span></div>
       <button className="secondary-button" disabled={busy} onClick={() => setShowArrangement(false)}>Back to object editing</button></header>
     <CreativePatchWorkbench project={project} scene={scene} commit={async change => { await commitRequired(change); }}
       busy={busy} playhead={playhead} onSeek={onSeek} displayProfile={profile} repairDraft={null}
-      onDismissRepair={() => {}} initialNodeId={selectedNodeId} arrangementOpen/>
+      onDismissRepair={() => {}} initialNodeId={selectedNodeId} arrangementOpen={scopedToolMode==="arrange"}
+      selectionRequest={scopedToolMode==="motion" ? scopedSelectionRequest : undefined}/>
   </section>;
 
   return (
@@ -1029,7 +1047,7 @@ export default function CanvasWorkspace({
         </div>
         <div className="canvas-toolbar-state">
           <button className="button compact" disabled={busy || addBusy || gesturePending.current || scene.nodes.length < 2}
-            onClick={() => { cancelDrag("Canvas gesture canceled before arranging saved frames."); setShowArrangement(true); }}>Arrange objects</button>
+            onClick={() => { cancelDrag("Canvas gesture canceled before arranging saved frames."); setScopedToolMode("arrange"); setShowArrangement(true); }}>Arrange objects</button>
           <label className="motion-playhead">
             <span className="mono">{scenePlayhead.toFixed(2)}s / {sceneDurationSeconds.toFixed(2)}s</span>
             <input

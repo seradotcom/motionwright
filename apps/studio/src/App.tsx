@@ -6,8 +6,9 @@ import CommandPalette, { type EditorCommand } from "./CommandPalette";
 import { assertPortableExportReceipt, inspectPortableMaterials } from "./portableMaterialReport";
 import SceneInspector from "./SceneInspector";
 import { isPaletteShortcut } from "./editorCommandSearch";
-import { resolveTimelineSelection, timelineSelectionScope, type TimelineSelection } from "./timelineSelection";
-import { timelineMarkerTime } from "./timelineMarkerTime";
+import { timelineSelectionScope, type TimelineSelection, type TimelineEditorRequest } from "./timelineSelection";
+import Timeline from "./Timeline";
+import { projectTimelineDuration } from "./timelineNavigation";
 import ProductionDesignWorkspace from "./ProductionDesignWorkspace";
 import HyperframesSourceWorkbench from "./HyperframesSourceWorkbench";
 import type { NativeSourceSaveRequest } from "./NativeSourceWorkbench";
@@ -132,7 +133,6 @@ import { seconds } from "./types";
 import {
   DEFAULT_EDITOR_RATE,
   formatEditorTimecode as formatTime,
-  rulerTime,
   stepEditorialFrame,
   supportsDropFrame,
   timebaseLabel,
@@ -200,16 +200,6 @@ const rendererLabels: Record<RendererKind, string> = {
 };
 
 
-function projectTimelineDuration(project: Project) {
-  return Math.max(
-    1,
-    ...project.scenes.map((scene) => seconds(scene.start) + seconds(scene.duration)),
-    ...project.markers.map((marker) => seconds(marker.at)),
-    ...project.audio.voice_tracks.map((track) => seconds(track.measured_duration)),
-    ...project.audio.transcript.map((segment) => seconds(segment.end)),
-    ...project.audio.cues.map((cue) => seconds(cue.at)),
-  );
-}
 
 function stateLabel(state: ProjectState) {
   return state.toUpperCase();
@@ -1408,352 +1398,6 @@ function ProjectRail({
 }
 
 
-function Timeline({
-  project,
-  selectedSceneId,
-  selectScene,
-  playhead,
-  setPlayhead,
-  commit,
-  playing,
-  togglePlayback,
-  stepFrame,
-  rate,
-  mode,
-  selectedProfileId,
-  onSelectProfile,
-  onSelectMode,
-}: {
-  project: Project;
-  selectedSceneId: string | null;
-  selectScene: (id: string, seekToStart?: boolean) => void;
-  playhead: number;
-  setPlayhead: (value: number) => void;
-  commit: (change: Change) => Promise<void>;
-  playing: boolean;
-  togglePlayback: () => void;
-  stepFrame: (direction: -1 | 1) => void;
-  rate: RationalTime;
-  mode: TimecodeMode;
-  selectedProfileId: string | null;
-  onSelectProfile: (id: string) => void;
-  onSelectMode: (mode: TimecodeMode) => void;
-}) {
-  const [selectionIdentity, setSelection] = useState<TimelineSelection | null>(null);
-  const selection = resolveTimelineSelection(project, selectionIdentity);
-  const selectionMissing = selectionIdentity !== null && selection === null;
-  useEffect(() => {
-    // Rendering already hides a removed resource. Clear its identity as well,
-    // without erasing a newer selection made before this effect is processed.
-    if (selectionMissing) setSelection(current => current === selectionIdentity ? null : current);
-  }, [selectionIdentity, selectionMissing]);
-  const duration = projectTimelineDuration(project);
-  const ticks = Array.from({ length: Math.ceil(duration / 5) + 1 }, (_, index) => index * 5);
-  // The Audio ledger retains every take. The VO lane represents the active
-  // take used by narration and native mix intent, not overlapping alternatives.
-  const measuredVoice = project.audio.voice_tracks.filter((track) => track.id === project.audio.active_voice_track_id);
-  const measuredAssetIds = new Set(project.audio.voice_tracks.map((track) => track.asset_id));
-  const pendingAudio = project.assets.filter(
-    (asset) => asset.media_type.startsWith("audio/") && !measuredAssetIds.has(asset.id),
-  );
-  const beatEntries = project.scenes.flatMap((scene) =>
-    scene.beats.map((beat) => {
-      const sceneStart = seconds(scene.start);
-      const sceneEnd = sceneStart + seconds(scene.duration);
-      const start = Math.min(sceneEnd, sceneStart + seconds(beat.start));
-      const end = Math.min(sceneEnd, start + seconds(beat.duration));
-      return { scene, beat, start, end };
-    }),
-  );
-
-  const sceneAtTime = (time: number) =>
-    project.scenes.find((scene) => {
-      const start = seconds(scene.start);
-      const end = start + seconds(scene.duration);
-      return time >= start && time < end;
-    }) ?? null;
-
-  const selectAt = (
-    time: number,
-    nextSelection: TimelineSelection,
-    sceneId?: string,
-  ) => {
-    const bounded = Math.max(0, Math.min(duration, time));
-    setPlayhead(bounded);
-    setSelection(nextSelection);
-    const targetScene = sceneId
-      ? project.scenes.find((scene) => scene.id === sceneId) ?? null
-      : sceneAtTime(bounded);
-    if (targetScene && targetScene.id !== selectedSceneId) {
-      selectScene(targetScene.id, false);
-    }
-  };
-
-  return (
-    <section className="timeline-panel" aria-label="Timeline">
-      <div className="timeline-header">
-        <div className="timeline-title">
-          <Film size={15} />
-          Timeline
-          <span className="muted">shared clock</span>
-        </div>
-        <div className="timeline-selection-context" aria-live="polite">
-          {selection ? (
-            <>
-              <span>{selection.kind}</span>
-              <strong>{selection.label}</strong>
-            </>
-          ) : (
-            <>
-              <span>context</span>
-              <strong>{project.scenes.find((scene) => scene.id === selectedSceneId)?.name ?? "project"}</strong>
-            </>
-          )}
-        </div>
-        <div className="timeline-timebase" aria-label="Editor timebase controls">
-          <label htmlFor="editor-timebase">Display profile</label>
-          <select
-            id="editor-timebase"
-            aria-label="Editor preview timebase"
-            value={selectedProfileId ?? ""}
-            disabled={project.deliverables.length === 0}
-            onChange={(event) => onSelectProfile(event.target.value)}
-            title="A display-only frame clock. Does not modify the export profile or project."
-          >
-            {project.deliverables.length === 0 ? <option value="">24 fps fallback</option> : null}
-            {project.deliverables.map((profile) => (
-              <option key={profile.id} value={profile.id}>
-                {profile.name} · {validEditorRate(profile.frame_rate)
-                  ? timebaseLabel(profile.frame_rate, "ndf")
-                  : "invalid rate · 24 fps fallback"}
-              </option>
-            ))}
-          </select>
-          {supportsDropFrame(rate) && (
-            <select aria-label="Timecode numbering" value={mode}
-              title="Display numbering only; does not change exported media."
-              onChange={(event) => onSelectMode(event.target.value as TimecodeMode)}>
-              <option value="ndf">NDF</option>
-              <option value="df">DF</option>
-            </select>
-          )}
-        </div>
-        <div className="timeline-transport">
-          <IconButton label="Step back one frame" onClick={() => stepFrame(-1)}>
-            <SkipBack size={13} />
-          </IconButton>
-          <IconButton label={playing ? "Pause design preview" : "Play design preview"} onClick={togglePlayback}>
-            {playing ? <Pause size={13} /> : <Play size={13} />}
-          </IconButton>
-          <IconButton label="Step forward one frame" onClick={() => stepFrame(1)}>
-            <SkipForward size={13} />
-          </IconButton>
-          <button
-            type="button"
-            className="button compact"
-            onClick={() => commit({
-              type: "add_marker",
-              at: timelineMarkerTime(playhead, rate),
-              label: "Marker " + (project.markers.length + 1),
-            })}
-          >
-            <Plus size={12} /> Marker
-          </button>
-          <span className="timecode" title={timebaseLabel(rate, mode) + " · display only"}>{formatTime(playhead, rate, mode)}</span>
-        </div>
-      </div>
-      <div className="timeline-body">
-        <div className="track-labels" aria-hidden="true">
-          <div className="ruler-label">time</div>
-          <div><span>VO</span><span className="track-type">audio</span></div>
-          <div><span>Transcript</span><span className="track-type">text</span></div>
-          <div><span>Beats</span><span className="track-type">story</span></div>
-          <div><span>Scenes</span><span className="track-type">semantic</span></div>
-          <div><span>Review</span><span className="track-type">cues · markers</span></div>
-        </div>
-        <div
-          className="track-area"
-          onPointerDown={(event) => {
-            const bounds = event.currentTarget.getBoundingClientRect();
-            const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
-            const nextPlayhead = ratio * duration;
-            setSelection(null);
-            setPlayhead(nextPlayhead);
-            const sceneAtPlayhead = sceneAtTime(nextPlayhead);
-            if (sceneAtPlayhead && sceneAtPlayhead.id !== selectedSceneId) {
-              selectScene(sceneAtPlayhead.id, false);
-            }
-          }}
-        >
-          <div className="ruler">
-            {ticks.map((tick) => (
-              <span key={tick} style={{ left: (tick / duration) * 100 + "%" }}>
-                {rulerTime(tick)}
-              </span>
-            ))}
-          </div>
-          <div className="track voice-track">
-            {measuredVoice.map((track) => (
-              <div
-                className="audio-presence measured"
-                key={track.id}
-                aria-label={"Measured voice track " + track.label}
-                style={{ width: Math.min(100, (seconds(track.measured_duration) / duration) * 100) + "%" }}
-              >
-                <span>{track.label}</span>
-                <small>{track.sample_rate_hz} Hz · {track.channels} ch · measured duration</small>
-              </div>
-            ))}
-            {measuredVoice.length === 0 && project.audio.voice_tracks.length > 0 && (
-              <div className="audio-pending" aria-label="No active voice take">
-                <span>No active voice take</span>
-                <small>choose a measured take in Audio</small>
-              </div>
-            )}
-            {project.audio.voice_tracks.length === 0 && pendingAudio.length > 0 && (
-              <div className="audio-pending" aria-label="Audio source awaiting measurement">
-                <span>{pendingAudio[0].name}</span>
-                <small>source attached · duration unmeasured</small>
-              </div>
-            )}
-            {project.audio.voice_tracks.length === 0 && pendingAudio.length === 0 && (
-              <div className="audio-pending empty" aria-label="No measured voice track">
-                <span>No measured voice</span>
-                <small>timeline duration is not inferred from text</small>
-              </div>
-            )}
-          </div>
-          <div className="track transcript-track">
-            {project.audio.transcript.length === 0 ? (
-              <span className="timeline-empty-lane">No measured or manually aligned transcript</span>
-            ) : (
-              project.audio.transcript.map((segment) => {
-                const start = seconds(segment.start);
-                const end = seconds(segment.end);
-                const selected = selection?.kind === "transcript" && selection.id === segment.id;
-                return (
-                  <button
-                    key={segment.id}
-                    type="button"
-                    className={"timeline-transcript" + (selected ? " selected" : "")}
-                    style={{
-                      left: (start / duration) * 100 + "%",
-                      width: (Math.max(0.1, end - start) / duration) * 100 + "%",
-                    }}
-                    aria-label={"Transcript: " + segment.text}
-                    aria-pressed={selected}
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onClick={() => selectAt(start, { kind: "transcript", id: segment.id })}
-                    title={segment.text}
-                  >
-                    {segment.text}
-                  </button>
-                );
-              })
-            )}
-          </div>
-          <div className="track beat-track">
-            {beatEntries.length === 0 ? (
-              <span className="timeline-empty-lane">No scene beats authored</span>
-            ) : (
-              beatEntries.map(({ scene, beat, start, end }) => {
-                const selected = selection?.kind === "beat" && selection.id === beat.id;
-                return (
-                  <button
-                    key={beat.id}
-                    type="button"
-                    className={"timeline-beat" + (selected ? " selected" : "")}
-                    style={{
-                      left: (start / duration) * 100 + "%",
-                      width: (Math.max(0.1, end - start) / duration) * 100 + "%",
-                    }}
-                    aria-label={"Beat: " + beat.label}
-                    aria-pressed={selected}
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onClick={() => selectAt(
-                      start,
-                      { kind: "beat", id: beat.id },
-                      scene.id,
-                    )}
-                    title={beat.objective}
-                  >
-                    <span>{beat.label}</span>
-                  </button>
-                );
-              })
-            )}
-          </div>
-          <div className="track scene-track">
-            {project.scenes.map((scene, index) => (
-              <button
-                key={scene.id}
-                type="button"
-                className={"timeline-clip clip-" + (index % 4) + (selectedSceneId === scene.id ? " selected" : "")}
-                style={{
-                  left: (seconds(scene.start) / duration) * 100 + "%",
-                  width: (seconds(scene.duration) / duration) * 100 + "%",
-                }}
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={() => {
-                  setSelection(null);
-                  selectScene(scene.id);
-                }}
-              >
-                <span>{scene.name}</span>
-                <small>{rendererLabels[scene.renderer]}</small>
-              </button>
-            ))}
-          </div>
-          <div className="track review-track">
-            {project.audio.cues.map((cue) => {
-              const at = seconds(cue.at);
-              const selected = selection?.kind === "cue" && selection.id === cue.id;
-              return (
-                <button
-                  key={cue.id}
-                  type="button"
-                  className={"timeline-cue" + (selected ? " selected" : "")}
-                  style={{ left: (at / duration) * 100 + "%" }}
-                  aria-label={"Cue: " + cue.label}
-                  aria-pressed={selected}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  onClick={() => selectAt(at, { kind: "cue", id: cue.id })}
-                  title={cue.label + " · " + cue.evidence}
-                >
-                  <i />
-                  <b>{cue.label}</b>
-                </button>
-              );
-            })}
-            {project.markers.map((marker) => {
-              const at = seconds(marker.at);
-              const selected = selection?.kind === "marker" && selection.id === marker.id;
-              return (
-                <button
-                  key={marker.id}
-                  type="button"
-                  className={"timeline-marker" + (selected ? " selected" : "")}
-                  style={{ left: (at / duration) * 100 + "%" }}
-                  aria-label={"Marker: " + marker.label}
-                  aria-pressed={selected}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  onClick={() => selectAt(at, { kind: "marker", id: marker.id })}
-                  title={marker.label}
-                >
-                  <i />
-                  <b>{marker.label}</b>
-                </button>
-              );
-            })}
-          </div>
-          <div className="splice-line" style={{ left: (playhead / duration) * 100 + "%" }}>
-            <span />
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
 export default function App() {
   const [view, setView] = useState<StudioProjectView | null>(null);
   const viewRef = useRef<StudioProjectView | null>(view);
@@ -1764,6 +1408,9 @@ export default function App() {
     setView(accepted);
   }, []);
   const [workspace, setWorkspace] = useState<Workspace>("Timeline");
+  const [timelineEditorRequest, setTimelineEditorRequest] = useState<TimelineEditorRequest | null>(null);
+  const timelineRequestSequence = useRef(0);
+  const consumeTimelineEditorRequest = useCallback((nonce: number) => setTimelineEditorRequest(current => current?.nonce === nonce ? null : current), []);
   const [graphReviewSelection, setGraphReviewSelection] = useState<{ owner: string; resource: string } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
@@ -2413,6 +2060,15 @@ export default function App() {
     );
   }
 
+  const openTimelineEditor = (selection: TimelineSelection) => {
+    const scene = selection.kind === "object" ? project.scenes.find(item=>item.nodes.some(node=>node.id===selection.id))
+      : selection.kind === "camera" ? project.scenes.find(item=>item.id===project.production_design?.camera_reframes?.find(move=>move.id===selection.id)?.scene_id)
+      : selection.kind === "beat" ? project.scenes.find(item=>item.beats.some(beat=>beat.id===selection.id)) : undefined;
+    if (scene) selectScene(scene.id,false);
+    setTimelineEditorRequest({nonce:++timelineRequestSequence.current,scope:timelineSelectionScope(project),selection,sceneId:scene?.id??null});
+    setWorkspace(selection.kind==="object"?"Canvas":selection.kind==="camera"?"Production":selection.kind==="review"?"Review":selection.kind==="beat"?"Storyboard":"Audio");
+  };
+
   const renderWorkspace = () => {
     switch (workspace) {
       case "Brief":
@@ -2435,7 +2091,7 @@ export default function App() {
       case "Storyboard":
         return <StoryboardView project={project} selectedSceneId={selectedSceneId} onSelect={selectScene} rate={timebaseRate} mode={displayMode} />;
       case "Production":
-        return <ProductionDesignWorkspace project={project} scene={selectedScene} commit={commit} commitCamera={commitCamera}
+        return <ProductionDesignWorkspace timelineRequest={timelineEditorRequest} onTimelineRequestHandled={consumeTimelineEditorRequest} project={project} scene={selectedScene} commit={commit} commitCamera={commitCamera}
           sourceServices={{
             saveSource: ingestNativeSource,
             refreshProject: refreshGraphProject,
@@ -2475,7 +2131,7 @@ export default function App() {
         }} busy={busy} playhead={playhead} onSeek={seekTo} onSelectScene={selectScene} onOpenCanvas={() => setWorkspace("Canvas")} displayProfile={selectedProfile} evidence={nativeRenderReceipt} onOpenRender={() => setWorkspace("Deliver")} />;
       case "Canvas":
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit}
-          commitRequired={commitCamera} playhead={playhead} onSeek={seekTo} profile={selectedProfile} busy={busy} />;
+          commitRequired={commitCamera} playhead={playhead} onSeek={seekTo} profile={selectedProfile} busy={busy} timelineRequest={timelineEditorRequest} onTimelineRequestHandled={consumeTimelineEditorRequest} />;
       case "Timeline":
         return <PreviewSurface
           key={JSON.stringify([
@@ -2710,6 +2366,8 @@ export default function App() {
           setTimebaseProfileId(id);
           setTimecodeMode("ndf");
         }}
+        rendererLabels={rendererLabels}
+        onEditSelection={openTimelineEditor}
         onSelectMode={(mode) => {
           setPlaying(false);
           setTimecodeMode(mode);

@@ -10,3 +10,7 @@
 @container (min-width: 600px) {
   .scoped-motion-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
+
+.scoped-motion-range { padding:10px; margin:10px 0; border:1px solid var(--border); border-radius:6px; display:block; }
+.scoped-motion-range summary { cursor:pointer; font-size:12px; margin-bottom:8px; }
+.scoped-motion-range .production-transform-grid { margin:10px 0; }

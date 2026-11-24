@@ -1,3 +1,4 @@
+import { timelineSelectionScope, type TimelineEditorRequest } from "./timelineSelection";
 import ExpandedStudy from "./ExpandedStudy";
 import NativeInspectionWorkbench from "./NativeInspectionWorkbench";
 import NativeContrastWorkbench from "./NativeContrastWorkbench";
@@ -846,9 +847,14 @@ function SceneBoundaryWorkbench(props: { project: Project; scene: Scene | null; 
     <SceneBoundaryEditor key={productionScope(props.project, { kind: "boundary", sceneId: props.scene?.id ?? null, boundaryId: selected || null })} {...props} boundaryId={selected || null}/></>;
 }
 
-export default function ProductionDesignWorkspace(props:{sourceServices:NativeSourceServices;graphServices:Pick<SemanticGraphWorkbenchProps,"commit"|"readContext"|"outcomeTransport"|"refreshProject"|"openReview">;project:Project;scene:Scene|null;commit:Commit; commitCamera:(change:Change)=>Promise<Project>;busy:boolean;playhead:number;onSeek:(time:number)=>void;onSelectScene:(id:string)=>void;onOpenCanvas:()=>void;onOpenRender:()=>void;displayProfile:DeliverableProfile|null;evidence:MotionCanvasRenderEvidence|null}) {
+export default function ProductionDesignWorkspace(props:{timelineRequest?:TimelineEditorRequest|null;onTimelineRequestHandled?:(nonce:number)=>void;sourceServices:NativeSourceServices;graphServices:Pick<SemanticGraphWorkbenchProps,"commit"|"readContext"|"outcomeTransport"|"refreshProject"|"openReview">;project:Project;scene:Scene|null;commit:Commit; commitCamera:(change:Change)=>Promise<Project>;busy:boolean;playhead:number;onSeek:(time:number)=>void;onSelectScene:(id:string)=>void;onOpenCanvas:()=>void;onOpenRender:()=>void;displayProfile:DeliverableProfile|null;evidence:MotionCanvasRenderEvidence|null}) {
   const [tab,setTab]=useState<"component"|"stage"|"plan"|"brand"|"sources"|"captures"|"data"|"procedural"|"camera"|"boundary"|"graph"|"impact"|"evaluator"|"identity"|"distillation"|"generation"|"patch"|"inspection"|"contrast">("component");
   const [repairDraft,setRepairDraft]=useState<NativeReviewRepairDraft|null>(null);
+  useEffect(()=>{
+    if (props.timelineRequest?.scope===timelineSelectionScope(props.project) && props.timelineRequest.selection.kind==="camera"
+      && props.timelineRequest.sceneId===props.scene?.id) { setTab("camera"); props.onTimelineRequestHandled?.(props.timelineRequest.nonce); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[props.timelineRequest?.nonce,props.project.id,props.project.generation,props.project.active_branch,props.scene?.id]);
   const design=props.project.production_design ?? emptyProductionDesign();
   const sceneOptions=useMemo(()=>props.project.scenes.map(scene=><option key={scene.id} value={scene.id}>{scene.name}</option>),[props.project.scenes]);
   return <section className="production-workspace" aria-label="Creative production workstation">

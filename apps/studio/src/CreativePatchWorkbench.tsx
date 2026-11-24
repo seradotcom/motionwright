@@ -34,6 +34,7 @@ interface Props {
   onDismissRepair: () => void;
   initialNodeId?: string | null;
   arrangementOpen?: boolean;
+  selectionRequest?: { nonce: number; nodeId: string };
 }
 const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
 
@@ -43,7 +44,7 @@ export default function CreativePatchWorkbench(props: Props) {
   return <ScopedEditor key={scopedDraftScope(props.project, props.scene)} {...props}/>;
 }
 
-function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayProfile, repairDraft, onDismissRepair, initialNodeId, arrangementOpen }: Props) {
+function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayProfile, repairDraft, onDismissRepair, initialNodeId, arrangementOpen, selectionRequest }: Props) {
   const scope = scopedDraftScope(project, scene);
   const storageKey = DRAFT_STORAGE_PREFIX + scope;
   const freshDraft = () => selectDraftNode(createScopedDraft(project, scene),
@@ -126,13 +127,20 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
       const next = receipt.change.type === "undo_creative_patch" && scopedDraftHasWork(draft)
         ? draft : retainUnqueuedInputs(draft, project, scene);
       const keepDraft = scopedDraftHasWork(next);
-      setDraft(next);
+      if (keepDraft) setDraft(next);
+      else {
+        const selected=selectDraftNode(next,scene?.nodes.find(item=>item.id===draft.editor.nodeId)??scene?.nodes[0]);
+        setDraft({...selected,editor:{...selected.editor,kind:draft.editor.kind}});
+      }
       if (!keepDraft) onDismissRepair();
       setUndoTarget(null);
       setNotice(keepDraft ? "The reviewed change is stored. Your other uncommitted inputs are still available."
         : "The reviewed change is stored in this project revision.");
     } else if (!scopedDraftHasWork(draft)) {
-      setDraft(createScopedDraft(project, scene));
+      setDraft(current=>{
+        const next=selectDraftNode(createScopedDraft(project,scene),scene?.nodes.find(item=>item.id===current.editor.nodeId)??scene?.nodes[0]);
+        return {...next,editor:{...next.editor,kind:current.editor.kind}};
+      });
     }
     submitted.current = null;
     // A new revision invalidates a preview, never an operator's draft. Commit
@@ -148,6 +156,23 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
       editor: { ...next.editor, kind: source.editKind } };
     update(next);
   };
+  const handledSelection = useRef<number | null>(null);
+  useEffect(() => {
+    if (!selectionRequest || handledSelection.current === selectionRequest.nonce) return;
+    handledSelection.current = selectionRequest.nonce;
+    const target = scene?.nodes.find(item=>item.id===selectionRequest.nodeId);
+    if (!target) { setNotice("The requested animation object is unavailable in this scene."); return; }
+    if (draft.nativeSource && draft.nativeSource.targetNodeId !== target.id) {
+      setNotice("The current native-frame repair has a fixed target. Keep or finish it before editing another animation."); return;
+    }
+    try {
+      const next=selectDraftNode(draft,target);
+      update({...next,editor:{...next.editor,kind:"motion"}});
+    } catch(reason) { setError(message(reason)); }
+    // This is an explicit navigation request. Subsequent edits keep their local
+    // selection and RAW inputs rather than replaying the request on each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[selectionRequest?.nonce,scope]);
   useEffect(() => {
     if (incomingRepair && !scopedDraftHasWork(draft)) beginRepair(incomingRepair);
     // An explicit handoff initializes an empty draft. A different existing draft
@@ -283,7 +308,7 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
               aria-invalid={invalidTransformFields.includes(field) || undefined}
               aria-describedby={invalidTransformFields.includes(field) ? "scoped-editor-error" : undefined}
               onChange={event => update(updateDraftTransformInput(draft, field, event.target.value))}/></label>)}</div>
-          : <ScopedPaintMotionEditor draft={draft} disabled={targetEditingDisabled} onChange={update}/>}
+          : <ScopedPaintMotionEditor duration={scene?.duration} draft={draft} disabled={targetEditingDisabled} onChange={update}/>}
         {editorInputError && <p className="production-error" role="status" id="scoped-editor-error">{editorInputError}</p>}
         <button className="secondary-button" disabled={!hasTargetSource || !node || draftStale || sourceUnchanged || editorInputError !== null || lockedUi || (nativeSource !== null && node.id !== nativeSource.targetNodeId)} onClick={queue}><Plus size={14}/> Add to proposal</button>
         <label className="production-field"><span>Visible reason for this change</span><textarea aria-label="Patch rationale" rows={3} placeholder="What is wrong, where is it visible, and why does this edit help?" value={draft.rationale} disabled={lockedUi}
