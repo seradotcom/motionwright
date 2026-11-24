@@ -61,6 +61,8 @@
     "allow-export-project-bundle",
     "allow-export-native-capsule-source",
     "allow-native-hyperframes-source",
+    "allow-render-hyperframes-source",
+    "allow-read-original-hyperframes-render",
     "allow-export-hyperframes-source-file",
     "allow-export-caption-sidecar",
     "allow-export-otio",

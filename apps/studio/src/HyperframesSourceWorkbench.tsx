@@ -1,5 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { FileCode2 } from "lucide-react";
+import HyperframesRenderPanel from "./HyperframesRenderPanel";
 import type { Project } from "./types";
 import { exportHyperframesSource, readHyperframesSource,
   type HyperframesSourceFormat, type HyperframesSourceSnapshot } from "./hyperframesSourceApi";
@@ -89,6 +90,7 @@ export default function HyperframesSourceWorkbench({ project, desktopMode }: { p
       <p className="production-help">Choose an existing directory and a new file. To save both formats, export each into the same directory.
         The saved Motionwright project remains unchanged; opening an editor or rendering is a separate action.</p>
     </fieldset>
+    <HyperframesRenderPanel project={project} source={inspected} desktopMode={desktopMode}/>
     {phase && <p role="status" aria-live="polite">{phase === "inspect" ? "Inspecting saved source…" : "Exporting the inspected source…"}</p>}
     {error && <p role="alert" className="production-error">{error}</p>}
     {status && <p role="status" aria-live="polite">{status}</p>}

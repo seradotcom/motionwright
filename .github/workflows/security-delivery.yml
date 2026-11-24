@@ -216,6 +216,7 @@ jobs:
     timeout-minutes: 30
     env:
       CARGO_BUILD_JOBS: '2'
+      CARGO_TERM_COLOR: never
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
@@ -233,6 +234,37 @@ jobs:
         run: cargo check --locked --jobs 2 -p motionwright-desktop
       - name: Effect-grant boundary regressions
         run: cargo test --locked --jobs 2 -p motionwright-desktop effect_grants
+      - name: HyperFrames original Desktop render and PNG recovery contracts
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --jobs 2 -p motionwright-native --test desktop_hyperframes_render -- -D warnings
+          log="$RUNNER_TEMP/hyperframes-desktop-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.original.log"
+          test ! -e "$log"
+          cargo test --locked --jobs 2 -p motionwright-native --test desktop_hyperframes_render \
+            desktop_render_tests:: -- --test-threads=1 > "$log" 2>&1 || {
+              grep -E '^test |^test result:|^error:|panicked at' "$log" | tail -n 24
+              exit 1
+            }
+          python3 -B - "$log" <<'PY_HF_RENDER'
+          from pathlib import Path
+          import re, sys
+          raw = Path(sys.argv[1]).read_text(encoding="utf-8")
+          expected = {
+              "durable_intent_and_live_lease_prevent_duplicate_dispatch",
+              "altered_source_runtime_and_grant_reject_before_native_intent",
+              "completed_original_reopens_sqlite_and_verifies_each_png_without_native_execution",
+              "lost_desktop_ack_recovers_original_result_without_appending_or_dispatching",
+              "foreign_provider_connection_job_or_source_never_recovers_a_success",
+              "unknown_original_blocks_new_request_ids_after_reopen_and_keeps_project_editable",
+              "png_reads_reject_drift_and_cannot_supply_motion_canvas_master_authority",
+              "historical_results_remain_original_and_never_become_current_preview",
+          }
+          observed = re.findall(r"^test desktop_render_tests::([a-z0-9_]+) \.\.\. ok$", raw, re.M)
+          assert len(observed) == len(expected) and set(observed) == expected
+          assert "8 passed; 0 failed; 0 ignored" in raw
+          print("HYPERFRAMES_DESKTOP_ORIGINAL_RECOVERY=PASS; cases=8; SQLite=REAL; provider_transport=SYNTHETIC; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+          PY_HF_RENDER
+          cargo test --locked --jobs 2 -p motionwright-service --lib jobs::tests:: -- --test-threads=1
       - name: Native PNG preview security regressions
         if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'desktop-source'
         run: cargo test --locked -p motionwright-desktop native_preview

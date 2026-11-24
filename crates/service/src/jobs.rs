@@ -82,6 +82,8 @@ fn classify(command: &str) -> Option<(&'static str, RenderCommand)> {
         || command == "driver.manim-community.camera.render.start"
     {
         "driver:manim-community"
+    } else if command.starts_with("driver.hyperframes.render.") {
+        "driver:hyperframes"
     } else if command.starts_with("driver.mlt-video.render.") {
         "driver:mlt-video"
     } else {
@@ -236,7 +238,10 @@ pub(crate) fn derive_production_jobs_all(
             continue;
         };
         if receipt.stage != "completed"
-            || !matches!(provider, "driver:motion-canvas" | "driver:manim-community")
+            || !matches!(
+                provider,
+                "driver:motion-canvas" | "driver:manim-community" | "driver:hyperframes"
+            )
         {
             continue;
         }
@@ -250,10 +255,10 @@ pub(crate) fn derive_production_jobs_all(
         else {
             continue;
         };
-        // A real Manim admission carries the SDK provenance on its original
+        // Manim and HyperFrames admissions carry SDK provenance on the original
         // start. Missing/foreign generation may be observed but grants no
         // completed lineage. Legacy Motion Canvas records remain compatible.
-        if provider == "driver:manim-community"
+        if matches!(provider, "driver:manim-community" | "driver:hyperframes")
             && (wrapper
                 .pointer("/execution/provenance/provider")
                 .and_then(Value::as_str)
@@ -291,8 +296,10 @@ pub(crate) fn derive_production_jobs_all(
         let data = wrapper.map(driver_data);
         // Observation never admits a new job or transfers its native result
         // to a different provider, generation, revision, or original start.
-        let guarded_provider =
-            matches!(provider, "driver:motion-canvas" | "driver:manim-community");
+        let guarded_provider = matches!(
+            provider,
+            "driver:motion-canvas" | "driver:manim-community" | "driver:hyperframes"
+        );
         let original = acknowledged_starts.get(&(
             provider.to_owned(),
             job_ref.clone(),
@@ -317,7 +324,7 @@ pub(crate) fn derive_production_jobs_all(
                 (Some(requested), Some(returned)) if requested == returned && requested == job_ref
             );
         let foreign_provider = receipt.stage == "completed"
-            && provider == "driver:manim-community"
+            && matches!(provider, "driver:manim-community" | "driver:hyperframes")
             && wrapper
                 .and_then(|value| value.pointer("/execution/provenance/provider"))
                 .and_then(Value::as_str)

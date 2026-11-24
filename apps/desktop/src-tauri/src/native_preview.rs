@@ -74,6 +74,10 @@ struct RenderManifest {
 
 #[derive(Clone)]
 enum GrantOrigin {
+    Hyperframes {
+        width: u32,
+        height: u32,
+    },
     Full {
         evidence: MotionCanvasRenderEvidence,
         options: Option<FilmBuildOptions>,
@@ -540,12 +544,14 @@ impl NativePreviewRegistry {
         }
         let _permit = ReadPermit(&self.inner.active_reads);
         let bytes = match &entry.origin {
-            GrantOrigin::Full { .. } => read_verified_production_artifact(
-                &entry.output_root,
-                &format!("{}/{}", entry.directory, frame.file),
-                &frame.sha256,
-                MAX_FRAME_BYTES,
-            ),
+            GrantOrigin::Full { .. } | GrantOrigin::Hyperframes { .. } => {
+                read_verified_production_artifact(
+                    &entry.output_root,
+                    &format!("{}/{}", entry.directory, frame.file),
+                    &frame.sha256,
+                    MAX_FRAME_BYTES,
+                )
+            }
             GrantOrigin::Window { evidence, service } => {
                 read_cached_motion_canvas_window_frame(service, evidence, request.frame_index)
             }
@@ -554,7 +560,175 @@ impl NativePreviewRegistry {
         if bytes.len() as u64 != frame.bytes || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
             return Err("Rendered frame metadata no longer matches the verified PNG.".into());
         }
+        if let GrantOrigin::Hyperframes { width, height } = entry.origin
+            && !hyperframes_png_dimensions(&bytes, width, height)
+        {
+            return Err("Native HyperFrames PNG dimensions differ from its saved source.".into());
+        }
         Ok(bytes)
+    }
+}
+
+fn hyperframes_png_dimensions(bytes: &[u8], width: u32, height: u32) -> bool {
+    bytes.len() >= 24
+        && bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+        && &bytes[12..16] == b"IHDR"
+        && bytes[16..20] == width.to_be_bytes()
+        && bytes[20..24] == height.to_be_bytes()
+}
+
+impl NativePreviewRegistry {
+    /// This origin grants bounded PNG reads only. It cannot become Motion
+    /// Canvas master authority or reinterpret a renderer result supplied by JS.
+    pub fn register_hyperframes(
+        &self,
+        output_root: &Path,
+        owner_resource: &str,
+        project: &Project,
+        evidence: &motionwright_native::production::HyperframesSourceEvidence,
+    ) -> Result<NativeFrameGrant, String> {
+        const INVALID: &str = "The original HyperFrames PNG sequence could not be verified.";
+        let expected = motionwright_native::hyperframes::compile_hyperframes_source(
+            project,
+            evidence.deliverable_id,
+        )
+        .map_err(|_| INVALID)?
+        .inventory();
+        let directory = format!("render-{}", evidence.job_ref);
+        let receipt = evidence.result.get("receipt").ok_or(INVALID)?;
+        if owner_resource != project.resource_key()
+            || evidence.project_resource != owner_resource
+            || evidence.generation != project.generation
+            || evidence.revision != project.revision
+            || serde_json::to_value(&expected).map_err(|_| INVALID)?
+                != serde_json::to_value(&evidence.source).map_err(|_| INVALID)?
+            || evidence.job_ref.len() != 67
+            || !evidence.job_ref.starts_with("hf-")
+            || !is_digest(&evidence.job_ref[3..])
+            || evidence.output_kind != "native_png_sequence_intermediate"
+            || evidence.human_acceptance
+            || evidence.result.get("state").and_then(Value::as_str) != Some("succeeded")
+            || evidence.result.get("directory").and_then(Value::as_str) != Some(directory.as_str())
+            || evidence.result.get("job_ref").and_then(Value::as_str)
+                != Some(evidence.job_ref.as_str())
+            || evidence
+                .result
+                .get("runtime_lock_sha256")
+                .and_then(Value::as_str)
+                != Some(evidence.runtime_lock_sha256.as_str())
+            || receipt.get("schema").and_then(Value::as_str)
+                != Some("semwright.hyperframes.native-render/1")
+            || receipt.get("status").and_then(Value::as_str) != Some("completed")
+            || receipt.get("attempt_id").and_then(Value::as_str) != Some(evidence.job_ref.as_str())
+            || receipt.get("fingerprint").and_then(Value::as_str)
+                != Some(expected.fingerprint.as_str())
+            || receipt.get("source_sha256").and_then(Value::as_str)
+                != Some(expected.source_sha256.as_str())
+            || receipt.get("html_sha256").and_then(Value::as_str)
+                != Some(expected.html_sha256.as_str())
+            || receipt.get("runtime_lock_sha256").and_then(Value::as_str)
+                != Some(evidence.runtime_lock_sha256.as_str())
+            || receipt.get("source_unchanged") != Some(&Value::Bool(true))
+            || receipt.get("automatic_retry") != Some(&Value::Bool(false))
+            || receipt.get("fps").and_then(Value::as_u64) != Some(30)
+            || receipt.get("frame_count").and_then(Value::as_u64)
+                != Some(u64::from(expected.composition.frame_count))
+            || receipt
+                .pointer("/native_command/exit_code")
+                .and_then(Value::as_u64)
+                != Some(0)
+            || receipt.pointer("/native_command/signal") != Some(&Value::Null)
+            || receipt.pointer("/native_command/capture_complete") != Some(&Value::Bool(true))
+            || receipt.pointer("/native_command/automatic_retry") != Some(&Value::Bool(false))
+        {
+            return Err(INVALID.into());
+        }
+        let originals = receipt
+            .get("frames")
+            .and_then(Value::as_array)
+            .ok_or(INVALID)?;
+        if originals.len() != expected.composition.frame_count as usize
+            || originals.is_empty()
+            || originals.len() > 300
+        {
+            return Err(INVALID.into());
+        }
+        let mut frames = Vec::with_capacity(originals.len());
+        let mut total = 0_u64;
+        for (index, original) in originals.iter().enumerate() {
+            let file = format!("frames/frame_{:06}.png", index + 1);
+            let bytes = original
+                .get("bytes")
+                .and_then(Value::as_u64)
+                .ok_or(INVALID)?;
+            let digest = original
+                .get("sha256")
+                .and_then(Value::as_str)
+                .ok_or(INVALID)?;
+            total = total.checked_add(bytes).ok_or(INVALID)?;
+            if original.as_object().is_none_or(|row| row.len() != 6)
+                || original.get("index").and_then(Value::as_u64) != Some(index as u64)
+                || original.get("file").and_then(Value::as_str) != Some(file.as_str())
+                || original.get("width").and_then(Value::as_u64)
+                    != Some(u64::from(expected.composition.width))
+                || original.get("height").and_then(Value::as_u64)
+                    != Some(u64::from(expected.composition.height))
+                || bytes == 0
+                || bytes > 16 * 1024 * 1024
+                || total > 256 * 1024 * 1024
+                || !is_digest(digest)
+            {
+                return Err(INVALID.into());
+            }
+            let actual = read_verified_production_artifact(
+                output_root,
+                &format!("{directory}/{file}"),
+                digest,
+                16 * 1024 * 1024,
+            )
+            .map_err(|_| INVALID)?;
+            if actual.len() as u64 != bytes
+                || !hyperframes_png_dimensions(
+                    &actual,
+                    expected.composition.width,
+                    expected.composition.height,
+                )
+            {
+                return Err(INVALID.into());
+            }
+            frames.push(FrameMeta {
+                file,
+                sha256: digest.into(),
+                bytes,
+            });
+        }
+        let token = Uuid::new_v4();
+        let grant = NativeFrameGrant {
+            token,
+            segment_id: evidence.job_ref.clone(),
+            scene_ids: project.scenes.iter().map(|scene| scene.id).collect(),
+            frame_count: frames.len() as u64,
+        };
+        let entry = GrantEntry {
+            token,
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            deliverable_id: evidence.deliverable_id,
+            directory,
+            output_root: output_root.to_path_buf(),
+            frames: Arc::new(frames),
+            origin: GrantOrigin::Hyperframes {
+                width: expected.composition.width,
+                height: expected.composition.height,
+            },
+        };
+        let mut entries = self.inner.grants.lock().map_err(|_| INVALID)?;
+        if entries.len() >= MAX_GRANTS {
+            entries.pop_front();
+        }
+        entries.push_back(entry);
+        Ok(grant)
     }
 }
 

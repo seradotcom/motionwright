@@ -45,6 +45,7 @@ function productionJobKey(projectId: string, job: ProductionJobProjection) {
 function providerLabel(provider: string) {
   if (provider === "driver:motion-canvas") return "Motion Canvas";
   if (provider === "driver:mlt-video") return "MLT";
+  if (provider === "driver:hyperframes") return "HyperFrames";
   return provider.replace(/^driver:/, "");
 }
 

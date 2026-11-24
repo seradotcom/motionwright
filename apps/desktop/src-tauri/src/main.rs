@@ -7,6 +7,7 @@ mod effect_authority;
 mod effect_grants;
 mod file_import;
 mod generation_journal;
+mod hyperframes_render;
 mod hyperframes_source;
 mod local_error;
 mod media_integrity;
@@ -102,6 +103,7 @@ struct AppState {
     preview: NativePreviewRegistry,
     av_delivery: NativeMasterDeliveryRegistry,
     runtime_connections: RuntimeConnectionRegistry,
+    hyperframes_renders: hyperframes_render::RenderRegistry,
     graph_exchange_custody: GraphExchangeJournal,
     development_audition_custody: motionwright_native::original_mix::DevelopmentAuditionCustody,
 }
@@ -3273,6 +3275,167 @@ async fn apply_semantic_graph_change(
     Ok(receipt.project().clone())
 }
 
+#[derive(Serialize)]
+struct DesktopHyperframesResponse {
+    attempt: hyperframes_render::AttemptView,
+    preview: Option<native_preview::NativeFrameGrant>,
+    preview_problem: Option<String>,
+}
+
+/// Recover only original local receipts and read original output bytes.
+/// No provider, query, effect grant, render start or retry is available here.
+async fn present_original_hyperframes(
+    owner: &mut desktop_owner::OwnerInvocation,
+    state: &AppState,
+    request: hyperframes_render::ReadRequest,
+) -> Result<DesktopHyperframesResponse, String> {
+    let service = state.service.clone();
+    let recovered = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        hyperframes_render::read_attempt(&service, &request)
+    })
+    .await
+    .map_err(|_| "Original HyperFrames history could not be read.".to_string())??;
+    owner.begin_phase()?;
+    let mut response = DesktopHyperframesResponse {
+        attempt: recovered.view,
+        preview: None,
+        preview_problem: None,
+    };
+    if !response.attempt.source_current {
+        return Ok(response);
+    }
+    let (Some(evidence), Some(project), Some(identity)) = (
+        recovered.evidence,
+        recovered.original_project,
+        recovered.connection_identity,
+    ) else {
+        return Ok(response);
+    };
+    let path = match selected_connection_path(state, project.id) {
+        Ok(Some(path)) => path,
+        _ => {
+            response.preview_problem = Some(
+                "Select the original Semwright connection to read this completed sequence.".into(),
+            );
+            return Ok(response);
+        }
+    };
+    let connection = ProductionConnection::load(path).ok().filter(|connection| {
+        connection.resource == project.resource_key()
+            && connection
+                .identity()
+                .is_ok_and(|current| current == identity)
+    });
+    let Some(connection) = connection else {
+        response.preview_problem = Some("The selected connection differs from the original render. No output path was substituted.".into());
+        return Ok(response);
+    };
+    let registry = state.preview.clone();
+    let saved = project.clone();
+    let preview = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        registry.register_hyperframes(
+            &connection.output_root,
+            &connection.resource,
+            &saved,
+            &evidence,
+        )
+    })
+    .await;
+    owner.begin_phase()?;
+    if state.service.project(project.id).map_err(sanitized)? != project {
+        response.attempt.source_current = false;
+        return Ok(response);
+    }
+    match preview {
+        Ok(Ok(grant)) => response.preview = Some(grant),
+        _ => response.preview_problem = Some(
+            "The original job completed, but its PNG sequence could not be verified. Keep the original operation; rendering was not repeated.".into()),
+    }
+    Ok(response)
+}
+
+#[tauri::command]
+async fn render_hyperframes_source(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: hyperframes_render::RenderRequest,
+) -> Result<DesktopHyperframesResponse, String> {
+    let _lease = state
+        .hyperframes_renders
+        .acquire(request.source.project_id)?;
+    let connection_path =
+        selected_connection_path(&state, request.source.project_id)?.ok_or_else(|| {
+            "Select an owner-provisioned Semwright connection in Integrations.".to_string()
+        })?;
+    let connection = ProductionConnection::load(connection_path)
+        .map_err(|_| "The selected Semwright connection is unavailable.".to_string())?;
+    if connection.resource != format!("project:{}", request.source.project_id) {
+        return Err("The connection belongs to a different project.".into());
+    }
+    let identity = connection
+        .identity()
+        .map_err(|_| "The connection identity is unavailable.".to_string())?;
+    let coordinator = ProductionCoordinator::with_receipt_custody(
+        state.service.clone(),
+        connection,
+        &state.production_receipt_custody,
+    )
+    .map_err(|_| "The original Semwright connection was rejected.".to_string())?;
+    let service = state.service.clone();
+    let grants = state.effect_grants.clone();
+    let intent = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        hyperframes_render::begin(&service, &grants, &request, &identity)
+    })
+    .await
+    .map_err(|_| {
+        "The original render admission could not be confirmed; read its retained request."
+            .to_string()
+    })??;
+    if owner.begin_phase().is_err() {
+        let result = Err(semwright_native_sdk::Error::new(
+            semwright_native_sdk::ErrorCode::PermissionDenied,
+            "Desktop owner retired before Native dispatch",
+        ));
+        hyperframes_render::finish(&state.service, &intent, &result)?;
+        return Err("Desktop owner retired before Native dispatch.".into());
+    }
+    let result = coordinator
+        .render_hyperframes_source(
+            intent.source.project_id,
+            &RevisionStamp::from(&intent.project),
+            &intent.request_id,
+            intent.source.deliverable_id,
+            &intent.runtime_lock_sha256,
+        )
+        .await;
+    // Retain the result of the already accepted invocation even if the UI closed.
+    // This append cannot start another native phase or manufacture a receipt.
+    hyperframes_render::finish(&state.service, &intent, &result)?;
+    if result.is_err() {
+        return Err("The original HyperFrames operation did not complete. Read its retained outcome; no automatic retry was made.".into());
+    }
+    owner.begin_phase()?;
+    present_original_hyperframes(
+        &mut owner,
+        &state,
+        hyperframes_render::ReadRequest {
+            project_id: intent.source.project_id,
+            generation: intent.source.generation,
+            request_id: intent.request_id,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+async fn read_original_hyperframes_render(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: hyperframes_render::ReadRequest,
+) -> Result<DesktopHyperframesResponse, String> {
+    present_original_hyperframes(&mut owner, &state, request).await
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(desktop_owner::lifecycle_plugin())
@@ -3318,6 +3481,7 @@ fn main() {
                 preview: NativePreviewRegistry::default(),
                 av_delivery: NativeMasterDeliveryRegistry::default(),
                 runtime_connections: RuntimeConnectionRegistry::new(&data_dir)?,
+                hyperframes_renders: hyperframes_render::RenderRegistry::default(),
                 graph_exchange_custody: GraphExchangeJournal::new(&data_dir, workspace_session)?,
                 development_audition_custody,
             });
@@ -3380,6 +3544,8 @@ fn main() {
             export_project_bundle,
             export_native_capsule_source,
             native_hyperframes_source,
+            render_hyperframes_source,
+            read_original_hyperframes_render,
             export_hyperframes_source_file,
             export_caption_sidecar,
             export_otio,
@@ -3407,13 +3573,12 @@ fn main() {
                 }
                 // Only an admitted, completed diagnostic audition prepares a
                 // read-only Store handoff. An unmarked production build is inert.
-                if let Some(state) = app.try_state::<AppState>() {
-                    if let Err(error) = state
+                if let Some(state) = app.try_state::<AppState>()
+                    && let Err(error) = state
                         .development_audition_custody
                         .prepare_exit_handoff(&state.service)
-                    {
-                        eprintln!("{error}");
-                    }
+                {
+                    eprintln!("{error}");
                 }
             }
         });

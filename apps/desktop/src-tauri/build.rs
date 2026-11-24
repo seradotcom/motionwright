@@ -56,6 +56,8 @@ fn main() {
             "export_project_bundle",
             "export_native_capsule_source",
             "native_hyperframes_source",
+            "render_hyperframes_source",
+            "read_original_hyperframes_render",
             "export_hyperframes_source_file",
             "export_caption_sidecar",
             "export_otio",
