@@ -33,7 +33,10 @@ test("saved shape rotation persists without derived motion keys on original reop
     expect(actual.keyframes).toEqual([]);
     const object=page.getByRole("button",{name:"Canvas object "+shape.name,exact:true});
     await expect.poll(()=>object.evaluate(el=>(el as HTMLElement).style.transform)).toBe("rotate(-33deg)");
-    await page.getByLabel("Motion playhead",{exact:true}).fill("0.5");
+    const playhead=page.getByLabel("Motion playhead",{exact:true});
+    await playhead.focus();
+    await playhead.press("End");
+    expect(Number(await playhead.inputValue())).toBeGreaterThan(0);
     await expect.poll(()=>object.evaluate(el=>(el as HTMLElement).style.transform)).toBe("rotate(-33deg)");
     await page.reload();
     await page.getByRole("button",{name:"Canvas",exact:true}).click();
