@@ -343,12 +343,17 @@ mod desktop_render_tests {
         let recovery = read_attempt(&reopened, &read(&p, &r)).unwrap();
         assert_eq!(recovery.view.state, "completed");
         assert!(recovery.view.source_current);
+        assert_eq!(recovery.original_project.as_ref(), Some(&p));
+        assert_eq!(
+            recovery.connection_identity.as_deref(),
+            Some(intent.connection_identity.as_str())
+        );
         let registry = NativePreviewRegistry::default();
         let grant = registry
             .register_hyperframes(
                 dir.path(),
                 &p.resource_key(),
-                &p,
+                recovery.original_project.as_ref().unwrap(),
                 &recovery.evidence.unwrap(),
             )
             .unwrap();
@@ -520,6 +525,11 @@ mod desktop_render_tests {
         let recovery = read_attempt(&service, &read(&next, &r)).unwrap();
         assert_eq!(recovery.view.state, "completed");
         assert!(!recovery.view.source_current);
+        assert_eq!(recovery.original_project.as_ref(), Some(&p));
+        assert_eq!(
+            recovery.connection_identity.as_deref(),
+            Some(intent.connection_identity.as_str())
+        );
         assert!(
             registry
                 .register_hyperframes(dir.path(), &p.resource_key(), &next, &original)
