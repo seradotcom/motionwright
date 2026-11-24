@@ -91,9 +91,14 @@ test("Studio retains, saves and replaces a clipped waypoint track with independe
     ]));
     const firstHistory = await service.history(original.id, positioned.revision, 8);
     expect(firstHistory).toHaveLength(1);
-    expect(firstHistory[0].change).toMatchObject({
-      type: "set_canvas_motion_keyframes", scene_id: scene.id, node_id: child.id, keyframes: savedNode.keyframes,
+    expect(firstHistory[0].change, "WAYPOINT_ORIGINAL_CHANGE_IDENTITY").toMatchObject({
+      type: "set_canvas_motion_keyframes", scene_id: scene.id, node_id: child.id,
     });
+    // The journal preserves submitted order; the saved node sorts time/property.
+    // Compare the complete unique key set without imposing either serialization order.
+    const journalKeys = (firstHistory[0].change as { keyframes: unknown[] }).keyframes;
+    expect(journalKeys, "WAYPOINT_ORIGINAL_CHANGE_KEY_COUNT").toHaveLength(22);
+    expect(journalKeys, "WAYPOINT_ORIGINAL_CHANGE_KEY_VALUES").toEqual(expect.arrayContaining(savedNode.keyframes));
 
     // A subsequent edit replaces the whole original track, including old times.
     await page.reload();

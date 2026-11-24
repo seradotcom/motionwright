@@ -3,13 +3,16 @@ import { expect, test } from "@playwright/test";
 type Fixture = {
   records(): { command:string; request:Record<string,unknown> }[];
   loseNext():void; holdGrant():void; releaseGrant():void; revision(value:number):void;
+  holdRuntime():void; releaseRuntime():void; runtimeState(state:"files_unverified"|"installed"):void; retainRollback():void;
 };
 declare global { interface Window { __hyperframesRenderFixture:Fixture; } }
 test("lost render acknowledgement survives reload and reads original PNGs without another render", async ({ page }) => {
   await page.goto("/tests/fixtures/hyperframes-render.html");
   await page.getByRole("button", { name:"Inspect saved HyperFrames source" }).click();
   const panel = page.getByRole("region", { name:"HyperFrames native PNG rendering" });
-  await panel.getByRole("textbox", { name:"Runtime lock SHA-256", exact:true }).fill("d".repeat(64));
+  await panel.getByRole("button", { name:"Read installed HyperFrames profiles", exact:true }).click();
+  await panel.getByRole("button", { name:"Use selected HyperFrames profile", exact:true }).click();
+  await expect(panel.getByText("Installed HyperFrames files verified for this selection.", { exact:false })).toBeVisible();
   await page.evaluate(() => window.__hyperframesRenderFixture.loseNext());
   await panel.getByRole("button", { name:"Render saved HyperFrames source" }).click();
   await expect(panel.getByRole("alert")).toContainText("acknowledgement lost");
@@ -31,6 +34,10 @@ test("lost render acknowledgement survives reload and reads original PNGs withou
   await panel.getByRole("link", { name:"Save displayed PNG" }).click();
   expect((await download).suggestedFilename()).toBe("hyperframes-frame_000060.png");
   const calls = await page.evaluate(() => window.__hyperframesRenderFixture.records());
+  expect(calls.filter(item => item.command === "runtime_profile_inventory")).toHaveLength(1);
+  expect(calls.filter(item => item.command === "read_original_runtime_profile")).toHaveLength(1);
+  expect(calls.some(item => item.command === "install_runtime_profile" || item.command === "rollback_runtime_profile")).toBe(false);
+  expect(calls.find(item => item.command === "render_hyperframes_source")!.request.runtime_lock_sha256).toBe("d".repeat(64));
   expect(calls.filter(item => item.command === "render_hyperframes_source")).toHaveLength(1);
   expect(calls.filter(item => item.command === "issue_effect_grant")).toHaveLength(1);
   expect(calls.filter(item => item.command === "read_original_hyperframes_render")
@@ -41,6 +48,7 @@ test("a retired source cannot dispatch when an old grant returns after revision 
   await page.goto("/tests/fixtures/hyperframes-render.html");
   await page.getByRole("button", { name:"Inspect saved HyperFrames source" }).click();
   const panel = page.getByRole("region", { name:"HyperFrames native PNG rendering" });
+  await panel.getByText("Use a separately provisioned runtime", { exact:true }).click();
   await panel.getByRole("textbox", { name:"Runtime lock SHA-256", exact:true }).fill("d".repeat(64));
   await page.evaluate(() => window.__hyperframesRenderFixture.holdGrant());
   await panel.getByRole("button", { name:"Render saved HyperFrames source" }).click();
@@ -56,4 +64,58 @@ test("a retired source cannot dispatch when an old grant returns after revision 
   const calls = await page.evaluate(() => window.__hyperframesRenderFixture.records());
   expect(calls.filter(item => item.command === "issue_effect_grant")).toHaveLength(1);
   expect(calls.filter(item => item.command === "render_hyperframes_source")).toHaveLength(0);
+});
+
+test("an unverified installed runtime cannot enable rendering or grant any effect", async ({ page }) => {
+  await page.goto("/tests/fixtures/hyperframes-render.html");
+  await page.getByRole("button", { name:"Inspect saved HyperFrames source" }).click();
+  const panel = page.getByRole("region", { name:"HyperFrames native PNG rendering" });
+  await page.evaluate(() => window.__hyperframesRenderFixture.runtimeState("files_unverified"));
+  await panel.getByRole("button", { name:"Read installed HyperFrames profiles", exact:true }).click();
+  await panel.getByRole("button", { name:"Use selected HyperFrames profile", exact:true }).click();
+  await expect(panel.getByRole("alert")).toContainText("files could not be verified");
+  await expect(panel.getByRole("button", { name:"Render saved HyperFrames source" })).toBeDisabled();
+  await expect(panel.getByLabel("Runtime lock SHA-256", { exact:true })).toHaveValue("");
+  const calls = await page.evaluate(() => window.__hyperframesRenderFixture.records());
+  expect(calls.filter(item => item.command === "read_original_runtime_profile")).toHaveLength(1);
+  expect(calls.some(item => ["issue_effect_grant", "render_hyperframes_source", "install_runtime_profile"].includes(item.command))).toBe(false);
+});
+
+test("a late runtime read cannot select a profile after source revision ABA", async ({ page }) => {
+  await page.goto("/tests/fixtures/hyperframes-render.html");
+  await page.getByRole("button", { name:"Inspect saved HyperFrames source" }).click();
+  const panel = page.getByRole("region", { name:"HyperFrames native PNG rendering" });
+  await panel.getByRole("button", { name:"Read installed HyperFrames profiles", exact:true }).click();
+  await page.evaluate(() => window.__hyperframesRenderFixture.holdRuntime());
+  await panel.getByRole("button", { name:"Use selected HyperFrames profile", exact:true }).click();
+  await expect(panel.getByText("Checking the original installed HyperFrames files", { exact:false })).toBeVisible();
+  await page.evaluate(() => window.__hyperframesRenderFixture.revision(5));
+  await page.evaluate(() => window.__hyperframesRenderFixture.revision(4));
+  await page.getByRole("button", { name:"Inspect saved HyperFrames source" }).click();
+  await page.evaluate(() => window.__hyperframesRenderFixture.releaseRuntime());
+  await expect(panel.getByLabel("Runtime lock SHA-256", { exact:true })).toHaveValue("");
+  await expect(panel.getByRole("button", { name:"Render saved HyperFrames source" })).toBeDisabled();
+  await expect(panel.getByText("Installed HyperFrames files verified for this selection.", { exact:false })).toHaveCount(0);
+  expect(await page.evaluate(() => window.__hyperframesRenderFixture.records()
+    .some(item => item.command === "issue_effect_grant" || item.command === "render_hyperframes_source"))).toBe(false);
+});
+
+test("a retained runtime rollback prevents dispatch when the original render grant returns", async ({ page }) => {
+  await page.goto("/tests/fixtures/hyperframes-render.html");
+  await page.getByRole("button", { name:"Inspect saved HyperFrames source" }).click();
+  const panel = page.getByRole("region", { name:"HyperFrames native PNG rendering" });
+  await panel.getByRole("button", { name:"Read installed HyperFrames profiles", exact:true }).click();
+  await panel.getByRole("button", { name:"Use selected HyperFrames profile", exact:true }).click();
+  await expect(panel.getByText("Installed HyperFrames files verified for this selection.", { exact:false })).toBeVisible();
+  await page.evaluate(() => window.__hyperframesRenderFixture.holdGrant());
+  await panel.getByRole("button", { name:"Render saved HyperFrames source" }).click();
+  await expect(panel.getByText("The original native operation is running", { exact:false })).toBeVisible();
+  await page.evaluate(() => window.__hyperframesRenderFixture.retainRollback());
+  await page.evaluate(() => window.__hyperframesRenderFixture.releaseGrant());
+  await expect(panel.getByRole("alert")).toContainText("selected runtime has a retained rollback");
+  await expect(panel.getByRole("button", { name:"Render saved HyperFrames source" })).toBeDisabled();
+  const calls = await page.evaluate(() => window.__hyperframesRenderFixture.records());
+  expect(calls.filter(item => item.command === "issue_effect_grant")).toHaveLength(1);
+  expect(calls.filter(item => item.command === "render_hyperframes_source")).toHaveLength(0);
+  expect(calls.some(item => item.command === "install_runtime_profile" || item.command === "rollback_runtime_profile")).toBe(false);
 });

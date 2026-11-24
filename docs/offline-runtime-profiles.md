@@ -44,6 +44,8 @@ The description includes each file's relative path, byte length, SHA-256 and int
 4. Choose **Install reviewed local copy**. This requests one exact local permission, records the original operation in SQLite, creates a new private destination and copies the declared files without replacement. Each file is checked, and the completed copy is read back before it is reported as verified.
 5. Expand **Paths for the separately authorized provider** to copy the verified Node, entry and lock paths or the lock digest. Configure those paths through the existing owner-controlled provider setup. Existing [connection selection](owner-native-runtime-onboarding.md) remains a separate step.
 
+For a saved HyperFrames composition, choose **Read installed HyperFrames profiles** in the native PNG rendering panel, then **Use selected HyperFrames profile**. The panel verifies the original installation and selects its runtime lock without copying a digest. Missing or changed files cannot enable rendering, and a retained rollback blocks dispatch even if a previous render permission arrives late. The selected Semwright connection must already use the same runtime. An existing owner-provisioned runtime remains available under **Use a separately provisioned runtime**.
+
 Opening a project, reading the inventory or running the creative runtime doctor never triggers a runtime download or installation. Installing a package does not change the project's revision, its sources or the selected owner connection.
 
 ## Recovery and rollback

@@ -2,6 +2,9 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import NativeFrameStage from "./NativeFrameStage";
 import type { DecodedPreviewFrame } from "./previewRecovery";
 import type { Project } from "./types";
+import {
+  readOriginalRuntimeProfile, readRuntimeRetention, runtimeProfileInventory, type RuntimeInstallation,
+} from "./runtimeProfileApi";
 import type { HyperframesSourceSnapshot } from "./hyperframesSourceApi";
 import {
   dispatchHyperframesRender, hyperframesIntentUnconfirmed, hyperframesRuntimeDigest,
@@ -14,10 +17,13 @@ export default function HyperframesRenderPanel({ project, source, desktopMode }:
 }) {
   const id = useId(), epoch = useRef(0), live = useRef(false), busy = useRef(false);
   const [runtime, setRuntime] = useState("");
+  const [profiles, setProfiles] = useState<RuntimeInstallation[]>([]);
+  const [selectedProfile, setSelectedProfile] = useState("");
+  const [verifiedProfile, setVerifiedProfile] = useState<RuntimeInstallation | null>(null);
   const [attempts, setAttempts] = useState<HyperframesRenderIntent[]>([]);
   const [selected, setSelected] = useState("");
   const [response, setResponse] = useState<HyperframesRenderResponse | null>(null);
-  const [phase, setPhase] = useState<"render" | "read" | null>(null);
+  const [phase, setPhase] = useState<"render" | "read" | "profiles" | "runtime" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
   const [frame, setFrame] = useState(0);
@@ -41,6 +47,7 @@ export default function HyperframesRenderPanel({ project, source, desktopMode }:
   useLayoutEffect(() => {
     epoch.current++; scopeRef.current = scope; busy.current = false;
     setResponse(null); setError(null); setPhase(null); setFrame(0); setDecoded(null);
+    setRuntime(""); setProfiles([]); setSelectedProfile(""); setVerifiedProfile(null);
     refresh();
     // The complete source scope is the ownership boundary.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -54,15 +61,51 @@ export default function HyperframesRenderPanel({ project, source, desktopMode }:
   }, [decoded, frame, response?.preview]);
   const currentAttempt = attempts.find(item => item.request_id === selected);
   const pending = attempts.some(hyperframesIntentUnconfirmed);
-  const perform = async (kind: "render" | "read") => {
+  const currentProfile = profiles.find(item => item.install_id === selectedProfile);
+  const perform = async (kind: "render" | "read" | "profiles" | "runtime") => {
     if (!desktopMode || busy.current || !live.current || storageError) return;
     if (kind === "render" && (!source || !hyperframesRuntimeDigest(runtime) || pending)) return;
     if (kind === "read" && !currentAttempt) return;
+    if (kind === "runtime" && !currentProfile) return;
     const turn = ++epoch.current, key = scope;
     const current = () => live.current && epoch.current === turn && scopeRef.current === key;
-    const beforeDispatch = () => { if (!current()) throw new Error("The saved source selection changed before Native dispatch."); };
-    busy.current = true; setPhase(kind); setError(null); setResponse(null); setDecoded(null);
+    const beforeDispatch = () => {
+      if (!current()) throw new Error("The saved source selection changed before Native dispatch.");
+      if (verifiedProfile && readRuntimeRetention(project).some(item =>
+        item.install_id === verifiedProfile.install_id && item.kind === "rollback" && item.state !== "not_sent")) {
+        setRuntime(""); setVerifiedProfile(null);
+        throw new Error("The selected runtime has a retained rollback. Review its original installation before rendering.");
+      }
+    };
+    busy.current = true; setPhase(kind); setError(null);
+    if (kind === "render" || kind === "read") { setResponse(null); setDecoded(null); }
+    else { setRuntime(""); setVerifiedProfile(null); }
     try {
+      if (kind === "profiles") {
+        const inventory = await runtimeProfileInventory(project);
+        if (current()) {
+          const available = inventory.profiles.filter(item => item.profile === "hyperframes" && item.state !== "rolled_back");
+          setProfiles(available);
+          setSelectedProfile(available[0]?.install_id ?? "");
+          if (!inventory.supported) setError(inventory.alternatives);
+          else if (!available.length) setError("No local HyperFrames installation is recorded for this project. Choose an offline package in Integrations, or use a separately provisioned runtime.");
+        }
+        return;
+      }
+      if (kind === "runtime" && currentProfile) {
+        const installed = await readOriginalRuntimeProfile(project, currentProfile);
+        if (!current()) return;
+        if (installed.profile !== "hyperframes" || installed.lock_sha256 !== currentProfile.lock_sha256
+          || installed.node_path !== currentProfile.node_path || installed.entry_path !== currentProfile.entry_path
+          || installed.lock_path !== currentProfile.lock_path)
+          throw new Error("The original runtime selection does not match the installed HyperFrames profile.");
+        if (installed.state !== "installed" || !installed.content_verified)
+          throw new Error("The original HyperFrames files could not be verified (" + installed.state.replaceAll("_", " ") + "). Review this installation in Integrations. The saved source is unchanged.");
+        setRuntime(installed.lock_sha256);
+        setVerifiedProfile(installed);
+        setProfiles(rows => rows.map(item => item.install_id === installed.install_id ? installed : item));
+        return;
+      }
       let result: HyperframesRenderResponse;
       if (kind === "render" && source) {
         const intent = prepareHyperframesRender(project, source, runtime);
@@ -88,10 +131,27 @@ export default function HyperframesRenderPanel({ project, source, desktopMode }:
       This action does not install software or grant provider permissions.</p>
     <fieldset disabled={!desktopMode || phase !== null || !!storageError}>
       <legend>Installed runtime</legend>
-      <label className="production-field" htmlFor={id + "-runtime"}><span>Runtime lock SHA-256</span>
-        <input id={id + "-runtime"} value={runtime} autoComplete="off" spellCheck={false} maxLength={64}
-          onChange={event => setRuntime(event.target.value)}/></label>
-      <p className="production-help">Use the digest of the owner's installed runtime-lock.json. A different runtime is rejected before rendering.</p>
+      <button type="button" className="secondary-button" onClick={() => void perform("profiles")}>
+        Read installed HyperFrames profiles</button>
+      {profiles.length > 0 && <>
+        <label className="production-field" htmlFor={id + "-profile"}><span>Local HyperFrames installation</span>
+          <select id={id + "-profile"} value={selectedProfile} onChange={event => {
+            setSelectedProfile(event.target.value); setRuntime(""); setVerifiedProfile(null);
+          }}>{profiles.map(item => <option key={item.install_id} value={item.install_id}>
+            {item.label + " " + item.version + " · " + item.state.replaceAll("_", " ") + " · " + item.install_id.slice(-8)}
+          </option>)}</select></label>
+        {currentProfile && <p className="production-help">Installed folder: {currentProfile.destination}</p>}
+        <button type="button" className="secondary-button" disabled={!currentProfile}
+          onClick={() => void perform("runtime")}>Use selected HyperFrames profile</button>
+      </>}
+      {verifiedProfile && <p role="status">Installed HyperFrames files verified for this selection.
+        The selected provider connection must use this same runtime and still requires its own permission.</p>}
+      <details><summary>Use a separately provisioned runtime</summary>
+        <label className="production-field" htmlFor={id + "-runtime"}><span>Runtime lock SHA-256</span>
+          <input id={id + "-runtime"} value={runtime} autoComplete="off" spellCheck={false} maxLength={64}
+            onChange={event => { setRuntime(event.target.value); setVerifiedProfile(null); }}/></label>
+        <p className="production-help">Use the digest of the owner's installed runtime-lock.json. A different runtime is rejected before rendering.</p>
+      </details>
       <button type="button" className="secondary-button"
         disabled={!source || !hyperframesRuntimeDigest(runtime) || pending}
         onClick={() => void perform("render")}>Render saved HyperFrames source</button>
@@ -110,7 +170,12 @@ export default function HyperframesRenderPanel({ project, source, desktopMode }:
         onClick={() => void perform("read")}>Read original HyperFrames result</button>
       <p className="production-help">Reads the saved operation and original PNG files. This never restarts a render.</p>
     </fieldset>}
-    {phase && <p role="status">{phase === "render" ? "The original native operation is running…" : "Reading the original retained operation…"}</p>}
+    {phase && <p role="status">{{
+      render: "The original native operation is running…",
+      read: "Reading the original retained operation…",
+      profiles: "Reading original local installations…",
+      runtime: "Checking the original installed HyperFrames files…",
+    }[phase]}</p>}
     {storageError && <p role="alert" className="production-error">{storageError} Source export remains available.</p>}
     {error && <p role="alert" className="production-error">{error}</p>}
     {response && <div role="status">

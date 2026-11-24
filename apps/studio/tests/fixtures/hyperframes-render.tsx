@@ -6,6 +6,7 @@ import "../../src/styles.css";
 import "../../src/production-design.css";
 import HyperframesSourceWorkbench from "../../src/HyperframesSourceWorkbench";
 import { fixtureProject } from "../../src/fixture";
+import { RUNTIME_RETENTION_PREFIX, type RuntimeInstallation } from "../../src/runtimeProfileApi";
 let project = structuredClone(fixtureProject); project.revision = 4;
 project.deliverables[0].width = 64; project.deliverables[0].height = 36;
 const root = createRoot(document.getElementById("render-root")!);
@@ -16,6 +17,21 @@ type Request = Record<string, unknown>;
 const records: { command: string; request: Request }[] = JSON.parse(sessionStorage.getItem("hf-fixture-calls") ?? "[]");
 let loseNext = false, hold = false, release: ((value: unknown) => void) | null = null;
 const grant = { token: "cccccccc-3333-4333-8333-cccccccccccc" };
+const installId = "11111111-7777-4777-8777-111111111111";
+const destination = "/synthetic/runtime-profiles-v1/" + installId;
+let runtimeState: RuntimeInstallation["state"] = "installed";
+let holdRuntime = false, returnRuntime: (() => void) | null = null;
+const installation = (scope: unknown, state: RuntimeInstallation["state"]) => ({
+  schema: "motionwright.runtime-profile-installation/1", scope, install_id: installId,
+  profile: "hyperframes", label: "HyperFrames", version: "0.8.181", platform: "linux-x86_64",
+  manifest_sha256: "a".repeat(64), total_bytes: 4096, file_count: 6,
+  destination, disabled_destination: "/synthetic/runtime-profiles-v1/disabled-" + installId,
+  node_path: destination + "/tools/node", entry_path: destination + "/runtime/semwright-hyperframes-runner.mjs",
+  lock_path: destination + "/runtime/runtime-lock.json", lock_sha256: "d".repeat(64),
+  state, content_verified: state === "installed", rollback_available: state !== "rolled_back",
+  rollback_subject: "runtime-profile-rollback|" + installId + "|" + "b".repeat(64),
+  execution_performed: false, automatic_retry: false,
+});
 const source = () => ({
   schema:"motionwright.hyperframes-source/1", project:structuredClone(project), deliverable_id:project.deliverables[0].id,
   fingerprint:"c".repeat(64), source_sha256:"a".repeat(64), source_bytes:"300", html_sha256:"b".repeat(64), html_bytes:"600",
@@ -39,6 +55,16 @@ function result(request: Request) {
     records.push({ command, request:structuredClone(args.request) });
     sessionStorage.setItem("hf-fixture-calls", JSON.stringify(records));
     if (command === "native_hyperframes_source") return source();
+    if (command === "runtime_profile_inventory") return {
+      schema: "motionwright.runtime-profile-inventory/1", scope: args.request, supported: true,
+      platform: "linux-x86_64", profiles: [installation(args.request, "copy_completed")], alternatives: "",
+    };
+    if (command === "read_original_runtime_profile") {
+      if (args.request.install_id !== installId) throw new Error("Foreign synthetic installation");
+      const result = installation(structuredClone(args.request.scope), runtimeState);
+      if (holdRuntime) return new Promise(resolve => { returnRuntime = () => resolve(result); });
+      return result;
+    }
     if (command === "issue_effect_grant") {
       if (hold) return new Promise(resolve => { release = resolve; });
       return grant;
@@ -64,6 +90,18 @@ function result(request: Request) {
 (window as unknown as Record<string, unknown>).__hyperframesRenderFixture = {
   records: () => structuredClone(records),
   loseNext: () => { loseNext = true; },
+  runtimeState: (state: RuntimeInstallation["state"]) => { runtimeState = state; },
+  holdRuntime: () => { holdRuntime = true; },
+  releaseRuntime: () => { holdRuntime = false; const pending = returnRuntime; returnRuntime = null; if (!pending) throw new Error("No original runtime read."); pending(); },
+  retainRollback: () => {
+    runtimeState = "rolled_back";
+    localStorage.setItem(RUNTIME_RETENTION_PREFIX + project.id + ":" + project.generation, JSON.stringify({
+      schema: "motionwright.runtime-profile-retention/1", operations: [{
+        install_id: installId, scope: { project_id: project.id, generation: project.generation, revision: project.revision },
+        manifest_sha256: "a".repeat(64), profile: "hyperframes", kind: "rollback", state: "dispatched",
+      }],
+    }));
+  },
   holdGrant: () => { hold = true; },
   releaseGrant: () => { hold = false; const pending = release; release = null; if (!pending) throw new Error("No pending original grant."); pending(grant); },
   revision: (revision: number) => { project = { ...structuredClone(project), revision }; render(); },

@@ -41,6 +41,11 @@ on:
         type: boolean
         default: false
         required: false
+      waypoint_studio_only:
+        description: "Only the real Studio waypoint Save/reopen case for UI/test changes; requires clipped_opacity_source_only"
+        type: boolean
+        default: false
+        required: false
       expected_source_sha:
         description: "Exact frozen Motionwright SHA; required for retained scopes and geometry E2E"
         type: string
@@ -116,6 +121,7 @@ env:
   MOTIONWRIGHT_NATIVE_CLIP_COMPOSITION: ${{ (github.event_name == 'workflow_dispatch' && inputs.clip_composition) || 'static' }}
   MW_NATIVE_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
   MW_CLIPPED_OPACITY_SOURCE_ONLY: ${{ (github.event_name == 'workflow_dispatch' && inputs.clipped_opacity_source_only) && '1' || '0' }}
+  MW_WAYPOINT_STUDIO_ONLY: ${{ (github.event_name == 'workflow_dispatch' && inputs.waypoint_studio_only) && '1' || '0' }}
   MOTIONWRIGHT_N83_RECOVERY_RECIPIENT: ${{ inputs.recovery_recipient }}
   MOTIONWRIGHT_V01_PROVIDER_REPEAT: ${{ inputs.v01_provider_repeat && 'true' || 'false' }}
   PYTHONDONTWRITEBYTECODE: '1'
@@ -128,7 +134,7 @@ env:
 
 jobs:
   real-native-render:
-    if: ${{ !inputs.clipped_opacity_source_only }}
+    if: ${{ !inputs.clipped_opacity_source_only && !inputs.waypoint_studio_only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -1408,7 +1414,7 @@ jobs:
           retention-days: 14
 
   clipped-opacity-source-g1:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.clipped_opacity_source_only }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.clipped_opacity_source_only || inputs.waypoint_studio_only) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -1474,6 +1480,9 @@ jobs:
           root="$RUNNER_TEMP/motionwright-clipped-opacity-g1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           test ! -e "$root"
           mkdir -m 700 "$root"
+          # The focused UI case reuses independently completed Rust checks.
+          # It still builds this exact source's Service and closes its real Store.
+          if [ "$MW_WAYPOINT_STUDIO_ONLY" != 1 ]; then
           source_phase=compile-all-native-targets
           cargo clippy --locked --jobs 2 -p motionwright-native --keep-going --all-targets -- -D warnings > "$root/native-compile.original.log" 2>&1 || {
               grep -E '^error:|^error\[|^ *-->' "$root/native-compile.original.log" | tail -n 18
@@ -1587,6 +1596,7 @@ jobs:
           assert re.search(r"(?m)^test result: ok\. 7 passed; 0 failed; 0 ignored;", raw)
           print("HYPERFRAMES_SAVED_SOURCE_EXPORT_REOPEN=PASS; source_tests=7; installedDesktop=NOT_RUN; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           PY_HYPERFRAMES_SOURCE
+          fi
           source_phase=service-build
           cargo build --locked -p motionwright-service --example studio_review_session > "$root/service-build.original.log" 2>&1 || {
             grep -E '^error:|^error\[' "$root/service-build.original.log" | tail -n 10
@@ -1605,8 +1615,12 @@ jobs:
           npx --no-install playwright install --with-deps chromium > "$root/browser.original.log" 2>&1
           export MOTIONWRIGHT_SERVICE_TEST_BIN="$GITHUB_WORKSPACE/target/debug/examples/studio_review_session"
           source_phase=studio-original-save-and-reopen
-          npx --no-install playwright test tests/native-clipped-opacity-service.spec.ts tests/native-clipped-position-service.spec.ts tests/native-composed-pose-service.spec.ts tests/native-pose-recovery-service.spec.ts tests/native-waypoint-pose-service.spec.ts             --project=chromium --workers=1 --retries=0 --reporter=dot             --output="$root/browser-original" > "$root/studio-original.log" 2>&1 || {
-              grep -E '^\s*[0-9]+ failed|^\s*[0-9]+ passed|^\s*[0-9]+ skipped|Error:|TimeoutError:|AssertionError:|^\s*[0-9]+\)' "$root/studio-original.log" | tail -n 12
+          source_specs=(tests/native-waypoint-pose-service.spec.ts)
+          if [ "$MW_WAYPOINT_STUDIO_ONLY" != 1 ]; then
+            source_specs=(tests/native-clipped-opacity-service.spec.ts tests/native-clipped-position-service.spec.ts tests/native-composed-pose-service.spec.ts tests/native-pose-recovery-service.spec.ts "${source_specs[@]}")
+          fi
+          npx --no-install playwright test "${source_specs[@]}"             --project=chromium --workers=1 --retries=0 --reporter=dot             --output="$root/browser-original" > "$root/studio-original.log" 2>&1 || {
+              grep -E '^\s*[0-9]+ failed|^\s*[0-9]+ passed|^\s*[0-9]+ skipped|Error:|TimeoutError:|AssertionError:|^\s*[0-9]+\)|at .*native-waypoint-pose-service.spec.ts:[0-9]+:[0-9]+' "$root/studio-original.log" | tail -n 12
               exit 1
             }
           cd ../..
@@ -1615,6 +1629,12 @@ jobs:
           from pathlib import Path
           import os,re
           root=Path(os.environ["CLIPPED_G1_ROOT"])
+          studio=(root/"studio-original.log").read_text(encoding="utf8")
+          assert not re.search(r"\b[1-9][0-9]* skipped\b",studio)
+          if os.environ["MW_WAYPOINT_STUDIO_ONLY"] == "1":
+              assert re.search(r"\b1 passed\b",studio), "The original Studio waypoint path must pass"
+              print("WAYPOINT_STUDIO_STORE=PASS; StudioChromium=1; SQLite=REAL; WriterClosed=YES; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+              raise SystemExit(0)
           expected=(
             ("film-positive.original.log",
              "film::tests::original_editable_clip_child_opacity_fades_in_and_out_in_native_film"),
