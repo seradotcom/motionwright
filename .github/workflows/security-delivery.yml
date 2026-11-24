@@ -340,6 +340,9 @@ jobs:
       - name: Verified MP4 local delivery security regressions
         if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-source","desktop-compile","desktop-hyperframes"]'), inputs.verification_scope)
         run: cargo test --locked -p motionwright-desktop av_delivery
+      - name: Owner Manim source exchange and original SQLite reopen
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'desktop-compile'
+        run: cargo test --locked --jobs 2 -p motionwright-desktop manim_source_ -- --test-threads=1
       - name: Clippy desktop boundary
         run: cargo clippy --locked --jobs 2 -p motionwright-desktop --keep-going --all-targets -- -D warnings
 
@@ -401,13 +404,21 @@ jobs:
           assert "4 passed; 0 failed; 0 ignored" in raw
           print("FIRST_USE_EXAMPLE_SOURCE=PASS; cases=4; SQLite=REAL; MotionCanvas=SOURCE_REALIZATION; HyperFrames=UNSUPPORTED_MOTION_VERIFIED; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           PY_FIRST_USE_SOURCE
+      - name: Grouped A4 source projections for hierarchy, camera, cut continuity and editable Manim
+        run: |
+          set -euo pipefail
+          cargo test --locked --jobs 2 -p motionwright-domain --lib camera_reframe::tests:: -- --test-threads=1
+          cargo test --locked --jobs 2 -p motionwright-domain --lib exact_native_position_move_inside_static_clip_saves_four_editable_keys_once -- --test-threads=1
+          cargo test --locked --jobs 2 -p motionwright-domain --lib scene_boundary -- --test-threads=1
+          cargo test --locked --jobs 2 -p motionwright-native --lib film::tests:: -- --test-threads=1
+          cargo test --locked --jobs 2 -p motionwright-native --test manim_editable_projection -- --test-threads=1
           cargo build --locked --jobs 2 -p motionwright-service --example studio_review_session
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: apps/studio/package-lock.json
-      - name: Five first-use and portable-library Studio flows through the actual closed Store
+      - name: Six first-use, portable-library and editable Group flows through the actual closed Store
         working-directory: apps/studio
         env:
           MOTIONWRIGHT_SERVICE_TEST_BIN: ${{ github.workspace }}/target/debug/examples/studio_review_session
@@ -419,8 +430,8 @@ jobs:
           npm ci --no-audit --no-fund
           npx tsc -b
           npx playwright install --with-deps chromium
-          npx playwright test tests/project-lifecycle-service.spec.ts \
-            --grep 'editable bundled example|lost example creation response|portable library' \
+          npx playwright test tests/project-lifecycle-service.spec.ts tests/native-static-group-service.spec.ts \
+            --grep 'editable bundled example|lost example creation response|portable library|creates a static ordinary group' \
             --project=chromium --workers=1 --retries=0 --reporter=line,json \
             --output="$MOTIONWRIGHT_SERVICE_TEST_TMPDIR/browser"
           python3 -B - <<'PY_FIRST_USE_STUDIO'
@@ -428,9 +439,9 @@ jobs:
           from pathlib import Path
           result = json.loads(Path(os.environ["PLAYWRIGHT_JSON_OUTPUT_FILE"]).read_text(encoding="utf-8"))
           stats = result["stats"]
-          assert stats["expected"] == 5, stats
+          assert stats["expected"] == 6, stats
           assert all(stats.get(key, 0) == 0 for key in ("unexpected","flaky","skipped")), stats
-          print("FIRST_USE_EXAMPLE_AND_LIBRARY_STUDIO=PASS; cases=5; SQLite=REAL; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+          print("FIRST_USE_LIBRARY_AND_GROUP_STUDIO=PASS; cases=6; SQLite=REAL; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           PY_FIRST_USE_STUDIO
 
   dependency-review:
