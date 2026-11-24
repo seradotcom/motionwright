@@ -35,6 +35,7 @@ import MeasuredDataWorkbench from "./MeasuredDataWorkbench";
 import RenderTailWorkbench from "./RenderTailWorkbench";
 import NativePropertyFidelityWorkbench from "./NativePropertyFidelityWorkbench";
 import NativeSourceWorkbench, { type NativeSourceServices } from "./NativeSourceWorkbench";
+import ManimEditableSourceWorkbench from "./ManimEditableSourceWorkbench";
 import ComponentDistillationWorkbench from "./ComponentDistillationWorkbench";
 import type { NativeReviewRepairDraft } from "./nativeReviewRepair";
 import "./production-design.css";
@@ -574,10 +575,13 @@ function SourceAttachmentEditor({project,scene,commitCamera,busy}:{project:Proje
   </>;
 }
 
-function SourcesWorkbench({project,scene,commit,commitCamera,busy,sourceServices}:{project:Project;scene:Scene|null;commit:Commit;commitCamera:ProductionCommit;busy:boolean;sourceServices:NativeSourceServices}) {
+function SourcesWorkbench({project,scene,commit,commitCamera,busy,sourceServices,displayProfile}:{project:Project;scene:Scene|null;commit:Commit;commitCamera:ProductionCommit;busy:boolean;sourceServices:NativeSourceServices;displayProfile:DeliverableProfile|null}) {
   const capsules = project.production_design?.capsules ?? [];
   return <div className="production-sources"><div className="production-section-title"><FileBox size={18}/><div><h2>Native source capsules</h2><p>Attach first. Preserve source bytes before considering translation or baking.</p></div></div>
     <NativeSourceWorkbench project={project} scene={scene} busy={busy} {...sourceServices}/>
+    {scene?.renderer==="manim-community" && displayProfile && <ManimEditableSourceWorkbench
+      key={JSON.stringify([project.id,project.generation,project.active_branch,scene.id,displayProfile.id])}
+      project={project} scene={scene} profile={displayProfile} busy={busy} commit={commitCamera} refreshProject={sourceServices.refreshProject}/>}
     <SourceAttachmentEditor key={productionScope(project,{kind:"source",sceneId:scene?.id ?? null})} project={project} scene={scene} commitCamera={commitCamera} busy={busy}/>
     <div className="production-capsule-list">{capsules.map(c=><article key={c.id}><header><strong>{c.label}</strong><span>{c.fidelity.renderer} / {c.fidelity.renderer_version}</span></header>
       <p className="mono">sha256:{c.source_sha256}</p><dl>{(["visual","temporal","structural","editable"] as const).map(d=><div key={d}><dt>{d}</dt><dd>{c.fidelity[d]}</dd></div>)}</dl>

@@ -10,6 +10,7 @@ mod generation_journal;
 mod hyperframes_render;
 mod hyperframes_source;
 mod local_error;
+mod manim_editable_source;
 mod media_integrity;
 mod narration_native;
 mod original_mix_native;
@@ -2995,6 +2996,61 @@ fn export_project_bundle(
 }
 
 #[tauri::command]
+async fn inspect_manim_editable_source(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: manim_editable_source::SourceRequest,
+) -> Result<manim_editable_source::SourceSnapshot, String> {
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        manim_editable_source::inspect_source(&service, request)
+    })
+    .await
+    .map_err(|_| "Manim source inspection did not finish.".to_string())?
+}
+
+#[tauri::command]
+async fn export_manim_editable_source(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: manim_editable_source::ExportRequest,
+) -> Result<manim_editable_source::ExportResponse, String> {
+    let service = state.service.clone();
+    let grants = state.effect_grants.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move ||
+        manim_editable_source::export_source(&service, &grants, request))
+        .await.map_err(|_| "The original Manim source export worker did not finish. Inspect the destination; do not retry automatically.".to_string())?
+}
+
+#[tauri::command]
+async fn inspect_attached_manim_editable_source(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: manim_editable_source::AttachedRequest,
+) -> Result<manim_editable_source::AttachedResponse, String> {
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        manim_editable_source::inspect_attached(&service, request)
+    })
+    .await
+    .map_err(|_| "The attached Manim source inspection did not finish.".to_string())?
+}
+
+#[tauri::command]
+async fn preview_manim_editable_source_edit(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: manim_editable_source::EditRequest,
+) -> Result<manim_editable_source::EditResponse, String> {
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        manim_editable_source::preview_edit(&service, request)
+    })
+    .await
+    .map_err(|_| "The Manim source edit inspection did not finish.".to_string())?
+}
+
+#[tauri::command]
 fn export_native_capsule_source(
     _owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
@@ -3760,6 +3816,10 @@ fn main() {
             read_original_hyperframes_render,
             observe_original_hyperframes_job,
             export_hyperframes_source_file,
+            inspect_manim_editable_source,
+            export_manim_editable_source,
+            inspect_attached_manim_editable_source,
+            preview_manim_editable_source_edit,
             export_caption_sidecar,
             export_otio,
             export_otio_source_snapshot,
