@@ -450,3 +450,148 @@ fn contextual_follow_refuses_non_translation_and_never_rewrites_original_source(
         assert_eq!(scene, before);
     }
 }
+
+#[test]
+fn scoped_pose_moves_base_and_complete_track_atomically_under_camera_in_either_order() {
+    let (mut source, scene_id) = setup();
+    let target = &source.scenes[0].nodes[0];
+    let mut keys = Vec::new();
+    for at in [RationalTime::ZERO, RationalTime::new(1, 1).unwrap()] {
+        for (property, value) in [
+            (MotionProperty::X, target.x),
+            (MotionProperty::Y, target.y),
+            (MotionProperty::Width, target.width),
+            (MotionProperty::Height, target.height),
+            (MotionProperty::RotationDeg, target.rotation_deg),
+        ] {
+            keys.push(CanvasKeyframe {
+                at,
+                property,
+                value: value
+                    - if at == RationalTime::ZERO && property == MotionProperty::X {
+                        40.0
+                    } else {
+                        0.0
+                    },
+                interpolation: if at == RationalTime::ZERO {
+                    MotionInterpolation::Linear
+                } else {
+                    MotionInterpolation::EaseOutCubic
+                },
+            });
+        }
+    }
+    source.scenes[0].nodes[0].keyframes = keys;
+    source
+        .apply_change(&Change::UpsertCameraReframe {
+            reframe: reframe(scene_id),
+        })
+        .unwrap();
+    let frozen = source.clone();
+    let original = &source.scenes[0].nodes[0];
+    let target_id = original.id;
+    let transform = CanvasTransform {
+        x: original.x + 20.0,
+        y: original.y,
+        width: original.width,
+        height: original.height,
+        rotation_deg: original.rotation_deg,
+        opacity: original.opacity,
+    };
+    let shifted: Vec<_> = original
+        .keyframes
+        .iter()
+        .cloned()
+        .map(|mut key| {
+            if key.property == MotionProperty::X {
+                key.value += 20.0;
+            }
+            key
+        })
+        .collect();
+    let base_edits = vec![
+        ScopedCanvasEdit::Transform {
+            node_id: target_id,
+            transform,
+        },
+        ScopedCanvasEdit::Motion {
+            node_id: target_id,
+            keyframes: shifted.clone(),
+        },
+    ];
+    for reverse in [false, true] {
+        let mut edits = base_edits.clone();
+        if reverse {
+            edits.reverse();
+        }
+        let patch = CreativePatch {
+            scene_id,
+            base_revision: source.revision,
+            rationale: "Move the whole authored entrance while preserving its camera".into(),
+            edits,
+        };
+        let preview = source.preview_creative_patch(&patch).unwrap();
+        assert_eq!(source, frozen);
+        assert_eq!(preview.before, vec![original.clone()]);
+        assert_eq!(preview.after[0].x, original.x + 20.0);
+        assert_eq!(preview.after[0].keyframes, shifted);
+        let mut saved = source.clone();
+        saved
+            .apply_change(&Change::ApplyCreativePatch { patch })
+            .unwrap();
+        saved.validate().unwrap();
+        assert_eq!(
+            saved.production_design.camera_reframes,
+            source.production_design.camera_reframes
+        );
+        let mut reopened: Project =
+            serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert_eq!(reopened, saved);
+        let patch_id = reopened.production_design.patches.last().unwrap().id;
+        reopened
+            .apply_change(&Change::UndoCreativePatch { patch_id })
+            .unwrap();
+        assert_eq!(reopened.scenes, source.scenes);
+    }
+    for property in [
+        NodeProperty::Position,
+        NodeProperty::Size,
+        NodeProperty::Rotation,
+    ] {
+        let mut locked = source.clone();
+        locked.scenes[0].nodes[0].property_locks.insert(property);
+        let before = locked.clone();
+        let patch = CreativePatch {
+            scene_id,
+            base_revision: locked.revision,
+            rationale: "A layout must preserve locks".into(),
+            edits: base_edits.clone(),
+        };
+        assert!(
+            locked
+                .apply_change(&Change::ApplyCreativePatch { patch })
+                .is_err()
+        );
+        assert_eq!(locked, before);
+    }
+    let mut invalid = shifted;
+    invalid.push(invalid[0].clone());
+    let patch = CreativePatch {
+        scene_id,
+        base_revision: source.revision,
+        rationale: "Malformed paired tracks must preserve all source".into(),
+        edits: vec![
+            base_edits[0].clone(),
+            ScopedCanvasEdit::Motion {
+                node_id: target_id,
+                keyframes: invalid,
+            },
+        ],
+    };
+    assert!(
+        source
+            .apply_change(&Change::ApplyCreativePatch { patch })
+            .is_err()
+    );
+    assert_eq!(source, frozen);
+}

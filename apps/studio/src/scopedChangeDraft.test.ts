@@ -118,7 +118,7 @@ describe("raw scoped transform recovery", () => {
     expect(unqueuedInputCount(draft)).toBe(2);
     const restored = decodeScopedDraft(encodeScopedDraft(draft), draft.scope);
     expect(restored).toEqual(draft);
-    expect(restored.schema).toBe("motionwright.scoped-change-draft/3");
+    expect(restored.schema).toBe("motionwright.scoped-change-draft/4");
     expect(draftTransformInput(restored, "y")).toBe("-");
 
     const current = structuredClone(project);
@@ -145,7 +145,7 @@ describe("raw scoped transform recovery", () => {
     delete legacy.editor.transformRaw;
     for (const editor of legacy.parkedEditors) delete editor.transformRaw;
     const restored = decodeScopedDraft(JSON.stringify(legacy), draft.scope);
-    expect(restored.schema).toBe("motionwright.scoped-change-draft/3");
+    expect(restored.schema).toBe("motionwright.scoped-change-draft/4");
     expect(restored.baseRevision).toBe(draft.baseRevision);
     expect(restored.edits).toEqual(draft.edits);
     expect(restored.origins).toEqual(draft.origins);

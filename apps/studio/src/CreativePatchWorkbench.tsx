@@ -3,6 +3,7 @@ import { Check, Eye, Plus, Trash2 } from "lucide-react";
 import { previewCreativePatch } from "./api";
 import SceneCompositionStudy from "./SceneCompositionStudy";
 import ScopedPaintMotionEditor from "./ScopedPaintMotionEditor";
+import CanvasArrangementControls from "./CanvasArrangementControls";
 import { scopedMotionIssue, scopedStyleIssues } from "./scopedPaintMotion";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { previewCreativePatchUndo } from "./creativeUndo";
@@ -31,6 +32,8 @@ interface Props {
   displayProfile: DeliverableProfile | null;
   repairDraft: NativeReviewRepairDraft | null;
   onDismissRepair: () => void;
+  initialNodeId?: string | null;
+  arrangementOpen?: boolean;
 }
 const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
 
@@ -40,15 +43,17 @@ export default function CreativePatchWorkbench(props: Props) {
   return <ScopedEditor key={scopedDraftScope(props.project, props.scene)} {...props}/>;
 }
 
-function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayProfile, repairDraft, onDismissRepair }: Props) {
+function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayProfile, repairDraft, onDismissRepair, initialNodeId, arrangementOpen }: Props) {
   const scope = scopedDraftScope(project, scene);
   const storageKey = DRAFT_STORAGE_PREFIX + scope;
+  const freshDraft = () => selectDraftNode(createScopedDraft(project, scene),
+    scene?.nodes.find(node => node.id === initialNodeId) ?? scene?.nodes[0]);
   const [recovery] = useState(() => {
     try {
       const raw = window.sessionStorage.getItem(storageKey);
-      return { draft: raw ? hydrateScopedDraft(decodeScopedDraft(raw, scope), project, scene) : createScopedDraft(project, scene), blocked: false, error: null as string | null };
+      return { draft: raw ? hydrateScopedDraft(decodeScopedDraft(raw, scope), project, scene) : freshDraft(), blocked: false, error: null as string | null };
     } catch {
-      return { draft: createScopedDraft(project, scene), blocked: true,
+      return { draft: freshDraft(), blocked: true,
         error: "The saved draft could not be restored. Its recovery copy has been left untouched; your project is unchanged." };
     }
   });
@@ -253,6 +258,8 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
         <details className="production-diff-details"><summary>Compare original, current and proposed values</summary><pre>{JSON.stringify({ original: conflict.before, current: conflict.current, proposed: conflict.proposed }, null, 2)}</pre></details>
         <button className="secondary-button" disabled={lockedUi} onClick={() => update(keepCurrentDraftValue(draft, conflict, scene))}>Keep current {conflict.kind} for {conflict.label}</button>
       </article>)}</section>}
+    <CanvasArrangementControls draft={draft} project={project} scene={scene} disabled={lockedUi || !scene || nativeSource !== null}
+      stale={draftStale} initiallyOpen={arrangementOpen} onChange={update}/>
     <div className="production-plan-grid">
       <section className="production-patch-editor" aria-label="Scoped proposal editor">
         {!hasTargetSource && <p className="production-help" role="status">{!scene
@@ -283,7 +290,7 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
           onChange={event => update({ ...draft, rationale: event.target.value })}/></label>
       </section>
       <section className="production-patch-queue" aria-label="Proposed edits"><h3>Proposed edits</h3>
-        {unqueuedInputCount(draft) > 0 && <p className="production-help" role="status">{unqueuedInputCount(draft)} input{unqueuedInputCount(draft) === 1 ? " is" : "s are"} kept outside this proposal. Select the object and add each edit you want to include; applying the queue keeps the remaining inputs.</p>}
+        {unqueuedInputCount(draft) > 0 && <p className="production-help" role="status">{unqueuedInputCount(draft)} input{unqueuedInputCount(draft) === 1 ? " is" : "s are"} kept outside this proposal. Select an object or stage an arrangement to include those inputs; applying the queue keeps the remaining inputs.</p>}
         {draft.edits.length === 0 ? <p className="production-help">No edits queued. Selecting or typing does not change the project.</p>
           : draft.edits.map((edit, index) => <div key={edit.node_id + edit.kind}><span>{editSummary(edit)}</span><button className="icon-button" disabled={lockedUi} aria-label={"Remove proposed edit " + (index + 1)}
             onClick={() => update(removeDraftEdit(draft, edit.node_id, edit.kind))}><Trash2 size={14}/></button></div>)}

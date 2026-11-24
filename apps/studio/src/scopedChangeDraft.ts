@@ -5,6 +5,8 @@ import type { CanvasNode, CanvasTransform, Change, Project, Scene } from "./type
 import { CANVAS_STYLE_FIELDS, cleanScopedMotion, cleanScopedStyle, parseScopedMotion, parseScopedStyle,
   scopedMotionRows, scopedStyleRaw, validScopedMotion, validScopedMotionRows, validScopedStyle, validScopedStyleRaw } from "./scopedPaintMotion";
 import type { ScopedMotionRow, ScopedStyleRaw } from "./scopedPaintMotion";
+import { arrangeCanvasFrames, emptyArrangementSelection, validArrangementSelection } from "./canvasArrangement";
+import type { ArrangementSelection } from "./canvasArrangement";
 
 export type DraftEdit = Extract<ScopedCanvasEdit, { kind: "text" | "transform" | "style" | "motion" }>;
 type SourceNode = Pick<CanvasNode, "id" | "kind" | "parent_id" | "text"> & CanvasTransform &
@@ -20,7 +22,7 @@ interface DraftEditor {
   source: SourceNode | null;
 }
 export interface ScopedChangeDraft {
-  schema: "motionwright.scoped-change-draft/3";
+  schema: "motionwright.scoped-change-draft/4";
   scope: string;
   baseRevision: number;
   rationale: string;
@@ -29,6 +31,7 @@ export interface ScopedChangeDraft {
   editor: DraftEditor;
   parkedEditors: DraftEditor[];
   nativeSource: NativeReviewRepairDraft | null;
+  arrangement?: ArrangementSelection;
 }
 export interface DraftConflict {
   nodeId: string;
@@ -128,8 +131,9 @@ export function selectDraftNode(draft: ScopedChangeDraft, node: CanvasNode | und
 }
 export function createScopedDraft(project: Project, scene: Scene | null): ScopedChangeDraft {
   return selectDraftNode({
-    schema: "motionwright.scoped-change-draft/3", scope: scopedDraftScope(project, scene),
+    schema: "motionwright.scoped-change-draft/4", scope: scopedDraftScope(project, scene),
     baseRevision: project.revision, rationale: "", edits: [], origins: [], parkedEditors: [], nativeSource: null,
+    arrangement: emptyArrangementSelection(),
     editor: { nodeId: "", kind: "text", text: "", transform: { ...emptyTransform }, source: null },
   }, scene?.nodes[0]);
 }
@@ -206,13 +210,14 @@ function editorHasInputs(draft: ScopedChangeDraft, editor: DraftEditor): boolean
   return draftKinds.some(kind => editorFieldHasInput(draft, editor, kind));
 }
 export function scopedDraftHasWork(draft: ScopedChangeDraft): boolean {
-  return draft.edits.length > 0 || draft.rationale.length > 0 ||
+  return draft.edits.length > 0 || draft.rationale.length > 0 || Boolean(draft.arrangement?.nodeIds.length) ||
     [draft.editor, ...draft.parkedEditors].some(editor => editorHasInputs(draft, editor));
 }
 export function unqueuedInputCount(draft: ScopedChangeDraft): number {
   return [draft.editor, ...draft.parkedEditors].flatMap(editor => draftKinds
     .filter(kind => editorFieldHasInput(draft, editor, kind) && !draft.edits.some(edit =>
-      edit.node_id === editor.nodeId && edit.kind === kind && sameValue(editValue(edit), editorValue(editor, kind))))).length;
+      edit.node_id === editor.nodeId && edit.kind === kind && sameValue(editValue(edit), editorValue(editor, kind))))).length +
+    (draft.arrangement?.nodeIds.length ? 1 : 0);
 }
 export function queueDraftEdit(draft: ScopedChangeDraft): ScopedChangeDraft {
   const source = draft.editor.source;
@@ -223,6 +228,54 @@ export function queueDraftEdit(draft: ScopedChangeDraft): ScopedChangeDraft {
   const origins = draft.origins.filter(origin => edits.some(item => item.node_id === origin.id));
   if (!origins.some(origin => origin.id === source.id)) origins.push(structuredClone(source));
   return { ...draft, edits, origins };
+}
+export function updateDraftArrangement(draft: ScopedChangeDraft, selection: ArrangementSelection): ScopedChangeDraft {
+  if (!validArrangementSelection(selection)) throw new Error("Choose at most 128 distinct frames and a supported arrangement.");
+  return { ...draft, arrangement: { action: selection.action, nodeIds: [...selection.nodeIds] } };
+}
+/** Build ordinary scoped edits from current source values. Selection preferences
+ * carry no prepared geometry; stale revisions require the existing rebase flow.
+ * Existing movement drafts are never overwritten by a generated arrangement.
+ */
+export function stageDraftArrangement(draft: ScopedChangeDraft, project: Project, scene: Scene | null): ScopedChangeDraft {
+  if (!scene || draft.scope !== scopedDraftScope(project, scene) || draft.baseRevision !== project.revision)
+    throw new Error("Review this proposal on the current project revision before staging an arrangement.");
+  if (draft.nativeSource) throw new Error("A native-frame repair has a fixed target. Keep that repair separate from a multi-object arrangement.");
+  const working = hydrateScopedDraft(draft, project, scene);
+  const selection = working.arrangement ?? emptyArrangementSelection();
+  const selected = new Set(selection.nodeIds), result = arrangeCanvasFrames(scene, selection);
+  if (working.edits.some(edit => selected.has(edit.node_id) && (edit.kind === "transform" || edit.kind === "motion")))
+    throw new Error("Selected objects already have proposed movement. Review or remove those edits before arranging them.");
+  for (const editor of [working.editor, ...working.parkedEditors].filter(item => selected.has(item.nodeId))) {
+    const current = scene.nodes.find(node => node.id === editor.nodeId)!;
+    if (!editor.source || !sameValue(sourceNode(editor.source), sourceNode(current)))
+      throw new Error("A selected object's original values are unavailable or changed. Review its draft source first.");
+    if (editorFieldHasInput(working, editor, "transform") || editorFieldHasInput(working, editor, "motion"))
+      throw new Error("A selected object has uncommitted movement inputs. Stage or discard those inputs before arranging it.");
+  }
+  const edits = [...working.edits, ...result.edits];
+  if (edits.length > 128) throw new Error("This proposal exceeds 128 edits. Keep the existing proposal and choose fewer frames.");
+  const moved = new Set(result.edits.map(edit => edit.node_id));
+  const origins = [...working.origins];
+  for (const id of moved) if (!origins.some(node => node.id === id)) origins.push(sourceNode(scene.nodes.find(node => node.id === id)!));
+  const updateEditor = (editor: DraftEditor): DraftEditor => {
+    const next = { ...editor };
+    for (const edit of result.edits.filter(item => item.node_id === editor.nodeId)) {
+      if (edit.kind === "transform") { next.transform = { ...edit.transform }; delete next.transformRaw; }
+      else next.motionRaw = scopedMotionRows(edit.keyframes);
+    }
+    return next;
+  };
+  const editor = updateEditor(working.editor), parkedEditors = working.parkedEditors.map(updateEditor);
+  for (const id of moved) {
+    if (id === editor.nodeId || parkedEditors.some(item => item.nodeId === id)) continue;
+    const node = scene.nodes.find(item => item.id === id)!;
+    parkedEditors.push(updateEditor({ nodeId: id, kind: "transform", text: node.text ?? "", transform: nodeTransform(node), source: sourceNode(node) }));
+  }
+  if (parkedEditors.length > 128) throw new Error("The arrangement would exceed the recoverable object-input budget. Keep this proposal and choose fewer frames.");
+  return { ...working, edits, origins, editor, parkedEditors,
+    rationale: working.rationale.trim() ? working.rationale : result.rationale,
+    arrangement: { action: selection.action, nodeIds: [] } };
 }
 export function removeDraftEdit(draft: ScopedChangeDraft, nodeId: string, kind: DraftEdit["kind"]): ScopedChangeDraft {
   const edits = draft.edits.filter(edit => edit.node_id !== nodeId || edit.kind !== kind);
@@ -401,20 +454,20 @@ function validNativeSource(value: unknown): value is NativeReviewRepairDraft | n
 export function decodeScopedDraft(raw: string, scope: string): ScopedChangeDraft {
   if (new TextEncoder().encode(raw).length > MAX_DRAFT_BYTES) throw new Error("Saved proposal exceeds the local draft budget.");
   const value: unknown = JSON.parse(raw);
-  if (!record(value) || !["motionwright.scoped-change-draft/1", "motionwright.scoped-change-draft/2", "motionwright.scoped-change-draft/3"].includes(String(value.schema)) || value.scope !== scope ||
+  if (!record(value) || !["motionwright.scoped-change-draft/1", "motionwright.scoped-change-draft/2", "motionwright.scoped-change-draft/3", "motionwright.scoped-change-draft/4"].includes(String(value.schema)) || value.scope !== scope ||
       !Number.isSafeInteger(value.baseRevision) || Number(value.baseRevision) < 0 || typeof value.rationale !== "string" ||
       !Array.isArray(value.edits) || value.edits.length > 128 || !value.edits.every(edit => record(edit) && typeof edit.node_id === "string" &&
         (edit.kind === "text" ? typeof edit.text === "string" : edit.kind === "transform" ? validTransform(edit.transform)
           : edit.kind === "style" ? validScopedStyle(edit.style) : edit.kind === "motion" && validScopedMotion(edit.keyframes))) ||
       !Array.isArray(value.origins) || value.origins.length > 128 || !value.origins.every(validSource) ||
       !validEditor(value.editor) || !Array.isArray(value.parkedEditors) || value.parkedEditors.length > 128 || !value.parkedEditors.every(validEditor) ||
-      !validNativeSource(value.nativeSource)) {
+      !validNativeSource(value.nativeSource) || (value.arrangement !== undefined && !validArrangementSelection(value.arrangement))) {
     throw new Error("Saved proposal has an unsupported shape or belongs to another editing scope.");
   }
   // Project validation and permission checks belong to the service. Only restore
   // the typed editor fields; unknown fields cannot become a command or grant.
   return {
-    schema: "motionwright.scoped-change-draft/3", scope, baseRevision: value.baseRevision as number,
+    schema: "motionwright.scoped-change-draft/4", scope, baseRevision: value.baseRevision as number,
     rationale: value.rationale, edits: (value.edits as DraftEdit[]).map(edit => edit.kind === "text"
       ? { kind: "text", node_id: edit.node_id, text: edit.text }
       : edit.kind === "transform" ? { kind: "transform", node_id: edit.node_id, transform: nodeTransform(edit.transform) }
@@ -422,6 +475,7 @@ export function decodeScopedDraft(raw: string, scope: string): ScopedChangeDraft
           : { kind: "motion", node_id: edit.node_id, keyframes: cleanScopedMotion(edit.keyframes) }),
     origins: (value.origins as SourceNode[]).map(sourceNode),
     editor: cleanEditor(value.editor), parkedEditors: value.parkedEditors.map(cleanEditor),
+    arrangement: value.arrangement ? { action: value.arrangement.action, nodeIds: [...value.arrangement.nodeIds] } : emptyArrangementSelection(),
     nativeSource: value.nativeSource ? { schema: "motionwright.native-review-repair-draft/1",
       projectId: value.nativeSource.projectId, generation: value.nativeSource.generation, revision: value.nativeSource.revision,
       sceneId: value.nativeSource.sceneId, profileId: value.nativeSource.profileId, frameIndex: value.nativeSource.frameIndex,

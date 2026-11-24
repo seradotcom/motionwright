@@ -4,6 +4,7 @@ import { alignmentScale } from "./canvasAlignment";
 import { resolveCanvasRelations } from "./canvasFollow";
 import { contextLabelNode } from "./contextLabel";
 import CompositionStudy from "./CompositionStudy";
+import CreativePatchWorkbench from "./CreativePatchWorkbench";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import "./canvas-source-study.css";
 import { sampledSceneCamera } from "./cameraReframe";
@@ -634,6 +635,7 @@ export default function CanvasWorkspace({
   playhead,
   onSeek,
   profile,
+  busy = false,
 }: {
   project: Project;
   scene: Scene | null;
@@ -642,9 +644,11 @@ export default function CanvasWorkspace({
   playhead: number;
   onSeek: (absoluteSeconds: number) => void;
   profile: Project["deliverables"][number] | null;
+  busy?: boolean;
 }) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(scene?.nodes[0]?.id ?? null);
   const [addBusy, setAddBusy] = useState(false);
+  const [showArrangement, setShowArrangement] = useState(false);
   const addPending = useRef(false);
   const [addError, setAddError] = useState<string | null>(null);
   const creationScope = JSON.stringify([project.id, project.generation, project.active_branch, scene?.id ?? null]);
@@ -696,7 +700,7 @@ export default function CanvasWorkspace({
     setGestureStatus(message);
   };
 
-  useEffect(() => { setAddError(null); setGestureStatus(null); }, [creationScope]);
+  useEffect(() => { setAddError(null); setGestureStatus(null); setShowArrangement(false); }, [creationScope]);
 
   useEffect(() => {
     const next = scene?.nodes[0] ?? null;
@@ -1000,6 +1004,14 @@ export default function CanvasWorkspace({
     });
   };
 
+  if (showArrangement) return <section className="production-workspace canvas-arrange-workspace" aria-label="Canvas arrangement workspace">
+    <header><div><h2>Arrange canvas objects</h2><span>{scene.name}</span></div>
+      <button className="secondary-button" disabled={busy} onClick={() => setShowArrangement(false)}>Back to object editing</button></header>
+    <CreativePatchWorkbench project={project} scene={scene} commit={async change => { await commitRequired(change); }}
+      busy={busy} playhead={playhead} onSeek={onSeek} displayProfile={profile} repairDraft={null}
+      onDismissRepair={() => {}} initialNodeId={selectedNodeId} arrangementOpen/>
+  </section>;
+
   return (
     <div className="canvas-workspace" onKeyDown={event => {
       if (event.key === "Escape" && drag.current) {
@@ -1016,6 +1028,8 @@ export default function CanvasWorkspace({
           <span>{scene.name}</span>
         </div>
         <div className="canvas-toolbar-state">
+          <button className="button compact" disabled={busy || addBusy || gesturePending.current || scene.nodes.length < 2}
+            onClick={() => { cancelDrag("Canvas gesture canceled before arranging saved frames."); setShowArrangement(true); }}>Arrange objects</button>
           <label className="motion-playhead">
             <span className="mono">{scenePlayhead.toFixed(2)}s / {sceneDurationSeconds.toFixed(2)}s</span>
             <input

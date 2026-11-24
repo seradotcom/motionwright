@@ -42,6 +42,8 @@ import type {
   BranchCombination,
   BranchCombinationPreviewRequest,
   CanvasKeyframe,
+  CanvasNode,
+  CanvasTransform,
   CaptionExportResult,
   Change,
   DataClass,
@@ -1403,7 +1405,69 @@ export async function applyChange(project: Project, change: Change, retainedGrap
   return simulateChange(project, change, requestId, true);
 }
 
-async function simulateChange(project: Project, change: Change, requestId: string, record: boolean): Promise<Project> {
+function applyNodeTransform(node: CanvasNode, transform: CanvasTransform): void {
+  if (![transform.x,transform.y,transform.width,transform.height,transform.rotation_deg,transform.opacity].every(Number.isFinite)
+    || transform.width < 0 || transform.height < 0 || transform.opacity < 0 || transform.opacity > 1) {
+    throw new Error("canvas transform is out of bounds");
+  }
+  const changesPosition = node.x !== transform.x || node.y !== transform.y;
+  const changesSize = node.width !== transform.width || node.height !== transform.height;
+  const changesRotation = node.rotation_deg !== transform.rotation_deg;
+  const changesOpacity = node.opacity !== transform.opacity;
+  if (
+    (changesPosition && node.property_locks.includes("position")) ||
+    (changesSize && node.property_locks.includes("size")) ||
+    (changesRotation && node.property_locks.includes("rotation")) ||
+    (changesOpacity && node.property_locks.includes("opacity"))
+  ) throw new Error("resource is locked: node transform property");
+  Object.assign(node, transform);
+}
+
+function applyCanvasMotion(next: Project, sceneId: string, nodeId: string, keyframes: CanvasKeyframe[], transform?: CanvasTransform): void {
+  assertUnlocked(next, sceneResource(sceneId), ["position", "timing"]);
+  const scene = next.scenes.find(entry => entry.id === sceneId);
+  const node = scene?.nodes.find(entry => entry.id === nodeId);
+  if (!scene || !node) throw new Error("resource not found: node:" + nodeId);
+  if (keyframes.length > 128) {
+    throw new Error("motion edit permits at most 128 keyframes");
+  }
+  const slots = new Set<string>();
+  for (const key of keyframes) {
+    const numerator = BigInt(key.at.num), denominator = BigInt(key.at.den);
+    if (denominator <= 0n || numerator < 0n
+      || numerator * BigInt(scene.duration.den) >= BigInt(scene.duration.num) * denominator
+      || !Number.isFinite(key.value)
+      || ((key.property === "width" || key.property === "height") && key.value < 0)
+      || (key.property === "opacity" && (key.value < 0 || key.value > 1))) {
+      throw new Error("motion edit keyframe is out of bounds");
+    }
+    let a = numerator, b = denominator;
+    while (b) [a, b] = [b, a % b];
+    if (a !== 1n) throw new Error("motion edit requires reduced rational time");
+    const slot = key.at.num + "/" + key.at.den + ":" + key.property;
+    if (slots.has(slot)) throw new Error("motion edit has duplicate time/property slots");
+    slots.add(slot);
+    const lock = key.property === "x" || key.property === "y" ? "position"
+      : key.property === "width" || key.property === "height" ? "size"
+      : key.property === "rotation_deg" ? "rotation" : "opacity";
+    if (node.property_locks.includes(lock)) throw new Error("resource is locked: node motion property");
+  }
+  for (const key of node.keyframes) {
+    const lock = key.property === "x" || key.property === "y" ? "position"
+      : key.property === "width" || key.property === "height" ? "size"
+      : key.property === "rotation_deg" ? "rotation" : "opacity";
+    if (node.property_locks.includes(lock)) throw new Error("resource is locked: node motion property");
+  }
+  if (transform) applyNodeTransform(node, transform);
+  node.keyframes = structuredClone(keyframes);
+  const propertyOrder = ["x", "y", "width", "height", "rotation_deg", "opacity"];
+  node.keyframes.sort((left, right) => {
+    const delta = BigInt(left.at.num) * BigInt(right.at.den) - BigInt(right.at.num) * BigInt(left.at.den);
+    return delta < 0n ? -1 : delta > 0n ? 1 : propertyOrder.indexOf(left.property) - propertyOrder.indexOf(right.property);
+  });
+}
+
+function simulationCandidate(project: Project): Project {
   if (![1,2].includes(project.schema_version)) throw new Error("Unsupported project schema.");
   if (project.schema_version===1 && (!sameValue({...emptyProductionDesign(),...project.production_design},emptyProductionDesign()) || project.branch_workspaces.some(workspace=>!sameValue({...emptyProductionDesign(),...workspace.base_state.production_design},emptyProductionDesign()) || !sameValue({...emptyProductionDesign(),...workspace.current_state.production_design},emptyProductionDesign())))) throw new Error("Creative production state requires project schema 2.");
   const next = structuredClone(project);
@@ -1411,6 +1475,11 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   next.branch_workspaces ??= [];
   next.reviews ??= [];
   next.merges ??= [];
+  return next;
+}
+
+async function simulateChange(project: Project, change: Change, requestId: string, record: boolean): Promise<Project> {
+  const next = simulationCandidate(project);
   switch (change.type) {
     case "combine_creative_branches":
       throw new Error("Combining editable branches requires the actual StudioService and canonical source preview.");
@@ -1719,17 +1788,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       const scene = next.scenes.find((entry) => entry.id === change.scene_id);
       const node = scene?.nodes.find((entry) => entry.id === change.node_id);
       if (!node) throw new Error("resource not found: node:" + change.node_id);
-      const changesPosition = node.x !== change.transform.x || node.y !== change.transform.y;
-      const changesSize = node.width !== change.transform.width || node.height !== change.transform.height;
-      const changesRotation = node.rotation_deg !== change.transform.rotation_deg;
-      const changesOpacity = node.opacity !== change.transform.opacity;
-      if (
-        (changesPosition && node.property_locks.includes("position")) ||
-        (changesSize && node.property_locks.includes("size")) ||
-        (changesRotation && node.property_locks.includes("rotation")) ||
-        (changesOpacity && node.property_locks.includes("opacity"))
-      ) throw new Error("resource is locked: node transform property");
-      Object.assign(node, change.transform);
+      applyNodeTransform(node, change.transform);
       break;
     }
     case "set_canvas_keyframe": {
@@ -1775,46 +1834,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       break;
     }
     case "set_canvas_motion_keyframes": {
-      assertUnlocked(next, sceneResource(change.scene_id), ["position", "timing"]);
-      const scene = next.scenes.find(entry => entry.id === change.scene_id);
-      const node = scene?.nodes.find(entry => entry.id === change.node_id);
-      if (!scene || !node) throw new Error("resource not found: node:" + change.node_id);
-      if (change.keyframes.length > 128) {
-        throw new Error("motion edit permits at most 128 keyframes");
-      }
-      const slots = new Set<string>();
-      for (const key of change.keyframes) {
-        const numerator = BigInt(key.at.num), denominator = BigInt(key.at.den);
-        if (denominator <= 0n || numerator < 0n
-          || numerator * BigInt(scene.duration.den) >= BigInt(scene.duration.num) * denominator
-          || !Number.isFinite(key.value)
-          || ((key.property === "width" || key.property === "height") && key.value < 0)
-          || (key.property === "opacity" && (key.value < 0 || key.value > 1))) {
-          throw new Error("motion edit keyframe is out of bounds");
-        }
-        let a = numerator, b = denominator;
-        while (b) [a, b] = [b, a % b];
-        if (a !== 1n) throw new Error("motion edit requires reduced rational time");
-        const slot = key.at.num + "/" + key.at.den + ":" + key.property;
-        if (slots.has(slot)) throw new Error("motion edit has duplicate time/property slots");
-        slots.add(slot);
-        const lock = key.property === "x" || key.property === "y" ? "position"
-          : key.property === "width" || key.property === "height" ? "size"
-          : key.property === "rotation_deg" ? "rotation" : "opacity";
-        if (node.property_locks.includes(lock)) throw new Error("resource is locked: node motion property");
-      }
-      for (const key of node.keyframes) {
-        const lock = key.property === "x" || key.property === "y" ? "position"
-          : key.property === "width" || key.property === "height" ? "size"
-          : key.property === "rotation_deg" ? "rotation" : "opacity";
-        if (node.property_locks.includes(lock)) throw new Error("resource is locked: node motion property");
-      }
-      node.keyframes = structuredClone(change.keyframes);
-      const propertyOrder = ["x", "y", "width", "height", "rotation_deg", "opacity"];
-      node.keyframes.sort((left, right) => {
-        const delta = BigInt(left.at.num) * BigInt(right.at.den) - BigInt(right.at.num) * BigInt(left.at.den);
-        return delta < 0n ? -1 : delta > 0n ? 1 : propertyOrder.indexOf(left.property) - propertyOrder.indexOf(right.property);
-      });
+      applyCanvasMotion(next, change.scene_id, change.node_id, change.keyframes);
       break;
     }
     case "set_canvas_position_keyframe": {
@@ -2475,6 +2495,10 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       next.locks = next.locks.filter((lock) => lock.id !== change.lock_id);
       break;
   }
+  return finishSimulatedChange(next, change, record);
+}
+
+async function finishSimulatedChange(next: Project, change: Change, record: boolean): Promise<Project> {
   await validateBrandGovernance(next);
   validateSfxProject(next);
   validateDistillations(next);
@@ -2551,7 +2575,23 @@ export async function previewCreativePatch(project: Project, patch: CreativePatc
   const ids = new Set(patch.edits.map(edit => edit.node_id));
   if (!source || [...ids].some(id => !source.nodes.some(n => n.id === id))) throw new Error("Patch target is outside the selected scene.");
   let candidate = structuredClone(project);
-  for (const edit of patch.edits) candidate = await simulateChange(candidate, scopedEditChange(patch.scene_id,edit), "editorial-preview", false);
+  const paired = new Set<string>();
+  for (const edit of patch.edits) {
+    if (edit.kind === "transform" || edit.kind === "motion") {
+      if (paired.has(edit.node_id)) continue;
+      const transforms = patch.edits.filter((entry): entry is Extract<ScopedCanvasEdit,{kind:"transform"}> => entry.kind === "transform" && entry.node_id === edit.node_id);
+      const motions = patch.edits.filter((entry): entry is Extract<ScopedCanvasEdit,{kind:"motion"}> => entry.kind === "motion" && entry.node_id === edit.node_id);
+      const hasSingleKeys = patch.edits.some(entry => entry.kind === "keyframe" && entry.node_id === edit.node_id);
+      if (transforms.length === 1 && motions.length === 1 && !hasSingleKeys) {
+        candidate = simulationCandidate(candidate);
+        applyCanvasMotion(candidate, patch.scene_id, edit.node_id, motions[0].keyframes, transforms[0].transform);
+        candidate = await finishSimulatedChange(candidate, { type:"apply_creative_patch", patch }, false);
+        paired.add(edit.node_id);
+        continue;
+      }
+    }
+    candidate = await simulateChange(candidate, scopedEditChange(patch.scene_id,edit), "editorial-preview", false);
+  }
   const after = candidate.scenes.find(s => s.id === patch.scene_id)!;
   let num = BigInt(source.start.num)*BigInt(source.duration.den)+BigInt(source.duration.num)*BigInt(source.start.den);
   let den = BigInt(source.start.den)*BigInt(source.duration.den);

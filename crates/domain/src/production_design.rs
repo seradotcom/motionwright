@@ -671,7 +671,54 @@ impl Project {
             ));
         }
         let mut candidate = self.clone();
+        let mut paired = BTreeSet::new();
         for edit in &patch.edits {
+            let id = edit.node_id();
+            if matches!(
+                edit,
+                ScopedCanvasEdit::Transform { .. } | ScopedCanvasEdit::Motion { .. }
+            ) {
+                if paired.contains(&id) {
+                    continue;
+                }
+                // A single base frame and a single complete track form one pose.
+                // Never reorder ambiguous repeated edits or individual key edits.
+                let transforms: Vec<_> = patch
+                    .edits
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        ScopedCanvasEdit::Transform { node_id, transform } if *node_id == id => {
+                            Some(transform)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let motions: Vec<_> = patch
+                    .edits
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        ScopedCanvasEdit::Motion { node_id, keyframes } if *node_id == id => {
+                            Some(keyframes)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let has_single_keys = patch.edits.iter().any(|entry| {
+                    matches!(entry,
+                    ScopedCanvasEdit::Keyframe { node_id, .. } if *node_id == id)
+                });
+                if transforms.len() == 1 && motions.len() == 1 && !has_single_keys {
+                    candidate.apply_canvas_motion(
+                        patch.scene_id,
+                        id,
+                        motions[0],
+                        Some(transforms[0]),
+                    )?;
+                    candidate.validate()?;
+                    paired.insert(id);
+                    continue;
+                }
+            }
             candidate.apply_change(&edit.change(patch.scene_id))?;
         }
         let after = candidate

@@ -1,0 +1,16 @@
+.canvas-arrangement { border: 1px solid var(--border-subtle, #47505e); border-radius: 8px; padding: 12px; margin: 0 0 14px; min-width: 0; }
+.canvas-arrangement > summary { cursor: pointer; font-weight: 600; }
+.canvas-arrangement > section { display: grid; gap: 10px; padding-top: 10px; min-width: 0; }
+.canvas-arrangement-selection { display: grid; align-content: start; grid-auto-rows: max-content; gap: 8px; max-height: 280px; overflow: auto; padding: 4px; }
+.canvas-arrangement-selection label { display: flex; gap: 9px; align-items: start; min-width: 0; cursor: pointer; }
+.canvas-arrangement .canvas-arrangement-selection input[type="checkbox"] { width: 16px; min-width: 16px; height: 16px; min-height: 16px; padding: 0; margin: 3px 0 0; flex: 0 0 16px; accent-color: var(--accent); }
+.canvas-arrangement-selection span { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.canvas-arrangement-selection small { display: block; color: var(--muted); font-size: 11px; }
+.canvas-arrangement .production-button-row { flex-wrap: wrap; }
+.canvas-arrange-workspace { height: 100%; min-height: 0; min-width: 0; overflow: auto; padding: 14px; }
+.canvas-arrange-workspace > header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.canvas-arrange-workspace > header h2 { margin: 0; font-size: 18px; }
+.canvas-arrange-workspace .production-plan-grid { grid-template-columns: minmax(0, 1fr) minmax(220px, .7fr); }
+@media (max-width: 1200px) {
+  .canvas-arrange-workspace .production-plan-grid, .canvas-arrange-workspace .production-compare-grid { grid-template-columns: minmax(0, 1fr); }
+}

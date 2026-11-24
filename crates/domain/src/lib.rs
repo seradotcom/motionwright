@@ -199,6 +199,38 @@ pub struct CanvasNode {
 }
 
 impl CanvasNode {
+    /// Share exact field and property-lock validation between standalone moves
+    /// and a scoped transform + complete track replacement.
+    fn apply_transform(&mut self, transform: &CanvasTransform) -> Result<()> {
+        transform.validate()?;
+        let mut affected = Vec::new();
+        if self.x != transform.x || self.y != transform.y {
+            affected.push(NodeProperty::Position);
+        }
+        if self.width != transform.width || self.height != transform.height {
+            affected.push(NodeProperty::Size);
+        }
+        if self.rotation_deg != transform.rotation_deg {
+            affected.push(NodeProperty::Rotation);
+        }
+        if self.opacity != transform.opacity {
+            affected.push(NodeProperty::Opacity);
+        }
+        if property_locked(&self.property_locks, &affected) {
+            return Err(DomainError::Locked(format!(
+                "node:{} has a locked transform property",
+                self.id
+            )));
+        }
+        self.x = transform.x;
+        self.y = transform.y;
+        self.width = transform.width;
+        self.height = transform.height;
+        self.rotation_deg = transform.rotation_deg;
+        self.opacity = transform.opacity;
+        Ok(())
+    }
+
     /// Validate node fields; scene membership and graph constraints require the full scene.
     pub fn validate(&self) -> Result<()> {
         if self.name.trim().is_empty() || self.name.len() > 160 {
@@ -1102,6 +1134,78 @@ impl Project {
         Ok(())
     }
 
+    fn apply_canvas_motion(
+        &mut self,
+        scene_id: Uuid,
+        node_id: Uuid,
+        keyframes: &[CanvasKeyframe],
+        transform: Option<&CanvasTransform>,
+    ) -> Result<()> {
+        let resource = format!("scene:{scene_id}");
+        self.ensure_unlocked(&resource, &[LockKind::Position, LockKind::Timing])?;
+        if keyframes.len() > 128 {
+            return Err(DomainError::Invalid(
+                "motion edit permits at most 128 keyframes".into(),
+            ));
+        }
+        let mut slots = std::collections::BTreeSet::new();
+        for key in keyframes {
+            key.validate()?;
+            if !slots.insert((key.at, key.property)) {
+                return Err(DomainError::Invalid(
+                    "motion edit has duplicate time/property slots".into(),
+                ));
+            }
+        }
+        let scene = self
+            .scenes
+            .iter_mut()
+            .find(|scene| scene.id == scene_id)
+            .ok_or(DomainError::NotFound(resource))?;
+        if keyframes.iter().any(|key| key.at >= scene.duration) {
+            return Err(DomainError::Invalid(
+                "motion edit must stay inside the half-open scene".into(),
+            ));
+        }
+        let node = scene
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == node_id)
+            .ok_or_else(|| DomainError::NotFound(format!("node:{node_id}")))?;
+        if keyframes
+            .iter()
+            .any(|key| node.property_locks.contains(&key.property.node_property()))
+        {
+            return Err(DomainError::Locked(format!(
+                "node:{node_id} motion property"
+            )));
+        }
+        // Replacement also removes channels, so their locks apply even
+        // when the incoming pose deliberately omits those properties.
+        if node
+            .keyframes
+            .iter()
+            .any(|key| node.property_locks.contains(&key.property.node_property()))
+        {
+            return Err(DomainError::Locked(format!(
+                "node:{node_id} motion property"
+            )));
+        }
+        // Validate the whole replacement before its first write. A
+        // retime cannot leave obsolete endpoint keys behind; journal,
+        // CAS and undo still see one ordinary creative Change.
+        if let Some(transform) = transform {
+            node.apply_transform(transform)?;
+        }
+        node.keyframes = keyframes.to_vec();
+        node.keyframes.sort_by(|left, right| {
+            left.at
+                .cmp(&right.at)
+                .then(left.property.cmp(&right.property))
+        });
+        Ok(())
+    }
+
     pub fn apply_change(&mut self, change: &Change) -> Result<()> {
         // Graph locks use one canonical spelling. Reject invalid aliases before
         // the unchanged generic SetLock path can mutate even an empty Project.
@@ -1852,7 +1956,6 @@ impl Project {
             } => {
                 let resource = format!("scene:{scene_id}");
                 self.ensure_unlocked(&resource, &[LockKind::Position])?;
-                transform.validate()?;
                 let scene = self
                     .scenes
                     .iter_mut()
@@ -1863,30 +1966,7 @@ impl Project {
                     .iter_mut()
                     .find(|node| node.id == *node_id)
                     .ok_or_else(|| DomainError::NotFound(format!("node:{node_id}")))?;
-                let mut affected = Vec::new();
-                if node.x != transform.x || node.y != transform.y {
-                    affected.push(NodeProperty::Position);
-                }
-                if node.width != transform.width || node.height != transform.height {
-                    affected.push(NodeProperty::Size);
-                }
-                if node.rotation_deg != transform.rotation_deg {
-                    affected.push(NodeProperty::Rotation);
-                }
-                if node.opacity != transform.opacity {
-                    affected.push(NodeProperty::Opacity);
-                }
-                if property_locked(&node.property_locks, &affected) {
-                    return Err(DomainError::Locked(format!(
-                        "node:{node_id} has a locked transform property"
-                    )));
-                }
-                node.x = transform.x;
-                node.y = transform.y;
-                node.width = transform.width;
-                node.height = transform.height;
-                node.rotation_deg = transform.rotation_deg;
-                node.opacity = transform.opacity;
+                node.apply_transform(transform)?;
             }
             Change::SetCanvasKeyframe {
                 scene_id,
@@ -1940,65 +2020,7 @@ impl Project {
                 node_id,
                 keyframes,
             } => {
-                let resource = format!("scene:{scene_id}");
-                self.ensure_unlocked(&resource, &[LockKind::Position, LockKind::Timing])?;
-                if keyframes.len() > 128 {
-                    return Err(DomainError::Invalid(
-                        "motion edit permits at most 128 keyframes".into(),
-                    ));
-                }
-                let mut slots = std::collections::BTreeSet::new();
-                for key in keyframes {
-                    key.validate()?;
-                    if !slots.insert((key.at, key.property)) {
-                        return Err(DomainError::Invalid(
-                            "motion edit has duplicate time/property slots".into(),
-                        ));
-                    }
-                }
-                let scene = self
-                    .scenes
-                    .iter_mut()
-                    .find(|scene| scene.id == *scene_id)
-                    .ok_or(DomainError::NotFound(resource))?;
-                if keyframes.iter().any(|key| key.at >= scene.duration) {
-                    return Err(DomainError::Invalid(
-                        "motion edit must stay inside the half-open scene".into(),
-                    ));
-                }
-                let node = scene
-                    .nodes
-                    .iter_mut()
-                    .find(|node| node.id == *node_id)
-                    .ok_or_else(|| DomainError::NotFound(format!("node:{node_id}")))?;
-                if keyframes
-                    .iter()
-                    .any(|key| node.property_locks.contains(&key.property.node_property()))
-                {
-                    return Err(DomainError::Locked(format!(
-                        "node:{node_id} motion property"
-                    )));
-                }
-                // Replacement also removes channels, so their locks apply even
-                // when the incoming pose deliberately omits those properties.
-                if node
-                    .keyframes
-                    .iter()
-                    .any(|key| node.property_locks.contains(&key.property.node_property()))
-                {
-                    return Err(DomainError::Locked(format!(
-                        "node:{node_id} motion property"
-                    )));
-                }
-                // Validate the whole replacement before its first write. A
-                // retime cannot leave obsolete endpoint keys behind; journal,
-                // CAS and undo still see one ordinary creative Change.
-                node.keyframes = keyframes.clone();
-                node.keyframes.sort_by(|left, right| {
-                    left.at
-                        .cmp(&right.at)
-                        .then(left.property.cmp(&right.property))
-                });
+                self.apply_canvas_motion(*scene_id, *node_id, keyframes, None)?;
             }
             Change::SetCanvasPositionKeyframe {
                 scene_id,
