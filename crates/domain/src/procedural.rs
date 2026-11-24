@@ -11,6 +11,10 @@ pub const PROCEDURAL_MAX_FIELDS: usize = 16;
 #[serde(rename_all = "snake_case")]
 pub enum FieldDistribution {
     Grid,
+    /// Recomputes columns from count and field bounds without shrinking objects.
+    AdaptiveGrid,
+    /// Equal-distance samples on an explicitly authored open or closed polyline.
+    Path,
     Staggered,
     Scatter,
     /// Equally distributed phase samples on a bounded elliptic perimeter.
@@ -77,6 +81,19 @@ impl ProceduralInfluence {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProceduralPathPoint {
+    pub x_percent: u8,
+    pub y_percent: u8,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProceduralPath {
+    pub closed: bool,
+    pub points: Vec<ProceduralPathPoint>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProceduralConfig {
@@ -102,6 +119,9 @@ pub struct ProceduralConfig {
     /// Omitted legacy documents retain the exact original v1 baseline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub influence: Option<ProceduralInfluence>,
+    /// Present only for the bounded polyline profile; legacy baselines stay unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<ProceduralPath>,
 }
 const fn default_reveal_duration() -> u8 {
     12
@@ -124,6 +144,7 @@ impl Default for ProceduralConfig {
             reveal_step_frames: 0,
             reveal_duration_frames: default_reveal_duration(),
             influence: None,
+            path: None,
         }
     }
 }
@@ -159,7 +180,16 @@ impl ProceduralConfig {
         if let Some(field) = &self.influence {
             field.validate()?;
         }
-        let columns = u32::from(self.columns).min(u32::from(self.count));
+        if self.distribution == FieldDistribution::Path {
+            path_vertices(self)?;
+            return Ok(());
+        }
+        if self.path.is_some() {
+            return Err(DomainError::Invalid(
+                "procedural path is only valid with the path distribution".into(),
+            ));
+        }
+        let columns = field_columns(self);
         let rows = u32::from(self.count).div_ceil(columns);
         if matches!(
             self.distribution,
@@ -181,6 +211,127 @@ impl ProceduralConfig {
         }
         Ok(())
     }
+}
+
+/// Choose the largest square cell, then the least unused cells, then fewer
+/// columns. This is reflow, never an implicit reduction in the requested size.
+fn field_columns(config: &ProceduralConfig) -> u32 {
+    let count = u32::from(config.count);
+    if config.distribution != FieldDistribution::AdaptiveGrid {
+        return u32::from(config.columns).min(count);
+    }
+    let mut best = (0, u32::MAX, 1);
+    for columns in 1..=count.min(16) {
+        let rows = count.div_ceil(columns);
+        let cell =
+            (u32::from(config.area_width) / columns).min(u32::from(config.area_height) / rows);
+        let unused = columns * rows - count;
+        if cell > best.0 || (cell == best.0 && unused < best.1) {
+            best = (cell, unused, columns);
+        }
+    }
+    best.2
+}
+fn path_vertices(config: &ProceduralConfig) -> Result<Vec<(u32, u32)>> {
+    let path = config.path.as_ref().ok_or_else(|| {
+        DomainError::Invalid("path distribution requires an editable polyline".into())
+    })?;
+    if path.points.len() < if path.closed { 3 } else { 2 }
+        || path.points.len() > 16
+        || path
+            .points
+            .iter()
+            .any(|point| point.x_percent > 100 || point.y_percent > 100)
+        || config.area_width < config.size
+        || config.area_height < config.size
+    {
+        return Err(DomainError::Invalid(
+            "procedural path requires 2..16 points (3 if closed), whole percentages and room for each object".into(),
+        ));
+    }
+    let vertices: Vec<_> = path
+        .points
+        .iter()
+        .map(|point| {
+            (
+                u32::from(config.origin_x)
+                    + u32::from(config.area_width - config.size) * u32::from(point.x_percent) / 100,
+                u32::from(config.origin_y)
+                    + u32::from(config.area_height - config.size) * u32::from(point.y_percent)
+                        / 100,
+            )
+        })
+        .collect();
+    if vertices.windows(2).any(|pair| pair[0] == pair[1])
+        || (path.closed && vertices.first() == vertices.last())
+    {
+        return Err(DomainError::Invalid(
+            "procedural path has a zero-length segment at the authored pixel resolution".into(),
+        ));
+    }
+    Ok(vertices)
+}
+struct PathSegment {
+    from: (u32, u32),
+    to: (u32, u32),
+    length: u64,
+}
+/// Q256 arc distance; the final object positions are literal whole pixels.
+/// The fixed integer profile is mirrored by Studio, including negative division.
+fn path_segments(config: &ProceduralConfig) -> Result<Vec<PathSegment>> {
+    let mut vertices = path_vertices(config)?;
+    if config.path.as_ref().expect("validated path").closed {
+        vertices.push(vertices[0]);
+    }
+    Ok(vertices
+        .windows(2)
+        .map(|pair| {
+            let dx = i64::from(pair[1].0) - i64::from(pair[0].0);
+            let dy = i64::from(pair[1].1) - i64::from(pair[0].1);
+            let squared = (dx * dx + dy * dy) as u64 * 65_536;
+            let (mut low, mut high) = (0_u64, 1_048_576_u64);
+            while low <= high {
+                let middle = (low + high) / 2;
+                if middle * middle <= squared {
+                    low = middle + 1;
+                } else {
+                    high = middle - 1;
+                }
+            }
+            PathSegment {
+                from: pair[0],
+                to: pair[1],
+                length: high,
+            }
+        })
+        .collect())
+}
+fn path_position(index: u32, config: &ProceduralConfig, segments: &[PathSegment]) -> (u32, u32) {
+    let count = u64::from(config.count);
+    let divisions = if config.path.as_ref().expect("validated path").closed {
+        count
+    } else {
+        (count - 1).max(1)
+    };
+    let distance =
+        segments.iter().map(|segment| segment.length).sum::<u64>() * u64::from(index) / divisions;
+    let mut elapsed = 0;
+    for segment in segments {
+        if distance <= elapsed + segment.length {
+            let offset = (distance - elapsed) as i64;
+            let interpolate = |from: u32, to: u32| {
+                (i64::from(from)
+                    + (i64::from(to) - i64::from(from)) * offset / segment.length as i64)
+                    as u32
+            };
+            return (
+                interpolate(segment.from.0, segment.to.0),
+                interpolate(segment.from.1, segment.to.1),
+            );
+        }
+        elapsed += segment.length;
+    }
+    segments.last().expect("nonempty validated path").to
 }
 
 /// Uses only unsigned 32-bit wrapping integer arithmetic, mirrored with JS Math.imul.
@@ -347,14 +498,21 @@ fn influenced_item(x: u32, y: u32, config: &ProceduralConfig) -> Result<Influenc
 /// Generates real, individually editable native Canvas nodes.
 pub fn realize_procedural_field(id: Uuid, config: &ProceduralConfig) -> Result<Vec<CanvasNode>> {
     config.validate()?; // all limits checked before creating any nodes
-    let columns = u32::from(config.columns).min(u32::from(config.count));
+    let columns = field_columns(config);
     let rows = u32::from(config.count).div_ceil(columns);
     let cell_w = u32::from(config.area_width) / columns;
     let cell_h = u32::from(config.area_height) / rows;
     let size = u32::from(config.size);
+    let path = if config.distribution == FieldDistribution::Path {
+        Some(path_segments(config)?)
+    } else {
+        None
+    };
     let mut nodes = Vec::with_capacity(usize::from(config.count));
     for index in 0..u32::from(config.count) {
-        let (x, y) = if matches!(
+        let (x, y) = if let Some(segments) = &path {
+            path_position(index, config, segments)
+        } else if matches!(
             config.distribution,
             FieldDistribution::Radial | FieldDistribution::Spiral
         ) {
@@ -365,7 +523,9 @@ pub fn realize_procedural_field(id: Uuid, config: &ProceduralConfig) -> Result<V
             let free_x = cell_w - size;
             let free_y = cell_h - size;
             let (dx, dy) = match config.distribution {
-                FieldDistribution::Grid => (free_x / 2, free_y / 2),
+                FieldDistribution::Grid | FieldDistribution::AdaptiveGrid => {
+                    (free_x / 2, free_y / 2)
+                }
                 FieldDistribution::Staggered => {
                     let quarter = free_x / 4;
                     let mid = free_x / 2;
@@ -382,7 +542,9 @@ pub fn realize_procedural_field(id: Uuid, config: &ProceduralConfig) -> Result<V
                     procedural_hash(config.seed, index, 0x71a5_029b) % (free_x + 1),
                     procedural_hash(config.seed, index, 0xda39_c617) % (free_y + 1),
                 ),
-                FieldDistribution::Radial | FieldDistribution::Spiral => unreachable!(),
+                FieldDistribution::Radial | FieldDistribution::Spiral | FieldDistribution::Path => {
+                    unreachable!()
+                }
             };
             (
                 u32::from(config.origin_x) + col * cell_w + dx,

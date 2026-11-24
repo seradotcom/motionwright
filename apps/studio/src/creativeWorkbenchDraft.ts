@@ -5,8 +5,8 @@ import { sameProjectRevision } from "./projectMutation";
 import { sameValue } from "./creativeProduction";
 import { applyProductStageChange, defaultProductStageConfig, validateProductStageConfig } from "./productStage";
 import type { ProductStageConfig } from "./productStage";
-import { applyProceduralChange, defaultProceduralConfig, defaultProceduralInfluence, normalizedProceduralConfig, validateProceduralConfig } from "./proceduralField";
-import type { ProceduralConfig, ProceduralInfluence } from "./proceduralField";
+import { applyProceduralChange, defaultProceduralConfig, defaultProceduralInfluence, defaultProceduralPath, normalizedProceduralConfig, validateProceduralConfig } from "./proceduralField";
+import type { ProceduralConfig, ProceduralInfluence, ProceduralPath } from "./proceduralField";
 import { applyStageCaptureChange } from "./stageCapture";
 import { applyMeasuredBinding, applyMeasuredTable, detachMeasuredBinding, measuredOutput, validateMeasuredTable, validateMeasuredView } from "./measuredData";
 import type { MeasuredBinding, MeasuredTable, MeasuredView } from "./measuredData";
@@ -19,7 +19,11 @@ type ProceduralNumber = typeof PROCEDURAL_NUMBERS[number];
 export const INFLUENCE_NUMBERS = ["center_x", "center_y", "radius", "offset_x", "offset_y", "scale_percent", "rotation_deg"] as const;
 type InfluenceNumber = typeof INFLUENCE_NUMBERS[number];
 export type InfluenceRaw = Omit<ProceduralInfluence, InfluenceNumber> & Record<InfluenceNumber, string> & { enabled: boolean };
-export type ProceduralRaw = Omit<Required<ProceduralConfig>, ProceduralNumber | "influence"> & Record<ProceduralNumber, string> & { influence?: InfluenceRaw };
+export type ProceduralPathRaw = { closed: boolean; points: { x_percent: string; y_percent: string }[] };
+export const rawProceduralPath = (path: ProceduralPath = defaultProceduralPath()): ProceduralPathRaw => ({
+  closed: path.closed, points: path.points.map(point => ({ x_percent: String(point.x_percent), y_percent: String(point.y_percent) })),
+});
+export type ProceduralRaw = Omit<Required<ProceduralConfig>, ProceduralNumber | "influence" | "path"> & Record<ProceduralNumber, string> & { influence?: InfluenceRaw; path?: ProceduralPathRaw };
 export function rawProceduralInfluence(config = defaultProceduralInfluence(), enabled = true): InfluenceRaw {
   return { ...Object.fromEntries(Object.entries(config).map(([key, value]) =>
     [key, INFLUENCE_NUMBERS.includes(key as InfluenceNumber) ? String(value) : value])), enabled } as InfluenceRaw;
@@ -96,7 +100,7 @@ export function productStageCreationIssue(project: Project, sceneId: string | nu
   return null;
 }
 export function proceduralConfig(raw: ProceduralRaw): ProceduralConfig {
-  const { influence, ...fields } = raw, result = { ...fields } as unknown as ProceduralConfig;
+  const { influence, path, ...fields } = raw, result = { ...fields } as unknown as ProceduralConfig;
   for (const key of PROCEDURAL_NUMBERS) result[key] = authoredInteger(raw[key], key, 0, key === "seed" ? 0xffffffff : 1920);
   if (influence?.enabled) {
     const { enabled: _enabled, ...values } = influence;
@@ -104,13 +108,20 @@ export function proceduralConfig(raw: ProceduralRaw): ProceduralConfig {
     for (const key of INFLUENCE_NUMBERS) parsed[key] = authoredInteger(influence[key], "Influence " + key, -4096, 4096);
     result.influence = parsed;
   }
+  if (raw.distribution === "path") {
+    if (!path) throw new Error("Path distribution requires an editable polyline.");
+    result.path = { closed: path.closed, points: path.points.map((point, index) => ({
+      x_percent: authoredInteger(point.x_percent, "Path point " + (index + 1) + " X", 0, 100),
+      y_percent: authoredInteger(point.y_percent, "Path point " + (index + 1) + " Y", 0, 100),
+    })) };
+  }
   validateProceduralConfig(result); return result;
 }
 function rawStage(config: ProductStageConfig): StageRaw { return { ...clone(config), focus_x_permille: String(config.focus_x_permille), focus_y_permille: String(config.focus_y_permille) }; }
 function rawProcedural(config: ProceduralConfig): ProceduralRaw {
-  const { influence, ...result } = normalizedProceduralConfig(config);
+  const { influence, path, ...result } = normalizedProceduralConfig(config);
   return { ...Object.fromEntries(Object.entries(result).map(([key, value]) => [key, PROCEDURAL_NUMBERS.includes(key as ProceduralNumber) ? String(value) : value])),
-    ...(influence ? { influence: rawProceduralInfluence(influence) } : {}) } as ProceduralRaw;
+    ...(influence ? { influence: rawProceduralInfluence(influence) } : {}), ...(path ? { path: rawProceduralPath(path) } : {}) } as ProceduralRaw;
 }
 const newMeasuredPresentation = (): MeasuredPresentationRaw => ({
   selectedNode: "", selectedKey: "", view: "counter", decimals: "2", axisMin: "", axisMax: "", maxWidth: "",
@@ -345,7 +356,7 @@ function remainingInput(input: WorkbenchInput, target: WorkbenchTarget, project:
     }
     if (input.kind === "procedural") {
       const saved = project.production_design?.procedural_fields?.find(value => value.scene_id === target.sceneId);
-      return !saved || input.config.influence?.enabled === false
+      return !saved || input.config.influence?.enabled === false || (input.config.path !== undefined && input.config.distribution !== "path")
         || !sameValue(normalizedProceduralConfig(proceduralConfig(input.config)), normalizedProceduralConfig(saved.config));
     }
     const retainedBindings = Object.entries(input.bindings ?? {}).some(([id, raw]) => {
@@ -444,15 +455,23 @@ function influenceRawShape(value: unknown): value is InfluenceRaw {
     && typeof value.enabled === "boolean" && allStrings(value, ["fill", ...INFLUENCE_NUMBERS])
     && ["radial", "horizontal", "vertical"].includes(String(value.shape)) && ["linear", "smoothstep"].includes(String(value.falloff));
 }
+function proceduralPathRawShape(value: unknown): value is ProceduralPathRaw {
+  return record(value) && exact(value, ["closed", "points"]) && typeof value.closed === "boolean"
+    && Array.isArray(value.points) && value.points.length >= 2 && value.points.length <= 16
+    && value.points.every(point => record(point) && exact(point, ["x_percent", "y_percent"])
+      && allStrings(point, ["x_percent", "y_percent"])
+      && String(point.x_percent).length <= 128 && String(point.y_percent).length <= 128);
+}
 function inputShape(value: unknown): value is WorkbenchInput {
   if (!record(value)) return false;
   if (value.kind === "stage") return exact(value, ["kind", "config", "captureId"]) && typeof value.captureId === "string" && record(value.config)
     && exact(value.config, ["frame", "animate_focus", ...stageTextKeys]) && allStrings(value.config, stageTextKeys)
     && ["browser", "flat_panel", "generic_handset"].includes(String(value.config.frame)) && typeof value.config.animate_focus === "boolean";
   if (value.kind === "procedural") return exact(value, ["kind", "config"]) && record(value.config)
-    && exact(value.config, [...PROCEDURAL_NUMBERS, "distribution", "shape", "fill"], ["influence"])
+    && exact(value.config, [...PROCEDURAL_NUMBERS, "distribution", "shape", "fill"], ["influence", "path"])
+    && (value.config.path === undefined || proceduralPathRawShape(value.config.path))
     && (value.config.influence === undefined || influenceRawShape(value.config.influence)) && allStrings(value.config, [...PROCEDURAL_NUMBERS, "fill"])
-    && ["grid", "staggered", "scatter", "radial", "spiral"].includes(String(value.config.distribution)) && ["square", "circle"].includes(String(value.config.shape));
+    && ["grid", "adaptive_grid", "path", "staggered", "scatter", "radial", "spiral"].includes(String(value.config.distribution)) && ["square", "circle"].includes(String(value.config.shape));
   if (value.kind !== "measured" || !exact(value, ["kind", "selectedTable", "tables"], ["selectedBinding", "bindings"]) || typeof value.selectedTable !== "string" || !record(value.tables)
     || Object.keys(value.tables).length > 17 || !Object.hasOwn(value.tables, value.selectedTable)) return false;
   if (value.bindings !== undefined && (!record(value.bindings) || Object.keys(value.bindings).length > 64
@@ -485,7 +504,7 @@ function changeShape(value: unknown, kind: WorkbenchKind): value is WorkbenchCha
   if (kind === "procedural") {
     if (value.type === "detach_procedural_field") return exact(value, ["type", "instance_id"]) && uuid(value.instance_id);
     if (value.type !== "upsert_procedural_field" || !exact(value, ["type", "instance_id", "scene_id", "config"]) || !uuid(value.instance_id) || !uuid(value.scene_id) || !record(value.config)
-      || !exact(value.config, [...PROCEDURAL_NUMBERS, "distribution", "shape", "fill"], ["influence"])) return false;
+      || !exact(value.config, [...PROCEDURAL_NUMBERS, "distribution", "shape", "fill"], ["influence", "path"])) return false;
     try { validateProceduralConfig(value.config as unknown as ProceduralConfig); return true; } catch { return false; }
   }
   if (value.type === "upsert_measured_table") return exact(value, ["type", "table"]) && tableShape(value.table);

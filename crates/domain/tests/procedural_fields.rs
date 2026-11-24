@@ -880,3 +880,227 @@ fn influenced_orientation_remains_constant_during_each_exact_staggered_entrance(
     let reopened: Project = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
     assert_eq!(reopened, p);
 }
+
+fn authored_path() -> ProceduralConfig {
+    ProceduralConfig {
+        distribution: FieldDistribution::Path,
+        count: 4,
+        origin_x: 100,
+        origin_y: 100,
+        area_width: 420,
+        area_height: 220,
+        size: 20,
+        path: Some(ProceduralPath {
+            closed: false,
+            points: vec![
+                ProceduralPathPoint {
+                    x_percent: 0,
+                    y_percent: 0,
+                },
+                ProceduralPathPoint {
+                    x_percent: 100,
+                    y_percent: 0,
+                },
+                ProceduralPathPoint {
+                    x_percent: 100,
+                    y_percent: 100,
+                },
+            ],
+        }),
+        ..Default::default()
+    }
+}
+#[test]
+fn editable_path_distance_matches_studio_with_unequal_and_reversed_segments() {
+    let mut config = authored_path();
+    let nodes = realize_procedural_field(instance_id(), &config).unwrap();
+    let coordinates = |nodes: &[CanvasNode]| {
+        nodes
+            .iter()
+            .map(|node| (node.x, node.y))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        coordinates(&nodes),
+        vec![
+            (100.0, 100.0),
+            (300.0, 100.0),
+            (500.0, 100.0),
+            (500.0, 300.0)
+        ]
+    );
+    config.path.as_mut().unwrap().points.reverse();
+    let reversed = realize_procedural_field(instance_id(), &config).unwrap();
+    assert_eq!(
+        coordinates(&reversed),
+        vec![
+            (500.0, 300.0),
+            (500.0, 100.0),
+            (300.0, 100.0),
+            (100.0, 100.0)
+        ]
+    );
+    assert_eq!(
+        nodes.iter().map(|node| node.id).collect::<Vec<_>>(),
+        reversed.iter().map(|node| node.id).collect::<Vec<_>>()
+    );
+    config.count = 1;
+    assert_eq!(
+        coordinates(&realize_procedural_field(instance_id(), &config).unwrap()),
+        vec![(500.0, 300.0)]
+    );
+}
+#[test]
+fn closed_path_does_not_duplicate_an_endpoint_and_reopens_with_editable_points() {
+    let mut config = authored_path();
+    config.area_width = 220;
+    let path = config.path.as_mut().unwrap();
+    path.closed = true;
+    path.points.push(ProceduralPathPoint {
+        x_percent: 0,
+        y_percent: 100,
+    });
+    let mut p = project();
+    upsert(&mut p, config.clone()).unwrap();
+    assert_eq!(
+        p.scenes[0]
+            .nodes
+            .iter()
+            .map(|node| (node.x, node.y))
+            .collect::<Vec<_>>(),
+        vec![
+            (100.0, 100.0),
+            (300.0, 100.0),
+            (300.0, 300.0),
+            (100.0, 300.0)
+        ]
+    );
+    let reopened: Project = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+    reopened.validate().unwrap();
+    assert_eq!(reopened, p);
+    assert_eq!(
+        reopened.production_design.procedural_fields[0].config.path,
+        config.path
+    );
+}
+#[test]
+fn path_rejects_degenerate_segments_limits_and_inactive_source_without_mutation() {
+    let good = authored_path();
+    let mut cases = vec![];
+    let mut missing = good.clone();
+    missing.path = None;
+    cases.push(missing);
+    let mut closed = good.clone();
+    closed.path.as_mut().unwrap().closed = true;
+    closed.path.as_mut().unwrap().points.pop();
+    cases.push(closed);
+    let mut duplicate = good.clone();
+    let first = duplicate.path.as_ref().unwrap().points[0];
+    duplicate.path.as_mut().unwrap().points[1] = first;
+    cases.push(duplicate);
+    let mut outside = good.clone();
+    outside.path.as_mut().unwrap().points[0].x_percent = 101;
+    cases.push(outside);
+    let mut capacity = good.clone();
+    capacity.path.as_mut().unwrap().points = vec![
+        ProceduralPathPoint {
+            x_percent: 0,
+            y_percent: 0
+        };
+        17
+    ];
+    cases.push(capacity);
+    let mut collapsed = good.clone();
+    collapsed.area_width = 21;
+    collapsed.area_height = 21;
+    collapsed.path.as_mut().unwrap().points = vec![
+        ProceduralPathPoint {
+            x_percent: 0,
+            y_percent: 0,
+        },
+        ProceduralPathPoint {
+            x_percent: 1,
+            y_percent: 1,
+        },
+    ];
+    cases.push(collapsed);
+    let mut hidden = good.clone();
+    hidden.distribution = FieldDistribution::Grid;
+    cases.push(hidden);
+    for config in cases {
+        let mut p = project();
+        let before = p.clone();
+        assert!(upsert(&mut p, config).is_err());
+        assert_eq!(p, before);
+    }
+}
+#[test]
+fn adaptive_grid_reflows_count_and_field_aspect_without_reducing_size_or_overrides() {
+    let mut config = ProceduralConfig {
+        distribution: FieldDistribution::AdaptiveGrid,
+        ..Default::default()
+    };
+    let nodes = realize_procedural_field(instance_id(), &config).unwrap();
+    assert_eq!(
+        (nodes[0].x, nodes[0].y, nodes[4].x, nodes[4].y),
+        (276.0, 247.0, 276.0, 433.0)
+    );
+    config.count = 20;
+    let twenty = realize_procedural_field(instance_id(), &config).unwrap();
+    assert_eq!(twenty[0].x, twenty[5].x);
+    assert!(
+        twenty
+            .iter()
+            .all(|node| node.width == 32.0 && node.height == 32.0)
+    );
+    config.count = 12;
+    config.area_width = 200;
+    config.columns = 16;
+    let portrait = realize_procedural_field(instance_id(), &config).unwrap();
+    assert_eq!(
+        (portrait[0].x, portrait[1].x, portrait[2].x),
+        (214.0, 314.0, 214.0)
+    );
+    let mut p = project();
+    upsert(&mut p, authored_path()).unwrap();
+    let ids = p.scenes[0]
+        .nodes
+        .iter()
+        .map(|node| node.id)
+        .collect::<Vec<_>>();
+    let mut style = p.scenes[0].nodes[0].style.clone();
+    style.fill = Some("#FFAA22".into());
+    p.apply_change(&Change::UpdateCanvasStyle {
+        scene_id: p.scenes[0].id,
+        node_id: ids[0],
+        style,
+    })
+    .unwrap();
+    config.count = 4;
+    upsert(&mut p, config).unwrap();
+    assert_eq!(
+        p.scenes[0]
+            .nodes
+            .iter()
+            .map(|node| node.id)
+            .collect::<Vec<_>>(),
+        ids
+    );
+    assert_eq!(p.scenes[0].nodes[0].style.fill.as_deref(), Some("#FFAA22"));
+    let before = p.clone();
+    assert!(
+        upsert(
+            &mut p,
+            ProceduralConfig {
+                distribution: FieldDistribution::AdaptiveGrid,
+                count: 2,
+                area_width: 20,
+                area_height: 20,
+                size: 20,
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(p, before);
+}

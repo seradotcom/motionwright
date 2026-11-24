@@ -3,7 +3,7 @@ import type { CanvasNode, Project } from "./types";
 import { mergeComponentNodes, sameValue } from "./creativeProduction";
 import type { ProductionDesign } from "./creativeProduction";
 
-export type FieldDistribution = "grid" | "staggered" | "scatter" | "radial" | "spiral";
+export type FieldDistribution = "grid" | "adaptive_grid" | "path" | "staggered" | "scatter" | "radial" | "spiral";
 export type ProceduralShape = "square" | "circle";
 export interface ProceduralInfluence {
   shape: "radial" | "horizontal" | "vertical"; falloff: "linear" | "smoothstep";
@@ -15,6 +15,12 @@ export const defaultProceduralInfluence = (): ProceduralInfluence => ({
   offset_x: 0, offset_y: 0, scale_percent: 100, rotation_deg: 0, fill: "#A5C8DF",
 });
 
+export interface ProceduralPath {
+  closed: boolean; points: { x_percent: number; y_percent: number }[];
+}
+export const defaultProceduralPath = (): ProceduralPath => ({
+  closed: false, points: [{ x_percent: 0, y_percent: 50 }, { x_percent: 50, y_percent: 0 }, { x_percent: 100, y_percent: 50 }],
+});
 export interface ProceduralConfig {
   seed: number; count: number; columns: number; distribution: FieldDistribution;
   /** Optional on legacy version-1 projects, default square. */
@@ -24,6 +30,8 @@ export interface ProceduralConfig {
   reveal_step_frames: number; reveal_duration_frames: number;
   /** Omitted on original v1 fields; their baseline remains identical. */
   influence?: ProceduralInfluence;
+  /** Authored polyline, only for the path distribution. */
+  path?: ProceduralPath;
 }
 export interface ProceduralFieldInstance {
   id: string; scene_id: string; generator_version: number;
@@ -50,7 +58,7 @@ export function validateProceduralConfig(input:ProceduralConfig):void {
     c.size<4 || c.size>128 || c.opacity_percent<1 || c.opacity_percent>100 ||
     (c.reveal_step_frames>0 && c.opacity_percent!==100) ||
     c.reveal_step_frames<0 || c.reveal_step_frames>10 || c.reveal_duration_frames<1 || c.reveal_duration_frames>60 ||
-    !hex.test(c.fill) || !["grid","staggered","scatter","radial","spiral"].includes(c.distribution) ||
+    !hex.test(c.fill) || !["grid","adaptive_grid","path","staggered","scatter","radial","spiral"].includes(c.distribution) ||
     !["square","circle"].includes(c.shape??"square")) {
     throw new Error("Procedural item, style or CPU budget exceeded.");
   }
@@ -59,12 +67,81 @@ export function validateProceduralConfig(input:ProceduralConfig):void {
   if (c.influence !== undefined) {
     validateProceduralInfluence(c.influence);
   }
-  const columns=Math.min(c.columns,c.count), rows=Math.ceil(c.count/columns);
+  if (c.distribution === "path") { pathVertices(c); return; }
+  if (c.path !== undefined) throw new Error("Procedural path is only valid with the path distribution.");
+  const columns=fieldColumns(c), rows=Math.ceil(c.count/columns);
   if(c.distribution==="radial" || c.distribution==="spiral"){
     if(c.area_width<c.size*2 || c.area_height<c.size*2)
       throw new Error("Procedural orbit requires a field at least twice the item size.");
   }else if(Math.floor(c.area_width/columns)<c.size || Math.floor(c.area_height/rows)<c.size)
     throw new Error("Procedural item does not fit its bounded cell.");
+}
+function fieldColumns(config: ProceduralConfig): number {
+  if (config.distribution !== "adaptive_grid") return Math.min(config.columns, config.count);
+  let best = { cell: 0, unused: Infinity, columns: 1 };
+  for (let columns = 1; columns <= Math.min(config.count, 16); columns++) {
+    const rows = Math.ceil(config.count / columns);
+    const cell = Math.min(Math.floor(config.area_width / columns), Math.floor(config.area_height / rows));
+    const unused = columns * rows - config.count;
+    if (cell > best.cell || (cell === best.cell && unused < best.unused)) best = { cell, unused, columns };
+  }
+  return best.columns;
+}
+export function proceduralGridDimensions(config: ProceduralConfig): { columns: number; rows: number } {
+  validateProceduralConfig(config);
+  const columns = fieldColumns(config);
+  return { columns, rows: Math.ceil(config.count / columns) };
+}
+function pathVertices(config: ProceduralConfig): { x: number; y: number }[] {
+  const path = config.path;
+  if (!path) throw new Error("Path distribution requires an editable polyline.");
+  if (typeof path !== "object" || Object.keys(path).length !== 2 || typeof path.closed !== "boolean"
+    || !Array.isArray(path.points) || path.points.length < (path.closed ? 3 : 2) || path.points.length > 16
+    || path.points.some(point => !point || typeof point !== "object" || Object.keys(point).length !== 2
+      || !Number.isInteger(point.x_percent) || !Number.isInteger(point.y_percent)
+      || point.x_percent < 0 || point.x_percent > 100 || point.y_percent < 0 || point.y_percent > 100)
+    || config.area_width < config.size || config.area_height < config.size)
+    throw new Error("Procedural path requires 2..16 points (3 if closed), whole percentages and room for each object.");
+  const vertices = path.points.map(point => ({
+    x: config.origin_x + Math.floor((config.area_width - config.size) * point.x_percent / 100),
+    y: config.origin_y + Math.floor((config.area_height - config.size) * point.y_percent / 100),
+  }));
+  const same = (a: typeof vertices[number], b: typeof vertices[number]) => a.x === b.x && a.y === b.y;
+  if (vertices.some((point, index) => index > 0 && same(point, vertices[index - 1]))
+    || (path.closed && same(vertices[0], vertices[vertices.length - 1])))
+    throw new Error("Procedural path has a zero-length segment at the authored pixel resolution.");
+  return vertices;
+}
+type PathSegment = { from: { x: number; y: number }; to: { x: number; y: number }; length: number };
+/** Same bounded Q256 arc distance and whole-pixel placement as the Rust profile. */
+function pathSegments(config: ProceduralConfig): PathSegment[] {
+  const vertices = pathVertices(config);
+  if (config.path!.closed) vertices.push(vertices[0]);
+  return vertices.slice(1).map((to, index) => {
+    const from = vertices[index], squared = ((to.x - from.x) ** 2 + (to.y - from.y) ** 2) * 65536;
+    let low = 0, high = 1048576;
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      if (middle * middle <= squared) low = middle + 1; else high = middle - 1;
+    }
+    return { from, to, length: high };
+  });
+}
+function pathPosition(index: number, config: ProceduralConfig, segments: PathSegment[]): { x: number; y: number } {
+  const divisions = config.path!.closed ? config.count : Math.max(1, config.count - 1);
+  const distance = Math.floor(segments.reduce((total, segment) => total + segment.length, 0) * index / divisions);
+  let elapsed = 0;
+  for (const segment of segments) {
+    if (distance <= elapsed + segment.length) {
+      const offset = distance - elapsed;
+      return {
+        x: segment.from.x + Math.trunc((segment.to.x - segment.from.x) * offset / segment.length),
+        y: segment.from.y + Math.trunc((segment.to.y - segment.from.y) * offset / segment.length),
+      };
+    }
+    elapsed += segment.length;
+  }
+  return segments[segments.length - 1].to;
 }
 export function proceduralHash(seed:number,index:number,salt:number):number {
   let v=(seed ^ Math.imul(index,0x9e3779b9) ^ salt)>>>0;
@@ -162,12 +239,15 @@ function influencedItem(x: number, y: number, config: ProceduralConfig) {
 export async function realizeProceduralField(id:string,input:ProceduralConfig):Promise<CanvasNode[]> {
   const c=normalizedProceduralConfig(input);
   validateProceduralConfig(c); // reject cost and frame bounds before hashing/allocating
-  const columns=Math.min(c.columns,c.count),rows=Math.ceil(c.count/columns);
+  const columns=fieldColumns(c),rows=Math.ceil(c.count/columns);
   const cellW=Math.floor(c.area_width/columns),cellH=Math.floor(c.area_height/rows);
+  const path=c.distribution==="path"?pathSegments(c):null;
   const nodes:CanvasNode[]=[];
   for(let index=0;index<c.count;index++){
     let x:number,y:number;
-    if(c.distribution==="radial" || c.distribution==="spiral"){
+    if(path){
+      ({x,y}=pathPosition(index,c,path));
+    }else if(c.distribution==="radial" || c.distribution==="spiral"){
       ({x,y}=orbitPosition(index,c));
     }else{
       const col=index%columns,row=Math.floor(index/columns);

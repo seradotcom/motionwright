@@ -281,3 +281,63 @@ fn oriented_influence_entrances_keep_literal_rotation_and_original_delayed_motio
     }
     assert_eq!(p, original);
 }
+
+#[test]
+fn authored_paths_and_adaptive_grids_remain_editable_native_subjects_with_exact_entrances() {
+    for distribution in [FieldDistribution::Path, FieldDistribution::AdaptiveGrid] {
+        for step in [0, 3] {
+            let (p, options) = project(ProceduralConfig {
+                distribution,
+                count: 4,
+                origin_x: 100,
+                origin_y: 100,
+                area_width: 420,
+                area_height: 220,
+                size: 20,
+                reveal_step_frames: step,
+                path: (distribution == FieldDistribution::Path).then(|| ProceduralPath {
+                    closed: false,
+                    points: vec![
+                        ProceduralPathPoint {
+                            x_percent: 0,
+                            y_percent: 0,
+                        },
+                        ProceduralPathPoint {
+                            x_percent: 100,
+                            y_percent: 0,
+                        },
+                        ProceduralPathPoint {
+                            x_percent: 100,
+                            y_percent: 100,
+                        },
+                    ],
+                }),
+                ..Default::default()
+            });
+            let original = p.clone();
+            let segments =
+                build_motion_canvas_segments(&p, p.deliverables[0].id, &options).unwrap();
+            assert_eq!(segments.len(), 1);
+            assert_eq!(segments[0].frame_count, 180);
+            let shot = &segments[0].film.sequences[0].beats[0].shots[0];
+            assert_eq!(shot.subjects.len(), 4);
+            assert_eq!(shot.layers.len(), 1);
+            assert_eq!(shot.motion.len(), if step == 0 { 0 } else { 4 });
+            assert!(shot.motion.iter().all(|motion| matches!(
+                motion.primitive,
+                Primitive::SlideIn { .. }
+            ) && motion.easing == MotionEasing::OutCubic));
+            assert!(
+                shot.subjects
+                    .iter()
+                    .all(|subject| subject.initially_visible == (step == 0))
+            );
+            assert!(realize(&segments[0].film).is_ok());
+            assert_eq!(p, original);
+            assert_eq!(
+                p.production_design.procedural_fields[0].baseline,
+                p.scenes[0].nodes
+            );
+        }
+    }
+}

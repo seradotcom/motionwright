@@ -432,3 +432,71 @@ test("Measured complete output editing preserves independent drafts, source revi
   } catch (reason) { primary = { reason }; }
   finally { await finish(page, info, service, [], final, observations, hold ? [() => hold!.dispose()] : [], primary); }
 });
+
+
+test("editable procedural path and count reflow preserve original source, late input and human objects through SQLite reopen", async ({ page }, info) => {
+  const service = await setup(info), observations: Record<string, unknown> = {};
+  let final: Project | undefined, primary: Failure | undefined, hold: ReturnType<typeof holdReply> | undefined;
+  try {
+    let initial = await unlocked(service);
+    const existing = new Set(initial.scenes.map(scene => scene.id));
+    initial = await service.apply(initial, { type: "add_scene", name: "Editable route and reflow", objective: "Bounded editable original geometry", duration_seconds: 6 });
+    const sceneId = initial.scenes.find(scene => !existing.has(scene.id))!.id;
+    await service.attachFixturePage(page, initial.id); await page.goto("/");
+    const open = async () => { await openWorkbench(page, "procedural"); await page.getByLabel("Production working scene", { exact: true }).selectOption(sceneId); };
+    await open();
+    await page.getByLabel("Procedural distribution", { exact: true }).selectOption("path");
+    for (const [label, value] of [["Number of objects", "4"], ["Stage X", "100"], ["Stage Y", "100"],
+      ["Field width", "420"], ["Field height", "220"], ["Object size", "20"],
+      ["Path point 1 X (%)", "0"], ["Path point 1 Y (%)", "0"], ["Path point 2 X (%)", "100"],
+      ["Path point 2 Y (%)", "0"], ["Path point 3 X (%)", "100"], ["Path point 3 Y (%)", "100"]] as const)
+      await page.getByLabel(label, { exact: true }).fill(value);
+    await button(page, "Add procedural field").click(); await revision(page, initial.revision + 1);
+    const saved = await service.project(initial.id), field = saved.production_design!.procedural_fields!.find(value => value.scene_id === sceneId)!;
+    const originalNodes = saved.scenes.find(scene => scene.id === sceneId)!.nodes;
+    expect(originalNodes.map(node => [node.x, node.y])).toEqual([[100, 100], [300, 100], [500, 100], [500, 300]]);
+    const human = await service.apply(saved, { type: "update_canvas_style", scene_id: sceneId, node_id: originalNodes[0].id,
+      style: { ...originalNodes[0].style, fill: "#FFAA22" } });
+    await page.reload(); await open();
+    const proposal = () => page.getByRole("img", { name: /Procedural editorial preview,/ });
+    await expect(proposal().locator(`[data-canvas-node-id="${originalNodes[0].id}"] > rect`)).toHaveAttribute("fill", "#FFAA22");
+    await page.getByLabel("Path point 2 X (%)", { exact: true }).fill("80");
+    hold = holdReply(service, "upsert_procedural_field");
+    await button(page, "Update procedural field").click();
+    const changed = await hold.observed;
+    await page.getByLabel("Path point 2 X (%)", { exact: true }).fill("-");
+    hold.release(); await revision(page, human.revision + 1);
+    await hold.dispose(); hold = undefined;
+    expect(changed.production_design!.procedural_fields!.find(value => value.id === field.id)!.config.path!.points[1].x_percent).toBe(80);
+    await page.reload(); await open();
+    await expect(page.getByLabel("Path point 2 X (%)", { exact: true })).toHaveValue("-");
+    await expect(button(page, "Update procedural field")).toBeDisabled();
+    expect(await service.project(initial.id)).toEqual(changed);
+    await page.getByLabel("Procedural distribution", { exact: true }).selectOption("adaptive_grid");
+    await page.getByLabel("Number of objects", { exact: true }).fill("12");
+    await page.getByLabel("Field width", { exact: true }).fill("200");
+    await page.getByLabel("Field height", { exact: true }).fill("560");
+    await expect(page.getByText(/2 columns × 6 rows, chosen from count/)).toBeVisible();
+    await expect(proposal().locator(`[data-canvas-node-id="${originalNodes[0].id}"] > rect`)).toHaveAttribute("fill", "#FFAA22");
+    await button(page, "Update procedural field").click(); await revision(page, changed.revision + 1);
+    final = await service.project(initial.id);
+    const finalField = final.production_design!.procedural_fields!.find(value => value.id === field.id)!;
+    const finalNodes = final.scenes.find(scene => scene.id === sceneId)!.nodes;
+    expect(finalField.config.distribution).toBe("adaptive_grid"); expect(finalField.config.path).toBeUndefined();
+    expect(finalNodes).toHaveLength(12);
+    expect(finalNodes.slice(0, 4).map(node => node.id)).toEqual(originalNodes.map(node => node.id));
+    expect(finalNodes[0].style.fill).toBe("#FFAA22");
+    expect(final.assets).toEqual(initial.assets);
+    expect(final.scenes.filter(scene => scene.id !== sceneId)).toEqual(initial.scenes.filter(scene => scene.id !== sceneId));
+    const oracle = await service.observeStoredProject(final); await service.close(); await service.start();
+    expect(await service.project(final.id)).toEqual(final);
+    await page.reload(); await open();
+    await expect(page.getByLabel("Procedural distribution", { exact: true })).toHaveValue("adaptive_grid");
+    await expect(page.getByLabel("Path point 2 X (%)", { exact: true })).toHaveValue("-");
+    await expect(page.getByLabel("Path point 2 X (%)", { exact: true })).toBeDisabled();
+    const changes = oracle.journal.filter(event => event.revision > initial.revision).map(event => event.change.type);
+    expect(changes).toEqual(["upsert_procedural_field", "update_canvas_style", "upsert_procedural_field", "upsert_procedural_field"]);
+    Object.assign(observations, { initial, saved, changed, oracle, instanceId: field.id, originalNodes, changes });
+  } catch (reason) { primary = { reason }; }
+  finally { await finish(page, info, service, [], final, observations, [async () => hold?.dispose()], primary); }
+});

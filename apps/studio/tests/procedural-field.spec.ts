@@ -99,3 +99,72 @@ test("procedural influence component edits complete geometry and color while ret
   await expect(page.getByRole("button", { name: "Canvas object ProceduralField / item 000", exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath("influence-component-editable-objects.png"), fullPage: true });
 });
+
+
+test("editable procedural paths and adaptive grid preserve human objects through whole composition edits", async ({ page }, info) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Add scene", exact: true }).click();
+  await page.getByLabel("New scene name").fill("Editable path composition");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  const open = async () => {
+    await page.getByRole("button", { name: "Production", exact: true }).click();
+    await page.getByLabel("Production working scene", { exact: true }).selectOption({ label: "Editable path composition" });
+    await page.getByRole("button", { name: "Procedural", exact: true }).click();
+  };
+  await open();
+  await page.getByLabel("Procedural distribution", { exact: true }).selectOption("path");
+  for (const [label, value] of [["Number of objects", "4"], ["Stage X", "100"], ["Stage Y", "100"],
+    ["Field width", "420"], ["Field height", "220"], ["Object size", "20"],
+    ["Path point 1 X (%)", "0"], ["Path point 1 Y (%)", "0"],
+    ["Path point 2 X (%)", "100"], ["Path point 2 Y (%)", "0"],
+    ["Path point 3 X (%)", "100"], ["Path point 3 Y (%)", "100"]] as const)
+    await page.getByLabel(label, { exact: true }).fill(value);
+  const study = () => page.getByRole("img", { name: /Procedural editorial preview,/ });
+  await expect(study().locator("[data-canvas-node-id] > rect")).toHaveCount(4);
+  expect(await study().locator("[data-canvas-node-id] > rect").evaluateAll(rects => rects.map(rect => [Number(rect.getAttribute("x")), Number(rect.getAttribute("y"))])))
+    .toEqual([[100, 100], [300, 100], [500, 100], [500, 300]]);
+  await page.getByRole("button", { name: "Add procedural field", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Update procedural field", exact: true })).toBeVisible();
+  const savedStudy = page.getByRole("img", { name: "Saved procedural scene", exact: true });
+  await expect(savedStudy.locator("[data-canvas-node-id]")).toHaveCount(4);
+  const ids = await savedStudy.locator("[data-canvas-node-id]").evaluateAll(nodes => nodes.map(node => node.getAttribute("data-canvas-node-id")));
+  await page.getByRole("button", { name: "Edit individual objects", exact: true }).click();
+  await page.getByRole("button", { name: "Canvas object ProceduralField / item 000", exact: true }).click();
+  await page.getByLabel("Canvas fill", { exact: true }).fill("#FFAA22");
+  const beforeStyle = await page.locator(".revision-chip").first().innerText();
+  await page.getByRole("button", { name: "Commit style", exact: true }).click();
+  await expect(page.locator(".revision-chip").first()).not.toHaveText(beforeStyle);
+  await open();
+  await expect(study().locator(`[data-canvas-node-id="${ids[0]}"] > rect`)).toHaveAttribute("fill", "#FFAA22");
+  await page.getByLabel("Path point 2 X (%)", { exact: true }).fill("-");
+  await expect(page.getByRole("button", { name: "Update procedural field", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Production plan", exact: true }).click();
+  await page.getByRole("button", { name: "Procedural", exact: true }).click();
+  await expect(page.getByLabel("Path point 2 X (%)", { exact: true })).toHaveValue("-");
+  await page.getByLabel("Path point 2 X (%)", { exact: true }).fill("80");
+  await page.getByRole("button", { name: "Add path point", exact: true }).click();
+  await page.getByLabel("Path point 4 X (%)", { exact: true }).fill("0");
+  await page.getByLabel("Closed procedural path", { exact: true }).check();
+  await page.getByRole("button", { name: "Move path point 4 earlier", exact: true }).click();
+  await expect(page.getByLabel("Path point 3 X (%)", { exact: true })).toHaveValue("0");
+  await page.getByRole("button", { name: "Move path point 3 later", exact: true }).click();
+  await page.getByRole("button", { name: "Update procedural field", exact: true }).click();
+  await page.getByLabel("Procedural distribution", { exact: true }).selectOption("adaptive_grid");
+  await page.getByLabel("Number of objects", { exact: true }).fill("12");
+  await page.getByLabel("Field width", { exact: true }).fill("200");
+  await page.getByLabel("Field height", { exact: true }).fill("560");
+  await expect(page.getByText(/2 columns × 6 rows, chosen from count/)).toBeVisible();
+  await expect(study().locator("[data-canvas-node-id] > rect")).toHaveCount(12);
+  expect((await study().locator("[data-canvas-node-id]").evaluateAll(nodes => nodes.map(node => node.getAttribute("data-canvas-node-id")))).slice(0, 4)).toEqual(ids);
+  await expect(study().locator(`[data-canvas-node-id="${ids[0]}"] > rect`)).toHaveAttribute("fill", "#FFAA22");
+  await expect(page.getByRole("img", { name: "Saved procedural scene", exact: true }).locator(`[data-canvas-node-id="${ids[0]}"] > rect`)).toHaveAttribute("fill", "#FFAA22");
+  await page.getByRole("button", { name: "Update procedural field", exact: true }).click();
+  await expect(page.getByLabel("Path point 2 X (%)", { exact: true })).toHaveValue("80");
+  await expect(page.getByLabel("Path point 2 X (%)", { exact: true })).toBeDisabled();
+  await page.screenshot({ path: info.outputPath("path-to-grid-preserved-human-composition.png"), fullPage: true });
+  await page.getByRole("button", { name: "Discard inactive path draft", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Editable path", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Detach generator (keep objects)", exact: true }).click();
+  await page.getByRole("button", { name: "Edit individual objects", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Canvas object ProceduralField / item 011", exact: true })).toBeVisible();
+});
