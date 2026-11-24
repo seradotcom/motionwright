@@ -871,6 +871,7 @@ export type Change =
   | { type: "register_creative_evaluator"; bundle: CreativeEvaluatorBundle }
   | { type: "evaluate_creative_scene"; evaluator_id: string; evaluator_version: number; scene_id: string }
   | { type: "upsert_native_capsule"; capsule: NativeCapsule }
+  | { type: "relink_native_capsule_source"; relink: { capsule_id: string; scene_id: string; expected_source_asset_id: string; expected_source_sha256: string; source_asset_id: string; source_sha256: string } }
   | { type: "apply_creative_patch"; patch: CreativePatch }
   | { type: "rename_project"; title: string }
   | { type: "set_brief"; objective: string; audience: string; constraints: string[]; exclusions: string[] }

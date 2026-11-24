@@ -1511,6 +1511,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
     case "set_production_plan":
     case "set_delivery_recipe":
     case "upsert_native_capsule":
+    case "relink_native_capsule_source":
       await applyProductionDesignChange(next, change);
       break;
     case "add_claim": {

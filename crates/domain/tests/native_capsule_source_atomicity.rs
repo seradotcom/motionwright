@@ -1,8 +1,8 @@
 //! Direct-change guards for the atomic source operation.
 //! These tests do not execute a renderer or represent human authorization.
 use motionwright_domain::{
-    Asset, Change, Fidelity, LockKind, NativeCapsule, NativeCapsuleSourceSpec,
-    NativePropertyFidelity, Project,
+    Asset, Change, Fidelity, LockKind, NativeCapsule, NativeCapsuleSourceRelink,
+    NativeCapsuleSourceSpec, NativePropertyFidelity, Project,
 };
 use uuid::Uuid;
 
@@ -284,4 +284,140 @@ fn metadata_mismatch_or_nil_identity_cannot_bind_source() {
     let mut altered = spec;
     altered.scene_id = Uuid::nil();
     assert!(altered.bind_asset(&asset).is_err());
+}
+
+#[test]
+fn conditional_relink_preserves_both_sources_and_discards_source_specific_claims() {
+    let (mut project, old_asset, spec) = fixture();
+    apply(
+        &mut project,
+        &old_asset,
+        &spec.bind_asset(&old_asset).unwrap(),
+    );
+    let mut new_asset = old_asset.clone();
+    new_asset.id = Uuid::new_v4();
+    new_asset.content_sha256 = Some("2".repeat(64));
+    let mut current = spec.bind_asset(&new_asset).unwrap();
+    apply(&mut project, &new_asset, &current);
+    current.fidelity.visual = Fidelity::Native;
+    current.fidelity.evidence_sha256 = Some("a".repeat(64));
+    current.property_fidelity.push(NativePropertyFidelity {
+        path: "camera.focal_length".into(),
+        fidelity: Fidelity::Native,
+        loss_note: None,
+    });
+    project
+        .apply_change(&Change::UpsertNativeCapsule {
+            capsule: current.clone(),
+        })
+        .unwrap();
+    let relink = NativeCapsuleSourceRelink {
+        capsule_id: current.id,
+        scene_id: current.scene_id,
+        expected_source_asset_id: current.source_asset_id,
+        expected_source_sha256: current.source_sha256.clone(),
+        source_asset_id: old_asset.id,
+        source_sha256: old_asset.content_sha256.clone().unwrap(),
+    };
+    for invalid in [
+        NativeCapsuleSourceRelink {
+            expected_source_sha256: "f".repeat(64),
+            ..relink.clone()
+        },
+        NativeCapsuleSourceRelink {
+            source_sha256: "f".repeat(64),
+            ..relink.clone()
+        },
+        NativeCapsuleSourceRelink {
+            scene_id: project.scenes[1].id,
+            ..relink.clone()
+        },
+        NativeCapsuleSourceRelink {
+            capsule_id: Uuid::new_v4(),
+            ..relink.clone()
+        },
+        NativeCapsuleSourceRelink {
+            source_asset_id: Uuid::new_v4(),
+            ..relink.clone()
+        },
+        NativeCapsuleSourceRelink {
+            source_asset_id: current.source_asset_id,
+            source_sha256: current.source_sha256.clone(),
+            ..relink.clone()
+        },
+    ] {
+        let before = serde_json::to_vec(&project).unwrap();
+        assert!(
+            project
+                .apply_change(&Change::RelinkNativeCapsuleSource { relink: invalid })
+                .is_err()
+        );
+        assert_eq!(serde_json::to_vec(&project).unwrap(), before);
+    }
+    for resource in [
+        project.resource_key(),
+        format!("scene:{}", current.scene_id),
+    ] {
+        let mut locked = project.clone();
+        locked
+            .apply_change(&Change::SetLock {
+                resource,
+                kind: LockKind::Content,
+                note: "Protected source".into(),
+            })
+            .unwrap();
+        let before = serde_json::to_vec(&locked).unwrap();
+        assert!(
+            locked
+                .apply_change(&Change::RelinkNativeCapsuleSource {
+                    relink: relink.clone()
+                })
+                .is_err()
+        );
+        assert_eq!(serde_json::to_vec(&locked).unwrap(), before);
+    }
+    let mut incompatible = project.clone();
+    incompatible
+        .assets
+        .iter_mut()
+        .find(|a| a.id == old_asset.id)
+        .unwrap()
+        .media_type = "text/plain".into();
+    let before = serde_json::to_vec(&incompatible).unwrap();
+    assert!(
+        incompatible
+            .apply_change(&Change::RelinkNativeCapsuleSource {
+                relink: relink.clone()
+            })
+            .is_err()
+    );
+    assert_eq!(serde_json::to_vec(&incompatible).unwrap(), before);
+    let assets = project.assets.clone();
+    let scenes = project.scenes.clone();
+    project
+        .apply_change(&Change::RelinkNativeCapsuleSource {
+            relink: relink.clone(),
+        })
+        .unwrap();
+    let capsule = &project.production_design.capsules[0];
+    assert_eq!(capsule.id, current.id);
+    assert_eq!(capsule.scene_id, current.scene_id);
+    assert_eq!(capsule.label, current.label);
+    assert_eq!(capsule.source_asset_id, old_asset.id);
+    assert_eq!(capsule.fidelity.visual, Fidelity::Unavailable);
+    assert_eq!(capsule.fidelity.temporal, Fidelity::Unavailable);
+    assert_eq!(capsule.fidelity.structural, Fidelity::Unavailable);
+    assert_eq!(capsule.fidelity.editable, Fidelity::Unavailable);
+    assert!(capsule.fidelity.evidence_sha256.is_none());
+    assert!(capsule.editable_parameters.is_empty() && capsule.property_fidelity.is_empty());
+    assert_eq!(project.assets, assets);
+    assert_eq!(project.scenes, scenes);
+    let before = serde_json::to_vec(&project).unwrap();
+    assert!(
+        project
+            .apply_change(&Change::RelinkNativeCapsuleSource { relink })
+            .is_err()
+    );
+    assert_eq!(serde_json::to_vec(&project).unwrap(), before);
+    project.validate().unwrap();
 }

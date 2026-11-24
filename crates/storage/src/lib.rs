@@ -1546,6 +1546,17 @@ impl Store {
             DomainError::Invalid("project revision exceeds SQLite integer range".into())
         })?;
         project.apply_change(change)?;
+        if let Change::RelinkNativeCapsuleSource { relink } = change {
+            // The domain has now checked the exact old binding, ownership of
+            // the target asset and content locks. Verify retained bytes only
+            // after the generation/revision/receipt gates, before commit.
+            let path = checked_existing_blob_path_from_root(&blob_root, &relink.source_sha256)?;
+            if hash_file(&path)?.sha256 != relink.source_sha256 {
+                return Err(StorageError::InvalidBackup(
+                    "relinked source blob failed content-address verification".into(),
+                ));
+            }
+        }
         if let Change::ApplyVoiceAlignment { application } = change {
             // The qualified source must still exist with its exact CAS bytes.
             // No media decoder or worker runs inside this transaction.

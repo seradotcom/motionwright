@@ -76,7 +76,85 @@ impl NativeCapsuleSourceSpec {
     }
 }
 
+/// Conditional reference change to an already retained, digest-bound asset.
+/// No bytes, renderer grants, or claims of fidelity may be supplied here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeCapsuleSourceRelink {
+    pub capsule_id: Uuid,
+    pub scene_id: Uuid,
+    pub expected_source_asset_id: Uuid,
+    pub expected_source_sha256: String,
+    pub source_asset_id: Uuid,
+    pub source_sha256: String,
+}
+
 impl Project {
+    pub(crate) fn relink_native_capsule_source(
+        &mut self,
+        relink: &NativeCapsuleSourceRelink,
+    ) -> Result<()> {
+        self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+        self.ensure_unlocked(&format!("scene:{}", relink.scene_id), &[LockKind::Content])?;
+        let mut matches = self
+            .production_design
+            .capsules
+            .iter()
+            .enumerate()
+            .filter(|(_, capsule)| capsule.id == relink.capsule_id);
+        let (index, current) = matches
+            .next()
+            .ok_or_else(|| DomainError::Invalid("Native capsule no longer exists".into()))?;
+        if matches.next().is_some()
+            || current.scene_id != relink.scene_id
+            || current.source_asset_id != relink.expected_source_asset_id
+            || current.source_sha256 != relink.expected_source_sha256
+        {
+            return Err(DomainError::Invalid(
+                "Native capsule source changed; review the saved binding".into(),
+            ));
+        }
+        current.validate(&self.scenes, &self.assets)?;
+        let find_asset = |id: Uuid, digest: &str| -> Result<&Asset> {
+            let mut candidates = self.assets.iter().filter(|asset| asset.id == id);
+            let asset = candidates.next().ok_or_else(|| {
+                DomainError::Invalid("Retained source asset is unavailable".into())
+            })?;
+            if candidates.next().is_some() || asset.content_sha256.as_deref() != Some(digest) {
+                return Err(DomainError::Invalid(
+                    "Retained source asset identity or digest differs".into(),
+                ));
+            }
+            asset.validate()?;
+            Ok(asset)
+        };
+        let previous = find_asset(current.source_asset_id, &current.source_sha256)?;
+        let replacement = find_asset(relink.source_asset_id, &relink.source_sha256)?;
+        if replacement.id == previous.id || replacement.media_type != previous.media_type {
+            return Err(DomainError::Invalid(
+                "Choose a different retained asset with the same source media type".into(),
+            ));
+        }
+        let mut capsule = current.clone();
+        capsule.source_asset_id = replacement.id;
+        capsule.source_sha256 = relink.source_sha256.clone();
+        capsule.fidelity = FidelityReport {
+            renderer: "source-relink".into(),
+            renderer_version: "unverified".into(),
+            visual: Fidelity::Unavailable,
+            temporal: Fidelity::Unavailable,
+            structural: Fidelity::Unavailable,
+            editable: Fidelity::Unavailable,
+            losses: vec!["Relinked source has no verified native realization or fidelity evidence. Review its editable parameters again.".into()],
+            evidence_sha256: None,
+        };
+        capsule.editable_parameters.clear();
+        capsule.property_fidelity.clear();
+        capsule.validate(&self.scenes, &self.assets)?;
+        self.production_design.capsules[index] = capsule;
+        self.validate()
+    }
+
     pub(crate) fn import_native_capsule_source(
         &mut self,
         asset: &Asset,

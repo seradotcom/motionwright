@@ -74,7 +74,7 @@ export type ScopedCanvasEdit =
   | { kind: "keyframe"; node_id: string; keyframe: CanvasKeyframe }
   | { kind: "motion"; node_id: string; keyframes: CanvasKeyframe[] };
 export interface CreativePatch { scene_id: string; base_revision: number; rationale: string; edits: ScopedCanvasEdit[]; }
-export type ProductionDesignChange = Extract<Change, { type: "upsert_product_hero" | "detach_product_hero" | "set_production_plan" | "set_delivery_recipe" | "upsert_native_capsule" | "apply_creative_patch" | "upsert_procedural_field" | "detach_procedural_field" }>;
+export type ProductionDesignChange = Extract<Change, { type: "upsert_product_hero" | "detach_product_hero" | "set_production_plan" | "set_delivery_recipe" | "upsert_native_capsule" | "relink_native_capsule_source" | "apply_creative_patch" | "upsert_procedural_field" | "detach_procedural_field" }>;
 
 export function validateNativePropertyFidelity(properties: NativePropertyFidelity[]) {
   if (properties.length > 64) throw new Error("At most 64 native property classifications are permitted.");
@@ -673,6 +673,8 @@ export async function validateProductionPlan(project: Project, plan: ProductionP
     if (plan.approval.content_sha256 !== await planContentDigest(plan)) throw new Error("Plan approval is stale.");
   }
 }
+import { proposeNativeSourceRelink } from "./nativeSourceRelink";
+
 /** Browser editorial mode uses the same Change contract; native mode calls Rust through IPC. */
 export async function applyProductionDesignChange(project: Project, change: ProductionDesignChange): Promise<void> {
   const design = structuredClone(project.production_design ?? emptyProductionDesign());
@@ -718,6 +720,13 @@ export async function applyProductionDesignChange(project: Project, change: Prod
       else delete recipes[change.deliverable_profile_id];
       if (Object.keys(recipes).length) design.delivery_recipes = recipes;
       else delete design.delivery_recipes;
+      break;
+    }
+    case "relink_native_capsule_source": {
+      const relink = change.relink;
+      unlocked(project, relink.scene_id, ["content"]);
+      const capsule = proposeNativeSourceRelink(project, relink);
+      design.capsules = design.capsules.map(current => current.id === capsule.id ? capsule : current);
       break;
     }
     case "upsert_native_capsule": {

@@ -1280,6 +1280,7 @@ impl Project {
                 | Change::UpsertDeliverable { .. }
                 | Change::RemoveAsset { .. }
                 | Change::ImportNativeCapsuleSource { .. }
+                | Change::RelinkNativeCapsuleSource { .. }
                 | Change::RemoveDeliverable { .. }
                 | Change::ApplyVoiceAlignment { .. }
                 | Change::ImportMeasuredVoice { .. }
@@ -1564,6 +1565,9 @@ impl Project {
             }
             Change::ImportNativeCapsuleSource { asset, capsule } => {
                 self.import_native_capsule_source(asset, capsule)?;
+            }
+            Change::RelinkNativeCapsuleSource { relink } => {
+                self.relink_native_capsule_source(relink)?;
             }
             Change::UpsertNativeCapsule { capsule } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
@@ -3090,6 +3094,9 @@ pub enum Change {
     },
     UpsertNativeCapsule {
         capsule: NativeCapsule,
+    },
+    RelinkNativeCapsuleSource {
+        relink: NativeCapsuleSourceRelink,
     },
     ApplyCreativePatch {
         patch: CreativePatch,

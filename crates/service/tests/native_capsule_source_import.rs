@@ -1,6 +1,8 @@
 //! Atomic immutable-source import through the real SQLite-backed service.
 //! Synthetic authored data only: no native execution or provider grant.
-use motionwright_domain::{Change, Fidelity, NativeCapsuleSourceSpec, Project};
+use motionwright_domain::{
+    Change, Fidelity, NativeCapsuleSourceRelink, NativeCapsuleSourceSpec, Project,
+};
 use motionwright_service::StudioService;
 use motionwright_storage::{ApplyOutcome, FileImportIntent, ProjectBackup, StorageError};
 use rusqlite::Connection;
@@ -513,4 +515,97 @@ fn portable_source_save_reopens_with_new_generation_without_inheriting_receipts(
     assert_eq!(after.project, imported_backup.project);
     assert_eq!(after.events, imported_backup.events);
     assert_eq!(after.payload_sha256, imported_backup.payload_sha256);
+}
+
+#[test]
+fn retained_original_relink_rejects_missing_bytes_then_commits_and_reopens() {
+    let f = fixture();
+    let spec = spec(&f.project);
+    let original_bytes = fs::read(&f.source).unwrap();
+    let first = save(&f, &f.project, "relink-original", &spec)
+        .unwrap()
+        .project;
+    let original = first.production_design.capsules[0].clone();
+    let new_bytes = br#"{"version":2,"label":"new authored source"}"#;
+    fs::write(&f.source, new_bytes).unwrap();
+    let second = save(&f, &first, "relink-new-version", &spec)
+        .unwrap()
+        .project;
+    let active = second.production_design.capsules[0].clone();
+    let change = Change::RelinkNativeCapsuleSource {
+        relink: NativeCapsuleSourceRelink {
+            capsule_id: active.id,
+            scene_id: active.scene_id,
+            expected_source_asset_id: active.source_asset_id,
+            expected_source_sha256: active.source_sha256.clone(),
+            source_asset_id: original.source_asset_id,
+            source_sha256: original.source_sha256.clone(),
+        },
+    };
+    let original_path = f
+        .service
+        .store()
+        .lock()
+        .verified_blob_path(&original.source_sha256)
+        .unwrap();
+    fs::remove_file(&original_path).unwrap();
+    let before = snapshot(&f);
+    assert!(
+        f.service
+            .apply(second.id, &second.stamp(), "missing-original", &change)
+            .is_err()
+    );
+    unchanged(&f, &before);
+    fs::write(&original_path, b"corrupt synthetic bytes").unwrap();
+    assert!(
+        f.service
+            .apply(second.id, &second.stamp(), "corrupt-original", &change)
+            .is_err()
+    );
+    unchanged(&f, &before);
+    fs::write(&original_path, &original_bytes).unwrap();
+    let saved = f
+        .service
+        .apply(second.id, &second.stamp(), "restore-original", &change)
+        .unwrap()
+        .project;
+    assert_eq!(saved.revision, second.revision + 1);
+    assert_eq!(saved.assets, second.assets);
+    assert_eq!(
+        saved.production_design.capsules.len(),
+        second.production_design.capsules.len()
+    );
+    let capsule = &saved.production_design.capsules[0];
+    assert_eq!(capsule.id, active.id);
+    assert_eq!(capsule.source_asset_id, original.source_asset_id);
+    assert_eq!(capsule.source_sha256, original.source_sha256);
+    assert_eq!(capsule.fidelity.renderer, "source-relink");
+    assert!(capsule.editable_parameters.is_empty());
+    assert!(capsule.property_fidelity.is_empty());
+    let event = snapshot(&f);
+    assert_eq!(event.events.len(), before.events.len() + 1);
+    // Reopen the existing database; both versions must remain independently readable.
+    let reopened = StudioService::open(&f.database).unwrap();
+    assert_eq!(reopened.project(saved.id).unwrap(), saved);
+    assert_eq!(
+        reopened
+            .store()
+            .lock()
+            .read_blob(&original.source_sha256, 4096)
+            .unwrap(),
+        original_bytes
+    );
+    assert_eq!(
+        reopened
+            .store()
+            .lock()
+            .read_blob(&active.source_sha256, 4096)
+            .unwrap(),
+        new_bytes.to_vec()
+    );
+    let replay = reopened
+        .apply(second.id, &second.stamp(), "restore-original", &change)
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.project, saved);
 }

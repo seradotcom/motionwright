@@ -1,3 +1,4 @@
+import { nativeRelinkCandidates, proposeNativeSourceRelink, relinkRequest, type ProductionRelinkInput } from "./nativeSourceRelink";
 import { timelineSelectionScope, type TimelineEditorRequest } from "./timelineSelection";
 import ExpandedStudy from "./ExpandedStudy";
 import NativeInspectionWorkbench from "./NativeInspectionWorkbench";
@@ -610,6 +611,61 @@ function SourceAttachmentEditor({project,scene,commitCamera,busy}:{project:Proje
   </>;
 }
 
+function NativeSourceRelinkEditor({ project, target, commit, busy }: {
+  project: Project; target: Extract<ProductionTarget, { kind: "relink" }>; commit: ProductionCommit; busy: boolean;
+}) {
+  const editor = useProductionEditor(project, target, commit, busy);
+  const input = editor.draft.input as ProductionRelinkInput;
+  const capsule = project.production_design?.capsules.find(c => c.id === target.capsuleId && c.scene_id === target.sceneId) ?? null;
+  const candidates = nativeRelinkCandidates(project, capsule);
+  const current = project.assets.find(a => a.id === capsule?.source_asset_id && a.content_sha256 === capsule?.source_sha256);
+  const selected = candidates.find(a => a.id === input.assetId && a.content_sha256 === input.assetSha256);
+  let issue = "";
+  if (input.assetId) {
+    try { proposeNativeSourceRelink(project, relinkRequest(target.capsuleId, target.sceneId, input)); }
+    catch (error) { issue = error instanceof Error ? error.message : String(error); }
+  }
+  const locked = project.locks.some(lock => lock.kind === "content" &&
+    (lock.resource === "project:" + project.id || lock.resource === "scene:" + target.sceneId));
+  return <section aria-label="Relink saved source" className="production-diff-details">
+    <p className="production-help">Switch this capsule to a different retained asset of the same media type. Both source assets remain in the project. The previous editable parameters, property review and fidelity evidence are cleared; relinking does not execute a renderer or verify native support.</p>
+    {!capsule && target.capsuleId && <p role="alert" className="production-error">The earlier capsule is unavailable. Its recovery copy remains scoped to the original identity.</p>}
+    {capsule && <p>Current source: {current?.name ?? "Unavailable"} <span className="mono" style={{overflowWrap:"anywhere"}}>sha256:{capsule.source_sha256}</span></p>}
+    <label className="production-field"><span>Replacement retained source</span>
+      <select aria-label="Replacement retained source" value={input.assetId} disabled={editor.busy || productionUnconfirmed(editor.draft) || !capsule}
+        onChange={event => { const asset = candidates.find(a => a.id === event.target.value); editor.edit({...input, assetId:asset?.id ?? "", assetSha256:asset?.content_sha256 ?? ""}); }}>
+        <option value="">Choose retained source asset</option>
+        {input.assetId && !selected && <option value={input.assetId}>Earlier selection unavailable or changed</option>}
+        {candidates.filter(a => a.id !== input.assetId || selected).map(a => <option key={a.id} value={a.id}>{a.name} ({a.content_sha256?.slice(0,12)})</option>)}
+      </select>
+    </label>
+    {capsule && !candidates.length && <p className="production-help">No other retained asset of this media type is available.</p>}
+    {selected && <p className="mono" style={{overflowWrap:"anywhere"}}>Replacement sha256:{input.assetSha256}</p>}
+    {locked && <p className="production-notice" role="status">This capsule's content scope is locked.</p>}
+    {issue && <p className="production-error" role="alert">{issue}</p>}
+    <ProductionDraftFeedback editor={editor} project={project}/>
+    <button type="button" className="primary-button" disabled={editor.blocked || locked || !selected || !!issue || !productionHasInput(editor.draft)}
+      onClick={() => void editor.send()}><RefreshCw size={14}/> Relink saved source</button>
+  </section>;
+}
+function NativeSourceRelinkWorkbench({ project, scene, commit, busy }: {project:Project; scene:Scene|null; commit:ProductionCommit; busy:boolean}) {
+  const capsules = project.production_design?.capsules.filter(c => c.scene_id === scene?.id) ?? [];
+  const [id, setId] = useState(capsules[0]?.id ?? "");
+  const selected = capsules.find(c => c.id === id);
+  useEffect(() => { if (!id && capsules[0]) setId(capsules[0].id); }, [id, capsules]);
+  // Preserve a disappeared selection so its retained draft is still visible.
+  const target = {kind:"relink" as const, sceneId:scene?.id ?? null, capsuleId:id || null};
+  return <section className="production-diff-details">
+    <h3>Relink an existing capsule</h3>
+    <label className="production-field"><span>Capsule to relink</span><select aria-label="Capsule to relink" value={id} disabled={busy || !capsules.length} onChange={event => setId(event.target.value)}>
+      {!id && <option value="">No capsule selected</option>}
+      {id && !selected && <option value={id}>Earlier capsule unavailable</option>}
+      {capsules.map(c => <option value={c.id} key={c.id}>{c.label}</option>)}
+    </select></label>
+    <NativeSourceRelinkEditor key={productionScope(project,target)} project={project} target={target} commit={commit} busy={busy}/>
+  </section>;
+}
+
 function NativePropertyReviewEditor({ project, target, select, commit, busy }: {
   project: Project; target: Extract<ProductionTarget, { kind: "fidelity" }>; select: (id: string) => void; commit: ProductionCommit; busy: boolean;
 }) {
@@ -645,6 +701,7 @@ function SourcesWorkbench({project,scene,commitCamera,busy,sourceServices,displa
     <div className="production-capsule-list">{capsules.map(c=><article key={c.id}><header><strong>{c.label}</strong><span>{c.fidelity.renderer} / {c.fidelity.renderer_version}</span></header>
       <p className="mono">sha256:{c.source_sha256}</p><dl>{(["visual","temporal","structural","editable"] as const).map(d=><div key={d}><dt>{d}</dt><dd>{c.fidelity[d]}</dd></div>)}</dl>
       {c.fidelity.losses.map(loss=><p key={loss}>{loss}</p>)}<small>Declared support metadata, not an independently verified renderer receipt.</small></article>)}</div>
+    <NativeSourceRelinkWorkbench key={JSON.stringify([project.id, project.generation, project.active_branch, scene?.id ?? null])} project={project} scene={scene} commit={commitCamera} busy={busy}/>
     <NativePropertyReview key={JSON.stringify([project.id, project.generation, project.active_branch])} project={project} commit={commitCamera} busy={busy}/>
   </div>;
 }
