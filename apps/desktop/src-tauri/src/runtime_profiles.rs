@@ -16,10 +16,24 @@ pub struct InstallRequest {
     pub scope: Scope,
     pub plan_id: Uuid,
     pub manifest_sha256: String,
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        expect(
+            dead_code,
+            reason = "Unsupported targets keep the closed wire shape and reject before effects"
+        )
+    )]
     pub effect_grant: Uuid,
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    expect(
+        dead_code,
+        reason = "Unsupported targets retain the closed query shape and perform no reads"
+    )
+)]
 pub struct ReadRequest {
     pub scope: Scope,
     pub install_id: Uuid,
@@ -30,6 +44,13 @@ pub struct RollbackRequest {
     pub scope: Scope,
     pub install_id: Uuid,
     pub manifest_sha256: String,
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        expect(
+            dead_code,
+            reason = "Unsupported targets keep the closed wire shape and reject before effects"
+        )
+    )]
     pub effect_grant: Uuid,
 }
 #[derive(Debug, Clone, Serialize)]

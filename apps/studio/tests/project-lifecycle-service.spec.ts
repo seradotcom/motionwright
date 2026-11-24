@@ -70,6 +70,29 @@ async function createStored(service: ScopedChangeService, title: string) {
   return result.project;
 }
 
+test("first-use native keyboard sequence submits one exact creation from the title form", async ({ page, lifecycle }) => {
+  const { service } = lifecycle;
+  await page.goto("/"); await openLibrary(page);
+  await expect(dialog(page).getByText("No saved projects", { exact: true })).toBeVisible();
+  await expect(dialog(page).getByRole("heading", { name: "Project library", exact: true })).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(button(page, "Close project library")).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(button(page, "Create editable motion example")).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(dialog(page).getByLabel("Project title", { exact: true })).toBeFocused();
+  const title = "motionwright ci first use";
+  await page.keyboard.type(title);
+  await page.keyboard.press("Enter");
+  await revision(page, 0);
+  const index = await service.invoke<{ items: { id: string }[] }>("list_projects", { request: { cursor: null, limit: 100 } });
+  expect(index.items).toHaveLength(1);
+  expect((await service.project(index.items[0].id)).title).toBe(title);
+  expect(calls(service, "issue_project_creation_grant")).toHaveLength(1);
+  expect(calls(service, "create_project")).toHaveLength(1);
+  expect(await creationCopies(page)).toEqual([]);
+});
+
 test("empty library creates exact intent, edits Brief and Canvas through several revisions and reopens the same decisions", async ({ page, lifecycle }, testInfo) => {
   const { service } = lifecycle;
   await page.goto("/"); await openLibrary(page);

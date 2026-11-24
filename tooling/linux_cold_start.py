@@ -256,9 +256,9 @@ def _unique_original_x11_window(scratch: Path) -> int:
 def _send_native_x11_create(scratch: Path) -> None:
     """Send a single real keyboard activation to the accessible modal.
 
-    ProjectLibraryDialog focuses its heading and traps Shift+Tab to its last
-    enabled control, the labeled title input (Create is disabled until title).
-    The subsequent Tab/Return uses the native WebKit/Xvfb event path.
+    ProjectLibraryDialog starts at its heading. Three reverse-tab stops reach
+    Close, the editable example button, then Project title (Create is disabled).
+    Return submits that title's form through the native WebKit/Xvfb event path.
     """
     if os.environ.get("GITHUB_ACTIONS") != "true" or not os.environ.get("DISPLAY"):
         raise ColdStartError("Native first-use keyboard requires disposable Xvfb CI")
@@ -304,17 +304,16 @@ def _send_native_x11_create(scratch: Path) -> None:
             key(name, True)
             key(name, False)
             time.sleep(0.035)
-        # The dialog focuses its h2. First Shift+Tab wraps to the footer
-        # Close button; the second reaches the labeled Project title input
-        # because the Create button is disabled before a title is entered.
-        # A single Shift+Tab would type into the footer and never create.
+        # Heading -> footer Close -> editable example -> Project title.
+        # Create is disabled while the title is empty. Submit the form directly
+        # from the input, exactly once; no follow-up activation or effect retry.
         key("Shift_L", True)
+        stroke("Tab")
         stroke("Tab")
         stroke("Tab")
         key("Shift_L", False)
         for char in EXPECTED_INITIAL_TITLE:
             stroke("space" if char == " " else char)
-        stroke("Tab")
         stroke("Return")
     finally:
         x11.XCloseDisplay(display)
