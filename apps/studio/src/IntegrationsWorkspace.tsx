@@ -1,6 +1,7 @@
 import { CircleCheck, CircleDashed, LockKeyhole, Package, ShieldCheck, Trash2 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import CreativeRuntimeDoctorPanel from "./CreativeRuntimeDoctorPanel";
+import RuntimeProfilesPanel from "./RuntimeProfilesPanel";
 import {sameValue} from "./creativeProduction";
 import {integrationScope,integrationEmptyInput,integrationExtension,integrationHandoff,
   integrationExtensionInput,integrationHandoffInput,integrationSnapshot} from "./integrationAuthoringDraft";
@@ -367,6 +368,7 @@ function IntegrationWorkspaceEditor({project,nativeSdk,commit}:IntegrationProps)
         </div>
         <CreativeRuntimeDoctorPanel project={project} nativeSdk={nativeSdk}
           runtime={runtimeCompatibility} />
+        <RuntimeProfilesPanel project={project} desktop={nativeSdk.mode === "tauri"} />
       </section>
 
       <section className="integration-section" aria-label="Launchwright public handoff bindings">

@@ -34,6 +34,11 @@ use media_integrity::{
     PortableMediaVerification, VerifyPortableMediaRequest, verify_portable_media,
 };
 mod native_preview;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod runtime_profile_bundle;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod runtime_profile_files;
+mod runtime_profiles;
 
 use av_master::{
     canonical_av_request_id, stage_measured_wav, stage_original_mix_wav,
@@ -103,6 +108,7 @@ struct AppState {
     preview: NativePreviewRegistry,
     av_delivery: NativeMasterDeliveryRegistry,
     runtime_connections: RuntimeConnectionRegistry,
+    runtime_profiles: runtime_profiles::RuntimeProfiles,
     hyperframes_renders: hyperframes_render::RenderRegistry,
     graph_exchange_custody: GraphExchangeJournal,
     development_audition_custody: motionwright_native::original_mix::DevelopmentAuditionCustody,
@@ -3436,6 +3442,136 @@ async fn read_original_hyperframes_render(
     present_original_hyperframes(&mut owner, &state, request).await
 }
 
+#[tauri::command]
+async fn runtime_profile_inventory(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: runtime_profiles::Scope,
+) -> Result<runtime_profiles::Inventory, String> {
+    let service = state.service.clone();
+    let profiles = state.runtime_profiles.clone();
+    let result = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        profiles.inventory(&service, request, SEMWRIGHT_REVISION)
+    })
+    .await
+    .map_err(|_| "Runtime inventory task failed.".to_string())??;
+    owner.begin_phase()?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn choose_runtime_profile_bundle(
+    mut owner: desktop_owner::OwnerInvocation,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: runtime_profiles::Scope,
+) -> Result<Option<runtime_profiles::PlanView>, String> {
+    checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    if !state.runtime_profiles.supported() {
+        return Err("No offline runtime profile is admitted for this operating system and architecture. Local editing and existing supported connections remain available.".into());
+    }
+    let selected = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        app.dialog()
+            .file()
+            .set_title("Select an offline runtime package folder")
+            .blocking_pick_folder()
+    })
+    .await
+    .map_err(|_| "Runtime package picker failed.".to_string())?;
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    owner.begin_phase()?;
+    checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    let path = selected
+        .into_path()
+        .map_err(|_| "Select a local runtime package folder.".to_string())?;
+    let service = state.service.clone();
+    let profiles = state.runtime_profiles.clone();
+    let result = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        profiles.inspect(&service, request, &path, SEMWRIGHT_REVISION)
+    })
+    .await
+    .map_err(|_| "Runtime package inspection task failed.".to_string())??;
+    owner.begin_phase()?;
+    Ok(Some(result))
+}
+
+#[tauri::command]
+async fn install_runtime_profile(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: runtime_profiles::InstallRequest,
+) -> Result<runtime_profiles::InstallView, runtime_profiles::RuntimeFailure> {
+    let failure = runtime_profiles::RuntimeFailure::install(
+        &request,
+        "The runtime task reply was not confirmed. Read its original operation.",
+    );
+    let service = state.service.clone();
+    let profiles = state.runtime_profiles.clone();
+    let grants = state.effect_grants.clone();
+    let result = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        profiles.install(&service, &grants, request, SEMWRIGHT_REVISION)
+    })
+    .await
+    .map_err(|_| failure.clone())??;
+    owner
+        .begin_phase()
+        .map_err(|message| runtime_profiles::RuntimeFailure { message, ..failure })?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn read_original_runtime_profile(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: runtime_profiles::ReadRequest,
+) -> Result<runtime_profiles::InstallView, String> {
+    let service = state.service.clone();
+    let profiles = state.runtime_profiles.clone();
+    let result = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        profiles.read(&service, request, SEMWRIGHT_REVISION)
+    })
+    .await
+    .map_err(|_| "Original runtime inspection task failed.".to_string())??;
+    owner.begin_phase()?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn rollback_runtime_profile(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: runtime_profiles::RollbackRequest,
+) -> Result<runtime_profiles::InstallView, runtime_profiles::RuntimeFailure> {
+    let failure = runtime_profiles::RuntimeFailure::rollback(
+        &request,
+        "The runtime task reply was not confirmed. Read its original operation.",
+    );
+    let service = state.service.clone();
+    let profiles = state.runtime_profiles.clone();
+    let grants = state.effect_grants.clone();
+    let result = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        profiles.rollback(&service, &grants, request, SEMWRIGHT_REVISION)
+    })
+    .await
+    .map_err(|_| failure.clone())??;
+    owner
+        .begin_phase()
+        .map_err(|message| runtime_profiles::RuntimeFailure { message, ..failure })?;
+    Ok(result)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(desktop_owner::lifecycle_plugin())
@@ -3481,6 +3617,7 @@ fn main() {
                 preview: NativePreviewRegistry::default(),
                 av_delivery: NativeMasterDeliveryRegistry::default(),
                 runtime_connections: RuntimeConnectionRegistry::new(&data_dir)?,
+                runtime_profiles: runtime_profiles::RuntimeProfiles::new(&data_dir),
                 hyperframes_renders: hyperframes_render::RenderRegistry::default(),
                 graph_exchange_custody: GraphExchangeJournal::new(&data_dir, workspace_session)?,
                 development_audition_custody,
@@ -3510,6 +3647,11 @@ fn main() {
             production_runtime_status,
             creative_runtime_doctor,
             choose_semwright_connection,
+            runtime_profile_inventory,
+            choose_runtime_profile_bundle,
+            install_runtime_profile,
+            read_original_runtime_profile,
+            rollback_runtime_profile,
             choose_brand_font_media_root,
             clear_saved_semwright_connection,
             workflow_overview,

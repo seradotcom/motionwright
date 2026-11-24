@@ -155,7 +155,7 @@ export default function CreativeRuntimeDoctorPanel({
           {" "}{report.broker_dispatch_performed
             ? "Authenticated read-only Broker observations are included. They do not establish native rendering, source readback, a signed package or human creative approval."
             : "A source declaration, compatible CLI and this local preflight do not establish a live Broker handshake, installed provider, media acceptance, signed package or human creative approval."}
-          {" "}Installation sizing, destination and rollback are not performed.</p>
+          {" "}For a supported local package, use Offline runtime profiles below to review its size and destination and install or roll back a copy.</p>
       </div>
     </>}
   </section>;

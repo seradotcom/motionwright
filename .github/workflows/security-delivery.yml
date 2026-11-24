@@ -234,6 +234,54 @@ jobs:
         run: cargo check --locked --jobs 2 -p motionwright-desktop
       - name: Effect-grant boundary regressions
         run: cargo test --locked --jobs 2 -p motionwright-desktop effect_grants
+      - name: Original offline runtime files, SQLite reopen and rollback
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY_RUNTIME_PROFILES'
+          import hashlib, importlib.util, json, os, re, subprocess
+          from pathlib import Path
+          pin = "e60e789035b1afe02df127e510b6be533371f567"
+          metadata = json.loads(subprocess.run(
+              ["cargo", "metadata", "--locked", "--format-version", "1"],
+              check=True, capture_output=True, text=True).stdout)
+          sdk = next(item for item in metadata["packages"] if item["name"] == "semwright-native-sdk")
+          assert sdk["version"] == "1.0.0" and sdk["source"].endswith("#" + pin)
+          candidates = [parent / "integrations/motion-canvas/runtime"
+                        for parent in Path(sdk["manifest_path"]).parents]
+          runtime = next(path for path in candidates if (path / "render.mjs").is_file())
+          spec = importlib.util.spec_from_file_location("runtime_profile_fixtures", "tooling/tests/runtime_profile_fixtures.py")
+          fixtures = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(fixtures)
+          destination = Path(os.environ["RUNNER_TEMP"]) / ("runtime-profile-fixtures-" + os.environ["GITHUB_RUN_ID"] + "-" + os.environ["GITHUB_RUN_ATTEMPT"])
+          mc, hf = fixtures.create(runtime, destination)
+          env = dict(os.environ, MOTIONWRIGHT_RUNTIME_TEST_PACKAGE_MC=str(mc),
+                     MOTIONWRIGHT_RUNTIME_TEST_PACKAGE_HF=str(hf), PYTHONDONTWRITEBYTECODE="1")
+          log = destination / "desktop-original.log"
+          with log.open("xb") as stream:
+              result = subprocess.run(["cargo", "test", "--locked", "--jobs", "2", "-p", "motionwright-desktop",
+                  "runtime_profiles::linux::tests::", "--", "--test-threads=1"], env=env, stdout=stream, stderr=subprocess.STDOUT)
+          raw = log.read_text(encoding="utf-8")
+          if result.returncode:
+              print("\n".join(raw.splitlines()[-90:]))
+              raise SystemExit(result.returncode)
+          expected = {
+              "actual_copy_reopens_sqlite_and_rollback_preserves_original_files",
+              "exact_grant_scope_manifest_and_expiry_reject_before_package_writes",
+              "changed_selected_bytes_leave_a_partial_original_that_can_be_rolled_back",
+              "link_hardlink_fifo_and_source_root_replacement_are_rejected",
+              "destination_identity_and_project_scope_cannot_be_substituted",
+              "unknown_original_survives_restart_and_blocks_a_new_profile_identity",
+              "lost_reply_recovers_original_bytes_without_reinstall_or_new_receipt",
+              "original_rollback_without_ack_is_recovered_without_another_move",
+              "closed_manifest_rejects_authority_fields_paths_collisions_and_budgets",
+              "hyperframes_original_runner_and_lock_install_without_executing_the_fixture_tools",
+              "unavailable_runtime_storage_keeps_original_projects_open_and_unchanged",
+          }
+          observed = re.findall(r"^test runtime_profiles::linux::tests::([a-z0-9_]+) \.\.\. ok$", raw, re.M)
+          assert len(observed) == len(expected) and set(observed) == expected
+          assert "11 passed; 0 failed; 0 ignored" in raw
+          print("RUNTIME_PROFILE_LOCAL_COPY=PASS; cases=11; SQLite=REAL; package_description=ACTUAL_PRODUCER; tools=INERT_BYTE_FIXTURES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+          PY_RUNTIME_PROFILES
       - name: HyperFrames original Desktop render and PNG recovery contracts
         run: |
           set -euo pipefail

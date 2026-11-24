@@ -37,13 +37,18 @@ impl EffectKind {
                 | Self::RenderLocal
                 | Self::DeliverLocal
                 | Self::WorkflowMutation
+                | Self::InstallRuntime
         )
     }
 
     fn requires_project_scope(self) -> bool {
         matches!(
             self,
-            Self::ProjectEdit | Self::RenderLocal | Self::DeliverLocal | Self::WorkflowMutation
+            Self::ProjectEdit
+                | Self::RenderLocal
+                | Self::DeliverLocal
+                | Self::WorkflowMutation
+                | Self::InstallRuntime
         )
     }
 }
@@ -194,7 +199,7 @@ impl EffectGrantRegistry {
     ) -> Result<EffectGrantReceipt, String> {
         if !effect.is_supported_local() {
             return Err(
-                "Motionwright does not expose grants for remote egress, upload, runtime installation, or publication."
+                "Motionwright does not expose grants for remote egress, upload, or publication."
                     .into(),
             );
         }
@@ -390,7 +395,6 @@ mod tests {
         for effect in [
             EffectKind::RemoteEgress,
             EffectKind::UploadExternal,
-            EffectKind::InstallRuntime,
             EffectKind::PublishExternal,
         ] {
             let error = registry.issue(effect, scope, "external").unwrap_err();
@@ -418,6 +422,11 @@ mod tests {
             )
             .unwrap();
 
+        assert!(
+            registry
+                .issue(EffectKind::InstallRuntime, unscoped, "runtime")
+                .is_err()
+        );
         assert!(
             registry
                 .issue(EffectKind::ProjectEdit, unscoped, "edit")

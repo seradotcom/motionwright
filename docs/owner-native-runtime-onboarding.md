@@ -2,6 +2,8 @@
 
 **Scope:** an owner-selectable, locally remembered existing Semwright production connection. This does **not** bundle, install, trust, update, provision or start a Semwright Broker/Driver Host. Offline project work remains available without any native renderer. This flow is independent of the 60 human acceptance cases.
 
+A separate [offline runtime profile installer](offline-runtime-profiles.md) now provides explicit package inspection, size/destination review, local copy, original-result recovery and preserved rollback for admitted Linux profiles. It does not provision or authorize the Broker/Driver Host described below.
+
 ## First project, first connection
 
 1. Install the unsigned Motionwright candidate only on a machine where you have chosen to test it. The first launch creates an application-owned local project in the normal platform app-data directory. Choose **Integrations** from the navigation; the Semwright Native SDK adapter is distinct from the production runtime and cannot by itself render media.
