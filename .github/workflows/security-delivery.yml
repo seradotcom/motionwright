@@ -91,11 +91,11 @@ on:
           - native-film-hold
           - native-geometry-readback
       first_use_case:
-        description: Impact selection within first-use-example; static-group runs only its Service-backed Studio flow
+        description: Impact selection within first-use-example; static layout choices reuse valid first-use and portable results
         type: choice
         required: false
         default: all
-        options: [all, static-group]
+        options: [all, static-group, static-alignment, static-layout]
       interchange_case:
         description: One original Studio flow for native-otio-real-media; no other suites
         type: choice
@@ -373,7 +373,7 @@ jobs:
       - name: Source policy
         run: python3 -B tooling/source_policy.py
       - name: Atomic creation and portable import recovery
-        if: inputs.first_use_case != 'static-group'
+        if: inputs.first_use_case == 'all' || inputs.first_use_case == ''
         run: |
           set -euo pipefail
           cargo test --locked --jobs 2 -p motionwright-storage --lib project_creation::tests:: -- --test-threads=1
@@ -394,7 +394,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev pkg-config clang
       - name: First-use original example, creation custody and free portable source
-        if: inputs.first_use_case != 'static-group'
+        if: inputs.first_use_case == 'all' || inputs.first_use_case == ''
         run: |
           set -euo pipefail
           cargo clippy --locked --jobs 2 -p motionwright-native --test first_use_example -- -D warnings
@@ -420,7 +420,7 @@ jobs:
           print("FIRST_USE_EXAMPLE_SOURCE=PASS; cases=4; SQLite=REAL; MotionCanvas=SOURCE_REALIZATION; HyperFrames=UNSUPPORTED_MOTION_VERIFIED; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           PY_FIRST_USE_SOURCE
       - name: Grouped A4 source projections for hierarchy, camera, cut continuity and editable Manim
-        if: inputs.first_use_case != 'static-group'
+        if: inputs.first_use_case == 'all' || inputs.first_use_case == ''
         run: |
           set -euo pipefail
           cargo test --locked --jobs 2 -p motionwright-domain --lib camera_reframe:: -- --test-threads=1
@@ -428,6 +428,12 @@ jobs:
           cargo test --locked --jobs 2 -p motionwright-domain --lib scene_boundary -- --test-threads=1
           cargo test --locked --jobs 2 -p motionwright-native --lib film::tests:: -- --test-threads=1
           cargo test --locked --jobs 2 -p motionwright-native --test manim_editable_projection -- --test-threads=1
+      - name: Exact static alignment projection for landscape, portrait and square
+        if: inputs.first_use_case == 'static-alignment' || inputs.first_use_case == 'static-layout'
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --jobs 2 -p motionwright-native --lib -- -D warnings
+          cargo test --locked --jobs 2 -p motionwright-native --lib film::tests::authored_static_alignment_preserves_exact_output_box_edges_and_source -- --exact --test-threads=1
       - name: Build the exact-source StudioService test transport
         run: cargo build --locked --jobs 2 -p motionwright-service --example studio_review_session
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -448,13 +454,21 @@ jobs:
           npm ci --no-audit --no-fund
           npx tsc -b
           npx playwright install --with-deps chromium
-          if test "$MOTIONWRIGHT_FIRST_USE_CASE" = static-group; then
-            specs=(tests/native-static-group-service.spec.ts)
-            selected_cases='creates a static ordinary group'
-          else
-            specs=(tests/project-lifecycle-service.spec.ts tests/native-static-group-service.spec.ts)
-            selected_cases='editable bundled example|lost example creation response|portable library|creates a static ordinary group'
-          fi
+          case "$MOTIONWRIGHT_FIRST_USE_CASE" in
+            static-group)
+              specs=(tests/native-static-group-service.spec.ts)
+              selected_cases='creates a static ordinary group' ;;
+            static-alignment)
+              specs=(tests/native-static-alignment-service.spec.ts)
+              selected_cases='saved static alignment' ;;
+            static-layout)
+              specs=(tests/native-static-group-service.spec.ts tests/native-static-alignment-service.spec.ts)
+              selected_cases='creates a static ordinary group|saved static alignment' ;;
+            all)
+              specs=(tests/project-lifecycle-service.spec.ts tests/native-static-group-service.spec.ts tests/native-static-alignment-service.spec.ts)
+              selected_cases='editable bundled example|lost example creation response|portable library|creates a static ordinary group|saved static alignment' ;;
+            *) echo "Unsupported first-use selection" >&2; exit 2 ;;
+          esac
           npx playwright test "${specs[@]}" --grep "$selected_cases" \
             --project=chromium --workers=1 --retries=0 --reporter=line,json \
             --output="$MOTIONWRIGHT_SERVICE_TEST_TMPDIR/browser"
@@ -464,7 +478,7 @@ jobs:
           result = json.loads(Path(os.environ["PLAYWRIGHT_JSON_OUTPUT_FILE"]).read_text(encoding="utf-8"))
           stats = result["stats"]
           selection = os.environ["MOTIONWRIGHT_FIRST_USE_CASE"]
-          expected = 1 if selection == "static-group" else 6
+          expected = {"all": 7, "static-group": 1, "static-alignment": 1, "static-layout": 2}[selection]
           assert stats["expected"] == expected, stats
           assert all(stats.get(key, 0) == 0 for key in ("unexpected","flaky","skipped")), stats
           print(f"FIRST_USE_LIBRARY_AND_GROUP_STUDIO=PASS; selection={selection}; cases={expected}; SQLite=REAL; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
