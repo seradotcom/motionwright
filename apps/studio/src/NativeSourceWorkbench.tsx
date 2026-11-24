@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Download, RefreshCw, Save } from "lucide-react";
 import BlenderSourceInspector from "./BlenderSourceInspector";
+import BlenderExecutionPanel from "./BlenderExecutionPanel";
 import { BLENDER_RECIPE_MEDIA_TYPE } from "./blenderSourceApi";
 import type { Project, Scene } from "./types";
 import {
@@ -189,9 +190,11 @@ function SourceEditor({ project, scene, target, busy, saveSource, refreshProject
       <span className="mono" style={{ overflowWrap: "anywhere" }}>sha256:{capsule.source_sha256}</span>
       <span>Replacing this source clears its previous realization and fidelity evidence.</span>
     </div>}
-    {capsule && sourceAsset && [BLENDER_RECIPE_MEDIA_TYPE, "application/x-blender"].includes(sourceAsset.media_type) &&
+    {capsule && sourceAsset && (sourceAsset.media_type === BLENDER_RECIPE_MEDIA_TYPE
+      || (sourceAsset.media_type === "application/x-blender" && capsule.editable_parameters.includes("product.annotation.body"))) &&
       <BlenderSourceInspector key={sourceKey} project={project} sceneId={scene.id}
-        capsuleId={capsule.id} busy={pending || pendingImport}/>}
+        capsuleId={capsule.id} busy={pending || pendingImport} refreshProject={refreshProject}
+        executionBlocked={editor.dirty || editor.conflict || !!editor.recoveryProblem || !!editor.backupError}/>}
     {capsule && <section className="production-notice" aria-label="Recover saved native source">
       <strong>Export the editable original</strong>
       <p className="production-help">Recover the saved source bytes without exporting the entire project. Choose a new absolute file path with the original extension. The export does not run an editor or execute imported content.</p>
@@ -276,6 +279,8 @@ function SceneSources(props: Props & { scene: Scene }) {
     && selection.target !== "00000000-0000-0000-0000-000000000000");
   const missingSelection = selection.target !== "new" && !capsules.some(capsule => capsule.id === selection.target);
   return <>
+    {scene.renderer === "blender" && <BlenderExecutionPanel mode="lit" project={project} sceneId={scene.id}
+      busy={props.busy} refreshProject={props.refreshProject}/>}
     <label className="production-field"><span>Source capsule to save</span>
       <select value={selection.target} onChange={event => {
         const target = event.target.value;

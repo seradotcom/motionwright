@@ -327,6 +327,7 @@ pub(crate) mod tests {
                     start: RationalTime::new(1, 2).unwrap(),
                     end: RationalTime::new(1, 1).unwrap(),
                     text: "Synthetic authored interval; no recognized speech".into(),
+                    emphasis: Vec::new(),
                     speaker: None,
                     alignment: AlignmentEvidence::Manual,
                 },

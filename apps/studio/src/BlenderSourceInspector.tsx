@@ -1,5 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
+import BlenderExecutionPanel from "./BlenderExecutionPanel";
 import {
   readBlenderSource, readBlenderAttempt,
   type BlenderRecipe, type BlenderAttemptSummary, type BlenderLineage,
@@ -7,7 +8,8 @@ import {
 } from "./blenderSourceApi";
 import type { Project } from "./types";
 
-interface Props { project: Project; sceneId: string; capsuleId: string; busy: boolean; }
+interface Props { project: Project; sceneId: string; capsuleId: string; busy: boolean;
+  refreshProject?: () => Promise<Project>; executionBlocked?: boolean; }
 const states = {
   completed: "Completed in the original journal",
   failed_known: "Original attempt failed with a known outcome",
@@ -48,7 +50,7 @@ function Lineage({ project, value }: { project: Project; value: BlenderLineage }
 }
 
 /** Mount with the complete saved source key. A late reply cannot replace a new selection. */
-export default function BlenderSourceInspector({ project, sceneId, capsuleId, busy }: Props) {
+export default function BlenderSourceInspector({ project, sceneId, capsuleId, busy, refreshProject, executionBlocked = false }: Props) {
   const id = useId();
   const active = useRef(false), epoch = useRef(0);
   const [reading, setReading] = useState<"source" | "attempt" | null>(null);
@@ -106,6 +108,8 @@ export default function BlenderSourceInspector({ project, sceneId, capsuleId, bu
       {source.attempt ? <Attempt value={source.attempt}/> :
         <p className="production-help">No original attempt is recorded for this saved recipe in this local project history.</p>}
       {source.lineage && <Lineage project={project} value={source.lineage}/>}
+      {refreshProject && <BlenderExecutionPanel mode="cycle" project={project} sceneId={sceneId}
+        source={source} busy={pending || executionBlocked} refreshProject={refreshProject}/>}
     </div>}
     <fieldset disabled={!desktop || pending} className="production-notice" aria-label="Read an original Blender attempt">
       <legend>Original attempt</legend>
