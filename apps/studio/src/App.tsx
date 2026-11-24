@@ -1962,7 +1962,7 @@ export default function App() {
     if (warning) setLibraryNotice(previous => [previous, warning].filter(Boolean).join(" "));
   }, []);
 
-  const createLibraryProject = useCallback(async (title: string): Promise<Project> => {
+  const createLibraryProject = useCallback(async (title: string, template?: "motion-study-v1"): Promise<Project> => {
     const nativeSdk = bootRef.current?.native_sdk ?? shellSdkRef.current;
     if (!nativeSdk) throw new Error("Studio information is not ready. Retry opening the library.");
     const saved = readProjectSelection();
@@ -1972,7 +1972,7 @@ export default function App() {
       const opened = await mutationGate.current.create<Project>(bootRef.current?.project ?? null,
         () => bootRef.current?.project ?? null,
         async () => {
-          observed = await createProjectWithRetainedIntent(title);
+          observed = await createProjectWithRetainedIntent(title, undefined, undefined, template);
           // The receipt is the original r0. Read current authority separately,
           // including revisions authored after the creation transaction.
           const current = await openSavedProjectView(observed.outcome.project.id, "editor");

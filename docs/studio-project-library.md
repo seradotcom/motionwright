@@ -5,6 +5,21 @@ its own identity. Use **Open project library** in the command bar, enter a title
 and choose **Create project**, or open an existing row. The browser demo remains
 explicitly identified and does not provide desktop persistence.
 
+## Start with the editable example
+
+Choose **Create editable motion example** in the project library. The optional
+title field names your copy; an empty field uses **Motion study**. The bundled
+example contains two scenes and six seconds of editable rectangle motion, a
+640 x 360 output at 30 fps, and saved narrative intent. Canvas provides a local
+semantic preview. Portable project export preserves the editable source.
+Native rendering uses the explicit runtime setup in Integrations.
+
+The versioned selection is part of the one-time creation grant and retained
+request. The complete example and its original receipt commit in one SQLite
+transaction. A lost response uses **Check creation result** to recover that
+same copy and open its current saved revision. Recovery never rebuilds the
+example over later edits. Existing blank-project requests remain compatible.
+
 ## Create, save and reopen
 
 The remembered startup selection is a convenience; the saved Project and its

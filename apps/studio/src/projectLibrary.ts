@@ -151,7 +151,8 @@ function openedProject(value: unknown, id: string): Project {
   return value as unknown as Project;
 }
 
-export interface ProjectCreationIntent { request_id: string; title: string; }
+export type ProjectTemplate = "motion-study-v1";
+export interface ProjectCreationIntent { request_id: string; title: string; template?: ProjectTemplate; }
 export interface ProjectCreationOutcome { request_id: string; project: Project; replayed: boolean; }
 export interface RetainedProjectCreation {
   schema: "motionwright.project-creation-intent/1";
@@ -183,13 +184,15 @@ function creationStorage(): ProjectCreationStorage {
 }
 
 function creationIntent(value: unknown): ProjectCreationIntent {
-  if (!record(value) || !exactKeys(value, ["request_id", "title"]) || typeof value.title !== "string"
+  const withTemplate = record(value) && Object.prototype.hasOwnProperty.call(value, "template");
+  if (!record(value) || !exactKeys(value, withTemplate ? ["request_id", "title", "template"] : ["request_id", "title"])
+      || (withTemplate && value.template !== "motion-study-v1") || typeof value.title !== "string"
       || !value.title.trim() || new TextEncoder().encode(value.title).length > 200) {
     throw new Error("A creation request needs its original title of at most 200 bytes.");
   }
   const id = projectId(value.request_id);
   if (id === NIL_UUID) throw new Error("A creation request needs a non-nil operation identity.");
-  return { request_id: id, title: value.title };
+  return { request_id: id, title: value.title, ...(withTemplate ? { template: "motion-study-v1" as const } : {}) };
 }
 
 function decodeCreation(key: string, raw: string): RetainedProjectCreation {
@@ -264,12 +267,13 @@ export async function createProjectWithRetainedIntent(
   title: string,
   call: ProjectCreationInvoke = creationInvoke,
   storage: ProjectCreationStorage = creationStorage(),
+  template?: ProjectTemplate,
 ): Promise<{ outcome: ProjectCreationOutcome; copy: ProjectCreationCopy; warning: string | null }> {
   const existing = readProjectCreations(storage);
   if (existing.limited || existing.copies.some(copy => !copy.value || copy.value.phase === "unconfirmed")) {
     throw new Error("Review the retained creation request before creating another project. Existing projects remain available.");
   }
-  const intent = creationIntent({ request_id: crypto.randomUUID(), title });
+  const intent = creationIntent({ request_id: crypto.randomUUID(), title, ...(template ? { template } : {}) });
   const key = PROJECT_CREATION_PREFIX + intent.request_id;
   const value: RetainedProjectCreation = { schema: "motionwright.project-creation-intent/1", intent,
     createdAt: Date.now(), phase: "unconfirmed", projectId: null };

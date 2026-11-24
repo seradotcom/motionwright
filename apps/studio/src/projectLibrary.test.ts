@@ -85,6 +85,36 @@ describe("retained project creation at the UI transport boundary", () => {
       project: { ...project(C), title: intent.title, revision: 0 } };
   }
 
+  it("retains the example selection before its grant and recovers the same original after a lost response", async () => {
+    const storage = new SelectionMemoryStorage();
+    let original: ProjectCreationIntent | undefined;
+    const call = vi.fn<ProjectCreationInvoke>(async (command, args) => {
+      const retained = readProjectCreations(storage).copies[0].value!;
+      expect(retained.intent.template).toBe("motion-study-v1");
+      if (command === "issue_project_creation_grant") {
+        expect(args.request).toEqual(retained.intent);
+        delete (args.request as ProjectCreationIntent).template;
+        return grant();
+      }
+      expect(command).toBe("create_project");
+      original = (args.request as { intent:ProjectCreationIntent }).intent;
+      expect(original).toEqual(retained.intent);
+      throw new Error("Original example reply lost");
+    });
+    await expect(createProjectWithRetainedIntent("My motion study", call, storage, "motion-study-v1"))
+      .rejects.toThrow("reply lost");
+    const copy = readProjectCreations(storage).copies[0];
+    const read = vi.fn<ProjectCreationInvoke>(async (command, args) => {
+      expect(command).toBe("recover_project_creation"); expect(args.request).toEqual(original);
+      return { ...result(original!), replayed:true };
+    });
+    const recovered = await recoverRetainedProjectCreation(copy, read, storage);
+    expect(recovered.copy.value!.intent.template).toBe("motion-study-v1");
+    expect(recovered.outcome!.replayed).toBe(true);
+    expect(call.mock.calls.map(([command]) => command)).toEqual(["issue_project_creation_grant","create_project"]);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
   it("retains the exact original intent before both IPCs and does not share mutable grant arguments", async () => {
     const storage = new SelectionMemoryStorage();
     const call = vi.fn<ProjectCreationInvoke>(async (command, args) => {

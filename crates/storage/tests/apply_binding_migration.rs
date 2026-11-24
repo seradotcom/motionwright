@@ -42,6 +42,7 @@ struct LegacyHistory {
 fn source_equivalent_schema3(path: &Path) -> LegacyHistory {
     let mut store = Store::open(path).unwrap();
     let creation = ProjectCreationIntent {
+        template: None,
         request_id: uuid::Uuid::now_v7(),
         title: "Retained creation".into(),
     };

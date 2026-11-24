@@ -83,6 +83,7 @@ on:
           - desktop-source
           - desktop-compile
           - desktop-hyperframes
+          - first-use-example
           - native-otio-snapshot
           - native-otio-real-media
           - native-source-browser
@@ -105,7 +106,7 @@ env:
 
 jobs:
   source-boundary:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures' && inputs.verification_scope != 'native-source-export' && inputs.verification_scope != 'desktop-source' && inputs.verification_scope != 'desktop-compile' && inputs.verification_scope != 'desktop-hyperframes' && inputs.verification_scope != 'native-otio-snapshot' && inputs.verification_scope != 'native-otio-real-media' && inputs.verification_scope != 'native-source-browser' && inputs.verification_scope != 'native-film-geometry' && inputs.verification_scope != 'native-film-hold' && inputs.verification_scope != 'native-geometry-readback')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures' && inputs.verification_scope != 'native-source-export' && inputs.verification_scope != 'desktop-source' && inputs.verification_scope != 'desktop-compile' && inputs.verification_scope != 'desktop-hyperframes' && inputs.verification_scope != 'first-use-example' && inputs.verification_scope != 'native-otio-snapshot' && inputs.verification_scope != 'native-otio-real-media' && inputs.verification_scope != 'native-source-browser' && inputs.verification_scope != 'native-film-geometry' && inputs.verification_scope != 'native-film-hold' && inputs.verification_scope != 'native-geometry-readback')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -334,6 +335,87 @@ jobs:
         run: cargo test --locked -p motionwright-desktop av_delivery
       - name: Clippy desktop boundary
         run: cargo clippy --locked --jobs 2 -p motionwright-desktop --keep-going --all-targets -- -D warnings
+
+  first-use-example:
+    needs: source-boundary
+    if: ${{ !cancelled() && (needs.source-boundary.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'first-use-example')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: 1.98.1
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Source policy and atomic creation before Native dependencies
+        run: |
+          set -euo pipefail
+          python3 -B tooling/source_policy.py
+          cargo test --locked --jobs 2 -p motionwright-storage --lib project_creation::tests:: -- --test-threads=1
+      - name: Native source prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev pkg-config clang
+      - name: First-use original example, creation custody and free portable source
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --jobs 2 -p motionwright-native --test first_use_example -- -D warnings
+          cargo test --locked --jobs 2 -p motionwright-service --test project_creation_idempotency -- --test-threads=1
+          log="$RUNNER_TEMP/first-use-example-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.original.log"
+          test ! -e "$log"
+          cargo test --locked --jobs 2 -p motionwright-native --test first_use_example first_use_tests:: -- --test-threads=1 > "$log" 2>&1 || {
+            tail -n 75 "$log"; exit 1;
+          }
+          python3 -B - "$log" <<'PY_FIRST_USE_SOURCE'
+          import re, sys
+          from pathlib import Path
+          raw = Path(sys.argv[1]).read_text(encoding="utf-8")
+          expected = {
+              "bundled_example_reopens_as_complete_editable_native_source",
+              "example_selection_is_bound_to_the_grant_and_original_request",
+              "lost_example_reply_recovers_the_original_without_replacing_saved_edits",
+              "bundled_example_exports_and_imports_portably_without_accounts_or_external_media",
+          }
+          found = re.findall(r"^test first_use_tests::([a-z0-9_]+) \.\.\. ok$", raw, re.M)
+          assert len(found) == len(expected) and set(found) == expected
+          assert "4 passed; 0 failed; 0 ignored" in raw
+          print("FIRST_USE_EXAMPLE_SOURCE=PASS; cases=4; SQLite=REAL; MotionCanvas=SOURCE_REALIZATION; HyperFrames=SOURCE_COMPILE; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+          PY_FIRST_USE_SOURCE
+          cargo build --locked --jobs 2 -p motionwright-service --example studio_review_session
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - name: Two first-use Studio flows through actual creation authority and closed Store
+        working-directory: apps/studio
+        env:
+          MOTIONWRIGHT_SERVICE_TEST_BIN: ${{ github.workspace }}/target/debug/examples/studio_review_session
+          MOTIONWRIGHT_SERVICE_TEST_TMPDIR: ${{ runner.temp }}/first-use-example-${{ github.run_id }}-${{ github.run_attempt }}
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ runner.temp }}/first-use-example-${{ github.run_id }}-${{ github.run_attempt }}/playwright.json
+        run: |
+          set -euo pipefail
+          mkdir -p "$MOTIONWRIGHT_SERVICE_TEST_TMPDIR"
+          npm ci --no-audit --no-fund
+          npx tsc -b
+          npx playwright install --with-deps chromium
+          npx playwright test tests/project-lifecycle-service.spec.ts \
+            --grep 'editable bundled example|lost example creation response' \
+            --project=chromium --workers=1 --retries=0 --reporter=line,json \
+            --output="$MOTIONWRIGHT_SERVICE_TEST_TMPDIR/browser"
+          python3 -B - <<'PY_FIRST_USE_STUDIO'
+          import json, os
+          from pathlib import Path
+          result = json.loads(Path(os.environ["PLAYWRIGHT_JSON_OUTPUT_FILE"]).read_text(encoding="utf-8"))
+          stats = result["stats"]
+          assert stats["expected"] == 2, stats
+          assert all(stats.get(key, 0) == 0 for key in ("unexpected","flaky","skipped")), stats
+          print("FIRST_USE_EXAMPLE_STUDIO=PASS; cases=2; SQLite=REAL; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+          PY_FIRST_USE_STUDIO
 
   dependency-review:
     if: github.event_name == 'pull_request'

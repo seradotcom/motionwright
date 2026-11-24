@@ -978,6 +978,7 @@ fn typed_creation_rejects_generic_apply_binding_markers_without_repair() {
         let directory = tempfile::tempdir().unwrap();
         let mut store = Store::open(directory.path().join("creation.sqlite3")).unwrap();
         let intent = motionwright_storage::ProjectCreationIntent {
+            template: None,
             request_id: uuid::Uuid::now_v7(),
             title: "Typed creation".into(),
         };

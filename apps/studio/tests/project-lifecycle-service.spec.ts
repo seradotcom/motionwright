@@ -312,3 +312,77 @@ test("real pagination preserves all identities and library keyboard focus surviv
   expect(calls(service, "create_project")).toHaveLength(25);
   for (const original of projects) expect(await service.project(original.id)).toEqual(original);
 });
+
+test("editable bundled example is created from the empty library, edited and reopened from its original Store", async ({ page, lifecycle }) => {
+  const { service } = lifecycle;
+  await page.goto("/"); await openLibrary(page);
+  await expect(dialog(page).getByText("No saved projects", { exact:true })).toBeVisible();
+  await button(page, "Create editable motion example").click();
+  await revision(page, 0);
+  if (await dialog(page).isVisible()) await button(page, "Close project library").click();
+  let current = (await service.fixtureBootstrap()).project;
+  expect(current.title).toBe("Motion study");
+  expect(current.scenes.map(scene => scene.name)).toEqual(["Slide in", "Settle"]);
+  expect(current.scenes.every(scene => scene.nodes.length === 2 && scene.nodes.some(node => node.keyframes.length === 4))).toBe(true);
+  expect(current.assets).toEqual([]);
+  expect(current.model_invocations).toEqual([]);
+  const originalScenes = structuredClone(current.scenes);
+  const request = calls(service, "create_project")[0].payload as { args:{ request:{ intent:{ template:string } } } };
+  expect(request.args.request.intent.template).toBe("motion-study-v1");
+  await button(page, "Canvas").click();
+  const card = page.getByRole("button", { name:"Canvas object Moving card", exact:true });
+  await expect(card).toBeVisible();
+  await expect.poll(() => card.evaluate(node => (node as HTMLElement).style.left)).toBe("10%");
+  const playhead = page.getByRole("slider", { name:"Motion playhead", exact:true });
+  await playhead.focus(); await playhead.press("End");
+  await expect.poll(() => card.evaluate(node => (node as HTMLElement).style.left)).toBe("41.25%");
+  await button(page, "Brief").click();
+  await page.getByLabel("Production objective", { exact:true }).fill("My first saved motion study, with editable original shapes.");
+  await button(page, "Commit brief").click();
+  await revision(page, 1);
+  current = await service.project(current.id);
+  expect(current.scenes).toEqual(originalScenes);
+  expect(current.brief.objective).toBe("My first saved motion study, with editable original shapes.");
+  await service.close(); await service.start(); await page.reload();
+  await revision(page, 1);
+  await button(page, "Brief").click();
+  await expect(page.getByLabel("Production objective", { exact:true })).toHaveValue(current.brief.objective);
+  expect(await service.project(current.id)).toEqual(current);
+  expect(calls(service, "create_project")).toHaveLength(1);
+  expect(calls(service, "issue_project_creation_grant")).toHaveLength(1);
+  expect(await creationCopies(page)).toEqual([]);
+});
+
+test("lost example creation response reopens the same story and later edits without creating another copy", async ({ page, lifecycle }) => {
+  const { service, peers } = lifecycle;
+  const originalInvoke = service.invoke.bind(service);
+  let originalProject: Project | undefined, interrupted = false;
+  service.invoke = async <T>(command: string, args: Record<string, unknown> = {}) => {
+    const result = await originalInvoke<T>(command, args);
+    if (command === "create_project" && !interrupted) {
+      interrupted = true; originalProject = (result as { project:Project }).project;
+      throw new Error("Original example response lost after real SQLite commit");
+    }
+    return result;
+  };
+  try {
+    await page.goto("/"); await openLibrary(page);
+    await button(page, "Create editable motion example").click();
+    await expect(dialog(page).getByRole("alert")).toContainText("response lost");
+    const retained = await creationCopies(page);
+    expect(retained).toHaveLength(1);
+    expect(JSON.parse(retained[0].raw).intent.template).toBe("motion-study-v1");
+    expect(originalProject!.scenes).toHaveLength(2);
+    const peer = await service.peer(); peers.push(peer);
+    const later = await peer.apply(originalProject!, { type:"rename_project", title:"My saved example after the lost reply" });
+    await page.reload(); await openLibrary(page);
+    await button(page, "Check creation result").click();
+    await revision(page, later.revision);
+    expect(await service.project(later.id)).toEqual(later);
+    expect(later.scenes).toEqual(originalProject!.scenes);
+    expect(calls(service, "create_project")).toHaveLength(1);
+    expect(calls(service, "issue_project_creation_grant")).toHaveLength(1);
+    expect(calls(service, "recover_project_creation")).toHaveLength(1);
+    expect(await creationCopies(page)).toEqual([]);
+  } finally { service.invoke = originalInvoke; }
+});

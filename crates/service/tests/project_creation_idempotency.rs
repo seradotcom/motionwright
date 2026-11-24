@@ -21,6 +21,7 @@ mod adapter {
 
 fn intent(request_id: Uuid, title: &str) -> adapter::Intent {
     adapter::Intent {
+        template: None,
         request_id,
         title: title.into(),
     }
@@ -222,6 +223,7 @@ mod readonly_recovery {
         let pending_path = directory.path().join("pending-create.json");
         let request_id = Uuid::now_v7();
         let intent = ProjectCreationIntent {
+            template: None,
             request_id,
             title: "Original creation title".into(),
         };
@@ -284,6 +286,7 @@ mod readonly_recovery {
         let service = StudioService::open(&database).unwrap();
         let unrelated = service.create_project(title).unwrap();
         let intent = ProjectCreationIntent {
+            template: None,
             request_id: Uuid::now_v7(),
             title: title.into(),
         };

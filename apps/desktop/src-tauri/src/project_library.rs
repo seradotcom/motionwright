@@ -91,11 +91,15 @@ fn creation_subject(
     intent: &ProjectCreationIntent,
 ) -> Result<String, String> {
     intent.validate().map_err(|error| error.to_string())?;
-    project_creation_subject(
+    let subject = project_creation_subject(
         invoking_window,
         &intent.request_id.to_string(),
         &intent.title,
-    )
+    )?;
+    Ok(match intent.template {
+        None => subject,
+        Some(template) => format!("{subject}|template:{}", template.id()),
+    })
 }
 
 pub fn issue_creation_grant(
@@ -398,6 +402,7 @@ mod tests {
 
     fn creation_intent() -> ProjectCreationIntent {
         ProjectCreationIntent {
+            template: None,
             request_id: Uuid::now_v7(),
             title: "  Original creation title  ".into(),
         }
@@ -490,14 +495,17 @@ mod tests {
             .token;
         for bad in [
             ProjectCreationIntent {
+                template: None,
                 request_id: Uuid::nil(),
                 title: intent.title.clone(),
             },
             ProjectCreationIntent {
+                template: None,
                 request_id: intent.request_id,
                 title: " ".into(),
             },
             ProjectCreationIntent {
+                template: None,
                 request_id: intent.request_id,
                 title: "x".repeat(201),
             },

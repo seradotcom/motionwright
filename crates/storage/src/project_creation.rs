@@ -1,5 +1,5 @@
 use super::{ApplyOutcome, Result, StorageError, Store};
-use motionwright_domain::{DomainError, Project};
+use motionwright_domain::{DomainError, Project, ProjectTemplate};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -12,6 +12,18 @@ use uuid::Uuid;
 pub struct ProjectCreationIntent {
     pub request_id: Uuid,
     pub title: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "template_when_present"
+    )]
+    pub template: Option<ProjectTemplate>,
+}
+
+fn template_when_present<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<ProjectTemplate>, D::Error> {
+    ProjectTemplate::deserialize(deserializer).map(Some)
 }
 
 /// The original revision-zero document, independent of the current head.
@@ -75,11 +87,21 @@ fn receipt_key(request_id: Uuid) -> String {
 }
 
 fn request_digest(intent: &ProjectCreationIntent) -> Result<String> {
-    Ok(hex::encode(Sha256::digest(serde_json::to_vec(&(
-        "motionwright.project-creation-request/1",
-        intent.request_id,
-        &intent.title,
-    ))?)))
+    // Preserve the exact digest of every legacy blank-project request.
+    let bytes = match intent.template {
+        None => serde_json::to_vec(&(
+            "motionwright.project-creation-request/1",
+            intent.request_id,
+            &intent.title,
+        ))?,
+        Some(template) => serde_json::to_vec(&(
+            "motionwright.project-creation-request/2",
+            intent.request_id,
+            &intent.title,
+            template,
+        ))?,
+    };
+    Ok(hex::encode(Sha256::digest(bytes)))
 }
 
 /// Classify only the typed purpose. An import rejects this envelope; this
@@ -218,7 +240,10 @@ impl Store {
         if occupied {
             return Err(StorageError::ProjectExists);
         }
-        let mut project = Project::new(intent.title.clone())?;
+        let mut project = match intent.template {
+            Some(template) => template.create(intent.title.clone())?,
+            None => Project::new(intent.title.clone())?,
+        };
         // Project::new initializes independent branch/profile identifiers;
         // none are derived from or reference its initial random project ID.
         project.id = id;
@@ -287,6 +312,7 @@ mod tests {
 
     fn intent(title: &str) -> ProjectCreationIntent {
         ProjectCreationIntent {
+            template: None,
             request_id: Uuid::now_v7(),
             title: title.into(),
         }
@@ -330,6 +356,24 @@ mod tests {
 
     fn read_only(store: &Store) {
         store.conn.execute_batch("PRAGMA query_only=ON").unwrap();
+    }
+
+    #[test]
+    fn example_receipt_failure_cannot_leave_a_partially_created_story() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(directory.path().join("state.sqlite3")).unwrap();
+        let mut request = intent("Atomic bundled example");
+        request.template = Some(ProjectTemplate::MotionStudyV1);
+        store
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER reject_example_receipt BEFORE INSERT ON receipts
+            BEGIN SELECT RAISE(ABORT, 'synthetic original receipt failure'); END;",
+            )
+            .unwrap();
+        assert!(store.create_project_with_intent(&request).is_err());
+        assert_eq!(counts(&store), (0, 0, 0));
+        assert!(store.recover_project_creation(&request).unwrap().is_none());
     }
 
     #[test]
@@ -662,6 +706,7 @@ mod tests {
         let mut right_store = Store::open(&database).unwrap();
         let left_request = intent("Left input");
         let right_request = ProjectCreationIntent {
+            template: None,
             request_id: left_request.request_id,
             title: "Right input".into(),
         };

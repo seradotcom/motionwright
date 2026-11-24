@@ -7,6 +7,7 @@ import {
   type ProjectLibraryPage,
   type ProjectLibrarySummary,
   type ProjectCreationCopy,
+  type ProjectTemplate,
 } from "./projectLibrary";
 import type { Project } from "./types";
 import "./project-library.css";
@@ -20,7 +21,7 @@ export interface ProjectLibraryDialogProps {
   onOpen: (projectId: string) => Promise<Pick<Project, "id">>;
   onBrowse?: (projectId: string) => Promise<Pick<Project, "id">>;
   /** Omit until creation is supported by the reviewed desktop authority. */
-  onCreate?: (title: string) => Promise<Project>;
+  onCreate?: (title: string, template?: ProjectTemplate) => Promise<Project>;
   creationCopies?: ProjectCreationCopy[];
   creationLimited?: boolean;
   creationError?: string | null;
@@ -175,11 +176,11 @@ export function ProjectLibraryDialog({
     if (accepted && current()) callbacks.current.onClose();
   }
 
-  async function createProject(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function createProject(event?: FormEvent<HTMLFormElement>, example = false) {
+    event?.preventDefault();
     const create = callbacks.current.onCreate;
     if (!create || operationRef.current) return;
-    const submittedTitle = newTitle;
+    const submittedTitle = example && !newTitle.trim() ? "Motion study" : newTitle;
     const submittedInputVersion = titleInputVersion.current;
     if (!submittedTitle.trim() || new TextEncoder().encode(submittedTitle).length > 200) {
       setOperationError(!submittedTitle.trim()
@@ -197,7 +198,7 @@ export function ProjectLibraryDialog({
       && operationRequest.current === request;
     let accepted = false;
     try {
-      const project = await create(submittedTitle);
+      const project = await create(submittedTitle, example ? "motion-study-v1" : undefined);
       if (!current()) return;
       if (!project.id) {
         throw new Error("The accepted project has no identity. Recover the original request; no automatic retry was made.");
@@ -345,6 +346,12 @@ export function ProjectLibraryDialog({
             <p id={createHintId}>Choose a short name you can recognize later.</p>
             <button type="submit" className="project-library-button project-library-primary"
               disabled={busy || unresolvedCreation || !newTitle.trim()}>{opening?.kind === "create" ? "Creating…" : "Create project"}</button>
+            <button type="button" className="project-library-button"
+              disabled={busy || unresolvedCreation} onClick={() => void createProject(undefined, true)}>
+              Create editable motion example</button>
+            <p>Start with a six-second motion study: two scenes, editable shapes, colors and movement.
+              Edit and preview on the Canvas, then export your saved project. No account or paid AI is needed.
+              Native rendering uses the separately installed runtime shown in Integrations.</p>
             {unresolvedCreation && <p role="status">Review the retained creation request below before creating another project. You can still open and edit saved projects.</p>}
           </form>
         )}
@@ -357,6 +364,7 @@ export function ProjectLibraryDialog({
           {creationLimited && <p role="status">The local request list exceeded its inspection limit. No copies were removed automatically.</p>}
           {creationCopies.map((copy, index) => <article key={copy.key} aria-label={"Retained creation " + (index + 1)}>
             <h4>{copy.value?.intent.title ?? "Unreadable creation request"}</h4>
+            {copy.value?.intent.template && <p>Editable motion example · motion-study-v1</p>}
             <p>{copy.value ? new Date(copy.value.createdAt).toLocaleString() + " · "
               + (copy.value.phase === "observed" ? "Creation receipt observed" : "Result unconfirmed")
               : "The original local bytes were preserved. Download this copy before removing it if you need to inspect it."}</p>
