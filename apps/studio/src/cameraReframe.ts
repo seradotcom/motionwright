@@ -9,6 +9,7 @@ import { seconds } from "./types";
 import { savedNativePoseDraft, type PoseGeometry } from "./nativePoseDraft";
 import { isStaticNativeGroup, nativeGroupOrderIssue, staticNativeGroupParent } from "./nativeGroupHierarchy";
 import { nativeStaticShapeRotation } from "./canvasMotion";
+import { exactCanvasOpacitySpans } from "./canvasOpacity";
 
 export const CAMERA_REFRAME_VERSION=1;
 export const CAMERA_REFRAME_MANIM_VERSION=2;
@@ -44,19 +45,15 @@ function cameraMotionStart(node: Scene["nodes"][number], scene: Scene): Scene["n
   const geometry = node.keyframes.some(key => key.property !== "opacity");
   if (geometry && !["shape", "rectangle", "circle"].includes(node.kind)) fail();
   if (node.keyframes.some(key => key.property === "x") !== node.keyframes.some(key => key.property === "y")) fail();
+  try { exactCanvasOpacitySpans(node, scene, {num: "30", den: "1"}); } catch { fail(); }
   let geometryEnd: string | null = null;
-  for (const property of ["x", "y", "width", "height", "rotation_deg", "opacity"] as const) {
+  for (const property of ["x", "y", "width", "height", "rotation_deg"] as const) {
     const keys = node.keyframes.filter(key => key.property === property).sort((a, b) => seconds(a.at) - seconds(b.at));
     if (!keys.length) continue;
     if (keys.length !== 2 || keys[0].at.num !== "0" || keys[0].at.den !== "1"
       || keys[0].interpolation !== "linear" || seconds(keys[1].at) <= 0
       || seconds(keys[1].at) >= seconds(scene.duration)) fail();
     try { if ((BigInt(keys[1].at.num) * 30n) % BigInt(keys[1].at.den) !== 0n) fail(); } catch { fail(); }
-    if (property === "opacity") {
-      if (!["linear", "ease_out_cubic"].includes(keys[1].interpolation)
-        || !((keys[0].value === 0 && keys[1].value === 1) || (keys[0].value === 1 && keys[1].value === 0))) fail();
-      continue;
-    }
     if (!["linear", "ease_out_cubic", "hold"].includes(keys[1].interpolation)) fail();
     const end = JSON.stringify([keys[1].at.num, keys[1].at.den, keys[1].interpolation]);
     if (geometryEnd !== null && geometryEnd !== end) fail();
@@ -76,7 +73,8 @@ function cameraMotionPoses(node: Scene["nodes"][number], scene: Scene): PoseGeom
       scene.nodes.some(child => child.parent_id === node.id)) fail();
   if (node.parent_id !== null && scene.nodes.find(parent => parent.id === node.parent_id)?.style.blend_mode !== "normal") fail();
   cameraMotionStart({...node, keyframes: node.keyframes.filter(key => key.property === "opacity")}, scene);
-  const draft = savedNativePoseDraft(node, {frame_rate: {num: "30", den: "1"}});
+  const draft = savedNativePoseDraft({...node, keyframes: node.keyframes.filter(key => key.property !== "opacity")},
+    {frame_rate: {num: "30", den: "1"}});
   if (!draft || !draft.waypoints?.length) return fail();
   const points = [...draft.waypoints, {frame: draft.endFrame, curve: draft.curve}];
   try {

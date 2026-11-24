@@ -219,6 +219,7 @@ fn camera_motion_start(node: &CanvasNode, scene: &Scene) -> Result<CanvasNode> {
     if x != y {
         return Err(fail());
     }
+    let _ = crate::exact_canvas_opacity_spans(node, scene, RationalTime::new(30, 1)?)?;
     let mut geometry_end = None;
     for property in [
         MotionProperty::X,
@@ -226,7 +227,6 @@ fn camera_motion_start(node: &CanvasNode, scene: &Scene) -> Result<CanvasNode> {
         MotionProperty::Width,
         MotionProperty::Height,
         MotionProperty::RotationDeg,
-        MotionProperty::Opacity,
     ] {
         let mut keys = node
             .keyframes
@@ -245,17 +245,6 @@ fn camera_motion_start(node: &CanvasNode, scene: &Scene) -> Result<CanvasNode> {
             || (i128::from(keys[1].at.num) * 30) % i128::from(keys[1].at.den) != 0
         {
             return Err(fail());
-        }
-        if property == MotionProperty::Opacity {
-            if !matches!(
-                keys[1].interpolation,
-                MotionInterpolation::Linear | MotionInterpolation::EaseOutCubic
-            ) || !((keys[0].value == 0.0 && keys[1].value == 1.0)
-                || (keys[0].value == 1.0 && keys[1].value == 0.0))
-            {
-                return Err(fail());
-            }
-            continue;
         }
         if !matches!(
             keys[1].interpolation,

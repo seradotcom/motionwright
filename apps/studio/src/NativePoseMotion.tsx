@@ -203,16 +203,35 @@ export default function NativePoseMotion(props: Props) {
       <label><span>Opacity</span><select disabled={fieldsLocked} aria-label="Pose opacity" value={draft.raw.fade}
         onChange={event => changeRaw("fade", event.target.value as NativePoseDraft["fade"])}>
         <option value="none">Keep visible</option><option value="in">Fade in</option><option value="out">Fade out</option>
+        <option value="in_out">Fade in, hold, fade out</option>
       </select></label>
-      {draft.raw.fade !== "none" && <label><span>Fade curve</span><select disabled={fieldsLocked} aria-label="Pose fade curve" value={draft.raw.fadeCurve}
+      {draft.raw.fade !== "none" && <label><span>{draft.raw.fade === "in_out" ? "Fade-in curve" : "Fade curve"}</span><select disabled={fieldsLocked} aria-label="Pose fade curve" value={draft.raw.fadeCurve}
         onChange={event => changeRaw("fadeCurve", event.target.value as NativePoseDraft["fadeCurve"])}>
         <option value="linear">Linear</option><option value="ease_out_cubic">Cubic ease-out</option>
       </select></label>}
-      {draft.raw.fade !== "none" && <label><span>Fade end frame (optional)</span>
+      {draft.raw.fade !== "none" && <label><span>{draft.raw.fade === "in_out" ? "Fade-in end frame (optional)" : "Fade end frame (optional)"}</span>
         <input disabled={fieldsLocked} type="text" inputMode="numeric" maxLength={64}
           aria-label="Pose fade end frame" placeholder="Same as geometry" value={draft.raw.fadeEndFrame ?? ""}
           onChange={event => changeRaw("fadeEndFrame", event.target.value)} />
       </label>}
+      {draft.raw.fade === "in_out" && <>
+        <label><span>Fade-out start frame</span>
+          <input disabled={fieldsLocked} type="text" inputMode="numeric" maxLength={64}
+            aria-label="Pose fade-out start frame" value={draft.raw.fadeOutStartFrame ?? ""}
+            onChange={event => changeRaw("fadeOutStartFrame", event.target.value)} />
+        </label>
+        <label><span>Fade-out end frame</span>
+          <input disabled={fieldsLocked} type="text" inputMode="numeric" maxLength={64}
+            aria-label="Pose fade-out end frame" value={draft.raw.fadeOutEndFrame ?? ""}
+            onChange={event => changeRaw("fadeOutEndFrame", event.target.value)} />
+        </label>
+        <label><span>Fade-out curve</span>
+          <select disabled={fieldsLocked} aria-label="Pose fade-out curve" value={draft.raw.fadeOutCurve ?? draft.raw.fadeCurve}
+            onChange={event => changeRaw("fadeOutCurve", event.target.value)}>
+            <option value="linear">Linear</option><option value="ease_out_cubic">Cubic ease-out</option>
+          </select>
+        </label>
+      </>}
     </div>
     {(draft.raw.waypoints ?? []).map((waypoint, index) => <fieldset className="canvas-field-grid motion-fields" key={index}>
       <legend>Intermediate pose {index + 1}</legend>

@@ -111,3 +111,35 @@ describe("bounded Native waypoint track", () => {
     expect(savedNativePoseDraft(reopened, profile)).toBeNull();
   });
 });
+
+describe("editable fade-in, hold and fade-out with an independent pose", () => {
+  it.each([15, 30])("preserves every opacity frame and incoming curve with exit starting at %i", async start => {
+    const {project, scene, node, profile, draft} = source();
+    Object.assign(draft, {fade:"in_out", fadeCurve:"ease_out_cubic", fadeEndFrame:15,
+      fadeOutStartFrame:start, fadeOutEndFrame:45, fadeOutCurve:"linear"});
+    const edit = nativePoseEdit(project, scene, node, profile, draft);
+    expect(edit.issue).toBeNull();
+    const saved = await applyChange(project, {type:"set_canvas_motion_keyframes",
+      scene_id:scene.id, node_id:node.id, keyframes:edit.keys!});
+    const reopened = JSON.parse(JSON.stringify(saved)).scenes[0].nodes[0];
+    expect(savedNativePoseDraft(reopened, profile)).toEqual(draft);
+    expect(previewTransform(reopened, 0).opacity).toBe(0);
+    expect(previewTransform(reopened, .25).opacity).toBe(.875);
+    expect(previewTransform(reopened, start / 30).opacity).toBe(1);
+    expect(previewTransform(reopened, (start + 45) / 60).opacity).toBeCloseTo(.5);
+    expect(previewTransform(reopened, 1.5).opacity).toBe(0);
+    expect(previewTransform(reopened, 1).x).toBe(node.x);
+    expect(reopened.keyframes.filter((key: {property:string}) => key.property === "opacity"))
+      .toHaveLength(start === 15 ? 3 : 4);
+    const changed = {...draft, fadeOutEndFrame:50};
+    expect(nativePoseEdit(saved, saved.scenes[0], reopened, profile, changed).issue).toBeNull();
+    for (const invalid of [
+      {...draft, fadeOutStartFrame:14}, {...draft, fadeOutEndFrame:start},
+      {...draft, fadeOutEndFrame:10000}, {...draft, fadeOutStartFrame:undefined},
+    ]) expect(nativePoseEdit(project, scene, node, profile, invalid).keys).toBeNull();
+    const extra = structuredClone(reopened);
+    extra.keyframes.push({at:{num:"7",den:"4"},property:"opacity",value:1,interpolation:"linear"});
+    expect(savedNativePoseDraft(extra, profile)).toBeNull();
+    expect(nativePoseEdit(saved, saved.scenes[0], extra, profile, draft).issue).toMatch(/additional keys/);
+  });
+});

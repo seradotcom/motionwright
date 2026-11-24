@@ -9,10 +9,13 @@ export type NativePoseDraft = {
   start: PoseGeometry;
   endFrame: number;
   curve: PoseCurve;
-  fade: "none" | "in" | "out";
+  fade: "none" | "in" | "out" | "in_out";
   fadeCurve: "linear" | "ease_out_cubic";
-  /** Absent means the fade follows the geometry duration. Legacy drafts stay valid. */
+  /** Absent means the fade-in or single fade follows the geometry duration. */
   fadeEndFrame?: number;
+  fadeOutStartFrame?: number;
+  fadeOutEndFrame?: number;
+  fadeOutCurve?: "linear" | "ease_out_cubic";
   waypoints?: NativePoseWaypoint[];
 };
 
@@ -93,19 +96,29 @@ export function savedNativePoseDraft(node: CanvasNode, profile: TimingProfile | 
   draft.endFrame = endFrame; draft.curve = terminal.curve;
   if (ordered.length > 2) draft.waypoints = ordered.slice(1, -1).map(([frame, slot]) =>
     ({ frame, pose: slot.pose as PoseGeometry, curve: slot.curve }));
-  const alpha = node.keyframes.filter(key => key.property === "opacity");
+  const alpha = node.keyframes.filter(key => key.property === "opacity")
+    .map(key => ({key, frame: frameOf(key.at, profile)})).sort((a, b) => (a.frame ?? -1) - (b.frame ?? -1));
   if (alpha.length) {
-    const first = alpha.find(key => key.at.num === "0" && key.at.den === "1");
-    const last = alpha.find(key => key !== first);
-    if (alpha.length !== 2 || !first || !last || first.interpolation !== "linear" ||
-        !["linear", "ease_out_cubic"].includes(last.interpolation)) return null;
-    const fadeFrame = frameOf(last.at, profile);
-    if (fadeFrame === null || !validFrame(fadeFrame)) return null;
-    if (first.value === 0 && last.value === 1) draft.fade = "in";
-    else if (first.value === 1 && last.value === 0) draft.fade = "out";
-    else return null;
-    draft.fadeCurve = last.interpolation as NativePoseDraft["fadeCurve"];
-    if (fadeFrame !== endFrame) draft.fadeEndFrame = fadeFrame;
+    if (alpha.length < 2 || alpha.length > 4 || alpha.some((item, index) =>
+      item.frame === null || (index > 0 && (!validFrame(item.frame) || item.frame <= alpha[index - 1].frame!)))) return null;
+    const first = alpha[0].key, entry = alpha[1].key, last = alpha.at(-1)!.key;
+    if (alpha[0].frame !== 0 || first.at.num !== "0" || first.at.den !== "1" ||
+        first.interpolation !== "linear" || !["linear", "ease_out_cubic"].includes(entry.interpolation)) return null;
+    if (alpha.length === 2) {
+      if (first.value === 0 && entry.value === 1) draft.fade = "in";
+      else if (first.value === 1 && entry.value === 0) draft.fade = "out";
+      else return null;
+    } else {
+      if (first.value !== 0 || entry.value !== 1 || last.value !== 0 ||
+          !["linear", "ease_out_cubic"].includes(last.interpolation) ||
+          (alpha.length === 4 && (alpha[2].key.value !== 1 || alpha[2].key.interpolation !== "hold"))) return null;
+      draft.fade = "in_out";
+      draft.fadeOutStartFrame = alpha.at(-2)!.frame!;
+      draft.fadeOutEndFrame = alpha.at(-1)!.frame!;
+      draft.fadeOutCurve = last.interpolation as NativePoseDraft["fadeCurve"];
+    }
+    draft.fadeCurve = entry.interpolation as NativePoseDraft["fadeCurve"];
+    if (alpha[1].frame !== endFrame) draft.fadeEndFrame = alpha[1].frame!;
   }
   return draft;
 }
@@ -139,7 +152,9 @@ export function nativePoseEdit(project: Project, scene: Scene, node: CanvasNode,
   if (![draft.start, ...waypoints.map(waypoint => waypoint.pose), geometry(node)].every(validGeometry))
     return fail("Enter finite geometry with positive dimensions and rotation between -360 and 360.");
   if (!validCurve(draft.curve) || !waypoints.every(waypoint => validCurve(waypoint.curve)) ||
-      !["linear", "ease_out_cubic"].includes(draft.fadeCurve) || !["none", "in", "out"].includes(draft.fade))
+      !["linear", "ease_out_cubic"].includes(draft.fadeCurve) ||
+      (draft.fadeOutCurve !== undefined && !["linear", "ease_out_cubic"].includes(draft.fadeOutCurve)) ||
+      !["none", "in", "out", "in_out"].includes(draft.fade))
     return fail("Choose a supported native curve.");
   let previousFrame = 0;
   for (const frame of [...waypoints.map(waypoint => waypoint.frame), draft.endFrame]) {
@@ -157,9 +172,19 @@ export function nativePoseEdit(project: Project, scene: Scene, node: CanvasNode,
       for (const property of POSE_GEOMETRY) keys.push({ at, property, value: waypoint.pose[property], interpolation: waypoint.curve });
     }
     if (draft.fade !== "none") {
-      const at = timeOf(draft.fadeEndFrame ?? draft.endFrame, profile, scene);
-      keys.push({ at: first, property: "opacity", value: draft.fade === "in" ? 0 : 1, interpolation: "linear" });
-      keys.push({ at, property: "opacity", value: draft.fade === "in" ? 1 : 0, interpolation: draft.fadeCurve as MotionInterpolation });
+      const fadeFrame = draft.fadeEndFrame ?? draft.endFrame;
+      const at = timeOf(fadeFrame, profile, scene), entering = draft.fade !== "out";
+      keys.push({ at: first, property: "opacity", value: entering ? 0 : 1, interpolation: "linear" });
+      keys.push({ at, property: "opacity", value: entering ? 1 : 0, interpolation: draft.fadeCurve as MotionInterpolation });
+      if (draft.fade === "in_out") {
+        const start = draft.fadeOutStartFrame, end = draft.fadeOutEndFrame;
+        if (start === undefined || end === undefined || !validFrame(start) || !validFrame(end) ||
+            start < fadeFrame || end <= start)
+          return fail("Fade-out must start at or after fade-in ends and end on a later frame inside the scene.");
+        const exitStart = timeOf(start, profile, scene), exitEnd = timeOf(end, profile, scene);
+        if (start > fadeFrame) keys.push({ at: exitStart, property: "opacity", value: 1, interpolation: "hold" });
+        keys.push({ at: exitEnd, property: "opacity", value: 0, interpolation: draft.fadeOutCurve ?? draft.fadeCurve });
+      }
     }
   } catch (reason) { return fail(reason instanceof Error ? reason.message : "Invalid rational pose timing."); }
   return { keys, issue: null };

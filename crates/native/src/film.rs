@@ -201,7 +201,18 @@ fn scene_span_cost(scene: &Scene) -> usize {
             .nodes
             .iter()
             .map(|node| {
-                let opacity_span = usize::from(composed_shape_motion(node).is_some());
+                let opacity_keys = node
+                    .keyframes
+                    .iter()
+                    .filter(|key| key.property == MotionProperty::Opacity)
+                    .count();
+                // Equal-value holds emit no span; this is a conservative upper
+                // bound before negotiation, including malformed source keys.
+                let opacity_span = if composed_shape_motion(node).is_some() {
+                    opacity_keys.saturating_sub(1).max(1)
+                } else {
+                    0
+                };
                 let geometry_times = node
                     .keyframes
                     .iter()
@@ -219,6 +230,8 @@ fn scene_span_cost(scene: &Scene) -> usize {
                     geometry_times.len() - 1 + usize::from(final_hold) + opacity_span
                 } else if node.keyframes.is_empty() {
                     0
+                } else if geometry_times.is_empty() && opacity_keys > 0 {
+                    opacity_keys.saturating_sub(1).max(1)
                 } else if node.keyframes.iter().any(|key| {
                     key.interpolation == MotionInterpolation::Hold
                         && matches!(
@@ -478,6 +491,7 @@ enum NativeOpacityDirection {
 
 #[derive(Debug, Clone, Copy)]
 struct NativeOpacityFade {
+    start: RationalTime,
     duration: RationalTime,
     easing: MotionEasing,
     direction: NativeOpacityDirection,
@@ -497,7 +511,7 @@ fn native_exact_opacity_fade(
     node: &CanvasNode,
     scene: &Scene,
     frame_rate: Rate,
-) -> NativeResult<Option<NativeOpacityFade>> {
+) -> NativeResult<Option<Vec<NativeOpacityFade>>> {
     if node.keyframes.is_empty()
         || node
             .keyframes
@@ -508,16 +522,13 @@ fn native_exact_opacity_fade(
     }
     let fail = || {
         unsupported(format!(
-            "Canvas node {} has opacity keys outside the exact native 0-to-1 FadeIn/1-to-0 FadeOut subset",
+            "Canvas node {} has opacity keys outside the exact native FadeIn/FadeOut interval contract",
             node.id
         ))
     };
-    // A saved child of unchanged Group or Clip ancestors carries the same
-    // opacity tween as a root drawable. Keep each authored container and
-    // its optional clipping plane; never flatten or approximate its alpha.
-    let exact_group_parent = native_static_root_group_parent(node, scene);
+    // Each unchanged Group/Clip keeps its identity and clipping plane.
     if !scene.beats.is_empty()
-        || (node.parent_id.is_some() && !exact_group_parent)
+        || (node.parent_id.is_some() && !native_static_root_group_parent(node, scene))
         || matches!(node.kind.as_str(), "group" | "clip_group")
         || scene
             .nodes
@@ -525,41 +536,30 @@ fn native_exact_opacity_fade(
             .any(|candidate| candidate.parent_id == Some(node.id))
         || node.opacity != 1.0
         || node.rotation_deg != 0.0
-        || node.keyframes.len() != 2
     {
         return Err(fail());
     }
-    let mut keys = node.keyframes.iter().collect::<Vec<_>>();
-    keys.sort_by_key(|key| key.at);
-    if keys[0].at != RationalTime::ZERO
-        || keys[1].at <= RationalTime::ZERO
-        || keys[1].at >= scene.duration
-        || keys[0].interpolation != MotionInterpolation::Linear
-    {
-        return Err(fail());
-    }
-    let direction = if keys[0].value == 0.0 && keys[1].value == 1.0 {
-        NativeOpacityDirection::In
-    } else if keys[0].value == 1.0 && keys[1].value == 0.0 {
-        NativeOpacityDirection::Out
-    } else {
-        return Err(fail());
+    let fps = RationalTime::new(i64::from(frame_rate.num), i64::from(frame_rate.den))
+        .map_err(|_| fail())?;
+    let Some(intervals) = motionwright_domain::exact_canvas_opacity_spans(node, scene, fps)
+        .map_err(|error| unsupported(error.to_string()))?
+    else {
+        return Ok(None);
     };
-    let easing = exact_native_easing(keys[1].interpolation).ok_or_else(&fail)?;
-    let numerator = i128::from(keys[1].at.num)
-        .checked_mul(i128::from(frame_rate.num))
-        .ok_or_else(&fail)?;
-    let denominator = i128::from(keys[1].at.den)
-        .checked_mul(i128::from(frame_rate.den))
-        .ok_or_else(&fail)?;
-    if denominator <= 0 || numerator <= 0 || numerator % denominator != 0 {
-        return Err(fail());
+    let mut fades = Vec::with_capacity(intervals.len());
+    for interval in intervals {
+        fades.push(NativeOpacityFade {
+            start: interval.start,
+            duration: sub(interval.end, interval.start, "Opacity interval underflow")?,
+            easing: exact_native_easing(interval.curve).ok_or_else(&fail)?,
+            direction: if interval.to > interval.from {
+                NativeOpacityDirection::In
+            } else {
+                NativeOpacityDirection::Out
+            },
+        });
     }
-    Ok(Some(NativeOpacityFade {
-        duration: keys[1].at,
-        easing,
-        direction,
-    }))
+    Ok(Some(fades))
 }
 
 /// A deliberately narrow *exact* mapping to Semwright Primitive::Settle:
@@ -1993,27 +1993,42 @@ fn attach_entrance_motion(
         }
         let composed = composed_shape_motion(node);
         let opacity_source = composed.as_ref().map_or(node, |(_, opacity)| opacity);
-        if let Some(fade) = native_exact_opacity_fade(opacity_source, scene, frame_rate)? {
-            let span_id = format!("linear-opacity-{}", node.id.simple());
-            spans.push(TemporalSpan {
-                id: span_id.clone(),
-                minimum: fade.duration,
-                preferred: fade.duration,
-                maximum: fade.duration,
-                anchor: StartAnchor::Absolute { time: scene_start },
-                preference_priority: 0,
-            });
-            let target = subject_id(node.id, None);
-            let primitive = match fade.direction {
-                NativeOpacityDirection::In => Primitive::FadeIn { target },
-                NativeOpacityDirection::Out => Primitive::FadeOut { target },
-            };
-            shot.motion.push(Invocation {
-                id: format!("native-fade-{}", node.id.simple()),
-                span_id,
-                easing: fade.easing,
-                primitive,
-            });
+        if let Some(fades) = native_exact_opacity_fade(opacity_source, scene, frame_rate)? {
+            if spans.len().saturating_add(fades.len()) > MAX_TEMPORAL_SPANS {
+                return Err(unsupported(
+                    "Opacity intervals exceed the Native temporal span budget",
+                ));
+            }
+            let multiple = fades.len() > 1;
+            for (index, fade) in fades.into_iter().enumerate() {
+                let suffix = if multiple {
+                    format!("-{index}")
+                } else {
+                    String::new()
+                };
+                let span_id = format!("linear-opacity-{}{suffix}", node.id.simple());
+                spans.push(TemporalSpan {
+                    id: span_id.clone(),
+                    minimum: fade.duration,
+                    preferred: fade.duration,
+                    maximum: fade.duration,
+                    anchor: StartAnchor::Absolute {
+                        time: add(scene_start, fade.start, "Opacity interval start overflow")?,
+                    },
+                    preference_priority: 0,
+                });
+                let target = subject_id(node.id, None);
+                let primitive = match fade.direction {
+                    NativeOpacityDirection::In => Primitive::FadeIn { target },
+                    NativeOpacityDirection::Out => Primitive::FadeOut { target },
+                };
+                shot.motion.push(Invocation {
+                    id: format!("native-fade-{}{suffix}", node.id.simple()),
+                    span_id,
+                    easing: fade.easing,
+                    primitive,
+                });
+            }
             continue;
         }
         let Some(entry) = entry_motion(node)? else {
@@ -3571,7 +3586,6 @@ mod tests {
                 (MotionProperty::Width, 280.0, child.width),
                 (MotionProperty::Height, 90.0, child.height),
                 (MotionProperty::RotationDeg, -18.0, child.rotation_deg),
-                (MotionProperty::Opacity, 0.0, 1.0),
             ] {
                 child.keyframes.extend([
                     CanvasKeyframe {
@@ -3584,13 +3598,30 @@ mod tests {
                         at: RationalTime::ONE,
                         property,
                         value: to,
-                        interpolation: if property == MotionProperty::Opacity {
-                            MotionInterpolation::EaseOutCubic
-                        } else {
-                            curve
-                        },
+                        interpolation: curve,
                     },
                 ]);
+            }
+            for (at, value, interpolation) in [
+                (RationalTime::ZERO, 0.0, MotionInterpolation::Linear),
+                (
+                    RationalTime::new(1, 2).unwrap(),
+                    1.0,
+                    MotionInterpolation::EaseOutCubic,
+                ),
+                (RationalTime::ONE, 1.0, MotionInterpolation::Hold),
+                (
+                    RationalTime::new(3, 2).unwrap(),
+                    0.0,
+                    MotionInterpolation::Linear,
+                ),
+            ] {
+                child.keyframes.push(CanvasKeyframe {
+                    at,
+                    property: MotionProperty::Opacity,
+                    value,
+                    interpolation,
+                });
             }
             scene.nodes.extend([middle, inner]);
             let camera_id = Uuid::now_v7();
@@ -3657,8 +3688,46 @@ mod tests {
                     .any(|invocation| matches!(&invocation.primitive,
                 Primitive::FadeIn { target } if target == &subject_id(child_id, None)))
             );
-            realize(&segments[0].film)
-                .expect("Pinned Film must preserve all nested clipping owners");
+            let realized = realize(&segments[0].film).expect(
+                "Pinned Film must preserve nested clipping, geometry, camera and visibility",
+            );
+            let alpha = realized
+                .instructions
+                .iter()
+                .filter(|instruction| {
+                    matches!(
+                        &instruction.operation,
+                        semwright_motion_authoring::NativeOp::Tween {
+                            channel: Channel::Opacity,
+                            ..
+                        }
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(alpha.len(), 2, "Hold emits no additional alpha write");
+            assert_eq!(alpha[0].start, RationalTime::ZERO);
+            assert_eq!(alpha[1].start, RationalTime::ONE);
+            for instruction in &alpha {
+                assert_eq!(instruction.duration, RationalTime::new(1, 2).unwrap());
+            }
+            assert_eq!(alpha[0].easing, MotionEasing::OutCubic);
+            assert_eq!(alpha[1].easing, MotionEasing::Linear);
+            assert!(matches!(
+                &alpha[0].operation,
+                semwright_motion_authoring::NativeOp::Tween {
+                    from: Some(Operand::Number(0.0)),
+                    to: Operand::Number(1.0),
+                    ..
+                }
+            ));
+            assert!(matches!(
+                &alpha[1].operation,
+                semwright_motion_authoring::NativeOp::Tween {
+                    from: None,
+                    to: Operand::Number(0.0),
+                    ..
+                }
+            ));
             assert_eq!(
                 project, original,
                 "Projection must not flatten or rewrite the saved tree"
@@ -4309,6 +4378,89 @@ mod tests {
                 interpolation: MotionInterpolation::Linear,
             });
         }
+    }
+
+    #[test]
+    fn exact_opacity_holds_fractional_intervals_and_budget_are_preserved() {
+        for value in [0.0, 1.0] {
+            let mut project = fixture_project();
+            let node = &mut project.scenes[0].nodes[0];
+            set_exact_linear_opacity_keys(node);
+            for key in &mut node.keyframes {
+                key.value = value;
+            }
+            let original = project.clone();
+            let segments = build_motion_canvas_segments(
+                &project,
+                project.deliverables[0].id,
+                &fixture_options(&project),
+            )
+            .unwrap();
+            let shot = &segments[0].film.sequences[0].beats[0].shots[0];
+            assert!(
+                shot.motion.is_empty(),
+                "Equal alpha endpoints need no invented fade"
+            );
+            assert_eq!(shot.subjects[0].initially_visible, value == 1.0);
+            realize(&segments[0].film).unwrap();
+            assert_eq!(project, original);
+        }
+        let mut project = fixture_project();
+        let node = &mut project.scenes[0].nodes[0];
+        node.keyframes.clear();
+        for (num, den, value, interpolation) in [
+            (0, 1, 0.0, MotionInterpolation::Linear),
+            (1001, 3000, 1.0, MotionInterpolation::EaseOutCubic),
+            (1001, 1500, 1.0, MotionInterpolation::Hold),
+            (1001, 1000, 0.0, MotionInterpolation::Linear),
+        ] {
+            node.keyframes.push(CanvasKeyframe {
+                at: RationalTime::new(num, den).unwrap(),
+                property: MotionProperty::Opacity,
+                value,
+                interpolation,
+            });
+        }
+        let intervals = native_exact_opacity_fade(
+            &project.scenes[0].nodes[0],
+            &project.scenes[0],
+            Rate::new(30000, 1001).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(intervals.len(), 2);
+        assert_eq!(intervals[1].start, RationalTime::new(1001, 1500).unwrap());
+        assert_eq!(
+            intervals[1].duration,
+            RationalTime::new(1001, 3000).unwrap()
+        );
+        let scene = &mut project.scenes[0];
+        let mut template = scene.nodes[0].clone();
+        template.keyframes = (0..8)
+            .map(|frame| CanvasKeyframe {
+                at: RationalTime::new(frame, 30).unwrap(),
+                property: MotionProperty::Opacity,
+                value: (frame % 2) as f64,
+                interpolation: MotionInterpolation::Linear,
+            })
+            .collect();
+        scene.nodes = (0..20)
+            .map(|index| {
+                let mut node = template.clone();
+                node.id = Uuid::now_v7();
+                node.z_index = index;
+                node
+            })
+            .collect();
+        assert!(scene_span_cost(scene) > MAX_TEMPORAL_SPANS);
+        assert!(
+            build_motion_canvas_segments(
+                &project,
+                project.deliverables[0].id,
+                &fixture_options(&project)
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -5149,9 +5301,8 @@ mod tests {
 
         let mut off_frame = baseline.clone();
         off_frame.scenes[0].nodes[0].keyframes[1].at = RationalTime::new(1, 7).unwrap();
-        let mut same_endpoint = baseline.clone();
-        same_endpoint.scenes[0].nodes[0].keyframes[0].value = 1.0;
-        same_endpoint.scenes[0].nodes[0].keyframes[1].value = 1.0;
+        let mut duplicate_time = baseline.clone();
+        duplicate_time.scenes[0].nodes[0].keyframes[1].at = RationalTime::ZERO;
         let mut partial_exit = baseline.clone();
         partial_exit.scenes[0].nodes[0].keyframes[0].value = 1.0;
         partial_exit.scenes[0].nodes[0].keyframes[1].value = 0.2;
@@ -5186,7 +5337,7 @@ mod tests {
 
         for variant in [
             off_frame,
-            same_endpoint,
+            duplicate_time,
             partial_exit,
             held_exit,
             wrong_target,

@@ -64,11 +64,16 @@ test("saves nested Clip Group Clip composition and continues the same child pose
       ["Pose start height",child.height*0.8],["Pose start rotation",-10],["Pose end frame",30],
     ] as const) await pose.getByLabel(label,{exact:true}).fill(String(value));
     await pose.getByLabel("Pose geometry curve",{exact:true}).selectOption("ease_out_cubic");
+    await pose.getByLabel("Pose opacity",{exact:true}).selectOption("in_out");
+    await pose.getByLabel("Pose fade end frame",{exact:true}).fill("15");
+    await pose.getByLabel("Pose fade-out start frame",{exact:true}).fill("30");
+    await pose.getByLabel("Pose fade-out end frame",{exact:true}).fill("45");
+    await pose.getByLabel("Pose fade-out curve",{exact:true}).selectOption("linear");
     await pose.getByRole("button",{name:"Create native pose animation",exact:true}).click();
     await expect(revision).toHaveText("r"+(++expectedRevision));
     const saved=await service.project(original.id);
     const savedNodes=saved.scenes.find(item=>item.id===scene.id)!.nodes;
-    expect(savedNodes.find(node=>node.id===child.id)?.keyframes).toHaveLength(10);
+    expect(savedNodes.find(node=>node.id===child.id)?.keyframes).toHaveLength(14);
     for(const container of [outer,middle,inner]) expect(savedNodes.find(node=>node.id===container.id)).toEqual(container);
     const object=page.getByRole("button",{name:"Canvas object "+child.name,exact:true});
     await expect(object).not.toHaveCSS("clip-path","none");
@@ -78,6 +83,11 @@ test("saves nested Clip Group Clip composition and continues the same child pose
     await row.click();
     await expect(row).toHaveAttribute("data-tree-depth","3");
     await expect(pose.getByLabel("Pose start x",{exact:true})).toHaveValue(String(child.x-40));
+    await expect(pose.getByLabel("Pose opacity",{exact:true})).toHaveValue("in_out");
+    await expect(pose.getByLabel("Pose fade end frame",{exact:true})).toHaveValue("15");
+    await expect(pose.getByLabel("Pose fade-out start frame",{exact:true})).toHaveValue("30");
+    await expect(pose.getByLabel("Pose fade-out end frame",{exact:true})).toHaveValue("45");
+    await expect(pose.getByLabel("Pose fade-out curve",{exact:true})).toHaveValue("linear");
     await expect(object).not.toHaveCSS("clip-path","none");
     await page.close();
     expect(await service.rawRequest({command:"prepare_read_only_handoff",args:null})).toMatchObject({

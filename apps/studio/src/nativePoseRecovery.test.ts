@@ -120,3 +120,24 @@ it("preserves exact waypoint and independent fade input, then acknowledges one c
   expect(confirmed.raw).toEqual(recovered.raw);
   expect(confirmed.authority.revision).toBe(saved.revision);
 });
+
+it("retains exact entry/hold/exit input and never resends an unconfirmed sequence", async () => {
+  const f = source(), store = storage(), scope = f.draft.authority.scope;
+  Object.assign(f.draft.raw, {fade:"in_out",fadeEndFrame:"015",fadeOutStartFrame:"030",
+    fadeOutEndFrame:"-",fadeOutCurve:"linear"});
+  const incomplete = writePoseRecovery(store, f.draft, null);
+  const recovered = decodePoseRecovery(incomplete, scope);
+  expect(recovered.raw).toEqual(f.draft.raw);
+  expect(() => parsePoseRaw(recovered.raw)).toThrow(/fade-out end frame/);
+  recovered.raw.fadeOutEndFrame = "045";
+  const submission = preparePose(recovered, f.project, f.scene, f.node, f.profile, ATTEMPT);
+  const pending = decodePoseRecovery(writePoseRecovery(store, submission.draft, incomplete), scope);
+  expect(pending.pending?.submitted.keyframes.filter(key => key.property === "opacity")).toHaveLength(4);
+  expect(() => preparePose(pending, f.project, f.scene, f.node, f.profile, ATTEMPT)).toThrow(/Review/);
+  const saved = await applyChange(f.project, submission.change);
+  const confirmed = acknowledgePose(pending, ATTEMPT, saved);
+  expect(confirmed.raw).toEqual(recovered.raw);
+  expect(confirmed.pending).toBeNull();
+  const reopened = freshPoseRecovery(saved, saved.scenes[0], saved.scenes[0].nodes[0], saved.deliverables[0]);
+  expect(parsePoseRaw(reopened.raw)).toEqual(parsePoseRaw(recovered.raw));
+});

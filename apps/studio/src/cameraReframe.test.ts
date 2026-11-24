@@ -246,3 +246,27 @@ it("preserves complete intermediate poses and rejects an unsafe intermediate exc
   invalid.scenes[0].nodes[0].keyframes.find(key=>key.property==="x" && key.at.num==="1" && key.at.den==="1")!.value=0;
   await expect(applyChange(invalid,{type:"upsert_camera_reframe",reframe:camera})).rejects.toThrow(/cropped|crop/);
 });
+
+it("keeps a shared camera, intermediate pose and independent entry/hold/exit editable", async () => {
+  const {project,camera}=source(),scene=project.scenes[0],node=scene.nodes[0];
+  const draft:NativePoseDraft={start:{x:400,y:400,width:220,height:80,rotation_deg:-12},
+    endFrame:60,curve:"ease_out_cubic",fade:"in_out",fadeCurve:"ease_out_cubic",fadeEndFrame:15,
+    fadeOutStartFrame:30,fadeOutEndFrame:45,fadeOutCurve:"linear",
+    waypoints:[{frame:30,curve:"hold",pose:{x:500,y:440,width:240,height:100,rotation_deg:15}}]};
+  const edit=nativePoseEdit(project,scene,node,project.deliverables[0],draft);
+  expect(edit.issue).toBeNull();
+  const posed=await applyChange(project,{type:"set_canvas_motion_keyframes",scene_id:scene.id,node_id:node.id,keyframes:edit.keys!});
+  const combined=await applyChange(posed,{type:"upsert_camera_reframe",reframe:camera});
+  expect(combined.scenes[0].nodes).toEqual(posed.scenes[0].nodes);
+  const reopened:Project=JSON.parse(JSON.stringify(combined));
+  const saved=reopened.scenes[0].nodes[0];
+  expect(previewTransform(saved,.25).opacity).toBe(.875);
+  expect(previewTransform(saved,.75).opacity).toBe(1);
+  expect(previewTransform(saved,1.25).opacity).toBe(.5);
+  expect(previewTransform(saved,1.5).opacity).toBe(0);
+  const replacement=nativePoseEdit(reopened,reopened.scenes[0],saved,reopened.deliverables[0],
+    {...draft,fadeOutStartFrame:45,fadeOutEndFrame:60});
+  const continued=await applyChange(reopened,{type:"set_canvas_motion_keyframes",scene_id:scene.id,node_id:node.id,keyframes:replacement.keys!});
+  expect(continued.production_design?.camera_reframes).toEqual([camera]);
+  expect(previewTransform(continued.scenes[0].nodes[0],1.5).opacity).toBe(1);
+});
