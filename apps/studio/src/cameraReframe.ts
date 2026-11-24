@@ -136,17 +136,16 @@ export function validateCameraReframeSource(source:CameraReframe,scene:Scene):vo
 
 export function validateCameraReframe(source:CameraReframe,scene:Scene):void{
   if(source.component_version===CAMERA_REFRAME_VERSION && scene.nodes.some(node=>node.relations.length)){
-    const resolved=resolveCanvasRelations(scene.nodes,undefined,false,{duration:scene.duration,fps:{num:"30",den:"1"},continuous:!scene.beats.length});
+    const resolved=resolveCanvasRelations(scene.nodes,undefined,false,{duration:scene.duration,fps:{num:"30",den:"1"},continuous:true});
     if(resolved.issue) invalid(resolved.issue);
     scene={...scene,nodes:scene.nodes.map(node=>({...node,...resolved.positions.get(node.id),
       keyframes:resolved.tracks.get(node.id)??node.keyframes,relations:[]}))};
   }
   validateCameraReframeCoordinates(source,scene);
   if(scene.nodes.length<1 || scene.nodes.length>32 ||
-    scene.beats.length ||
     (source.component_version===CAMERA_REFRAME_MANIM_VERSION &&
-      scene.nodes.some(node=>["group","clip_group"].includes(node.kind) || node.keyframes.length || node.parent_id!==null)))
-    invalid("an original, ungrouped and motion-free Canvas shot with at most 32 objects is required");
+      (scene.beats.length || scene.nodes.some(node=>["group","clip_group"].includes(node.kind) || node.keyframes.length || node.parent_id!==null))))
+    invalid("a supported source scene with 1 to 32 objects is required; the Manim profile also requires an ungrouped, motion-free scene without editorial beats");
   if(scene.camera.zoom!==1 || scene.camera.rotation_deg!==0)
     invalid("this planar reframe cannot represent optical zoom or 3D rotation");
   // Match the existing Rust v2 source contract. Do not admit visual semantics

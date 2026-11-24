@@ -46,7 +46,7 @@ export function sampleProfileLayout(project: Project, scene: Scene, profile: Del
   if (![profile.width, profile.height].every(value => Number.isInteger(value) && value >= 320 && value <= 7680))
     throw new Error("Output layout dimensions are out of bounds.");
   const alignment = resolveCanvasRelations(scene.nodes, alignmentScale(profile.width, profile.height, profile.framing_strategy), false,
-    {duration:scene.duration,fps:profile.frame_rate,continuous:!scene.beats.length});
+    {duration:scene.duration,fps:profile.frame_rate,continuous:true});
   if (alignment.issue) throw new Error("Output layout relation is unresolved: " + alignment.issue);
   const replan = profile.framing_strategy === "replan";
   if (!replan && profile.framing_strategy !== "crop") throw new Error("Unknown output framing strategy.");

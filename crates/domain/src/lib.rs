@@ -2184,12 +2184,9 @@ impl Project {
                     .iter_mut()
                     .find(|scene| scene.id == *scene_id)
                     .ok_or(DomainError::NotFound(resource))?;
-                if scene.renderer != RendererKind::MotionCanvas
-                    || !scene.beats.is_empty()
-                    || end_at >= scene.duration
-                {
+                if scene.renderer != RendererKind::MotionCanvas || end_at >= scene.duration {
                     return Err(DomainError::Invalid(
-                        "native linear position move requires a Motion Canvas scene without authored beats and an endpoint inside its duration".into(),
+                        "native linear position move requires a Motion Canvas scene and an endpoint inside its duration".into(),
                     ));
                 }
                 let index = scene

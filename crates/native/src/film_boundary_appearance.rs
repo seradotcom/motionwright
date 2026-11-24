@@ -39,8 +39,8 @@ fn focal_node<'a>(
             "mapped snapshot differs from the saved object or camera; copy the current source",
         ));
     }
+    authored_beats_tile_scene(scene)?;
     if scene.renderer != RendererKind::MotionCanvas
-        || !scene.beats.is_empty()
         || !matches!(node.kind.as_str(), "shape" | "rectangle" | "circle")
         || node.parent_id.is_some()
         || !node.relations.is_empty()
@@ -50,7 +50,7 @@ fn focal_node<'a>(
             .any(|candidate| candidate.parent_id == Some(id))
     {
         return Err(loss(
-            "only independent Motion Canvas shapes in unsegmented scenes have a bounded continuity projection",
+            "only independent Motion Canvas shapes with exact scene clocks have a bounded continuity projection",
         ));
     }
     Ok(node)

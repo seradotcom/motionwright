@@ -1894,11 +1894,11 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       if (!scene || !profile) throw new Error("native linear motion source scene or saved delivery profile is missing");
       const node = scene.nodes.find((entry) => entry.id === change.node_id);
       if (!node) throw new Error("resource not found: node:" + change.node_id);
-      if (scene.renderer !== "motion-canvas" || scene.beats.length > 0 ||
+      if (scene.renderer !== "motion-canvas" ||
         (node.parent_id !== null && !staticNativeGroupParent(node, scene)) ||
         ["group","clip_group"].includes(node.kind) ||
         scene.nodes.some((item) => item.parent_id === node.id)) {
-        throw new Error("native linear motion requires a drawable Motion Canvas object with unchanged Group/Clip ancestors and no authored beats");
+        throw new Error("native linear motion requires a drawable Motion Canvas object with unchanged Group/Clip ancestors");
       }
       if (node.property_locks.includes("position")) {
         throw new Error("resource is locked: node motion property");

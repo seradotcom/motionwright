@@ -74,10 +74,11 @@ describe("MW05-E01-01 exact native cubic-out source motion",()=>{
     expect(linearNode.keyframes.map(k=>k.interpolation)).toEqual(Array(4).fill("linear"));
     expect(previewTransform(linearNode,.5).x).toBeCloseTo(linearNode.x-40,9);
   });
-  it("blocks authored scene beats without starting a new motion scope",async()=>{
+  it("keeps authored scene beats while saving one continuous motion scope",async()=>{
     const p=project();p.scenes[0].beats=structuredClone(fixtureProject.scenes[0].beats);
-    const original=structuredClone(p);
-    await expect(applyChange(p,cubic(p))).rejects.toThrow("authored beats");
+    const original=structuredClone(p),next=await applyChange(p,cubic(p));
+    expect(next.scenes[0].beats).toEqual(original.scenes[0].beats);
+    expect(previewTransform(next.scenes[0].nodes[0],.5).x).toBeCloseTo(p.scenes[0].nodes[0].x-10,9);
     expect(p).toEqual(original);
   });
   it("respects project scene-position locks",async()=>{

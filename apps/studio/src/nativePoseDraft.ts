@@ -131,7 +131,7 @@ export function nativePoseEdit(project: Project, scene: Scene, node: CanvasNode,
   if (!profile) return fail("Select a saved delivery profile.");
   if (scene.nodes.some(candidate => candidate.relations.some(relation => relation.target_id === node.id)))
     return fail("This object is a saved relation target. Remove or revise that relation before authoring a different pose track.");
-  if (scene.renderer !== "motion-canvas" || scene.beats.length) return fail("Use a Motion Canvas scene with a continuous timeline.");
+  if (scene.renderer !== "motion-canvas") return fail("Use a Motion Canvas scene.");
   if (!["shape", "rectangle", "circle"].includes(node.kind) ||
       node.coordinate_space !== "project_pixels" || node.relations.length ||
       node.style.blend_mode !== "normal" || node.opacity !== 1 ||

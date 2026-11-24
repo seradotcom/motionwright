@@ -52,7 +52,7 @@ describe("Follow preserves saved terminal offsets on exact native translation",(
     expect(b.relations[0].target_id).toBe(a.id);
   });
   it("refuses ambiguous, unsupported, locked or non-frame-aligned tracks atomically",()=>{
-    for(const test of ["cycle","extra","shared","static","mixed","curve","clock","scene-lock","node-lock","missing","hierarchy","beats"]){
+    for(const test of ["cycle","extra","shared","static","mixed","curve","clock","scene-lock","node-lock","missing","hierarchy","discontinuous-clock"]){
       const {a,b,c,nodes,shape,link}=fixture();
       switch(test){
         case "cycle":a.keyframes=[];link(a,c);break;
@@ -67,7 +67,7 @@ describe("Follow preserves saved terminal offsets on exact native translation",(
         case "hierarchy":a.parent_id=c.id;break;
       }
       const before=structuredClone(nodes);
-      const result=resolveCanvasRelations(nodes,undefined,test==="scene-lock",{...clock,continuous:test!=="beats"});
+      const result=resolveCanvasRelations(nodes,undefined,test==="scene-lock",{...clock,continuous:test!=="discontinuous-clock"});
       expect(result.issue,test).not.toBeNull();expect(result.tracks.size,test).toBe(0);
       expect(result.positions.size,test).toBe(0);expect(nodes).toEqual(before);
     }

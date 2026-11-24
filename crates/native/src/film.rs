@@ -189,7 +189,29 @@ fn composed_shape_motion(node: &CanvasNode) -> Option<(CanvasNode, CanvasNode)> 
     Some((geometry, opacity))
 }
 
-fn scene_span_cost(scene: &Scene) -> usize {
+fn has_camera_reframe(project: &Project, scene: &Scene) -> bool {
+    project
+        .production_design
+        .camera_reframes
+        .iter()
+        .any(|camera| camera.scene_id == scene.id)
+}
+
+/// Editorial beats describe timing inside the scene; they are not cuts in
+/// an object's scene-local animation clock. A continuous shot owns all visual
+/// channels while the original beat intervals remain constrained Film spans.
+fn uses_continuous_visual_clock(scene: &Scene, camera_reframe: bool) -> bool {
+    camera_reframe || scene.nodes.iter().any(|node| !node.keyframes.is_empty())
+}
+
+fn scene_span_cost(scene: &Scene, camera_reframe: bool) -> usize {
+    let continuous = uses_continuous_visual_clock(scene, camera_reframe);
+    let visual_shots = if continuous {
+        1
+    } else {
+        scene.beats.len().max(1)
+    };
+    let editorial_spans = if continuous { scene.beats.len() } else { 0 };
     // Native Hold requires two anchored one-frame spans (Set at t0, Set at tN)
     // instead of a tween's single span. Budget before provider realization,
     // retaining at least the original one-span bound for unsupported keys.
@@ -199,11 +221,13 @@ fn scene_span_cost(scene: &Scene) -> usize {
         .iter()
         .any(motionwright_domain::native_constant_shape_rotation)
     {
-        scene.beats.len().max(1)
+        visual_shots
     } else {
         0
     };
-    1 + scene.beats.len().max(1)
+    1 + visual_shots
+        + editorial_spans
+        + usize::from(camera_reframe)
         + static_rotation_spans
         + scene
             .nodes
@@ -383,11 +407,15 @@ fn motion_canvas_runs(
         let starts_new = if let Some(first) = current.first() {
             let last_end = segment_end(current.last().expect("run is nonempty"))?;
             let candidate_duration = sub(end, first.start, "Film segment duration underflow")?;
-            let span_cost = current.iter().map(scene_span_cost).sum::<usize>();
+            let span_cost = current
+                .iter()
+                .map(|item| scene_span_cost(item, has_camera_reframe(project, item)))
+                .sum::<usize>();
             scene.start != last_end
                 || candidate_duration > max_duration
                 || current.len() >= MAX_SEQUENCES
-                || span_cost + scene_span_cost(&scene) > MAX_TEMPORAL_SPANS
+                || span_cost + scene_span_cost(&scene, has_camera_reframe(project, &scene)) + 1
+                    > MAX_TEMPORAL_SPANS
         } else {
             false
         };
@@ -535,8 +563,7 @@ fn native_exact_opacity_fade(
         ))
     };
     // Each unchanged Group/Clip keeps its identity and clipping plane.
-    if !scene.beats.is_empty()
-        || (node.parent_id.is_some() && !native_static_root_group_parent(node, scene))
+    if (node.parent_id.is_some() && !native_static_root_group_parent(node, scene))
         || matches!(node.kind.as_str(), "group" | "clip_group")
         || scene
             .nodes
@@ -573,7 +600,7 @@ fn native_exact_opacity_fade(
 /// A deliberately narrow *exact* mapping to Semwright Primitive::Settle:
 /// paired X/Y at scene-local 0, then paired X/Y back to the unchanged base
 /// position at an exact output-frame boundary, all linear, single unparented
-/// object, no other keyframe channels/scene beats.
+/// object, no other keyframe channels. Editorial beats retain the scene clock.
 fn native_linear_position_motion(
     node: &CanvasNode,
     scene: &Scene,
@@ -598,8 +625,7 @@ fn native_linear_position_motion(
             node.id
         ))
     };
-    if !scene.beats.is_empty()
-        || (node.parent_id.is_some() && !native_static_root_group_parent(node, scene))
+    if (node.parent_id.is_some() && !native_static_root_group_parent(node, scene))
         || matches!(node.kind.as_str(), "group" | "clip_group")
         || scene
             .nodes
@@ -718,8 +744,7 @@ fn native_linear_geometry_motion(
             node.id
         ))
     };
-    if !scene.beats.is_empty()
-        || (node.parent_id.is_some() && !native_static_root_group_parent(node, scene))
+    if (node.parent_id.is_some() && !native_static_root_group_parent(node, scene))
         || !matches!(node.kind.as_str(), "shape" | "rectangle" | "circle")
         || scene
             .nodes
@@ -2113,11 +2138,6 @@ fn attach_entrance_motion(
 }
 
 fn authored_beats_tile_scene(scene: &Scene) -> NativeResult<()> {
-    if !scene.beats.is_empty() && scene.nodes.iter().any(|node| !node.keyframes.is_empty()) {
-        return Err(unsupported(
-            "Authored motion keyframes across multiple beat scopes need an explicit continuity mapping; motion is not restarted silently",
-        ));
-    }
     if scene.beats.is_empty() {
         return Ok(());
     }
@@ -2136,6 +2156,47 @@ fn authored_beats_tile_scene(scene: &Scene) -> NativeResult<()> {
             "Scene {} authored beats must cover the full scene duration before native Film projection",
             scene.id
         )));
+    }
+    Ok(())
+}
+
+/// Keep every authored beat as its own exact source-identified interval.
+/// These nonvisual spans are contained by the one continuous visual shot,
+/// just as source scene spans remain constrained after native run grouping.
+/// No subject, curve or camera is restarted at an editorial boundary.
+fn attach_continuous_editorial_spans(
+    scene: &Scene,
+    scene_start: RationalTime,
+    shot_span: &str,
+    spans: &mut Vec<TemporalSpan>,
+    constraints: &mut Vec<TemporalConstraint>,
+) -> NativeResult<()> {
+    for beat in &scene.beats {
+        if spans.len() >= MAX_TEMPORAL_SPANS {
+            return Err(unsupported(
+                "Editorial beat continuity exceeds the Film temporal span budget",
+            ));
+        }
+        let id = format!("editorial-beat-{}-{}", scene.id.simple(), beat.id.simple());
+        spans.push(TemporalSpan {
+            id: id.clone(),
+            minimum: beat.duration,
+            preferred: beat.duration,
+            maximum: beat.duration,
+            anchor: StartAnchor::Absolute {
+                time: add(
+                    scene_start,
+                    beat.start,
+                    "Editorial beat continuity start overflow",
+                )?,
+            },
+            preference_priority: 0,
+        });
+        constraints.push(TemporalConstraint::Contains {
+            id: format!("continuous-contains-{}", beat.id.simple()),
+            parent: shot_span.to_owned(),
+            child: id,
+        });
     }
     Ok(())
 }
@@ -2205,17 +2266,11 @@ fn build_segment(
         font_family: &options.font_family,
     };
 
-    let span_capacity = scenes.iter().map(scene_span_cost).sum::<usize>()
-        + scenes
-            .iter()
-            .filter(|scene| {
-                project
-                    .production_design
-                    .camera_reframes
-                    .iter()
-                    .any(|camera| camera.scene_id == scene.id)
-            })
-            .count();
+    let span_capacity = scenes
+        .iter()
+        .map(|scene| scene_span_cost(scene, has_camera_reframe(project, scene)))
+        .sum::<usize>()
+        + usize::from(scenes.len() > 1);
     if span_capacity > MAX_TEMPORAL_SPANS {
         return Err(unsupported(
             "Canonical Film segment exceeds 128 bounded temporal spans including keyframe motion",
@@ -2233,12 +2288,6 @@ fn build_segment(
             )));
         }
         authored_beats_tile_scene(scene)?;
-        if !scene.beats.is_empty() && scene.nodes.iter().any(|node| !node.keyframes.is_empty()) {
-            return Err(unsupported(format!(
-                "Scene {} authored beat spans cannot preserve Canvas motion keyframes yet",
-                scene.id
-            )));
-        }
         let intent = intents.get(&scene.id).ok_or_else(|| {
             invalid(format!(
                 "Scene {} requires explicit narrative role and archetype for canonical Film",
@@ -2257,7 +2306,9 @@ fn build_segment(
         });
 
         let mut authoring_beats = Vec::with_capacity(scene.beats.len().max(1));
-        if scene.beats.is_empty() {
+        if scene.beats.is_empty()
+            || uses_continuous_visual_clock(scene, has_camera_reframe(project, scene))
+        {
             let shot_span = uid("shotspan", scene.id);
             spans.push(TemporalSpan {
                 id: shot_span.clone(),
@@ -2272,6 +2323,13 @@ fn build_segment(
                 parent: sequence_span.clone(),
                 child: shot_span.clone(),
             });
+            attach_continuous_editorial_spans(
+                scene,
+                local_start,
+                &shot_span,
+                &mut spans,
+                &mut constraints,
+            )?;
             let mut shot = projected_shot(
                 scene,
                 &shot_context,
@@ -3251,6 +3309,24 @@ mod tests {
                 });
             }
             project.scenes[0].nodes = vec![root.clone(), label.clone()];
+            // Editorial boundaries cross both the exact translation and the
+            // independent text fade, without changing the scene-local clock.
+            project.scenes[0].beats = vec![
+                SceneBeat {
+                    id: Uuid::now_v7(),
+                    label: "Follow lead".into(),
+                    objective: "Keep source timing".into(),
+                    start: RationalTime::ZERO,
+                    duration: RationalTime::new(2, 3).unwrap(),
+                },
+                SceneBeat {
+                    id: Uuid::now_v7(),
+                    label: "Follow evidence".into(),
+                    objective: "Keep source timing".into(),
+                    start: RationalTime::new(2, 3).unwrap(),
+                    duration: RationalTime::new(4, 3).unwrap(),
+                },
+            ];
             if camera {
                 project
                     .production_design
@@ -4402,6 +4478,190 @@ mod tests {
         );
     }
 
+    fn assert_continuous_editorial_projection(mut project: Project) {
+        project.scenes.truncate(1);
+        let id = project.deliverables[0].id;
+        let baseline =
+            build_motion_canvas_segments(&project, id, &fixture_options(&project)).unwrap();
+        let compiled_before = realize(&baseline[0].film).unwrap();
+        let scene_id = project.scenes[0].id;
+        for (start, duration) in [
+            (RationalTime::ZERO, RationalTime::new(1, 3).unwrap()),
+            (
+                RationalTime::new(1, 3).unwrap(),
+                RationalTime::new(1, 3).unwrap(),
+            ),
+            (RationalTime::new(2, 3).unwrap(), RationalTime::ONE),
+            (
+                RationalTime::new(5, 3).unwrap(),
+                RationalTime::new(1, 3).unwrap(),
+            ),
+        ] {
+            project
+                .apply_change(&Change::UpsertSceneBeat {
+                    scene_id,
+                    beat: SceneBeat {
+                        id: Uuid::now_v7(),
+                        label: "Editorial interval".into(),
+                        objective: "Preserve continuous source animation".into(),
+                        start,
+                        duration,
+                    },
+                })
+                .unwrap();
+        }
+        let source = project.clone();
+        let output =
+            build_motion_canvas_segments(&project, id, &fixture_options(&project)).unwrap();
+        let film = &output[0].film;
+        let compiled = realize(film).unwrap();
+        assert_eq!(
+            serde_json::to_value(&film.sequences).unwrap(),
+            serde_json::to_value(&baseline[0].film.sequences).unwrap(),
+            "Editorial boundaries must not duplicate subjects, change IDs or restart curves"
+        );
+        assert_eq!(
+            format!("{:?}", compiled.instructions),
+            format!("{:?}", compiled_before.instructions)
+        );
+        assert_eq!(
+            film.timing.spans.len(),
+            baseline[0].film.timing.spans.len() + 4
+        );
+        for span in &baseline[0].film.timing.spans {
+            let before = compiled_before.schedule.interval(&span.id).unwrap();
+            let after = compiled.schedule.interval(&span.id).unwrap();
+            assert_eq!(before.start, after.start);
+            assert_eq!(before.end, after.end);
+        }
+        for beat in &project.scenes[0].beats {
+            let id = format!("editorial-beat-{}-{}", scene_id.simple(), beat.id.simple());
+            let interval = compiled.schedule.interval(&id).unwrap();
+            assert_eq!(
+                interval.start,
+                Rational::new(beat.start.num, beat.start.den).unwrap()
+            );
+            let end = beat.start.checked_add(beat.duration).unwrap();
+            assert_eq!(interval.end, Rational::new(end.num, end.den).unwrap());
+        }
+        assert!(
+            film.timing.spans.len()
+                <= scene_span_cost(
+                    &project.scenes[0],
+                    has_camera_reframe(&project, &project.scenes[0])
+                )
+        );
+        assert_eq!(
+            project, source,
+            "Film projection never rewrites the editable Project"
+        );
+    }
+
+    #[test]
+    fn editorial_beats_keep_full_pose_opacity_clip_and_camera_on_one_clock() {
+        for curve in [
+            MotionInterpolation::Linear,
+            MotionInterpolation::EaseOutCubic,
+            MotionInterpolation::Hold,
+        ] {
+            let (mut project, _, child_id) = clipped_opacity_source();
+            let child = project.scenes[0]
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == child_id)
+                .unwrap();
+            for (at, delta, width, height, rotation, interpolation) in [
+                (
+                    RationalTime::ZERO,
+                    -60.0,
+                    280.0,
+                    90.0,
+                    -18.0,
+                    MotionInterpolation::Linear,
+                ),
+                (
+                    RationalTime::new(3, 2).unwrap(),
+                    0.0,
+                    child.width,
+                    child.height,
+                    child.rotation_deg,
+                    curve,
+                ),
+            ] {
+                for (property, value) in [
+                    (MotionProperty::X, child.x + delta),
+                    (MotionProperty::Y, child.y + delta / 3.0),
+                    (MotionProperty::Width, width),
+                    (MotionProperty::Height, height),
+                    (MotionProperty::RotationDeg, rotation),
+                ] {
+                    child.keyframes.push(CanvasKeyframe {
+                        at,
+                        property,
+                        value,
+                        interpolation,
+                    });
+                }
+            }
+            for (at, value, interpolation) in [
+                (RationalTime::ZERO, 0.0, MotionInterpolation::Linear),
+                (
+                    RationalTime::new(1, 2).unwrap(),
+                    1.0,
+                    MotionInterpolation::Linear,
+                ),
+                (RationalTime::ONE, 1.0, MotionInterpolation::Hold),
+                (
+                    RationalTime::new(9, 5).unwrap(),
+                    0.0,
+                    MotionInterpolation::EaseOutCubic,
+                ),
+            ] {
+                child.keyframes.push(CanvasKeyframe {
+                    at,
+                    property: MotionProperty::Opacity,
+                    value,
+                    interpolation,
+                });
+            }
+            project
+                .apply_change(&Change::UpsertCameraReframe {
+                    reframe: CameraReframe {
+                        id: Uuid::now_v7(),
+                        scene_id: project.scenes[0].id,
+                        component_version: 1,
+                        start_center_x: 942.0,
+                        start_center_y: 532.0,
+                        end_center_x: 960.0,
+                        end_center_y: 540.0,
+                        duration_frames: 45,
+                    },
+                })
+                .unwrap();
+            assert_continuous_editorial_projection(project);
+        }
+    }
+
+    #[test]
+    fn editorial_beats_keep_camera_only_motion_and_conservative_resource_limits() {
+        let mut project = fixture_project();
+        project
+            .apply_change(&Change::UpsertCameraReframe {
+                reframe: CameraReframe {
+                    id: Uuid::now_v7(),
+                    scene_id: project.scenes[0].id,
+                    component_version: 1,
+                    start_center_x: 942.0,
+                    start_center_y: 532.0,
+                    end_center_x: 960.0,
+                    end_center_y: 540.0,
+                    duration_frames: 45,
+                },
+            })
+            .unwrap();
+        assert_continuous_editorial_projection(project);
+    }
+
     #[test]
     fn tiled_scene_beats_project_to_distinct_realized_film_shots() {
         let mut project = fixture_project();
@@ -4683,7 +4943,7 @@ mod tests {
                 node
             })
             .collect();
-        assert!(scene_span_cost(scene) > MAX_TEMPORAL_SPANS);
+        assert!(scene_span_cost(scene, false) > MAX_TEMPORAL_SPANS);
         assert!(
             build_motion_canvas_segments(
                 &project,
@@ -5078,12 +5338,13 @@ mod tests {
                             "Film must preserve every editable source key"
                         );
                         assert_eq!(
-                            scene_span_cost(&project.scenes[0]),
-                            2 + if curve == MotionInterpolation::Hold {
-                                3
-                            } else {
-                                2
-                            }
+                            scene_span_cost(&project.scenes[0], with_camera),
+                            2 + usize::from(with_camera)
+                                + if curve == MotionInterpolation::Hold {
+                                    3
+                                } else {
+                                    2
+                                }
                         );
                     }
                 }
@@ -6458,7 +6719,7 @@ mod tests {
         let untouched = rectangle.clone();
         let id = rectangle.id;
         project.scenes[0].nodes[0] = rectangle;
-        assert_eq!(scene_span_cost(&project.scenes[0]), 4); // sequence + beat + two sets
+        assert_eq!(scene_span_cost(&project.scenes[0], false), 4); // sequence + beat + two sets
         let options = fixture_options(&project);
         let segments = build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
             .expect("source-bound held shape must become a real native Film");
@@ -7546,6 +7807,7 @@ mod tests {
         };
         for case in [
             "match",
+            "editorial",
             "jump",
             "appearance",
             "invisible",
@@ -7596,6 +7858,22 @@ mod tests {
             }
             project.scenes[0].nodes = vec![from.clone()];
             project.scenes[1].nodes = vec![to.clone()];
+            if case == "editorial" {
+                for scene in &mut project.scenes {
+                    let half =
+                        RationalTime::new(scene.duration.num, scene.duration.den * 2).unwrap();
+                    scene.beats = [RationalTime::ZERO, half]
+                        .into_iter()
+                        .map(|start| SceneBeat {
+                            id: Uuid::now_v7(),
+                            label: "Preserved editorial beat".into(),
+                            objective: "Keep focal continuity at the actual scene cut".into(),
+                            start,
+                            duration: half,
+                        })
+                        .collect();
+                }
+            }
             let options = fixture_options(&project);
             let profile = project.deliverables[0].id;
             let actual = SceneBoundaryFilmOptions {
@@ -7660,7 +7938,7 @@ mod tests {
             }
             let before = project.clone();
             let result = build_motion_canvas_segments(&project, profile, &options);
-            if case == "match" {
+            if matches!(case, "match" | "editorial") {
                 let segments = result.unwrap();
                 assert!(
                     segments

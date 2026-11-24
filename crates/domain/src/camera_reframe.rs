@@ -90,7 +90,6 @@ pub fn exact_canvas_pose_waypoints(
         || fps.validate().is_err()
         || fps.num <= 0
         || fps.den <= 0
-        || !scene.beats.is_empty()
         || !matches!(
             node.kind.as_str(),
             "shape" | "rectangle" | "circle" | "text"
@@ -368,16 +367,16 @@ impl CameraReframe {
             || scene.id != self.scene_id
             || scene.nodes.is_empty()
             || scene.nodes.len() > 32
-            || !scene.beats.is_empty()
             || (self.component_version == CAMERA_REFRAME_MANIM_VERSION
-                && scene.nodes.iter().any(|node| {
-                    matches!(node.kind.as_str(), "group" | "clip_group")
-                        || !node.keyframes.is_empty()
-                        || node.parent_id.is_some()
-                }))
+                && (!scene.beats.is_empty()
+                    || scene.nodes.iter().any(|node| {
+                        matches!(node.kind.as_str(), "group" | "clip_group")
+                            || !node.keyframes.is_empty()
+                            || node.parent_id.is_some()
+                    })))
         {
             return Err(DomainError::Invalid(
-                "CameraReframe requires one ungrouped, motion-free original Motion Canvas shot of at most 32 objects".into(),
+                "CameraReframe requires a supported source scene with 1 to 32 objects; the Manim profile also requires an ungrouped, motion-free scene without editorial beats".into(),
             ));
         }
         if scene.camera.zoom != 1.0 || scene.camera.rotation_deg != 0.0 {

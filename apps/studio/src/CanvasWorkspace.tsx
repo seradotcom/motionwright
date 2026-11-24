@@ -784,13 +784,13 @@ export default function CanvasWorkspace({
     ? {...node,...draftTransforms[node.id]} : node);
   const alignment = scene.renderer === "motion-canvas"
     ? resolveCanvasRelations(alignmentInput, undefined, alignmentLocked, {
-      duration:scene.duration,fps:profile?.frame_rate,continuous:scene.beats.length===0}) : null;
+      duration:scene.duration,fps:profile?.frame_rate,continuous:true}) : null;
   const deliveryAlignment = scene.renderer === "motion-canvas" && profile
     ? resolveCanvasRelations(scene.nodes, alignmentScale(profile.width,profile.height,profile.framing_strategy), alignmentLocked,
-      {duration:scene.duration,fps:profile.frame_rate,continuous:scene.beats.length===0})
+      {duration:scene.duration,fps:profile.frame_rate,continuous:true})
     : null;
   const nativeMoveAllowed = Boolean(profile && selectedNode
-    && scene.renderer === "motion-canvas" && scene.beats.length === 0
+    && scene.renderer === "motion-canvas"
     && !scenePositionLocked && !selectedNode.property_locks.includes("position")
     && (selectedNode.parent_id === null || (selectedStaticGroupParent
       && selectedNode.coordinate_space === "project_pixels"))

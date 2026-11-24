@@ -57,7 +57,7 @@ export default function CanvasStructureEditor({
   const aligned = scene.renderer === "motion-canvas" ? resolveCanvasRelations(scene.nodes, undefined,
     project.locks.some(lock => lock.kind === "position" &&
       (lock.resource === "project:" + project.id || lock.resource === "scene:" + scene.id)),
-    {duration:scene.duration,continuous:scene.beats.length===0}) : null;
+    {duration:scene.duration,continuous:true}) : null;
   const effective = aligned?.positions.get(node.id);
   const proposed = useMemo(() => {
     if (!hierarchyDirty || (draft.awaiting?.group === "hierarchy" && !draft.reparent)) return null;

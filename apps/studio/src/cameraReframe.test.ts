@@ -39,7 +39,7 @@ describe("source-authoritative planar camera reframe",()=>{
     expect(()=>validateCameraReframe({...camera,end_center_x:1450},project.scenes[0]))
       .toThrow(/end x is outside the admitted source canvas/);
     expect(()=>validateCameraReframe(camera,project.scenes[0]))
-      .toThrow(/original, ungrouped and motion-free Canvas shot/);
+      .toThrow(/supported source scene with 1 to 32 objects/);
   });
   it("updates original camera only, preserving all Canvas node identities, layers and camera-safe dimensions",async()=>{
     const {project,camera}=source();

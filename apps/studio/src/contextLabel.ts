@@ -23,7 +23,7 @@ export function contextLabelNode(scene: Scene, target: CanvasNode | null,
       .map(kind => ({ id: crypto.randomUUID(), target_id: target.id, kind })),
   };
   const result = resolveCanvasRelations([...scene.nodes, label], undefined, false,
-    { duration: scene.duration, fps: profile?.frame_rate, continuous: scene.beats.length === 0 });
+    { duration: scene.duration, fps: profile?.frame_rate, continuous: true });
   if (result.issue) throw new Error("Context label: " + result.issue);
   return label;
 }

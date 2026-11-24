@@ -282,7 +282,7 @@ export default function SceneBeatEditor({ project, scene, contentLocked, timingL
     <button type="button" className="button full" disabled={locked || busy || !firstGap || savedBeats.length >= 32}
       title={firstGap ? "Fill the first uncovered interval" : "No uncovered timing gap remains"} onClick={fillGap}>
       <Plus size={12} /> Fill timing gap</button>
-    <div className="renderer-note"><Clock3 size={13} />Authored beats may be incomplete while editing. Full coverage requires exact, non-overlapping beats; native render limits are checked at dispatch.</div>
+    <div className="renderer-note"><Clock3 size={13} />Authored beats may be incomplete while editing. Full coverage requires exact, non-overlapping beats. Animation and camera motion continue across beat boundaries on the scene clock; native render limits are checked at dispatch.</div>
     <details role="region" aria-label="Beat recovery files"><summary>Recover a beat from a file</summary>
       <p>Import a downloaded beat copy for this project generation, branch and scene, up to 128 KiB. Import never saves or retries a Project change.</p>
       <label>Import beat draft file<input type="file" accept="application/json,.json" aria-label="Import beat draft file"

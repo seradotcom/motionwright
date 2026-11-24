@@ -48,7 +48,7 @@ fn root_translation(node: &CanvasNode, scene: &Scene, fps: RationalTime) -> Resu
             "the root needs 2 to 6 exact translation poses with common linear, ease-out-cubic or Hold curves and unchanged size and orientation",
         )
     };
-    if !node.relations.is_empty() || !scene.beats.is_empty() {
+    if !node.relations.is_empty() {
         return Err(fail());
     }
     let _ = crate::exact_canvas_opacity_spans(node, scene, fps)?;
@@ -143,12 +143,7 @@ pub fn resolve_canvas_follow_tracks(
     }) {
         return Ok(BTreeMap::new());
     }
-    if scene.nodes.len() > MAX_NODES
-        || !scene.beats.is_empty()
-        || fps.validate().is_err()
-        || fps.num <= 0
-        || fps.den <= 0
-    {
+    if scene.nodes.len() > MAX_NODES || fps.validate().is_err() || fps.num <= 0 || fps.den <= 0 {
         return Err(invalid(
             "a bounded continuous scene and exact positive output clock are required",
         ));

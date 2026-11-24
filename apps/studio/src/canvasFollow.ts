@@ -4,6 +4,7 @@ import type { CanvasKeyframe, CanvasNode, MotionInterpolation, RationalTime } fr
 import { resolveCanvasAlignments, type AlignmentScale, type AlignmentResult } from "./canvasAlignment";
 import { exactCanvasOpacitySpans } from "./canvasOpacity";
 
+/** Continuous means the source scene clock; editorial beats never reset it. */
 export interface FollowClock { duration: RationalTime; fps?: RationalTime; continuous: boolean; }
 export interface RelationProjection extends AlignmentResult { tracks: Map<string, CanvasKeyframe[]>; }
 type TranslationPoint = {x:number;y:number;at:RationalTime;curve:MotionInterpolation};

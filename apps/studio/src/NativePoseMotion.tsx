@@ -188,6 +188,7 @@ export default function NativePoseMotion(props: Props) {
   return <section className="native-motion-authoring" aria-label="Native pose animation">
     <div className="motion-editor-heading"><strong>{node.keyframes.length ? "Edit the saved pose animation" : "Animate a complete pose"}</strong></div>
     <p className="inspector-note">Move, resize and rotate through up to four intermediate poses into the saved destination. Each incoming geometry curve and fade timing is editable. All keys save together in one revision.</p>
+    {scene.beats.length > 0 && <p className="inspector-note" aria-label="Editorial animation continuity">Animation uses the scene clock. Editorial beats keep their timing without restarting poses, opacity, Follow or camera motion.</p>}
     <div className="canvas-field-grid motion-fields">
       {([["Start X", "x"], ["Start Y", "y"], ["Start width", "width"], ["Start height", "height"], ["Start rotation", "rotation_deg"]] as const)
         .map(([label, property]) => <label key={property}><span>{label}</span>

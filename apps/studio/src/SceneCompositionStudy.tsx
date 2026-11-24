@@ -15,5 +15,5 @@ export default function SceneCompositionStudy({ scene, nodes, cameraReframes, fr
     Camera preview unavailable: {sampled.issue}
   </p>;
   return <CompositionStudy {...study} nodes={nodes ?? scene.nodes} width={1920} height={1080} camera={sampled.camera}
-    relationClock={{duration:scene.duration,fps:frameRate,continuous:!scene.beats.length}}/>;
+    relationClock={{duration:scene.duration,fps:frameRate,continuous:true}}/>;
 }
