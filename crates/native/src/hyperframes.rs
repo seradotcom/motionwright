@@ -83,15 +83,45 @@ pub fn build_hyperframes_source(
             "Initial HyperFrames profile is a first-party rectangular clip source without assets, audio, locks or production extensions",
         ));
     }
-    let backgrounds = project
-        .visual_language
-        .palette
+    // Preserve the explicit background contract of historical rect sources.
+    // A new Studio project authors its matte as "surface"; admit that exact
+    // token if no explicit background exists. Do not invent a default color.
+    let palette = &project.visual_language.palette;
+    let backgrounds = palette
         .iter()
-        .filter(|p| p.name == "background")
+        .filter(|p| p.name.eq_ignore_ascii_case("background"))
         .collect::<Vec<_>>();
-    if backgrounds.len() != 1 {
+    let surfaces = palette
+        .iter()
+        .filter(|p| p.name.eq_ignore_ascii_case("surface"))
+        .collect::<Vec<_>>();
+    let matte = match (backgrounds.as_slice(), surfaces.as_slice()) {
+        ([background], _) => *background,
+        ([], [surface]) => *surface,
+        _ => {
+            return Err(unsupported(
+                "HyperFrames source needs one unambiguous authored background or surface token; no inferred matte",
+            ));
+        }
+    };
+    // Studio's editorial stage uses the first saved background/surface token.
+    // New Studio drawable sources must not silently export another matte.
+    // Historical rect-only sources keep their existing source fingerprint.
+    if project
+        .scenes
+        .iter()
+        .flat_map(|scene| &scene.nodes)
+        .any(|node| matches!(node.kind.as_str(), "shape" | "rectangle"))
+        && palette
+            .iter()
+            .find(|token| {
+                token.name.eq_ignore_ascii_case("background")
+                    || token.name.eq_ignore_ascii_case("surface")
+            })
+            .is_none_or(|token| !token.value.eq_ignore_ascii_case(&matte.value))
+    {
         return Err(unsupported(
-            "HyperFrames source needs one explicit background token; no inferred matte",
+            "HyperFrames matte differs from the Studio composition; reconcile the authored background and surface tokens before export",
         ));
     }
     let mut source = Composition {
@@ -106,7 +136,7 @@ pub fn build_hyperframes_source(
         height: profile.height,
         fps: 30,
         frame_count: 0,
-        background: backgrounds[0].value.clone(),
+        background: matte.value.clone(),
         clips: vec![],
     };
     let scale = profile.width as f64 / 1920.0;
@@ -130,24 +160,45 @@ pub fn build_hyperframes_source(
             return Err(unsupported("HyperFrames clip scene has no authored shape"));
         }
         for node in &scene.nodes {
-            if node.kind != "rect"
-                || node.parent_id.is_some()
-                || node.coordinate_space != CoordinateSpace::ProjectPixels
-                || node.rotation_deg != 0.0
-                || node.text.is_some()
-                || !node.keyframes.is_empty()
-                || !node.relations.is_empty()
-                || !node.property_locks.is_empty()
-                || node.style.blend_mode != BlendMode::Normal
-                || node.style.stroke.is_some()
-                || node.style.stroke_width != 0.0
-                || node.style.font_family.is_some()
+            // Studio authors shape and rectangle as the same planar rectangle
+            // primitive. Keep the legacy rect source vocabulary and every ID.
+            // All nonrepresentable properties remain explicit pre-effect errors.
+            let property = if !matches!(node.kind.as_str(), "rect" | "shape" | "rectangle") {
+                Some("drawable kind (use a rectangle)")
+            } else if node.parent_id.is_some() {
+                Some("group or clipping parent")
+            } else if node.coordinate_space != CoordinateSpace::ProjectPixels {
+                Some("coordinate space (requires project pixels)")
+            } else if node.rotation_deg != 0.0 {
+                Some("rotation")
+            } else if node.text.is_some() {
+                Some("text")
+            } else if !node.keyframes.is_empty() {
+                Some("motion keyframes")
+            } else if !node.relations.is_empty() {
+                Some("semantic relations")
+            } else if !node.property_locks.is_empty() {
+                Some("property locks")
+            } else if node.style.blend_mode != BlendMode::Normal {
+                Some("blend mode")
+            } else if node.style.stroke.is_some() || node.style.stroke_width != 0.0 {
+                Some("stroke (use no stroke and width zero)")
+            } else if node.style.font_family.is_some()
                 || node.style.font_size.is_some()
                 || node.style.font_weight.is_some()
                 || node.style.line_height.is_some()
             {
-                return Err(unsupported(
-                    "HyperFrames source would lose a node property outside the closed rectangle profile",
+                Some("typography")
+            } else {
+                None
+            };
+            if let Some(property) = property {
+                return Err(Error::new(
+                    ErrorCode::Unsupported,
+                    format!(
+                        "HyperFrames node {} would lose {property} outside the closed rectangle profile",
+                        node.id
+                    ),
                 ));
             }
             let opacity = node.opacity * 1000.0;
@@ -308,6 +359,202 @@ mod tests {
         wrong.scenes[0].nodes[0].x = 120.25;
         assert!(build_hyperframes_source(&wrong, id).is_err());
         assert!(service.production_receipts(p.id, 20).unwrap().is_empty());
+    }
+
+    #[test]
+    fn studio_rectangles_use_saved_matte_and_reopen_exact_compiled_source() {
+        use motionwright_domain::CanvasTransform;
+        let (dir, service, legacy, _) = fixture();
+        let mut p = service
+            .create_project("Editable Studio rectangle production")
+            .unwrap();
+        p = service
+            .apply(
+                p.id,
+                &p.stamp(),
+                "studio-hf:scene",
+                &Change::AddScene {
+                    name: "Opening".into(),
+                    objective: "Author two editable rectangles".into(),
+                    duration_seconds: 6,
+                },
+            )
+            .unwrap()
+            .project;
+        let scene_id = p.scenes[0].id;
+        let mut rectangle = legacy.scenes[0].nodes[0].clone();
+        rectangle.id = Uuid::now_v7();
+        rectangle.kind = "rectangle".into();
+        rectangle.name = "Rectangle 1".into();
+        rectangle.x = 276.0;
+        rectangle.y = 252.0;
+        rectangle.width = 360.0;
+        rectangle.height = 216.0;
+        rectangle.style.fill = Some("#86C8D1".into());
+        rectangle.z_index = 1;
+        let mut shape = rectangle.clone();
+        shape.id = Uuid::now_v7();
+        shape.kind = "shape".into();
+        shape.name = "Shape 1".into();
+        shape.x += 36.0;
+        shape.y += 36.0;
+        shape.z_index = 2;
+        for (index, node) in [rectangle.clone(), shape.clone()].into_iter().enumerate() {
+            p = service
+                .apply(
+                    p.id,
+                    &p.stamp(),
+                    &format!("studio-hf:node:{index}"),
+                    &Change::AddCanvasNode { scene_id, node },
+                )
+                .unwrap()
+                .project;
+        }
+        let mut profile = p.deliverables[0].clone();
+        profile.captions = false;
+        let profile_id = profile.id;
+        p = service
+            .apply(
+                p.id,
+                &p.stamp(),
+                "studio-hf:profile",
+                &Change::UpsertDeliverable { profile },
+            )
+            .unwrap()
+            .project;
+        let first = build_hyperframes_source(&p, profile_id).unwrap();
+        assert_eq!(first.background, "#0F1216");
+        assert_eq!(first.frame_count, 180);
+        assert_eq!(first.clips.len(), 2);
+        assert_eq!(first.clips[0].id, format!("node-{}", rectangle.id.simple()));
+        assert_eq!(first.clips[1].id, format!("node-{}", shape.id.simple()));
+        assert_eq!(
+            (
+                first.clips[0].x,
+                first.clips[0].y,
+                first.clips[0].width,
+                first.clips[0].height
+            ),
+            (276, 252, 360, 216)
+        );
+        let transform = CanvasTransform {
+            x: 480.0,
+            y: 360.0,
+            width: 420.0,
+            height: 240.0,
+            rotation_deg: 0.0,
+            opacity: 0.625,
+        };
+        p = service
+            .apply(
+                p.id,
+                &p.stamp(),
+                "studio-hf:transform",
+                &Change::TransformCanvasNode {
+                    scene_id,
+                    node_id: rectangle.id,
+                    transform,
+                },
+            )
+            .unwrap()
+            .project;
+        let mut style = rectangle.style.clone();
+        style.fill = Some("#E0A940".into());
+        p = service
+            .apply(
+                p.id,
+                &p.stamp(),
+                "studio-hf:style",
+                &Change::UpdateCanvasStyle {
+                    scene_id,
+                    node_id: rectangle.id,
+                    style,
+                },
+            )
+            .unwrap()
+            .project;
+        let source = build_hyperframes_source(&p, profile_id).unwrap();
+        let clip = &source.clips[0];
+        assert_eq!(clip.id, first.clips[0].id);
+        assert_eq!(
+            (clip.x, clip.y, clip.width, clip.height, clip.opacity_milli),
+            (480, 360, 420, 240, 625)
+        );
+        assert_eq!(clip.fill, "#E0A940");
+        assert_eq!(source.clips[1], first.clips[1]);
+        let compiled = model::compile(&source).unwrap();
+        assert_ne!(compiled.source, model::compile(&first).unwrap().source);
+        assert!(service.production_receipts(p.id, 20).unwrap().is_empty());
+        drop(service);
+        let reopened = StudioService::open(dir.path().join("hf.sqlite3")).unwrap();
+        let readback = reopened.project(p.id).unwrap();
+        assert_eq!(p, readback);
+        let reconstructed =
+            model::compile(&build_hyperframes_source(&readback, profile_id).unwrap()).unwrap();
+        assert_eq!(reconstructed.source, compiled.source);
+        assert_eq!(reconstructed.html, compiled.html);
+        assert_eq!(reconstructed.fingerprint, compiled.fingerprint);
+        assert!(reopened.production_receipts(p.id, 20).unwrap().is_empty());
+    }
+
+    #[test]
+    fn modern_rectangles_fail_closed_on_matte_conflict_or_unsupported_property() {
+        let (_dir, service, legacy, id) = fixture();
+        // Preserve the preexisting explicitly authored legacy background.
+        assert_eq!(
+            build_hyperframes_source(&legacy, id).unwrap().background,
+            "#101820"
+        );
+        let mut modern = legacy.clone();
+        modern.scenes[0].nodes[0].kind = "rectangle".into();
+        let error = build_hyperframes_source(&modern, id).unwrap_err();
+        assert!(error.message.contains("matte differs"));
+        modern
+            .visual_language
+            .palette
+            .retain(|token| token.name != "background");
+        assert_eq!(
+            build_hyperframes_source(&modern, id).unwrap().background,
+            "#0F1216"
+        );
+        for property in [
+            "stroke",
+            "rotation",
+            "drawable kind",
+            "blend mode",
+            "motion keyframes",
+        ] {
+            let mut invalid = modern.clone();
+            let node = &mut invalid.scenes[0].nodes[0];
+            match property {
+                "stroke" => {
+                    node.style.stroke = Some("#000000".into());
+                    node.style.stroke_width = 1.0;
+                }
+                "rotation" => node.rotation_deg = 10.0,
+                "drawable kind" => node.kind = "circle".into(),
+                "blend mode" => node.style.blend_mode = BlendMode::Multiply,
+                "motion keyframes" => node.keyframes.push(motionwright_domain::CanvasKeyframe {
+                    at: RationalTime::ZERO,
+                    property: motionwright_domain::MotionProperty::X,
+                    value: node.x,
+                    interpolation: motionwright_domain::MotionInterpolation::Linear,
+                }),
+                _ => unreachable!(),
+            }
+            let expected = node.id.to_string();
+            let error = build_hyperframes_source(&invalid, id).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unsupported);
+            assert!(error.message.contains(property), "{:?}", error);
+            assert!(error.message.contains(&expected));
+        }
+        assert_eq!(service.project(legacy.id).unwrap(), legacy);
+        assert!(
+            service
+                .production_receipts(legacy.id, 20)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     fn attach_source_guard_graph(project: &mut Project, scene_index: usize, profile_index: usize) {

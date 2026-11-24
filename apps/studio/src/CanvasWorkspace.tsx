@@ -73,21 +73,21 @@ function propertyLock(property: MotionProperty): NodeProperty {
   return "opacity";
 }
 
-function createNode(scene: Scene, kind: "text" | "shape" | "group" | "clip_group"): CanvasNode {
+function createNode(scene: Scene, kind: "text" | "shape" | "rectangle" | "group" | "clip_group"): CanvasNode {
   const count = scene.nodes.filter((node) => node.kind === kind).length + 1;
   const zIndex = scene.nodes.reduce((highest, node) => Math.max(highest, node.z_index), 0) + 1;
   const dimensions = kind === "text"
     ? { width: 520, height: 120 }
     : kind === "group" || kind === "clip_group"
       ? { width: 640, height: 360 }
-      : { width: 360, height: 220 };
+      : kind === "rectangle" ? { width: 360, height: 216 } : { width: 360, height: 220 };
   return {
     id: crypto.randomUUID(),
     name: kind === "clip_group" ? "Clip group " + count : kind[0].toUpperCase() + kind.slice(1) + " " + count,
     kind,
     parent_id: null,
-    x: kind === "clip_group" ? (PROJECT_WIDTH - dimensions.width) / 2 : 240 + (count % 4) * 34,
-    y: kind === "clip_group" ? (PROJECT_HEIGHT - dimensions.height) / 2 : 220 + (count % 4) * 34,
+    x: kind === "clip_group" ? (PROJECT_WIDTH - dimensions.width) / 2 : kind === "rectangle" ? 240 + (count % 4) * 36 : 240 + (count % 4) * 34,
+    y: kind === "clip_group" ? (PROJECT_HEIGHT - dimensions.height) / 2 : kind === "rectangle" ? 216 + (count % 4) * 36 : 220 + (count % 4) * 34,
     width: dimensions.width,
     height: dimensions.height,
     rotation_deg: 0,
@@ -96,9 +96,9 @@ function createNode(scene: Scene, kind: "text" | "shape" | "group" | "clip_group
     coordinate_space: "project_pixels",
     z_index: zIndex,
     style: {
-      fill: kind === "text" || kind === "group" || kind === "clip_group" ? null : "#1D242C",
-      stroke: kind === "text" ? null : "#5A6570",
-      stroke_width: kind === "text" ? 0 : 1,
+      fill: kind === "text" || kind === "group" || kind === "clip_group" ? null : kind === "rectangle" ? "#86C8D1" : "#1D242C",
+      stroke: kind === "text" || kind === "rectangle" ? null : "#5A6570",
+      stroke_width: kind === "text" || kind === "rectangle" ? 0 : 1,
       font_family: kind === "text" ? "Instrument Sans Variable" : null,
       font_size: kind === "text" ? 64 : null,
       font_weight: kind === "text" ? 700 : null,
@@ -814,7 +814,7 @@ export default function CanvasWorkspace({
     onSeek(sceneStartSeconds + Math.max(0, Math.min(relativeSeconds, maxPlayhead)));
   };
 
-  const addNode = async (kind: "text" | "shape" | "group" | "clip_group" | "context_label") => {
+  const addNode = async (kind: "text" | "shape" | "rectangle" | "group" | "clip_group" | "context_label") => {
     if (addPending.current) return;
     addPending.current = true;
     setAddBusy(true);
@@ -827,7 +827,7 @@ export default function CanvasWorkspace({
     // Creating a text/shape while a clipping group is selected should produce
     // a usable editable child inside that exact saved group, not a visually
     // vanished object somewhere outside its original clipping rectangle.
-    if ((kind === "text" || kind === "shape") && selectedNode && isStaticNativeGroup(selectedNode)) {
+    if ((kind === "text" || kind === "shape" || kind === "rectangle") && selectedNode && isStaticNativeGroup(selectedNode)) {
       node.parent_id = selectedNode.id;
       node.x = selectedNode.x + (selectedNode.width - node.width) / 2;
       node.y = selectedNode.y + (selectedNode.height - node.height) / 2;
@@ -1082,11 +1082,12 @@ export default function CanvasWorkspace({
         <aside className="canvas-object-tree" aria-label="Canvas object tree">
           <div className="canvas-panel-heading">Objects</div>
           <div className="canvas-create-row" aria-label="Create canvas object">
-            {(["text", "shape", "group", "clip_group"] as const).map((kind) => (
+            {(["text", "shape", "rectangle", "group", "clip_group"] as const).map((kind) => (
               <button
                 type="button"
                 className="canvas-create-button"
                 key={kind}
+                title={kind === "rectangle" ? "Create a filled rectangle without a stroke" : undefined}
                 disabled={sceneContentLocked || scenePositionLocked || addBusy}
                 onClick={() => void addNode(kind)}
               >
@@ -1393,8 +1394,8 @@ export default function CanvasWorkspace({
                   {nativeMotionCurve==="linear"?"Create native linear move":"Create native ease-out cubic move"}
                 </button>
                 <p className="inspector-note">
-                  Existing motion keys, scene beats, nested objects and locked positions
-                  are not overwritten. Film preflight still verifies native framing.
+                  Existing keys and locked positions are not overwritten. Editorial beats keep the scene clock.
+                  Film preflight still verifies native framing.
                 </p>
               </section>
 
