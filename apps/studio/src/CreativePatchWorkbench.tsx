@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Eye, Plus, Trash2 } from "lucide-react";
 import { previewCreativePatch } from "./api";
-import CompositionStudy from "./CompositionStudy";
+import SceneCompositionStudy from "./SceneCompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { previewCreativePatchUndo } from "./creativeUndo";
 import { nativeRepairDraftIsCurrent } from "./nativeReviewRepair";
@@ -283,9 +283,9 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
           <p>Prepared for revision {activeReview!.revision}. Changing the proposal requires a new preview.</p></div>}
       </section>
     </div>
-    {scene && <><div className="production-compare-grid"><figure><figcaption>BEFORE · current project</figcaption><CompositionStudy nodes={scene.nodes} time={time} background={background} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
+    {scene && <><div className="production-compare-grid"><figure><figcaption>BEFORE · current project</figcaption><SceneCompositionStudy scene={scene} cameraReframes={project.production_design?.camera_reframes} time={time} background={background} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
         label="Before scoped changes"/></figure>
-      <figure><figcaption>AFTER · {undoTarget ? "uncommitted undo" : "uncommitted proposal"}</figcaption><CompositionStudy nodes={resultNodes} time={time} background={background} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
+      <figure><figcaption>AFTER · {undoTarget ? "uncommitted undo" : "uncommitted proposal"}</figcaption><SceneCompositionStudy scene={scene} nodes={resultNodes} cameraReframes={project.production_design?.camera_reframes} time={time} background={background} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
         label="After scoped changes"/></figure></div>
       <div className="production-transport"><span className="mono">{time.toFixed(3)} s</span><input aria-label="Comparison playhead" type="range" min={0} max={seconds(scene.duration)} step={1 / 30} value={time}
         onChange={event => onSeek(seconds(scene.start) + Number(event.target.value))}/></div>

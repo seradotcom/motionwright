@@ -1,4 +1,4 @@
-import CompositionStudy from "./CompositionStudy";
+import SceneCompositionStudy from "./SceneCompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import type { DeliverableProfile, Project, Scene } from "./types";
 
@@ -32,7 +32,7 @@ export default function ProgramDesignStudy({
   return <div className="program-design-study" aria-label="Saved Canvas editorial design monitor"
     data-source-revision={project.revision} data-selected-profile-id={profile?.id ?? ""}
     data-output-cut-scope={cutScope}>
-    <CompositionStudy nodes={scene.nodes} width={1920} height={1080} time={time}
+    <SceneCompositionStudy scene={scene} cameraReframes={project.production_design?.camera_reframes} time={time}
       background={surface} ink={ink} textOverrides={cutScope === "excluded" ? undefined : profile?.text_overrides}
       label="Program Canvas editorial study: not native output"/>
     <p className="program-design-disclosure">
@@ -42,7 +42,7 @@ export default function ProgramDesignStudy({
           This editable source scene will not be exported in this profile.</strong>}
       {cutScope === "included" && " · Scene included in selected cut"}
       {cutScope === "full" && " · Complete saved sequence"}
-      {" · "}Native frames, crop, fonts and final AV require separate verification.
+      {" · "}Saved scene camera sampled at {time.toFixed(3)} s. Native frames, crop, fonts and final AV require separate verification.
     </p>
   </div>;
 }

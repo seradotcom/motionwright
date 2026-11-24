@@ -2,6 +2,7 @@ import { previewTransform } from "./canvasMotion";
 import { rectangularAncestorClip } from "./canvasClip";
 import { alignmentScale } from "./canvasAlignment";
 import { resolveCanvasRelations } from "./canvasFollow";
+import { sampledSceneCamera } from "./cameraReframe";
 import { isStaticNativeGroup, nativeGroupOrderIssue, nativeGroupTreeRows, staticNativeGroupAncestors, staticNativeGroupParent } from "./nativeGroupHierarchy";
 import NativePoseMotion from "./NativePoseMotion";
 import { sameProjectRevision, type ProjectRevision } from "./projectMutation";
@@ -780,6 +781,10 @@ export default function CanvasWorkspace({
   const maxPlayhead = Math.max(0, sceneDurationSeconds - 0.001);
   const sceneStartSeconds = seconds(scene.start);
   const scenePlayhead = Math.max(0, Math.min(playhead - sceneStartSeconds, maxPlayhead));
+  const gesture = drag.current;
+  const viewTime = gesture && gesture.sceneId === scene.id && sameProjectRevision(project, gesture.source)
+    ? gesture.at : scenePlayhead;
+  const viewCamera = sampledSceneCamera(scene, project.production_design?.camera_reframes, viewTime);
   const seekSceneTime = (relativeSeconds: number) => {
     onSeek(sceneStartSeconds + Math.max(0, Math.min(relativeSeconds, maxPlayhead)));
   };
@@ -833,8 +838,8 @@ export default function CanvasWorkspace({
   const objectTransform = (node: CanvasNode) => draftTransforms[node.id] ?? nodeTransform(node);
   const stageTransform = (node: CanvasNode) => {
     const followTrack = alignment?.tracks.get(node.id);
-    if (followTrack) return previewTransform({...node,...draftTransforms[node.id],keyframes:followTrack},scenePlayhead);
-    const base = draftTransforms[node.id] ?? previewTransform(node, scenePlayhead);
+    if (followTrack) return previewTransform({...node,...draftTransforms[node.id],keyframes:followTrack},viewTime);
+    const base = draftTransforms[node.id] ?? previewTransform(node, viewTime);
     const position = alignment?.positions.get(node.id);
     return position ? {...base,...position} : base;
   };
@@ -842,6 +847,7 @@ export default function CanvasWorkspace({
   const beginDrag = (event: React.PointerEvent<HTMLButtonElement>, node: CanvasNode) => {
     if (event.button !== 0 || drag.current || gesturePending.current) return;
     selectNode(node);
+    if (!viewCamera.camera) { setGestureStatus("Camera preview unavailable: " + viewCamera.issue); return; }
     if (scenePositionLocked || node.property_locks.includes("position")) return;
     if (alignment?.tracks.has(node.id)) {
       setGestureStatus("This follower inherits its target's translation. Edit its saved terminal offset in the transform inspector.");
@@ -871,7 +877,7 @@ export default function CanvasWorkspace({
         active_branch: project.active_branch, revision: project.revision },
       scope: creationScope,
       sceneId: scene.id,
-      camera: { ...scene.camera },
+      camera: { ...viewCamera.camera },
       // This callback retains the original App transaction source. A later
       // render must not authorize the gesture against its newer revision.
       commit: commitRequired,
@@ -1086,7 +1092,7 @@ export default function CanvasWorkspace({
         <section className="canvas-stage-shell" aria-label="Semantic canvas">
           <div className="canvas-stage-meta">
             <span>{PROJECT_WIDTH} × {PROJECT_HEIGHT}</span>
-            <span>Semantic camera · no renderer evidence</span>
+            <span>Semantic camera · {viewTime.toFixed(3)} s{viewCamera.sourceId ? " · saved movement" : ""} · no renderer evidence</span>
           </div>
           {groupProjectionIssue && scene.nodes.some(node=>node.parent_id!==null || ["group","clip_group"].includes(node.kind)) &&
             <p className="production-error" role="status">{groupProjectionIssue}</p>}
@@ -1097,12 +1103,16 @@ export default function CanvasWorkspace({
                 ? "Follow translation is inherited during playback. Saved terminal poses and relation identities remain unchanged."
                 : "Static box alignment is resolved in the source preview. The selected delivery resolves the same relations at its own aspect."}
           </p>}
+          {viewCamera.issue && <p className="production-error" role="alert">Camera preview unavailable: {viewCamera.issue}</p>}
           <div className="canvas-stage">
             <div className="canvas-safe-area" style={{ inset: (scene.camera.safe_margin * 100) + "%" }}>
               <span>SAFE</span>
             </div>
-            <div className="canvas-camera-layer" data-testid="canvas-camera-layer"
-              style={{ transform: cameraLayerTransform(scene.camera) }}>
+            <div className="canvas-camera-layer" data-testid="canvas-camera-layer" aria-hidden={!viewCamera.camera}
+              data-camera-center-x={viewCamera.camera?.center_x} data-camera-center-y={viewCamera.camera?.center_y}
+              data-camera-time={viewTime}
+              style={{ transform: viewCamera.camera ? cameraLayerTransform(viewCamera.camera) : undefined,
+                visibility: viewCamera.camera ? undefined : "hidden" }}>
               {scene.nodes.map((node) => {
               const transform = stageTransform(node);
               const clips = staticNativeGroupAncestors(node, scene)?.filter(parent => parent.kind === "clip_group") ?? [];

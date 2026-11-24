@@ -500,3 +500,63 @@ test("editable procedural path and count reflow preserve original source, late i
   } catch (reason) { primary = { reason }; }
   finally { await finish(page, info, service, [], final, observations, [async () => hold?.dispose()], primary); }
 });
+
+test("saved scene camera follows the same playhead without writes and survives SQLite reopen", async ({ page }, info) => {
+  const service = await setup(info), observations: Record<string, unknown> = { kind: "shared scene camera" };
+  let final: Project | undefined, primary: Failure | undefined;
+  try {
+    const initial = await unlocked(service);
+    const scene = initial.scenes.find(value => value.name === "Independent synthetic scene");
+    if (!scene || scene.nodes.length) throw new Error("The actual Service fixture must provide its empty independent source scene.");
+    observations.initial = initial;
+    await service.attachFixturePage(page, initial.id); await page.goto("/");
+    await page.locator(".tree-row").filter({ hasText: scene.name }).click();
+    await button(page, "Canvas").click(); await button(page, "shape").click();
+    await revision(page, initial.revision + 1);
+    const source = (await service.project(initial.id)).scenes.find(value => value.id === scene.id)!;
+    expect(source.nodes).toHaveLength(1);
+    await button(page, "Production").click();
+    await page.getByLabel("Production working scene", { exact: true }).selectOption(scene.id);
+    await button(page, "Camera").click();
+    for (const [label, value] of [["Start center X", "900"], ["Start center Y", "500"], ["End center X", "980"],
+      ["End center Y", "540"], ["Camera duration frames", "60"]] as const)
+      await page.getByLabel(label, { exact: true }).fill(value);
+    await button(page, "Attach camera reframe").click(); await revision(page, initial.revision + 2);
+    final = await service.project(initial.id);
+    const savedScene = final.scenes.find(value => value.id === scene.id)!;
+    const sourceMove = final.production_design?.camera_reframes?.find(value => value.scene_id === scene.id);
+    expect(sourceMove).toMatchObject({ start_center_x: 900, start_center_y: 500, end_center_x: 980, end_center_y: 540, duration_frames: 60 });
+    expect(savedScene.nodes).toEqual(source.nodes);
+    const count = applies(service).length;
+    const layer = page.getByTestId("canvas-camera-layer");
+    const playhead = page.getByLabel("Motion playhead", { exact: true });
+    const monitor = page.getByRole("img", { name: "Program Canvas editorial study: not native output", exact: true });
+    const inspect = async () => {
+      await button(page, "Canvas").click();
+      await playhead.focus(); await playhead.press("End"); await playhead.press("Home");
+      await expect(layer).toHaveAttribute("data-camera-center-x", "900");
+      await expect(layer).toHaveAttribute("data-camera-center-y", "500");
+      await button(page, "Timeline").click();
+      await expect(monitor).toHaveAttribute("data-camera-center-x", "900");
+      await expect(monitor).toHaveAttribute("data-camera-center-y", "500");
+      await button(page, "Canvas").click(); await playhead.focus(); await playhead.press("End");
+      await expect(layer).toHaveAttribute("data-camera-center-x", "980");
+      await button(page, "Timeline").click();
+      await expect(monitor).toHaveAttribute("data-camera-center-x", "980");
+      await revision(page, final!.revision);
+      expect(await service.project(initial.id)).toEqual(final);
+    };
+    await inspect();
+    expect(applies(service)).toHaveLength(count);
+    const history = await service.history(initial.id, initial.revision);
+    expect(history.map(value => value.change.type)).toEqual(["add_canvas_node", "upsert_camera_reframe"]);
+    await service.close(); await service.start();
+    expect(await service.project(initial.id)).toEqual(final);
+    expect(await service.history(initial.id, initial.revision)).toEqual(history);
+    await page.reload(); await page.locator(".tree-row").filter({ hasText: scene.name }).click();
+    await inspect(); expect(applies(service)).toHaveLength(count);
+    observations.sourceMove = sourceMove; observations.journal = history;
+    await page.screenshot({ path: info.outputPath("saved-camera-shared-monitor-after-reopen.png"), fullPage: true });
+  } catch (reason) { primary = { reason }; }
+  finally { await finish(page, info, service, [], final, observations, [], primary); }
+});

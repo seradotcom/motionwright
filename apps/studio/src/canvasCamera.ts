@@ -63,3 +63,12 @@ export function projectWorldPoint(camera: CameraState, x: number, y: number): { 
   };
   return [output.x, output.y].every(Number.isFinite) ? output : null;
 }
+
+
+/** The SVG equivalent of cameraLayerTransform. The outer camera transform owns
+ * the same world-space clip planes and object rotations, exactly once. */
+export function cameraSvgTransform(camera: CameraState, width = PROJECT_CANVAS_WIDTH, height = PROJECT_CANVAS_HEIGHT): string | null {
+  if (![camera.center_x, camera.center_y, camera.rotation_deg, camera.zoom, width, height].every(Number.isFinite)
+    || camera.zoom <= 0 || width <= 0 || height <= 0) return null;
+  return `translate(${width / 2} ${height / 2}) rotate(${-camera.rotation_deg}) scale(${camera.zoom}) translate(${-camera.center_x} ${-camera.center_y})`;
+}

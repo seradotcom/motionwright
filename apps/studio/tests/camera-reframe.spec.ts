@@ -113,3 +113,59 @@ test("Camera inspection preserves a recovered pending copy and never authorizes 
   await expect(button("I verified this operation was not saved")).toHaveCount(0);
   await page.screenshot({path:info.outputPath("camera-recovery-inspection.png"),fullPage:true});
 });
+
+
+test("saved camera movement follows the shared playhead in Canvas and Program while a drag keeps its original frame", async ({ page }, info) => {
+  const button = (name: string) => page.getByRole("button", { name, exact: true });
+  await page.goto("/");
+  await button("Add scene").click();
+  await page.getByLabel("New scene name").fill("Shared camera source");
+  await button("Add").click();
+  await page.getByRole("button", { name: /^05 Shared camera source$/ }).click();
+  await button("Canvas").click();
+  await button("shape").click();
+  const node = page.getByRole("button", { name: /^Canvas object / });
+  await expect(node).toHaveCount(1);
+  const sourceLeft = await node.evaluate(element => (element as HTMLElement).style.left);
+  await button("Production").click();
+  await page.getByLabel("Production working scene", { exact: true }).selectOption({ label: "Shared camera source" });
+  await button("Camera").click();
+  for (const [label, value] of [["Start center X", "900"], ["Start center Y", "500"], ["End center X", "980"],
+    ["End center Y", "540"], ["Camera duration frames", "60"]] as const)
+    await page.getByLabel(label, { exact: true }).fill(value);
+  await button("Attach camera reframe").click();
+  await expect(button("Update camera reframe")).toBeVisible();
+  await button("Canvas").click();
+  const layer = page.getByTestId("canvas-camera-layer"), playhead = page.getByLabel("Motion playhead", { exact: true });
+  await playhead.focus(); await playhead.press("End"); await playhead.press("Home");
+  await expect(layer).toHaveAttribute("data-camera-center-x", "900");
+  await expect(layer).toHaveAttribute("data-camera-center-y", "500");
+  const start = await node.boundingBox(), stage = await page.locator(".canvas-stage").boundingBox();
+  if (!start || !stage) throw new Error("The source object and stage must be visible.");
+  await playhead.press("End");
+  await expect(layer).toHaveAttribute("data-camera-center-x", "980");
+  const end = await node.boundingBox();
+  if (!end) throw new Error("The same source object must remain visible.");
+  expect(Math.abs(end.x - start.x + 80 * stage.width / 1920)).toBeLessThan(1.5);
+  expect(Math.abs(end.y - start.y + 40 * stage.height / 1080)).toBeLessThan(1.5);
+  expect(await node.evaluate(element => (element as HTMLElement).style.left)).toBe(sourceLeft);
+  await playhead.press("Home");
+  const originalRevision = await page.locator(".command-bar .revision-chip").innerText();
+  const target = await node.boundingBox();
+  if (!target) throw new Error("The source gesture target is unavailable.");
+  await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2); await page.mouse.down();
+  await playhead.focus(); await playhead.press("End");
+  await expect(layer).toHaveAttribute("data-camera-center-x", "900");
+  await expect(layer).toHaveAttribute("data-camera-time", "0");
+  await page.keyboard.press("Escape"); await page.mouse.up();
+  await expect(layer).toHaveAttribute("data-camera-center-x", "980");
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText(originalRevision);
+  await button("Timeline").click();
+  const program = page.getByRole("img", { name: "Program Canvas editorial study: not native output", exact: true });
+  await expect(program).toHaveAttribute("data-camera-center-x", "980");
+  await button("Canvas").click(); await playhead.focus(); await playhead.press("Home"); await button("Timeline").click();
+  await expect(program).toHaveAttribute("data-camera-center-x", "900");
+  await expect(program).toHaveAttribute("data-camera-center-y", "500");
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText(originalRevision);
+  await page.screenshot({ path: info.outputPath("shared-camera-canvas-program.png"), fullPage: true });
+});

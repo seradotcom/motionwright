@@ -2,7 +2,7 @@
  * optical dolly, virtual camera execution or arbitrary external plugin.
  * Rust Project/StudioService CAS remains the durable source of truth.
  */
-import type { Project, Scene } from "./types";
+import type { CameraState, Project, Scene } from "./types";
 import type { Change } from "./types";
 import { emptyProductionDesign } from "./creativeProduction";
 import { seconds } from "./types";
@@ -87,7 +87,8 @@ function cameraMotionPoses(node: Scene["nodes"][number], scene: Scene): PoseGeom
   } catch { fail(); }
   return [draft.start, ...draft.waypoints.map(point => point.pose), node];
 }
-export function validateCameraReframe(source:CameraReframe,scene:Scene):void{
+/** Source sampling and production admission share the exact same camera contract. */
+function validateCameraReframeCoordinates(source:CameraReframe,scene:Scene):void{
   if(!source || typeof source!=="object" || Array.isArray(source) ||
     Object.keys(source).sort().join("|")!==[...KEYS].sort().join("|"))
     invalid("unknown or missing source parameters");
@@ -106,7 +107,31 @@ export function validateCameraReframe(source:CameraReframe,scene:Scene):void{
   }
   const admittedPair=(source.component_version===CAMERA_REFRAME_VERSION && scene.renderer==="motion-canvas") ||
     (source.component_version===CAMERA_REFRAME_MANIM_VERSION && scene.renderer==="manim-community");
-  if(!admittedPair || scene.nodes.length<1 || scene.nodes.length>32 ||
+  if(!admittedPair) invalid("camera version does not match the scene renderer");
+}
+
+function validateCameraReframeTiming(source:CameraReframe,scene:Scene):void{
+  const dx=source.end_center_x-source.start_center_x;
+  const dy=source.end_center_y-source.start_center_y;
+  if(Math.abs(dx)>80 || Math.abs(dy)>80 || (Math.abs(dx)<.001 && Math.abs(dy)<.001))
+    invalid("camera movement must be visible and at most 80 source pixels per axis");
+  if(!Number.isInteger(source.duration_frames)||source.duration_frames<12 ||
+    source.duration_frames>180 || source.duration_frames/CAMERA_REFRAME_FPS>seconds(scene.duration))
+    invalid("camera duration must fit 12â€“180 exact frames inside the authored scene");
+  if(scene.camera.center_x!==source.end_center_x || scene.camera.center_y!==source.end_center_y)
+    invalid("terminal camera center must match the authored Scene camera");
+}
+
+export function validateCameraReframeSource(source:CameraReframe,scene:Scene):void{
+  validateCameraReframeCoordinates(source,scene);
+  if(scene.camera.zoom!==1 || scene.camera.rotation_deg!==0)
+    invalid("this planar reframe cannot represent optical zoom or 3D rotation");
+  validateCameraReframeTiming(source,scene);
+}
+
+export function validateCameraReframe(source:CameraReframe,scene:Scene):void{
+  validateCameraReframeCoordinates(source,scene);
+  if(scene.nodes.length<1 || scene.nodes.length>32 ||
     scene.beats.length ||
     (source.component_version===CAMERA_REFRAME_MANIM_VERSION &&
       scene.nodes.some(node=>["group","clip_group"].includes(node.kind) || node.keyframes.length || node.parent_id!==null)))
@@ -131,15 +156,7 @@ export function validateCameraReframe(source:CameraReframe,scene:Scene):void{
         invalid("Manim camera requires explicit opaque #RRGGBB fill for node "+node.id);
     }
   }
-  const dx=source.end_center_x-source.start_center_x;
-  const dy=source.end_center_y-source.start_center_y;
-  if(Math.abs(dx)>80 || Math.abs(dy)>80 || (Math.abs(dx)<.001 && Math.abs(dy)<.001))
-    invalid("camera movement must be visible and at most 80 source pixels per axis");
-  if(!Number.isInteger(source.duration_frames)||source.duration_frames<12 ||
-    source.duration_frames>180 || source.duration_frames/CAMERA_REFRAME_FPS>seconds(scene.duration))
-    invalid("camera duration must fit 12â€“180 exact frames inside the authored scene");
-  if(scene.camera.center_x!==source.end_center_x || scene.camera.center_y!==source.end_center_y)
-    invalid("terminal camera center must match the authored Scene camera");
+  validateCameraReframeTiming(source,scene);
   const marginX=1920*Math.max(.05,scene.camera.safe_margin);
   const marginY=1080*Math.max(.05,scene.camera.safe_margin);
   const composed=source.component_version===CAMERA_REFRAME_VERSION && cameraUsesComposition(scene);
@@ -226,4 +243,28 @@ export function cameraPreviewOffset(move:CameraReframe,timeSeconds:number):{x:nu
   const cameraX=move.start_center_x+(move.end_center_x-move.start_center_x)*progress;
   const cameraY=move.start_center_y+(move.end_center_y-move.start_center_y)*progress;
   return {x:960-cameraX,y:540-cameraY};
+}
+
+
+export type SampledSceneCamera = { camera: CameraState; sourceId: string | null; issue: null }
+  | { camera: null; sourceId: null; issue: string };
+/** Sample the saved source at scene-relative time. Never substitute the terminal
+ * pose for an unreadable or stale movement, and never mutate authored geometry. */
+export function sampledSceneCamera(scene: Scene, moves: readonly CameraReframe[] | undefined, time: number): SampledSceneCamera {
+  try {
+    const camera = scene.camera;
+    if (!Number.isFinite(time) || ![camera.center_x, camera.center_y, camera.zoom, camera.rotation_deg, camera.safe_margin].every(Number.isFinite)
+      || camera.zoom <= 0) invalid("saved camera or playhead is not finite and usable");
+    const candidates = (moves ?? []).filter(move => move.scene_id === scene.id);
+    if (candidates.length > 1) invalid("multiple camera sources claim this scene");
+    const source = candidates[0];
+    if (!source) return { camera: { ...camera }, sourceId: null, issue: null };
+    if (!Number.isFinite(seconds(scene.duration)) || seconds(scene.duration) <= 0)
+      invalid("camera source has no usable scene duration");
+    validateCameraReframeSource(source, scene);
+    const offset = cameraPreviewOffset(source, time);
+    return { camera: { ...camera, center_x: 960 - offset.x, center_y: 540 - offset.y }, sourceId: source.id, issue: null };
+  } catch (reason) {
+    return { camera: null, sourceId: null, issue: reason instanceof Error ? reason.message : String(reason) };
+  }
 }

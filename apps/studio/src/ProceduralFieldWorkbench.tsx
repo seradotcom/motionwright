@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Save, ExternalLink, Unlink } from "lucide-react";
 import type { CanvasNode, Change, Project, Scene } from "./types";
 import { seconds } from "./types";
-import CompositionStudy from "./CompositionStudy";
+import SceneCompositionStudy from "./SceneCompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { applyProceduralChange, proceduralGridDimensions } from "./proceduralField";
 import type { ProceduralConfig } from "./proceduralField";
@@ -212,14 +212,14 @@ function ProceduralEditor({project,scene,commit,busy,onOpenCanvas,displayProfile
           step={1/30} value={renderedTime} onChange={e=>setPreviewTime(Number(e.target.value))}/>
       </label>
       <p className="production-help">Compare the saved scene with the proposed scene at the same playhead. The proposal includes compatible individual edits and surrounding objects.
-        These studies show the authored 1920 × 1080 layout; the selected output profile and camera are reviewed in Native preview.</p>
+        These studies show the authored 1920 × 1080 scene and its saved camera at this time. Output profile adaptation and rendered pixels are reviewed in Native preview.</p>
       <div className="production-plan-grid">
-        <div><h4>Saved scene</h4><CompositionStudy nodes={scene?.nodes ?? []} time={renderedTime} background="#0C1723"
-          ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides} label="Saved procedural scene"/></div>
+        <div><h4>Saved scene</h4>{scene ? <SceneCompositionStudy scene={scene} cameraReframes={project.production_design?.camera_reframes} time={renderedTime} background="#0C1723"
+          ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides} label="Saved procedural scene"/> : <p>Choose a working scene.</p>}</div>
         <div><h4>Proposed scene</h4>
           {previewLoading?<p role="status">Evaluating bounded procedural preview…</p>
-           :previewError?<p role="status">No preview until the field constraints are valid.</p>
-           :<CompositionStudy nodes={nodes} width={1920} height={1080} time={renderedTime} background="#0C1723" ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
+           :previewError || !scene?<p role="status">No preview until the field constraints are valid.</p>
+           :<SceneCompositionStudy scene={scene} nodes={nodes} cameraReframes={project.production_design?.camera_reframes} time={renderedTime} background="#0C1723" ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
               label={`Procedural editorial preview, ${draft.distribution} distribution, ${draft.count} editable objects`}/>}
         </div>
       </div>

@@ -1,5 +1,6 @@
 import { useId } from "react";
-import type { CanvasNode } from "./types";
+import type { CameraState, CanvasNode } from "./types";
+import { cameraSvgTransform } from "./canvasCamera";
 import { isStaticNativeGroup, nativeGroupOrderIssue, staticNativeGroupAncestors } from "./nativeGroupHierarchy";
 import { intersectRectangularClips } from "./canvasClip";
 import { previewTransform } from "./canvasMotion";
@@ -7,16 +8,20 @@ import { resolveCanvasRelations } from "./canvasFollow";
 function safePaint(value: string | null, fallback: string): string { return value && /^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(value) ? value : fallback; }
 
 /** A DOM/SVG editorial study. Raster/native evidence is shown by the existing native frame stage. */
-export default function CompositionStudy({ nodes, width=1920, height=1080, time, background, label, ink=null, textOverrides }: {
+export default function CompositionStudy({ nodes, width=1920, height=1080, time, background, label, ink=null, textOverrides, camera }: {
   nodes: CanvasNode[]; width?:number; height?:number; time:number; background:string; label:string; ink?:string|null;
-  textOverrides?: Readonly<Record<string,string>>;
+  textOverrides?: Readonly<Record<string,string>>; camera?: CameraState;
 }) {
   const prefix = "study-clip-" + useId().replace(/[^a-zA-Z0-9_-]/g, "_");
   const clipGroups = nodes.filter(node => node.kind === "clip_group" && isStaticNativeGroup(node));
   const clipIds = new Map(clipGroups.map((group, index) => [group.id, prefix + "-" + index]));
   const hierarchyIssue = nativeGroupOrderIssue({nodes});
   const alignment = resolveCanvasRelations(nodes);
-  return <svg className="production-study" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={label}>
+  const cameraTransform = camera ? cameraSvgTransform(camera, width, height) : null;
+  if (camera && cameraTransform === null) return <p className="production-error" role="alert" aria-label={label + " camera unavailable"}>The saved camera cannot be displayed. No terminal-pose fallback was drawn.</p>;
+  return <svg className="production-study" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={label}
+    data-camera-center-x={camera?.center_x} data-camera-center-y={camera?.center_y}
+    data-camera-zoom={camera?.zoom} data-camera-rotation={camera?.rotation_deg}>
     {nodes.some(node => node.parent_id !== null) && <desc>Static Group descendants retain saved world coordinates and every ancestor's rectangular Clip plane. Native Film defines authoritative transforms and relations. {hierarchyIssue ?? ""}</desc>}
     {alignment.participants.size > 0 && <desc>{alignment.issue ? "Authored relation unresolved: " + alignment.issue : "Authored static alignment or Follow resolved for this editorial study, not native glyph or pixel evidence."}</desc>}
     <defs>{clipGroups.map(group => {
@@ -27,6 +32,7 @@ export default function CompositionStudy({ nodes, width=1920, height=1080, time,
       </clipPath> : null;
     })}</defs>
     <rect width={width} height={height} fill={safePaint(background, "#0F1216")}/>
+    <g data-camera-layer={camera ? "scene" : undefined} transform={cameraTransform ?? undefined}>
     {nodes.filter(node => !["group","clip_group"].includes(node.kind)).sort((a,b) => a.z_index-b.z_index).map(node => {
       const followTrack = alignment.tracks.get(node.id);
       const t = {...previewTransform(followTrack ? {...node,keyframes:followTrack} : node,time),
@@ -49,6 +55,6 @@ export default function CompositionStudy({ nodes, width=1920, height=1080, time,
           : ["shape","rectangle"].includes(node.kind) ? <rect x={t.x} y={t.y} width={t.width} height={t.height} fill={safePaint(node.style.fill, "none")} stroke={safePaint(node.style.stroke, "none")} strokeWidth={node.style.stroke_width}/>
           : null}
       </g></g>;
-    })}
+    })}</g>
   </svg>;
 }

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import CompositionStudy from "./CompositionStudy";
+import SceneCompositionStudy from "./SceneCompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { seconds } from "./types";
 import { BranchRecovery, useBranchDraft } from "./useBranchDraft";
@@ -113,19 +113,19 @@ export default function BranchCombinationEditor({project,commit,capability=unava
           {project.deliverables.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}
         </select></label>
         <div className="production-compare-grid">
-          <figure><figcaption>BASE · current editable source</figcaption><CompositionStudy nodes={scene.nodes} width={profile.width} height={profile.height}
+          <figure><figcaption>BASE · current editable source</figcaption><SceneCompositionStudy scene={scene} cameraReframes={project.production_design?.camera_reframes}
             time={time} background={surface(project.visual_language.palette)} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={profile.text_overrides}
             label="Combination base source study"/></figure>
-          <figure><figcaption>DONOR · saved editable source</figcaption><CompositionStudy nodes={other.nodes} width={profile.width} height={profile.height}
+          <figure><figcaption>DONOR · saved editable source</figcaption><SceneCompositionStudy scene={other} cameraReframes={saved?.production_design?.camera_reframes}
             time={time} background={surface(saved!.visual_language.palette)} ink={inheritedTextInk(saved!.visual_language.palette)} textOverrides={profile.text_overrides}
             label="Combination donor source study"/></figure>
-          {candidateNodes&&<figure><figcaption>CANDIDATE · canonical source diff</figcaption><CompositionStudy nodes={candidateNodes} width={profile.width} height={profile.height}
+          {candidateNodes&&<figure><figcaption>CANDIDATE · canonical source diff</figcaption><SceneCompositionStudy scene={scene} nodes={candidateNodes} cameraReframes={project.production_design?.camera_reframes}
             time={time} background={surface(project.visual_language.palette)} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={profile.text_overrides}
             label="Combination candidate source study"/></figure>}
         </div>
         <label><span className="field-label">Shared scene time · {time.toFixed(3)} s</span><input aria-label="Combination comparison time" type="range" min="0" max={seconds(scene.duration)} step="0.001" value={time}
           onChange={event=>{const value=Number(event.target.value);setLocalTime(value);onSeek?.(seconds(scene.start)+value);}}/></label>
-        <p>These bounded editorial studies share the same scene time. They draw flat text, shapes and circles; parenting, imported media and advanced paint require native frames. Source inequality does not establish a visually different or successful strategy.</p>
+        <p>These editorial studies share the same scene time on the authored 1920 × 1080 stage, using each source’s saved camera. The comparison profile applies its text overrides to all three studies. Static groups and rectangular clipping remain visible; output reflow, imported media, fonts and advanced paint require native frames. Source inequality does not establish a visually different or successful strategy.</p>
       </section>}
       <button type="button" className="button compact" disabled={editor.busy||editor.previewingCombination||!editor.combinationAvailable||branchUnknown(draft)||!!raw.completed||editor.conflict}
         onClick={()=>void editor.previewCombination()}>{editor.previewingCombination?"Reading source preview…":"Read canonical combination preview"}</button>

@@ -7,6 +7,7 @@ import type { CanvasNode, Change, Project, Scene, DeliverableProfile, MotionCanv
 import { seconds } from "./types";
 import { reviewBoundaryAppearance } from "./boundaryAppearanceReview";
 import CompositionStudy from "./CompositionStudy";
+import SceneCompositionStudy from "./SceneCompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { emptyProductionDesign, parseSceneBoundaryEndpoint, realizeProductHero, sameValue, sceneBoundaryNarrativeRoles, sceneBoundaryArchetypes } from "./creativeProduction";
 import ComponentRevisionReview, { useComponentRevisionReview } from "./ComponentRevisionReview";
@@ -497,8 +498,8 @@ function HeroWorkbench({ project, scene, commit, commitCamera, busy, playhead, o
         <button className="secondary-button" disabled={!scene} onClick={() => onSeek(seconds(scene!.start)+Math.min(2,seconds(scene!.duration)-1/30))}>Settled</button></div>
       <div className="production-evidence-note"><strong>{aspect.width} × {aspect.height} · project revision {project.revision}</strong>
         <p>This parameter study does not replace custom edits on scene objects. Use Canvas to inspect those overrides. This preview audits composition and timing intent. Use the native frame stage and Deliver for authoritative renderer frames and export verification. The editorial viewer uses a system fallback when the required font is not installed. Glyph metrics, clipping and creative approval are separate checks.</p></div>
-      {instance && <ComponentRevisionReview review={revisionReview} renderScene={(reviewNodes, label) =>
-        <div className="production-preview-mat"><CompositionStudy nodes={reviewNodes} width={1920} height={1080}
+      {instance && scene && <ComponentRevisionReview review={revisionReview} renderScene={(reviewNodes, label) =>
+        <div className="production-preview-mat"><SceneCompositionStudy scene={scene} nodes={reviewNodes} cameraReframes={project.production_design?.camera_reframes}
           time={localTime} background={background} ink={inheritedTextInk(project.visual_language.palette)} label={label}/></div>}/>}
     </section>
     {expanded && scene && <ExpandedStudy nodes={nodes} width={aspect.width} height={aspect.height} time={localTime} duration={seconds(scene.duration)} background={background} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides} onSeek={time=>onSeek(seconds(scene.start)+time)} onClose={()=>setExpanded(false)}/>}
@@ -638,11 +639,11 @@ function BoundaryEndpointEditor({ label, raw, edit, project, scene, profile, bus
     <div className="production-viewer-toolbar"><div><strong>{label === "entry" ? "Entry" : "Exit"} snapshot</strong><span>Saved scene objects and authored pose</span></div>
       <button className="secondary-button" disabled={!scene || busy} onClick={copyScene}>Copy saved scene to {label}</button></div>
     {endpoint && profile && <div className="production-preview-mat" style={{ minHeight: 150, padding: 12 }}>
-      <CompositionStudy nodes={endpoint.nodes.map(node => ({ ...node, keyframes: [] }))} width={profile.width} height={profile.height} time={0} background={background}
-        ink={inheritedTextInk(project.visual_language.palette)} textOverrides={profile.text_overrides} label={"Boundary " + label + " object layout"}/>
+      <CompositionStudy nodes={endpoint.nodes.map(node => ({ ...node, keyframes: [] }))} width={1920} height={1080} time={0} background={background}
+        camera={endpoint.camera ?? undefined} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={profile.text_overrides} label={"Boundary " + label + " object layout"}/>
     </div>}
     {endpoint && <>
-      <p className="production-help">{endpoint.nodes.length} objects · {endpoint.assets.length} asset references. This object layout uses stored coordinates. Camera pose and native appearance are reviewed in the native frame stage.</p>
+      <p className="production-help">{endpoint.nodes.length} objects · {endpoint.assets.length} asset references. This authored 1920 × 1080 snapshot uses stored coordinates{endpoint.camera ? " and its saved camera pose" : "; no camera pose has been authored"}. Output profile layout and native appearance require the native frame stage.</p>
       <dl className="production-help" aria-label={"Boundary " + label + " camera"}>
         <dt>Camera center</dt><dd>{endpoint.camera ? `${endpoint.camera.center_x}, ${endpoint.camera.center_y}` : "Not authored"}</dd>
         <dt>Zoom / rotation / safe margin</dt><dd>{endpoint.camera ? `${endpoint.camera.zoom} / ${endpoint.camera.rotation_deg}° / ${endpoint.camera.safe_margin}` : "Not authored"}</dd>
