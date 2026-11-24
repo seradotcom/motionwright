@@ -56,20 +56,32 @@ test("saved Follow inherits translation at each playhead and retains original so
     const x=(name:string)=>object(name).evaluate(el=>parseFloat((el as HTMLElement).style.left)*1920/100);
     const y=(name:string)=>object(name).evaluate(el=>parseFloat((el as HTMLElement).style.top)*1080/100);
     const playhead=page.getByLabel("Motion playhead",{exact:true});
-    const verify=async(t:number)=>{
-      await playhead.fill(String(t));
+    const end=Math.max(...savedTarget.keyframes.map(key=>Number(key.at.num)/Number(key.at.den)));
+    const verify=async(position:"start"|"intermediate"|"end")=>{
+      // Native keyboard input reaches React's controlled range. Also check
+      // absolute motion: an unchanged pair could preserve its relative offset.
+      await playhead.focus();
+      await playhead.press("Home");
+      if(position==="end") await playhead.press("End");
+      if(position==="intermediate") for(let step=0;step<10;step++) await playhead.press("ArrowRight");
+      const t=Number(await playhead.inputValue());
+      if(position==="start") expect(t).toBe(0);
+      if(position==="intermediate"){expect(t).toBeGreaterThan(0);expect(t).toBeLessThan(end);}
+      if(position==="end") expect(t).toBeGreaterThanOrEqual(end);
+      const progress=Math.min(t/end,1);
+      await expect.poll(async()=>Math.abs(await x(target.name)-(target.x-80*(1-progress)))).toBeLessThan(.02);
+      await expect.poll(async()=>Math.abs(await y(target.name)-(target.y+25*(1-progress)))).toBeLessThan(.02);
       await expect(object(follower.name)).toHaveAttribute("data-follow-resolved","true");
       await expect.poll(async()=>Math.abs((await x(follower.name))-(await x(target.name))-(follower.x-target.x))).toBeLessThan(.02);
       await expect.poll(async()=>Math.abs((await y(follower.name))-(await y(target.name))-(follower.y-target.y))).toBeLessThan(.02);
     };
-    await verify(0);
-    await expect.poll(async()=>Math.abs(await x(target.name)-(target.x-80))).toBeLessThan(.02);
-    await verify(.5);
-    await verify(1);
+    await verify("start");
+    await verify("intermediate");
+    await verify("end");
     await page.reload();
     await page.getByRole("button",{name:"Canvas",exact:true}).click();
     await page.locator(".tree-row").filter({hasText:scene.name}).click();
-    await verify(.5);
+    await verify("intermediate");
     expect((await service.history(original.id,created.revision,8)).map(event=>event.change.type)).toEqual(["set_canvas_relations"]);
     await page.close();
     expect(await service.rawRequest({command:"prepare_read_only_handoff",args:null})).toMatchObject({ok:true,result:{read_only_handoff:true,journal_mode:"delete"}});

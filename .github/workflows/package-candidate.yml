@@ -1560,6 +1560,14 @@ jobs:
           save-if: ${{ github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'linux_bundle' }}
       - name: Install Linux desktop bundling prerequisites
         run: |
+          set -euo pipefail
+          # Regional EC2 mirrors stalled the original prerequisite download.
+          # Change only that URI; suites, components and signed keyrings stay intact.
+          for apt_source in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt; do
+            if test -f "$apt_source"; then
+              sudo sed -i -E 's@https?://[a-z0-9-]+\.ec2\.archive\.ubuntu\.com/ubuntu/?@https://archive.ubuntu.com/ubuntu/@g' "$apt_source"
+            fi
+          done
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libfuse2 xvfb x11-utils dbus-x11 python3 ffmpeg
       - name: Install locked Studio and Tauri CLI dependencies
