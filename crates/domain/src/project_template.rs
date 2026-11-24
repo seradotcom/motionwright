@@ -40,7 +40,7 @@ fn rectangle(name: &str, x: f64, y: f64, width: f64, height: f64, color: &str) -
     CanvasNode {
         id: Uuid::now_v7(),
         name: name.into(),
-        kind: "rect".into(),
+        kind: "rectangle".into(),
         parent_id: None,
         x,
         y,

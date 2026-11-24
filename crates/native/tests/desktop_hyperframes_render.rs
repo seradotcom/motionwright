@@ -625,6 +625,7 @@ mod desktop_render_tests {
             None,
         );
     }
+    // Historical observation IDs remain readable after the Jobs integration.
     fn observed_receipts(
         service: &StudioService,
         intent: &OriginalIntent,
@@ -1022,6 +1023,18 @@ mod desktop_render_tests {
             fs::read(dir.path().join("calls")).unwrap(),
             b"status\nresult\n"
         );
+        let jobs = service.production_jobs_snapshot(p.id, &before).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].revision, p.revision);
+        assert_eq!(
+            jobs[0].root_request_id,
+            format!("{}:render-start", r.request_id)
+        );
+        assert_eq!(
+            serde_json::to_value(jobs[0].state).unwrap(),
+            json!("succeeded")
+        );
+        assert!(jobs[0].result_available);
         assert_eq!(service.project(p.id).unwrap(), next);
     }
 

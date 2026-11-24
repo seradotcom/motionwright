@@ -56,6 +56,33 @@ fn observed_state(data: &Value) -> NativeResult<HyperframesJobState> {
     serde_json::from_value(data.get("state").cloned().ok_or_else(uncertain)?)
         .map_err(|_| uncertain())
 }
+fn observation_prefix(original: &HyperframesOriginalJob, id: Uuid) -> String {
+    // <=118 bytes including command suffix, independent of the original
+    // request length. The complete digest binds Jobs to the original start.
+    format!(
+        "hf-observe-{}-{id}",
+        model::sha(original.request_id.as_bytes())
+    )
+}
+fn recorded_observation_prefix(
+    service: &StudioService,
+    original: &HyperframesOriginalJob,
+    id: Uuid,
+) -> NativeResult<String> {
+    let current = observation_prefix(original, id);
+    let legacy = format!("hf-observe-{id}");
+    let exists = |prefix: &str| {
+        service
+            .latest_production_receipt(original.project.id, &format!("{prefix}:status"))
+            .map(|row| row.is_some())
+            .map_err(storage_error)
+    };
+    match (exists(&current)?, exists(&legacy)?) {
+        (true, false) => Ok(current),
+        (false, true) => Ok(legacy),
+        _ => Err(uncertain()),
+    }
+}
 fn original_job_id(original: &HyperframesOriginalJob, source: &SourceInventory) -> String {
     format!(
         "hf-{}",
@@ -231,7 +258,7 @@ pub fn read_recorded_hyperframes_job_observation(
     {
         return Err(uncertain());
     }
-    let prefix = format!("hf-observe-{}", observation.observation_id);
+    let prefix = recorded_observation_prefix(service, original, observation.observation_id)?;
     let status = completed(
         service,
         original,
@@ -336,7 +363,7 @@ impl ProductionCoordinator {
         require_dispatches(&self.service, original, &job, &[&start])?;
         let provider_generation = receipt_generation(&start)?;
         let id = Uuid::new_v4();
-        let prefix = format!("hf-observe-{id}");
+        let prefix = observation_prefix(original, id);
         let observed = self
             .execute(
                 original.project.id,

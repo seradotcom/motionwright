@@ -78,8 +78,13 @@ mod first_use_tests {
         for segment in &segments {
             semwright_motion_authoring::realize(&segment.film).unwrap();
         }
-        let hyperframes = compile_hyperframes_source(&original, profile.id).unwrap();
-        assert_eq!(hyperframes.inventory().composition.frame_count, 180);
+        // The current HyperFrames profile is static. It must not silently
+        // discard the example's authored motion or delivery intent.
+        let unsupported = compile_hyperframes_source(&original, profile.id).unwrap_err();
+        assert_eq!(
+            unsupported.code,
+            semwright_native_sdk::ErrorCode::Unsupported
+        );
         assert!(
             service
                 .production_receipts(original.id, 100)
@@ -204,8 +209,30 @@ mod first_use_tests {
                 .unwrap()
                 .is_empty()
         );
-        let source = compile_hyperframes_source(&restored, restored.deliverables[0].id).unwrap();
-        assert_eq!(source.inventory().composition.frame_count, 180);
+        let profile = &restored.deliverables[0];
+        let recipe = &restored.production_design.delivery_recipes[&profile.id];
+        let options = FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: MOTION_CANVAS_FONT_FAMILY.into(),
+            mono_font_family: MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+            scene_intents: recipe.scene_intents.iter().map(|intent|
+                serde_json::from_value(json!({"scene_id":intent.scene_id,"role":intent.role,"archetype":intent.archetype})).unwrap()
+            ).collect(),
+        };
+        let segments = build_motion_canvas_segments(&restored, profile.id, &options).unwrap();
+        assert_eq!(
+            segments.iter().map(|part| part.frame_count).sum::<u64>(),
+            180
+        );
+        for segment in &segments {
+            semwright_motion_authoring::realize(&segment.film).unwrap();
+        }
+        assert_eq!(
+            compile_hyperframes_source(&restored, profile.id)
+                .unwrap_err()
+                .code,
+            semwright_native_sdk::ErrorCode::Unsupported,
+        );
         drop(imported);
         let reopened = StudioService::open(destination.join("reopened.sqlite3")).unwrap();
         assert_eq!(reopened.project(restored.id).unwrap(), restored);

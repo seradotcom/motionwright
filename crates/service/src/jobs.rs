@@ -1,3 +1,6 @@
+#[path = "hyperframes_job_observation.rs"]
+mod hyperframes_job_observation;
+
 use motionwright_storage::ProductionReceipt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -278,6 +281,8 @@ pub(crate) fn derive_production_jobs_all(
             .push((provider_generation(wrapper), receipt));
     }
 
+    let original_observations =
+        hyperframes_job_observation::OriginalObservations::new(receipts_in_commit_order);
     let mut jobs: BTreeMap<(String, Uuid, u64, String), (usize, ProductionJobProjection)> =
         BTreeMap::new();
     let mut observed_starts = BTreeSet::new();
@@ -292,10 +297,15 @@ pub(crate) fn derive_production_jobs_all(
             continue;
         };
 
+        let observation_source = original_observations.source_revision(receipt, position);
+        let source_revision = match observation_source {
+            Some(Ok(revision)) => revision,
+            _ => receipt.revision,
+        };
         let wrapper = completed_wrapper(receipt);
         let data = wrapper.map(driver_data);
-        // Observation never admits a new job or transfers its native result
-        // to a different provider, generation, revision, or original start.
+        // An explicitly bound read keeps its original source revision. Other
+        // observations still require the exact original provider and stamp.
         let guarded_provider = matches!(
             provider,
             "driver:motion-canvas" | "driver:manim-community" | "driver:hyperframes"
@@ -304,7 +314,7 @@ pub(crate) fn derive_production_jobs_all(
             provider.to_owned(),
             job_ref.clone(),
             receipt.generation,
-            receipt.revision,
+            source_revision,
         ));
         let ambiguous_original = original.is_none_or(|roots| roots.len() != 1);
         let original_start = original
@@ -335,7 +345,8 @@ pub(crate) fn derive_production_jobs_all(
                 .and_then(|(generation, _)| *generation)
                 .is_some_and(|expected| wrapper.and_then(provider_generation) != Some(expected));
         let unbound_observation = guarded_provider
-            && (ambiguous_original
+            && (matches!(observation_source, Some(Err(())))
+                || ambiguous_original
                 || foreign_returned_job
                 || foreign_provider
                 || provider_generation_drift);
@@ -371,7 +382,7 @@ pub(crate) fn derive_production_jobs_all(
             .entry((
                 provider.to_owned(),
                 receipt.generation,
-                receipt.revision,
+                source_revision,
                 job_ref.clone(),
             ))
             .or_insert_with(|| {
@@ -383,7 +394,7 @@ pub(crate) fn derive_production_jobs_all(
                         provider: provider.to_owned(),
                         root_request_id: root_receipt.request_id.clone(),
                         generation: receipt.generation,
-                        revision: receipt.revision,
+                        revision: source_revision,
                         state: initial_state,
                         cancellation_requested,
                         applicability: ProductionJobApplicability::Current,
@@ -1086,6 +1097,105 @@ mod tests {
                 assert_eq!(jobs[0].state, ProductionJobState::OutcomeUnknown);
                 assert!(!jobs[0].artifact_available && !jobs[0].result_available);
             }
+        }
+    }
+
+    #[test]
+    fn later_hyperframes_reads_require_the_original_request_and_connection() {
+        use sha2::{Digest, Sha256};
+        for altered in [
+            "none",
+            "origin",
+            "connection",
+            "digest",
+            "missing_dispatch",
+            "duplicate_start",
+            "provider_generation",
+            "job",
+            "order",
+        ] {
+            let generation = Uuid::new_v4();
+            let base = "original-hyperframes";
+            let job = format!("hf-{}", "9".repeat(64));
+            let payload = |state: &str| {
+                json!({"job_ref":job,
+                "result":{"data":{"job_ref":job,"state":state},
+                    "execution":{"provenance":{"provider":"driver:hyperframes","provider_generation":3}}}})
+            };
+            let start = receipt(
+                generation,
+                7,
+                &format!("{base}:render-start"),
+                "driver.hyperframes.render.start",
+                "completed",
+                payload("running"),
+                "2026-11-24T12:00:00Z",
+            );
+            let mut start_dispatch = start.clone();
+            start_dispatch.id = Uuid::new_v4();
+            start_dispatch.stage = "dispatching".into();
+            start_dispatch.payload =
+                json!({"connection":"2".repeat(64),"mutation":true,"job_ref":null});
+            let origin = if altered == "origin" {
+                "7".repeat(64)
+            } else {
+                hex::encode(Sha256::digest(base.as_bytes()))
+            };
+            let request = format!("hf-observe-{origin}-{}:result", Uuid::new_v4());
+            let command = "driver.hyperframes.render.result";
+            let mut observed = receipt(
+                generation,
+                8,
+                &request,
+                command,
+                "completed",
+                payload("succeeded"),
+                "2026-11-24T11:00:00Z",
+            );
+            observed.request_sha256 = hex::encode(Sha256::digest(
+                serde_json::to_vec(&(command, json!({"job_ref":job}))).unwrap(),
+            ));
+            if altered == "digest" {
+                observed.request_sha256 = "6".repeat(64);
+            }
+            if altered == "provider_generation" {
+                observed.payload["result"]["execution"]["provenance"]["provider_generation"] =
+                    json!(4);
+            }
+            if altered == "job" {
+                observed.payload["result"]["data"]["job_ref"] = json!("foreign");
+            }
+            let mut read_dispatch = observed.clone();
+            read_dispatch.id = Uuid::new_v4();
+            read_dispatch.stage = "dispatching".into();
+            read_dispatch.payload = json!({"connection":if altered=="connection" {"3".repeat(64)} else {"2".repeat(64)},
+                "mutation":false,"job_ref":job});
+            let mut receipts = vec![start_dispatch, start.clone()];
+            if altered == "duplicate_start" {
+                receipts.push(start);
+            }
+            if altered != "missing_dispatch" {
+                receipts.push(read_dispatch);
+            }
+            receipts.push(observed);
+            if altered == "order" {
+                receipts.swap(1, 2);
+            }
+            let before = receipts.clone();
+            let jobs = derive_production_jobs(&receipts, generation, 8, 16);
+            if altered == "none" {
+                assert_eq!(jobs.len(), 1);
+                assert_eq!(jobs[0].revision, 7);
+                assert_eq!(jobs[0].root_request_id, format!("{base}:render-start"));
+                assert_eq!(jobs[0].state, ProductionJobState::Succeeded);
+            } else {
+                assert!(
+                    jobs.iter()
+                        .all(|job| job.state != ProductionJobState::Succeeded),
+                    "{altered}"
+                );
+            }
+            assert_eq!(receipts, before);
         }
     }
 

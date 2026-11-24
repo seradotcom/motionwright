@@ -230,8 +230,13 @@ jobs:
         run: python3 -B tooling/source_policy.py
       - name: Tauri Linux prerequisites
         run: |
+          # Regional EC2 mirrors stalled the original prerequisite download.
+          # Change only that URI; suites, components and signed keyrings stay intact.
+          if test -f /etc/apt/sources.list.d/ubuntu.sources; then
+            sudo sed -i -E 's@https?://[a-z0-9-]+\.ec2\.archive\.ubuntu\.com/ubuntu/?@https://archive.ubuntu.com/ubuntu/@g' /etc/apt/sources.list.d/ubuntu.sources
+          fi
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libpipewire-0.3-dev pkg-config clang
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libpipewire-0.3-dev pkg-config clang
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Check bounded desktop command surface
         run: cargo check --locked --jobs 2 -p motionwright-desktop
@@ -358,6 +363,11 @@ jobs:
           cargo test --locked --jobs 2 -p motionwright-storage --lib project_creation::tests:: -- --test-threads=1
       - name: Native source prerequisites
         run: |
+          # Regional EC2 mirrors stalled the original prerequisite download.
+          # Change only that URI; suites, components and signed keyrings stay intact.
+          if test -f /etc/apt/sources.list.d/ubuntu.sources; then
+            sudo sed -i -E 's@https?://[a-z0-9-]+\.ec2\.archive\.ubuntu\.com/ubuntu/?@https://archive.ubuntu.com/ubuntu/@g' /etc/apt/sources.list.d/ubuntu.sources
+          fi
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev pkg-config clang
       - name: First-use original example, creation custody and free portable source
@@ -383,7 +393,7 @@ jobs:
           found = re.findall(r"^test first_use_tests::([a-z0-9_]+) \.\.\. ok$", raw, re.M)
           assert len(found) == len(expected) and set(found) == expected
           assert "4 passed; 0 failed; 0 ignored" in raw
-          print("FIRST_USE_EXAMPLE_SOURCE=PASS; cases=4; SQLite=REAL; MotionCanvas=SOURCE_REALIZATION; HyperFrames=SOURCE_COMPILE; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+          print("FIRST_USE_EXAMPLE_SOURCE=PASS; cases=4; SQLite=REAL; MotionCanvas=SOURCE_REALIZATION; HyperFrames=UNSUPPORTED_MOTION_VERIFIED; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           PY_FIRST_USE_SOURCE
           cargo build --locked --jobs 2 -p motionwright-service --example studio_review_session
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
