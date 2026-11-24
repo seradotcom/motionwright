@@ -62,14 +62,13 @@ pub fn build_hyperframes_source(
         || profile.burn_in_captions
         || profile.voice_track_id.is_some()
         || !profile.text_overrides.is_empty()
-        || !profile.included_scene_ids.is_empty()
         || profile.frame_rate.num != 30
         || profile.frame_rate.den != 1
         || profile.framing_strategy != Default::default()
         || profile.color_space != Default::default()
     {
         return Err(unsupported(
-            "HyperFrames source profile supports original 16:9 framing, 30 fps and no captions, voice or editorial overrides",
+            "HyperFrames source profile supports original 16:9 framing, 30 fps and no captions, voice or localized text overrides",
         ));
     }
     if project.scenes.is_empty()
@@ -83,6 +82,27 @@ pub fn build_hyperframes_source(
             "Initial HyperFrames profile is a first-party rectangular clip source without assets, audio, locks or production extensions",
         ));
     }
+    // Selection order and protected-scene coverage have already been
+    // validated by Project::validate. Retain the complete original clock
+    // check; rebase only the explicitly selected output clips, never Project.
+    let mut original_cursor = RationalTime::ZERO;
+    for scene in &project.scenes {
+        if scene.start != original_cursor || scene.duration.num <= 0 {
+            return Err(unsupported(
+                "HyperFrames cannot drop gaps or overlaps in the original scene clock",
+            ));
+        }
+        original_cursor = original_cursor
+            .checked_add(scene.duration)
+            .map_err(|_| unsupported("HyperFrames original scene clock overflow"))?;
+    }
+    let selected = project
+        .scenes
+        .iter()
+        .filter(|scene| {
+            profile.included_scene_ids.is_empty() || profile.included_scene_ids.contains(&scene.id)
+        })
+        .collect::<Vec<_>>();
     // Preserve the explicit background contract of historical rect sources.
     // A new Studio project authors its matte as "surface"; admit that exact
     // token if no explicit background exists. Do not invent a default color.
@@ -107,8 +127,7 @@ pub fn build_hyperframes_source(
     // Studio's editorial stage uses the first saved background/surface token.
     // New Studio drawable sources must not silently export another matte.
     // Historical rect-only sources keep their existing source fingerprint.
-    if project
-        .scenes
+    if selected
         .iter()
         .flat_map(|scene| &scene.nodes)
         .any(|node| matches!(node.kind.as_str(), "shape" | "rectangle"))
@@ -141,16 +160,12 @@ pub fn build_hyperframes_source(
     };
     let scale = profile.width as f64 / 1920.0;
     let mut cursor = 0u32;
-    for scene in &project.scenes {
-        let start = frames(scene.start)?;
+    for scene in selected {
+        let start = cursor;
         let duration = frames(scene.duration)?;
-        if start != cursor
-            || duration == 0
-            || scene.camera != CameraState::default()
-            || !scene.beats.is_empty()
-        {
+        if duration == 0 || scene.camera != CameraState::default() || !scene.beats.is_empty() {
             return Err(unsupported(
-                "HyperFrames cannot drop scene gaps, camera state or beat semantics",
+                "HyperFrames selected scenes require positive exact clip duration and cannot drop camera state or beat semantics",
             ));
         }
         let end = start
@@ -495,6 +510,154 @@ mod tests {
         assert_eq!(reconstructed.html, compiled.html);
         assert_eq!(reconstructed.fingerprint, compiled.fingerprint);
         assert!(reopened.production_receipts(p.id, 20).unwrap().is_empty());
+    }
+
+    #[test]
+    fn saved_hyperframes_cut_rebases_exact_intervals_and_preserves_original_source() {
+        let (dir, service, mut project, master_id) = fixture();
+        let first = project.scenes[0].id;
+        let template = project.scenes[0].nodes[0].clone();
+        for (index, (name, duration, color)) in
+            [("Middle", 3, "#2B6CB0"), ("Closing", 2, "#F5B84A")]
+                .into_iter()
+                .enumerate()
+        {
+            project = service
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    &format!("cut-scene-{index}"),
+                    &Change::AddScene {
+                        name: name.into(),
+                        objective: "Exact authored sequence".into(),
+                        duration_seconds: duration,
+                    },
+                )
+                .unwrap()
+                .project;
+            let scene_id = project.scenes.last().unwrap().id;
+            let mut node = template.clone();
+            node.id = Uuid::now_v7();
+            node.name = format!("{name} rectangle");
+            node.style.fill = Some(color.into());
+            project = service
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    &format!("cut-node-{index}"),
+                    &Change::AddCanvasNode { scene_id, node },
+                )
+                .unwrap()
+                .project;
+        }
+        let middle = project.scenes[1].id;
+        let closing = project.scenes[2].id;
+        let before_scenes = project.scenes.clone();
+        let master_before = build_hyperframes_source(&project, master_id).unwrap();
+        assert_eq!(master_before.frame_count, 180);
+        let mut cut = project.deliverables[0].clone();
+        cut.id = Uuid::now_v7();
+        cut.name = "Opening and closing".into();
+        cut.included_scene_ids = vec![first, closing];
+        cut.protected_scene_ids = vec![closing];
+        let cut_id = cut.id;
+        project = service
+            .apply(
+                project.id,
+                &project.stamp(),
+                "save-cut-profile",
+                &Change::UpsertDeliverable { profile: cut },
+            )
+            .unwrap()
+            .project;
+        assert_eq!(project.scenes, before_scenes);
+        let master = build_hyperframes_source(&project, master_id).unwrap();
+        assert_eq!(master.clips, master_before.clips);
+        let source = build_hyperframes_source(&project, cut_id).unwrap();
+        assert_eq!(source.frame_count, 90);
+        assert_eq!(source.binding.deliverable_id, cut_id.to_string());
+        assert_eq!(source.binding.revision, project.revision);
+        assert_eq!(source.clips.len(), 2);
+        assert_eq!(source.clips[0], master.clips[0]);
+        let mut closing_clip = master.clips[2].clone();
+        closing_clip.start_frame = 30;
+        closing_clip.end_frame_exclusive = 90;
+        assert_eq!(source.clips[1], closing_clip);
+        assert!(
+            !source
+                .clips
+                .iter()
+                .any(|clip| clip.id == master.clips[1].id)
+        );
+        let compiled = model::compile(&source).unwrap();
+        // Explicit selection of every original scene has identical clip content.
+        let mut all = project.clone();
+        all.deliverables
+            .iter_mut()
+            .find(|p| p.id == master_id)
+            .unwrap()
+            .included_scene_ids = vec![first, middle, closing];
+        assert_eq!(build_hyperframes_source(&all, master_id).unwrap(), master);
+
+        // Only explicitly excluded content may be omitted. The original clock,
+        // protected scene selection, and selected native semantics remain strict.
+        let mut excluded = project.clone();
+        excluded.scenes[1].camera.zoom = 2.0;
+        assert_eq!(build_hyperframes_source(&excluded, cut_id).unwrap(), source);
+        assert!(build_hyperframes_source(&excluded, master_id).is_err());
+        let mut fractional = project.clone();
+        fractional.scenes[1].duration = RationalTime::new(7, 2).unwrap();
+        fractional.scenes[2].start = RationalTime::new(9, 2).unwrap();
+        assert_eq!(
+            build_hyperframes_source(&fractional, cut_id).unwrap(),
+            source
+        );
+        assert!(build_hyperframes_source(&fractional, master_id).is_err());
+        fractional.scenes[2].duration = RationalTime::new(5, 2).unwrap();
+        assert!(build_hyperframes_source(&fractional, cut_id).is_err());
+        let mut unsupported = project.clone();
+        unsupported.scenes[2].camera.zoom = 2.0;
+        assert!(build_hyperframes_source(&unsupported, cut_id).is_err());
+        let mut protected = project.clone();
+        protected
+            .deliverables
+            .iter_mut()
+            .find(|p| p.id == cut_id)
+            .unwrap()
+            .included_scene_ids = vec![first];
+        assert!(build_hyperframes_source(&protected, cut_id).is_err());
+        let mut reordered = project.clone();
+        reordered
+            .deliverables
+            .iter_mut()
+            .find(|p| p.id == cut_id)
+            .unwrap()
+            .included_scene_ids = vec![closing, first];
+        assert!(build_hyperframes_source(&reordered, cut_id).is_err());
+        let mut gap = project.clone();
+        gap.scenes[1].start = RationalTime::new(2, 1).unwrap();
+        assert!(build_hyperframes_source(&gap, cut_id).is_err());
+        assert!(
+            service
+                .production_receipts(project.id, 20)
+                .unwrap()
+                .is_empty()
+        );
+        drop(service);
+        let reopened = StudioService::open(dir.path().join("hf.sqlite3")).unwrap();
+        let saved = reopened.project(project.id).unwrap();
+        assert_eq!(saved, project);
+        let reconstructed =
+            model::compile(&build_hyperframes_source(&saved, cut_id).unwrap()).unwrap();
+        assert_eq!(reconstructed.source, compiled.source);
+        assert_eq!(reconstructed.html, compiled.html);
+        assert_eq!(reconstructed.fingerprint, compiled.fingerprint);
+        assert!(
+            reopened
+                .production_receipts(project.id, 20)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
