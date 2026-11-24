@@ -39,9 +39,13 @@ test("saved Follow inherits translation at each playhead and retains original so
     const follower=created.scenes.find(item=>item.id===scene.id)!.nodes.find(node=>
       !animated.scenes.find(item=>item.id===scene.id)!.nodes.some(before=>before.id===node.id))!;
     expect(follower.parent_id).toBeNull();
-    await page.getByLabel("Canvas relation kind",{exact:true}).selectOption("follow");
-    await page.getByLabel("Canvas relation target",{exact:true}).selectOption(target.id);
-    await page.getByRole("button",{name:"Add canvas relation",exact:true}).click();
+    const followerInspector=page.locator(".canvas-draft-inspector").filter({
+      has:page.locator("#canvas-draft-"+follower.id+"-x"),
+    });
+    await expect(followerInspector).toHaveCount(1);
+    await followerInspector.getByLabel("Canvas relation kind",{exact:true}).selectOption("follow");
+    await followerInspector.getByLabel("Canvas relation target",{exact:true}).selectOption(target.id);
+    await followerInspector.getByRole("button",{name:"Add canvas relation",exact:true}).click();
     await expect(revision).toHaveText("r"+(original.revision+4));
     const saved=await service.project(original.id);
     const nodes=saved.scenes.find(item=>item.id===scene.id)!.nodes;
