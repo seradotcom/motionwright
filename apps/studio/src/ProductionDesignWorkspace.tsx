@@ -8,6 +8,8 @@ import { seconds } from "./types";
 import { reviewBoundaryAppearance } from "./boundaryAppearanceReview";
 import CompositionStudy from "./CompositionStudy";
 import SceneCompositionStudy from "./SceneCompositionStudy";
+import { buildComponentSceneStudy, type ComponentSceneStudy } from "./componentSceneStudy";
+import { sampleProfileLayout } from "./profileComposition";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { emptyProductionDesign, parseSceneBoundaryEndpoint, realizeProductHero, sameValue, sceneBoundaryNarrativeRoles, sceneBoundaryArchetypes } from "./creativeProduction";
 import ComponentRevisionReview, { useComponentRevisionReview } from "./ComponentRevisionReview";
@@ -431,9 +433,12 @@ function HeroWorkbench({ project, scene, commit, commitCamera, busy, playhead, o
     draft.layout === "metric_evidence" ? "MetricEvidence" :
     draft.layout === "step_sequence" ? "StepSequence" :
     draft.layout === "contrast_comparison" ? "ContrastComparison" :
-    draft.layout === "editorial_quote" ? "EditorialQuote" : "ProductHeroReveal";
+    draft.layout === "editorial_quote" ? "EditorialQuote" :
+    draft.layout === "typography_focus" ? "TypographyFocus" :
+    draft.layout === "typography_contrast" ? "TypographyContrast" : "ProductHeroReveal";
   const [aspect,setAspect] = useState(aspects[0]);
-  const [nodes,setNodes] = useState<CanvasNode[]>([]);
+  const [visual, setVisual] = useState<{ project: Project; draft: HeroConfig; sequence: number; aspect: typeof aspects[number];
+    profile: DeliverableProfile | null | undefined; instanceId: string | null; nodes: CanvasNode[]; context: ComponentSceneStudy | null } | null>(null);
   const [error,setError] = useState<string|null>(null);
   const [previewLoading,setPreviewLoading] = useState(true);
   const [expanded,setExpanded] = useState(false);
@@ -444,15 +449,33 @@ function HeroWorkbench({ project, scene, commit, commitCamera, busy, playhead, o
   }, [scene?.id,project.id,project.generation,project.active_branch]);
   useEffect(() => {
     let current = true; setPreviewLoading(true); setError(null);
-    realizeProductHero(instance?.id ?? previewIdentity,draft,aspect.width,aspect.height).then(value => {
-      if (current) { setNodes(value); setPreviewLoading(false); }
-    }, reason => { if (current) { setNodes([]); setError(String(reason instanceof Error ? reason.message : reason)); setPreviewLoading(false); } });
+    const tag = { project, draft, sequence: editor.draft.sequence, aspect, profile: displayProfile, instanceId: instance?.id ?? null };
+    const prepare = async () => {
+      if (instance && scene) {
+        const context = await buildComponentSceneStudy(project, scene.id, instance.id, draft, editor.draft.sequence,
+          aspect.width, aspect.height, displayProfile ?? null);
+        return { ...tag, nodes: [] as CanvasNode[], context };
+      }
+      return { ...tag, nodes: await realizeProductHero(previewIdentity, draft, aspect.width, aspect.height), context: null };
+    };
+    prepare().then(value => {
+      if (current) { setVisual(value); setPreviewLoading(false); }
+    }, reason => { if (current) { setVisual(null); setError(String(reason instanceof Error ? reason.message : reason)); setPreviewLoading(false); } });
     return () => { current=false; };
-  }, [draft,aspect,instance?.id]);
+  }, [project, scene, draft, editor.draft.sequence, aspect, instance, displayProfile]);
   const localTime = scene ? Math.max(0,Math.min(seconds(scene.duration),playhead-seconds(scene.start))) : 2;
+  const visualCurrent = visual !== null && visual.project === project && visual.draft === draft && visual.sequence === editor.draft.sequence
+    && visual.aspect === aspect && visual.profile === displayProfile && visual.instanceId === (instance?.id ?? null);
+  const sampled = useMemo(() => {
+    if (!visualCurrent || !visual) return { nodes: [] as CanvasNode[], boundaryIssues: [] as string[], issue: null };
+    if (!visual.context) return { nodes: visual.nodes, boundaryIssues: [] as string[], issue: null };
+    try { return { ...sampleProfileLayout(visual.context.project, visual.context.scene, visual.context.profile, localTime), issue: null }; }
+    catch (reason) { return { nodes: [] as CanvasNode[], boundaryIssues: [] as string[], issue: reason instanceof Error ? reason.message : String(reason) }; }
+  }, [visualCurrent, visual, localTime]);
+  const nodes = sampled.nodes, viewIssue = error ?? sampled.issue, viewLoading = !error && (previewLoading || !visualCurrent);
   const background = project.visual_language.palette.find(t => ["surface","background"].includes(t.name.toLowerCase()))?.value ?? "#0F1216";
   const locked = project.locks.some(lock => ["project:"+project.id,"scene:"+scene?.id].includes(lock.resource) && ["content","position","style","timing","renderer"].includes(lock.kind));
-  const canApply = !!scene && scene.renderer === "motion-canvas" && seconds(scene.duration)>=2 && !editor.blocked && !error && !previewLoading && !locked && (!instance || revisionReview.ready);
+  const canApply = !!scene && scene.renderer === "motion-canvas" && seconds(scene.duration)>=2 && !editor.blocked && !error && !viewLoading && !locked && (!instance || revisionReview.ready);
   return <div className="production-split">
     <section className="production-inspector" aria-label={`${familyName} controls`}>
       <div className="production-section-title"><Layers size={16}/><div><h2>{familyName}</h2><p>Editable first-party composition · v1</p></div></div>
@@ -460,6 +483,8 @@ function HeroWorkbench({ project, scene, commit, commitCamera, busy, playhead, o
       <p className="production-help">Six persistent semantic objects, synchronized cubic entrances and a responsive composition. These families are graphic studies, not fabricated screenshots, validated statistics, measured comparisons or claims about actual software.</p>
       <label className="production-field"><span>Composition family</span><select aria-label="Component layout" value={draft.layout ?? "product_hero_reveal"} onChange={e => setDraft({...draft, layout:e.target.value as NonNullable<HeroConfig["layout"]>})}>
         <option value="product_hero_reveal">ProductHeroReveal · product statement</option>
+        <option value="typography_focus">TypographyFocus · one grouped headline</option>
+        <option value="typography_contrast">TypographyContrast · primary and supporting ideas</option>
         <option value="split_explanation">SplitExplanation · two-part explanation</option>
         <option value="contrast_comparison">ContrastComparison - authored conceptual before/after</option>
         <option value="editorial_quote">EditorialQuote - illustrative original quotation</option>
@@ -467,7 +492,7 @@ function HeroWorkbench({ project, scene, commit, commitCamera, busy, playhead, o
         <option value="step_sequence">StepSequence · one editable procedural step</option>
       </select></label>
       <ProductionDraftFeedback editor={editor} project={project}/>
-      {([ ["eyebrow","Eyebrow",48], ["headline",draft.layout==="split_explanation"?"Left panel idea":draft.layout==="metric_evidence"?"Authored fact / metric":draft.layout==="step_sequence"?"Step heading":draft.layout==="contrast_comparison"?"Before: original concept":draft.layout==="editorial_quote"?"Illustrative quotation":"Headline",64], ["body",draft.layout==="split_explanation"?"Right panel narrative":draft.layout==="metric_evidence"?"Evidence context":draft.layout==="step_sequence"?"What happens at this step":draft.layout==="contrast_comparison"?"After: original concept":draft.layout==="editorial_quote"?"Original quote context":"Supporting copy",150], ["wordmark",draft.layout==="split_explanation"?"Right panel label":draft.layout==="metric_evidence"?"Evidence label":draft.layout==="step_sequence"?"Step index (e.g. 01 / 03)":"Wordmark",8] ] as const).map(([field,label,max]) =>
+      {([ ["eyebrow","Eyebrow",48], ["headline",draft.layout==="split_explanation"?"Left panel idea":draft.layout==="metric_evidence"?"Authored fact / metric":draft.layout==="step_sequence"?"Step heading":draft.layout==="contrast_comparison"?"Before: original concept":draft.layout==="editorial_quote"?"Illustrative quotation":draft.layout==="typography_contrast"?"Primary idea":"Headline",64], ["body",draft.layout==="split_explanation"?"Right panel narrative":draft.layout==="metric_evidence"?"Evidence context":draft.layout==="step_sequence"?"What happens at this step":draft.layout==="contrast_comparison"?"After: original concept":draft.layout==="editorial_quote"?"Original quote context":draft.layout==="typography_contrast"?"Supporting idea":"Supporting copy",150], ["wordmark",draft.layout==="split_explanation"?"Right panel label":draft.layout==="metric_evidence"?"Evidence label":draft.layout==="step_sequence"?"Step index (e.g. 01 / 03)":"Wordmark",8] ] as const).map(([field,label,max]) =>
         <label className="production-field" key={field}><span>{label}<small>{Array.from(draft[field]).length}/{max}</small></span>
           {field === "headline" || field === "body" ? <textarea aria-label={label} rows={field==="headline"?3:4} value={draft[field]} onChange={e => setDraft({...draft,[field]:e.target.value})}/>
             : <input aria-label={label} value={draft[field]} onChange={e => setDraft({...draft,[field]:e.target.value})}/>} </label>)}
@@ -476,7 +501,11 @@ function HeroWorkbench({ project, scene, commit, commitCamera, busy, playhead, o
         <label className="production-field"><span>Accent</span><input aria-label="Hero accent" type="color" value={draft.accent} onChange={e => setDraft({...draft,accent:e.target.value})}/></label>
       </div>
       <label className="production-check"><input type="checkbox" checked={draft.motion} onChange={e => setDraft({...draft,motion:e.target.checked})}/> Animate entrance</label>
-      <p className="production-help">Turning motion off creates a static equivalent. All six families preserve stable editable objects and human override conflict checks across landscape, square and portrait. StepSequence is an authored step, not observed behavior; MetricEvidence is not verified data; ContrastComparison is not measured improvement; EditorialQuote is not a verified testimonial. Their disclosures cannot be treated as source authentication.</p>
+      <p className="production-help">Turning motion off creates a static equivalent. Every family preserves stable editable objects and human override conflict checks across landscape, square and portrait. StepSequence is an authored step, not observed behavior; MetricEvidence is not verified data; ContrastComparison is not measured improvement; EditorialQuote is not a verified testimonial. Their disclosures cannot be treated as source authentication.</p>
+      {(draft.layout === "typography_focus" || draft.layout === "typography_contrast") && <p className="production-help">
+        {draft.layout === "typography_focus" ? "motionwright.type.hero-focus · All six objects share one entrance interval." : "motionwright.type.contrast-pair · The supporting idea enters after the primary idea and uses a smaller type scale."}
+        {" "}Four authored text objects and two editable rules. All copy remains complete; a line or glyph-box budget conflict requires an explicit variant. Creative admission remains pending review.
+      </p>}
       {draft.layout==="metric_evidence" && <p className="production-help">SOURCE NOT VERIFIED is protected while this component remains attached. Detaching preserves its objects but releases that semantic guard without verifying the claim.</p>}
       {error && <p className="production-error" role="alert">{error}</p>}
       {!scene && <button className="primary-button" disabled={busy} onClick={() => commit({type:"add_scene",name:"Product hero",objective:"An original, editable product reveal",duration_seconds:6})}><Plus size={14}/> Create a six-second scene</button>}
@@ -487,22 +516,24 @@ function HeroWorkbench({ project, scene, commit, commitCamera, busy, playhead, o
         <button className="text-button" disabled={editor.blocked || locked} onClick={() => void editor.send("detach")}>Detach, keep objects</button></div>}
     </section>
     <section className="production-viewer" aria-label="Component study viewer">
-      <div className="production-viewer-toolbar"><div><strong>Composition study</strong><span>{sameValue(draft,instance?.config)?"Stored parameters":"Uncommitted parameters"} · editorial preview</span></div>
-        <div className="production-button-row"><div className="production-segmented" aria-label="Preview aspect">{aspects.map(value => <button key={value.label} aria-pressed={value.label===aspect.label} onClick={() => setAspect(value)}>{value.label}</button>)}</div><button className="secondary-button" disabled={previewLoading || !!error || !scene} onClick={()=>setExpanded(true)}>Enlarge study</button></div></div>
+      <div className="production-viewer-toolbar"><div><strong>Composition study</strong><span>{instance ? "Proposed scene with authored objects" : "Uncommitted component parameters"} · editorial preview</span></div>
+        <div className="production-button-row"><div className="production-segmented" aria-label="Preview aspect">{aspects.map(value => <button key={value.label} aria-pressed={value.label===aspect.label} onClick={() => setAspect(value)}>{value.label}</button>)}</div><button className="secondary-button" disabled={viewLoading || !!viewIssue || !scene} onClick={()=>setExpanded(true)}>Enlarge study</button></div></div>
       <div className={"production-preview-mat " + (aspect.height>aspect.width?"portrait":"")}>
-        {previewLoading ? <p role="status">Preparing the editable study…</p> : <CompositionStudy nodes={nodes} width={aspect.width} height={aspect.height} time={localTime} background={background} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides} label={`${familyName} ${aspect.label}, editorial frame at ${localTime.toFixed(3)} seconds`}/>}
+        {viewLoading ? <p role="status">Preparing the editable study…</p> : viewIssue ? <p role={error ? "status" : "alert"} className="production-error">The current scene study is unavailable: {viewIssue}</p> : <CompositionStudy nodes={nodes} width={aspect.width} height={aspect.height} time={localTime} background={background} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides} label={`${familyName} ${aspect.label}, editorial frame at ${localTime.toFixed(3)} seconds`}/>}
       </div>
       <div className="production-transport"><span className="mono">{localTime.toFixed(3)} s</span>
         <input aria-label="Component playhead" type="range" min={0} max={scene?seconds(scene.duration):6} step={1/30} value={localTime} disabled={!scene} onChange={e => onSeek(seconds(scene!.start)+Number(e.target.value))}/>
         <button className="secondary-button" disabled={!scene} onClick={() => onSeek(seconds(scene!.start)+.65)}>Entrance</button>
         <button className="secondary-button" disabled={!scene} onClick={() => onSeek(seconds(scene!.start)+Math.min(2,seconds(scene!.duration)-1/30))}>Settled</button></div>
       <div className="production-evidence-note"><strong>{aspect.width} × {aspect.height} · project revision {project.revision}</strong>
-        <p>This parameter study does not replace custom edits on scene objects. Use Canvas to inspect those overrides. This preview audits composition and timing intent. Use the native frame stage and Deliver for authoritative renderer frames and export verification. The editorial viewer uses a system fallback when the required font is not installed. Glyph metrics, clipping and creative approval are separate checks.</p></div>
+        <p>{instance ? "This study includes the complete proposed scene, compatible object edits and the sampled scene camera. Aspect changes use the existing Replan layout and report conflicts." : "This parameter study previews the new component before it is attached to the scene."} Use the native frame stage and Deliver for renderer frames and export verification. Font fallback, glyph metrics, full motion admission and creative approval require separate review.</p>
+        {sampled.boundaryIssues.length > 0 && <p role="status">{sampled.boundaryIssues.length} sampled object bounds cross the output safe area. No geometry was clamped or shrunk.</p>}</div>
       {instance && scene && <ComponentRevisionReview review={revisionReview} renderScene={(reviewNodes, label) =>
         <div className="production-preview-mat"><SceneCompositionStudy scene={scene} nodes={reviewNodes} cameraReframes={project.production_design?.camera_reframes}
           time={localTime} background={background} ink={inheritedTextInk(project.visual_language.palette)} label={label}/></div>}/>}
     </section>
-    {expanded && scene && <ExpandedStudy nodes={nodes} width={aspect.width} height={aspect.height} time={localTime} duration={seconds(scene.duration)} background={background} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides} onSeek={time=>onSeek(seconds(scene.start)+time)} onClose={()=>setExpanded(false)}/>}
+    {expanded && scene && !viewLoading && !viewIssue && <ExpandedStudy nodes={nodes} width={aspect.width} height={aspect.height} time={localTime} duration={seconds(scene.duration)} background={background}
+      description={instance ? "Complete proposed scene · authored object edits and sampled camera · Native pixels remain separate" : undefined} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides} onSeek={time=>onSeek(seconds(scene.start)+time)} onClose={()=>setExpanded(false)}/>}
   </div>;
 }
 

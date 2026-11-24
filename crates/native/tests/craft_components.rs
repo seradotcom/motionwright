@@ -111,3 +111,56 @@ fn native_craft_static_realizations_do_not_fabricate_animation() {
         assert!(realize(&film[0].film).unwrap().instructions.is_empty());
     }
 }
+
+#[test]
+fn typography_candidates_reach_native_fixed_text_with_complete_motion_and_three_aspects() {
+    for layout in [HeroLayout::TypographyFocus, HeroLayout::TypographyContrast] {
+        for motion in [false, true] {
+            let (p, id) = project(layout, motion);
+            let original = p.clone();
+            for profile in &p.deliverables {
+                let segments = build_motion_canvas_segments(&p, profile.id, &options(&p)).unwrap();
+                let shot = &segments[0].film.sequences[0].beats[0].shots[0];
+                assert_eq!(segments[0].frame_count, 180);
+                assert_eq!(
+                    shot.subjects
+                        .iter()
+                        .filter(|subject| subject.parent.is_none())
+                        .count(),
+                    6
+                );
+                assert_eq!(
+                    shot.subjects
+                        .iter()
+                        .filter(|subject| subject.role == "component-text-container")
+                        .count(),
+                    4
+                );
+                assert_eq!(
+                    shot.subjects
+                        .iter()
+                        .filter(|subject| matches!(
+                            subject.content,
+                            SubjectContent::Rectangle { .. }
+                        ))
+                        .count(),
+                    2
+                );
+                for role in ["eyebrow", "headline", "body", "wordmark"] {
+                    let parent = format!("node-{}", hero_node_id(id, role).simple());
+                    assert!(shot.subjects.iter().any(|subject| subject.id == parent
+                        && subject.role == "component-text-container"));
+                    assert!(shot.subjects.iter().any(|subject| subject.parent.as_deref() == Some(parent.as_str()) && matches!(&subject.content, SubjectContent::Text { runs, .. } if !runs[0].text.is_empty())));
+                }
+                assert_eq!(shot.motion.len(), if motion { 6 } else { 0 });
+                assert!(
+                    shot.motion
+                        .iter()
+                        .all(|entry| entry.easing == MotionEasing::OutCubic)
+                );
+                assert!(realize(&segments[0].film).is_ok());
+            }
+            assert_eq!(p, original);
+        }
+    }
+}

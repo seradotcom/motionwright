@@ -17,7 +17,7 @@ import type { CanvasKeyframe, CanvasNode, CanvasTransform, Change, NodeProperty,
   SceneBoundaryInput, SceneBoundaryNarrativeRole, SceneBoundaryPredecessorContext, SceneBoundarySource } from "./types";
 import { rationalSeconds, seconds } from "./types";
 
-export type HeroLayout = "product_hero_reveal" | "split_explanation" | "metric_evidence" | "step_sequence" | "contrast_comparison" | "editorial_quote";
+export type HeroLayout = "product_hero_reveal" | "split_explanation" | "metric_evidence" | "step_sequence" | "contrast_comparison" | "editorial_quote" | "typography_focus" | "typography_contrast";
 export interface HeroConfig {
   /** Optional for legacy format-2 projects. Rust defaults absent layouts to ProductHeroReveal. */
   layout?: HeroLayout;
@@ -377,7 +377,7 @@ function textBudget(value: string, max: number, label: string) {
   if (!value.trim() || new TextEncoder().encode(value).length > max || /[\u0000-\u0009\u000b-\u001f\u007f]/u.test(value)) throw new Error("Invalid " + label);
 }
 export function validateHero(config: HeroConfig) {
-  if (config.layout !== undefined && !(["product_hero_reveal","split_explanation","metric_evidence","step_sequence","contrast_comparison","editorial_quote"] as const).includes(config.layout)) throw new Error("Unsupported semantic component layout.");
+  if (config.layout !== undefined && !(["product_hero_reveal","split_explanation","metric_evidence","step_sequence","contrast_comparison","editorial_quote","typography_focus","typography_contrast"] as const).includes(config.layout)) throw new Error("Unsupported semantic component layout.");
   for (const [key, max] of [["eyebrow", 48], ["headline", 64], ["body", 150], ["wordmark", 8]] as const) {
     if (!config[key].trim() || Array.from(config[key]).length > max || /[\u0000-\u0009\u000b-\u001f\u007f]/u.test(config[key])) throw new Error("Hero " + key + " exceeds the layout budget or contains control characters.");
   }
@@ -423,6 +423,7 @@ function entryKeys(node: CanvasNode, start: number, end: number, offset: number,
 export async function realizeProductHero(id: string, config: HeroConfig, w = 1920, h = 1080): Promise<CanvasNode[]> {
   validateHero(config);
   if (!Number.isInteger(w) || !Number.isInteger(h) || w < 320 || h < 320 || w > 7680 || h > 7680) throw new Error("Hero output dimensions are out of bounds.");
+  if (config.layout === "typography_focus" || config.layout === "typography_contrast") return realizeTypographyHero(id,config,w,h);
   if (config.layout === "metric_evidence") return realizeMetricEvidence(id,config,w,h);
   if (config.layout === "step_sequence") return realizeStepSequence(id,config,w,h);
   if (config.layout === "contrast_comparison" || config.layout === "editorial_quote")
@@ -459,6 +460,50 @@ export async function realizeProductHero(id: string, config: HeroConfig, w = 192
     return node;
   }));
 }
+/** Original typography candidates use four authored text objects and two rules.
+ * They retain the six stable component roles; no extra claim or source is invented. */
+async function realizeTypographyHero(id: string, config: HeroConfig, w: number, h: number): Promise<CanvasNode[]> {
+  const contrast = config.layout === "typography_contrast", compact = h >= w;
+  const scale = Math.min(w, h) / 1080, left = w * .10;
+  const headline = wrapCopy(config.headline, contrast ? compact ? 19 : 20 : compact ? 22 : 27, 3);
+  const body = wrapCopy(config.body, contrast ? compact ? 34 : 24 : compact ? 36 : 56, contrast ? 4 : 3);
+  const entries: Array<[string, string, number, number, number, number, number, number]> = [
+    ["eyebrow", config.eyebrow, left, h * .12, w * .80, h * .05, 23 * scale, 500],
+    ["headline", headline, left, h * (contrast ? .24 : .26),
+      w * (contrast && !compact ? .46 : .80), h * (contrast ? compact ? .25 : .35 : .32),
+      (contrast ? compact ? 70 : 76 : compact ? 72 : 88) * scale, 600],
+    ["body", body, contrast && !compact ? w * .62 : left, h * (contrast ? compact ? .58 : .35 : .66),
+      w * (contrast && !compact ? .28 : .80), h * (contrast ? compact ? .18 : .28 : .15),
+      (contrast ? compact ? 36 : 38 : 30) * scale, 400],
+    ["wordmark", config.wordmark, left, h * .86, w * .20, h * .05, 27 * scale, 600],
+    ["rule", "", contrast && !compact ? w * .58 : left, h * (contrast ? compact ? .535 : .235 : .60),
+      contrast && !compact ? 3 * scale : w * (contrast ? .80 : .32), contrast && !compact ? h * .45 : 3 * scale, 0, 400],
+    ["disclosure", "", left, h * .835, w * .80, 2 * scale, 0, 400],
+  ];
+  const family = contrast ? "TypographyContrast" : "TypographyFocus";
+  return Promise.all(entries.map(async ([role, text, x, y, width, height, fontSize, weight], index) => {
+    const isText = role !== "rule" && role !== "disclosure";
+    const node: CanvasNode = { id: await heroNodeId(id, role), name: family + " / " + role,
+      kind: isText ? "text" : "rectangle", parent_id: null, x, y, width, height, rotation_deg: 0, opacity: 1,
+      text: isText ? text : null, coordinate_space: "project_pixels", z_index: 10 + index,
+      style: { fill: role === "headline" || role === "rule" ? config.accent : config.foreground,
+        stroke: null, stroke_width: 0, font_family: isText ? "Instrument Sans Variable" : null,
+        font_size: isText ? fontSize : null, font_weight: isText ? weight : null,
+        line_height: isText ? 1.12 : null, blend_mode: "normal" }, relations: [], property_locks: [], keyframes: [] };
+    const start = contrast && role === "body" ? 500 : contrast && role === "rule" ? 300 : 100;
+    if (config.motion) node.keyframes = entryKeys(node, start, start + 800, 18 * scale, 0);
+    if (isText) {
+      const lines = text.split("\n"), longest = Math.max(...lines.map(line => Array.from(line).length));
+      if (lines.some(line => !line.trim()) || longest * fontSize * .56 > width * .96
+        || fontSize * (1.12 * (lines.length - 1) + 1.4) > height * .96)
+        throw new Error(family + " " + role + " copy exceeds the declared text box; author a shorter variant or an intentional line break.");
+    }
+    if (x < w * .05 || y < h * .05 || x + width > w * .96 || y + height + (config.motion ? 18 * scale : 0) > h * .96)
+      throw new Error(family + " " + role + " exceeds the output safe area during its entrance.");
+    return node;
+  }));
+}
+
 /** Source-unverified caption is immutable only while MetricEvidence remains
  * an attached managed composition. Old projects remain readable; mutations
  * must restore an original exact caption or explicitly detach the component.

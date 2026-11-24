@@ -452,7 +452,7 @@ function inputShape(value: unknown): value is ProductionInput {
     const config = value.config;
     return exact(value, ["kind", "config"]) && record(config) && exact(config, ["eyebrow", "headline", "body", "wordmark", "foreground", "accent", "motion"], ["layout"])
       && ["eyebrow", "headline", "body", "wordmark", "foreground", "accent"].every(key => typeof config[key] === "string")
-      && typeof config.motion === "boolean" && (config.layout === undefined || ["product_hero_reveal", "split_explanation", "metric_evidence", "step_sequence", "contrast_comparison", "editorial_quote"].includes(String(config.layout)));
+      && typeof config.motion === "boolean" && (config.layout === undefined || ["product_hero_reveal", "split_explanation", "metric_evidence", "step_sequence", "contrast_comparison", "editorial_quote", "typography_focus", "typography_contrast"].includes(String(config.layout)));
   }
   if (value.kind !== "plan" || !exact(value, ["kind", "plan", "reviewer", "note"]) || typeof value.reviewer !== "string" || typeof value.note !== "string") return false;
   const plan = value.plan;

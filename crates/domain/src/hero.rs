@@ -19,6 +19,10 @@ pub enum HeroLayout {
     ContrastComparison,
     /// An illustrative quote, not an authorized third-party testimonial.
     EditorialQuote,
+    /// A single typographic focus; all original subjects enter as one group in time.
+    TypographyFocus,
+    /// Primary and supporting ideas with deliberately different visual authority.
+    TypographyContrast,
 }
 
 pub const HERO_ROLES: [&str; 6] = [
@@ -196,6 +200,12 @@ pub fn realize_product_hero(
     }
     let w = f64::from(width);
     let h = f64::from(height);
+    if matches!(
+        config.layout,
+        HeroLayout::TypographyFocus | HeroLayout::TypographyContrast
+    ) {
+        return realize_typography_hero(id, config, w, h);
+    }
     if config.layout == HeroLayout::MetricEvidence {
         return realize_metric_evidence(id, config, w, h);
     }
@@ -486,6 +496,220 @@ pub fn realize_product_hero(
         };
         if config.motion {
             node.keyframes = entry_keys(&node, start, end, offset, rotation);
+        }
+        node.validate()?;
+        nodes.push(node);
+    }
+    Ok(nodes)
+}
+
+/// Two original typography candidates share the existing versioned component,
+/// override and Native fixed-text paths. The last two roles are editable rules.
+fn realize_typography_hero(
+    id: Uuid,
+    config: &HeroConfig,
+    w: f64,
+    h: f64,
+) -> Result<Vec<CanvasNode>> {
+    let contrast = config.layout == HeroLayout::TypographyContrast;
+    let compact = h >= w;
+    let scale = w.min(h) / 1080.0;
+    let left = w * 0.10;
+    let headline = wrap_copy(
+        &config.headline,
+        if contrast {
+            if compact { 19 } else { 20 }
+        } else if compact {
+            22
+        } else {
+            27
+        },
+        3,
+    )?;
+    let body = wrap_copy(
+        &config.body,
+        if contrast {
+            if compact { 34 } else { 24 }
+        } else if compact {
+            36
+        } else {
+            56
+        },
+        if contrast { 4 } else { 3 },
+    )?;
+    let entries = [
+        (
+            "eyebrow",
+            config.eyebrow.clone(),
+            left,
+            h * 0.12,
+            w * 0.80,
+            h * 0.05,
+            23.0 * scale,
+            500,
+        ),
+        (
+            "headline",
+            headline,
+            left,
+            h * if contrast { 0.24 } else { 0.26 },
+            w * if contrast && !compact { 0.46 } else { 0.80 },
+            h * if contrast {
+                if compact { 0.25 } else { 0.35 }
+            } else {
+                0.32
+            },
+            (if contrast {
+                if compact { 70.0 } else { 76.0 }
+            } else if compact {
+                72.0
+            } else {
+                88.0
+            }) * scale,
+            600,
+        ),
+        (
+            "body",
+            body,
+            if contrast && !compact { w * 0.62 } else { left },
+            h * if contrast {
+                if compact { 0.58 } else { 0.35 }
+            } else {
+                0.66
+            },
+            w * if contrast && !compact { 0.28 } else { 0.80 },
+            h * if contrast {
+                if compact { 0.18 } else { 0.28 }
+            } else {
+                0.15
+            },
+            (if contrast {
+                if compact { 36.0 } else { 38.0 }
+            } else {
+                30.0
+            }) * scale,
+            400,
+        ),
+        (
+            "wordmark",
+            config.wordmark.clone(),
+            left,
+            h * 0.86,
+            w * 0.20,
+            h * 0.05,
+            27.0 * scale,
+            600,
+        ),
+        (
+            "rule",
+            String::new(),
+            if contrast && !compact { w * 0.58 } else { left },
+            h * if contrast {
+                if compact { 0.535 } else { 0.235 }
+            } else {
+                0.60
+            },
+            if contrast && !compact {
+                3.0 * scale
+            } else {
+                w * if contrast { 0.80 } else { 0.32 }
+            },
+            if contrast && !compact {
+                h * 0.45
+            } else {
+                3.0 * scale
+            },
+            0.0,
+            400,
+        ),
+        (
+            "disclosure",
+            String::new(),
+            left,
+            h * 0.835,
+            w * 0.80,
+            2.0 * scale,
+            0.0,
+            400,
+        ),
+    ];
+    let family = if contrast {
+        "TypographyContrast"
+    } else {
+        "TypographyFocus"
+    };
+    let mut nodes = Vec::with_capacity(HERO_ROLES.len());
+    for (index, (role, text, x, y, width, height, font_size, weight)) in
+        entries.into_iter().enumerate()
+    {
+        let is_text = role != "rule" && role != "disclosure";
+        if is_text {
+            let lines = text.split('\n').collect::<Vec<_>>();
+            let longest = lines
+                .iter()
+                .map(|line| line.chars().count())
+                .max()
+                .unwrap_or(0);
+            if lines.iter().any(|line| line.trim().is_empty())
+                || longest as f64 * font_size * 0.56 > width * 0.96
+                || font_size * (1.12 * (lines.len() - 1) as f64 + 1.4) > height * 0.96
+            {
+                return Err(DomainError::Invalid(format!(
+                    "{family} {role} copy exceeds the declared text box; author a shorter variant or an intentional line break"
+                )));
+            }
+        }
+        if x < w * 0.05
+            || y < h * 0.05
+            || x + width > w * 0.96
+            || y + height + if config.motion { 18.0 * scale } else { 0.0 } > h * 0.96
+        {
+            return Err(DomainError::Invalid(format!(
+                "{family} {role} exceeds the output safe area during its entrance"
+            )));
+        }
+        let mut node = CanvasNode {
+            id: hero_node_id(id, role),
+            name: format!("{family} / {role}"),
+            kind: (if is_text { "text" } else { "rectangle" }).into(),
+            parent_id: None,
+            x,
+            y,
+            width,
+            height,
+            rotation_deg: 0.0,
+            opacity: 1.0,
+            text: is_text.then_some(text),
+            coordinate_space: CoordinateSpace::ProjectPixels,
+            z_index: 10 + index as i32,
+            style: NodeStyle {
+                fill: Some(
+                    (if role == "headline" || role == "rule" {
+                        &config.accent
+                    } else {
+                        &config.foreground
+                    })
+                    .clone(),
+                ),
+                font_family: is_text.then(|| "Instrument Sans Variable".into()),
+                font_size: is_text.then_some(font_size),
+                font_weight: is_text.then_some(weight),
+                line_height: is_text.then_some(1.12),
+                ..Default::default()
+            },
+            relations: vec![],
+            property_locks: BTreeSet::new(),
+            keyframes: vec![],
+        };
+        let start = if contrast && role == "body" {
+            500
+        } else if contrast && role == "rule" {
+            300
+        } else {
+            100
+        };
+        if config.motion {
+            node.keyframes = entry_keys(&node, start, start + 800, 18.0 * scale, 0.0);
         }
         node.validate()?;
         nodes.push(node);

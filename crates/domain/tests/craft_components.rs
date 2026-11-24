@@ -289,3 +289,160 @@ fn attached_craft_source_cannot_remove_or_falsely_verify_its_disclosure() {
         assert!(p.production_design.heroes.is_empty());
     }
 }
+
+#[test]
+fn typography_focus_and_contrast_keep_whole_copy_glyph_room_and_original_ids() {
+    let original = realize_product_hero(instance(), &HeroConfig::default(), 1920, 1080).unwrap();
+    for layout in [HeroLayout::TypographyFocus, HeroLayout::TypographyContrast] {
+        for (headline, body) in [
+            ("One clear idea", "Space for the supporting thought."),
+            ("Una idea clara", "Espacio para lo que importa."),
+            ("Une idée claire", "Un espace pour le sens du message."),
+        ] {
+            let cfg = HeroConfig {
+                headline: headline.into(),
+                body: body.into(),
+                ..config(layout)
+            };
+            for (width, height) in [(1920, 1080), (1080, 1080), (1080, 1920)] {
+                let nodes = realize_product_hero(instance(), &cfg, width, height).unwrap();
+                assert_eq!(
+                    nodes.iter().map(|node| node.id).collect::<Vec<_>>(),
+                    original.iter().map(|node| node.id).collect::<Vec<_>>()
+                );
+                assert_eq!(nodes.iter().filter(|node| node.kind == "text").count(), 4);
+                assert_eq!(
+                    nodes.iter().filter(|node| node.kind == "rectangle").count(),
+                    2
+                );
+                let words = |value: &str| value.split_whitespace().collect::<Vec<_>>().join(" ");
+                assert_eq!(words(nodes[1].text.as_deref().unwrap()), words(headline));
+                assert_eq!(words(nodes[2].text.as_deref().unwrap()), words(body));
+                for node in &nodes {
+                    if let (Some(text), Some(size)) = (&node.text, node.style.font_size) {
+                        assert!(
+                            size * ((text.lines().count() - 1) as f64 * 1.12 + 1.4)
+                                <= node.height * 0.96
+                        );
+                    }
+                    assert!(node.x >= f64::from(width) * 0.05);
+                    assert!(
+                        node.y + node.height + 18.0 * f64::from(width.min(height)) / 1080.0
+                            <= f64::from(height) * 0.96
+                    );
+                }
+                let end = |node: &CanvasNode| {
+                    node.keyframes
+                        .iter()
+                        .rfind(|key| key.property == MotionProperty::Opacity)
+                        .unwrap()
+                        .at
+                };
+                assert_eq!(end(&nodes[1]), RationalTime::new(9, 10).unwrap());
+                assert_eq!(
+                    end(&nodes[2]),
+                    RationalTime::new(
+                        if layout == HeroLayout::TypographyFocus {
+                            9
+                        } else {
+                            13
+                        },
+                        10
+                    )
+                    .unwrap()
+                );
+                if layout == HeroLayout::TypographyFocus {
+                    for node in &nodes {
+                        assert_eq!(end(node), end(&nodes[1]));
+                    }
+                }
+            }
+            let static_nodes = realize_product_hero(
+                instance(),
+                &HeroConfig {
+                    motion: false,
+                    ..cfg
+                },
+                1920,
+                1080,
+            )
+            .unwrap();
+            assert!(static_nodes.iter().all(|node| node.keyframes.is_empty()));
+        }
+    }
+}
+
+#[test]
+fn typography_variations_preserve_human_appearance_and_report_copy_conflicts() {
+    let mut p = project();
+    let scene_id = p.scenes[0].id;
+    p.apply_change(&Change::UpsertProductHero {
+        instance_id: instance(),
+        scene_id,
+        config: config(HeroLayout::TypographyFocus),
+    })
+    .unwrap();
+    let node = p.scenes[0].nodes[1].clone();
+    let mut style = node.style.clone();
+    style.fill = Some("#FFAA22".into());
+    p.apply_change(&Change::UpdateCanvasStyle {
+        scene_id,
+        node_id: node.id,
+        style,
+    })
+    .unwrap();
+    p.apply_change(&Change::UpsertProductHero {
+        instance_id: instance(),
+        scene_id,
+        config: config(HeroLayout::TypographyContrast),
+    })
+    .unwrap();
+    assert_eq!(p.scenes[0].nodes[1].style.fill.as_deref(), Some("#FFAA22"));
+    let reopened: Project = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+    assert_eq!(p, reopened);
+    p.apply_change(&Change::UpdateCanvasText {
+        scene_id,
+        node_id: node.id,
+        text: "The human direction".into(),
+    })
+    .unwrap();
+    let saved = p.clone();
+    assert!(
+        p.apply_change(&Change::UpsertProductHero {
+            instance_id: instance(),
+            scene_id,
+            config: HeroConfig {
+                headline: "A conflicting idea".into(),
+                ..config(HeroLayout::TypographyContrast)
+            }
+        })
+        .is_err()
+    );
+    assert_eq!(p, saved);
+    for layout in [HeroLayout::TypographyFocus, HeroLayout::TypographyContrast] {
+        assert!(
+            realize_product_hero(
+                instance(),
+                &HeroConfig {
+                    headline: "X".repeat(60),
+                    ..config(layout)
+                },
+                1080,
+                1920
+            )
+            .is_err()
+        );
+        assert!(
+            realize_product_hero(
+                instance(),
+                &HeroConfig {
+                    headline: "A\n\nB".into(),
+                    ..config(layout)
+                },
+                1920,
+                1080
+            )
+            .is_err()
+        );
+    }
+}

@@ -94,7 +94,8 @@ function expectedSaved(before: Project, nodes: Awaited<ReturnType<typeof inspect
   return expected;
 }
 
-test("Component v1 review shows retained human objects before a real family change and preserves the full result across SQLite restart", async ({ page }, info) => {
+for (const layout of ["split_explanation", "typography_focus", "typography_contrast"] as const) {
+test(`Component v1 review shows retained human objects before a real family change and preserves the full result across SQLite restart (${layout})`, async ({ page }, info) => {
   const service = await ScopedChangeService.create({ databasePath: info.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true });
   const observations: Record<string, unknown> = {};
   let final: Project | undefined, primary: Failure | undefined;
@@ -102,12 +103,12 @@ test("Component v1 review shows retained human objects before a real family chan
     const arranged = await arrange(service), initial = arranged.project;
     const { sceneId, instanceId, eyebrowId, bodyId, unrelated } = arranged;
     const hero = initial.production_design!.heroes.find(value => value.id === instanceId)!;
-    const target: HeroConfig = { ...hero.config, layout: "split_explanation" };
+    const target: HeroConfig = { ...hero.config, layout };
     const comparison = await inspectComponentRevision(initial, sceneId, instanceId, target, 1);
     observations.initial = initial; observations.comparison = comparison;
     const applies = commandCount(service, "apply_change"), grants = projectEditGrantCount(service);
     await open(page, service, initial, sceneId);
-    await page.getByLabel("Component layout", { exact: true }).selectOption("split_explanation");
+    await page.getByLabel("Component layout", { exact: true }).selectOption(layout);
     const review = page.getByRole("region", { name: "Component change review", exact: true });
     await expect(review.getByRole("heading", { name: "Saved scene", exact: true })).toBeVisible();
     await expect(review.getByRole("heading", { name: "After this change", exact: true })).toBeVisible();
@@ -119,7 +120,7 @@ test("Component v1 review shows retained human objects before a real family chan
     expect(commandCount(service, "apply_change")).toBe(applies);
     expect(projectEditGrantCount(service)).toBe(grants);
     await page.reload(); await open(page, service, initial, sceneId, false);
-    await expect(page.getByLabel("Component layout", { exact: true })).toHaveValue("split_explanation");
+    await expect(page.getByLabel("Component layout", { exact: true })).toHaveValue(layout);
     await expect(review).toContainText("An independent authored line");
     await expect(button(page, "Update component")).toBeEnabled();
     expect(commandCount(service, "apply_change")).toBe(applies);
@@ -147,6 +148,7 @@ test("Component v1 review shows retained human objects before a real family chan
   } catch (reason) { primary = { reason }; }
   finally { await finish(page, info, service, final, observations, primary); }
 });
+}
 
 test("Component v1 review blocks a conflicting human edit without UI dispatch and the real service preserves Project and journal", async ({ page }, info) => {
   const service = await ScopedChangeService.create({ databasePath: info.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true });
