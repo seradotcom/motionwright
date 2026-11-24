@@ -65,7 +65,7 @@ fn root_translation(node: &CanvasNode, scene: &Scene, fps: RationalTime) -> Resu
     let multiple = slots.len() > 2;
     let mut points = Vec::with_capacity(slots.len());
     let mut grammar = None;
-    let frame = RationalTime::new(fps.den, fps.num)?;
+    let frame = RationalTime::new(fps.den, fps.num).map_err(|_| fail())?;
     for (at, keys) in slots {
         let count = keys.len();
         let curve = keys[0].interpolation;
@@ -87,7 +87,8 @@ fn root_translation(node: &CanvasNode, scene: &Scene, fps: RationalTime) -> Resu
             )
             || (points.is_empty()
                 && (at != RationalTime::ZERO || curve != MotionInterpolation::Linear))
-            || (curve == MotionInterpolation::Hold && at.checked_add(frame)? > scene.duration)
+            || (curve == MotionInterpolation::Hold
+                && at.checked_add(frame).map_err(|_| fail())? > scene.duration)
         {
             return Err(fail());
         }

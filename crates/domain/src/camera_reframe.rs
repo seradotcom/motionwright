@@ -255,7 +255,14 @@ fn camera_motion_start(node: &CanvasNode, scene: &Scene) -> Result<CanvasNode> {
     if x != y {
         return Err(fail());
     }
-    let _ = crate::exact_canvas_opacity_spans(node, scene, RationalTime::new(30, 1)?)?;
+    let _ = crate::exact_canvas_opacity_spans(
+        node,
+        scene,
+        RationalTime {
+            num: CAMERA_REFRAME_FPS,
+            den: 1,
+        },
+    )?;
     let mut geometry_end = None;
     for property in [
         MotionProperty::X,
@@ -331,8 +338,14 @@ impl CameraReframe {
             && scene.nodes.iter().any(|node| !node.relations.is_empty())
         {
             resolved = scene.clone();
-            let tracks =
-                crate::resolve_canvas_follow_tracks(scene, RationalTime::new(30, 1)?, false)?;
+            let tracks = crate::resolve_canvas_follow_tracks(
+                scene,
+                RationalTime {
+                    num: CAMERA_REFRAME_FPS,
+                    den: 1,
+                },
+                false,
+            )?;
             for node in &mut resolved.nodes {
                 if let Some(keys) = tracks.get(&node.id) {
                     node.keyframes = keys.clone();
