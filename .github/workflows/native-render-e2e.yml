@@ -37,7 +37,7 @@ on:
         required: false
         default: static
       clipped_opacity_source_only:
-        description: "Exact source Rust and real Studio Save/reopen for Clip opacity, position and composed pose; no Native Host effect"
+        description: "Exact source Rust and real Studio Save/reopen for Clip opacity, position and waypoint poses; no Native Host effect"
         type: boolean
         default: false
         required: false
@@ -1550,6 +1550,13 @@ jobs:
               grep -E '^test |^test result:|^error:|panicked at' "$root/pose-operation-contracts.original.log" | tail -n 12
               exit 1
             }
+          source_phase=waypoint-film-composition
+          cargo test --locked --jobs 2 -p motionwright-native --lib \
+            film::tests::waypoint_track_realizes_mixed_curves_with_independent_fade_inside_clip \
+            -- --exact --test-threads=1 > "$root/waypoint-film.original.log" 2>&1 || {
+              grep -E '^test |^test result:|^error:|panicked at' "$root/waypoint-film.original.log" | tail -n 12
+              exit 1
+            }
           source_phase=camera-composition-domain
           cargo test --locked --jobs 2 -p motionwright-domain --lib \
             camera_reframe::manim_camera_closed_pair_tests:: -- --test-threads=1 > "$root/camera-domain.original.log" 2>&1 || {
@@ -1598,7 +1605,7 @@ jobs:
           npx --no-install playwright install --with-deps chromium > "$root/browser.original.log" 2>&1
           export MOTIONWRIGHT_SERVICE_TEST_BIN="$GITHUB_WORKSPACE/target/debug/examples/studio_review_session"
           source_phase=studio-original-save-and-reopen
-          npx --no-install playwright test tests/native-clipped-opacity-service.spec.ts tests/native-clipped-position-service.spec.ts tests/native-composed-pose-service.spec.ts tests/native-pose-recovery-service.spec.ts             --project=chromium --workers=1 --retries=0 --reporter=dot             --output="$root/browser-original" > "$root/studio-original.log" 2>&1 || {
+          npx --no-install playwright test tests/native-clipped-opacity-service.spec.ts tests/native-clipped-position-service.spec.ts tests/native-composed-pose-service.spec.ts tests/native-pose-recovery-service.spec.ts tests/native-waypoint-pose-service.spec.ts             --project=chromium --workers=1 --retries=0 --reporter=dot             --output="$root/browser-original" > "$root/studio-original.log" 2>&1 || {
               grep -E '^\s*[0-9]+ failed|^\s*[0-9]+ passed|^\s*[0-9]+ skipped|Error:|TimeoutError:|AssertionError:|^\s*[0-9]+\)' "$root/studio-original.log" | tail -n 12
               exit 1
             }
@@ -1625,6 +1632,8 @@ jobs:
              "film::tests::composed_pose_motion_preserves_all_channels_clip_coordinates_and_hold"),
             ("pose-negative.original.log",
              "film::tests::composed_pose_refuses_inexact_curves_parent_motion_and_invalid_alpha"),
+            ("waypoint-film.original.log",
+             "film::tests::waypoint_track_realizes_mixed_curves_with_independent_fade_inside_clip"),
             ("pose-operations.original.log",
              "tests::creative_operation_arguments_remain_typed_and_bounded"),
             ("pose-public-capabilities.original.log",
@@ -1649,7 +1658,7 @@ jobs:
           assert set(actual)==camera_cases and len(actual)==4
           assert "test result: ok. 4 passed; 0 failed; 0 ignored;" in camera
           studio=(root/"studio-original.log").read_text(encoding="utf8")
-          assert re.search(r"\b4 passed\b",studio), "All four original Studio Clip and recovery paths must pass"
+          assert re.search(r"\b5 passed\b",studio), "All five original Studio Clip, waypoint and recovery paths must pass"
           assert not re.search(r"\b[1-9][0-9]* skipped\b",studio)
-          print("SOURCE_CLIPPED_ANIMATION_G1=PASS; RustDomain=6; RustFilm=6; RustOperations=3; RustOriginalStore=1; StudioChromium=4; StoreReopen=PRODUCER_TEST; NativeHost=NOT_RUN; G2=NOT_GRANTED; G3=STOP; RELEASE=NOT_AUTHORIZED")
+          print("SOURCE_CLIPPED_ANIMATION_G1=PASS; RustDomain=6; RustFilm=7; RustOperations=3; RustOriginalStore=1; StudioChromium=5; StoreReopen=PRODUCER_TEST; NativeHost=NOT_RUN; G2=NOT_GRANTED; G3=STOP; RELEASE=NOT_AUTHORIZED")
           PY_CLIPPED_CHECK

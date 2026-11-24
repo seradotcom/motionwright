@@ -81,6 +81,7 @@ on:
           - service-legacy-fixtures
           - native-source-export
           - desktop-source
+          - desktop-compile
           - native-otio-snapshot
           - native-otio-real-media
           - native-source-browser
@@ -211,7 +212,7 @@ jobs:
 
   desktop-boundary:
     needs: source-boundary
-    if: ${{ !cancelled() && (needs.source-boundary.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'desktop-source')) }}
+    if: ${{ !cancelled() && (needs.source-boundary.result == 'success' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["desktop-source","desktop-compile"]'), inputs.verification_scope))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -233,8 +234,10 @@ jobs:
       - name: Check bounded desktop command surface
         run: cargo check --locked --jobs 2 -p motionwright-desktop
       - name: Effect-grant boundary regressions
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'desktop-compile'
         run: cargo test --locked --jobs 2 -p motionwright-desktop effect_grants
       - name: Original offline runtime files, SQLite reopen and rollback
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'desktop-compile'
         run: |
           set -euo pipefail
           python3 -B - <<'PY_RUNTIME_PROFILES'
@@ -283,6 +286,7 @@ jobs:
           print("RUNTIME_PROFILE_LOCAL_COPY=PASS; cases=11; SQLite=REAL; package_description=ACTUAL_PRODUCER; tools=INERT_BYTE_FIXTURES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           PY_RUNTIME_PROFILES
       - name: HyperFrames original Desktop render and PNG recovery contracts
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'desktop-compile'
         run: |
           set -euo pipefail
           cargo clippy --locked --jobs 2 -p motionwright-native --test desktop_hyperframes_render -- -D warnings
@@ -314,13 +318,13 @@ jobs:
           PY_HF_RENDER
           cargo test --locked --jobs 2 -p motionwright-service --lib jobs::tests:: -- --test-threads=1
       - name: Native PNG preview security regressions
-        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'desktop-source'
+        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-source","desktop-compile"]'), inputs.verification_scope)
         run: cargo test --locked -p motionwright-desktop native_preview
       - name: Measured WAV / native AV master source regressions
-        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'desktop-source'
+        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-source","desktop-compile"]'), inputs.verification_scope)
         run: cargo test --locked -p motionwright-desktop av_master
       - name: Verified MP4 local delivery security regressions
-        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'desktop-source'
+        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-source","desktop-compile"]'), inputs.verification_scope)
         run: cargo test --locked -p motionwright-desktop av_delivery
       - name: Clippy desktop boundary
         run: cargo clippy --locked --jobs 2 -p motionwright-desktop --keep-going --all-targets -- -D warnings

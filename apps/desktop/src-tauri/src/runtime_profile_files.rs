@@ -302,7 +302,7 @@ impl Directory {
             if value == "." || value == ".." {
                 continue;
             }
-            if names.len() >= bundle::MAX_FILES + bundle::MAX_DIRECTORIES + 1
+            if names.len() > bundle::MAX_FILES + bundle::MAX_DIRECTORIES
                 || !names.insert(value.to_string())
             {
                 return Err(INVALID.into());
