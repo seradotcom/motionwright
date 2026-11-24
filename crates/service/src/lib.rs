@@ -745,6 +745,48 @@ impl StudioService {
         store.read_blob(digest, MAX_SFX_WAV_BYTES)
     }
 
+    /// Owner-side, bounded image read. The current exact revision must own
+    /// this PNG asset; SHA-256 CAS verification remains in Store::read_blob.
+    /// This exposes no arbitrary path and conveys no Native render authority.
+    pub fn verified_render_png_asset(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        asset_id: Uuid,
+        digest: &str,
+    ) -> StorageResult<Vec<u8>> {
+        let store = self.store.lock();
+        let project = store.load_project(project_id)?;
+        if expected.resource != project.resource_key() || expected.generation != project.generation
+        {
+            return Err(StorageError::GenerationConflict);
+        }
+        if expected.revision != project.revision {
+            return Err(StorageError::Conflict {
+                expected: expected.revision,
+                actual: project.revision,
+            });
+        }
+        if !project.assets.iter().any(|asset| {
+            asset.id == asset_id
+                && asset.media_type == "image/png"
+                && asset.content_sha256.as_deref() == Some(digest)
+        }) {
+            return Err(DomainError::Invalid(
+                "The PNG is not owned by this saved project revision".into(),
+            )
+            .into());
+        }
+        let bytes = store.read_blob(digest, 32 * 1024 * 1024)?;
+        if bytes.len() < 24 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") || &bytes[12..16] != b"IHDR"
+        {
+            return Err(
+                DomainError::Invalid("The retained render asset is not a PNG".into()).into(),
+            );
+        }
+        Ok(bytes)
+    }
+
     pub fn put_derived_cache_file(
         &self,
         scope: &str,

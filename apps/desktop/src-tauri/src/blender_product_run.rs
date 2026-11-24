@@ -73,12 +73,12 @@ pub struct CycleResponse {
     pub automatic_retry: bool,
 }
 #[derive(Clone)]
-struct RootIdentity {
-    path: PathBuf,
+pub(super) struct RootIdentity {
+    pub(super) path: PathBuf,
     handle: Arc<same_file::Handle>,
 }
 impl RootIdentity {
-    fn capture(connection: &ProductionConnection) -> Result<Self, String> {
+    pub(super) fn capture(connection: &ProductionConnection) -> Result<Self, String> {
         // Full connection validation rejects linked/reparse ancestors and hashes
         // the pinned executable. Capture the actual directory identity afterward.
         connection
@@ -91,7 +91,7 @@ impl RootIdentity {
             handle: Arc::new(handle),
         })
     }
-    fn check(&self) -> Result<(), String> {
+    pub(super) fn check(&self) -> Result<(), String> {
         let current = same_file::Handle::from_path(&self.path).map_err(|_| UNAVAILABLE)?;
         if &current != self.handle.as_ref() {
             return Err("A prepared Blender output directory was replaced.".into());
@@ -99,13 +99,13 @@ impl RootIdentity {
         Ok(())
     }
 }
-struct RootLock {
+pub(super) struct RootLock {
     root: RootIdentity,
     path: PathBuf,
     file: File,
 }
 impl RootLock {
-    fn acquire(root: &RootIdentity, request_id: &str) -> Result<Self, String> {
+    pub(super) fn acquire(root: &RootIdentity, request_id: &str) -> Result<Self, String> {
         root.check()?;
         let path = root.path.join(LOCK_NAME);
         let mut options = OpenOptions::new();

@@ -183,12 +183,14 @@ fn camera_pan_refuses_edit_conflicts_and_scene_motion_without_mutating_authority
             },
         })
         .unwrap();
-    assert!(
-        with_motion
-            .apply_change(&Change::UpsertCameraReframe { reframe: rig })
-            .unwrap_err()
-            .to_string()
-            .contains("motion-free")
+    let saved_motion = with_motion.clone();
+    let error = with_motion
+        .apply_change(&Change::UpsertCameraReframe { reframe: rig })
+        .unwrap_err();
+    assert!(error.to_string().contains("exact paired motion"), "{error}");
+    assert_eq!(
+        with_motion, saved_motion,
+        "An incomplete independent track must remain untouched"
     );
 
     // Existing scene lock is project-authoritative even with valid metadata.

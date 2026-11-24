@@ -202,6 +202,26 @@ fn segment_artifact(
 }
 
 impl NativePreviewRegistry {
+    /// Retained CAS stills share the existing two-read budget with native frames.
+    /// Their owner performs source/receipt/CAS checks inside this bounded read.
+    pub fn read_retained_png(
+        &self,
+        read: impl FnOnce() -> Result<Vec<u8>, String>,
+    ) -> Result<Vec<u8>, String> {
+        self.inner
+            .active_reads
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < MAX_SIMULTANEOUS_READS).then_some(n + 1)
+            })
+            .map_err(|_| "Native preview is busy; retry this read.")?;
+        let _permit = ReadPermit(&self.inner.active_reads);
+        let bytes = read()?;
+        if bytes.len() > 32 * 1024 * 1024 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            return Err("The retained PNG exceeds its verified preview bounds.".into());
+        }
+        Ok(bytes)
+    }
+
     /// Legacy manifest-only registration is exclusively for adversarial unit
     /// tests. Production must require source-bound FilmBuildOptions via
     /// register_with_options; otherwise readiness may be misattributed.

@@ -368,7 +368,7 @@ jobs:
           cargo test --locked --jobs 2 -p motionwright-desktop manim_source_ -- --test-threads=1
       - name: Blender exact preparation, grants, staging and original source reads
         if: inputs.verification_scope == 'desktop-blender'
-        run: cargo test --locked --jobs 2 -p motionwright-desktop blender_product -- --test-threads=1
+        run: cargo test --locked --jobs 2 -p motionwright-desktop blender_ -- --test-threads=1
       - name: Clippy desktop boundary
         run: cargo clippy --locked --jobs 2 -p motionwright-desktop --keep-going --all-targets -- -D warnings
 
@@ -466,12 +466,17 @@ jobs:
           set -euo pipefail
           python3 -B -m unittest discover -s tooling/tests -p "test_linux_cold_start.py" -v
           cargo clippy --locked --jobs 2 -p motionwright-native --lib -- -D warnings
-          cargo test --locked --jobs 2 -p motionwright-domain --lib nested_static_group_order_validates_all_ancestors_and_sibling_scopes -- --test-threads=1
-          cargo test --locked --jobs 2 -p motionwright-domain --test camera_reframe --test procedural_fields --test craft_components --test caption_emphasis --test production_design --test scene_beat_timeline --test delivery_family_propagation --test native_capsule_source_atomicity -- --test-threads=1
-          cargo test --locked --jobs 2 -p motionwright-native --lib film::tests:: -- --test-threads=1
-          cargo test --locked --jobs 2 -p motionwright-native --test procedural_fields --test craft_components --test native_caption_burn_in -- --test-threads=1
-          cargo test --locked --jobs 2 -p motionwright-native --lib hyperframes::tests:: -- --test-threads=1
-          cargo test --locked --jobs 2 -p motionwright-service --test scene_beat_timeline --test delivery_family_persistence --test native_capsule_source_import -- --test-threads=1
+          # Collect independent selected unit/transaction failures in one job.
+          # A shared compilation/Clippy failure still stops before this block.
+          cohort_status=0
+          selected_check() { "$@" || cohort_status=1; }
+          selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-domain --lib nested_static_group_order_validates_all_ancestors_and_sibling_scopes -- --test-threads=1
+          selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-domain --test camera_reframe --test procedural_fields --test craft_components --test caption_emphasis --test production_design --test scene_beat_timeline --test delivery_family_propagation --test native_capsule_source_atomicity -- --test-threads=1
+          selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-native --lib film::tests:: -- --test-threads=1
+          selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-native --test procedural_fields --test craft_components --test native_caption_burn_in -- --test-threads=1
+          selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-native --lib hyperframes::tests:: -- --test-threads=1
+          selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-service --test scene_beat_timeline --test delivery_family_persistence --test native_capsule_source_import -- --test-threads=1
+          exit "$cohort_status"
       - name: Build the exact-source StudioService test transport
         run: cargo build --locked --jobs 2 -p motionwright-service --example studio_review_session
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

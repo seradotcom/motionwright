@@ -1780,26 +1780,21 @@ impl LitSession<'_> {
 }
 
 impl ProductionCoordinator {
-    /// Execute exactly one closed phase in a newly admitted isolated canonical
-    /// Blender context. The caller must keep the journal even if this returns Err.
-    /// A native file is measured only after the exact provider acknowledgement.
-    /// Decoder, before/after pixel comparison, custody selection, and formal acceptance
-    /// remain independent gates; PNG header inspection does not satisfy them.
-    pub async fn realize_blender_lit_still(
+    /// Source, scope and output admission only. No Native dispatch, receipt,
+    /// output write or inherited execution permission is produced here.
+    pub fn preflight_blender_lit_still(
         &self,
         request: &BlenderLitStillRequest,
-        journal: &mut BlenderLitStillJournal,
-    ) -> NativeResult<Value> {
+    ) -> NativeResult<BlenderLitStillPlan> {
+        self.planned_blender_lit_still(request)
+            .map(|(_, plan)| plan)
+    }
+
+    fn planned_blender_lit_still(
+        &self,
+        request: &BlenderLitStillRequest,
+    ) -> NativeResult<(Project, BlenderLitStillPlan)> {
         validate_lit_request(request)?;
-        if !journal.schema.is_empty()
-            || !journal.phase.is_empty()
-            || journal.plan.is_some()
-            || !journal.calls.is_empty()
-        {
-            return Err(invalid(
-                "Lit-still journal must belong to one new explicit attempt",
-            ));
-        }
         let project = self
             .service
             .project(request.project_id)
@@ -1835,11 +1830,7 @@ impl ProductionCoordinator {
             return Err(Error::new(ErrorCode::Conflict,
                 "Lit-still phase was already attempted; inspect the original receipts without replay").uncertain());
         }
-        let scoped = self.with_scene_without_film_options(
-            &project,
-            request.scene_id,
-            motionwright_domain::RendererKind::Blender,
-        )?;
+        crate::native_scene_boundary::guard_scene_without_film_options(&project, request.scene_id)?;
         let output_root = self.client.connection().output_root.clone();
         new_lit_output(&output_root, request.phase.png())?;
         if let Some(name) = request.phase.output_source() {
@@ -1848,6 +1839,36 @@ impl ProductionCoordinator {
         if let Some(source) = &request.source {
             verify_source_binding(&output_root, source)?;
         }
+        Ok((project, plan))
+    }
+
+    /// Execute exactly one closed phase in a newly admitted isolated canonical
+    /// Blender context. The caller must keep the journal even if this returns Err.
+    /// A native file is measured only after the exact provider acknowledgement.
+    /// Decoder, before/after pixel comparison, custody selection, and formal acceptance
+    /// remain independent gates; PNG header inspection does not satisfy them.
+    pub async fn realize_blender_lit_still(
+        &self,
+        request: &BlenderLitStillRequest,
+        journal: &mut BlenderLitStillJournal,
+    ) -> NativeResult<Value> {
+        validate_lit_request(request)?;
+        if !journal.schema.is_empty()
+            || !journal.phase.is_empty()
+            || journal.plan.is_some()
+            || !journal.calls.is_empty()
+        {
+            return Err(invalid(
+                "Lit-still journal must belong to one new explicit attempt",
+            ));
+        }
+        let (project, plan) = self.planned_blender_lit_still(request)?;
+        let scoped = self.with_scene_without_film_options(
+            &project,
+            request.scene_id,
+            motionwright_domain::RendererKind::Blender,
+        )?;
+        let output_root = self.client.connection().output_root.clone();
         journal.schema = LIT_SCHEMA.into();
         journal.phase = request.phase.label().into();
         journal.plan = Some(

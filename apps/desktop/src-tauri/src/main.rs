@@ -1,5 +1,6 @@
 mod av_delivery;
 mod av_master;
+mod blender_lit;
 mod blender_product;
 mod blender_product_run;
 mod caption_export;
@@ -113,6 +114,7 @@ struct AppState {
     runtime_profiles: runtime_profiles::RuntimeProfiles,
     native_renders: hyperframes_render::RenderRegistry,
     blender_cycle_plans: blender_product_run::CyclePlans,
+    blender_lit_plans: blender_lit::LitPlans,
     graph_exchange_custody: GraphExchangeJournal,
     development_audition_custody: motionwright_native::original_mix::DevelopmentAuditionCustody,
 }
@@ -1583,6 +1585,194 @@ async fn production_jobs_history(
         return Err("Project or production receipts changed during historical paging.".into());
     }
     Ok(page.0)
+}
+
+#[tauri::command]
+async fn native_blender_lit_source(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: blender_lit::SourceScope,
+) -> Result<blender_lit::SourceView, String> {
+    let service = state.service.clone();
+    let scope = request.clone();
+    let view = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        blender_lit::inspect(&service, &scope)
+    })
+    .await
+    .map_err(|_| "Blender source inspection did not complete.")??;
+    owner.begin_phase()?;
+    blender_lit::project(&state.service, &request)?;
+    Ok(view)
+}
+
+#[tauri::command]
+async fn prepare_blender_lit_still(
+    mut owner: desktop_owner::OwnerInvocation,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: blender_lit::PrepareRequest,
+) -> Result<Option<blender_lit::PlanView>, String> {
+    let service = state.service.clone();
+    let check = request.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        blender_lit::checked(&service, &check).map(|_| ())
+    })
+    .await
+    .map_err(|_| "Blender source inspection did not complete.")??;
+    let selected = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        app.dialog()
+            .file()
+            .set_title("Blender: select the lit-still owner connection")
+            .add_filter("JSON connection", &["json"])
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|_| "The native Blender connection picker did not complete.")?;
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    let path = selected
+        .into_path()
+        .map_err(|_| "Choose a local owner connection file.")?;
+    let connection = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        ProductionConnection::load(path)
+            .map_err(|_| "The selected Blender connection failed validation.")
+    })
+    .await
+    .map_err(|_| "Blender connection validation did not complete.")??;
+    owner.begin_phase()?;
+    let client = ProductionClient::new(connection.clone())
+        .map_err(|_| "The selected Blender connection was rejected.")?;
+    let probe = client
+        .probe_runtime(SEMWRIGHT_VERSION)
+        .await
+        .map_err(|_| "The selected Blender runtime is unavailable or changed.")?;
+    if !probe.version_compatible {
+        return Err("Blender runtime does not match the pinned Semwright version.".into());
+    }
+    let plans = state.blender_lit_plans.clone();
+    let service = state.service.clone();
+    let custody = state.production_receipt_custody.clone();
+    let source = request.source.clone();
+    let view = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        plans.prepare(&service, &custody, request, connection)
+    })
+    .await
+    .map_err(|_| "Blender still preparation did not complete.")??;
+    owner.begin_phase()?;
+    blender_lit::project(&state.service, &source)?;
+    Ok(Some(view))
+}
+
+#[tauri::command]
+async fn start_blender_lit_still(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: blender_lit::StartRequest,
+) -> Result<blender_lit::AttemptView, String> {
+    let _lease = state
+        .native_renders
+        .acquire(request.intent.source.project_id)?;
+    let service = state.service.clone();
+    let plans = state.blender_lit_plans.clone();
+    let grants = state.effect_grants.clone();
+    let custody = state.production_receipt_custody.clone();
+    let admitted = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        plans.admit(&service, &custody, &grants, request)
+    })
+    .await
+    .map_err(|_| "Blender admission is unconfirmed; retain its original request.")??;
+    let admitted = std::sync::Arc::new(admitted);
+    let original = admitted.clone();
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || original.reserve(&service))
+        .await
+        .map_err(|_| "Blender source reservation is unconfirmed; read the original attempt.")??;
+    let mut journal = motionwright_native::production::BlenderLitStillJournal::default();
+    let native_outcome = match owner.begin_phase().and_then(|()| admitted.check_roots()) {
+        Ok(()) => {
+            admitted
+                .coordinator
+                .realize_blender_lit_still(&admitted.request, &mut journal)
+                .await
+        }
+        Err(_) => Err(semwright_native_sdk::Error::new(
+            semwright_native_sdk::ErrorCode::PermissionDenied,
+            "Desktop owner or prepared output root retired before Blender dispatch",
+        )),
+    };
+    // Each later CAS adoption has a fresh owner phase and the exact current
+    // project, hash/size and original file-import receipt. No Native repeat.
+    let adoption = async {
+        let native = native_outcome
+            .as_ref()
+            .map_err(|_| "No successful original native still is available.".to_string())?;
+        owner.begin_phase()?;
+        let measured = admitted.measure(native)?;
+        let original = admitted.clone();
+        let service = state.service.clone();
+        let image_measure = measured.clone();
+        let image = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+            original.import_image(&service, &image_measure)
+        })
+        .await
+        .map_err(|_| "The original Blender image import is unconfirmed.".to_string())??;
+        owner.begin_phase()?;
+        let original = admitted.clone();
+        let service = state.service.clone();
+        desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+            original.import_source(&service, &measured, &image)
+        })
+        .await
+        .map_err(|_| "The original Blender editable-source import is unconfirmed.".to_string())?
+    }
+    .await;
+    let service = state.service.clone();
+    // Retaining an already observed terminal must survive owner close. This
+    // phase writes only the original receipt; no provider, source import or
+    // new authorization can follow it.
+    tauri::async_runtime::spawn_blocking(move || {
+        admitted.finish(&service, &native_outcome, &journal, adoption)
+    })
+    .await
+    .map_err(|_| "The original Blender terminal is unconfirmed; read its retained attempt.".into())
+}
+
+#[tauri::command]
+async fn read_original_blender_lit_still(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: blender_lit::ReadRequest,
+) -> Result<Option<blender_lit::AttemptView>, String> {
+    let service = state.service.clone();
+    let original = request.clone();
+    let view = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        blender_lit::read_attempt(&service, &original)
+    })
+    .await
+    .map_err(|_| "The original Blender attempt could not be read.")??;
+    owner.begin_phase()?;
+    blender_lit::project(&state.service, &request.source)?;
+    Ok(view)
+}
+
+#[tauri::command]
+async fn preview_blender_lit_still(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: blender_lit::ReadRequest,
+) -> Result<tauri::ipc::Response, String> {
+    let service = state.service.clone();
+    let original = request.clone();
+    let registry = state.preview.clone();
+    let bytes = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        registry.read_retained_png(|| blender_lit::read_png(&service, &original))
+    })
+    .await
+    .map_err(|_| "The original Blender PNG could not be read.")??;
+    owner.begin_phase()?;
+    blender_lit::project(&state.service, &request.source)?;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 /// Prepare only: the native picker selects three existing owner connections.
@@ -3898,6 +4088,7 @@ fn main() {
                 runtime_profiles: runtime_profiles::RuntimeProfiles::new(&data_dir),
                 native_renders: hyperframes_render::RenderRegistry::default(),
                 blender_cycle_plans: blender_product_run::CyclePlans::default(),
+                blender_lit_plans: blender_lit::LitPlans::default(),
                 graph_exchange_custody: GraphExchangeJournal::new(&data_dir, workspace_session)?,
                 development_audition_custody,
             });
@@ -3942,6 +4133,11 @@ fn main() {
             native_blender_product_source,
             prepare_blender_product_cycle,
             start_blender_product_cycle,
+            native_blender_lit_source,
+            prepare_blender_lit_still,
+            start_blender_lit_still,
+            read_original_blender_lit_still,
+            preview_blender_lit_still,
             native_blender_product_attempt,
             motion_canvas_preflight,
             render_motion_canvas,
