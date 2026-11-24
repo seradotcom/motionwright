@@ -4,7 +4,12 @@ use super::effect_grants::{EffectGrantRegistry, EffectKind, EffectScope};
 use super::hyperframes_source::{SourceRequest, inspect_source};
 use motionwright_domain::Project;
 use motionwright_native::{
-    hyperframes::compile_hyperframes_source, production::HyperframesSourceEvidence,
+    hyperframes::compile_hyperframes_source,
+    production::{
+        HyperframesJobObservation, HyperframesJobReadback, HyperframesJobState,
+        HyperframesOriginalJob, HyperframesSourceEvidence,
+        read_recorded_hyperframes_job_observation,
+    },
 };
 use motionwright_service::{ProductionReceipt, ProductionReceiptInput, StudioService};
 use serde::{Deserialize, Serialize};
@@ -520,14 +525,34 @@ pub fn read_attempt(service: &StudioService, request: &ReadRequest) -> Result<Re
     if intent.source.generation != request.generation {
         return Err(UNCONFIRMED.into());
     }
-    let evidence = original_result(service, &intent)?;
+    let canonical = original_result(service, &intent)?;
+    let observed = if canonical.is_none() {
+        retained_job_observation(service, &intent)?.0
+    } else {
+        None
+    };
+    let observed_state = observed.as_ref().map(|result| result.observation.state);
+    let observed_job = observed
+        .as_ref()
+        .map(|result| result.observation.job_ref.clone());
+    let evidence = canonical.or_else(|| observed.and_then(|result| result.evidence));
     view.state = if evidence.is_some() {
         "completed"
-    } else if receipt.stage == "failed_known" {
+    } else if receipt.stage == "failed_known"
+        || matches!(
+            observed_state,
+            Some(HyperframesJobState::Failed | HyperframesJobState::Cancelled)
+        )
+    {
         "failed_known"
     } else {
-        "outcome_unknown"
+        match observed_state {
+            Some(HyperframesJobState::Running) => "running",
+            Some(HyperframesJobState::Cancelling) => "cancelling",
+            _ => "outcome_unknown",
+        }
     };
+    view.job_ref = observed_job;
     view.source_current = current == intent.project;
     view.source = Some(intent.source.clone());
     view.fingerprint = Some(intent.fingerprint);
@@ -549,4 +574,179 @@ pub fn read_attempt(service: &StudioService, request: &ReadRequest) -> Result<Re
         original_project: Some(intent.project),
         connection_identity: Some(intent.connection_identity),
     })
+}
+
+pub fn job_binding(intent: &OriginalIntent) -> HyperframesOriginalJob {
+    HyperframesOriginalJob {
+        project: intent.project.clone(),
+        request_id: intent.request_id.clone(),
+        deliverable_id: intent.source.deliverable_id,
+        runtime_lock_sha256: intent.runtime_lock_sha256.clone(),
+        connection_identity: intent.connection_identity.clone(),
+    }
+}
+fn observation_stage(state: HyperframesJobState) -> &'static str {
+    match state {
+        HyperframesJobState::Succeeded => "completed",
+        HyperframesJobState::Failed | HyperframesJobState::Cancelled => "failed_known",
+        HyperframesJobState::Running | HyperframesJobState::Cancelling => "outcome_unknown",
+    }
+}
+/// Inspect the bounded original history once, then authenticate only the chosen
+/// observation against its SDK dispatch and completion records. A terminal
+/// result cannot be hidden by a later nonterminal observation.
+fn retained_job_observation(
+    service: &StudioService,
+    intent: &OriginalIntent,
+) -> Result<(Option<HyperframesJobReadback>, BTreeSet<Uuid>), String> {
+    let watermark = service
+        .production_receipt_watermark(intent.project.id)
+        .map_err(|_| UNCONFIRMED)?;
+    if watermark.count > 20_000 {
+        return Err("The original observation history exceeds its inspection budget.".into());
+    }
+    let encoded = serde_json::to_value(intent).map_err(|_| UNCONFIRMED)?;
+    let request_sha = digest(intent)?;
+    let mut observations = std::collections::BTreeMap::<Uuid, HyperframesJobObservation>::new();
+    let mut recent = None;
+    let mut terminal: Option<HyperframesJobObservation> = None;
+    let mut before = None;
+    let mut inspected = 0_u64;
+    while inspected < watermark.count {
+        let page = service
+            .production_receipts_snapshot_page(intent.project.id, &watermark, before, 256)
+            .map_err(|_| UNCONFIRMED)?;
+        if page.is_empty() {
+            return Err(UNCONFIRMED.into());
+        }
+        inspected += page.len() as u64;
+        before = page.last().map(|row| row.id);
+        for row in page {
+            if row.request_id != intent.request_id || row.command != COMMAND {
+                continue;
+            }
+            let Some(raw) = row.payload.pointer("/outcome/job_observation") else {
+                continue;
+            };
+            if row.request_sha256 != request_sha
+                || row.project_id != intent.project.id
+                || row.generation != intent.source.generation
+                || row.revision != intent.source.revision
+                || row.payload.get("intent") != Some(&encoded)
+                || row.payload.get("mutation") != Some(&Value::Bool(true))
+            {
+                return Err(UNCONFIRMED.into());
+            }
+            let observed: HyperframesJobObservation =
+                serde_json::from_value(raw.clone()).map_err(|_| UNCONFIRMED)?;
+            if observed.schema != "motionwright.hyperframes-job-observation/1"
+                || observed.observation_id.is_nil()
+                || observed.original_request_id != intent.request_id
+                || observed.generation != intent.source.generation
+                || observed.observed_revision < intent.source.revision
+                || observed.job_ref != original_job(intent)
+                || row.stage != observation_stage(observed.state)
+            {
+                return Err(UNCONFIRMED.into());
+            }
+            if let Some(previous) = observations.insert(observed.observation_id, observed.clone())
+                && previous != observed
+            {
+                return Err(UNCONFIRMED.into());
+            }
+            if observations.len() > 64 {
+                return Err("The original job observation budget is exhausted.".into());
+            }
+            if recent.is_none() {
+                recent = Some(observed.clone());
+            }
+            if observed.state.terminal() {
+                if let Some(prior) = &terminal {
+                    if prior.state != observed.state
+                        || prior.provider_generation != observed.provider_generation
+                    {
+                        return Err(
+                            "The original job contains conflicting terminal observations.".into(),
+                        );
+                    }
+                } else {
+                    terminal = Some(observed);
+                }
+            }
+        }
+    }
+    let readback = terminal
+        .or(recent)
+        .map(|observed| {
+            read_recorded_hyperframes_job_observation(service, &job_binding(intent), &observed)
+                .map_err(|_| UNCONFIRMED.to_string())
+        })
+        .transpose()?;
+    if service
+        .production_receipt_watermark(intent.project.id)
+        .map_err(|_| UNCONFIRMED)?
+        != watermark
+    {
+        return Err("Original observation history changed during readback.".into());
+    }
+    Ok((readback, observations.keys().copied().collect()))
+}
+/// A completed retained result is returned locally. An absent/unacknowledged
+/// Native start is never replaced with another render.
+pub fn prepare_job_observation(
+    service: &StudioService,
+    request: &ReadRequest,
+) -> Result<Option<OriginalIntent>, String> {
+    let recovered = read_attempt(service, request)?;
+    if matches!(recovered.view.state, "completed" | "failed_known") {
+        return Ok(None);
+    }
+    let receipt = service
+        .latest_production_receipt(request.project_id, &request.request_id)
+        .map_err(|_| UNCONFIRMED)?
+        .ok_or(UNCONFIRMED)?;
+    let intent = original_from_receipt(&receipt)?;
+    let (_, ids) = retained_job_observation(service, &intent)?;
+    if ids.len() >= 64 {
+        return Err("The original job observation budget is exhausted. Retained source and results remain readable.".into());
+    }
+    Ok(Some(intent))
+}
+pub fn record_job_observation(
+    service: &StudioService,
+    intent: &OriginalIntent,
+    readback: &HyperframesJobReadback,
+) -> Result<(), String> {
+    let confirmed = read_recorded_hyperframes_job_observation(
+        service,
+        &job_binding(intent),
+        &readback.observation,
+    )
+    .map_err(|_| UNCONFIRMED)?;
+    if let Some(evidence) = &confirmed.evidence {
+        validate_evidence(intent, evidence)?;
+    }
+    let (prior, ids) = retained_job_observation(service, intent)?;
+    if ids.contains(&confirmed.observation.observation_id) {
+        return Ok(());
+    }
+    if let Some(prior) = prior
+        && prior.observation.state.terminal()
+    {
+        if confirmed.observation.state.terminal()
+            && confirmed.observation.state != prior.observation.state
+        {
+            return Err("The original job contains conflicting terminal observations.".into());
+        }
+        return Ok(());
+    }
+    if ids.len() >= 64 {
+        return Err("The original job observation budget is exhausted.".into());
+    }
+    append(
+        service,
+        intent,
+        observation_stage(confirmed.observation.state),
+        json!({"job_observation":confirmed.observation}),
+    )
 }

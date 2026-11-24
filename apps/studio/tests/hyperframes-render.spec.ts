@@ -2,6 +2,8 @@
 import { expect, test } from "@playwright/test";
 type Fixture = {
   records(): { command:string; request:Record<string,unknown> }[];
+  pendingNext():void; jobState(state:"running"|"cancelling"|"completed"|"failed_known"):void;
+  holdObservation():void; releaseObservation():void;
   loseNext():void; holdGrant():void; releaseGrant():void; revision(value:number):void;
   holdRuntime():void; releaseRuntime():void; runtimeState(state:"files_unverified"|"installed"):void; retainRollback():void;
 };
@@ -118,4 +120,75 @@ test("a retained runtime rollback prevents dispatch when the original render gra
   expect(calls.filter(item => item.command === "issue_effect_grant")).toHaveLength(1);
   expect(calls.filter(item => item.command === "render_hyperframes_source")).toHaveLength(0);
   expect(calls.some(item => item.command === "install_runtime_profile" || item.command === "rollback_runtime_profile")).toBe(false);
+});
+
+async function pendingOriginal(page: import("@playwright/test").Page) {
+  await page.goto("/tests/fixtures/hyperframes-render.html");
+  await page.getByRole("button", { name:"Inspect saved HyperFrames source" }).click();
+  const panel = page.getByRole("region", { name:"HyperFrames native PNG rendering" });
+  await panel.getByRole("button", { name:"Read installed HyperFrames profiles", exact:true }).click();
+  await panel.getByRole("button", { name:"Use selected HyperFrames profile", exact:true }).click();
+  await expect(panel.getByText("Installed HyperFrames files verified for this selection.", { exact:false })).toBeVisible();
+  await page.evaluate(() => window.__hyperframesRenderFixture.pendingNext());
+  await panel.getByRole("button", { name:"Render saved HyperFrames source" }).click();
+  await expect(panel.getByRole("alert")).toContainText("remained pending");
+  return panel;
+}
+test("a pending original job is explicitly checked and its finished PNGs reopen without another native operation", async ({ page }) => {
+  const panel = await pendingOriginal(page);
+  await panel.getByRole("button", { name:"Read original HyperFrames result" }).click();
+  await expect(panel.getByText("The original outcome is unconfirmed", { exact:false })).toBeVisible();
+  await panel.getByRole("button", { name:"Check original native job" }).click();
+  await expect(panel.getByText("Last native check: the original job was running.", { exact:false })).toBeVisible();
+  await expect(panel.getByRole("button", { name:"Render saved HyperFrames source" })).toBeDisabled();
+  await expect(panel.getByRole("img")).toHaveCount(0);
+  await page.evaluate(() => window.__hyperframesRenderFixture.jobState("completed"));
+  await panel.getByRole("button", { name:"Check original native job" }).click();
+  await expect(panel.getByText("The provider completed the original 60-frame PNG sequence.", { exact:false })).toBeVisible();
+  await expect(panel.getByRole("button", { name:"Check original native job" })).toBeDisabled();
+  await page.reload();
+  await panel.getByRole("button", { name:"Read original HyperFrames result" }).click();
+  const image = panel.getByRole("img");
+  await expect.poll(() => image.evaluate(node => (node as HTMLImageElement).naturalWidth)).toBe(64);
+  const calls = await page.evaluate(() => window.__hyperframesRenderFixture.records());
+  expect(calls.filter(item => item.command === "issue_effect_grant")).toHaveLength(1);
+  expect(calls.filter(item => item.command === "render_hyperframes_source")).toHaveLength(1);
+  expect(calls.filter(item => item.command === "observe_original_hyperframes_job")).toHaveLength(2);
+  expect(calls.filter(item => item.command === "read_original_hyperframes_render")).toHaveLength(2);
+  const id = calls.find(item => item.command === "render_hyperframes_source")!.request.request_id;
+  expect(calls.filter(item => item.command === "observe_original_hyperframes_job").every(item => item.request.request_id === id)).toBe(true);
+});
+test("a late original job observation cannot activate a preview after revision ABA", async ({ page }) => {
+  const panel = await pendingOriginal(page);
+  await page.evaluate(() => {
+    window.__hyperframesRenderFixture.jobState("completed");
+    window.__hyperframesRenderFixture.holdObservation();
+  });
+  await panel.getByRole("button", { name:"Check original native job" }).click();
+  await expect(panel.getByText("Checking the original native job without restarting it", { exact:false })).toBeVisible();
+  await page.evaluate(() => window.__hyperframesRenderFixture.revision(5));
+  await page.evaluate(() => window.__hyperframesRenderFixture.revision(4));
+  await page.getByRole("button", { name:"Inspect saved HyperFrames source" }).click();
+  await page.evaluate(() => window.__hyperframesRenderFixture.releaseObservation());
+  await expect(panel.getByRole("img")).toHaveCount(0);
+  await expect(panel.getByText("The provider completed the original", { exact:false })).toHaveCount(0);
+  const calls = await page.evaluate(() => window.__hyperframesRenderFixture.records());
+  expect(calls.filter(item => item.command === "observe_original_hyperframes_job")).toHaveLength(1);
+  expect(calls.filter(item => item.command === "render_hyperframes_source")).toHaveLength(1);
+});
+test("an authenticated terminal failure permits a distinct explicit attempt without replay", async ({ page }) => {
+  const panel = await pendingOriginal(page);
+  await page.evaluate(() => window.__hyperframesRenderFixture.jobState("failed_known"));
+  await panel.getByRole("button", { name:"Check original native job" }).click();
+  await expect(panel.getByText("The original operation has a known failure.", { exact:false })).toBeVisible();
+  await expect(panel.getByRole("button", { name:"Check original native job" })).toBeDisabled();
+  await expect(panel.getByRole("button", { name:"Render saved HyperFrames source" })).toBeEnabled();
+  await panel.getByRole("button", { name:"Render saved HyperFrames source" }).click();
+  await expect(panel.getByText("The provider completed the original", { exact:false })).toBeVisible();
+  const calls = await page.evaluate(() => window.__hyperframesRenderFixture.records());
+  const ids = calls.filter(item => item.command === "render_hyperframes_source").map(item => item.request.request_id);
+  expect(ids).toHaveLength(2);
+  expect(new Set(ids).size).toBe(2);
+  expect(calls.filter(item => item.command === "issue_effect_grant")).toHaveLength(2);
+  expect(calls.filter(item => item.command === "observe_original_hyperframes_job")).toHaveLength(1);
 });

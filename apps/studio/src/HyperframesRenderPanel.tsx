@@ -8,7 +8,7 @@ import {
 import type { HyperframesSourceSnapshot } from "./hyperframesSourceApi";
 import {
   dispatchHyperframesRender, hyperframesIntentUnconfirmed, hyperframesRuntimeDigest,
-  prepareHyperframesRender, readHyperframesRenderIntents, readOriginalHyperframesRender,
+  prepareHyperframesRender, readHyperframesRenderIntents, readOriginalHyperframesRender, observeOriginalHyperframesJob,
   type HyperframesRenderIntent, type HyperframesRenderResponse,
 } from "./hyperframesRenderApi";
 
@@ -23,7 +23,7 @@ export default function HyperframesRenderPanel({ project, source, desktopMode }:
   const [attempts, setAttempts] = useState<HyperframesRenderIntent[]>([]);
   const [selected, setSelected] = useState("");
   const [response, setResponse] = useState<HyperframesRenderResponse | null>(null);
-  const [phase, setPhase] = useState<"render" | "read" | "profiles" | "runtime" | null>(null);
+  const [phase, setPhase] = useState<"render" | "read" | "observe" | "profiles" | "runtime" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
   const [frame, setFrame] = useState(0);
@@ -62,23 +62,23 @@ export default function HyperframesRenderPanel({ project, source, desktopMode }:
   const currentAttempt = attempts.find(item => item.request_id === selected);
   const pending = attempts.some(hyperframesIntentUnconfirmed);
   const currentProfile = profiles.find(item => item.install_id === selectedProfile);
-  const perform = async (kind: "render" | "read" | "profiles" | "runtime") => {
+  const perform = async (kind: "render" | "read" | "observe" | "profiles" | "runtime") => {
     if (!desktopMode || busy.current || !live.current || storageError) return;
     if (kind === "render" && (!source || !hyperframesRuntimeDigest(runtime) || pending)) return;
-    if (kind === "read" && !currentAttempt) return;
+    if ((kind === "read" || kind === "observe") && !currentAttempt) return;
     if (kind === "runtime" && !currentProfile) return;
     const turn = ++epoch.current, key = scope;
     const current = () => live.current && epoch.current === turn && scopeRef.current === key;
     const beforeDispatch = () => {
       if (!current()) throw new Error("The saved source selection changed before Native dispatch.");
-      if (verifiedProfile && readRuntimeRetention(project).some(item =>
+      if (kind === "render" && verifiedProfile && readRuntimeRetention(project).some(item =>
         item.install_id === verifiedProfile.install_id && item.kind === "rollback" && item.state !== "not_sent")) {
         setRuntime(""); setVerifiedProfile(null);
         throw new Error("The selected runtime has a retained rollback. Review its original installation before rendering.");
       }
     };
     busy.current = true; setPhase(kind); setError(null);
-    if (kind === "render" || kind === "read") { setResponse(null); setDecoded(null); }
+    if (kind === "render" || kind === "read" || kind === "observe") { setResponse(null); setDecoded(null); }
     else { setRuntime(""); setVerifiedProfile(null); }
     try {
       if (kind === "profiles") {
@@ -111,6 +111,8 @@ export default function HyperframesRenderPanel({ project, source, desktopMode }:
         const intent = prepareHyperframesRender(project, source, runtime);
         setSelected(intent.request_id); refresh();
         result = await dispatchHyperframesRender(project, source, intent, beforeDispatch);
+      } else if (kind === "observe" && currentAttempt) {
+        result = await observeOriginalHyperframesJob(project, currentAttempt, beforeDispatch);
       } else if (currentAttempt) {
         result = await readOriginalHyperframesRender(project, currentAttempt);
       } else { return; }
@@ -169,10 +171,16 @@ export default function HyperframesRenderPanel({ project, source, desktopMode }:
       <button type="button" className="secondary-button" disabled={!currentAttempt}
         onClick={() => void perform("read")}>Read original HyperFrames result</button>
       <p className="production-help">Reads the saved operation and original PNG files. This never restarts a render.</p>
+      <button type="button" className="secondary-button"
+        disabled={!currentAttempt || !hyperframesIntentUnconfirmed(currentAttempt)}
+        onClick={() => void perform("observe")}>Check original native job</button>
+      <p className="production-help">For a pending operation, use its original owner connection to read the native job's status
+        and finished result. This does not apply source, start another render or cancel the original job.</p>
     </fieldset>}
     {phase && <p role="status">{{
       render: "The original native operation is running…",
       read: "Reading the original retained operation…",
+      observe: "Checking the original native job without restarting it…",
       profiles: "Reading original local installations…",
       runtime: "Checking the original installed HyperFrames files…",
     }[phase]}</p>}
@@ -184,7 +192,10 @@ export default function HyperframesRenderPanel({ project, source, desktopMode }:
             {response.attempt.source_current ? "" : " It belongs to an earlier saved source."}</p>
         : response.attempt.state === "failed_known"
           ? <p>The original operation has a known failure. Review the runtime and source before a new explicit attempt.</p>
-          : <p>The original outcome is unconfirmed. Its request is preserved and will not be replayed.</p>}
+          : response.attempt.state === "running" || response.attempt.state === "cancelling"
+            ? <p>Last native check: the original job was {response.attempt.state}. Check again to refresh its status.
+                The original request remains retained.</p>
+            : <p>The original outcome is unconfirmed. Its request is preserved and will not be replayed.</p>}
       {response.preview_problem && <p>{response.preview_problem}</p>}
     </div>}
     {response?.preview && <div aria-label="HyperFrames original frame viewer">

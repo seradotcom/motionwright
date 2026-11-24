@@ -68,6 +68,7 @@
     "allow-native-hyperframes-source",
     "allow-render-hyperframes-source",
     "allow-read-original-hyperframes-render",
+    "allow-observe-original-hyperframes-job",
     "allow-export-hyperframes-source-file",
     "allow-export-caption-sidecar",
     "allow-export-otio",

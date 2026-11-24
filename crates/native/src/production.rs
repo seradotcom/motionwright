@@ -52,7 +52,10 @@ pub use hybrid_budget::HybridNativeSources;
 pub use hybrid_mlt::{HybridNativeMaster, HybridNativeTimeline};
 mod manim_graph;
 mod manim_graph_profile;
-pub use hyperframes::HyperframesSourceEvidence;
+pub use hyperframes::{
+    HyperframesJobObservation, HyperframesJobReadback, HyperframesJobState, HyperframesOriginalJob,
+    HyperframesSourceEvidence, read_recorded_hyperframes_job_observation,
+};
 mod mlt_mezzanine;
 mod mlt_multisegment_av;
 mod mlt_timeline;

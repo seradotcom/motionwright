@@ -63,6 +63,7 @@ fn main() {
             "native_hyperframes_source",
             "render_hyperframes_source",
             "read_original_hyperframes_render",
+            "observe_original_hyperframes_job",
             "export_hyperframes_source_file",
             "export_caption_sidecar",
             "export_otio",

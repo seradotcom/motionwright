@@ -16,6 +16,9 @@ const render = () => flushSync(() => root.render(<StrictMode>
 type Request = Record<string, unknown>;
 const records: { command: string; request: Request }[] = JSON.parse(sessionStorage.getItem("hf-fixture-calls") ?? "[]");
 let loseNext = false, hold = false, release: ((value: unknown) => void) | null = null;
+type ObservedState = "running" | "cancelling" | "completed" | "failed_known" | "outcome_unknown";
+let pendingNext = false, nativeState: ObservedState = "running", holdObservation = false;
+let returnObservation: (() => void) | null = null;
 const grant = { token: "cccccccc-3333-4333-8333-cccccccccccc" };
 const installId = "11111111-7777-4777-8777-111111111111";
 const destination = "/synthetic/runtime-profiles-v1/" + installId;
@@ -38,15 +41,15 @@ const source = () => ({
   compiler:"semwright-hyperframes-rect-clips-v3", hyperframes_version:"0.8.181",
   width:64, height:36, frame_count:60, project_modified:false, editor_launched:false, native_execution_started:false,
 });
-function result(request: Request) {
+function result(request: Request, state: ObservedState = "completed") {
   const binding = request.source as { revision:number; active_branch:string };
   const current = binding.revision === project.revision && binding.active_branch === project.active_branch;
   return { attempt: {
     schema:"motionwright.hyperframes-desktop-attempt/1", request_id:request.request_id,
     source:request.source, fingerprint:request.expected_fingerprint, runtime_lock_sha256:request.runtime_lock_sha256,
-    state:"completed", source_current:current, job_ref:"hf-"+"9".repeat(64), frame_count:60,
+    state, source_current:current, job_ref:state === "outcome_unknown" ? null : "hf-"+"9".repeat(64), frame_count:state === "completed" ? 60 : null,
     project_modified:false, automatic_retry:false,
-  }, preview:current ? { token:grant.token, segment_id:"hf-"+"9".repeat(64),
+  }, preview:current && state === "completed" ? { token:grant.token, segment_id:"hf-"+"9".repeat(64),
       scene_ids:project.scenes.map(scene => scene.id), frame_count:60 } : null,
     preview_problem:null };
 }
@@ -71,17 +74,27 @@ function result(request: Request) {
     }
     if (command === "render_hyperframes_source") {
       sessionStorage.setItem("hf-fixture-original", JSON.stringify(args.request));
+      sessionStorage.setItem("hf-fixture-retained-state", pendingNext ? "outcome_unknown" : "completed");
+      if (pendingNext) { pendingNext = false; throw new Error("Synthetic original acknowledgement lost while native job remained pending."); }
       if (loseNext) { loseNext = false; throw new Error("Synthetic original acknowledgement lost after completion."); }
       return result(args.request);
     }
     if (command === "read_original_hyperframes_render") {
       const original = JSON.parse(sessionStorage.getItem("hf-fixture-original") ?? "null") as Request | null;
-      if (original?.request_id === args.request.request_id) return result(original);
+      if (original?.request_id === args.request.request_id) return result(original, (sessionStorage.getItem("hf-fixture-retained-state") ?? "completed") as ObservedState);
       return { attempt: {
         schema:"motionwright.hyperframes-desktop-attempt/1", request_id:args.request.request_id, source:null,
         fingerprint:null, runtime_lock_sha256:null, state:"not_found", source_current:false,
         job_ref:null, frame_count:null, project_modified:false, automatic_retry:false,
       }, preview:null, preview_problem:null };
+    }
+    if (command === "observe_original_hyperframes_job") {
+      const original = JSON.parse(sessionStorage.getItem("hf-fixture-original") ?? "null") as Request | null;
+      if (original?.request_id !== args.request.request_id) throw new Error("No acknowledged original fixture job");
+      const observed = result(original, nativeState);
+      sessionStorage.setItem("hf-fixture-retained-state", nativeState);
+      if (holdObservation) return new Promise(resolve => { returnObservation = () => resolve(observed); });
+      return observed;
     }
     if (command === "preview_native_frame") return Uint8Array.from(atob(PNG_BASE64), char => char.charCodeAt(0));
     throw new Error("Unexpected synthetic fixture command: " + command);
@@ -90,6 +103,10 @@ function result(request: Request) {
 (window as unknown as Record<string, unknown>).__hyperframesRenderFixture = {
   records: () => structuredClone(records),
   loseNext: () => { loseNext = true; },
+  pendingNext: () => { pendingNext = true; },
+  jobState: (state: ObservedState) => { nativeState = state; },
+  holdObservation: () => { holdObservation = true; },
+  releaseObservation: () => { holdObservation = false; const pending = returnObservation; returnObservation = null; if (!pending) throw new Error("No pending original observation"); pending(); },
   runtimeState: (state: RuntimeInstallation["state"]) => { runtimeState = state; },
   holdRuntime: () => { holdRuntime = true; },
   releaseRuntime: () => { holdRuntime = false; const pending = returnRuntime; returnRuntime = null; if (!pending) throw new Error("No original runtime read."); pending(); },

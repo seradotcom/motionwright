@@ -1,7 +1,12 @@
 //! Public provider route using the existing source-bound production journal.
 use super::*;
+mod recovery;
 use crate::hyperframes::build_hyperframes_source;
 use motionwright_hyperframes_profile::{self as model, SourceInventory};
+pub use recovery::{
+    HyperframesJobObservation, HyperframesJobReadback, HyperframesJobState, HyperframesOriginalJob,
+    read_recorded_hyperframes_job_observation,
+};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HyperframesSourceEvidence {

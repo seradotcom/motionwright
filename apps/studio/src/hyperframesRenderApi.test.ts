@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fixtureProject } from "./fixture";
 import type { HyperframesSourceSnapshot } from "./hyperframesSourceApi";
 import { dispatchHyperframesRender, prepareHyperframesRender, readHyperframesRenderIntents,
-  readOriginalHyperframesRender, parseHyperframesRenderResponse, type HyperframesRenderIntent,
+  readOriginalHyperframesRender, observeOriginalHyperframesJob, parseHyperframesRenderResponse, type HyperframesRenderIntent,
   type HyperframesRenderResponse } from "./hyperframesRenderApi";
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
@@ -141,5 +141,43 @@ describe("original HyperFrames render custody", () => {
     await expect(dispatchHyperframesRender(p, s, intent, () => {})).rejects.toThrow("Desktop");
     await expect(readOriginalHyperframesRender(p, intent)).rejects.toThrow("Desktop");
     expect(invokeMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("explicit original job observations", () => {
+  it("uses only the original status command and retains running until a terminal result", async () => {
+    const p = project(), s = source(p), intent = prepareHyperframesRender(p, s, "d".repeat(64));
+    invokeMock.mockResolvedValueOnce({ token:grant }).mockRejectedValueOnce(new Error("lost"));
+    await expect(dispatchHyperframesRender(p, s, intent, () => {})).rejects.toThrow("lost");
+    const running = response(intent);
+    Object.assign(running.attempt, { state:"running", frame_count:null });
+    invokeMock.mockResolvedValueOnce(running);
+    const guard = vi.fn();
+    await expect(observeOriginalHyperframesJob(p, intent, guard)).resolves.toEqual(running);
+    expect(guard).toHaveBeenCalledTimes(1);
+    expect(invokeMock.mock.calls[2]).toEqual(["observe_original_hyperframes_job", { request:{
+      project_id:p.id, generation:p.generation, request_id:intent.request_id,
+    } }]);
+    expect(readHyperframesRenderIntents(p)[0].retention).toBe("dispatched");
+    expect(() => prepareHyperframesRender(p, s, "d".repeat(64))).toThrow("unconfirmed");
+    const failed = response(intent);
+    Object.assign(failed.attempt, { state:"failed_known", frame_count:null });
+    invokeMock.mockResolvedValueOnce(failed);
+    await observeOriginalHyperframesJob(p, intent, () => {});
+    expect(readHyperframesRenderIntents(p)[0].retention).toBe("failed_known");
+    expect(prepareHyperframesRender(p, s, "d".repeat(64)).request_id).not.toBe(intent.request_id);
+    expect(invokeMock.mock.calls.filter(call => call[0] === "issue_effect_grant")).toHaveLength(1);
+    expect(invokeMock.mock.calls.filter(call => call[0] === "render_hyperframes_source")).toHaveLength(1);
+  });
+  it("rejects a retired invocation and a foreign original without changing retained custody", async () => {
+    const p = project(), s = source(p), intent = prepareHyperframesRender(p, s, "d".repeat(64));
+    await expect(observeOriginalHyperframesJob(p, intent, () => { throw new Error("retired owner"); }))
+      .rejects.toThrow("retired owner");
+    expect(invokeMock).not.toHaveBeenCalled();
+    const foreign = response(intent);
+    foreign.attempt.request_id = "hf-ui-11111111-1111-4111-8111-111111111111";
+    invokeMock.mockResolvedValueOnce(foreign);
+    await expect(observeOriginalHyperframesJob(p, intent, () => {})).rejects.toThrow();
+    expect(readHyperframesRenderIntents(p)[0].retention).toBe("prepared");
   });
 });

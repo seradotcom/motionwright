@@ -13,7 +13,7 @@ export interface HyperframesRenderResponse {
   attempt: {
     schema: "motionwright.hyperframes-desktop-attempt/1"; request_id: string;
     source: HyperframesSourceBinding | null; fingerprint: string | null; runtime_lock_sha256: string | null;
-    state: "not_found" | "outcome_unknown" | "completed" | "failed_known";
+    state: "not_found" | "outcome_unknown" | "running" | "cancelling" | "completed" | "failed_known";
     source_current: boolean; job_ref: string | null; frame_count: number | null;
     project_modified: false; automatic_retry: false;
   };
@@ -117,7 +117,7 @@ export function parseHyperframesRenderResponse(value: unknown, project: Project,
   const attempt = object(result.attempt, ["schema", "request_id", "source", "fingerprint", "runtime_lock_sha256",
     "state", "source_current", "job_ref", "frame_count", "project_modified", "automatic_retry"]);
   if (attempt.schema !== "motionwright.hyperframes-desktop-attempt/1" || attempt.request_id !== intent.request_id
-    || !["not_found", "outcome_unknown", "completed", "failed_known"].includes(String(attempt.state))
+    || !["not_found", "outcome_unknown", "running", "cancelling", "completed", "failed_known"].includes(String(attempt.state))
     || typeof attempt.source_current !== "boolean" || attempt.project_modified !== false || attempt.automatic_retry !== false
     || (result.preview_problem !== null && (typeof result.preview_problem !== "string" || result.preview_problem.length > 1024))) {
     throw new Error("The original render response is not bound to this request.");
@@ -138,8 +138,12 @@ export function parseHyperframesRenderResponse(value: unknown, project: Project,
       if (typeof attempt.job_ref !== "string" || !/^hf-[0-9a-f]{64}$/.test(attempt.job_ref)
         || !Number.isSafeInteger(attempt.frame_count) || Number(attempt.frame_count) < 30
         || Number(attempt.frame_count) > 300 || Number(attempt.frame_count) % 30 !== 0) throw new Error("The completed sequence identity is malformed.");
-    } else if (attempt.job_ref !== null || attempt.frame_count !== null || result.preview !== null) {
-      throw new Error("An unconfirmed render cannot supply a completed sequence.");
+    } else {
+      const job = typeof attempt.job_ref === "string" && /^hf-[0-9a-f]{64}$/.test(attempt.job_ref);
+      const observed = attempt.state === "running" || attempt.state === "cancelling";
+      if (attempt.frame_count !== null || result.preview !== null
+        || (observed ? !job : attempt.job_ref !== null && !(attempt.state === "failed_known" && job)))
+        throw new Error("An unconfirmed render cannot supply a completed sequence.");
     }
   }
   if (result.preview !== null) {
@@ -195,6 +199,21 @@ export async function readOriginalHyperframesRender(project: Project, intent: Hy
   desktop();
   const original = structuredClone(project), request = parseIntent(intent, original);
   const response = parseHyperframesRenderResponse(await invoke<unknown>("read_original_hyperframes_render", { request: {
+    project_id: original.id, generation: original.generation, request_id: request.request_id,
+  } }), original, request);
+  retainKnownOutcome(original, request, response);
+  return response;
+}
+
+
+/** One explicit Native status/result observation of the acknowledged original job.
+ * Stored readback remains a different, provider-free operation. */
+export async function observeOriginalHyperframesJob(project: Project, intent: HyperframesRenderIntent,
+  beforeDispatch: () => void): Promise<HyperframesRenderResponse> {
+  desktop();
+  const original = structuredClone(project), request = parseIntent(intent, original);
+  beforeDispatch();
+  const response = parseHyperframesRenderResponse(await invoke<unknown>("observe_original_hyperframes_job", { request: {
     project_id: original.id, generation: original.generation, request_id: request.request_id,
   } }), original, request);
   retainKnownOutcome(original, request, response);

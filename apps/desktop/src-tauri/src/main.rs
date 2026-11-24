@@ -3443,6 +3443,64 @@ async fn read_original_hyperframes_render(
 }
 
 #[tauri::command]
+async fn observe_original_hyperframes_job(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: hyperframes_render::ReadRequest,
+) -> Result<DesktopHyperframesResponse, String> {
+    let _lease = state.hyperframes_renders.acquire(request.project_id)?;
+    let service = state.service.clone();
+    let original_request = hyperframes_render::ReadRequest {
+        project_id: request.project_id,
+        generation: request.generation,
+        request_id: request.request_id.clone(),
+    };
+    let (intent, stamp) = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        let intent = hyperframes_render::prepare_job_observation(&service, &original_request)?;
+        let current = service
+            .project(original_request.project_id)
+            .map_err(|_| "Original project is unavailable.".to_string())?;
+        if current.generation != original_request.generation {
+            return Err("The original project generation changed.".to_string());
+        }
+        Ok::<_, String>((intent, RevisionStamp::from(&current)))
+    })
+    .await
+    .map_err(|_| "Original job preparation could not be confirmed.".to_string())??;
+    owner.begin_phase()?;
+    let Some(intent) = intent else {
+        return present_original_hyperframes(&mut owner, &state, request).await;
+    };
+    let path = selected_connection_path(&state, request.project_id)?.ok_or_else(|| {
+        "Select the original owner-provisioned Semwright connection to check this job.".to_string()
+    })?;
+    let connection = ProductionConnection::load(path)
+        .map_err(|_| "The original Semwright connection is unavailable.".to_string())?;
+    if connection.resource != intent.project.resource_key()
+        || connection
+            .identity()
+            .map_err(|_| "The original connection identity is unavailable.".to_string())?
+            != intent.connection_identity
+    {
+        return Err("The selected connection does not own the retained HyperFrames job.".into());
+    }
+    let coordinator = ProductionCoordinator::with_receipt_custody(
+        state.service.clone(),
+        connection,
+        &state.production_receipt_custody,
+    )
+    .map_err(|_| "The original Semwright connection was rejected.".to_string())?;
+    owner.begin_phase()?;
+    let observed = coordinator.observe_original_hyperframes_job(&stamp, &hyperframes_render::job_binding(&intent))
+        .await.map_err(|_| "The original Native job could not be authenticated or read. Its existing outcome is preserved; no render was restarted.".to_string())?;
+    // Retain the authenticated observation of an already accepted invocation,
+    // including when its window has since closed. This cannot dispatch Native.
+    hyperframes_render::record_job_observation(&state.service, &intent, &observed)?;
+    owner.begin_phase()?;
+    present_original_hyperframes(&mut owner, &state, request).await
+}
+
+#[tauri::command]
 async fn runtime_profile_inventory(
     mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
@@ -3688,6 +3746,7 @@ fn main() {
             native_hyperframes_source,
             render_hyperframes_source,
             read_original_hyperframes_render,
+            observe_original_hyperframes_job,
             export_hyperframes_source_file,
             export_caption_sidecar,
             export_otio,

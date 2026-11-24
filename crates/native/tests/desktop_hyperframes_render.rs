@@ -22,7 +22,11 @@ mod desktop_render_tests {
         CanvasNode, Change, CoordinateSpace, NodeStyle, Project, RationalTime, VisualToken,
     };
     use motionwright_native::{
-        hyperframes::compile_hyperframes_source, production::HyperframesSourceEvidence,
+        hyperframes::compile_hyperframes_source,
+        production::{
+            HyperframesJobObservation, HyperframesJobReadback, HyperframesJobState,
+            HyperframesSourceEvidence, read_recorded_hyperframes_job_observation,
+        },
     };
     use motionwright_service::{ProductionReceiptInput, StudioService};
     use serde_json::{Value, json};
@@ -541,6 +545,529 @@ mod desktop_render_tests {
                 .is_err()
         );
     }
+
+    // Synthetic SDK receipts with the real command digest and original dispatch
+    // metadata. They test custody, not provider permission or rendered fidelity.
+    fn sdk_receipt(
+        service: &StudioService,
+        intent: &OriginalIntent,
+        receipt_scope: (u64, String),
+        command: &str,
+        args: Value,
+        data: Value,
+        tamper: Option<&str>,
+    ) {
+        let (revision, request_id) = receipt_scope;
+        let mutation = command.ends_with(".start");
+        let job = if mutation {
+            Value::Null
+        } else {
+            args["job_ref"].clone()
+        };
+        let mut dispatch =
+            json!({"connection":intent.connection_identity,"mutation":mutation,"job_ref":job});
+        let mut completed = json!({"job_ref":job,"broker_request_id":Uuid::new_v4(),
+            "result":{"data":data,"execution":{"provenance":{"provider":"driver:hyperframes","provider_generation":3}}}});
+        match tamper {
+            Some("provider") => {
+                completed["result"]["execution"]["provenance"]["provider"] = json!("driver:blender")
+            }
+            Some("generation") => {
+                completed["result"]["execution"]["provenance"]["provider_generation"] = json!(4)
+            }
+            Some("connection") => dispatch["connection"] = json!("3".repeat(64)),
+            Some("job") => {
+                completed["result"]["data"]["job_ref"] = json!(format!("hf-{}", "4".repeat(64)))
+            }
+            Some("source") => {
+                completed["result"]["data"]["receipt"]["source_sha256"] = json!("5".repeat(64))
+            }
+            _ => {}
+        }
+        let input = ProductionReceiptInput {
+            project_id: intent.project.id,
+            generation: intent.source.generation,
+            revision,
+            request_id,
+            request_sha256: if tamper == Some("digest") {
+                "6".repeat(64)
+            } else {
+                sha(&serde_json::to_vec(&(command, &args)).unwrap())
+            },
+            command: command.into(),
+            stage: "dispatching".into(),
+            payload: dispatch,
+        };
+        service.append_production_receipt(input.clone()).unwrap();
+        service
+            .append_production_receipt(ProductionReceiptInput {
+                stage: "completed".into(),
+                payload: completed,
+                ..input
+            })
+            .unwrap();
+    }
+    fn acknowledged_start(
+        service: &StudioService,
+        intent: &OriginalIntent,
+        native: &HyperframesSourceEvidence,
+    ) {
+        sdk_receipt(
+            service,
+            intent,
+            (
+                intent.source.revision,
+                format!("{}:render-start", intent.request_id),
+            ),
+            "driver.hyperframes.render.start",
+            json!({"fingerprint":intent.fingerprint,"runtime_lock_sha256":intent.runtime_lock_sha256,"attempt_id":native.job_ref}),
+            json!({"job_ref":native.job_ref,"state":"running"}),
+            None,
+        );
+    }
+    fn observed_receipts(
+        service: &StudioService,
+        intent: &OriginalIntent,
+        native: &HyperframesSourceEvidence,
+        state: HyperframesJobState,
+        revision: u64,
+        tamper: Option<&str>,
+    ) -> HyperframesJobObservation {
+        let id = Uuid::new_v4();
+        let observation = HyperframesJobObservation {
+            schema: "motionwright.hyperframes-job-observation/1".into(),
+            observation_id: id,
+            original_request_id: intent.request_id.clone(),
+            generation: intent.source.generation,
+            observed_revision: revision,
+            job_ref: native.job_ref.clone(),
+            provider_generation: 3,
+            state,
+        };
+        sdk_receipt(
+            service,
+            intent,
+            (revision, format!("hf-observe-{id}:status")),
+            "driver.hyperframes.render.status",
+            json!({"job_ref":native.job_ref}),
+            json!({"state":state,"job_ref":native.job_ref,"fingerprint":intent.fingerprint}),
+            if tamper == Some("source") {
+                None
+            } else {
+                tamper
+            },
+        );
+        if state == HyperframesJobState::Succeeded {
+            sdk_receipt(
+                service,
+                intent,
+                (revision, format!("hf-observe-{id}:result")),
+                "driver.hyperframes.render.result",
+                json!({"job_ref":native.job_ref}),
+                native.result.clone(),
+                tamper,
+            );
+        }
+        observation
+    }
+    fn retain_observed(
+        service: &StudioService,
+        intent: &OriginalIntent,
+        observation: &HyperframesJobObservation,
+    ) {
+        let readback =
+            read_recorded_hyperframes_job_observation(service, &job_binding(intent), observation)
+                .unwrap();
+        record_job_observation(service, intent, &readback).unwrap();
+    }
+
+    #[test]
+    fn original_job_observation_reopens_original_pngs_and_preserves_later_edits() {
+        let (dir, service, p) = fixture();
+        let grants = EffectGrantRegistry::default();
+        let r = request(&p, &grants);
+        let intent = begin(&service, &grants, &r, &"2".repeat(64)).unwrap();
+        let native = evidence(&intent, dir.path());
+        acknowledged_start(&service, &intent, &native);
+        assert!(
+            prepare_job_observation(&service, &read(&p, &r))
+                .unwrap()
+                .is_some()
+        );
+        let running = observed_receipts(
+            &service,
+            &intent,
+            &native,
+            HyperframesJobState::Running,
+            p.revision,
+            None,
+        );
+        retain_observed(&service, &intent, &running);
+        let saved = service.production_receipt_watermark(p.id).unwrap();
+        retain_observed(&service, &intent, &running);
+        assert_eq!(service.production_receipt_watermark(p.id).unwrap(), saved);
+        assert_eq!(
+            read_attempt(&service, &read(&p, &r)).unwrap().view.state,
+            "running"
+        );
+        let mut profile = p.deliverables[0].clone();
+        profile.name = "Independent saved edit during original job".into();
+        let next = service
+            .apply(
+                p.id,
+                &p.stamp(),
+                "independent-edit",
+                &Change::UpsertDeliverable { profile },
+            )
+            .unwrap()
+            .project;
+        let success = observed_receipts(
+            &service,
+            &intent,
+            &native,
+            HyperframesJobState::Succeeded,
+            next.revision,
+            None,
+        );
+        retain_observed(&service, &intent, &success);
+        drop(service);
+        let reopened = StudioService::open(dir.path().join("original.sqlite3")).unwrap();
+        let before = reopened.production_receipt_watermark(p.id).unwrap();
+        let recovered = read_attempt(&reopened, &read(&next, &r)).unwrap();
+        assert_eq!(recovered.view.state, "completed");
+        assert!(!recovered.view.source_current);
+        assert_eq!(recovered.original_project.as_ref(), Some(&p));
+        assert_eq!(recovered.evidence.as_ref().unwrap().revision, p.revision);
+        let previews = NativePreviewRegistry::default();
+        let token = previews
+            .register_hyperframes(
+                dir.path(),
+                &p.resource_key(),
+                &p,
+                recovered.evidence.as_ref().unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            previews
+                .read_frame(&p, &frame_request(&p, token.token, 29))
+                .unwrap(),
+            ORIGINAL_PNG
+        );
+        assert!(
+            previews
+                .read_frame(&next, &frame_request(&next, token.token, 0))
+                .is_err()
+        );
+        assert!(
+            prepare_job_observation(&reopened, &read(&next, &r))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(reopened.production_receipt_watermark(p.id).unwrap(), before);
+        assert_eq!(reopened.project(p.id).unwrap(), next);
+        assert!(
+            reopened
+                .latest_production_receipt(p.id, &format!("{}:render-result", r.request_id))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn unacknowledged_or_tampered_job_observation_never_settles_original() {
+        for tamper in [
+            "unacknowledged",
+            "provider",
+            "generation",
+            "connection",
+            "job",
+            "source",
+            "digest",
+            "nonce",
+            "revision",
+        ] {
+            let (dir, service, p) = fixture();
+            let grants = EffectGrantRegistry::default();
+            let r = request(&p, &grants);
+            let intent = begin(&service, &grants, &r, &"2".repeat(64)).unwrap();
+            let native = evidence(&intent, dir.path());
+            if tamper != "unacknowledged" {
+                acknowledged_start(&service, &intent, &native);
+            }
+            let mut observation = observed_receipts(
+                &service,
+                &intent,
+                &native,
+                HyperframesJobState::Succeeded,
+                p.revision,
+                Some(tamper),
+            );
+            if tamper == "nonce" {
+                observation.observation_id = Uuid::new_v4();
+            }
+            if tamper == "revision" {
+                observation.observed_revision += 1;
+            }
+            let before = service.production_receipt_watermark(p.id).unwrap();
+            assert!(
+                read_recorded_hyperframes_job_observation(
+                    &service,
+                    &job_binding(&intent),
+                    &observation
+                )
+                .is_err(),
+                "{tamper}"
+            );
+            assert!(
+                record_job_observation(
+                    &service,
+                    &intent,
+                    &HyperframesJobReadback {
+                        observation,
+                        evidence: Some(native)
+                    }
+                )
+                .is_err(),
+                "{tamper}"
+            );
+            assert_eq!(service.production_receipt_watermark(p.id).unwrap(), before);
+            assert_eq!(
+                read_attempt(&service, &read(&p, &r)).unwrap().view.state,
+                "outcome_unknown"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_job_observation_cannot_be_downgraded_or_replayed() {
+        for terminal in [HyperframesJobState::Failed, HyperframesJobState::Cancelled] {
+            let (dir, service, p) = fixture();
+            let grants = EffectGrantRegistry::default();
+            let r = request(&p, &grants);
+            let intent = begin(&service, &grants, &r, &"2".repeat(64)).unwrap();
+            let native = evidence(&intent, dir.path());
+            acknowledged_start(&service, &intent, &native);
+            let ended = observed_receipts(&service, &intent, &native, terminal, p.revision, None);
+            retain_observed(&service, &intent, &ended);
+            let late = observed_receipts(
+                &service,
+                &intent,
+                &native,
+                HyperframesJobState::Running,
+                p.revision,
+                None,
+            );
+            let before = service.production_receipt_watermark(p.id).unwrap();
+            retain_observed(&service, &intent, &late);
+            assert_eq!(service.production_receipt_watermark(p.id).unwrap(), before);
+            assert_eq!(
+                read_attempt(&service, &read(&p, &r)).unwrap().view.state,
+                "failed_known"
+            );
+            assert!(
+                prepare_job_observation(&service, &read(&p, &r))
+                    .unwrap()
+                    .is_none()
+            );
+            let contradiction = observed_receipts(
+                &service,
+                &intent,
+                &native,
+                HyperframesJobState::Succeeded,
+                p.revision,
+                None,
+            );
+            let conflicting = read_recorded_hyperframes_job_observation(
+                &service,
+                &job_binding(&intent),
+                &contradiction,
+            )
+            .unwrap();
+            assert!(record_job_observation(&service, &intent, &conflicting).is_err());
+            assert!(begin(&service, &grants, &r, &intent.connection_identity).is_err());
+            let fresh = request(&p, &grants);
+            assert_ne!(r.request_id, fresh.request_id);
+            assert!(begin(&service, &grants, &fresh, &intent.connection_identity).is_ok());
+        }
+    }
+
+    #[cfg(unix)]
+    fn observation_transport(
+        dir: &Path,
+        p: &Project,
+    ) -> motionwright_native::production::ProductionConnection {
+        use std::os::unix::fs::PermissionsExt;
+        let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
+        let executable = dir.join("synthetic-semwright");
+        let script = format!(
+            "#!/bin/sh\ncase \"$*\" in\n*driver.hyperframes.render.status*) printf 'status\\n' >> '{}'; cat '{}' ;;\n*driver.hyperframes.render.result*) printf 'result\\n' >> '{}'; cat '{}' ;;\n*) printf 'unexpected\\n' >> '{}'; exit 42 ;;\nesac\n",
+            quote(&dir.join("calls")),
+            quote(&dir.join("status.json")),
+            quote(&dir.join("calls")),
+            quote(&dir.join("result.json")),
+            quote(&dir.join("calls"))
+        );
+        fs::write(&executable, script.as_bytes()).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = dir.join("broker.sock");
+        let session_file = dir.join("session.json");
+        let output_root = dir.join("output");
+        fs::write(&socket, b"").unwrap();
+        fs::write(&session_file, b"{}").unwrap();
+        fs::create_dir(&output_root).unwrap();
+        for path in [&socket, &session_file] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        fs::set_permissions(&output_root, fs::Permissions::from_mode(0o700)).unwrap();
+        motionwright_native::production::ProductionConnection {
+            schema: "motionwright-semwright-connection/1".into(),
+            executable_sha256: sha(script.as_bytes()),
+            executable,
+            socket,
+            session_file,
+            output_root,
+            resource: p.resource_key(),
+        }
+    }
+    #[cfg(unix)]
+    fn transport_response(command: &str, data: Value, generation: u64) -> Value {
+        json!({"ok":true,"request_id":"synthetic-original-observation","command":command,"data":data,"error":null,
+            "execution":{"backend":"driver:hyperframes","duration_ms":1,"policy_decision":"allow","fallbacks_attempted":[],
+                "provenance":{"provider":"driver:hyperframes","source":"driver","provider_version":"test","capability_version":"test",
+                    "descriptor_sha256":"ab".repeat(32),"untrusted_metadata":false,"catalog_revision":1,
+                    "execution_provider":"driver:hyperframes","provider_generation":generation},"dry_run":false},"warnings":[]})
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_observer_dispatches_only_original_status_and_result() {
+        use motionwright_native::production::ProductionCoordinator;
+        let (dir, service, p) = fixture();
+        let connection = observation_transport(dir.path(), &p);
+        let grants = EffectGrantRegistry::default();
+        let r = request(&p, &grants);
+        let intent = begin(&service, &grants, &r, &connection.identity().unwrap()).unwrap();
+        let native = evidence(&intent, &connection.output_root);
+        acknowledged_start(&service, &intent, &native);
+        // Preserve an interrupted previous read exactly as unknown.
+        let unknown_id = format!("{}:render-status:0", intent.request_id);
+        service
+            .append_production_receipt(ProductionReceiptInput {
+                project_id: p.id,
+                generation: p.generation,
+                revision: p.revision,
+                request_id: unknown_id.clone(),
+                request_sha256: sha(b"interrupted fixture read"),
+                command: "driver.hyperframes.render.status".into(),
+                stage: "outcome_unknown".into(),
+                payload: json!({"mutation":false}),
+            })
+            .unwrap();
+        fs::write(dir.path().join("status.json"), serde_json::to_vec(&transport_response(
+            "driver.hyperframes.render.status", json!({"state":"succeeded","job_ref":native.job_ref,"fingerprint":intent.fingerprint}), 3)).unwrap()).unwrap();
+        fs::write(
+            dir.path().join("result.json"),
+            serde_json::to_vec(&transport_response(
+                "driver.hyperframes.render.result",
+                native.result.clone(),
+                3,
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut profile = p.deliverables[0].clone();
+        profile.name = "Later source stays saved".into();
+        let next = service
+            .apply(
+                p.id,
+                &p.stamp(),
+                "edit",
+                &Change::UpsertDeliverable { profile },
+            )
+            .unwrap()
+            .project;
+        let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+        let observed = coordinator
+            .observe_original_hyperframes_job(&next.stamp(), &job_binding(&intent))
+            .await
+            .unwrap();
+        assert_eq!(observed.observation.state, HyperframesJobState::Succeeded);
+        assert_eq!(observed.observation.observed_revision, next.revision);
+        assert_eq!(observed.evidence.as_ref().unwrap().revision, p.revision);
+        record_job_observation(&service, &intent, &observed).unwrap();
+        assert_eq!(
+            fs::read(dir.path().join("calls")).unwrap(),
+            b"status\nresult\n"
+        );
+        assert_eq!(
+            service
+                .latest_production_receipt(p.id, &unknown_id)
+                .unwrap()
+                .unwrap()
+                .stage,
+            "outcome_unknown"
+        );
+        let before = service.production_receipt_watermark(p.id).unwrap();
+        assert_eq!(
+            read_attempt(&service, &read(&next, &r)).unwrap().view.state,
+            "completed"
+        );
+        assert!(
+            prepare_job_observation(&service, &read(&next, &r))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(service.production_receipt_watermark(p.id).unwrap(), before);
+        assert_eq!(
+            fs::read(dir.path().join("calls")).unwrap(),
+            b"status\nresult\n"
+        );
+        assert_eq!(service.project(p.id).unwrap(), next);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_observer_rejects_unacknowledged_start_and_changed_provider_before_result() {
+        use motionwright_native::production::ProductionCoordinator;
+        for changed in ["unacknowledged", "connection", "provider_generation"] {
+            let (dir, service, p) = fixture();
+            let connection = observation_transport(dir.path(), &p);
+            let grants = EffectGrantRegistry::default();
+            let r = request(&p, &grants);
+            let intent = begin(&service, &grants, &r, &connection.identity().unwrap()).unwrap();
+            let native = evidence(&intent, &connection.output_root);
+            if changed != "unacknowledged" {
+                acknowledged_start(&service, &intent, &native);
+            }
+            let mut binding = job_binding(&intent);
+            if changed == "connection" {
+                binding.connection_identity = "2".repeat(64);
+            }
+            fs::write(dir.path().join("status.json"), serde_json::to_vec(&transport_response(
+                "driver.hyperframes.render.status", json!({"state":"succeeded","job_ref":native.job_ref,"fingerprint":intent.fingerprint}), 4)).unwrap()).unwrap();
+            let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+            let before = service.production_receipt_watermark(p.id).unwrap();
+            assert!(
+                coordinator
+                    .observe_original_hyperframes_job(&p.stamp(), &binding)
+                    .await
+                    .is_err(),
+                "{changed}"
+            );
+            if changed == "provider_generation" {
+                assert_eq!(fs::read(dir.path().join("calls")).unwrap(), b"status\n");
+            } else {
+                assert!(!dir.path().join("calls").exists());
+                assert_eq!(service.production_receipt_watermark(p.id).unwrap(), before);
+            }
+            assert_eq!(
+                read_attempt(&service, &read(&p, &r)).unwrap().view.state,
+                "outcome_unknown"
+            );
+            assert_eq!(service.project(p.id).unwrap(), p);
+        }
+    }
+
     // Actual first-party PNG bytes; this is an image transport fixture, not a rendered fidelity claim.
     const ORIGINAL_PNG: &[u8] = &[
         137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 64, 0, 0, 0, 36, 8,
