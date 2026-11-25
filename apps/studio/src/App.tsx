@@ -3,6 +3,8 @@ import {
   recoverRetainedBundleImport, discardBundleImportCopy, type BundleImportCopy,
 } from "./projectBundleImport";
 import CommandPalette, { type EditorCommand } from "./CommandPalette";
+import AudioReviewTransport from "./AudioReviewTransport";
+import { audioReviewScope, buildAudioReviewClock, type AudioReviewActions, type AudioReviewRequest } from "./audioReviewClock";
 import { assertPortableExportReceipt, inspectPortableMaterials } from "./portableMaterialReport";
 import SceneInspector from "./SceneInspector";
 import SceneBeatTimelineEditor from "./SceneBeatTimelineEditor";
@@ -1421,6 +1423,7 @@ export default function App() {
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [audioReviewSession,setAudioReviewSession] = useState<{key:string;request:AudioReviewRequest}|null>(null);
   const [nativeRenderReceipt, setNativeRenderReceipt] = useState<MotionCanvasRenderEvidence | null>(null);
   const [nativeWindowEditors, setNativeWindowEditors] = useState<NativeWindowEditors>({});
   const [nativeAvReceipt, setNativeAvReceipt] = useState<MltAvMasterEvidence | null>(null);
@@ -1704,6 +1707,12 @@ export default function App() {
   }, []);
 
   const project = boot?.project ?? null;
+  useEffect(() => {
+    if(audioReviewSession && (!project || audioReviewSession.request.scope!==audioReviewScope(project))) {
+      setAudioReviewSession(null);
+      setError("Timeline audio review stopped because the saved project changed. Load the current source again.");
+    }
+  }, [project, audioReviewSession]);
   const selectedProfile = project?.deliverables.find((profile) => profile.id === timebaseProfileId)
     ?? project?.deliverables[0] ?? null;
   const timebaseRate = selectedProfile && validEditorRate(selectedProfile.frame_rate)
@@ -2075,6 +2084,17 @@ export default function App() {
     setWorkspace(selection.kind==="object"?"Canvas":selection.kind==="camera"?"Production":selection.kind==="review"?"Review":selection.kind==="beat"?"Storyboard":"Audio");
   };
 
+  const audioReviewActions: AudioReviewActions = {
+    open: request => {
+      try {
+        if(request.scope!==audioReviewScope(project)) throw new Error("The saved audio revision changed before review.");
+        buildAudioReviewClock(project,request);
+        setPlaying(false);setAudioReviewSession({key:crypto.randomUUID(),request});
+      } catch(reason) { setError(reason instanceof Error?reason.message:String(reason)); }
+    },
+    invalidate: source => setAudioReviewSession(current => current?.request.kind===source.kind &&
+      current.request.sourceId===source.sourceId?null:current),
+  };
   const renderWorkspace = () => {
     switch (workspace) {
       case "Brief":
@@ -2090,6 +2110,7 @@ export default function App() {
             commitRecipe={commitCamera}
             desktopMode={boot.native_sdk.mode === "tauri"}
             importVoice={ingestVoice}
+            audioReview={audioReviewActions}
             playhead={playhead}
             onSeek={seekTo}
           />
@@ -2359,6 +2380,9 @@ export default function App() {
         {workspace !== "Production" && <SceneInspector project={project} scene={selectedScene} commit={commit} commitScene={commitCamera} commitBeat={commitCamera} rate={timebaseRate} mode={displayMode} rendererLabels={rendererLabels} />}
       </div>
 
+      {audioReviewSession&&<AudioReviewTransport key={audioReviewSession.key}
+        project={project} request={audioReviewSession.request} playhead={playhead} editorialPlaying={playing}
+        onSeek={seekTo} onClose={()=>setAudioReviewSession(null)}/>}
       <Timeline
         key={timelineSelectionScope(project)}
         project={project}

@@ -2,14 +2,17 @@ import {useEffect,useRef,useState} from "react";
 import {AudioLines} from "lucide-react";
 import {readOriginalVoiceAudition} from "./api";
 import {voiceAuditionSource} from "./voiceAudition";
+import {audioReviewScope, buildAudioReviewClock, type AudioReviewActions} from "./audioReviewClock";
+import {useLocalAudioElement} from "./audioReviewPlayback";
 import type {Project} from "./types";
 
 /** Review any retained measured take without selecting it for the project,
  * changing its transcript, or claiming native mix / mastering evidence. */
-export default function VoiceTakeAudition({project,desktopMode}:{project:Project;desktopMode:boolean}){
+export default function VoiceTakeAudition({project,desktopMode,audioReview}:{project:Project;desktopMode:boolean;audioReview?:AudioReviewActions}){
+  const player=useLocalAudioElement();
   const [trackId,setTrackId]=useState(()=>project.audio.active_voice_track_id??project.audio.voice_tracks[0]?.id??"");
   const [attested,setAttested]=useState<string|null>(null);
-  const [preview,setPreview]=useState<{scope:string;url:string}|null>(null);
+  const [preview,setPreview]=useState<{scope:string;url:string;wav:Blob}|null>(null);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState<string|null>(null);
   const [expanded,setExpanded]=useState(false);
@@ -36,23 +39,28 @@ export default function VoiceTakeAudition({project,desktopMode}:{project:Project
       const bytes=await readOriginalVoiceAudition(project,trackId,true);
       if(!mounted.current||serial.current!==ticket||latest.current!==originalScope)return;
       const owned=new Uint8Array(bytes.length);owned.set(bytes);
-      setPreview({scope:originalScope,url:URL.createObjectURL(new Blob([owned.buffer],{type:"audio/wav"}))});
+      const wav=new Blob([owned.buffer],{type:"audio/wav"});
+      setPreview({scope:originalScope,url:URL.createObjectURL(wav),wav});
     }catch(reason){
       if(mounted.current&&serial.current===ticket&&latest.current===originalScope)
         setError(reason instanceof Error?reason.message:String(reason));
     }finally{running.current=false;if(mounted.current)setBusy(false);}
   };
   const current=expanded&&desktopMode&&preview?.scope===scope?preview:null;
+  const invalidateReview=()=>audioReview?.invalidate({kind:"voice",sourceId:trackId});
+  let reviewProblem:string|null=null;
+  try{buildAudioReviewClock(project,{kind:"voice",sourceId:trackId});}
+  catch(reason){reviewProblem=reason instanceof Error?reason.message:String(reason);}
   return <section className="audio-editor-section" aria-label="Original voice take listening">
     <button type="button" className="button button-secondary" aria-expanded={expanded}
-      onClick={()=>{serial.current++;setExpanded(v=>!v);setPreview(null);setAttested(null);}}>
+      onClick={()=>{invalidateReview();serial.current++;setExpanded(v=>!v);setPreview(null);setAttested(null);}}>
       <AudioLines size={15} aria-hidden="true"/> Listen to an original voice take
     </button>
     {expanded&&<div>
       <p className="production-help">Compare retained measured takes locally without making a take active. The original WAV is checked against its saved digest and measured clock. Playback does not change the project, certify timing, or approve a mix.</p>
       <label className="production-field"><span>Take to listen to</span>
         <select aria-label="Take to listen to" value={track?.id??""} onChange={event=>{
-          serial.current++;setTrackId(event.target.value);setAttested(null);setPreview(null);setError(null);
+          invalidateReview();serial.current++;setTrackId(event.target.value);setAttested(null);setPreview(null);setError(null);
         }}>
           <option value="">Select a measured take</option>
           {project.audio.voice_tracks.map(item=><option key={item.id} value={item.id}>
@@ -65,7 +73,7 @@ export default function VoiceTakeAudition({project,desktopMode}:{project:Project
       {blocker&&<p role="status" className="production-help">{blocker}</p>}
       <label className="production-check"><input type="checkbox" aria-label="Confirm original take listening rights"
         checked={confirmed} disabled={!!blocker||busy}
-        onChange={event=>{serial.current++;setPreview(null);setError(null);setAttested(event.target.checked?scope:null);}}/>
+        onChange={event=>{invalidateReview();serial.current++;setPreview(null);setError(null);setAttested(event.target.checked?scope:null);}}/>
         I have permission to listen to this exact original take locally.
       </label>
       <button type="button" className="button button-primary" disabled={!!blocker||!confirmed||busy}
@@ -73,8 +81,16 @@ export default function VoiceTakeAudition({project,desktopMode}:{project:Project
       {error&&<p role="alert" className="portable-message error">{error}</p>}
       {current&&<section aria-label="Verified original take playback" className="audio-narration-source-evidence">
         <strong>Exact original source WAV</strong>
-        <audio aria-label="Original take playback" controls preload="none" src={current.url}
+        <audio aria-label="Original take playback" ref={player.bind} onPlay={player.claim} controls preload="none" src={current.url}
           onError={()=>{setPreview(null);setError("The local media decoder could not play this original WAV.");}}/>
+        {audioReview&&<div>
+          <button type="button" className="button button-secondary" disabled={!!reviewProblem}
+            onClick={()=>{if(!current||reviewProblem)return;player.pause();audioReview.open({
+              kind:"voice",sourceId:trackId,scope:audioReviewScope(project),label:track?.label??"Active voice",wav:current.wav});}}>
+            Review active take on project timeline
+          </button>
+          {reviewProblem&&<p role="status" className="production-help">{reviewProblem}</p>}
+        </div>}
         <p className="production-help">Local source playback only. No independent speech, loudness, or final audiovisual approval.</p>
       </section>}
     </div>}

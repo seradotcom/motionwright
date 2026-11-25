@@ -66,7 +66,21 @@ test("review either retained original voice take, verify its bytes and never cha
   await expect(audio).toHaveAttribute("src",/^blob:/);
   await audio.evaluate(node=>{const el=node as HTMLAudioElement;el.preload="metadata";el.load();});
   await expect.poll(()=>audio.evaluate(node=>(node as HTMLAudioElement).duration)).toBe(1);
+  await panel.getByRole("button",{name:"Review active take on project timeline"}).click();
+  const linked=page.getByLabel("Timeline audio playback",{exact:true});
+  await expect.poll(()=>linked.evaluate(node=>(node as HTMLAudioElement).duration)).toBe(1);
+  const linkedUrl=await linked.getAttribute("src");
+  await linked.evaluate(async node=>{const el=node as HTMLAudioElement;el.muted=true;el.currentTime=.4;await el.play();});
+  await expect(page.locator(".timeline-transport .timecode")).not.toHaveText("00:00:00");
+  await page.getByRole("button",{name:"Canvas",exact:true}).click();
+  await expect(linked).toHaveAttribute("src",linkedUrl!);
+  await expect.poll(()=>linked.evaluate(node=>(node as HTMLAudioElement).currentTime)).toBeGreaterThan(.4);
+  await page.getByRole("button",{name:"Audio",exact:true}).click();
+  await panel.getByRole("button",{name:"Listen to an original voice take"}).click();
+  // Reopening the local source controls never silently approves another read.
+  await expect(rights).not.toBeChecked();
   await select.selectOption(ids[1]);
+  await expect(linked).toHaveCount(0);
   await expect(audio).toHaveCount(0);await expect(rights).not.toBeChecked();await expect(load).toBeDisabled();
   await rights.check();await load.click();await expect(audio).toHaveCount(1);
   await audio.evaluate(node=>{const el=node as HTMLAudioElement;el.preload="metadata";el.load();});

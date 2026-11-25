@@ -68,7 +68,7 @@ export function assertAudioRecipeExtensions(recipe: { original_mix: unknown; aud
     if (Object.hasOwn(recipe.original_mix, key)) assertOriginalMixBusEnvelope(recipe.original_mix[key]);
   }
 }
-function selectedScenes(project: Project, profileId: string): Scene[] {
+export function selectedAudioScenes(project: Project, profileId: string): Scene[] {
   const profile = project.deliverables.find(profile => profile.id === profileId);
   if (!profile) throw new Error("The delivery profile no longer exists.");
   if (!profile.included_scene_ids.length) return project.scenes;
@@ -109,7 +109,7 @@ export function validateAudioRecipeCut(project: Project, profileId: string, reci
   const envelopes = originalMixEnvelopeKeys.flatMap(key => recipe.original_mix?.[key] ? [recipe.original_mix[key]!] : []);
   const start = recipe.original_mix?.music_source_start_sample;
   if (start === undefined && !envelopes.some(envelope => envelope.fade_in_samples || envelope.fade_out_samples)) return;
-  const scenes = selectedScenes(project, profileId);
+  const scenes = selectedAudioScenes(project, profileId);
   const samples = exactOutputSamples(scenes);
   if (start !== undefined) {
     const profile = project.deliverables.find(value => value.id === profileId)!;
@@ -150,7 +150,7 @@ export function canonicalAudioTargets(recipe: DeliveryRecipe): { audio_targets?:
 }
 /** Selected cue identity only; scheduling, source bytes and tails stay canonical in Rust. */
 export function selectedOriginalMixCues(project: Project, profileId: string): SemanticSfxCue[] {
-  const ids = new Set(selectedScenes(project, profileId).map(scene => scene.id));
+  const ids = new Set(selectedAudioScenes(project, profileId).map(scene => scene.id));
   return (project.audio.sfx_cues ?? []).filter(cue => ids.has(cue.scene_id));
 }
 export function requireOriginalMixSfx(project: Project, profileId: string, mix: OriginalMixRecipe): void {

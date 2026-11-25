@@ -16,6 +16,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import SemanticSfxWorkbench from "./SemanticSfxWorkbench";
 import NarrationTakeReview from "./NarrationTakeReview";
 import VoiceTakeAudition from "./VoiceTakeAudition";
+import type { AudioReviewActions } from "./audioReviewClock";
 import NativeOriginalMixReview from "./NativeOriginalMixReview";
 import type {
   AudioCue,
@@ -327,7 +328,7 @@ function MixEditor({ project, commit }: { project: Project; commit: Commit }) {
   </section>;
 }
 
-type AudioWorkspaceProps = { project: Project; commit: Commit; commitRequired: Commit; commitRecipe: (change: Change) => Promise<Project>; desktopMode: boolean; importVoice: (path: string, label?: string) => Promise<void>; playhead: number; onSeek: (seconds: number) => void };
+type AudioWorkspaceProps = { audioReview?: AudioReviewActions; project: Project; commit: Commit; commitRequired: Commit; commitRecipe: (change: Change) => Promise<Project>; desktopMode: boolean; importVoice: (path: string, label?: string) => Promise<void>; playhead: number; onSeek: (seconds: number) => void };
 
 function AudioRetainedDrafts({ project }: { project: Project }) {
   const [copies, setCopies] = useState<AudioRecoveryCopy[]>([]), [error, setError] = useState<string | null>(null);
@@ -405,7 +406,9 @@ function AudioWorkspaceEditor({
   importVoice,
   playhead,
   onSeek,
+  audioReview,
 }: {
+  audioReview?: AudioReviewActions;
   project: Project;
   commit: Commit;
   commitRequired: Commit;
@@ -564,7 +567,7 @@ function AudioWorkspaceEditor({
           </section>
 
           <VoiceTakeAudition key={JSON.stringify([project.id,project.generation,project.active_branch])}
-            project={project} desktopMode={desktopMode} />
+            project={project} desktopMode={desktopMode} audioReview={audioReview} />
           <section className="waveform-proxy-section" aria-label="Measured sample peak waveform">
             <header>
               <div>
@@ -662,7 +665,7 @@ function AudioWorkspaceEditor({
           </section>
 
           <NarrationTakeReview project={project} desktopMode={desktopMode} commit={commit}/>
-          <NativeOriginalMixReview project={project} desktopMode={desktopMode} commit={commitRecipe}/>
+          <NativeOriginalMixReview project={project} desktopMode={desktopMode} commit={commitRecipe} audioReview={audioReview}/>
           <SemanticSfxWorkbench project={project} commit={commitRecipe} onSeek={onSeek}/>
           <MixEditor project={project} commit={commit}/>
           <AudioRetainedDrafts project={project}/>

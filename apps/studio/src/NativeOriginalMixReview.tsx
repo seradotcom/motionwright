@@ -1,6 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { AudioWaveform, ShieldCheck } from "lucide-react";
 import { nativeOriginalMixAudition } from "./api";
+import { audioReviewScope, buildAudioReviewClock, type AudioReviewActions } from "./audioReviewClock";
+import { useLocalAudioElement } from "./audioReviewPlayback";
 import { originalMixEnvelopeKeys, requireOriginalMixSfx, selectedOriginalMixCues } from "./audioRecipeContract";
 import { RecipeDraftReview, containRecipeKeyboard } from "./DeliveryProfiles";
 import { savedDeliveryRecipe, useDeliveryRecipeDraft, validateDeliveryRecipe } from "./deliveryRecipe";
@@ -30,11 +32,13 @@ function measuredVoiceProblem(voice: VoiceTrack): string | null {
   return null;
 }
 
-export default function NativeOriginalMixReview({ project, desktopMode, commit }: {
+export default function NativeOriginalMixReview({ project, desktopMode, commit, audioReview }: {
   project: Project;
   desktopMode: boolean;
   commit: (change: Change) => Promise<Project>;
+  audioReview?: AudioReviewActions;
 }) {
+  const player = useLocalAudioElement();
   const [expanded, setExpanded] = useState(false);
   const panelId = useId();
   const [profileId, setProfileId] = useState(() => project.deliverables.find(profile =>
@@ -50,7 +54,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
   const selectableSources = sourceAudio.filter(asset => asset.id !== selectedVoice?.asset_id);
   const [attestedScope, setAttestedScope] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
-  const [audition, setAudition] = useState<{ scope: string; url: string } | null>(null);
+  const [audition, setAudition] = useState<{ scope: string; url: string; wav: Blob } | null>(null);
   // A real decoded PCM is available before WebKit builds media controls.
   // Defer their subtree until the user actually asks to listen.
   const [playbackEnabled, setPlaybackEnabled] = useState(false);
@@ -94,6 +98,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
   }, [scope]);
 
   const invalidateAudition = () => {
+    if(selectedProfile) audioReview?.invalidate({kind:"mix",sourceId:selectedProfile.id});
     serial.current++;
     setAudition(null);
     setPlaybackEnabled(false);
@@ -179,7 +184,8 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
       if (!mounted.current || ticket !== serial.current || liveScope.current !== originalScope) return;
       const owned = new Uint8Array(wav.length);
       owned.set(wav);
-      setAudition({ scope: originalScope, url: URL.createObjectURL(new Blob([owned.buffer], { type: "audio/wav" })) });
+      const verifiedWav = new Blob([owned.buffer], { type: "audio/wav" });
+      setAudition({ scope: originalScope, url: URL.createObjectURL(verifiedWav), wav: verifiedWav });
     } catch (failure) {
       if (mounted.current && ticket === serial.current && liveScope.current === originalScope) setError(explain(failure));
     } finally {
@@ -188,10 +194,14 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
     }
   };
 
+  let reviewProblem: string | null = null;
+  try { buildAudioReviewClock(project,{kind:"mix",sourceId:selectedProfile?.id??""}); }
+  catch(reason) { reviewProblem = explain(reason); }
+
   const draftSourceStatus = `Draft source bindings: music ${mixDraft.values.music_asset_id || "none"}; SFX ${mixDraft.values.sfx_asset_id || "none"}.`;
   return <section className="audio-editor-section" aria-label="Original three-bus native PCM audition" onKeyDown={containRecipeKeyboard}>
     <button type="button" className="button button-secondary" aria-expanded={expanded}
-      aria-controls={panelId} onClick={() => setExpanded(value => !value)}>
+      aria-controls={panelId} onClick={() => { player.pause(); setPlaybackEnabled(false); setExpanded(value => !value); }}>
       <AudioWaveform size={15} aria-hidden="true" /> Voice / music / SFX · original source mix
     </button>
     <div id={panelId} hidden={!expanded}>
@@ -306,6 +316,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
     <label className="production-check">
       <input type="checkbox" checked={selfAttested} disabled={blockers.length > 0 || working}
         onChange={event => {
+          if(selectedProfile) audioReview?.invalidate({kind:"mix",sourceId:selectedProfile.id});
           serial.current++;
           setAudition(null);
           setPlaybackEnabled(false);
@@ -326,12 +337,21 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
     {currentAudition && <div aria-label="Unmastered original PCM preview" className="audio-narration-source-evidence">
       <strong>Local source PCM only · 48 kHz · not a mastered deliverable</strong>
       {playbackEnabled
-        ? <audio controls preload="none" src={currentAudition.url} />
+        ? <audio aria-label="Original mix playback" ref={player.bind} onPlay={player.claim} controls preload="none" src={currentAudition.url} />
         : <button type="button" className="button button-secondary"
             aria-label="Enable local original PCM playback controls"
             onClick={() => setPlaybackEnabled(true)}>
             Enable playback controls
           </button>}
+      {audioReview&&<div>
+        <button type="button" className="button button-secondary" disabled={!!reviewProblem}
+          onClick={()=>{if(!currentAudition||!selectedProfile||reviewProblem)return;player.pause();audioReview.open({
+            kind:"mix",sourceId:selectedProfile.id,scope:audioReviewScope(project),
+            label:selectedProfile.name+" original mix",wav:currentAudition.wav});}}>
+          Review saved mix on project timeline
+        </button>
+        {reviewProblem&&<p role="status" className="production-help">{reviewProblem}</p>}
+      </div>}
       <p>Source, clock and sample-peak guards passed for this PCM. Integrated LUFS, true peak, listening intelligibility and editorial approval require separate measurement and review. No timeline event or mastered deliverable was created.</p>
     </div>}
     </div>
