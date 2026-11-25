@@ -763,3 +763,52 @@ describe("retained native source import", () => {
     expect(readFileImport(ID, nativeStorage).kind).toBe("invalid"); expect(nativeStorage.getItem(saved.key)).toBe(oversizedNative);
   });
 });
+
+describe("authored native source digest", () => {
+  const digest = "a".repeat(64);
+  const boundInput = () => ({ ...nativeInput(), expected_sha256: digest });
+  const boundPreparation = (): PreparedFileImport => ({
+    ...nativePreparation(), intent: { kind: "native_capsule_source", spec: nativeSpec(), expected_sha256: digest },
+  });
+  it.each([null, "A".repeat(64), "a".repeat(63), digest + "\\n", 42])("refuses invalid expected digest %s before transport", async invalid => {
+    const storage = new MemoryStorage(), port = nativeTransport(storage);
+    await expect(importFileWithRetention(source(), { ...boundInput(), expected_sha256: invalid } as FileImportInput, port, storage)).rejects.toThrow("SHA-256");
+    expect(port.prepare).not.toHaveBeenCalled();
+    expect(port.grant).not.toHaveBeenCalled();
+    expect(storage.writes).toBe(0);
+  });
+  it("rejects a preparation that omits or replaces the authored digest before a grant", async () => {
+    for (const preparation of [nativePreparation(), {
+      ...boundPreparation(), intent: { kind: "native_capsule_source", spec: nativeSpec(), expected_sha256: "b".repeat(64) },
+    }]) {
+      const storage = new MemoryStorage(), port = nativeTransport(storage);
+      port.prepare.mockResolvedValue(preparation);
+      await expect(importFileWithRetention(source(), boundInput(), port, storage)).rejects.toThrow("differs from the authored input");
+      expect(port.grant).not.toHaveBeenCalled(); expect(port.dispatch).not.toHaveBeenCalled();
+      expect(storage.writes).toBe(0);
+    }
+  });
+  it("retains the original digest and refuses a receipt for substituted bytes", () => {
+    const storage = new MemoryStorage();
+    const original = retainFileImport(boundPreparation(), boundInput(), storage, REQUEST, 1_790_000_000_000);
+    expect(requireFileImport(original, storage).input).toEqual(boundInput());
+    expect(retained(readFileImport(ID, storage)).copy.preparation.intent).toEqual(boundPreparation().intent);
+    const response = receipt(original.copy);
+    expect(() => parseFileImportReceipt(response, original.copy)).toThrow("does not bind");
+    const spec = nativeSpec();
+    response.project.assets.push({ id: TOKEN, name: spec.name, media_type: spec.media_type, content_sha256: digest, source_revision: "native-capsule-source-import" });
+    response.project.production_design = {
+      ...response.project.production_design, plan: null, heroes: [], capsules: [{
+        id: spec.capsule_id, scene_id: spec.scene_id, label: spec.label,
+        source_asset_id: TOKEN, source_sha256: digest, editable_parameters: spec.editable_parameters,
+        native_editor_hint: spec.native_editor_hint, fidelity: { renderer: "Blender", renderer_version: "unobserved",
+          visual: "unavailable", temporal: "unavailable", structural: "unavailable", editable: "unavailable",
+          losses: [], evidence_sha256: null },
+      }],
+    };
+    expect(parseFileImportReceipt(response, original.copy).project).toEqual(response.project);
+    response.project.assets.at(-1)!.content_sha256 = "b".repeat(64);
+    expect(() => parseFileImportReceipt(response, original.copy)).toThrow("does not bind");
+    expect(requireFileImport(original, storage)).toEqual(original.copy);
+  });
+});

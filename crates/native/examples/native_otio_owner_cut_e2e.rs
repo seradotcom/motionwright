@@ -662,7 +662,10 @@ fn import_observed_native_capsule_source(
         request_id,
         native_path,
         &expected,
-        motionwright_storage::FileImportIntent::NativeCapsuleSource { spec },
+        motionwright_storage::FileImportIntent::NativeCapsuleSource {
+            spec,
+            expected_sha256: None,
+        },
     ) {
         Ok(value) => value,
         Err(error) => {
@@ -1579,6 +1582,7 @@ fn alab_adopt_with_expected(
     }
     let request = "original:alab-source:whole-otio";
     let intent = motionwright_storage::FileImportIntent::NativeCapsuleSource {
+        expected_sha256: None,
         spec: alab_capsule_spec(&project)?,
     };
     project = alab_stage(
@@ -2196,7 +2200,10 @@ fn alab_commit_returned_cut(
                 &source_request,
                 native_path,
                 &native_descriptor,
-                motionwright_storage::FileImportIntent::NativeCapsuleSource { spec },
+                motionwright_storage::FileImportIntent::NativeCapsuleSource {
+                    spec,
+                    expected_sha256: None,
+                },
             )?)
         },
     )?;

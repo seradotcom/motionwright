@@ -14,7 +14,7 @@ export interface NativeCapsuleSourceSpec7 {
 export type FileImportIntent =
   | { kind: "asset"; name: string; media_type: string }
   | { kind: "voice"; name: string; media_type: string; label: string }
-  | { kind: "native_capsule_source"; spec: NativeCapsuleSourceSpec7 };
+  | { kind: "native_capsule_source"; spec: NativeCapsuleSourceSpec7; expected_sha256?: string };
 
 interface LegacyFileImportInput {
   kind: "asset" | "voice";
@@ -25,7 +25,7 @@ interface LegacyFileImportInput {
 }
 
 export type FileImportInput = LegacyFileImportInput
-  | { kind: "native_capsule_source"; path: string; spec: NativeCapsuleSourceSpec7 };
+  | { kind: "native_capsule_source"; path: string; spec: NativeCapsuleSourceSpec7; expected_sha256?: string };
 
 type SavedInput = Required<LegacyFileImportInput>
   | Extract<FileImportInput, { kind: "native_capsule_source" }>;
@@ -165,14 +165,27 @@ function stamp(value: Record<string, unknown>): FileImportStamp {
   return { project_id: uuid(value.project_id), generation: uuid(value.generation), revision: value.revision as number };
 }
 
+/** Optional digest lives outside the seven authored metadata fields. */
+function nativeKeys(value: Record<string, unknown>, base: string[]): boolean {
+  return keys(value, Object.hasOwn(value, "expected_sha256") ? [...base, "expected_sha256"] : base);
+}
+function nativeDigest(value: Record<string, unknown>): { expected_sha256?: string } {
+  if (!Object.hasOwn(value, "expected_sha256")) return {};
+  const digest = value.expected_sha256;
+  if (typeof digest !== "string" || digest.length !== 64 || !/^[0-9a-f]{64}$/.test(digest)) {
+    throw new Error("The expected native source SHA-256 is invalid.");
+  }
+  return { expected_sha256: digest };
+}
+
 function savedInput(input: FileImportInput): SavedInput {
   if (input.kind === "native_capsule_source") {
-    if (!keys(input as unknown as Record<string, unknown>, ["kind", "path", "spec"])) {
+    if (!nativeKeys(input as unknown as Record<string, unknown>, ["kind", "path", "spec"])) {
       throw new Error("The native source input contains unsupported fields.");
     }
     const path = boundedText(input.path, MAX_COPY_BYTES);
     if (!path.trim()) throw new Error("Choose the original native source file.");
-    return { kind: input.kind, path, spec: parseNativeCapsuleSourceSpec(input.spec) };
+    return { kind: input.kind, path, spec: parseNativeCapsuleSourceSpec(input.spec), ...nativeDigest(input as unknown as Record<string, unknown>) };
   }
   if (input.kind !== "asset" && input.kind !== "voice") throw new Error("The import kind is unsupported.");
   const optional = (value: unknown) => value == null ? null : boundedText(value, MAX_COPY_BYTES, true);
@@ -186,8 +199,8 @@ function savedInput(input: FileImportInput): SavedInput {
 
 function intent(value: unknown): FileImportIntent {
   if (record(value) && value.kind === "native_capsule_source") {
-    if (!keys(value, ["kind", "spec"])) throw new Error("The prepared native source metadata is invalid.");
-    return { kind: value.kind, spec: parseNativeCapsuleSourceSpec(value.spec) };
+    if (!nativeKeys(value, ["kind", "spec"])) throw new Error("The prepared native source metadata is invalid.");
+    return { kind: value.kind, spec: parseNativeCapsuleSourceSpec(value.spec), ...nativeDigest(value) };
   }
   if (!record(value) || (value.kind !== "asset" && value.kind !== "voice")
       || !keys(value, value.kind === "voice" ? ["kind", "name", "media_type", "label"] : ["kind", "name", "media_type"])) {
@@ -208,7 +221,7 @@ function intent(value: unknown): FileImportIntent {
 function sameIntent(a: FileImportIntent, b: FileImportIntent): boolean {
   if (a.kind === "native_capsule_source" || b.kind === "native_capsule_source") {
     return a.kind === "native_capsule_source" && b.kind === "native_capsule_source"
-      && sameNativeCapsuleSourceSpec(a.spec, b.spec);
+      && sameNativeCapsuleSourceSpec(a.spec, b.spec) && a.expected_sha256 === b.expected_sha256;
   }
   return a.kind === b.kind && a.name === b.name && a.media_type === b.media_type
     && (a.kind !== "voice" || (b.kind === "voice" && a.label === b.label));
@@ -228,7 +241,8 @@ function matchesInput(preparation: PreparedFileImport, input: SavedInput): void 
   if (input.kind === "native_capsule_source" || preparation.intent.kind === "native_capsule_source") {
     if (preparation.path !== input.path.trim() || input.kind !== "native_capsule_source"
         || preparation.intent.kind !== "native_capsule_source"
-        || !sameNativeCapsuleSourceSpec(preparation.intent.spec, input.spec)) {
+        || !sameNativeCapsuleSourceSpec(preparation.intent.spec, input.spec)
+        || preparation.intent.expected_sha256 !== input.expected_sha256) {
       throw new Error("The prepared native source differs from the authored input. Keep the original input.");
     }
     return;
@@ -266,7 +280,7 @@ function decode(key: string, raw: string): FileImportCopy {
   if (!record(value) || !keys(value, ["schema", "request_id", "created_at", "preparation", "input"])
       || value.schema !== "motionwright.file-import-intent/1" || !Number.isSafeInteger(value.created_at)
       || (value.created_at as number) < 0 || !record(value.input)
-      || !keys(value.input, value.input.kind === "native_capsule_source" ? ["kind", "path", "spec"] : ["kind", "path", "name", "media_type", "label"])) {
+      || !(value.input.kind === "native_capsule_source" ? nativeKeys(value.input, ["kind", "path", "spec"]) : keys(value.input, ["kind", "path", "name", "media_type", "label"]))) {
     throw new Error("The retained import is unreadable. Its original copy was preserved.");
   }
   if (value.input.kind !== "native_capsule_source" && (raw.length > MAX_COPY_BYTES || textBytes(raw) > MAX_COPY_BYTES)) {
@@ -410,6 +424,14 @@ export function parseFileImportReceipt(value: unknown, copy: FileImportCopy): Fi
   if (!sameIntent(returnedIntent, copy.preparation.intent) || project.id !== copy.preparation.project_id
       || project.generation !== copy.preparation.generation || project.revision !== copy.preparation.revision + 1) {
     throw new Error("The import receipt differs from the original request. Keep its recovery copy.");
+  }
+  if (returnedIntent.kind === "native_capsule_source" && returnedIntent.expected_sha256) {
+    const spec = returnedIntent.spec, digest = returnedIntent.expected_sha256;
+    const capsules = (project.production_design?.capsules ?? []).filter(c => c.id === spec.capsule_id && c.scene_id === spec.scene_id);
+    if (capsules.length !== 1 || capsules[0].source_sha256 !== digest
+        || project.assets.filter(a => a.id === capsules[0].source_asset_id && a.content_sha256 === digest).length !== 1) {
+      throw new Error("The import receipt does not bind the authored source SHA-256. Keep its recovery copy.");
+    }
   }
   return { schema: value.schema, request_id: copy.request_id, intent: returnedIntent, project, replayed: value.replayed };
 }

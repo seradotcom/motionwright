@@ -514,7 +514,7 @@ impl AdmittedStill {
         };
         let saved = service.import_file_verified(self.project.id, &image.project.stamp(),
             &format!("{}-source", self.request.request_id), self.root.path.join(&file.relative_path), &descriptor,
-            FileImportIntent::NativeCapsuleSource { spec:NativeCapsuleSourceSpec {
+            FileImportIntent::NativeCapsuleSource { expected_sha256:None, spec:NativeCapsuleSourceSpec {
                 name:"Blender lit original.blend".into(), media_type:"application/x-blender".into(),
                 capsule_id:self.intent.capsule_id, scene_id:self.request.scene_id, label:"Blender lit original".into(),
                 editable_parameters:vec![], native_editor_hint:"Blender".into(),

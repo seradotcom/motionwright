@@ -181,7 +181,10 @@ fn altered_receipt_cannot_rebind_the_capsule_to_a_foreign_asset() {
                 f.project.id,
                 &f.project.stamp(),
                 "bound-receipt",
-                &FileImportIntent::NativeCapsuleSource { spec },
+                &FileImportIntent::NativeCapsuleSource {
+                    spec,
+                    expected_sha256: None
+                },
                 false
             )
             .is_err()
@@ -212,7 +215,10 @@ fn committed_receipt_recovery_does_not_reimport_a_missing_blob() {
             f.project.id,
             &f.project.stamp(),
             "known-source",
-            &FileImportIntent::NativeCapsuleSource { spec },
+            &FileImportIntent::NativeCapsuleSource {
+                spec,
+                expected_sha256: None,
+            },
             false,
         )
         .unwrap()

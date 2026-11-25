@@ -390,6 +390,7 @@ const desktopFileImport: FileImportTransport = {
     ? invoke("prepare_native_capsule_source_file", { request: {
       project_id: request.project_id, generation: request.generation, revision: request.revision,
       path: request.path, spec: request.spec,
+      ...(request.expected_sha256 !== undefined ? { expected_sha256: request.expected_sha256 } : {}),
     } })
     : invoke("prepare_file_import", { request }),
   grant: preparation => issueEffectGrant("import_local", {
@@ -427,10 +428,11 @@ export async function importVoiceFile(
 
 /** Dedicated atomic source import. No browser save or two-step asset/capsule fallback. */
 export async function importNativeCapsuleSourceFile(
-  project: Project, path: string, spec: NativeCapsuleSourceSpec7,
+  project: Project, path: string, spec: NativeCapsuleSourceSpec7, expectedSha256?: string,
 ): Promise<{ project: Project; retained: RetainedFileImport }> {
   if (!isTauri()) throw new Error("Saving a local native source requires the Motionwright desktop runtime.");
-  return importFileWithRetention(project, { kind: "native_capsule_source", path, spec }, desktopFileImport);
+  return importFileWithRetention(project, { kind: "native_capsule_source", path, spec,
+    ...(expectedSha256 !== undefined ? { expected_sha256: expectedSha256 } : {}) }, desktopFileImport);
 }
 
 /** Reads the original durable receipt; it never obtains or retries an import grant. */

@@ -302,6 +302,7 @@ fn cycle_import_and_attach(
         "expected": request.expected,
         "source": witness.file,
         "intent": motionwright_service::FileImportIntent::NativeCapsuleSource {
+            expected_sha256: None,
             spec: spec.clone(),
         },
         "atomic_revision": true,

@@ -713,6 +713,7 @@ mod tests {
             let prepared = prepare_native_capsule_source_file(
                 &f.service,
                 NativeCapsuleSourcePrepareRequest {
+                    expected_sha256: None,
                     project_id: project.id,
                     generation: project.generation,
                     revision: project.revision,

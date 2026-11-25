@@ -40,6 +40,8 @@ pub(crate) struct NativeCapsuleSourcePrepareRequest {
     pub revision: u64,
     pub path: String,
     pub spec: NativeCapsuleSourceSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -483,14 +485,34 @@ fn validate_native_source_spec(spec: &NativeCapsuleSourceSpec) -> Result<(), Fil
 
 fn qualified_native_source_spec(
     intent: &FileImportIntent,
-) -> Result<&NativeCapsuleSourceSpec, FileImportError> {
-    let FileImportIntent::NativeCapsuleSource { spec } = intent else {
+) -> Result<(&NativeCapsuleSourceSpec, Option<&str>), FileImportError> {
+    let FileImportIntent::NativeCapsuleSource {
+        spec,
+        expected_sha256,
+    } = intent
+    else {
         return Err(FileImportError::Invalid(
             "The native source command requires its qualified source-save intent.".into(),
         ));
     };
     validate_native_source_spec(spec)?;
-    Ok(spec)
+    let digest = expected_sha256.as_deref();
+    validate_expected_native_digest(digest)?;
+    Ok((spec, digest))
+}
+
+fn validate_expected_native_digest(digest: Option<&str>) -> Result<(), FileImportError> {
+    if digest.is_some_and(|d| {
+        d.len() != 64
+            || !d
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }) {
+        return Err(FileImportError::Invalid(
+            "Invalid expected native source SHA-256.".into(),
+        ));
+    }
+    Ok(())
 }
 
 // Advisory dispatch preflight, without a synthetic Asset/Change. The real
@@ -569,6 +591,7 @@ pub(crate) fn prepare_native_capsule_source_file(
         Some(request.revision),
     )?;
     validate_native_source_spec(&request.spec)?;
+    validate_expected_native_digest(request.expected_sha256.as_deref())?;
     // Lexical PathBuf/is_absolute validation only: never stat, canonicalize,
     // open source bytes, inspect CAS, consume a grant or preflight content locks.
     absolute_asset_path(&request.path)?;
@@ -578,7 +601,10 @@ pub(crate) fn prepare_native_capsule_source_file(
         generation: request.generation,
         revision: request.revision,
         path: request.path.trim().to_owned(),
-        intent: FileImportIntent::NativeCapsuleSource { spec: request.spec },
+        intent: FileImportIntent::NativeCapsuleSource {
+            spec: request.spec,
+            expected_sha256: request.expected_sha256,
+        },
     })
 }
 
@@ -594,7 +620,7 @@ pub(crate) fn import_native_capsule_source_file(
         request.generation,
         Some(request.revision),
     )?;
-    let spec = qualified_native_source_spec(&request.intent)?;
+    let (spec, expected_sha256) = qualified_native_source_spec(&request.intent)?;
     validate_native_source_target(&project, spec)?;
     let source = absolute_asset_path(&request.path)?;
     grants
@@ -609,12 +635,13 @@ pub(crate) fn import_native_capsule_source_file(
     // capsule, event, revision and original request receipt atomically. There is
     // no asset-import/upsert fallback and no renderer/provider authority here.
     let outcome = service
-        .import_native_capsule_source_file(
+        .import_native_capsule_source_file_bound(
             request.project_id,
             &project.stamp(),
             &request.request_id,
             &source,
             spec.clone(),
+            expected_sha256.map(str::to_owned),
         )
         .map_err(storage_error)?;
     validate_native_source_result_revision(
@@ -1588,6 +1615,7 @@ mod tests {
             effect_grant: token,
             path: path.clone(),
             intent: FileImportIntent::NativeCapsuleSource {
+                expected_sha256: None,
                 spec: motionwright_domain::NativeCapsuleSourceSpec {
                     name: "Authored source".into(),
                     media_type: "application/json".into(),
@@ -1732,6 +1760,7 @@ mod tests {
 
     fn native_preparation(project: &Project, path: &Path) -> NativeCapsuleSourcePrepareRequest {
         NativeCapsuleSourcePrepareRequest {
+            expected_sha256: None,
             project_id: project.id,
             generation: project.generation,
             revision: project.revision,
@@ -1765,7 +1794,8 @@ mod tests {
         assert_eq!(
             prepared.intent,
             FileImportIntent::NativeCapsuleSource {
-                spec: request.spec.clone()
+                spec: request.spec.clone(),
+                expected_sha256: None,
             }
         );
         assert_eq!(prepared.schema, "motionwright.file-import-preparation/1");
@@ -1924,7 +1954,10 @@ mod tests {
                     &service,
                     &grants,
                     FileImportDispatchRequest {
-                        intent: FileImportIntent::NativeCapsuleSource { spec: spec.clone() },
+                        intent: FileImportIntent::NativeCapsuleSource {
+                            spec: spec.clone(),
+                            expected_sha256: None
+                        },
                         ..request.clone()
                     }
                 ),
@@ -1934,7 +1967,10 @@ mod tests {
                 recover_native_capsule_source_file(
                     &service,
                     FileImportRecoveryRequest {
-                        intent: FileImportIntent::NativeCapsuleSource { spec },
+                        intent: FileImportIntent::NativeCapsuleSource {
+                            spec,
+                            expected_sha256: None
+                        },
                         ..recovery(&request)
                     }
                 ),
@@ -2211,6 +2247,7 @@ mod tests {
             let prepared = prepare_native_capsule_source_file(
                 &service,
                 NativeCapsuleSourcePrepareRequest {
+                    expected_sha256: None,
                     project_id: locked.id,
                     generation: locked.generation,
                     revision: locked.revision,
@@ -2272,6 +2309,7 @@ mod tests {
         let prepared = prepare_native_capsule_source_file(
             &service,
             NativeCapsuleSourcePrepareRequest {
+                expected_sha256: None,
                 project_id: head.id,
                 generation: head.generation,
                 revision: head.revision,
@@ -2284,7 +2322,10 @@ mod tests {
         let second = import_native_capsule_source_file(&service, &grants, request.clone()).unwrap();
         assert_eq!(
             second.intent,
-            FileImportIntent::NativeCapsuleSource { spec: spec.clone() }
+            FileImportIntent::NativeCapsuleSource {
+                spec: spec.clone(),
+                expected_sha256: None
+            }
         );
         assert_eq!(second.project.revision, head.revision + 1);
         assert_eq!(second.project.assets.len(), head.assets.len() + 1);
@@ -2440,7 +2481,10 @@ mod tests {
         let mut changed_spec = spec;
         changed_spec.label = "A different authored operation".into();
         let different_intent = FileImportRecoveryRequest {
-            intent: FileImportIntent::NativeCapsuleSource { spec: changed_spec },
+            intent: FileImportIntent::NativeCapsuleSource {
+                spec: changed_spec,
+                expected_sha256: None,
+            },
             ..recovery(&request)
         };
         assert!(matches!(

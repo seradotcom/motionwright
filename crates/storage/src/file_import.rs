@@ -14,6 +14,8 @@ use uuid::Uuid;
 pub enum FileImportIntent {
     NativeCapsuleSource {
         spec: NativeCapsuleSourceSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_sha256: Option<String>,
     },
     Asset {
         name: String,
@@ -110,10 +112,21 @@ fn verify_import_binding(
         ));
     }
     let matches_intent = match (intent, track, capsule) {
-        (FileImportIntent::NativeCapsuleSource { spec }, None, Some(capsule)) => spec
-            .bind_asset(asset)
-            .as_ref()
-            .is_ok_and(|bound| bound == capsule),
+        (
+            FileImportIntent::NativeCapsuleSource {
+                spec,
+                expected_sha256,
+            },
+            None,
+            Some(capsule),
+        ) => {
+            spec.bind_asset(asset)
+                .as_ref()
+                .is_ok_and(|bound| bound == capsule)
+                && expected_sha256
+                    .as_deref()
+                    .is_none_or(|expected| expected == source_sha256)
+        }
         (FileImportIntent::Asset { name, media_type }, None, None) => {
             asset.name == *name && asset.media_type == *media_type
         }

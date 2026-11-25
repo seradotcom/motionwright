@@ -117,7 +117,33 @@ impl StudioService {
             expected,
             request_id,
             source.as_ref(),
-            FileImportIntent::NativeCapsuleSource { spec },
+            FileImportIntent::NativeCapsuleSource {
+                spec,
+                expected_sha256: None,
+            },
+            None,
+        )
+    }
+
+    /// Bind an authored digest to the same immutable capture used for publication.
+    pub fn import_native_capsule_source_file_bound(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        source: impl AsRef<Path>,
+        spec: NativeCapsuleSourceSpec,
+        expected_sha256: Option<String>,
+    ) -> Result<ApplyOutcome> {
+        self.import_file_with_identity(
+            project_id,
+            expected,
+            request_id,
+            source.as_ref(),
+            FileImportIntent::NativeCapsuleSource {
+                spec,
+                expected_sha256,
+            },
             None,
         )
     }
@@ -188,6 +214,29 @@ impl StudioService {
         intent: FileImportIntent,
         expected_source: Option<&BlobDescriptor>,
     ) -> Result<ApplyOutcome> {
+        // An authored digest narrows the import; it never grants source IO.
+        let expected_native_digest = match &intent {
+            FileImportIntent::NativeCapsuleSource {
+                expected_sha256, ..
+            } => expected_sha256.as_deref(),
+            _ => None,
+        };
+        if expected_native_digest.is_some_and(|d| {
+            d.len() != 64
+                || !d
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        }) {
+            return Err(invalid_import("invalid expected native source SHA-256"));
+        }
+        let verify_native_digest = |actual: &str| -> Result<()> {
+            if expected_native_digest.is_some_and(|d| d != actual) {
+                return Err(invalid_import(
+                    "captured native source differs from its authored SHA-256",
+                ));
+            }
+            Ok(())
+        };
         // Current scope and new-request revision are checked before source IO.
         let recorded = self
             .store
@@ -201,6 +250,7 @@ impl StudioService {
                 return Err(StorageError::RequestReuse);
             }
             verify_expected_source(&source_descriptor, expected_source)?;
+            verify_native_digest(&source_descriptor.sha256)?;
             let source_sha256 = source_descriptor.sha256;
             let confirmed = self
                 .store
@@ -229,6 +279,7 @@ impl StudioService {
             FileImportIntent::Asset { media_type, .. }
             | FileImportIntent::NativeCapsuleSource {
                 spec: NativeCapsuleSourceSpec { media_type, .. },
+                ..
             } if media_type.eq_ignore_ascii_case("image/svg+xml") || svg_extension => {
                 MAX_SVG_IMPORT_BYTES.min(self.import_limits.source_bytes())
             }
@@ -238,10 +289,11 @@ impl StudioService {
         // The descriptor is measured by this same retained capture. A mismatch
         // drops only its private stage before publication, decoding or apply.
         verify_expected_source(staged.descriptor(), expected_source)?;
+        verify_native_digest(&staged.descriptor().sha256)?;
         let source_sha256 = staged.descriptor().sha256.clone();
         let immutable_path = staged.path();
         let change = match &intent {
-            FileImportIntent::NativeCapsuleSource { spec } => {
+            FileImportIntent::NativeCapsuleSource { spec, .. } => {
                 validate_importable_asset(immutable_path, &spec.media_type, svg_extension)?;
                 let asset = Asset {
                     id: stable_import_id(
@@ -767,7 +819,10 @@ mod verified_source_tests {
                     "missing-capsule-scene",
                     &path,
                     &expected,
-                    FileImportIntent::NativeCapsuleSource { spec: invalid },
+                    FileImportIntent::NativeCapsuleSource {
+                        spec: invalid,
+                        expected_sha256: None
+                    },
                 )
                 .is_err()
         );
@@ -780,7 +835,10 @@ mod verified_source_tests {
                 "verified-capsule",
                 &path,
                 &expected,
-                FileImportIntent::NativeCapsuleSource { spec },
+                FileImportIntent::NativeCapsuleSource {
+                    spec,
+                    expected_sha256: None,
+                },
             )
             .unwrap();
         assert_eq!(outcome.project.revision, project.revision + 1);
@@ -1326,7 +1384,10 @@ mod verified_source_tests {
                         "captured-missing-scene",
                         bytes,
                         &expected,
-                        FileImportIntent::NativeCapsuleSource { spec: invalid },
+                        FileImportIntent::NativeCapsuleSource {
+                            spec: invalid,
+                            expected_sha256: None
+                        },
                     )
                     .is_err()
             );
@@ -1339,7 +1400,10 @@ mod verified_source_tests {
                     "captured-native-source",
                     bytes,
                     &expected,
-                    FileImportIntent::NativeCapsuleSource { spec },
+                    FileImportIntent::NativeCapsuleSource {
+                        spec,
+                        expected_sha256: None,
+                    },
                 )
                 .unwrap();
             let capsule = &outcome.project.production_design.capsules[0];

@@ -140,7 +140,10 @@ fn invalid_capsule_target_does_not_commit_an_unbound_asset() {
                 f.project.id,
                 &f.project.stamp(),
                 "rejected-source",
-                &FileImportIntent::NativeCapsuleSource { spec }
+                &FileImportIntent::NativeCapsuleSource {
+                    spec,
+                    expected_sha256: None
+                }
             )
             .unwrap()
             .is_none()
@@ -240,7 +243,10 @@ fn recovery_reads_original_result_without_source_after_later_edit() {
             f.project.id,
             &f.project.stamp(),
             "recover-original",
-            &FileImportIntent::NativeCapsuleSource { spec },
+            &FileImportIntent::NativeCapsuleSource {
+                spec,
+                expected_sha256: None,
+            },
         )
         .unwrap()
         .unwrap();
@@ -421,7 +427,10 @@ fn missing_receipt_observation_does_not_create_a_capsule_or_asset() {
                 f.project.id,
                 &f.project.stamp(),
                 "unobserved",
-                &FileImportIntent::NativeCapsuleSource { spec }
+                &FileImportIntent::NativeCapsuleSource {
+                    spec,
+                    expected_sha256: None
+                }
             )
             .unwrap()
             .is_none()
@@ -491,7 +500,10 @@ fn portable_source_save_reopens_with_new_generation_without_inheriting_receipts(
         .export_project_at(imported.id, &imported.stamp())
         .unwrap();
     assert_eq!(imported_backup.events, before.events);
-    let intent = FileImportIntent::NativeCapsuleSource { spec };
+    let intent = FileImportIntent::NativeCapsuleSource {
+        spec,
+        expected_sha256: None,
+    };
     assert!(matches!(
         reopened.recover_file_import(imported.id, &project.stamp(), key, &intent),
         Err(StorageError::GenerationConflict)
@@ -608,4 +620,93 @@ fn retained_original_relink_rejects_missing_bytes_then_commits_and_reopens() {
         .unwrap();
     assert!(replay.replayed);
     assert_eq!(replay.project, saved);
+}
+
+#[test]
+fn authored_digest_refuses_substituted_source_before_publication() {
+    use sha2::{Digest, Sha256};
+    let f = fixture();
+    let spec = spec(&f.project);
+    let original_bytes = fs::read(&f.source).unwrap();
+    let digest = hex::encode(Sha256::digest(&original_bytes));
+    let mut substituted = original_bytes.clone();
+    let at = substituted.iter().position(|b| *b == b'o').unwrap();
+    substituted[at] = b'x';
+    let substituted_digest = hex::encode(Sha256::digest(&substituted));
+    fs::write(&f.source, &substituted).unwrap();
+    let before = snapshot(&f);
+    let intent = FileImportIntent::NativeCapsuleSource {
+        spec: spec.clone(),
+        expected_sha256: Some(digest.clone()),
+    };
+    let refused = f.service.import_native_capsule_source_file_bound(
+        f.project.id,
+        &f.project.stamp(),
+        "authored-substitution",
+        &f.source,
+        spec.clone(),
+        Some(digest.clone()),
+    );
+    assert!(refused.is_err());
+    unchanged(&f, &before);
+    assert!(
+        f.service
+            .recover_file_import(
+                f.project.id,
+                &f.project.stamp(),
+                "authored-substitution",
+                &intent
+            )
+            .unwrap()
+            .is_none()
+    );
+    let store = motionwright_storage::Store::open(&f.database).unwrap();
+    assert!(store.verify_blob(&substituted_digest).is_err());
+    drop(store);
+    fs::write(&f.source, original_bytes).unwrap();
+    let saved = f
+        .service
+        .import_native_capsule_source_file_bound(
+            f.project.id,
+            &f.project.stamp(),
+            "authored-exact-source",
+            &f.source,
+            spec.clone(),
+            Some(digest.clone()),
+        )
+        .unwrap();
+    assert_eq!(saved.project.revision, f.project.revision + 1);
+    assert_eq!(
+        saved.project.production_design.capsules[0].source_sha256,
+        digest
+    );
+    fs::remove_file(&f.source).unwrap();
+    let after = snapshot(&f);
+    let reopened = StudioService::open(&f.database).unwrap();
+    let original = reopened
+        .recover_file_import(
+            f.project.id,
+            &f.project.stamp(),
+            "authored-exact-source",
+            &intent,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(original.replayed);
+    assert_eq!(original.project, saved.project);
+    let mismatched = FileImportIntent::NativeCapsuleSource {
+        spec,
+        expected_sha256: Some(substituted_digest),
+    };
+    assert!(
+        reopened
+            .recover_file_import(
+                f.project.id,
+                &f.project.stamp(),
+                "authored-exact-source",
+                &mismatched
+            )
+            .is_err()
+    );
+    unchanged(&f, &after);
 }

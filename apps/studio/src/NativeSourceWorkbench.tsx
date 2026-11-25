@@ -15,6 +15,7 @@ import { blenderProductSceneIssues } from "./blenderProductRecipe";
 export interface NativeSourceSaveRequest {
   path: string;
   spec: NativeCapsuleSourceSpec7;
+  expected_sha256?: string;
   source: { project_id: string; generation: string; revision: number; branch_id: string };
 }
 export interface NativeSourceExportRequest {
@@ -99,6 +100,7 @@ function SourceEditor({ project, scene, target, busy, saveSource, refreshProject
       const sequence = editor.sequence;
       const request: NativeSourceSaveRequest = {
         path: editor.fields.path, spec,
+        ...(editor.fields.blenderRecipeExport ? { expected_sha256: editor.fields.blenderRecipeExport } : {}),
         source: { project_id: project.id, generation: project.generation, revision: editor.baseRevision, branch_id: project.active_branch },
       };
       setSending(true);

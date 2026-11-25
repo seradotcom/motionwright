@@ -1926,7 +1926,7 @@ export default function App() {
           || source.revision !== request.source.revision || source.active_branch !== request.source.branch_id) {
         throw new Error("The source input belongs to an earlier project view. Read the current project and review your input before saving.");
       }
-      return importNativeCapsuleSourceFile(source, request.path, request.spec);
+      return importNativeCapsuleSourceFile(source, request.path, request.spec, request.expected_sha256);
     }), [ingestFile]);
 
   const recoverFileImport = useCallback(async (retained: RetainedFileImport): Promise<boolean> => {
