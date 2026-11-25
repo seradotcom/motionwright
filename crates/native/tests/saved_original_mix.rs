@@ -1041,3 +1041,140 @@ fn additive_semantic_bus_clipping_is_rejected_without_dropping_base_or_cues() {
     );
     assert_eq!(service.project(project.id).unwrap(), before);
 }
+
+#[test]
+fn localized_saved_mixes_follow_explicit_voice_and_survive_reopen_without_switching_active_take() {
+    let (root, service, mut project) = fixture();
+    let parent = project.deliverables[0].clone();
+    let original_id = parent.voice_track_id.unwrap();
+    let path = root.path().join("localized-voice.wav");
+    fs::write(&path, wav(4_000)).unwrap();
+    project = service
+        .import_voice_file(
+            project.id,
+            &RevisionStamp::from(&project),
+            "localized-voice",
+            &path,
+            VoiceImportMetadata {
+                name: "localized-voice.wav".into(),
+                media_type: "audio/wav".into(),
+                label: "Localized synthetic PCM proxy; not speech".into(),
+            },
+        )
+        .unwrap()
+        .project;
+    let alternate = project
+        .audio
+        .voice_tracks
+        .iter()
+        .find(|track| track.id != original_id)
+        .unwrap()
+        .clone();
+    apply(
+        &service,
+        &mut project,
+        "localized-window",
+        Change::AddTranscriptSegment {
+            segment: TranscriptSegment {
+                emphasis: Vec::new(),
+                id: Uuid::new_v4(),
+                voice_track_id: alternate.id,
+                start: RationalTime::new(1, 1).unwrap(),
+                end: RationalTime::new(3, 2).unwrap(),
+                text: "Synthetic localized timing".into(),
+                speaker: None,
+                alignment: AlignmentEvidence::Manual,
+            },
+        },
+    );
+    let mut child = parent.clone();
+    child.id = Uuid::now_v7();
+    child.name = "Localized delivery".into();
+    child.parent_profile_id = Some(parent.id);
+    child.source_revision = Some(project.revision);
+    child.adaptation_notes = vec!["Explicit localized voice and text".into()];
+    child.language = "es-MX".into();
+    child.voice_track_id = Some(alternate.id);
+    child.timing_locked = true;
+    child.text_overrides = project
+        .scenes
+        .iter()
+        .flat_map(|scene| &scene.nodes)
+        .filter(|node| node.kind == "text")
+        .map(|node| (node.id, "Texto localizado".into()))
+        .collect();
+    let child_id = child.id;
+    apply(
+        &service,
+        &mut project,
+        "localized-profile",
+        Change::UpsertDeliverable { profile: child },
+    );
+    let recipe = project.production_design.delivery_recipes[&parent.id].clone();
+    apply(
+        &service,
+        &mut project,
+        "localized-mix",
+        Change::SetDeliveryRecipe {
+            deliverable_profile_id: child_id,
+            recipe: Some(recipe),
+        },
+    );
+    apply(
+        &service,
+        &mut project,
+        "active-original",
+        Change::SetActiveVoiceTrack {
+            track_id: original_id,
+        },
+    );
+    let original = prepare_saved_original_mix(
+        &service,
+        project.id,
+        &RevisionStamp::from(&project),
+        parent.id,
+    )
+    .unwrap();
+    let localized = prepare_saved_original_mix(
+        &service,
+        project.id,
+        &RevisionStamp::from(&project),
+        child_id,
+    )
+    .unwrap();
+    assert_eq!(service.project(project.id).unwrap(), project);
+    assert_eq!(localized.plan().measured_voice.asset_id, alternate.asset_id);
+    assert_ne!(localized.wav_bytes(), original.wav_bytes());
+    assert_ne!(
+        localized.plan().voice_windows,
+        original.plan().voice_windows
+    );
+    assert_ne!(
+        localized.audio_inputs_sha256(),
+        original.audio_inputs_sha256()
+    );
+    apply(
+        &service,
+        &mut project,
+        "active-localized",
+        Change::SetActiveVoiceTrack {
+            track_id: alternate.id,
+        },
+    );
+    assert!(localized.verify_project(&project, child_id).is_err());
+    drop(service);
+    let reopened = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
+    assert_eq!(reopened.project(project.id).unwrap(), project);
+    for (profile_id, expected) in [(parent.id, &original), (child_id, &localized)] {
+        let mixed = prepare_saved_original_mix(
+            &reopened,
+            project.id,
+            &RevisionStamp::from(&project),
+            profile_id,
+        )
+        .unwrap();
+        assert_eq!(mixed.wav_bytes(), expected.wav_bytes());
+        assert_eq!(mixed.audio_inputs_sha256(), expected.audio_inputs_sha256());
+    }
+    assert_eq!(reopened.project(project.id).unwrap(), project);
+}

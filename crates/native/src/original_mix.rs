@@ -239,16 +239,18 @@ impl OriginalMixPlan {
             .audio
             .validate()
             .map_err(|err| MixError::Unsupported(err.to_string()))?;
-        let active = project.audio.active_voice_track_id.ok_or_else(|| {
-            MixError::Unsupported("No owner-imported measured active voice track".into())
+        motionwright_domain::validate_deliverable_voice_authority(project, profile.id)
+            .map_err(|error| mix_unsupported(error.to_string()))?;
+        let voice_id = profile.voice_track_id.ok_or_else(|| {
+            MixError::Unsupported("Bind one exact measured voice to the delivery profile".into())
         })?;
         let track = project
             .audio
             .voice_tracks
             .iter()
-            .find(|voice| voice.id == active)
+            .find(|voice| voice.id == voice_id)
             .ok_or_else(|| {
-                MixError::Unsupported("Measured voice track is no longer active".into())
+                MixError::Unsupported("Delivery profile measured voice is unavailable".into())
             })?;
         check(
             track.sample_rate_hz == 48000
@@ -261,10 +263,6 @@ impl OriginalMixPlan {
                         && asset.content_sha256.as_deref() == Some(track.source_sha256.as_str())
                 }),
             "Mix must retain the exact imported measured voice asset identity",
-        )?;
-        check(
-            profile.voice_track_id == Some(track.id),
-            "Localized delivery profile must bind the exact active voice take",
         )?;
         for envelope in [self.voice_envelope, self.music_envelope, self.sfx_envelope] {
             envelope
@@ -721,10 +719,8 @@ fn saved_mix_inputs(
     let voice_id = profile.voice_track_id.ok_or_else(|| {
         MixError::Unsupported("Bind one measured voice to the saved mix delivery profile".into())
     })?;
-    check(
-        project.audio.active_voice_track_id == Some(voice_id),
-        "Saved mix delivery voice differs from the active measured voice",
-    )?;
+    motionwright_domain::validate_deliverable_voice_authority(project, profile_id)
+        .map_err(|error| mix_unsupported(error.to_string()))?;
     let track = project
         .audio
         .voice_tracks

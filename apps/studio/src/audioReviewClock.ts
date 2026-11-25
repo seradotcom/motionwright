@@ -56,8 +56,8 @@ export function buildAudioReviewClock(project: Project, source: AudioReviewSourc
     const profile = project.deliverables.find(value => value.id === source.sourceId);
     if (!profile || profile.audio_sample_rate_hz !== 48000)
       return fail("The original mix needs its saved 48-kHz delivery profile.");
-    if (!profile.voice_track_id || profile.voice_track_id !== project.audio.active_voice_track_id)
-      return fail("The saved mix must still bind the active measured voice.");
+    if (!profile.voice_track_id)
+      return fail("The saved mix must bind an explicit measured delivery voice.");
     const voice = voiceAuditionSource(project, profile.voice_track_id).track;
     if (voice.sample_rate_hz !== 48000 || voice.channels !== 2)
       return fail("The saved original mix requires the existing stereo 48-kHz voice source.");

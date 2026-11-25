@@ -645,15 +645,9 @@ pub fn variant_dependency_fingerprint(
     validate_localized_voice_authority(project, profile)?;
     let recipe = project.production_design.delivery_recipes.get(&profile_id);
     let original_mix = recipe.and_then(|recipe| recipe.original_mix.as_ref());
-    if original_mix.is_some()
-        && profile.voice_track_id.is_some()
-        && profile.voice_track_id != project.audio.active_voice_track_id
-    {
-        return Err(DomainError::Invalid(
-            "original mix is unavailable: the delivery profile voice differs from the active measured voice"
-                .into(),
-        ));
-    }
+    // An explicitly bound voice is the delivery's source, independently of
+    // the Audio workspace's active editorial take. Realization still requires
+    // an explicit binding, reviewed timing and verified original PCM.
 
     let scenes = scenes_for_profile(&project.scenes, profile)?;
     let caption_segments = if project.audio.transcript.is_empty() {

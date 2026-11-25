@@ -22,13 +22,13 @@ const numericFields = [
 ] as const;
 
 function measuredVoiceProblem(voice: VoiceTrack): string | null {
-  if (voice.sample_rate_hz !== 48_000 || voice.channels !== 2) return "The active measured voice must be stereo at 48 kHz for this audition.";
+  if (voice.sample_rate_hz !== 48_000 || voice.channels !== 2) return "The delivery's measured voice must be stereo at 48 kHz for this audition.";
   try {
     const num = BigInt(voice.measured_duration.num), den = BigInt(voice.measured_duration.den);
-    if (den <= 0n || num <= 0n || (num * 48_000n) % den !== 0n) return "The active voice duration must resolve to exact 48-kHz samples.";
+    if (den <= 0n || num <= 0n || (num * 48_000n) % den !== 0n) return "The delivery voice duration must resolve to exact 48-kHz samples.";
     const samples = num * 48_000n / den;
     if (samples < 48_000n || samples > 720_000n) return "The local original PCM audition supports measured takes from 1 to 15 seconds.";
-  } catch { return "The active voice has no valid measured duration for an original PCM audition."; }
+  } catch { return "The delivery voice has no valid measured duration for an original PCM audition."; }
   return null;
 }
 
@@ -49,7 +49,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
   const savedMix = recipe?.original_mix ?? null;
   const sourceAudio = useMemo(() => project.assets.filter(asset =>
     wavTypes.includes(asset.media_type) && /^[a-f0-9]{64}$/.test(asset.content_sha256 ?? "")), [project.assets]);
-  const selectedVoice = project.audio.voice_tracks.find(track => track.id === project.audio.active_voice_track_id);
+  const selectedVoice = project.audio.voice_tracks.find(track => track.id === selectedProfile?.voice_track_id);
   const voiceAsset = selectedVoice ? project.assets.find(asset => asset.id === selectedVoice.asset_id) : undefined;
   const selectableSources = sourceAudio.filter(asset => asset.id !== selectedVoice?.asset_id);
   const [attestedScope, setAttestedScope] = useState<string | null>(null);
@@ -122,24 +122,21 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
     try { validateDeliveryRecipe(project, selectedProfile.id, recipe); }
     catch (failure) { blockers.push("The saved recipe needs correction: " + explain(failure)); }
   }
-  if (!selectedVoice) blockers.push("Select an active measured voice take in Audio before auditioning.");
+  if (!selectedProfile?.voice_track_id) blockers.push("Explicitly bind this delivery profile to a measured voice take before auditioning.");
+  else if (!selectedVoice) blockers.push("The saved delivery voice is no longer available.");
   else {
     const voiceProblem = measuredVoiceProblem(selectedVoice);
     if (voiceProblem) blockers.push(voiceProblem);
     if (!voiceAsset || !wavTypes.includes(voiceAsset.media_type)
         || !/^[a-f0-9]{64}$/.test(voiceAsset.content_sha256 ?? "")
         || voiceAsset.content_sha256 !== selectedVoice.source_sha256) {
-      blockers.push("The active measured voice must still reference its exact imported WAV digest.");
-    }
-    if (selectedProfile && !selectedProfile.voice_track_id) {
-      blockers.push("Explicitly bind this delivery profile to the active measured voice take before auditioning.");
-    } else if (selectedProfile?.voice_track_id && selectedProfile.voice_track_id !== selectedVoice.id) {
-      blockers.push("The delivery profile is bound to a different voice take than the active Audio take. Select that active take or explicitly save a matching profile before auditioning.");
+      blockers.push("The delivery's measured voice must still reference its exact imported WAV digest.");
     }
     const voiceSegments = project.audio.transcript.filter(segment => segment.voice_track_id === selectedVoice.id);
     if (voiceSegments.length === 0 || voiceSegments.some(segment => segment.alignment.kind !== "manual"
-        && !(segment.alignment.kind === "measured" && (segment.alignment.confidence_millis ?? 0) >= 800))) {
-      blockers.push("Music ducking requires every transcript interval for the active voice to have manually aligned or high-confidence measured timing.");
+        && !(segment.alignment.kind === "measured" && segment.alignment.source_sha256 === selectedVoice.source_sha256
+          && (segment.alignment.confidence_millis ?? 0) >= 800))) {
+      blockers.push("Music ducking requires every transcript interval for the delivery voice to have manually aligned or high-confidence source-bound measured timing.");
     }
   }
   if (savedMix) {
@@ -309,7 +306,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
       <div><span>Saved music gain</span><strong>{project.audio.mix.music_gain_db} dB</strong></div>
       <div><span>Sample peak guard policy</span><strong>{ORIGINAL_MIX_SAMPLE_PEAK_GUARD_DBFS} dBFS · fixed</strong></div>
     </div>
-    <p className="production-help">Audition uses the active measured voice{selectedVoice ? " (" + selectedVoice.label + ")" : ""}, the selected saved profile and the saved global voice/music gains shown above. The saved profile must explicitly bind that active voice. The sample peak guard is a native mixer policy; it is separate from LUFS and true-peak targets.</p>
+    <p className="production-help">Audition uses the delivery's explicitly bound measured voice{selectedVoice ? " (" + selectedVoice.label + ")" : ""} and the saved global voice/music gains shown above. It does not change the active Audio take. The sample peak guard is a native mixer policy; it is separate from LUFS and true-peak targets.</p>
     {blockers.length > 0 && <section aria-label="Original mix audition requirements">
       <ul className="production-help">{blockers.map(reason => <li key={reason}>{reason}</li>)}</ul>
     </section>}

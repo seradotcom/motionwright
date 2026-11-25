@@ -40,6 +40,23 @@ describe("verified audio review on the saved project clock", () => {
     const p = fixture(); p.audio.voice_tracks.push({ ...p.audio.voice_tracks[0], id: "other" });
     expect(() => buildAudioReviewClock(p, { kind: "voice", sourceId: "other" })).toThrow(/Select it explicitly/);
   });
+  it("resolves a saved delivery voice independently of the active editorial take", () => {
+    const p = fixture(), original = p.audio.voice_tracks[0], other = {
+      ...original, id: "other", asset_id: "other-asset", source_sha256: "b".repeat(64),
+    };
+    p.assets.push({ id: other.asset_id, name: "other.wav", media_type: "audio/wav",
+      content_sha256: other.source_sha256, source_revision: null });
+    p.audio.voice_tracks.push(other);
+    p.deliverables[0].voice_track_id = other.id;
+    const before = structuredClone(p), clock = buildAudioReviewClock(p, mix(p));
+    expect(clock.sampleCount).toBe(192000);
+    expect(p).toEqual(before);
+    expect(() => buildAudioReviewClock(p, { kind: "voice", sourceId: other.id })).toThrow(/Select it explicitly/);
+    p.audio.active_voice_track_id = null;
+    expect(buildAudioReviewClock(p, mix(p))).toEqual(clock);
+    p.deliverables[0].voice_track_id = null;
+    expect(() => buildAudioReviewClock(p, mix(p))).toThrow();
+  });
   it("refuses a source beyond the saved visual timeline instead of clipping it", () => {
     const p = fixture(); p.scenes[0].duration = { num: "3", den: "1" };
     expect(() => buildAudioReviewClock(p, voice(p))).toThrow(/extends beyond/);

@@ -2639,8 +2639,8 @@ export async function nativeOriginalMixAudition(
   if (!profile || !recipe?.original_mix) throw new Error("Save an enabled original mix recipe for this profile before auditioning.");
   validateDeliveryRecipe(project, profile.id, recipe);
   const mix = recipe.original_mix;
-  if (profile.voice_track_id && profile.voice_track_id !== project.audio.active_voice_track_id) {
-    throw new Error("The profile voice differs from the active measured voice; this original mix cannot realize that combination.");
+  if (!profile.voice_track_id || !project.audio.voice_tracks.some(track => track.id === profile.voice_track_id)) {
+    throw new Error("Explicitly bind this delivery profile to an available measured voice take before auditioning.");
   }
   if(!options.owner_attests_preview_rights||typeof options.music_asset_id!=="string"||
       (options.sfx_asset_id!==null&&typeof options.sfx_asset_id!=="string")||

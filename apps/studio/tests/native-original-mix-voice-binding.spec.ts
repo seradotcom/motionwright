@@ -3,13 +3,14 @@ import { applyChange as applySyntheticFixtureChange } from "../src/api";
 import { defaultOriginalMix } from "../src/deliveryRecipe";
 import { fixtureBootstrap } from "../src/fixture";
 
-type VoiceBinding = "absent" | "different" | "matching";
+type VoiceBinding = "absent" | "different" | "different-reviewed" | "matching";
 const activeVoiceId = "00000000-0000-4000-8000-000000000153";
 const otherVoiceId = "00000000-0000-4000-8000-000000000154";
 const musicId = "00000000-0000-4000-8000-000000000151";
 const sfxId = "00000000-0000-4000-8000-000000000152";
-const missingBinding = "Explicitly bind this delivery profile to the active measured voice take before auditioning.";
-const differentBinding = "The delivery profile is bound to a different voice take than the active Audio take.";
+const missingBinding = "Explicitly bind this delivery profile to a measured voice take before auditioning.";
+const otherAssetId = "00000000-0000-4000-8000-000000000156";
+const differentBinding = "Music ducking requires every transcript interval for the delivery voice";
 const permissionLabel = /I confirm I have permission to use these exact original sources/;
 
 // Reuses the selected-project and browser authoring fixtures. Bootstrap and
@@ -23,15 +24,17 @@ async function openBindingFixture(page: Page, binding: VoiceBinding) {
   const voiceAsset = project.assets.find(asset => asset.media_type === "audio/wav");
   if (!voiceAsset?.content_sha256) throw new Error("The synthetic voice fixture needs a hashed WAV asset.");
   project.assets.push(
+    { id: otherAssetId, media_type: "audio/wav", content_sha256: "d".repeat(64),
+      name: "Other original voice", source_revision: "synthetic-ui-fixture" },
     { id: musicId, media_type: "audio/wav", content_sha256: "b".repeat(64),
       name: "Synthetic source music", source_revision: "synthetic-ui-fixture" },
     { id: sfxId, media_type: "audio/wav", content_sha256: "c".repeat(64),
       name: "Synthetic source effects", source_revision: "synthetic-ui-fixture" },
   );
   project.audio.voice_tracks = [activeVoiceId, otherVoiceId].map((id, index) => ({
-    id, asset_id: voiceAsset.id, label: index === 0 ? "Active measured take" : "Other measured take",
+    id, asset_id: index === 0 ? voiceAsset.id : otherAssetId, label: index === 0 ? "Active measured take" : "Other measured take",
     sample_rate_hz: 48_000, channels: 2, measured_duration: { num: "1", den: "1" },
-    source_sha256: voiceAsset.content_sha256!, loudness_lufs: -22, true_peak_dbfs: -8,
+    source_sha256: index === 0 ? voiceAsset.content_sha256! : "d".repeat(64), loudness_lufs: -22, true_peak_dbfs: -8,
   }));
   project.audio.active_voice_track_id = activeVoiceId;
   project.audio.transcript = [{
@@ -39,10 +42,14 @@ async function openBindingFixture(page: Page, binding: VoiceBinding) {
     start: { num: "0", den: "1" }, end: { num: "1", den: "1" },
     text: "Synthetic manually aligned source words", speaker: null, alignment: { kind: "manual" },
   }];
+  if (binding === "different-reviewed") project.audio.transcript.push({
+    ...project.audio.transcript[0], id: "00000000-0000-4000-8000-000000000157",
+    voice_track_id: otherVoiceId, text: "Other independently reviewed interval",
+  });
   project.audio.sfx_cues = [];
   const profileId = project.deliverables[0].id;
   project.deliverables[0].voice_track_id =
-    binding === "absent" ? null : binding === "different" ? otherVoiceId : activeVoiceId;
+    binding === "absent" ? null : binding.startsWith("different") ? otherVoiceId : activeVoiceId;
   boot.project = await applySyntheticFixtureChange(project, {
     type: "set_delivery_recipe", deliverable_profile_id: profileId,
     recipe: { schema: "motionwright.delivery-recipe/1", scene_intents: [],
@@ -83,9 +90,9 @@ async function openBindingFixture(page: Page, binding: VoiceBinding) {
 
   await page.goto("/");
   await page.getByRole("button", { name: "Audio", exact: true }).click();
-  const desk = page.locator('details[aria-label="Original three-bus native PCM audition"]');
+  const desk = page.locator('section[aria-label="Original three-bus native PCM audition"]');
   await expect(desk).toBeVisible();
-  await desk.locator(":scope > summary").click();
+  await desk.getByRole("button", { name: /original source mix/ }).click();
   await expect(desk.getByLabel("Delivery language / profile")).toHaveValue(profileId);
   await expect(desk.getByLabel("Original music asset")).toHaveValue(musicId);
   await expect(desk.getByLabel("Original SFX asset")).toHaveValue(sfxId);
@@ -96,7 +103,7 @@ async function openBindingFixture(page: Page, binding: VoiceBinding) {
 
 async function expectNoNativeOrWrite(page: Page, revision: number) {
   await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + revision);
-  await expect(page.locator('details[aria-label="Original three-bus native PCM audition"] audio')).toHaveCount(0);
+  await expect(page.locator('section[aria-label="Original three-bus native PCM audition"] audio')).toHaveCount(0);
   const calls = await page.evaluate(() => (window as unknown as {
     __MIX_VOICE_BINDING_CALLS__: { reads: string[]; auditions: string[]; other: string[] };
   }).__MIX_VOICE_BINDING_CALLS__);
@@ -114,7 +121,7 @@ test("an unbound saved profile blocks audition before permission or a native req
   const { desk, revision } = await openBindingFixture(page, "absent");
   await expect(desk.getByRole("region", { name: "Original mix audition requirements" }))
     .toContainText(missingBinding);
-  await expect(desk).toContainText("The saved profile must explicitly bind that active voice.");
+  await expect(desk).toContainText("It does not change the active Audio take.");
   await expect(desk).not.toContainText("An unbound profile uses that active voice.");
   await expect(desk.getByLabel(permissionLabel)).toBeDisabled();
   await expect(desk.getByLabel(permissionLabel)).not.toBeChecked();
@@ -122,7 +129,7 @@ test("an unbound saved profile blocks audition before permission or a native req
   await expectNoNativeOrWrite(page, revision);
 });
 
-test("a different saved voice binding remains blocked without a native request", async ({ page }) => {
+test("a different saved voice without reviewed timing remains blocked without a native request", async ({ page }) => {
   const { desk, revision } = await openBindingFixture(page, "different");
   const requirements = desk.getByRole("region", { name: "Original mix audition requirements" });
   await expect(requirements).toContainText(differentBinding);
@@ -148,5 +155,14 @@ test("a matching saved voice binding enables local confirmation without dispatch
   await expectNoNativeOrWrite(page, revision);
   await permission.uncheck();
   await expect(audition).toBeDisabled();
+  await expectNoNativeOrWrite(page, revision);
+});
+
+test("an explicitly bound reviewed alternate voice is eligible without changing the active take", async ({ page }) => {
+  const { desk, revision } = await openBindingFixture(page, "different-reviewed");
+  await expect(desk.getByRole("region", { name: "Original mix audition requirements" })).toHaveCount(0);
+  await expect(desk).toContainText("explicitly bound measured voice (Other measured take)");
+  await desk.getByLabel(permissionLabel).check();
+  await expect(desk.getByRole("button", { name: "Create local original PCM audition" })).toBeEnabled();
   await expectNoNativeOrWrite(page, revision);
 });
