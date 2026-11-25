@@ -15,6 +15,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import SemanticSfxWorkbench from "./SemanticSfxWorkbench";
 import NarrationTakeReview from "./NarrationTakeReview";
+import VoiceTakeAudition from "./VoiceTakeAudition";
 import NativeOriginalMixReview from "./NativeOriginalMixReview";
 import type {
   AudioCue,
@@ -562,6 +563,8 @@ function AudioWorkspaceEditor({
             <div><span>Alignment</span><strong>{activeSegments.length ? activeSegments.length + " SEGMENTS" : "NONE"}</strong></div>
           </section>
 
+          <VoiceTakeAudition key={JSON.stringify([project.id,project.generation,project.active_branch])}
+            project={project} desktopMode={desktopMode} />
           <section className="waveform-proxy-section" aria-label="Measured sample peak waveform">
             <header>
               <div>

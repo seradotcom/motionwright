@@ -38,6 +38,7 @@ REAL_COMMANDS = (
     "project_scene_page",
     "project_scene_nodes",
     "semantic_graph_authoring_context",
+    "semantic_graph_operation_recovery",
     "scene_boundary_authoring_context",
     "preview_branch_combination",
     "issue_project_creation_grant",
@@ -83,11 +84,20 @@ REAL_COMMANDS = (
     "recover_native_capsule_source_file",
     "waveform_page",
     "export_project_bundle",
+    "export_native_capsule_source",
+    "inspect_manim_editable_source",
+    "export_manim_editable_source",
+    "inspect_attached_manim_editable_source",
+    "preview_manim_editable_source_edit",
     "export_caption_sidecar",
     "export_otio",
+    "export_otio_source_snapshot",
+    "export_portable_otio_media_bundle",
+    "preview_otio_media_cut",
     "inspect_project_bundle",
     "import_project_bundle",
     "native_original_mix_audition",
+    "read_original_voice_audition",
     "native_narration_take_snapshot",
     "native_narration_replacement_impact",
     "native_paid_generation_journal",
@@ -132,12 +142,12 @@ class TauriGeneratedPermissionsTests(unittest.TestCase):
         with self.assertRaisesRegex(permissions.TauriGeneratedPermissionsError, expression):
             permissions.derive_command_permissions(raw)
 
-    def test_real_build_rs_63_match_original_upstream_bytes(self):
+    def test_real_build_rs_matches_explicit_roster_and_original_upstream_bytes(self):
         self.assertEqual(hashlib.sha256(UPSTREAM_TEMPLATE).hexdigest(),
                          UPSTREAM_TEMPLATE_SHA256)
         path = Path(__file__).resolve().parents[1] / "apps/desktop/src-tauri/build.rs"
         result = permissions.derive_command_permissions(path.read_bytes())
-        self.assertEqual(len(result), 63)
+        self.assertEqual(len(result), len(REAL_COMMANDS))
         expected_paths = [permissions.GENERATED_ROOT + "/" + command + ".toml"
                           for command in REAL_COMMANDS]
         self.assertEqual(list(result), expected_paths)

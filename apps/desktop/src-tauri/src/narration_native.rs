@@ -33,6 +33,54 @@ pub struct NarrationSourceScope {
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct VoiceAuditionScope {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    track_id: Uuid,
+    source_sha256: String,
+    owner_attests_preview_rights: bool,
+}
+
+#[tauri::command]
+pub async fn read_original_voice_audition(
+    mut owner: crate::desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: VoiceAuditionScope,
+) -> Result<tauri::ipc::Response, String> {
+    if !request.owner_attests_preview_rights {
+        return Err("Confirm permission to listen to this exact original take locally.".into());
+    }
+    let project = current(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    let expected = project.stamp();
+    let service = state.service.clone();
+    let project_id = request.project_id;
+    let track_id = request.track_id;
+    let source_sha256 = request.source_sha256;
+    let bytes = crate::desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        motionwright_native::mlt_av_audio::read_measured_voice_audition(
+            &service,
+            project_id,
+            &expected,
+            track_id,
+            &source_sha256,
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "Original voice listening read failed.".to_string())??;
+    owner.begin_phase()?;
+    current(&state, project_id, request.generation, request.revision)?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NarrationCompareScope {
     project_id: Uuid,
     generation: Uuid,

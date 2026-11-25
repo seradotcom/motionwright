@@ -85,6 +85,7 @@ fn main() {
             "recover_project_bundle_import",
             "import_project_bundle",
             "native_original_mix_audition",
+            "read_original_voice_audition",
             "native_narration_take_snapshot",
             "native_narration_replacement_impact",
             "native_paid_generation_journal",

@@ -4180,6 +4180,7 @@ fn main() {
             recover_project_bundle_import,
             import_project_bundle,
             original_mix_native::native_original_mix_audition,
+            narration_native::read_original_voice_audition,
             narration_native::native_narration_take_snapshot,
             narration_native::native_narration_replacement_impact,
             generation_journal::native_paid_generation_journal,

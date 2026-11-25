@@ -7,9 +7,9 @@ use crate::{
 };
 use motionwright_domain::{
     AlignmentEvidence, AudioCodec, DeliverableProfile, OutputColorSpace, OutputContainer, Project,
-    VideoCodec, transcript_for_profile,
+    RevisionStamp, VideoCodec, transcript_for_profile,
 };
-use motionwright_service::VerifiedMasterVoice;
+use motionwright_service::{StudioService, VerifiedMasterVoice};
 use semwright_native_sdk::{Error, ErrorCode, Result as NativeResult};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -106,6 +106,18 @@ fn wave_sample_frames_with_format<R: Read + Seek>(
     file_len: u64,
     require_pcm16: bool,
 ) -> NativeResult<u64> {
+    wave_sample_frames_for_format(file, file_len, require_pcm16, 48_000, 2)
+}
+
+/// The same bounded RIFF index used for the final master, with the expected
+/// measured clock supplied for the separate original-take playback path.
+fn wave_sample_frames_for_format<R: Read + Seek>(
+    file: &mut R,
+    file_len: u64,
+    require_pcm16: bool,
+    expected_rate: u32,
+    expected_channels: u16,
+) -> NativeResult<u64> {
     file.rewind()
         .map_err(|_| stale("Imported WAV cannot be rewound"))?;
     let mut riff = [0_u8; 12];
@@ -161,13 +173,17 @@ fn wave_sample_frames_with_format<R: Read + Seek>(
             let bits = wav_u16(&fmt[14..16]);
             if !matches!((kind, bits), (1, 16 | 24 | 32) | (3, 32))
                 || (require_pcm16 && (kind != 1 || bits != 16))
-                || channels != 2
-                || hz != 48_000
+                || channels != expected_channels
+                || hz != expected_rate
                 || align != channels * bits / 8
                 || byte_rate != hz * u32::from(align)
             {
                 return Err(unsupported(if require_pcm16 {
-                    "Final decoded WAV content is not exact 48 kHz stereo PCM16"
+                    if expected_rate == 48_000 && expected_channels == 2 {
+                        "Final decoded WAV content is not exact 48 kHz stereo PCM16"
+                    } else {
+                        "Original take WAV content is not PCM16 at its measured clock"
+                    }
                 } else {
                     "Measured WAV content is not 48 kHz stereo PCM16/24/32 or float32"
                 }));
@@ -203,6 +219,109 @@ fn wave_sample_frames_with_format<R: Read + Seek>(
         ));
     }
     Ok(size / align)
+}
+
+/// Bounded, read-only local listening to one selected measured original
+/// take. No active-take mutation, decoding into a new asset, effect grant,
+/// path from the client, or approval is involved. Returned bytes are the
+/// original CAS container, not an audition mix or a derived waveform.
+pub const MAX_VOICE_AUDITION_BYTES: u64 = 16 * 1024 * 1024;
+
+pub fn read_measured_voice_audition(
+    service: &StudioService,
+    project_id: Uuid,
+    expected: &RevisionStamp,
+    track_id: Uuid,
+    expected_source_sha256: &str,
+) -> NativeResult<Vec<u8>> {
+    let (track, bytes) = {
+        let shared = service.store();
+        let store = shared.lock();
+        let project = store
+            .load_project(project_id)
+            .map_err(|_| stale("Original voice audition project is unavailable"))?;
+        if project.stamp() != *expected || !digest_valid(expected_source_sha256) {
+            return Err(stale(
+                "Original voice audition revision or source digest changed",
+            ));
+        }
+        let track = project
+            .audio
+            .voice_tracks
+            .iter()
+            .find(|track| track.id == track_id)
+            .ok_or_else(|| stale("Selected measured voice take is unavailable"))?;
+        let asset = project
+            .assets
+            .iter()
+            .find(|asset| asset.id == track.asset_id)
+            .ok_or_else(|| stale("Selected measured voice asset is unavailable"))?;
+        if track.source_sha256 != expected_source_sha256
+            || asset.content_sha256.as_deref() != Some(expected_source_sha256)
+            || !matches!(
+                asset.media_type.as_str(),
+                "audio/wav" | "audio/x-wav" | "audio/wave"
+            )
+        {
+            return Err(unsupported(
+                "Original voice audition requires the exact imported measured WAV",
+            ));
+        }
+        if !(8_000..=96_000).contains(&track.sample_rate_hz)
+            || !matches!(track.channels, 1 | 2)
+            || track.measured_duration.num <= 0
+            || track.measured_duration.den <= 0
+            || i128::from(track.measured_duration.num)
+                > i128::from(track.measured_duration.den) * 180
+        {
+            return Err(unsupported(
+                "Original voice audition supports mono/stereo PCM16 WAV at 8-96 kHz, up to 180 seconds and 16 MiB",
+            ));
+        }
+        let bytes = store
+            .read_blob(expected_source_sha256, MAX_VOICE_AUDITION_BYTES)
+            .map_err(|_| {
+                stale(
+                    "Original voice WAV is missing, changed or exceeds the 16 MiB listening limit",
+                )
+            })?;
+        (track.clone(), bytes)
+    };
+    // Inspect the exact captured bytes, not a path that can be replaced.
+    // Existing mastering/decoded-PCM callers retain their original policy.
+    let frames = wave_sample_frames_for_format(
+        &mut std::io::Cursor::new(&bytes),
+        bytes.len() as u64,
+        true,
+        track.sample_rate_hz,
+        track.channels,
+    )?;
+    if i128::from(frames) * i128::from(track.measured_duration.den)
+        != i128::from(track.measured_duration.num) * i128::from(track.sample_rate_hz)
+    {
+        return Err(stale(
+            "Original voice WAV frame count differs from the measured take",
+        ));
+    }
+    let latest = service
+        .project(project_id)
+        .map_err(|_| stale("Original voice audition project became unavailable"))?;
+    if latest.stamp() != *expected
+        || !latest.audio.voice_tracks.iter().any(|item| item == &track)
+        || !latest.assets.iter().any(|asset| {
+            asset.id == track.asset_id
+                && asset.content_sha256.as_deref() == Some(expected_source_sha256)
+                && matches!(
+                    asset.media_type.as_str(),
+                    "audio/wav" | "audio/x-wav" | "audio/wave"
+                )
+        })
+    {
+        return Err(stale(
+            "Original voice source changed during audition preparation",
+        ));
+    }
+    Ok(bytes)
 }
 
 fn verify_measured_voice_file(voice: &VerifiedMasterVoice) -> NativeResult<u64> {

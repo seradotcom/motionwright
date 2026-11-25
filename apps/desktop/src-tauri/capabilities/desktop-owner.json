@@ -90,6 +90,7 @@
     "allow-recover-project-bundle-import",
     "allow-import-project-bundle",
     "allow-native-original-mix-audition",
+    "allow-read-original-voice-audition",
     "allow-native-narration-take-snapshot",
     "allow-native-narration-replacement-impact",
     "allow-native-paid-generation-journal",

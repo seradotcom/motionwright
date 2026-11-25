@@ -3,6 +3,7 @@ import type { NativeAudioQcReceiptHint, NativeAudioQcReceiptInventoryResponse } 
 import { validateTranscriptEmphasis } from "./transcriptEmphasis";
 import type { OtioEditPreview } from "./otioCutReview";
 import { savedOriginalMixAuditionRequest } from "./audioRecipeContract";
+import { originalVoiceAuditionRequest, verifyOriginalVoiceAuditionBytes } from "./voiceAudition";
 import { readNativeAvAudioQcResponse, readNativeAudioQcReceiptInventoryResponse } from "./nativeAvAudioQc";
 import { claimFields, claimRaw, parseClaimRaw } from "./claimSourceDraft";
 export { nativePaidGenerationJournal, nativePaidGenerationPreflight, nativePaidGenerationReservePreflight } from "./generationJournalApi";
@@ -2619,6 +2620,14 @@ export async function previewCreativePatch(project: Project, patch: CreativePatc
     before:source.nodes.filter(n => ids.has(n.id)), after:after.nodes.filter(n => ids.has(n.id)),
     dirty_start:source.start, dirty_end:{num:String(num),den:String(den)},
     kind:"semantic_diff_full_scene_invalidation_not_pixel_verification" as const };
+}
+
+/** Original take playback is a separate read-only owner operation. */
+export async function readOriginalVoiceAudition(project:Project,trackId:string,confirmed:boolean):Promise<Uint8Array>{
+  if(!isTauri())throw new Error("Original take listening requires the Motionwright desktop runtime.");
+  const request=originalVoiceAuditionRequest(project,trackId,confirmed);
+  const result=await invoke<unknown>("read_original_voice_audition",{request});
+  return verifyOriginalVoiceAuditionBytes(result,request.source_sha256);
 }
 
 export async function nativeOriginalMixAudition(
