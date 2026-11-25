@@ -153,6 +153,155 @@ fn exact_music_cut_persists_under_one_native_service_transaction_and_stale_cas_f
 }
 
 #[test]
+fn saved_source_window_conforms_the_original_grid_and_reopens_exactly() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("music-window.sqlite3");
+    let service = StudioService::open(&db).unwrap();
+    let mut p = service
+        .create_project("Source-window editorial clock")
+        .unwrap();
+    for (index, duration_seconds) in [7, 9, 6].into_iter().enumerate() {
+        p = apply(
+            &service,
+            &p,
+            &format!("scene-{index}"),
+            Change::AddScene {
+                name: format!("Scene {index}"),
+                objective: "Keep original source beats".into(),
+                duration_seconds,
+            },
+        );
+    }
+    let path = temp.path().join("synthetic-author-marked.wav");
+    // Real PCM custody; synthetic transport fixture, not music detection.
+    write_original_wav(&path, 48_000 * 30);
+    p = service
+        .import_asset_file(
+            p.id,
+            &p.stamp(),
+            "original",
+            &path,
+            "synthetic-author-marked.wav".into(),
+            "audio/wav".into(),
+        )
+        .unwrap()
+        .project;
+    let asset = p.assets[0].clone();
+    let sha = asset.content_sha256.clone().unwrap();
+    let profile = p.deliverables[0].id;
+    let recipe = DeliveryRecipe {
+        original_mix: Some(OriginalMixRecipe {
+            music_asset_id: Some(asset.id),
+            music_source_start_sample: Some(24_001),
+            sfx_asset_id: None,
+            sfx_gain_db: -8.0,
+            duck_attenuation_db: 14.0,
+            duck_attack_samples: 2400,
+            duck_release_samples: 4800,
+            voice_envelope: Default::default(),
+            music_envelope: Default::default(),
+            sfx_envelope: Default::default(),
+        }),
+        ..Default::default()
+    };
+    p = apply(
+        &service,
+        &p,
+        "recipe",
+        Change::SetDeliveryRecipe {
+            deliverable_profile_id: profile,
+            recipe: Some(recipe.clone()),
+        },
+    );
+    let at = |n, d| RationalTime::new(n, d).unwrap();
+    let plan = ProductionPlan {
+        objective: "Align the timeline with the source window".into(),
+        audience: "Editors".into(),
+        concept: "One exact source origin for a saved musical grid".into(),
+        reference_constraints: vec![],
+        exclusions: vec![],
+        shots: p
+            .scenes
+            .iter()
+            .map(|scene| PlannedShot {
+                scene_id: scene.id,
+                purpose: scene.objective.clone(),
+                claim_ids: vec![],
+                asset_ids: vec![],
+                evidence_kind: NarrativeEvidenceKind::GraphicStudy,
+            })
+            .collect(),
+        clock: ProductionClock::Music {
+            asset_id: asset.id,
+            beats: vec![at(0, 1), at(8, 1), at(18, 1)],
+        },
+        approval: None,
+    };
+    p = apply(
+        &service,
+        &p,
+        "plan",
+        Change::SetProductionPlan {
+            plan: Some(plan.clone()),
+        },
+    );
+    let first = p.scenes[0].id;
+    let second = p.scenes[1].id;
+    let original = p.clone();
+    let single = Change::SnapSceneCutToMusic {
+        scene_id: first,
+        beat_index: 1,
+        source_sha256: sha.clone(),
+        base_revision: p.revision,
+        acknowledge_absolute_anchors: false,
+    };
+    p = apply(&service, &p, "single", single.clone());
+    assert_eq!(p.revision, original.revision + 1);
+    assert_eq!(p.scenes[1].start, at(359_999, 48_000));
+    let both = Change::ConformScenesToMusic {
+        targets: vec![
+            MusicConformTarget {
+                scene_id: first,
+                beat_index: 1,
+            },
+            MusicConformTarget {
+                scene_id: second,
+                beat_index: 2,
+            },
+        ],
+        source_sha256: sha.clone(),
+        base_revision: p.revision,
+        acknowledge_absolute_anchors: false,
+    };
+    p = apply(&service, &p, "both", both);
+    assert_eq!(p.revision, original.revision + 2);
+    assert_eq!(p.scenes[2].start, at(839_999, 48_000));
+    assert_eq!(p.scenes[1].duration, at(10, 1));
+    assert_eq!(p.production_design.plan.as_ref().unwrap().clock, plan.clock);
+    assert_eq!(p.production_design.delivery_recipes[&profile], recipe);
+    assert_eq!(p.assets, original.assets);
+    assert_eq!(p.audio, original.audio);
+    assert!(
+        service
+            .apply(p.id, &original.stamp(), "stale", &single)
+            .is_err()
+    );
+    let bytes = std::fs::read(&path).unwrap();
+    drop(service);
+    std::fs::remove_file(&path).unwrap();
+    let reopened = StudioService::open(&db).unwrap();
+    assert_eq!(reopened.project(p.id).unwrap(), p);
+    assert_eq!(
+        reopened
+            .store()
+            .lock()
+            .read_blob(&sha, 4 * 1024 * 1024)
+            .unwrap(),
+        bytes
+    );
+}
+
+#[test]
 fn changing_an_absolute_marker_never_grants_a_stale_mutation() {
     let temp = tempfile::tempdir().unwrap();
     let service = StudioService::open(temp.path().join("stale-marker.sqlite3")).unwrap();

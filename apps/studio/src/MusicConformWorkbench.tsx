@@ -5,6 +5,7 @@ import { seconds } from "./types";
 import type { ProductionClock } from "./creativeProduction";
 import {
   inspectMusicConform,
+  musicBeatClockLabel,
   type MusicConformReview,
   type MusicConformTarget,
 } from "./musicClock";
@@ -120,7 +121,7 @@ export default function MusicConformWorkbench({
             onChange={e=>changeBeat(scene.id,Number(e.target.value))}>
             {(savedClock?.beats??[]).slice(0,512).map((beat,index)=>
               <option key={index} value={index}>
-                Beat {String(index+1).padStart(3,"0")} · {fmt(beat)}
+                Beat {String(index+1).padStart(3,"0")} · {musicBeatClockLabel(project,savedClock!.asset_id,beat)}
               </option>)}
           </select>
         </div>;

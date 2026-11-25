@@ -98,6 +98,7 @@ impl Project {
                 "owner audio source identity has changed; reconfirm the grid".into(),
             ));
         }
+        let origin = self.music_clock_timeline_origin(*asset_id)?;
         let indices: HashMap<Uuid, usize> = self
             .scenes
             .iter()
@@ -128,8 +129,16 @@ impl Project {
                     "selected music beat exceeds clock bounds".into(),
                 ));
             }
+            let mapped = beat.checked_sub(origin).map_err(|_| {
+                DomainError::Invalid("Music source beat exceeds rational clock".into())
+            })?;
+            if mapped < RationalTime::ZERO {
+                return Err(DomainError::Invalid(
+                    "Selected source beat precedes the saved music window".into(),
+                ));
+            }
             previous_index = Some(index);
-            selected.insert(target.scene_id, (target.beat_index, beat));
+            selected.insert(target.scene_id, (target.beat_index, mapped));
         }
 
         let mut cursor = RationalTime::ZERO;
@@ -240,17 +249,31 @@ impl Project {
             .ok_or_else(|| DomainError::Invalid("no selected music boundary changes".into()))?;
         // Validate the combined projection, not each boundary in isolation:
         // a later shortening can invalidate an earlier source-bound SFX tail.
-        if !self.audio.sfx_cues.is_empty() {
+        if !self.audio.sfx_cues.is_empty() || !self.production_design.delivery_recipes.is_empty() {
             let mut projected = self.clone();
             for (scene, mapped) in projected.scenes.iter_mut().zip(&changes) {
                 scene.start = mapped.new_start;
                 scene.duration = mapped.new_duration;
             }
-            projected.validated_sfx_schedule().map_err(|error| {
-                DomainError::Invalid(format!(
-                    "music conform would invalidate a semantic SFX tail or mix: {error}"
-                ))
-            })?;
+            projected
+                .production_design
+                .validate_delivery_recipes(
+                    &projected.scenes,
+                    &projected.assets,
+                    &projected.deliverables,
+                )
+                .map_err(|error| {
+                    DomainError::Invalid(format!(
+                        "music conform would invalidate a saved delivery recipe: {error}"
+                    ))
+                })?;
+            if !projected.audio.sfx_cues.is_empty() {
+                projected.validated_sfx_schedule().map_err(|error| {
+                    DomainError::Invalid(format!(
+                        "music conform would invalidate a semantic SFX tail or mix: {error}"
+                    ))
+                })?;
+            }
         }
         let affected_sfx_cue_count = self
             .audio

@@ -6,6 +6,7 @@
  */
 import type { Project, RationalTime } from "./types";
 import { validateSfxProject } from "./semanticSfx";
+import { MAX_MUSIC_SOURCE_SAMPLE_FRAMES, validateAudioRecipeCut } from "./audioRecipeContract";
 
 type Fraction = { n: bigint; d: bigint };
 const MAX_TIME = 86_400n;
@@ -47,6 +48,49 @@ const subtract = (a: Fraction, b: Fraction): Fraction =>
   normalized({n:a.n*b.d-b.n*a.d,d:a.d*b.d});
 const ZERO: Fraction = {n:0n,d:1n};
 const MAX_DURATION: Fraction = {n:MAX_TIME,d:1n};
+
+/** One original source can govern the global scene clock only when every
+ * saved mix that consumes it uses the same 1:1 source origin. */
+export function musicClockOriginSamples(project: Project, assetId: string): number {
+  let observed: number | undefined;
+  for (const recipe of Object.values(project.production_design?.delivery_recipes ?? {})) {
+    const mix = recipe.original_mix;
+    if (!mix || mix.music_asset_id !== assetId) continue;
+    const start = mix.music_source_start_sample === undefined ? 0 : mix.music_source_start_sample;
+    if (typeof start !== "number" || !Number.isInteger(start) || start < 0 || start >= MAX_MUSIC_SOURCE_SAMPLE_FRAMES)
+      throw new Error("Saved music source start exceeds its bounded sample clock.");
+    if (observed !== undefined && observed !== start)
+      throw new Error("Delivery profiles use different start samples for this music source; resolve the conflicting saved windows before changing global scene timing.");
+    observed = start;
+  }
+  return observed ?? 0;
+}
+
+export function mapMusicSourceBeat(at: RationalTime, originSamples: number): RationalTime {
+  if (!Number.isInteger(originSamples) || originSamples < 0 || originSamples >= MAX_MUSIC_SOURCE_SAMPLE_FRAMES)
+    throw new Error("Invalid music source origin.");
+  const target = subtract(fraction(at), { n: BigInt(originSamples), d: 48000n });
+  if (compare(target, ZERO) < 0) throw new Error("Selected source beat precedes the saved music window.");
+  return asTime(target);
+}
+
+/** Retain existing source-time labels when the source starts at zero. Show
+ * exact mapped time for a nonzero origin; never imply a pre-window beat is usable. */
+export function musicBeatClockLabel(project: Project, assetId: string, at: RationalTime): string {
+  const source = (Number(at.num) / Number(at.den)).toFixed(3) + "s";
+  try {
+    const origin = musicClockOriginSamples(project, assetId);
+    if (!origin) return source;
+    return formatMarkedBeat(at) + "s source → " + formatMarkedBeat(mapMusicSourceBeat(at, origin)) + "s timeline";
+  } catch (error) {
+    return source + " source (mapping unavailable)";
+  }
+}
+
+function validateProjectedAudioRecipes(project: Project) {
+  for (const [profileId, recipe] of Object.entries(project.production_design?.delivery_recipes ?? {}))
+    validateAudioRecipeCut(project, profileId, recipe);
+}
 
 export function formatMarkedBeat(at: RationalTime): string {
   const t = fraction(at);
@@ -137,7 +181,7 @@ export function inspectMusicCut(
   const index=project.scenes.findIndex(scene=>scene.id===sceneId);
   if (index<0) throw new Error("Scene is no longer in the project.");
   const scene=project.scenes[index];
-  const target=fraction(plan.clock.beats[beatIndex]);
+  const target=fraction(mapMusicSourceBeat(clock.beats[beatIndex],musicClockOriginSamples(project,clock.asset_id)));
   const start=fraction(scene.start);
   const duration=fraction(scene.duration);
   const newDuration=subtract(target,start);
@@ -176,6 +220,8 @@ export function inspectMusicCut(
     item.start=asTime(projectedCursor);
     projectedCursor=add(projectedCursor,fraction(item.duration));
   }
+  try {validateProjectedAudioRecipes(projected);}
+  catch(e) {throw new Error("Music cut would invalidate a saved delivery recipe: "+(e instanceof Error?e.message:String(e)));}
   try {validateSfxProject(projected);}
   catch(e) {throw new Error("Music cut would invalidate semantic SFX tail or mix: "+
     (e instanceof Error?e.message:String(e)));}
@@ -207,6 +253,7 @@ export function applyMusicCutToProject(project: Project, proposal: MusicCutPropo
     item.start=asTime(cursor);
     cursor=add(cursor,fraction(item.duration));
   }
+  validateProjectedAudioRecipes(projected);
   validateSfxProject(projected);
   project.scenes=projected.scenes;
   if (project.production_design?.plan) project.production_design.plan.approval=null;
@@ -260,6 +307,7 @@ export function inspectMusicConform(
     && asset.media_type.startsWith("audio/"));
   if(!source||source.content_sha256!==expectedDigest)
     throw new Error("Owner music source digest changed; review this clock again.");
+  const origin=musicClockOriginSamples(project,clock.asset_id);
   const indices=new Map(project.scenes.map((scene,index)=>[scene.id,index]));
   const selected=new Map<string,{beat:number;at:Fraction}>();
   let previous=-1;
@@ -273,7 +321,7 @@ export function inspectMusicConform(
     const at=fraction(clock.beats[target.beat_index]);
     if(compare(at,ZERO)<0||compare(at,MAX_DURATION)>0)
       throw new Error("Selected beat exceeds project timing bounds.");
-    selected.set(target.scene_id,{beat:target.beat_index,at});
+    selected.set(target.scene_id,{beat:target.beat_index,at:fraction(mapMusicSourceBeat(clock.beats[target.beat_index],origin))});
     previous=pos;
   }
   let cursor:Fraction=ZERO;
@@ -334,6 +382,8 @@ export function inspectMusicConform(
     projected.scenes[i].start=structuredClone(changes[i].new_start);
     projected.scenes[i].duration=structuredClone(changes[i].new_duration);
   }
+  try {validateProjectedAudioRecipes(projected);}
+  catch(e) {throw new Error("Music conform would invalidate a saved delivery recipe: "+(e instanceof Error?e.message:String(e)));}
   try {validateSfxProject(projected);}
   catch(e) {throw new Error("Music conform would invalidate semantic SFX tail or mix: "+
     (e instanceof Error?e.message:String(e)));}
@@ -368,6 +418,7 @@ export function applyMusicConformToProject(project:Project,review:MusicConformRe
     if(after.changed)scene.status="draft";
   }
   // No partial mutation if an obsolete UI review strands a newer SFX cue.
+  validateProjectedAudioRecipes(staged);
   validateSfxProject(staged);
   project.scenes=staged.scenes;
   if(project.production_design?.plan)project.production_design.plan.approval=null;

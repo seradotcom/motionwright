@@ -44,6 +44,36 @@ impl MusicCutReview {
 }
 
 impl Project {
+    /// Resolve the editorial origin from the existing saved mix recipes.
+    /// A global edit cannot pretend two offsets of one source have the same
+    /// clock. Legacy whole-source music starts at sample zero. Profiles with
+    /// other music sources do not redefine this grid.
+    pub(crate) fn music_clock_timeline_origin(&self, asset_id: Uuid) -> Result<RationalTime> {
+        let mut observed = None;
+        for recipe in self.production_design.delivery_recipes.values() {
+            let Some(mix) = recipe
+                .original_mix
+                .as_ref()
+                .filter(|mix| mix.music_asset_id == Some(asset_id))
+            else {
+                continue;
+            };
+            let start = mix.music_source_start_sample.unwrap_or(0);
+            if u64::from(start) >= MAX_MUSIC_SOURCE_SAMPLE_FRAMES {
+                return Err(DomainError::Invalid(
+                    "Saved music source start exceeds its bounded sample clock".into(),
+                ));
+            }
+            if observed.is_some_and(|previous| previous != start) {
+                return Err(DomainError::Invalid("Delivery profiles use different start samples for this music source; resolve the conflicting saved windows before changing global scene timing".into()));
+            }
+            observed = Some(start);
+        }
+        RationalTime::new(i64::from(observed.unwrap_or(0)), 48_000).map_err(|_| {
+            DomainError::Invalid("Music timeline origin exceeds rational clock".into())
+        })
+    }
+
     pub fn inspect_music_cut(
         &self,
         scene_id: Uuid,
@@ -76,11 +106,20 @@ impl Project {
                 "music source bytes changed after the beat grid was reviewed".into(),
             ));
         }
-        let Some(&target_end) = beats.get(beat_index) else {
+        let Some(&source_beat) = beats.get(beat_index) else {
             return Err(DomainError::Invalid(
                 "music beat index is out of range".into(),
             ));
         };
+        let origin = self.music_clock_timeline_origin(*asset_id)?;
+        let target_end = source_beat
+            .checked_sub(origin)
+            .map_err(|_| DomainError::Invalid("Music source beat exceeds rational clock".into()))?;
+        if target_end < RationalTime::ZERO {
+            return Err(DomainError::Invalid(
+                "Selected source beat precedes the saved music window".into(),
+            ));
+        }
         let Some(scene_index) = self.scenes.iter().position(|scene| scene.id == scene_id) else {
             return Err(DomainError::NotFound(format!("scene:{scene_id}")));
         };
@@ -160,15 +199,29 @@ impl Project {
         };
         // Review the full projected schedule, including tails that cross cuts
         // or must fit a shorter delivery profile, before reporting a safe cut.
-        if !self.audio.sfx_cues.is_empty() {
+        if !self.audio.sfx_cues.is_empty() || !self.production_design.delivery_recipes.is_empty() {
             let mut projected = self.clone();
             projected.scenes[scene_index].duration = new_duration;
             projected.reflow_scene_starts()?;
-            projected.validated_sfx_schedule().map_err(|error| {
-                DomainError::Invalid(format!(
-                    "music cut would invalidate a semantic SFX tail or mix: {error}"
-                ))
-            })?;
+            projected
+                .production_design
+                .validate_delivery_recipes(
+                    &projected.scenes,
+                    &projected.assets,
+                    &projected.deliverables,
+                )
+                .map_err(|error| {
+                    DomainError::Invalid(format!(
+                        "music cut would invalidate a saved delivery recipe: {error}"
+                    ))
+                })?;
+            if !projected.audio.sfx_cues.is_empty() {
+                projected.validated_sfx_schedule().map_err(|error| {
+                    DomainError::Invalid(format!(
+                        "music cut would invalidate a semantic SFX tail or mix: {error}"
+                    ))
+                })?;
+            }
         }
         Ok(MusicCutReview {
             scene_id,

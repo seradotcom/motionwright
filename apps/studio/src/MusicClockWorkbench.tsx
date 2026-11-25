@@ -8,6 +8,8 @@ import {
   formatMarkedBeat,
   generateAuthorBeatGrid,
   inspectMusicCut,
+  musicBeatClockLabel,
+  musicClockOriginSamples,
   parseMarkedBeatGrid,
 } from "./musicClock";
 
@@ -60,6 +62,14 @@ export default function MusicClockWorkbench({
   useEffect(()=>{setAcknowledge(false);setCutError(null);setCutNote(null);},
     [cutSceneId,cutBeatIndex,project.revision]);
   const savedClock=storedPlan?.clock.kind==="music" ? storedPlan.clock : null;
+  const originNotice=useMemo(()=>{
+    try {
+      const origin=musicClockOriginSamples(project,draftClock.asset_id);
+      return {message:origin===0?"Source sample zero maps to timeline zero.":`Source sample ${origin} (exactly ${origin}/48000 s) maps to timeline zero. Beat choices show both original source and mapped timeline time.`,blocked:false};
+    } catch(error) {
+      return {message:error instanceof Error?error.message:String(error),blocked:true};
+    }
+  },[project,draftClock.asset_id]);
   const proposalResult=useMemo(()=>{
     if (!savedClock || !draftMatchesSaved) return {proposal:null,error:"Save this exact music clock to the production plan before retiming."};
     try {
@@ -129,6 +139,9 @@ export default function MusicClockWorkbench({
     {selected && <p className="music-clock-source" aria-label="Selected audio fingerprint">
       Asset SHA-256 <code>{selected.content_sha256?.slice(0,16)}…</code> · an asset hash is not an independent musical timing measurement
     </p>}
+    <p className="production-help" role="status" aria-label="Music source to timeline mapping">
+      {originNotice.message} {originNotice.blocked?"":"Original beat timestamps stay unchanged; matching saved delivery recipes determine the origin. This is an editorial mapping, not measured audio playback."}
+    </p>
     <div className="music-clock-grid">
       <label className="production-field music-clock-marks"><span>Author-marked beat times · one per line, seconds.mmm or exact n/d</span>
         <textarea aria-label="Music beat timestamps" rows={6} value={marked} spellCheck={false} onChange={event=>setMarked(event.target.value)} placeholder={"0.000\n0.500\n1.000\n1.500"}/>
@@ -163,7 +176,7 @@ export default function MusicClockWorkbench({
           <select aria-label="Music cut target beat" value={Math.min(cutBeatIndex,Math.max(0,(savedClock?.beats.length??1)-1))}
             onChange={e=>setCutBeatIndex(Number(e.target.value))}>
             {(savedClock?.beats ?? []).slice(0,512).map((beat,i)=>
-              <option key={i} value={i}>{String(i+1).padStart(3,"0")} · {readableTime(beat)}</option>)}
+              <option key={i} value={i}>{String(i+1).padStart(3,"0")} · {musicBeatClockLabel(project,savedClock!.asset_id,beat)}</option>)}
           </select>
         </label>
       </div>

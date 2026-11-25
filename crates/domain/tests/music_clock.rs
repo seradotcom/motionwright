@@ -68,6 +68,102 @@ fn change(project: &Project, first: Uuid, beat_index: usize, acknowledge: bool) 
 }
 
 #[test]
+fn music_window_origin_maps_both_edit_operations_without_rewriting_source_marks() {
+    let (mut p, first, second) = test_project();
+    let asset_id = p.assets[0].id;
+    let profile = p.deliverables[0].id;
+    let recipe = DeliveryRecipe {
+        original_mix: Some(OriginalMixRecipe {
+            music_asset_id: Some(asset_id),
+            music_source_start_sample: Some(24_001),
+            sfx_asset_id: None,
+            sfx_gain_db: -8.0,
+            duck_attenuation_db: 14.0,
+            duck_attack_samples: 2400,
+            duck_release_samples: 4800,
+            voice_envelope: Default::default(),
+            music_envelope: Default::default(),
+            sfx_envelope: Default::default(),
+        }),
+        ..Default::default()
+    };
+    p.apply_change(&Change::SetDeliveryRecipe {
+        deliverable_profile_id: profile,
+        recipe: Some(recipe.clone()),
+    })
+    .unwrap();
+    let baseline = p.clone();
+    let preview = p.inspect_music_cut(first, 2, MUSIC_DIGEST).unwrap();
+    assert_eq!(preview.target_end, at(359_999, 48_000));
+    assert_eq!(preview.ripple, at(23_999, 48_000));
+    assert!(p.inspect_music_cut(first, 0, MUSIC_DIGEST).is_err());
+    assert_eq!(p, baseline);
+    let targets = vec![
+        MusicConformTarget {
+            scene_id: first,
+            beat_index: 2,
+        },
+        MusicConformTarget {
+            scene_id: second,
+            beat_index: 3,
+        },
+    ];
+    let conform = p.inspect_music_conform(&targets, MUSIC_DIGEST).unwrap();
+    assert_eq!(conform.scenes[0].new_duration, at(359_999, 48_000));
+    assert_eq!(conform.scenes[1].new_duration, at(5, 1));
+    assert_eq!(conform.scenes[2].new_start, at(599_999, 48_000));
+    let mut single = p.clone();
+    single.apply_change(&change(&p, first, 2, false)).unwrap();
+    assert_eq!(single.scenes[1].start, preview.target_end);
+    let original_clock = p.production_design.plan.as_ref().unwrap().clock.clone();
+    p.apply_change(&Change::ConformScenesToMusic {
+        targets: targets.clone(),
+        source_sha256: MUSIC_DIGEST.into(),
+        base_revision: p.revision,
+        acknowledge_absolute_anchors: false,
+    })
+    .unwrap();
+    assert_eq!(p.scenes[2].start, at(599_999, 48_000));
+    assert_eq!(
+        p.production_design.plan.as_ref().unwrap().clock,
+        original_clock
+    );
+    assert_eq!(
+        p.production_design.delivery_recipes,
+        baseline.production_design.delivery_recipes
+    );
+    assert_eq!(p.assets, baseline.assets);
+    assert_eq!(p.audio, baseline.audio);
+    let mut competing = recipe;
+    competing
+        .original_mix
+        .as_mut()
+        .unwrap()
+        .music_source_start_sample = None;
+    let other_profile = p.deliverables[1].id;
+    p.apply_change(&Change::SetDeliveryRecipe {
+        deliverable_profile_id: other_profile,
+        recipe: Some(competing),
+    })
+    .unwrap();
+    let before = p.clone();
+    assert!(
+        p.inspect_music_cut(first, 3, MUSIC_DIGEST)
+            .unwrap_err()
+            .to_string()
+            .contains("different start samples")
+    );
+    assert!(
+        p.inspect_music_conform(&targets, MUSIC_DIGEST)
+            .unwrap_err()
+            .to_string()
+            .contains("different start samples")
+    );
+    assert!(p.apply_change(&change(&p, first, 3, false)).is_err());
+    assert_eq!(p, before);
+}
+
+#[test]
 fn exact_rational_cut_ripples_subsequent_scenes_and_roundtrips() {
     let (mut p, first, second) = test_project();
     let snapshot = p.clone();
