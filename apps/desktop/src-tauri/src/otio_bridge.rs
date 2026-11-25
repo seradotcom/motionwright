@@ -888,6 +888,105 @@ mod tests {
     }
 
     #[test]
+    fn otio_original_source_choice_is_closed_and_has_no_implicit_fallback() {
+        let base = serde_json::json!({
+            "scene_id": Uuid::now_v7(), "asset_id": Uuid::now_v7(), "source_start_frame": 0
+        });
+        let mut legacy = base.clone();
+        legacy["source_path"] = serde_json::json!("/owner/unchanged.mp4");
+        assert!(
+            !serde_json::from_value::<OtioOriginalMediaBinding>(legacy.clone())
+                .unwrap()
+                .uses_project_cas()
+                .unwrap()
+        );
+        legacy["source_kind"] = serde_json::json!("owner_file");
+        assert!(
+            !serde_json::from_value::<OtioOriginalMediaBinding>(legacy)
+                .unwrap()
+                .uses_project_cas()
+                .unwrap()
+        );
+        let mut cas = base.clone();
+        cas["source_kind"] = serde_json::json!("project_cas");
+        assert!(
+            serde_json::from_value::<OtioOriginalMediaBinding>(cas.clone())
+                .unwrap()
+                .uses_project_cas()
+                .unwrap()
+        );
+        cas["source_path"] = serde_json::json!("/owner/foreign.mp4");
+        assert!(
+            serde_json::from_value::<OtioOriginalMediaBinding>(cas.clone())
+                .unwrap()
+                .uses_project_cas()
+                .is_err()
+        );
+        cas["source_path"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<OtioOriginalMediaBinding>(cas).is_err());
+        assert!(
+            serde_json::from_value::<OtioOriginalMediaBinding>(base.clone())
+                .unwrap()
+                .uses_project_cas()
+                .is_err()
+        );
+        for invalid_kind in [serde_json::Value::Null, serde_json::json!("unknown")] {
+            let mut invalid = base.clone();
+            invalid["source_kind"] = invalid_kind;
+            assert!(serde_json::from_value::<OtioOriginalMediaBinding>(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn imported_otio_source_survives_original_path_move_and_store_reopen() {
+        // Opaque test bytes exercise CAS custody only. The real ffprobe/NLE
+        // admission remains in the existing media bridge integration test.
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("otio-source.sqlite3");
+        let original = root.path().join("original.mp4");
+        let bytes = b"synthetic custody fixture, not playable media";
+        fs::write(&original, bytes).unwrap();
+        let service = StudioService::open(&db).unwrap();
+        let project = service
+            .create_project("Synthetic OTIO source custody")
+            .unwrap();
+        let saved = service
+            .import_asset_file(
+                project.id,
+                &project.stamp(),
+                "otio-source-original",
+                &original,
+                "original.mp4".into(),
+                "video/mp4".into(),
+            )
+            .unwrap()
+            .project;
+        let asset = saved
+            .assets
+            .iter()
+            .find(|asset| asset.content_sha256.as_deref() == Some(sha(bytes).as_str()))
+            .unwrap()
+            .clone();
+        let digest = asset.content_sha256.as_deref().unwrap();
+        fs::rename(&original, root.path().join("retained-original.mp4")).unwrap();
+        assert!(!original.exists());
+        drop(service);
+        let reopened = StudioService::open(&db).unwrap();
+        let current = reopened.project(saved.id).unwrap();
+        assert_eq!(current, saved);
+        assert_eq!(
+            read_saved_otio_asset(&reopened, &current, asset.id, digest).unwrap(),
+            bytes
+        );
+        assert!(read_saved_otio_asset(&reopened, &current, Uuid::now_v7(), digest).is_err());
+        assert!(read_saved_otio_asset(&reopened, &current, asset.id, &"b".repeat(64)).is_err());
+        let mut stale = current.clone();
+        stale.revision += 1;
+        assert!(read_saved_otio_asset(&reopened, &stale, asset.id, digest).is_err());
+        assert_eq!(reopened.project(saved.id).unwrap(), saved);
+    }
+
+    #[test]
     fn request_rejects_foreign_fields_before_bridge_authority() {
         let input = serde_json::json!({
             "project_id": Uuid::now_v7(),
@@ -1017,13 +1116,79 @@ mod tests {
 
 /// Explicit owner-selected source bindings. Asset IDs must already exist in
 /// the saved Project and source bytes must match the original CAS digest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OtioOriginalSourceKind {
+    ProjectCas,
+    OwnerFile,
+}
+
+/// Missing legacy kind is accepted only with the original explicit file path.
+/// Explicit ProjectCas has no client-supplied filesystem location.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OtioOriginalMediaBinding {
     pub scene_id: Uuid,
     pub asset_id: Uuid,
-    pub source_path: String,
+    #[serde(default, deserialize_with = "present_original_source_kind")]
+    source_kind: Option<OtioOriginalSourceKind>,
+    #[serde(default, deserialize_with = "present_original_source_path")]
+    source_path: Option<String>,
     pub source_start_frame: u32,
+}
+
+fn present_original_source_kind<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<OtioOriginalSourceKind>, D::Error> {
+    OtioOriginalSourceKind::deserialize(deserializer).map(Some)
+}
+
+fn present_original_source_path<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
+}
+
+impl OtioOriginalMediaBinding {
+    fn uses_project_cas(&self) -> Result<bool, String> {
+        match (self.source_kind, self.source_path.as_deref()) {
+            (Some(OtioOriginalSourceKind::ProjectCas), None) => Ok(true),
+            (None | Some(OtioOriginalSourceKind::OwnerFile), Some(path))
+                if !path.trim().is_empty() && path.trim() == path && path.len() <= 1800
+                    && !path.chars().any(char::is_control) => Ok(false),
+            _ => Err("Select either the saved Project MP4 or one explicit external original file, never both.".into()),
+        }
+    }
+}
+
+/// Project-owned source capture, using the existing verified CAS reader and
+/// exact saved snapshot. No asset id alone grants permission to arbitrary blobs.
+fn read_saved_otio_asset(
+    service: &StudioService,
+    project: &Project,
+    asset_id: Uuid,
+    expected_sha256: &str,
+) -> Result<Vec<u8>, String> {
+    if !project.assets.iter().any(|asset| {
+        asset.id == asset_id
+            && asset.media_type == "video/mp4"
+            && asset.content_sha256.as_deref() == Some(expected_sha256)
+    }) {
+        return Err("Saved OTIO media is not an exact Project-owned MP4 asset.".into());
+    }
+    let shared = service.store();
+    let store = shared.lock();
+    if store.load_project(project.id).map_err(|_| refused())? != *project {
+        return Err("Project changed before saved OTIO media capture.".into());
+    }
+    let bytes = store.read_blob(expected_sha256, 256 * 1024 * 1024)
+        .map_err(|_| "Saved Project MP4 is missing, altered or exceeds the source budget; no external fallback was used.".to_string())?;
+    if bytes.is_empty() || sha(&bytes) != expected_sha256 {
+        return Err(
+            "Saved Project MP4 bytes differ from their exact immutable source digest.".into(),
+        );
+    }
+    Ok(bytes)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1192,6 +1357,7 @@ pub fn export_portable(
     }
     let mut scene_ids = std::collections::BTreeSet::new();
     for binding in &request.bindings {
+        binding.uses_project_cas()?;
         if !scene_ids.insert(binding.scene_id)
             || !project
                 .scenes
@@ -1249,17 +1415,25 @@ pub fn export_portable(
 
     let mut staged_by_sha = std::collections::BTreeMap::<String, Vec<u8>>::new();
     let mut original_by_path = std::collections::BTreeMap::<PathBuf, String>::new();
+    let mut original_by_asset = std::collections::BTreeMap::<Uuid, String>::new();
     let mut bindings = Vec::new();
     let mut unique_bytes = 0u64;
     for selected in &request.bindings {
-        let source = selected_owner_file(&selected.source_path)?;
         let asset = project
             .assets
             .iter()
             .find(|asset| asset.id == selected.asset_id)
             .ok_or_else(refused)?;
         let digest = asset.content_sha256.as_deref().ok_or_else(refused)?;
-        let bytes = read_regular_bounded(&source, 256 * 1024 * 1024)?;
+        let (source, bytes) = if selected.uses_project_cas()? {
+            let bytes = read_saved_otio_asset(service, &project, selected.asset_id, digest)?;
+            original_by_asset.insert(selected.asset_id, digest.to_owned());
+            (None, bytes)
+        } else {
+            let source = selected_owner_file(selected.source_path.as_deref().ok_or_else(refused)?)?;
+            let bytes = read_regular_bounded(&source, 256 * 1024 * 1024)?;
+            (Some(source), bytes)
+        };
         if sha(&bytes) != digest {
             return Err("Owner MP4 bytes do not match the saved Project asset SHA-256.".into());
         }
@@ -1282,9 +1456,10 @@ pub fn export_portable(
             write_exact(&raw_root, &format!("owned-{digest}.mp4"), &bytes)?;
             staged_by_sha.insert(digest.to_owned(), bytes);
         }
-        if original_by_path
-            .insert(source.clone(), digest.to_owned())
-            .is_some_and(|previous| previous != digest)
+        if let Some(source) = source
+            && original_by_path
+                .insert(source, digest.to_owned())
+                .is_some_and(|previous| previous != digest)
         {
             return Err(
                 "A previously selected original source path changed its asset identity.".into(),
@@ -1381,6 +1556,14 @@ pub fn export_portable(
     for (path, digest) in &original_by_path {
         if sha(&read_regular_bounded(path, 256 * 1024 * 1024)?) != digest.as_str() {
             return Err("Owner original MP4 changed during portable export.".into());
+        }
+    }
+    // Re-read each selected CAS identity after actual bridge/ffprobe output
+    // validation. Missing or changed bytes never switch to an owner path.
+    for (asset_id, digest) in &original_by_asset {
+        let original = read_saved_otio_asset(service, &project, *asset_id, digest)?;
+        if staged_by_sha.get(digest) != Some(&original) {
+            return Err("Saved Project MP4 changed during portable export.".into());
         }
     }
     if service.project(request.project_id).map_err(|_| refused())? != project {

@@ -113,7 +113,9 @@ describe("source-bound OTIO cut review is a non-executable proposal",()=>{
     expect(markup).toContain('Create the original media-bound OTIO bundle');
     expect(markup).toContain('aria-label="New OTIO media bundle destination"');
     expect(markup).toContain('aria-label="Original OTIO video asset 1"');
-    expect(markup).toContain('aria-label="Original OTIO MP4 file path 1"');
+    expect(markup).toContain('aria-label="Original OTIO media source 1"');
+    expect(markup).toContain("Saved Project original (CAS)");
+    expect(markup).not.toContain('aria-label="Original OTIO MP4 file path 1"');
     expect(markup).toContain('Export original media-bound OTIO bundle');
     expect(markup).toContain('Preview edited OTIO with verified media');
     expect(markup).not.toContain("Commit reviewed OTIO cut");

@@ -503,7 +503,9 @@ export async function exportNativeCapsuleSource(
 export interface OtioOriginalMediaExportBinding {
   scene_id: string;
   asset_id: string;
-  source_path: string;
+  /** Legacy external source callers may omit the kind but must supply a path. */
+  source_kind?: "project_cas" | "owner_file";
+  source_path?: string;
   source_start_frame: number;
 }
 export interface OtioPortableMediaExportInput {
@@ -536,22 +538,29 @@ export async function exportPortableOtioMediaBundle(
 ): Promise<OtioPortableMediaExportReceipt> {
   if (!isTauri()) throw new Error("Original media-bound OTIO export requires Motionwright desktop.");
   const destination = input.destination.trim();
-  const bindings = input.bindings.map(binding => ({
-    ...binding,
-    source_path: binding.source_path.trim(),
-  }));
+  const bindings = input.bindings.map(binding => {
+    const {scene_id, asset_id, source_start_frame, source_kind, source_path} = binding;
+    if (source_kind === "project_cas" && source_path === undefined)
+      return {scene_id, asset_id, source_start_frame, source_kind};
+    if ((source_kind === undefined || source_kind === "owner_file") && typeof source_path === "string"
+      && source_path.trim() && source_path.trim().length <= 1800 && !/[\u0000-\u001f\u007f]/.test(source_path.trim()))
+      return {scene_id, asset_id, source_start_frame, ...(source_kind === undefined ? {} : {source_kind}),
+        source_path: source_path.trim()};
+    throw new Error("Select either the saved Project MP4 or one explicit external original file, never both.");
+  });
   if (!destination || !input.authorized || !input.redistributable
       || !input.reviewer_declaration.trim() || !input.media_owner.trim()
       || !input.media_license.trim() || bindings.length === 0
       || bindings.length > project.scenes.length || bindings.length > 32
+      || new Set(bindings.map(binding => binding.scene_id)).size !== bindings.length
       || bindings.some(binding =>
         !project.scenes.some(scene => scene.id === binding.scene_id)
         || !project.assets.some(asset => asset.id === binding.asset_id
           && asset.media_type === "video/mp4" && /^[0-9a-f]{64}$/.test(asset.content_sha256 ?? ""))
-        || !binding.source_path || !Number.isSafeInteger(binding.source_start_frame)
-        || binding.source_start_frame < 0
+        || !Number.isSafeInteger(binding.source_start_frame)
+        || binding.source_start_frame < 0 || binding.source_start_frame > 216000
       )) {
-    throw new Error("Select the saved original video assets, owner source files and explicit redistribution rights before exporting.");
+    throw new Error("Select the saved original video assets, their source modes and explicit redistribution rights before exporting.");
   }
   const grant = await issueEffectGrant("deliver_local", project, destination);
   const receipt = await invoke<OtioPortableMediaExportReceipt>("export_portable_otio_media_bundle", {

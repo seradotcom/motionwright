@@ -42,7 +42,7 @@ export default function OtioCutReviewWorkbench({
   const [exportingBundle,setExportingBundle]=useState(false);
   const [exportAttempted,setExportAttempted]=useState(false);
   const [exportBindings,setExportBindings]=useState<OtioOriginalMediaExportBinding[]>(()=>project.scenes.length
-    ?[{scene_id:project.scenes[0].id,asset_id:"",source_path:"",source_start_frame:0}]
+    ?[{scene_id:project.scenes[0].id,asset_id:"",source_kind:"project_cas",source_start_frame:0}]
     :[]);
   const fileAttempt=useRef(0);
   const inspectedSelections=useRef(new Set<string>());
@@ -58,11 +58,12 @@ export default function OtioCutReviewWorkbench({
     setStatus(null);setError(null);setWorking(false);setFileLoading(false);
     setBridgeInspecting(false);
     setExportingBundle(false);
-    setExportAttempted(false);
+    setExportAttempted(false);setExportRights(false);
   },[scope]);
   const videoAssets=project.assets.filter(asset=>
     asset.media_type==="video/mp4"&&/^[0-9a-f]{64}$/.test(asset.content_sha256??""));
   const updateExportBinding=(index:number,change:Partial<OtioOriginalMediaExportBinding>)=>{
+    setExportRights(false);
     setExportBindings(previous=>previous.map((binding,position)=>
       position===index?{...binding,...change}:binding));
   };
@@ -247,13 +248,26 @@ export default function OtioCutReviewWorkbench({
           </select>
         </label>
         <label>
-          <span className="field-label">Original MP4 file matching the saved asset hash</span>
-          <input aria-label={"Original OTIO MP4 file path "+(index+1)}
-            value={binding.source_path} maxLength={1800} spellCheck={false}
-            autoComplete="off" disabled={busy||exportingBundle||bridgeInspecting}
-            placeholder="Absolute path to the original MP4 bytes"
-            onChange={event=>updateExportBinding(index,{source_path:event.target.value})}/>
+          <span className="field-label">Original media source</span>
+          <select aria-label={"Original OTIO media source "+(index+1)}
+            value={binding.source_kind ?? "owner_file"} disabled={busy||exportingBundle||bridgeInspecting}
+            onChange={event=>updateExportBinding(index,event.target.value==="project_cas"
+              ? {source_kind:"project_cas",source_path:undefined}
+              : {source_kind:"owner_file",source_path:""})}>
+            <option value="project_cas">Saved Project original (CAS)</option>
+            <option value="owner_file">External original file (verify exact hash)</option>
+          </select>
         </label>
+        {binding.source_kind==="project_cas"
+          ? <p className="portable-runtime-note">Uses the immutable imported MP4 bytes in this saved Project. A missing or changed source blocks export; it does not fall back to an external file.</p>
+          : <label>
+            <span className="field-label">Original MP4 file matching the saved asset hash</span>
+            <input aria-label={"Original OTIO MP4 file path "+(index+1)}
+              value={binding.source_path??""} maxLength={1800} spellCheck={false}
+              autoComplete="off" disabled={busy||exportingBundle||bridgeInspecting}
+              placeholder="Absolute path to the original MP4 bytes"
+              onChange={event=>updateExportBinding(index,{source_path:event.target.value})}/>
+          </label>}
         <label>
           <span className="field-label">Original source start frame</span>
           <input aria-label={"Original OTIO source start frame "+(index+1)}
@@ -265,7 +279,7 @@ export default function OtioCutReviewWorkbench({
         </label>
         {exportBindings.length>1&&<button type="button" className="button"
           disabled={busy||exportingBundle||bridgeInspecting}
-          onClick={()=>setExportBindings(current=>current.filter((_,position)=>position!==index))}>
+          onClick={()=>{setExportRights(false);setExportBindings(current=>current.filter((_,position)=>position!==index));}}>
           Remove media mapping
         </button>}
       </fieldset>)}
@@ -273,9 +287,9 @@ export default function OtioCutReviewWorkbench({
         className="button" disabled={busy||exportingBundle||bridgeInspecting}
         onClick={()=>{
           const next=project.scenes.find(scene=>!exportBindings.some(binding=>binding.scene_id===scene.id));
-          if(next)setExportBindings(current=>[...current,{
-            scene_id:next.id,asset_id:"",source_path:"",source_start_frame:0,
-          }]);
+          if(next){setExportRights(false);setExportBindings(current=>[...current,{
+            scene_id:next.id,asset_id:"",source_kind:"project_cas",source_start_frame:0,
+          }]);}
         }}>Bind another original scene</button>}
       <label className="otio-cut-check">
         <input type="checkbox" checked={exportRights}
@@ -296,7 +310,8 @@ export default function OtioCutReviewWorkbench({
           ||!exportDestination.trim()||!exportReviewer.trim()
           ||!mediaOwner.trim()||!mediaLicense.trim()||videoAssets.length===0
           ||exportBindings.length===0||exportBindings.some(binding=>
-            !binding.scene_id||!binding.asset_id||!binding.source_path.trim())}
+            !binding.scene_id||!binding.asset_id
+            ||(binding.source_kind==="project_cas" ? binding.source_path!==undefined : !binding.source_path?.trim()))}
         onClick={()=>void exportOriginalMediaBundle()}>
         {exportingBundle?"Verifying and exporting original media…":"Export original media-bound OTIO bundle"}
       </button>

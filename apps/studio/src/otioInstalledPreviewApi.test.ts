@@ -1,6 +1,6 @@
 /** Source transport tests, not actual media, Tauri, NLE or Store acceptance. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { previewInstalledOtioMediaCut } from "./api";
+import { exportPortableOtioMediaBundle, previewInstalledOtioMediaCut, type OtioOriginalMediaExportBinding } from "./api";
 import { reviewableOtioProject, sampleOtioPreview } from "./otioCutReviewTestFixtures";
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
@@ -95,5 +95,51 @@ describe("original Kdenlive export pair", () => {
     await expect(previewInstalledOtioMediaCut(reviewableOtioProject(),
       bundle, "edited.otio", "received.otio")).rejects.toThrow("requires Motionwright desktop");
     expect(invokeMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("portable OTIO original source selection", () => {
+  const destination = "/owner/new-bundle";
+  function fixture() {
+    const project = reviewableOtioProject();
+    const asset_id = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb";
+    project.assets.push({id:asset_id,name:"Original stored video",media_type:"video/mp4",content_sha256:"c".repeat(64),source_revision:null});
+    const binding = {scene_id:project.scenes[0].id,asset_id,source_start_frame:0};
+    const input = (bindings: OtioOriginalMediaExportBinding[]) => ({
+      destination, reviewer_declaration:"Owner reviewer",media_owner:"Original owner",media_license:"Original local license",
+      authorized:true,redistributable:true,allow_synthetic:true,bindings,
+    });
+    const result = {path:destination,source_project_sha256:"d".repeat(64),media_refs_verified:1,
+      missing_references:project.scenes.length-1,source_media_relinked:false,editor_launched:false,
+      project_modified:false,nle_import_verified:false,publication_authorized:false};
+    return {project,binding,input,result};
+  }
+  it("uses the exact saved asset identity with no caller path or implicit fallback", async () => {
+    const {project,binding,input,result}=fixture();
+    const source={...binding,source_kind:"project_cas" as const};
+    invokeMock.mockResolvedValueOnce({token}).mockResolvedValueOnce(result);
+    await expect(exportPortableOtioMediaBundle(project,input([source]))).resolves.toEqual(result);
+    expect(invokeMock.mock.calls.map(row=>row[0])).toEqual(["issue_effect_grant","export_portable_otio_media_bundle"]);
+    expect(invokeMock.mock.calls[1][1].request.bindings).toEqual([source]);
+    expect(invokeMock.mock.calls[1][1].request.bindings[0]).not.toHaveProperty("source_path");
+  });
+  it("retains the legacy external path lane and rejects ambiguity before requesting a grant", async () => {
+    const {project,binding,input,result}=fixture();
+    for (const source of [binding,{...binding,source_kind:"project_cas",source_path:"/owner/foreign.mp4"},
+      {...binding,source_kind:"owner_file"},{...binding,source_kind:"project_cas",source_path:null},
+      {...binding,source_kind:"unknown",source_path:"/owner/file.mp4"}]) {
+      await expect(exportPortableOtioMediaBundle(project,input([source as OtioOriginalMediaExportBinding]))).rejects.toThrow(/Select either/);
+    }
+    expect(invokeMock).not.toHaveBeenCalled();
+    invokeMock.mockResolvedValueOnce({token}).mockResolvedValueOnce(result);
+    await exportPortableOtioMediaBundle(project,input([{...binding,source_path:" /owner/old.mp4 "}]));
+    expect(invokeMock.mock.calls[1][1].request.bindings).toEqual([{...binding,source_path:"/owner/old.mp4"}]);
+  });
+  it("does not retry a missing CAS source through the external original lane", async () => {
+    const {project,binding,input}=fixture();
+    const missing=new Error("Saved original CAS is missing");
+    invokeMock.mockResolvedValueOnce({token}).mockRejectedValueOnce(missing);
+    await expect(exportPortableOtioMediaBundle(project,input([{...binding,source_kind:"project_cas"}]))).rejects.toBe(missing);
+    expect(invokeMock.mock.calls.map(row=>row[0])).toEqual(["issue_effect_grant","export_portable_otio_media_bundle"]);
   });
 });

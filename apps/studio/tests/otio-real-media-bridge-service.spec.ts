@@ -9,7 +9,7 @@
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { expect, test, type Locator, type Page } from "@playwright/test";
@@ -124,6 +124,11 @@ test(flowTitle, async ({ page }, info) => {
     record.actualOwnerMediaBytes = true;
     record.mediaOriginalSha256 = mediaSha;
     record.originalProjectRevision = current.revision;
+    const retainedOriginal = kdenlivePair ? media : media + ".retained";
+    if (!kdenlivePair) {
+      await rename(media, retainedOriginal);
+      await expect(readFile(media)).rejects.toMatchObject({code:"ENOENT"});
+    }
 
     // Studio initiates export through the exact Desktop otio_bridge module
     // and one use-limited grant via the real Service test transport.
@@ -135,10 +140,14 @@ test(flowTitle, async ({ page }, info) => {
     await page.getByLabel("Original OTIO media owner").fill("Test fixture's original creator");
     await page.getByLabel("Original OTIO media license").fill("Synthetic test-owned original");
     await page.getByLabel("Original OTIO video asset 1").selectOption(mediaAsset!.id);
-    await page.getByLabel("Original OTIO MP4 file path 1").fill(media);
+    // Ordinary metadata-preserving case uses the reopened Project's CAS source.
+    // The paired external editor case retains the separately checked path lane.
     if (kdenlivePair) {
+      await page.getByLabel("Original OTIO media source 1").selectOption("owner_file");
+      await page.getByLabel("Original OTIO MP4 file path 1").fill(media);
       await page.getByRole("button", { name: "Bind another original scene", exact: true }).click();
       await page.getByLabel("Original OTIO video asset 2").selectOption(mediaAsset!.id);
+      await page.getByLabel("Original OTIO media source 2").selectOption("owner_file");
       await page.getByLabel("Original OTIO MP4 file path 2").fill(media);
       await page.getByLabel("Original OTIO source start frame 2").fill("144");
     }
@@ -275,7 +284,7 @@ test(flowTitle, async ({ page }, info) => {
     expect(after.scenes[1].nodes).toEqual(current.scenes[0].nodes);
     expect(after.assets).toEqual(current.assets);
     expect(after.audio).toEqual(current.audio);
-    expect(await readFile(media)).toEqual(sourceBytes);
+    expect(await readFile(retainedOriginal)).toEqual(sourceBytes);
     const actualMutations = service.transcript.filter(item =>
       item.direction === "request" && "command" in item.payload &&
       item.payload.command === "apply_change");
