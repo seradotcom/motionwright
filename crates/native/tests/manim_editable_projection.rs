@@ -1,9 +1,9 @@
 //! Source/SQLite tests only. Native rendering, glyph pixels and reopening in a
 //! new Manim process remain separate original-Host G2 observations.
 use motionwright_domain::{
-    BlendMode, CanvasKeyframe, CanvasNode, Change, CoordinateSpace, FontRight, MotionInterpolation,
-    MotionProperty, NodeProperty, NodeStyle, Project, RationalTime, RendererKind, RevisionStamp,
-    RightsStatus, VisualToken,
+    BlendMode, CanvasKeyframe, CanvasNode, Change, CoordinateSpace, CreativePatch, FontRight,
+    MotionInterpolation, MotionProperty, NodeProperty, NodeStyle, Project, RationalTime,
+    RendererKind, RevisionStamp, RightsStatus, ScopedCanvasEdit, VisualToken,
 };
 use motionwright_manim_profile::{SOURCE_BUNDLE_MIME_V2, editable_scene as profile};
 use motionwright_native::manim_editable_projection::*;
@@ -673,6 +673,7 @@ fn compiled_manim_candidate_is_one_inert_source_edit_and_reopens_without_native_
         EditableProperty::Transform,
         EditableProperty::Text,
         EditableProperty::Style,
+        EditableProperty::Controls,
     ]
     .into_iter()
     .enumerate()
@@ -724,6 +725,38 @@ fn compiled_manim_candidate_is_one_inert_source_edit_and_reopens_without_native_
                 style: NodeStyle {
                     fill: Some("#86C8D1".into()),
                     ..node.style.clone()
+                },
+            },
+            EditableProperty::Controls => Change::ApplyCreativePatch {
+                patch: CreativePatch {
+                    scene_id,
+                    base_revision: saved.revision,
+                    rationale: EDITABLE_CONTROLS_RATIONALE.into(),
+                    edits: vec![
+                        ScopedCanvasEdit::Transform {
+                            node_id: node.id,
+                            transform: motionwright_domain::CanvasTransform {
+                                x: node.x + 10.0,
+                                y: node.y + 5.0,
+                                width: node.width - 10.0,
+                                height: node.height,
+                                rotation_deg: node.rotation_deg - 2.0,
+                                opacity: 0.75,
+                            },
+                        },
+                        ScopedCanvasEdit::Text {
+                            node_id: node.id,
+                            text: "Reviewed full object\nSecond line".into(),
+                        },
+                        ScopedCanvasEdit::Style {
+                            node_id: node.id,
+                            style: NodeStyle {
+                                fill: Some("#86C8D1".into()),
+                                font_size: Some(58.0),
+                                ..node.style.clone()
+                            },
+                        },
+                    ],
                 },
             },
         };
@@ -785,9 +818,14 @@ fn compiled_manim_candidate_is_one_inert_source_edit_and_reopens_without_native_
             property,
         )
         .unwrap();
+        let mut expected_change = change.clone();
+        if let Change::ApplyCreativePatch { patch } = &mut expected_change {
+            // Attaching the inert candidate advances source revision, not controls.
+            patch.base_revision = attached.revision;
+        }
         assert_eq!(
             serde_json::to_value(&preview.change).unwrap(),
-            serde_json::to_value(&change).unwrap()
+            serde_json::to_value(&expected_change).unwrap()
         );
         assert_eq!(service.project(attached.id).unwrap(), attached);
         let committed = service
@@ -819,6 +857,23 @@ fn compiled_manim_candidate_is_one_inert_source_edit_and_reopens_without_native_
                 .unwrap()
                 .is_empty()
         );
+        if matches!(property, EditableProperty::Controls) {
+            let patch = committed.production_design.patches.last().unwrap();
+            assert_eq!(patch.before, vec![attached.scenes[1].nodes[0].clone()]);
+            assert_eq!(patch.after, vec![committed.scenes[1].nodes[0].clone()]);
+            let undone = reopened
+                .apply(
+                    committed.id,
+                    &RevisionStamp::from(&committed),
+                    "undo-complete-manim-controls",
+                    &Change::UndoCreativePatch { patch_id: patch.id },
+                )
+                .unwrap()
+                .project;
+            assert_eq!(undone.scenes[1].nodes, attached.scenes[1].nodes);
+            assert_eq!(undone.assets, attached.assets);
+            assert_eq!(reopened.project(undone.id).unwrap(), undone);
+        }
     }
 }
 
@@ -930,4 +985,242 @@ fn compiled_manim_candidate_refuses_unrelated_noop_stale_and_locked_changes() {
         .is_err()
     );
     assert_eq!(service.project(saved.id).unwrap(), saved);
+}
+
+#[test]
+fn complete_manim_controls_refuse_other_objects_and_late_locked_groups_atomically() {
+    let temp = tempfile::tempdir().unwrap();
+    let service = StudioService::open(temp.path().join("complete-controls.sqlite3")).unwrap();
+    let original = source(&service, temp.path());
+    let scene_id = original.scenes[1].id;
+    let node_id = original.scenes[1].nodes[0].id;
+    let output_id = original.deliverables[0].id;
+    let package = prepare_saved_manim_editable_source(
+        &service,
+        original.id,
+        &RevisionStamp::from(&original),
+        scene_id,
+        output_id,
+    )
+    .unwrap();
+    let bytes = profile::source_bundle(&package.plan, &font_entries(&package)).unwrap();
+    let (mut saved, original_id) = attach(
+        &service,
+        temp.path(),
+        &original,
+        "complete-original",
+        &bytes,
+        SOURCE_BUNDLE_MIME_V2,
+    );
+    for other_object in [true, false] {
+        let mut changed = package.plan.clone();
+        changed.nodes[0].x_px += 12.0;
+        changed.nodes[0].typography.as_mut().unwrap().text = "Returned text\nSecond line".into();
+        changed.nodes[0].fill_hex = "#86C8D1".into();
+        if other_object {
+            changed.nodes[1].x_px += 8.0;
+        }
+        let edited = profile::source_bundle(&changed, &font_entries(&package)).unwrap();
+        let (next, edited_id) = attach(
+            &service,
+            temp.path(),
+            &saved,
+            if other_object {
+                "other-object"
+            } else {
+                "complete-controls"
+            },
+            &edited,
+            SOURCE_BUNDLE_MIME_V2,
+        );
+        saved = next;
+        if !other_object {
+            // Transform/text are individually writable; the final style lock
+            // must reject the complete source without a partial first edit.
+            apply(
+                &service,
+                &mut saved,
+                Change::SetNodePropertyLock {
+                    scene_id,
+                    node_id,
+                    property: NodeProperty::Style,
+                    locked: true,
+                },
+            );
+        }
+        let prior = saved.clone();
+        assert!(
+            preview_saved_manim_editable_edit(
+                &service,
+                saved.id,
+                &RevisionStamp::from(&saved),
+                original_id,
+                edited_id,
+                node_id,
+                EditableProperty::Controls
+            )
+            .is_err()
+        );
+        assert_eq!(service.project(saved.id).unwrap(), prior);
+        assert!(
+            service
+                .production_receipts(saved.id, 100)
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn complete_manim_candidate_refuses_duplicate_mixed_and_motion_patch_groups() {
+    let temp = tempfile::tempdir().unwrap();
+    let service = StudioService::open(temp.path().join("closed-controls.sqlite3")).unwrap();
+    let original = source(&service, temp.path());
+    let scene_id = original.scenes[1].id;
+    let output_id = original.deliverables[0].id;
+    let node_id = original.scenes[1].nodes[0].id;
+    let bytes = export_saved_manim_editable_source_bundle(
+        &service,
+        original.id,
+        &RevisionStamp::from(&original),
+        scene_id,
+        output_id,
+    )
+    .unwrap();
+    let (saved, original_id) = attach(
+        &service,
+        temp.path(),
+        &original,
+        "closed-original",
+        &bytes,
+        SOURCE_BUNDLE_MIME_V2,
+    );
+    let text = ScopedCanvasEdit::Text {
+        node_id,
+        text: "New title".into(),
+    };
+    for edits in [
+        vec![text.clone(), text.clone()],
+        vec![
+            text.clone(),
+            ScopedCanvasEdit::Text {
+                node_id: saved.scenes[1].nodes[1].id,
+                text: "Other object".into(),
+            },
+        ],
+        vec![
+            text.clone(),
+            ScopedCanvasEdit::Motion {
+                node_id,
+                keyframes: vec![],
+            },
+        ],
+    ] {
+        let change = Change::ApplyCreativePatch {
+            patch: CreativePatch {
+                scene_id,
+                base_revision: saved.revision,
+                rationale: EDITABLE_CONTROLS_RATIONALE.into(),
+                edits,
+            },
+        };
+        assert!(
+            compile_saved_manim_editable_candidate(
+                &service,
+                saved.id,
+                &RevisionStamp::from(&saved),
+                original_id,
+                scene_id,
+                output_id,
+                &change
+            )
+            .is_err()
+        );
+    }
+    assert_eq!(service.project(saved.id).unwrap(), saved);
+}
+
+#[test]
+fn complete_manim_controls_preserve_unchanged_output_text_overrides() {
+    let temp = tempfile::tempdir().unwrap();
+    let service = StudioService::open(temp.path().join("variant-controls.sqlite3")).unwrap();
+    let mut original = source(&service, temp.path());
+    let scene_id = original.scenes[1].id;
+    let node_id = original.scenes[1].nodes[0].id;
+    let base_text = original.scenes[1].nodes[0].text.clone();
+    let mut output = original.deliverables[0].clone();
+    output
+        .text_overrides
+        .insert(node_id, "Localized output title".into());
+    apply(
+        &service,
+        &mut original,
+        Change::UpsertDeliverable { profile: output },
+    );
+    let package = prepare_saved_manim_editable_source(
+        &service,
+        original.id,
+        &RevisionStamp::from(&original),
+        scene_id,
+        original.deliverables[0].id,
+    )
+    .unwrap();
+    let bytes = profile::source_bundle(&package.plan, &font_entries(&package)).unwrap();
+    let (saved, original_id) = attach(
+        &service,
+        temp.path(),
+        &original,
+        "variant-original",
+        &bytes,
+        SOURCE_BUNDLE_MIME_V2,
+    );
+    let mut returned = package.plan.clone();
+    returned.nodes[0].x_px += 12.0;
+    returned.nodes[0].fill_hex = "#86C8D1".into();
+    let bytes = profile::source_bundle(&returned, &font_entries(&package)).unwrap();
+    let (saved, edited_id) = attach(
+        &service,
+        temp.path(),
+        &saved,
+        "variant-returned",
+        &bytes,
+        SOURCE_BUNDLE_MIME_V2,
+    );
+    let preview = preview_saved_manim_editable_edit(
+        &service,
+        saved.id,
+        &RevisionStamp::from(&saved),
+        original_id,
+        edited_id,
+        node_id,
+        EditableProperty::Controls,
+    )
+    .unwrap();
+    let Change::ApplyCreativePatch { patch } = &preview.change else {
+        panic!("Expected one complete controls patch");
+    };
+    assert_eq!(patch.edits.len(), 2);
+    assert!(
+        patch
+            .edits
+            .iter()
+            .all(|edit| !matches!(edit, ScopedCanvasEdit::Text { .. }))
+    );
+    let committed = service
+        .apply(
+            saved.id,
+            &RevisionStamp::from(&saved),
+            "reviewed-variant-controls",
+            &preview.change,
+        )
+        .unwrap()
+        .project;
+    assert_eq!(committed.scenes[1].nodes[0].text, base_text);
+    assert_eq!(committed.deliverables, saved.deliverables);
+    assert_eq!(committed.assets, saved.assets);
+    assert_eq!(
+        plan(&committed).nodes[0].typography.as_ref().unwrap().text,
+        "Localized output title"
+    );
+    assert_eq!(service.project(committed.id).unwrap(), committed);
 }

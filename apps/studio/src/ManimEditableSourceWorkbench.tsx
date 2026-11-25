@@ -5,7 +5,7 @@ import { bootstrap, projectHistory } from "./api";
 import { sameValue } from "./creativeProduction";
 import { MANIM_EDITABLE_MIME, acknowledgeManimPending, confirmManimEdit, exportManimSource,
   inspectAttachedManim, inspectManimSource, manimAsset, manimExportSubject, manimScope,
-  matchingManimHistory, pendingScopeKey, previewCurrent, previewManimEdit, proposedNode,
+  matchingManimHistory, manimControlRows, pendingScopeKey, previewCurrent, previewManimEdit, proposedNode,
   readManimPending, retainManimPending, type ManimAttached, type ManimEditRequest,
   type ManimPending, type ManimPreview, type ManimProperty, type ManimScope, type ManimSnapshot,
 } from "./manimEditableSource";
@@ -52,6 +52,8 @@ export default function ManimEditableSourceWorkbench({project,scene,profile,busy
   const makeRequest = (): ManimEditRequest => {
     const original=manimAsset(project,originalId), edited=manimAsset(project,editedId);
     if (!attachedCurrent || !attachedCurrent.node_ids.includes(nodeId) || originalId===editedId) throw new Error("Read one original package and choose a separate edited package and node.");
+    if (property==="controls" && !attachedCurrent.editable_parameters.includes("one_node.controls"))
+      throw new Error("This source inspector does not admit a complete object-controls patch.");
     return {source,original_asset_id:originalId,original_sha256:original.content_sha256!,
       edited_asset_id:editedId,edited_sha256:edited.content_sha256!,node_id:nodeId,property};
   };
@@ -59,8 +61,7 @@ export default function ManimEditableSourceWorkbench({project,scene,profile,busy
   try { if(preview && sameValue(preview.request,makeRequest()) && previewCurrent(project,preview)) reviewed=preview; } catch { /* A source change invalidates the preview. */ }
   const before = reviewed && scene.nodes.find(node=>node.id===reviewed!.request.node_id);
   const after = reviewed && before ? proposedNode(before,reviewed.preview.change) : null;
-  const field = (node: NonNullable<typeof before>) => property==="text"?node.text:property==="style"?node.style:
-    {x:node.x,y:node.y,width:node.width,height:node.height,rotation_deg:node.rotation_deg,opacity:node.opacity};
+  const rows=before&&after?manimControlRows(before,after):[];
   useEffect(()=>{
     const onStorage=(event:StorageEvent)=>{if(event.key===key || event.key===null) setRetained(recovery(key));};
     window.addEventListener("storage",onStorage);
@@ -94,6 +95,7 @@ export default function ManimEditableSourceWorkbench({project,scene,profile,busy
     setAttached(null);setPreview(null);const asset=manimAsset(project,originalId);
     const result=await inspectAttachedManim({source,asset_id:asset.id,expected_sha256:asset.content_sha256!});
     checkScope(source);setAttached(result);setNodeId(result.node_ids[0]??"");
+    setProperty(result.editable_parameters.includes("one_node.controls")?"controls":"transform");
     setNotice("The attached original matches the saved controls. No native code was run.");
   });
   const review = () => void run(async()=>{
@@ -105,7 +107,7 @@ export default function ManimEditableSourceWorkbench({project,scene,profile,busy
     if(!reviewed || !before) return;
     checkScope(reviewed.request.source);
     // Re-read the exact compiler comparison immediately before retaining a normal
-    // human-approved Change. No imported Python and no second writer are used.
+    // user-reviewed Change. No imported Python and no second writer are used.
     const fresh=await previewManimEdit(reviewed.request);
     checkScope(reviewed.request.source);
     if (!sameValue(fresh,reviewed) || !previewCurrent(current.current.project,fresh)) throw new Error("The reviewed edit changed; read the proposal again.");
@@ -114,7 +116,7 @@ export default function ManimEditableSourceWorkbench({project,scene,profile,busy
     const saved=await commit(fresh.preview.change);
     if(!confirmManimEdit(project,fresh,saved)) throw new Error("The original response did not confirm the exact one-node edit. Read the saved project; do not resubmit.");
     acknowledgeManimPending(window.localStorage,pending,raw);
-    setAttached(null);setPreview(null);setNotice("The original one-node change is confirmed in r"+saved.revision+". Both attached packages are retained.");
+    setAttached(null);setPreview(null);setNotice("The reviewed object controls are confirmed in r"+saved.revision+". Both attached packages are retained.");
   });
   const inspectOutcome = () => void run(async()=>{
     if (!retained.value || retained.value.kind!=="edit" || !retained.raw) return;
@@ -179,14 +181,21 @@ export default function ManimEditableSourceWorkbench({project,scene,profile,busy
     {attachedCurrent && <div className="production-notice">
       <span>Original r{attachedCurrent.origin_revision}; current r{project.revision}. {attachedCurrent.node_ids.length} editable nodes.</span>
       <label className="production-field"><span>Original node</span><select disabled={blocked} value={nodeId} onChange={event=>{setNodeId(event.target.value);setPreview(null);}}>{scene.nodes.filter(node=>attachedCurrent.node_ids.includes(node.id)).map(node=><option key={node.id} value={node.id}>{node.name}</option>)}</select></label>
-      <label className="production-field"><span>One property group</span><select disabled={blocked} value={property} onChange={event=>{setProperty(event.target.value as ManimProperty);setPreview(null);}}><option value="transform">Transform</option><option value="text">Text</option><option value="style">Style</option></select></label>
+      <label className="production-field"><span>Controls to reintegrate</span><select disabled={blocked} value={property} onChange={event=>{setProperty(event.target.value as ManimProperty);setPreview(null);}}>
+        {attachedCurrent.editable_parameters.includes("one_node.controls")&&<option value="controls">All changed controls of this object</option>}
+        <option value="transform">Transform only</option><option value="text">Text only</option><option value="style">Style only</option></select></label>
       <button className="secondary-button" type="button" disabled={blocked || !editedId || editedId===originalId || !nodeId} onClick={review}>Compare returned package</button>
     </div>}
     {reviewed && before && after && <section className="production-notice" aria-label="Reviewed Manim source edit">
-      <strong>{before.name}: {property}</strong>
-      <div className="production-plan-grid"><div><h4>Saved control</h4><pre style={{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>{JSON.stringify(field(before),null,2)}</pre></div>
-        <div><h4>Proposed control</h4><pre style={{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>{JSON.stringify(field(after),null,2)}</pre></div></div>
-      <p className="production-help">The original compiler confirmed that no other control changed. Save one normal project Change; both attached assets remain.</p>
+      <strong>{before.name}: {property==="controls"?"complete object controls":property}</strong>
+      <table aria-label="Manim control changes" style={{width:"100%",tableLayout:"fixed"}}>
+        <thead><tr><th scope="col">Control</th><th scope="col">Saved</th><th scope="col">Returned source</th></tr></thead>
+        <tbody>{rows.map(row=><tr key={row.field}><th scope="row">{row.field}</th>
+          <td style={{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>{row.before}</td>
+          <td style={{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>{row.after}</td></tr>)}</tbody>
+      </table>
+      <p className="production-help">The compiler confirmed the complete package differs only in these controls of this object.
+        They save together in one revision; both source assets remain. {property==="controls"&&"The saved patch can be reviewed or undone in Revisions."}</p>
       <button type="button" className="primary-button" disabled={blocked} onClick={apply}><Save size={14} aria-hidden="true"/> Save reviewed Manim edit</button>
     </section>}
     {retained.error && <p role="alert" className="production-error">Retained Manim attempt could not be read. No new operation is allowed: {retained.error}</p>}

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fixtureProject } from "./fixture";
-import { MANIM_EDITABLE_MIME, acknowledgeManimPending, confirmManimEdit, exportManimSource, inspectAttachedManim, manimExportSubject,
+import { applyChange } from "./api";
+import { MANIM_CONTROLS_RATIONALE, manimControlRows, proposedNode, MANIM_EDITABLE_MIME, acknowledgeManimPending, confirmManimEdit, exportManimSource, inspectAttachedManim, manimExportSubject,
   manimScope, matchingManimHistory, pendingScopeKey, previewCurrent, previewManimEdit, readManimPending,
   readManimPreview, readManimSnapshot, retainManimPending, type ManimEditRequest, type ManimPending, type ManimPreview, type ManimSnapshot } from "./manimEditableSource";
 
@@ -92,5 +93,75 @@ describe("Manim closed source exchange",()=>{
     expect(matchingManimHistory(pending,saved,[{revision:saved.revision,change:result.preview.change,created_at:"now"}])).toEqual([saved.revision]);
     expect(()=>matchingManimHistory(pending,saved,[])).toThrow(/incomplete/);
     expect(confirmManimEdit(project,result,saved)).toBe(false);
+  });
+});
+
+function controlsFixture() {
+  const f=fixture();
+  f.project.locks=[]; // This positive source is explicitly writable; lock negatives remain separate.
+  f.request.property="controls";
+  f.result.preview.change={type:"apply_creative_patch",patch:{
+    scene_id:f.scene.id,base_revision:f.project.revision,rationale:MANIM_CONTROLS_RATIONALE,edits:[
+      {kind:"transform",node_id:f.node.id,transform:{x:f.node.x+12,y:f.node.y+20,width:f.node.width,height:f.node.height,rotation_deg:7,opacity:.8}},
+      {kind:"text",node_id:f.node.id,text:"Returned complete object"},
+      {kind:"style",node_id:f.node.id,style:{...f.node.style,fill:"#86C8D1",font_size:40}},
+    ],
+  }};
+  return f;
+}
+describe("Manim complete object controls",()=>{
+  it("reviews and commits all changed controls in one revision with retained sources and existing undo",async()=>{
+    const {project,node,request,result}=controlsFixture(),before=structuredClone(project);
+    expect(readManimPreview(result,request)).toEqual(result);
+    const proposed=proposedNode(node,result.preview.change),rows=manimControlRows(node,proposed);
+    expect(rows.map(row=>row.field)).toEqual(expect.arrayContaining(["x","y","rotation_deg","opacity","text","style.fill","style.font_size"]));
+    const saved=await applyChange(project,result.preview.change);
+    expect(saved.revision).toBe(project.revision+1);
+    expect(confirmManimEdit(project,result,saved)).toBe(true);
+    expect(saved.assets).toEqual(before.assets);expect(project).toEqual(before);
+    const reopened=JSON.parse(JSON.stringify(saved));
+    expect(confirmManimEdit(project,result,reopened)).toBe(true);
+    const patch=saved.production_design!.patches!.at(-1)!;
+    const undone=await applyChange(saved,{type:"undo_creative_patch",patch_id:patch.id});
+    expect(undone.scenes[0].nodes).toEqual(project.scenes[0].nodes);
+    expect(undone.assets).toEqual(project.assets);
+  });
+  it("rejects outside objects, duplicate groups, motion, stale bases and extra returned controls",()=>{
+    const {request,result}=controlsFixture();
+    if(result.preview.change.type!=="apply_creative_patch")throw new Error("fixture");
+    const patch=result.preview.change.patch,transform=patch.edits[0];
+    for(const candidate of [
+      {...patch,base_revision:patch.base_revision+1},
+      {...patch,edits:[]},
+      {...patch,edits:[transform,transform]},
+      {...patch,edits:[{...transform,node_id:uuid(22)}]},
+      {...patch,edits:[{kind:"motion",node_id:request.node_id,keyframes:[]}]},
+      {...patch,edits:[{...transform,hidden:"outside"}]},
+      {...patch,rationale:"Unreviewed imported command"},
+      {...patch,scene_id:uuid(23)},
+    ]) expect(()=>readManimPreview({...result,preview:{...result.preview,change:{type:"apply_creative_patch",patch:candidate}}},request)).toThrow();
+  });
+  it("requires the actual saved patch record and refuses replay when only the base revision changes",async()=>{
+    const {project,scope,result}=controlsFixture(),store=storage(),key=pendingScopeKey(scope);
+    const pending:ManimPending={kind:"edit",source:scope,result};
+    const raw=retainManimPending(store,pending);
+    store.setItem(key+":archive:"+uuid(11),raw);acknowledgeManimPending(store,pending,raw);
+    const next=structuredClone(pending);
+    next.source.revision++;next.result.request.source.revision=next.source.revision;
+    next.result.preview.expected.revision=next.source.revision;
+    if(next.result.preview.change.type!=="apply_creative_patch")throw new Error("fixture");
+    next.result.preview.change.patch.base_revision=next.source.revision;
+    expect(()=>retainManimPending(store,next)).toThrow(/uncertain edit/);
+    const saved=await applyChange(project,result.preview.change);
+    saved.production_design!.patches=[];
+    expect(confirmManimEdit(project,result,saved)).toBe(false);
+  });
+  it("recognizes the new capability while preserving earlier source inspectors",async()=>{
+    const {scope,request}=controlsFixture();
+    const response={schema:"motionwright.manim-editable-source-attached/1",source:scope,asset_id:request.original_asset_id,
+      source_sha256:request.original_sha256,original_plan_sha256:digest("a"),current_plan_sha256:digest("b"),
+      origin_revision:scope.revision,revision_only_rebound:false,node_ids:[request.node_id],
+      editable_parameters:["one_node.transform","one_node.text","one_node.style","one_node.controls"],native_execution_performed:false,imported_source_authority_used:false};
+    expect(await inspectAttachedManim({source:scope,asset_id:request.original_asset_id,expected_sha256:request.original_sha256},async()=>response)).toEqual(response);
   });
 });

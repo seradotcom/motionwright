@@ -2,8 +2,9 @@
 //! single domain Change contracts. Imported Python has no execution authority.
 use crate::NativeResult;
 use motionwright_domain::{
-    BlendMode, CanvasTransform, Change, CoordinateSpace, FramingStrategy, OutputColorSpace,
-    OutputContainer, Project, RendererKind, RevisionStamp, VideoCodec,
+    BlendMode, CanvasTransform, Change, CoordinateSpace, CreativePatch, FramingStrategy, NodeStyle,
+    OutputColorSpace, OutputContainer, Project, RendererKind, RevisionStamp, ScopedCanvasEdit,
+    VideoCodec,
 };
 use motionwright_manim_profile::{
     ManimCanvasV2, ManimFrameClockV2, ManimMatteV2, ManimOutputRoleV2, ManimRenderProfile,
@@ -524,7 +525,12 @@ pub fn inspect_saved_manim_editable_source(
         original_closure: origin.closure,
         current_closure: rebound.closure,
         current_plan: plan,
-        editable_parameters: vec!["one_node.transform", "one_node.text", "one_node.style"],
+        editable_parameters: vec![
+            "one_node.transform",
+            "one_node.text",
+            "one_node.style",
+            "one_node.controls",
+        ],
         native_execution_performed: false,
         imported_source_authority_used: false,
     })
@@ -560,9 +566,13 @@ pub fn compile_saved_manim_editable_candidate(
         Change::UpdateCanvasStyle {
             scene_id, node_id, ..
         } => (*scene_id, *node_id, EditableProperty::Style),
+        Change::ApplyCreativePatch { patch } => {
+            let node_id = editable_patch_node(patch)?;
+            (patch.scene_id, node_id, EditableProperty::Controls)
+        }
         _ => {
             return Err(reject(
-                "Editable candidate requires one transform, text or style Change",
+                "Editable candidate requires one object transform, text, style or controls patch",
             ));
         }
     };
@@ -603,40 +613,43 @@ pub fn compile_saved_manim_editable_candidate(
     }
     // Independently check the compiled plan's complete difference, rather
     // than assuming one generic Change cannot affect another source control.
-    match property {
-        EditableProperty::Transform => {
-            before.x_px = after.x_px;
-            before.y_px = after.y_px;
-            before.width_px = after.width_px;
-            before.height_px = after.height_px;
-            before.rotation_deg = after.rotation_deg;
-            before.opacity = after.opacity;
+    if matches!(
+        property,
+        EditableProperty::Transform | EditableProperty::Controls
+    ) {
+        before.x_px = after.x_px;
+        before.y_px = after.y_px;
+        before.width_px = after.width_px;
+        before.height_px = after.height_px;
+        before.rotation_deg = after.rotation_deg;
+        before.opacity = after.opacity;
+    }
+    if matches!(
+        property,
+        EditableProperty::Text | EditableProperty::Controls
+    ) {
+        match (&mut before.typography, &after.typography) {
+            (Some(old), Some(new)) => old.text = new.text.clone(),
+            (None, None) if matches!(property, EditableProperty::Controls) => {}
+            _ => return Err(reject("Editable text cannot change object topology")),
         }
-        EditableProperty::Text => {
-            let text = after
-                .typography
-                .as_ref()
-                .ok_or_else(|| reject("Edited text is absent"))?;
-            before
-                .typography
-                .as_mut()
-                .ok_or_else(|| reject("Original text is absent"))?
-                .text = text.text.clone();
-        }
-        EditableProperty::Style => {
-            before.fill_hex = after.fill_hex.clone();
-            match (&mut before.typography, &after.typography) {
-                (Some(old), Some(new)) => {
-                    old.font_asset_id = new.font_asset_id;
-                    old.font_size_px = new.font_size_px;
-                    old.weight = new.weight;
-                    old.line_height = new.line_height;
-                }
-                (None, None) => {}
-                _ => return Err(reject("Editable style cannot change text topology")),
+    }
+    if matches!(
+        property,
+        EditableProperty::Style | EditableProperty::Controls
+    ) {
+        before.fill_hex = after.fill_hex.clone();
+        match (&mut before.typography, &after.typography) {
+            (Some(old), Some(new)) => {
+                old.font_asset_id = new.font_asset_id;
+                old.font_size_px = new.font_size_px;
+                old.weight = new.weight;
+                old.line_height = new.line_height;
             }
-            allowed.fonts = proposed.fonts.clone();
+            (None, None) => {}
+            _ => return Err(reject("Editable style cannot change text topology")),
         }
+        allowed.fonts = proposed.fonts.clone();
     }
     // Only the selected property group's projected controls may differ.
     // No clock, profile, scene identity, other nodes or hidden source changes.
@@ -668,6 +681,136 @@ pub enum EditableProperty {
     Transform,
     Text,
     Style,
+    /// All changed transform/text/style controls of one retained object,
+    /// applied atomically through the existing creative patch contract.
+    Controls,
+}
+
+pub const EDITABLE_CONTROLS_RATIONALE: &str = "Reintegrate reviewed Manim object controls";
+
+/// This is a closed subset of CreativePatch, not a general imported command.
+fn editable_patch_node(patch: &CreativePatch) -> NativeResult<Uuid> {
+    if patch.edits.is_empty() || patch.edits.len() > 3 {
+        return Err(reject(
+            "Editable controls require one to three property groups",
+        ));
+    }
+    let node_id = patch.edits[0].node_id();
+    let mut kinds = std::collections::BTreeSet::new();
+    for edit in &patch.edits {
+        let kind = match edit {
+            ScopedCanvasEdit::Transform { .. } => "transform",
+            ScopedCanvasEdit::Text { .. } => "text",
+            ScopedCanvasEdit::Style { .. } => "style",
+            _ => {
+                return Err(reject(
+                    "Editable controls cannot import motion or unrelated commands",
+                ));
+            }
+        };
+        if edit.node_id() != node_id || !kinds.insert(kind) {
+            return Err(reject(
+                "Editable controls require one object and distinct property groups",
+            ));
+        }
+    }
+    Ok(node_id)
+}
+
+fn editable_transform(node: &profile::Node) -> CanvasTransform {
+    CanvasTransform {
+        x: node.x_px,
+        y: node.y_px,
+        width: node.width_px,
+        height: node.height_px,
+        rotation_deg: node.rotation_deg,
+        opacity: node.opacity,
+    }
+}
+
+fn editable_style(
+    project: &Project,
+    scene_id: Uuid,
+    node: &profile::Node,
+    edited: &profile::Plan,
+) -> NativeResult<NodeStyle> {
+    let mut style = project
+        .scenes
+        .iter()
+        .find(|row| row.id == scene_id)
+        .and_then(|scene| scene.nodes.iter().find(|row| row.id == node.node_id))
+        .ok_or_else(|| invalid("Canonical editable node absent"))?
+        .style
+        .clone();
+    style.fill = Some(node.fill_hex.clone());
+    if let Some(text) = &node.typography {
+        let font = edited
+            .fonts
+            .iter()
+            .find(|row| row.asset_id == text.font_asset_id)
+            .ok_or_else(|| invalid("Edited font absent"))?;
+        style.font_family = Some(font.family.clone());
+        style.font_size = Some(text.font_size_px);
+        style.font_weight = Some(text.weight);
+        style.line_height = Some(text.line_height);
+    }
+    Ok(style)
+}
+
+fn editable_controls(
+    project: &Project,
+    scene_id: Uuid,
+    original: &profile::Node,
+    node: &profile::Node,
+    edited: &profile::Plan,
+) -> NativeResult<Change> {
+    let saved = project
+        .scenes
+        .iter()
+        .find(|row| row.id == scene_id)
+        .and_then(|scene| scene.nodes.iter().find(|row| row.id == node.node_id))
+        .ok_or_else(|| invalid("Canonical editable node absent"))?;
+    let transform = editable_transform(node);
+    let before = CanvasTransform {
+        x: saved.x,
+        y: saved.y,
+        width: saved.width,
+        height: saved.height,
+        rotation_deg: saved.rotation_deg,
+        opacity: saved.opacity,
+    };
+    let style = editable_style(project, scene_id, node, edited)?;
+    let text = node.typography.as_ref().map(|row| row.text.clone());
+    let mut edits = Vec::new();
+    if before != transform {
+        edits.push(ScopedCanvasEdit::Transform {
+            node_id: node.node_id,
+            transform,
+        });
+    }
+    // Compare rendered source controls, not base text hidden by an output
+    // override. An unchanged variant must not silently replace canonical text.
+    if original.typography.as_ref().map(|row| &row.text) != text.as_ref() {
+        let text = text.ok_or_else(|| reject("Editable controls cannot remove text topology"))?;
+        edits.push(ScopedCanvasEdit::Text {
+            node_id: node.node_id,
+            text,
+        });
+    }
+    if saved.style != style {
+        edits.push(ScopedCanvasEdit::Style {
+            node_id: node.node_id,
+            style,
+        });
+    }
+    let patch = CreativePatch {
+        scene_id,
+        base_revision: project.revision,
+        rationale: EDITABLE_CONTROLS_RATIONALE.into(),
+        edits,
+    };
+    editable_patch_node(&patch)?;
+    Ok(Change::ApplyCreativePatch { patch })
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct PreviewedEditableEdit {
@@ -682,7 +825,7 @@ pub struct PreviewedEditableEdit {
     pub native_execution_performed: bool,
     pub imported_source_authority_used: bool,
 }
-/// Preview exactly one normal Change; the original service owns locks/CAS and
+/// Preview one ordinary Change (including one atomic object patch); the original service owns locks/CAS and
 /// request idempotency. This function never applies or retries a mutation.
 pub fn preview_saved_manim_editable_edit(
     service: &StudioService,
@@ -727,47 +870,20 @@ pub fn preview_saved_manim_editable_edit(
         EditableProperty::Transform => Change::TransformCanvasNode {
             scene_id,
             node_id,
-            transform: CanvasTransform {
-                x: node.x_px,
-                y: node.y_px,
-                width: node.width_px,
-                height: node.height_px,
-                rotation_deg: node.rotation_deg,
-                opacity: node.opacity,
-            },
+            transform: editable_transform(node),
         },
         EditableProperty::Text => Change::UpdateCanvasText {
             scene_id,
             node_id,
             text: node.typography.as_ref().map(|row| row.text.clone()),
         },
-        EditableProperty::Style => {
-            let mut style = project
-                .scenes
-                .iter()
-                .find(|row| row.id == scene_id)
-                .and_then(|scene| scene.nodes.iter().find(|row| row.id == node_id))
-                .ok_or_else(|| invalid("Canonical editable node absent"))?
-                .style
-                .clone();
-            style.fill = Some(node.fill_hex.clone());
-            if let Some(text) = &node.typography {
-                let font = edited
-                    .plan
-                    .fonts
-                    .iter()
-                    .find(|row| row.asset_id == text.font_asset_id)
-                    .ok_or_else(|| invalid("Edited font absent"))?;
-                style.font_family = Some(font.family.clone());
-                style.font_size = Some(text.font_size_px);
-                style.font_weight = Some(text.weight);
-                style.line_height = Some(text.line_height);
-            }
-            Change::UpdateCanvasStyle {
-                scene_id,
-                node_id,
-                style,
-            }
+        EditableProperty::Style => Change::UpdateCanvasStyle {
+            scene_id,
+            node_id,
+            style: editable_style(&project, scene_id, node, &edited.plan)?,
+        },
+        EditableProperty::Controls => {
+            editable_controls(&project, scene_id, before, node, &edited.plan)?
         }
     };
     let mut candidate = project.clone();

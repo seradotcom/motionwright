@@ -3,8 +3,9 @@ import type { CanvasNode, CanvasTransform, Change, NodeStyle, Project, ProjectEv
 import { sameValue } from "./creativeProduction";
 
 export const MANIM_EDITABLE_MIME = "application/vnd.motionwright.manim-source+zip";
-export type ManimProperty = "transform" | "text" | "style";
-export type ManimChange = Extract<Change, {type: "transform_canvas_node" | "update_canvas_text" | "update_canvas_style"}>;
+export type ManimProperty = "transform" | "text" | "style" | "controls";
+export const MANIM_CONTROLS_RATIONALE = "Reintegrate reviewed Manim object controls";
+export type ManimChange = Extract<Change, {type: "transform_canvas_node" | "update_canvas_text" | "update_canvas_style" | "apply_creative_patch"}>;
 export type ManimScope = {project_id: string; generation: string; revision: number; active_branch: string; scene_id: string; deliverable_id: string};
 export type ManimSnapshot = {schema: "motionwright.manim-editable-source/1"; source: ManimScope; bundle_sha256: string; size_bytes: string; media_type: string; native_execution_performed: false; project_modified: false};
 export type ManimExport = Omit<ManimSnapshot, "schema"> & {schema: "motionwright.manim-editable-source-export/1"; path: string};
@@ -90,7 +91,8 @@ export async function inspectAttachedManim(request: ManimAttachedRequest, call: 
       typeof value.revision_only_rebound !== "boolean" || !Array.isArray(value.node_ids) ||
       value.node_ids.length < 1 || value.node_ids.length > 128 || !value.node_ids.every(uuid) ||
       new Set(value.node_ids).size !== value.node_ids.length ||
-      !sameValue(value.editable_parameters,["one_node.transform","one_node.text","one_node.style"]) ||
+      !(sameValue(value.editable_parameters,["one_node.transform","one_node.text","one_node.style"]) ||
+      sameValue(value.editable_parameters,["one_node.transform","one_node.text","one_node.style","one_node.controls"])) ||
       value.native_execution_performed !== false || value.imported_source_authority_used !== false) return fail();
   return value as unknown as ManimAttached;
 }
@@ -110,7 +112,27 @@ function validStyle(value: unknown): value is NodeStyle {
     ["font_size","font_weight","line_height"].every(field=>optionalNumber(value[field])) &&
     finite(value.stroke_width) && ["normal","multiply","screen","add"].includes(String(value.blend_mode));
 }
+function validControlsPatch(value: unknown, request: ManimEditRequest): boolean {
+  if (!record(value) || !exact(value,["type","patch"]) || value.type !== "apply_creative_patch" || !record(value.patch)) return false;
+  const patch=value.patch;
+  if (!exact(patch,["scene_id","base_revision","rationale","edits"]) || patch.scene_id !== request.source.scene_id ||
+      patch.base_revision !== request.source.revision || patch.rationale !== MANIM_CONTROLS_RATIONALE ||
+      !Array.isArray(patch.edits) || patch.edits.length < 1 || patch.edits.length > 3) return false;
+  let previous=-1;
+  for (const edit of patch.edits) {
+    if (!record(edit) || edit.node_id !== request.node_id) return false;
+    const index=["transform","text","style"].indexOf(String(edit.kind));
+    if (index <= previous) return false;
+    previous=index;
+    if (edit.kind === "transform" && exact(edit,["kind","node_id","transform"]) && validTransform(edit.transform)) continue;
+    if (edit.kind === "text" && exact(edit,["kind","node_id","text"]) && typeof edit.text === "string") continue;
+    if (edit.kind === "style" && exact(edit,["kind","node_id","style"]) && validStyle(edit.style)) continue;
+    return false;
+  }
+  return true;
+}
 function validChange(value: unknown, request: ManimEditRequest): value is ManimChange {
+  if (request.property === "controls") return validControlsPatch(value,request);
   if (!record(value) || value.scene_id !== request.source.scene_id || value.node_id !== request.node_id) return false;
   if (request.property === "transform") return value.type === "transform_canvas_node" && exact(value,["type","scene_id","node_id","transform"]) && validTransform(value.transform);
   if (request.property === "text") return value.type === "update_canvas_text" && exact(value,["type","scene_id","node_id","text"]) && optionalText(value.text);
@@ -119,7 +141,7 @@ function validChange(value: unknown, request: ManimEditRequest): value is ManimC
 function editRequestShape(value: unknown): value is ManimEditRequest {
   return record(value) && exact(value,["source","original_asset_id","original_sha256","edited_asset_id","edited_sha256","node_id","property"]) &&
     scopeShape(value.source) && uuid(value.original_asset_id) && uuid(value.edited_asset_id) && value.original_asset_id !== value.edited_asset_id &&
-    uuid(value.node_id) && sha(value.original_sha256) && sha(value.edited_sha256) && ["transform","text","style"].includes(String(value.property));
+    uuid(value.node_id) && sha(value.original_sha256) && sha(value.edited_sha256) && ["transform","text","style","controls"].includes(String(value.property));
 }
 export function readManimPreview(value: unknown, request: ManimEditRequest): ManimPreview {
   if (!record(value) || value.schema !== "motionwright.manim-editable-source-edit/1" ||
@@ -136,6 +158,19 @@ export async function previewManimEdit(request: ManimEditRequest, call: Transpor
   return readManimPreview(await call("preview_manim_editable_source_edit",{request}),request);
 }
 export function proposedNode(before: CanvasNode, change: ManimChange): CanvasNode {
+  if (change.type === "apply_creative_patch") {
+    let result={...before};
+    for (const edit of change.patch.edits) {
+      if (edit.node_id !== before.id) return fail();
+      switch (edit.kind) {
+        case "transform": result={...result,...edit.transform}; break;
+        case "text": result={...result,text:edit.text}; break;
+        case "style": result={...result,style:edit.style}; break;
+        default: return fail();
+      }
+    }
+    return result;
+  }
   if (before.id !== change.node_id) return fail();
   switch (change.type) {
     case "transform_canvas_node": return {...before,...change.transform};
@@ -175,6 +210,9 @@ export function readManimPending(raw: string, key: string): ManimPending {
   return fail();
 }
 type LocalStore = Pick<Storage,"length"|"key"|"getItem"|"setItem"|"removeItem">;
+function replayShape(change: ManimChange): ManimChange {
+  return change.type === "apply_creative_patch" ? {...change,patch:{...change.patch,base_revision:0}} : change;
+}
 function rejectArchivedReplay(store: LocalStore, pending: ManimPending) {
   const key=pendingScopeKey(pending.source), prefix=key+":archive:";
   let count=0;
@@ -190,7 +228,7 @@ function rejectArchivedReplay(store: LocalStore, pending: ManimPending) {
     if(old.kind==="edit" && pending.kind==="edit" &&
         old.result.request.original_sha256===pending.result.request.original_sha256 &&
         old.result.request.edited_sha256===pending.result.request.edited_sha256 &&
-        sameValue(old.result.preview.change,pending.result.preview.change))
+        sameValue(replayShape(old.result.preview.change),replayShape(pending.result.preview.change)))
       throw new Error("An earlier uncertain edit used this exact proposal. Review a distinct edit.");
   }
 }
@@ -215,7 +253,14 @@ export function confirmManimEdit(before: Project, result: ManimPreview, after: P
   if (!node || !previewCurrent(before,result) || after.id !== before.id || after.generation !== before.generation ||
       after.active_branch !== before.active_branch || after.revision !== before.revision+1) return false;
   const saved = after.scenes.find(s=>s.id===scope.scene_id)?.nodes.find(n=>n.id===node.id);
-  return sameValue(saved,proposedNode(node,result.preview.change)) && sameValue(before.assets,after.assets);
+  if (!sameValue(saved,proposedNode(node,result.preview.change)) || !sameValue(before.assets,after.assets)) return false;
+  if (result.preview.change.type === "apply_creative_patch") {
+    const patch=result.preview.change.patch;
+    return (after.production_design?.patches ?? []).some(record=>record.scene_id===scope.scene_id &&
+      record.source_revision===scope.revision && record.rationale===patch.rationale &&
+      sameValue(record.before,[node]) && sameValue(record.after,[saved]));
+  }
+  return true;
 }
 /** Observation only: matching journal values do not acknowledge a lost reply. */
 export function matchingManimHistory(pending: Extract<ManimPending,{kind:"edit"}>, project: Project, events: ProjectEvent[]): number[] {
@@ -225,4 +270,15 @@ export function matchingManimHistory(pending: Extract<ManimPending,{kind:"edit"}
       project.revision-source.revision>2048 || events.length!==project.revision-source.revision ||
       events.some((event,index)=>event.revision!==source.revision+index+1)) throw new Error("The exact saved journal is unavailable or incomplete.");
   return events.filter(event=>sameValue(event.change,pending.result.preview.change)).map(event=>event.revision);
+}
+
+/** Literal changed controls, for a reviewable diff before the existing Change. */
+export function manimControlRows(before: CanvasNode, after: CanvasNode): {field:string;before:string;after:string}[] {
+  const display=(value:unknown)=>value===null?"Unspecified":String(value);
+  const values: [string,unknown,unknown][]=[
+    ...transformKeys.map(key=>[key,before[key],after[key]] as [string,unknown,unknown]),
+    ["text",before.text,after.text],
+    ...styleKeys.map(key=>["style."+key,before.style[key],after.style[key]] as [string,unknown,unknown]),
+  ];
+  return values.filter(([,a,b])=>!sameValue(a,b)).map(([field,a,b])=>({field,before:display(a),after:display(b)}));
 }
