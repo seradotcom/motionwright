@@ -37,11 +37,13 @@ export function deriveVoiceCut(project: Project, profile: DeliverableProfile): V
   }
   if (sourceFrames !== fullEnd || sourceFrames < 48000)
     throw new Error("Original voice must exactly cover the complete original project clock.");
-  let outputFrames = 0;
+  let outputFrames = 0, previousSourceEnd = 0;
   const seen = new Set<string>();
   const spans = profile.included_scene_ids.map(sceneId => {
     const source = sourceSpans.get(sceneId);
     if (!source || seen.has(sceneId)) throw new Error("Selected voice cut has missing or duplicate scenes.");
+    if (source.start < previousSourceEnd) throw new Error("Voice cut must preserve approved project scene order.");
+    previousSourceEnd = source.end;
     seen.add(sceneId);
     const span = { sceneId, sourceStart: source.start, sourceEnd: source.end, outputStart: outputFrames };
     outputFrames += source.end - source.start;

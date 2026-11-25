@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 
 // Authoring-only browser fixture. The original sources are synthetic metadata;
 // no native dispatch, generated media, or real Store proof is supplied.
-test("review and save a reordered original voice cut without replacing source assets", async ({page}) => {
+test("review and save a noncontiguous original voice cut without replacing source assets", async ({page}) => {
   const seed = structuredClone(fixtureBootstrap.project);
   const trackId = "00000000-0000-4000-8000-000000000801";
   const assetId = "00000000-0000-4000-8000-000000000802";
@@ -16,7 +16,7 @@ test("review and save a reordered original voice cut without replacing source as
     sample_rate_hz:48000,channels:2,measured_duration:{num:"36",den:"1"},loudness_lufs:null,true_peak_dbfs:null}];
   const profile = seed.deliverables[0];
   profile.voice_track_id = trackId;
-  profile.included_scene_ids = [seed.scenes[3].id,seed.scenes[0].id];
+  profile.included_scene_ids = [seed.scenes[0].id,seed.scenes[3].id];
   const cut = deriveVoiceCut(seed,profile);
   const binding = createHash("sha256").update(cut.wire).digest("hex");
   const music = seed.assets.find(a=>a.id!==assetId && a.media_type==="audio/wav")!;
@@ -42,7 +42,7 @@ test("review and save a reordered original voice cut without replacing source as
   const review=panel.getByRole("region",{name:"Original voice cut review",exact:true});
   await expect(review).toContainText("Review required");
   await expect(review.locator("tbody tr")).toHaveCount(2);
-  await expect(review.locator("tbody tr").first()).toContainText(seed.scenes[3].name);
+  await expect(review.locator("tbody tr").first()).toContainText(seed.scenes[0].name);
   await review.getByRole("button",{name:"Bind reviewed original voice cut",exact:true}).click();
   await expect(review).toContainText("Exact cut binding selected.");
   const save=panel.getByRole("button",{name:"Save original mix recipe",exact:true});

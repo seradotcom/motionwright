@@ -14,7 +14,7 @@ function fixture() {
   const profile = project.deliverables[0];
   profile.id = "00000000-0000-4000-8000-000000000200";
   profile.audio_sample_rate_hz = 48000;
-  profile.included_scene_ids = [sceneId(2), sceneId(0)];
+  profile.included_scene_ids = [sceneId(0), sceneId(2)];
   const track = {id:"00000000-0000-4000-8000-000000000300",asset_id:"00000000-0000-4000-8000-000000000400",
     label:"Original",source_sha256:"a".repeat(64),sample_rate_hz:48000,channels:2,
     measured_duration:{num:"6",den:"1"},loudness_lufs:null,true_peak_dbfs:null};
@@ -32,15 +32,17 @@ describe("explicit original voice montage binding", () => {
   it("hashes the exact ordered original samples using a shared closed wire", async () => {
     const {project,profile} = fixture(), cut = deriveVoiceCut(project,profile);
     expect(cut.sourceFrames).toBe(288000); expect(cut.outputFrames).toBe(192000);
-    expect(cut.spans.map(s=>[s.sourceStart,s.sourceEnd,s.outputStart])).toEqual([[192000,288000,0],[0,96000,96000]]);
+    expect(cut.spans.map(s=>[s.sourceStart,s.sourceEnd,s.outputStart])).toEqual([[0,96000,0],[192000,288000,96000]]);
     const digest = await voiceCutDigest(cut.wire);
-    expect(digest).toBe("39d8d4fbf9c7b8725f16c78bae9ba5120c5da4a86fbc271177f460d785075dfd");
+    expect(digest).toBe("e398be6acc88b7618f6f3bc6130f12fb1020901d48ed7157c675cc77feeee7f8");
     expect(await requireCurrentVoiceCut(project,profile,digest)).toEqual(cut);
     const prior = structuredClone(project);
     expect(project).toEqual(prior);
     profile.included_scene_ids.reverse();
+    await expect(requireCurrentVoiceCut(project,profile,digest)).rejects.toThrow(/approved project scene order/);
+    profile.included_scene_ids = [project.scenes[0].id, project.scenes[1].id];
     await expect(requireCurrentVoiceCut(project,profile,digest)).rejects.toThrow(/Review and save/);
-    profile.included_scene_ids.reverse();
+    profile.included_scene_ids = [project.scenes[0].id, project.scenes[2].id];
     profile.id = "00000000-0000-4000-8000-000000000201";
     await expect(requireCurrentVoiceCut(project,profile,digest)).rejects.toThrow();
   });
@@ -64,11 +66,11 @@ describe("explicit original voice montage binding", () => {
     project.production_design = {...emptyProductionDesign(),delivery_recipes:{[profile.id]:{...recipe,original_mix:{...recipe.original_mix,voice_cut_sha256:digest}}}};
     const clock=buildAudioReviewClock(project,{kind:"mix",sourceId:profile.id});
     expect(clock.sampleCount).toBe(192000);
-    expect(audioSampleToProject(clock,0)).toEqual({num:"4",den:"1"});
-    expect(audioSampleToProject(clock,96000)).toEqual({num:"0",den:"1"});
-    expect(audioSampleToProject(clock,192000)).toEqual({num:"2",den:"1"});
-    expect(projectToAudioMedia(clock,5)).toBe(1);
-    expect(projectToAudioMedia(clock,1)).toBe(3);
+    expect(audioSampleToProject(clock,0)).toEqual({num:"0",den:"1"});
+    expect(audioSampleToProject(clock,96000)).toEqual({num:"4",den:"1"});
+    expect(audioSampleToProject(clock,192000)).toEqual({num:"6",den:"1"});
+    expect(projectToAudioMedia(clock,5)).toBe(3);
+    expect(projectToAudioMedia(clock,1)).toBe(1);
     expect(projectToAudioMedia(clock,3)).toBeNull();
   });
   it("admits only contained, non-overlapping reviewed intervals in the selected cut", () => {

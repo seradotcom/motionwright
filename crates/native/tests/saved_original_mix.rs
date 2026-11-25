@@ -1269,7 +1269,7 @@ fn explicit_voice_montage_uses_exact_original_samples_and_reopens_without_replay
     let mut profile = project.deliverables[0].clone();
     profile.voice_track_id = Some(track.id);
     profile.language = "en".into();
-    profile.included_scene_ids = vec![project.scenes[2].id, project.scenes[0].id];
+    profile.included_scene_ids = vec![project.scenes[0].id, project.scenes[2].id];
     let profile_id = profile.id;
     apply(
         &service,
@@ -1368,9 +1368,9 @@ fn explicit_voice_montage_uses_exact_original_samples_and_reopens_without_replay
             .iter()
             .map(|w| (w.start_sample, w.end_exclusive))
             .collect::<Vec<_>>(),
-        vec![(12_000, 36_000), (108_000, 120_000)]
+        vec![(12_000, 24_000), (108_000, 132_000)]
     );
-    for (frame, level) in [(0, 3000), (95_999, 3000), (96_000, 1000), (191_999, 1000)] {
+    for (frame, level) in [(0, 1000), (95_999, 1000), (96_000, 3000), (191_999, 3000)] {
         assert_eq!(sample(mixed.wav_bytes(), frame, 0), level);
         assert_eq!(sample(mixed.wav_bytes(), frame, 1), level);
     }
@@ -1395,13 +1395,26 @@ fn explicit_voice_montage_uses_exact_original_samples_and_reopens_without_replay
             .unwrap(),
         voice_wav
     );
+    let mut reversed = restored.deliverables[0].clone();
+    reversed.included_scene_ids.reverse();
+    assert!(
+        reopened
+            .apply(
+                restored.id,
+                &RevisionStamp::from(&restored),
+                "reject-reversed-order",
+                &Change::UpsertDeliverable { profile: reversed }
+            )
+            .is_err()
+    );
+    assert_eq!(reopened.project(restored.id).unwrap(), restored);
     let mut changed = restored.deliverables[0].clone();
-    changed.included_scene_ids.reverse();
+    changed.included_scene_ids = vec![restored.scenes[0].id, restored.scenes[1].id];
     project = restored;
     apply(
         &reopened,
         &mut project,
-        "change-order",
+        "change-approved-selection",
         Change::UpsertDeliverable { profile: changed },
     );
     assert!(

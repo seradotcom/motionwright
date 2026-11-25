@@ -104,11 +104,18 @@ pub fn derive_original_voice_cut(
         ));
     }
     let mut output_frames = 0u64;
+    let mut previous_source_end = 0u64;
     let mut spans = Vec::new();
     for scene in crate::delivery::scenes_for_profile(&project.scenes, profile)? {
         let source_start = exact_samples(scene.start)?;
         let length = exact_samples(scene.duration)?;
         let source_end = source_start + length;
+        if source_start < previous_source_end {
+            return Err(invalid(
+                "Voice cut must preserve approved project scene order",
+            ));
+        }
+        previous_source_end = source_end;
         spans.push(OriginalVoiceCutSpan {
             scene_id: scene.id,
             source_start,
@@ -211,13 +218,13 @@ mod tests {
         p.deliverables[0].id = id("00000000-0000-4000-8000-000000000200");
         p.deliverables[0].voice_track_id = Some(track_id);
         p.deliverables[0].audio_sample_rate_hz = 48_000;
-        p.deliverables[0].included_scene_ids = vec![p.scenes[2].id, p.scenes[0].id];
+        p.deliverables[0].included_scene_ids = vec![p.scenes[0].id, p.scenes[2].id];
         let cut = derive_original_voice_cut(&p, &p.deliverables[0]).unwrap();
         assert_eq!(cut.source_frames, 288_000);
         assert_eq!(cut.output_frames, 192_000);
         assert_eq!(
             cut.sha256,
-            "39d8d4fbf9c7b8725f16c78bae9ba5120c5da4a86fbc271177f460d785075dfd"
+            "e398be6acc88b7618f6f3bc6130f12fb1020901d48ed7157c675cc77feeee7f8"
         );
         assert!(resolve_original_voice_cut(&p, &p.deliverables[0], None).is_err());
         assert_eq!(
@@ -225,6 +232,13 @@ mod tests {
             Some(cut.clone())
         );
         p.deliverables[0].included_scene_ids.reverse();
+        assert!(
+            derive_original_voice_cut(&p, &p.deliverables[0])
+                .unwrap_err()
+                .to_string()
+                .contains("approved project scene order")
+        );
+        p.deliverables[0].included_scene_ids = vec![p.scenes[0].id, p.scenes[1].id];
         assert!(resolve_original_voice_cut(&p, &p.deliverables[0], Some(&cut.sha256)).is_err());
     }
 }
