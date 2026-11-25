@@ -2013,11 +2013,13 @@ jobs:
             'media_bundle_export_rejects_implicit_rights_and_noncanonical_origins',
             'original_source_open_never_follows_a_racing_symlink',
             'original_source_open_rejects_racing_fifo_without_waiting_for_a_writer',
+            'otio_original_source_choice_is_closed_and_has_no_implicit_fallback',
+            'imported_otio_source_survives_original_path_move_and_store_reopen',
           }
           found=set(re.findall(r'(?m)^test otio_bridge::tests::([A-Za-z0-9_]+) \.\.\. ok$',text))
           assert found==expected,(found,expected)
-          assert re.search(r'(?m)^test result: ok\. 8 passed; 0 failed; 0 ignored;',text)
-          print('native-otio-bridge-compiled=PASS 8/8 exact Rust tests')
+          assert re.search(r'(?m)^test result: ok\. 10 passed; 0 failed; 0 ignored;',text)
+          print('native-otio-bridge-compiled=PASS 10/10 exact Rust tests')
           PY_NATIVE_OTIO_RUST
           fi
           cargo build --locked --jobs 2 -p motionwright-service --example studio_review_session \
