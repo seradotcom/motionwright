@@ -25,10 +25,10 @@ import ci_storage_apply_recovery as custody
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKER = "managed-project-source-kit"
-SDK = "e60e789035b1afe02df127e510b6be533371f567"
+SDK = "c2c40c74e5714a3e680415d0dddcf27743f0f0fa"
 SDK_SOURCE = "git+https://github.com/seradotcom/semwright?rev=" + SDK + "#" + SDK
 FACTORY = "tooling/fixedtxt/prepare_fixedtxt_managed_project.rs"
-FACTORY_SHA = "5d56b32a593b861b94be55e1606b72331b6b4bb7bb6f38e489c015a1fff46059"
+FACTORY_SHA = "f8012589e4fed06ba4bb309720e3a9f4d79faaa8b02c87ccc62b11d69515a990"
 TEMPLATE_SHA = "5b1f9e7befb11c3ef6354a9b3b292d105647f444cac4a13d6eb8d27bf7c10b97"
 WORKFLOW = ".github/workflows/native-mlt-sequence-e2e.yml"
 SOURCE_PATHS = (WORKFLOW, FACTORY, "tooling/fixedtxt_source_kit.py",

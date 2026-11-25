@@ -15,7 +15,7 @@ import re
 import stat
 import sys
 
-PIN = "e60e789035b1afe02df127e510b6be533371f567"
+PIN = "c2c40c74e5714a3e680415d0dddcf27743f0f0fa"
 SCHEMA = "motionwright.runtime-profile-bundle/1"
 MANIFEST = "runtime-profile.json"
 MAX_FILE = 512 * 1024 * 1024

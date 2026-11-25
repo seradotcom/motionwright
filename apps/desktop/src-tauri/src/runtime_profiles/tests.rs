@@ -7,7 +7,7 @@ use std::{
     os::unix::{ffi::OsStrExt, fs::symlink},
     path::PathBuf,
 };
-const PIN: &str = "e60e789035b1afe02df127e510b6be533371f567";
+const PIN: &str = "c2c40c74e5714a3e680415d0dddcf27743f0f0fa";
 fn elf() -> Vec<u8> {
     let mut bytes = vec![0_u8; 128];
     bytes[..6].copy_from_slice(b"\x7fELF\x02\x01");

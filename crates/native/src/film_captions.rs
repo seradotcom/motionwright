@@ -219,6 +219,7 @@ pub(super) fn attach_native_caption_cues(
                             },
                             initially_visible: true,
                             clip_intentional: false,
+                            blend_mode: semwright_motion_authoring::SubjectBlendMode::Normal,
                         });
                         shot.subjects.push(Subject {
                             id: subject_id.clone(),
@@ -248,6 +249,7 @@ pub(super) fn attach_native_caption_cues(
                             },
                             initially_visible: false,
                             clip_intentional: false,
+                            blend_mode: semwright_motion_authoring::SubjectBlendMode::Normal,
                         });
                         shot.captions.push(Caption {
                             id: format!("mw-caption-{}", cue.id.simple()),

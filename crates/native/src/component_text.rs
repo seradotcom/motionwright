@@ -266,6 +266,7 @@ fn emit_fixed_text(
             },
             initially_visible: true,
             clip_intentional: false,
+            blend_mode: semwright_motion_authoring::SubjectBlendMode::Normal,
         });
         constraints.extend([
             VisualConstraint::NativeText {

@@ -1500,6 +1500,7 @@ fn subject(
                     && key.value == 0.0
             }),
             clip_intentional: node.kind == "clip_group",
+            blend_mode: semwright_motion_authoring::SubjectBlendMode::Normal,
         },
         constraints,
     ))
@@ -1770,6 +1771,7 @@ fn projected_shot(
                 },
                 initially_visible: true,
                 clip_intentional: false,
+                blend_mode: semwright_motion_authoring::SubjectBlendMode::Normal,
             };
             subjects.push(image);
         }
@@ -1989,6 +1991,7 @@ fn attach_camera_reframe(
                 },
                 initially_visible: true,
                 clip_intentional: false,
+                blend_mode: semwright_motion_authoring::SubjectBlendMode::Normal,
             },
         );
         shot.motion.push(Invocation {

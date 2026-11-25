@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-11-15",
+  "generated_at": "2026-11-25",
   "dependencies": {
     "semwright": {
       "repository": "https://github.com/seradotcom/semwright",
-      "revision": "e60e789035b1afe02df127e510b6be533371f567",
+      "revision": "c2c40c74e5714a3e680415d0dddcf27743f0f0fa",
       "version": "1.0.0",
       "native_sdk_package": "semwright-native-sdk",
       "driver_sdk_package": "semwright-driver-sdk",
@@ -18,10 +18,10 @@
         "schema": "motionwright.source-verification/1",
         "status": "verified",
         "repository": "https://github.com/seradotcom/semwright",
-        "revision": "e60e789035b1afe02df127e510b6be533371f567",
+        "revision": "c2c40c74e5714a3e680415d0dddcf27743f0f0fa",
         "evidence": {
-          "path": "third_party/semwright-source-evidence/e60e789035b1afe02df127e510b6be533371f567/evidence.json",
-          "sha256": "d6a161a181290c4188efb143ff2b52909d66bf95f7f40532ec95766e08312516"
+          "path": "third_party/semwright-source-evidence/c2c40c74e5714a3e680415d0dddcf27743f0f0fa/evidence.json",
+          "sha256": "67a5928827c3c60373516d6dc2cc86e22f1d5f2b016d0081ca8e6e71cc51be45"
         }
       }
     }
