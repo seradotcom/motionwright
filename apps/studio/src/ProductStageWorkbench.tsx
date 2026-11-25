@@ -5,7 +5,8 @@ import { seconds } from "./types";
 import CompositionStudy from "./CompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { sameValue } from "./creativeProduction";
-import { productStageCreationIssue, stageConfig, workbenchScope } from "./creativeWorkbenchDraft";
+import { productStageCreationIssue, rawStage, stageConfig, workbenchScope, workbenchHasWork } from "./creativeWorkbenchDraft";
+import {craftAuthoringExample, type CraftDefinition} from "./craftLibrary";
 import type { StageRaw, WorkbenchInput } from "./creativeWorkbenchDraft";
 import { useCreativeWorkbenchDraft, WorkbenchDraftFeedback } from "./useCreativeWorkbenchDraft";
 import {
@@ -20,13 +21,13 @@ const aspects=[
 ] as const;
 const previewId="00000000-0000-4000-8000-000000000005";
 type Props={
-  project:Project;scene:Scene|null;displayProfile?:Project["deliverables"][number]|null;commit:(change:Change)=>Promise<Project>;
+  project:Project;scene:Scene|null;catalogChoice?:CraftDefinition|null;displayProfile?:Project["deliverables"][number]|null;commit:(change:Change)=>Promise<Project>;
   busy:boolean;playhead:number;onSeek:(n:number)=>void;onOpenCanvas:()=>void;
 };
 export default function ProductStageWorkbench(props: Props) {
   return <ProductStageEditor key={workbenchScope(props.project,{kind:"stage",sceneId:props.scene?.id??null})} {...props}/>;
 }
-function ProductStageEditor({project,scene,commit,busy,playhead,onSeek,onOpenCanvas,displayProfile}:Props){
+function ProductStageEditor({project,scene,commit,busy,playhead,onSeek,onOpenCanvas,displayProfile,catalogChoice}:Props){
   const stored=project.production_design?.stages?.find(stage=>stage.scene_id===scene?.id);
   const linked=project.production_design?.stage_capture_cards?.find(card=>card.stage_id===stored?.id);
   const sources=(project.production_design?.captures??[])
@@ -36,6 +37,7 @@ function ProductStageEditor({project,scene,commit,busy,playhead,onSeek,onOpenCan
   const editor=useCreativeWorkbenchDraft(project,{kind:"stage",sceneId:scene?.id??null},commit,busy);
   const input=editor.draft.input as Extract<WorkbenchInput,{kind:"stage"}>, draft=input.config;
   const selectedCapture=input.captureId, setSelectedCapture=(captureId:string)=>editor.edit({...input,captureId});
+  const example=catalogChoice?craftAuthoringExample(catalogChoice):null;
   const [aspect,setAspect]=useState<(typeof aspects)[number]>(aspects[0]);
   const [preview,setPreview]=useState<CanvasNode[]>([]);
   const [previewError,setPreviewError]=useState<string|null>(null);
@@ -95,6 +97,10 @@ function ProductStageEditor({project,scene,commit,busy,playhead,onSeek,onOpenCan
         third-party logo, actual browser session, opaque source execution or
         screenshot is inserted. This is a graphic study, not proof of real software behavior.</p>
       <WorkbenchDraftFeedback editor={editor} project={project}/>
+      {example?.kind==="stage"&&<div className="production-notice"><p>{catalogChoice?.title} library example. Supply your own original source rights declaration before Save.</p>
+        <button type="button" className="secondary-button" disabled={!scene||editor.blocked||workbenchHasWork(editor.draft)||!!stored}
+          onClick={()=>editor.edit({...input,config:rawStage(example.config)})}>Load library example</button>
+        {!!stored&&<p className="production-help">Choose an empty stage slot to avoid replacing an attached stage.</p>}</div>}
       <label className="production-field"><span>Neutral stage silhouette</span>
         <select aria-label="ProductStage frame" value={draft.frame} onChange={e=>
           patch("frame",e.target.value as ProductStageConfig["frame"])}>

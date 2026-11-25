@@ -9,6 +9,8 @@ import { arrangeCanvasFrames, emptyArrangementSelection, validArrangementSelecti
 import type { ArrangementSelection } from "./canvasArrangement";
 import { defaultMotionRangeInput, retimeMotionRows, validMotionRangeInput } from "./timelineMotionRange";
 import type { MotionRangeInput } from "./timelineMotionRange";
+import type { DeliverableProfile } from "./types";
+import { focusTransferEdits, type FocusTransferInput } from "./focusTransfer";
 
 export type DraftEdit = Extract<ScopedCanvasEdit, { kind: "text" | "transform" | "style" | "motion" }>;
 type SourceNode = Pick<CanvasNode, "id" | "kind" | "parent_id" | "text"> & CanvasTransform &
@@ -291,6 +293,30 @@ export function stageDraftArrangement(draft: ScopedChangeDraft, project: Project
     rationale: working.rationale.trim() ? working.rationale : result.rationale,
     arrangement: { action: selection.action, nodeIds: [] } };
 }
+/** Stage the reusable two-object transfer through the same recoverable
+ * scoped proposal, original snapshots, review and atomic save as manual motion. */
+export function stageDraftFocusTransfer(draft:ScopedChangeDraft,project:Project,scene:Scene|null,
+  profile:DeliverableProfile|null,input:FocusTransferInput):ScopedChangeDraft {
+  if(!scene||!profile||draft.scope!==scopedDraftScope(project,scene)||draft.baseRevision!==project.revision)
+    throw new Error("Choose the current scene and saved output profile before staging a focus transfer.");
+  if(draft.nativeSource||draft.edits.length||unqueuedInputCount(draft)>0||draft.arrangement?.nodeIds.length)
+    throw new Error("Finish or discard the current scoped proposal before staging a focus transfer.");
+  const working=hydrateScopedDraft(draft,project,scene), result=focusTransferEdits(project,scene,profile,input);
+  const origins=result.edits.map(edit=>sourceNode(scene.nodes.find(node=>node.id===edit.node_id)!));
+  const updateEditor=(editor:DraftEditor):DraftEditor=>{
+    const edit=result.edits.find(item=>item.node_id===editor.nodeId);
+    return edit?{...editor,motionRaw:scopedMotionRows(edit.keyframes)}:editor;
+  };
+  const editor=updateEditor(working.editor),parkedEditors=working.parkedEditors.map(updateEditor);
+  for(const edit of result.edits){
+    if(editor.nodeId===edit.node_id||parkedEditors.some(item=>item.nodeId===edit.node_id))continue;
+    const node=scene.nodes.find(item=>item.id===edit.node_id)!;
+    parkedEditors.push(updateEditor({nodeId:node.id,kind:"motion",text:node.text??"",transform:nodeTransform(node),source:sourceNode(node)}));
+  }
+  if(parkedEditors.length>128)throw new Error("The focus transfer would exceed the recoverable object input budget.");
+  return {...working,edits:result.edits,origins,editor,parkedEditors,rationale:working.rationale.trim()||result.rationale};
+}
+
 export function removeDraftEdit(draft: ScopedChangeDraft, nodeId: string, kind: DraftEdit["kind"]): ScopedChangeDraft {
   const edits = draft.edits.filter(edit => edit.node_id !== nodeId || edit.kind !== kind);
   return { ...draft, edits, origins: draft.origins.filter(origin => edits.some(edit => edit.node_id === origin.id)) };

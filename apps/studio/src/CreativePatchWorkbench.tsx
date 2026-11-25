@@ -4,6 +4,7 @@ import { previewCreativePatch } from "./api";
 import SceneCompositionStudy from "./SceneCompositionStudy";
 import ScopedPaintMotionEditor from "./ScopedPaintMotionEditor";
 import CanvasArrangementControls from "./CanvasArrangementControls";
+import FocusTransferControls from "./FocusTransferControls";
 import { scopedMotionIssue, scopedStyleIssues } from "./scopedPaintMotion";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { previewCreativePatchUndo } from "./creativeUndo";
@@ -285,6 +286,8 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
       </article>)}</section>}
     <CanvasArrangementControls draft={draft} project={project} scene={scene} disabled={lockedUi || !scene || nativeSource !== null}
       stale={draftStale} initiallyOpen={arrangementOpen} onChange={update}/>
+    <FocusTransferControls key={scope} project={project} scene={scene} profile={displayProfile} draft={draft}
+      disabled={lockedUi||draftStale||backupBlocked||nativeSource!==null} onChange={update}/>
     <div className="production-plan-grid">
       <section className="production-patch-editor" aria-label="Scoped proposal editor">
         {!hasTargetSource && <p className="production-help" role="status">{!scene

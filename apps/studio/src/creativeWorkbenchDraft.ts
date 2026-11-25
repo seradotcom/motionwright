@@ -119,8 +119,8 @@ export function proceduralConfig(raw: ProceduralRaw): ProceduralConfig {
   }
   validateProceduralConfig(result); return result;
 }
-function rawStage(config: ProductStageConfig): StageRaw { return { ...clone(config), focus_x_permille: String(config.focus_x_permille), focus_y_permille: String(config.focus_y_permille) }; }
-function rawProcedural(config: ProceduralConfig): ProceduralRaw {
+export function rawStage(config: ProductStageConfig): StageRaw { return { ...clone(config), focus_x_permille: String(config.focus_x_permille), focus_y_permille: String(config.focus_y_permille) }; }
+export function rawProcedural(config: ProceduralConfig): ProceduralRaw {
   const { influence, path, ...result } = normalizedProceduralConfig(config);
   return { ...Object.fromEntries(Object.entries(result).map(([key, value]) => [key, PROCEDURAL_NUMBERS.includes(key as ProceduralNumber) ? String(value) : value])),
     ...(influence ? { influence: rawProceduralInfluence(influence) } : {}), ...(path ? { path: rawProceduralPath(path) } : {}) } as ProceduralRaw;

@@ -1,0 +1,15 @@
+/* Existing Studio theme, bounded library browser rather than a new editor. */
+.craft-library{display:grid;gap:16px;padding:16px;min-width:0;}
+.craft-library h2,.craft-library h3,.craft-library p{margin:0;}
+.craft-library header p{margin-top:6px;color:var(--muted);font-size:12px;}
+.craft-library-controls{display:grid;grid-template-columns:minmax(120px,1fr) minmax(180px,2fr);gap:12px;}
+.craft-library-body{display:grid;grid-template-columns:minmax(180px,250px) minmax(0,1fr);gap:16px;align-items:start;}
+.craft-library-list{display:grid;gap:4px;max-height:520px;overflow:auto;padding:2px;}
+.craft-library-list button{display:grid;text-align:left;gap:4px;padding:9px;border:1px solid var(--border);border-radius:6px;background:var(--surface-2);color:var(--text);}
+.craft-library-list button[aria-pressed="true"]{border-color:var(--accent);background:var(--surface);}
+.craft-library-list small{font-size:10px;color:var(--muted);}
+.craft-library-detail{display:grid;gap:12px;min-width:0;padding:14px;border:1px solid var(--border);border-radius:8px;}
+.craft-library-detail p{margin-top:6px;line-height:1.5;}
+.craft-library-preview{height:280px;min-width:0;flex:none;}
+.craft-library-detail pre{max-height:220px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;}
+@media(max-width:800px){.craft-library-body{grid-template-columns:minmax(0,1fr);}.craft-library-list{max-height:200px;}.craft-library-controls{grid-template-columns:minmax(0,1fr);}}

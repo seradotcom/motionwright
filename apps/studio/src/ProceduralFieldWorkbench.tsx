@@ -7,12 +7,13 @@ import ProfileCompositionStudy from "./ProfileCompositionStudy";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { applyProceduralChange, proceduralGridDimensions } from "./proceduralField";
 import type { ProceduralConfig } from "./proceduralField";
-import { proceduralConfig, rawProceduralInfluence, rawProceduralPath, workbenchScope } from "./creativeWorkbenchDraft";
+import { proceduralConfig, rawProcedural, rawProceduralInfluence, rawProceduralPath, workbenchScope, workbenchHasWork } from "./creativeWorkbenchDraft";
+import {craftAuthoringExample, type CraftDefinition} from "./craftLibrary";
 import type { InfluenceRaw, ProceduralRaw, WorkbenchInput } from "./creativeWorkbenchDraft";
 import { useCreativeWorkbenchDraft, WorkbenchDraftFeedback } from "./useCreativeWorkbenchDraft";
 
 const previewIdentity="00000000-0000-4000-8000-000000000095";
-type Props={project:Project;scene:Scene|null;displayProfile?:Project["deliverables"][number]|null;commit:(change:Change)=>Promise<Project>;busy:boolean;onOpenCanvas:()=>void};
+type Props={project:Project;scene:Scene|null;catalogChoice?:CraftDefinition|null;displayProfile?:Project["deliverables"][number]|null;commit:(change:Change)=>Promise<Project>;busy:boolean;onOpenCanvas:()=>void};
 const dimensions=[
   ["seed","Integer seed",0,4294967295],
   ["count","Number of objects",1,64],
@@ -34,11 +35,12 @@ const influenceDimensions = [
 export default function ProceduralFieldWorkbench(props: Props) {
   return <ProceduralEditor key={workbenchScope(props.project,{kind:"procedural",sceneId:props.scene?.id??null})} {...props}/>;
 }
-function ProceduralEditor({project,scene,commit,busy,onOpenCanvas,displayProfile}:Props){
+function ProceduralEditor({project,scene,commit,busy,onOpenCanvas,displayProfile,catalogChoice}:Props){
   const stored=project.production_design?.procedural_fields?.find(field=>field.scene_id===scene?.id);
   const editor=useCreativeWorkbenchDraft(project,{kind:"procedural",sceneId:scene?.id??null},commit,busy);
   const input=editor.draft.input as Extract<WorkbenchInput,{kind:"procedural"}>, draft=input.config;
   const setDraft=(update:(value:ProceduralRaw)=>ProceduralRaw)=>editor.edit({...input,config:update(draft)});
+  const example=catalogChoice?craftAuthoringExample(catalogChoice):null;
   const influence = draft.influence ?? rawProceduralInfluence();
   const patchInfluence = (patch: Partial<Omit<InfluenceRaw, "enabled">>) =>
     setDraft(value => ({ ...value, influence: { ...(value.influence ?? rawProceduralInfluence()), ...patch } }));
@@ -89,6 +91,10 @@ function ProceduralEditor({project,scene,commit,busy,onOpenCanvas,displayProfile
       Up to 64 nodes per field, 16 fields per project and one attached field per scene.</p>
     {!scene && <p role="status">Choose a working scene to author a field.</p>}
     <WorkbenchDraftFeedback editor={editor} project={project}/>
+    {example?.kind==="procedural"&&<div className="production-notice"><p>{catalogChoice?.title} library example. The saved field and other objects will not change until Save.</p>
+      <button type="button" className="secondary-button" disabled={!scene||editor.blocked||workbenchHasWork(editor.draft)||!!stored}
+        onClick={()=>setDraft(()=>rawProcedural(example.config))}>Load library example</button>
+      {!!stored&&<p className="production-help">Choose an empty field slot to avoid replacing an attached field.</p>}</div>}
     <div className="production-plan-grid">
       <label className="production-field"><span>Distribution</span>
         <select aria-label="Procedural distribution" value={draft.distribution}
