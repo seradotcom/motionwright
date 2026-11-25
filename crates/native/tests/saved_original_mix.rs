@@ -467,7 +467,7 @@ fn saved_music_window_selects_exact_original_samples_and_reopens_without_source_
     let profile_id = project.deliverables[0].id;
     // Synthetic deterministic 3-second stereo PCM: each frame/channel differs.
     let mut source = wav_with_frames(0, 144_000);
-    for (index, bytes) in source[44..].chunks_exact_mut(4).enumerate() {
+    for (index, bytes) in source[44..].as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let left = (index % 7000) as i16 - 3500;
         let right = -left;
         bytes[..2].copy_from_slice(&left.to_le_bytes());
@@ -1201,7 +1201,12 @@ fn explicit_voice_montage_uses_exact_original_samples_and_reopens_without_replay
         );
     }
     let mut voice_wav = wav_with_frames(0, 288_000);
-    for (frame, stereo) in voice_wav[44..].chunks_exact_mut(4).enumerate() {
+    for (frame, stereo) in voice_wav[44..]
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .enumerate()
+    {
         let level = ((frame / 96_000 + 1) * 1_000) as i16;
         stereo[..2].copy_from_slice(&level.to_le_bytes());
         stereo[2..].copy_from_slice(&level.to_le_bytes());
