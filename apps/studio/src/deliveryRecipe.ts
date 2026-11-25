@@ -1,4 +1,4 @@
-import { assertDeliveryAudioTargets, assertOriginalMixBusEnvelope, originalMixEnvelopeKeys, validateAudioRecipeCut } from "./audioRecipeContract";
+import { assertDeliveryAudioTargets, assertOriginalMixBusEnvelope, originalMixEnvelopeKeys, originalMixOptionalKeys, MAX_MUSIC_SOURCE_SAMPLE_FRAMES, validateAudioRecipeCut } from "./audioRecipeContract";
 import type { DeliveryAudioTargets, OriginalMixBusEnvelope } from "./audioRecipeContract";
 import type { MotionCanvasArchetype, MotionCanvasNarrativeRole, Project } from "./types";
 
@@ -12,6 +12,8 @@ export interface DeliverySceneIntent {
 }
 export interface OriginalMixRecipe {
   music_asset_id: string | null;
+  /** Explicit 1:1 window; absent preserves the historical whole-source mix. */
+  music_source_start_sample?: number;
   sfx_asset_id: string | null;
   sfx_gain_db: number;
   duck_attenuation_db: number;
@@ -37,7 +39,7 @@ const numberFields = ["sfx_gain_db", "duck_attenuation_db", "duck_attack_samples
 const decimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
 export const mixEnvelopeFields = ["muted", "fade_in_samples", "fade_out_samples"] as const;
 const mixEnvelopeKeys = originalMixEnvelopeKeys.flatMap(bus => mixEnvelopeFields.map(field => bus + ":" + field));
-const mixKeys = ["enabled", "music_asset_id", "sfx_asset_id", ...numberFields, ...mixEnvelopeKeys];
+const mixKeys = ["enabled", "music_asset_id", "music_source_start_sample", "sfx_asset_id", ...numberFields, ...mixEnvelopeKeys];
 const ownKeys = (value: unknown, keys: readonly string[], label: string, optional: readonly string[] = []): Record<string, unknown> => {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid " + label + ".");
   const record = value as Record<string, unknown>;
@@ -54,6 +56,15 @@ export function parseOriginalMixSamples(raw: string): number {
   if (value > 4294967295n)
     throw new Error("Bus fades must fit unsigned 32-bit sample counts.");
   return Number(value);
+}
+
+/** Empty input means whole-source music; zero explicitly selects a window. */
+export function parseMusicSourceStartSample(raw: string): number | undefined {
+  const text = raw.trim();
+  if (!text) return undefined;
+  if (raw.length > 128 || !/^\d+$/.test(text) || BigInt(text) >= BigInt(MAX_MUSIC_SOURCE_SAMPLE_FRAMES))
+    throw new Error("Music source start must be a whole sample count from 0 to 8639999.");
+  return Number(text);
 }
 
 export const deliveryAudioTargetFields = ["target_lufs", "target_true_peak_dbtp"] as const;
@@ -109,7 +120,7 @@ export function validateDeliveryRecipe(project: Project, profileId: string, cand
   }
   validateAudioRecipeCut(project, profileId, recipe as unknown as DeliveryRecipe);
   if (recipe.original_mix === null) return;
-  const mix = ownKeys(recipe.original_mix, ["music_asset_id", "sfx_asset_id", ...numberFields], "original mix", originalMixEnvelopeKeys);
+  const mix = ownKeys(recipe.original_mix, ["music_asset_id", "sfx_asset_id", ...numberFields], "original mix", originalMixOptionalKeys);
   for (const key of ["music_asset_id", "sfx_asset_id"] as const) {
     const id = mix[key];
     if (id !== null && (typeof id !== "string" || !uuid.test(id) || !project.assets.some(asset => asset.id.toLowerCase() === id.toLowerCase() && asset.media_type.startsWith("audio/") && /^[a-f0-9]{64}$/.test(asset.content_sha256 ?? "")))) throw new Error("The selected " + key.replaceAll("_", " ") + " is not a current hashed audio source.");
@@ -135,6 +146,7 @@ export function recipeFields(recipe: DeliveryRecipe | null, group: RecipeGroup):
   return {
     enabled: recipe?.original_mix ? "true" : "false",
     music_asset_id: mix.music_asset_id ?? "", sfx_asset_id: mix.sfx_asset_id ?? "",
+    music_source_start_sample: mix.music_source_start_sample === undefined ? "" : String(mix.music_source_start_sample),
     ...Object.fromEntries(numberFields.map(key => [key, String(mix[key])])),
     ...Object.fromEntries(originalMixEnvelopeKeys.flatMap(bus => [
       [bus + ":muted", String(mix[bus]?.muted ?? false)],
@@ -175,6 +187,10 @@ export function submitRecipeDraft(draft: RecipeDraft, revision: number): RecipeD
 export function canonicalRecipeField(group: RecipeGroup, key: string, raw: string): string {
   if (group === "targets" && (deliveryAudioTargetFields as readonly string[]).includes(key)) {
     try { const value = parseDeliveryAudioTarget(raw); return value === null ? "" : String(value); } catch { return raw; }
+  }
+  if (group === "mix" && key === "music_source_start_sample") {
+    try { const sample = parseMusicSourceStartSample(raw); return sample === undefined ? "" : String(sample); }
+    catch { return raw; }
   }
   if (group === "mix" && (numberFields as readonly string[]).includes(key) && decimal.test(raw.trim()) && Number.isFinite(Number(raw))) return String(Number(raw));
   if (group === "mix" && mixEnvelopeKeys.includes(key) && key.endsWith("_samples")) {
@@ -224,6 +240,14 @@ export function proposedDeliveryRecipe(current: DeliveryRecipe | null, draft: Re
   else {
     for (const key of numberFields) if (!decimal.test(fields[key]?.trim() ?? "")) throw new Error("Enter a decimal value for " + key.replaceAll("_", " ") + ".");
     recipe.original_mix = { ...recipe.original_mix, music_asset_id: fields.music_asset_id || null, sfx_asset_id: fields.sfx_asset_id || null, sfx_gain_db: Number(fields.sfx_gain_db), duck_attenuation_db: Number(fields.duck_attenuation_db), duck_attack_samples: Number(fields.duck_attack_samples), duck_release_samples: Number(fields.duck_release_samples) };
+    if (Object.hasOwn(draft.edits, "music_source_start_sample")) {
+      const start = parseMusicSourceStartSample(fields.music_source_start_sample);
+      if (start === undefined) delete recipe.original_mix.music_source_start_sample;
+      else recipe.original_mix.music_source_start_sample = start;
+    } else if (recipe.original_mix.music_source_start_sample !== undefined
+      && recipe.original_mix.music_asset_id !== current?.original_mix?.music_asset_id) {
+      throw new Error("Clear or explicitly revise the saved music source window before changing its source asset.");
+    }
     for (const bus of originalMixEnvelopeKeys) {
       // Untouched buses retain their exact saved optional representation.
       if (!mixEnvelopeFields.some(field => Object.hasOwn(draft.edits, bus + ":" + field))) continue;

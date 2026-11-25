@@ -115,6 +115,14 @@ pub struct OriginalMixPlan {
     pub sample_frames: u64,
     pub measured_voice: PcmStemReceipt,
     pub original_music: PcmStemReceipt,
+    /// Full original decoded PCM remains digest-bound. Only the selected
+    /// contiguous interval contributes samples to the output.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "motionwright_domain::deserialize_music_source_start_sample"
+    )]
+    pub music_source_start_sample: Option<u32>,
     pub original_sfx: OriginalSfxSource,
     pub voice_gain_db: f64,
     pub music_gain_db: f64,
@@ -264,7 +272,17 @@ impl OriginalMixPlan {
                 .map_err(|error| mix_unsupported(error.to_string()))?;
         }
         check_stem(&self.measured_voice, project, self.sample_frames)?;
-        check_stem(&self.original_music, project, self.sample_frames)?;
+        let music_frames = self.original_music.sample_frames;
+        let music_start = u64::from(self.music_source_start_sample.unwrap_or(0));
+        check(
+            music_frames <= maximum_samples(budget)
+                && music_start
+                    .checked_add(self.sample_frames)
+                    .is_some_and(|end| end <= music_frames)
+                && (self.music_source_start_sample.is_some() || music_frames == self.sample_frames),
+            "Music source window exceeds verified PCM length/decode budget or whole-source music differs from output duration",
+        )?;
+        check_stem(&self.original_music, project, music_frames)?;
         self.original_sfx.validate_source(
             project,
             self.deliverable_profile_id,
@@ -335,8 +353,23 @@ impl OriginalMixPlan {
                     && saved.duck_release_samples == self.duck_release_samples
                     && saved.voice_envelope == self.voice_envelope
                     && saved.music_envelope == self.music_envelope
-                    && saved.sfx_envelope == self.sfx_envelope,
-                "Mix sources or envelopes differ from the saved delivery recipe",
+                    && saved.sfx_envelope == self.sfx_envelope
+                    && saved.music_source_start_sample == self.music_source_start_sample,
+                "Mix sources, music window or envelopes differ from the saved delivery recipe",
+            )?;
+            if let Some(frames) = saved
+                .music_window_output_frames(&project.scenes, profile)
+                .map_err(|error| mix_unsupported(error.to_string()))?
+            {
+                check(
+                    frames == self.sample_frames,
+                    "Explicit music source window requires the measured voice to match the exact saved cut length",
+                )?;
+            }
+        } else {
+            check(
+                self.music_source_start_sample.is_none(),
+                "An explicit music source window requires a saved delivery recipe",
             )?;
         }
         let accepted = reviewed_voice_windows(project, track.id)?;
@@ -476,6 +509,8 @@ pub fn render_original_source_mix_with_budget(
     // No additional full-cut buffer is allocated (180 seconds is permitted).
     let mut first_live = 0_usize;
     let mut started = 0_usize;
+    // Bounds and the full original PCM digest were checked before this loop.
+    let music_start = plan.music_source_start_sample.unwrap_or(0) as usize;
     for index in 0..plan.sample_frames as usize {
         let at = index as u64;
         let duck = if music_duck_active {
@@ -498,7 +533,7 @@ pub fn render_original_source_mix_with_budget(
             .map(|envelope| bus_envelope_gain(&envelope, index as u64, plan.sample_frames));
         for channel in 0..2 {
             let mixed = sample(voice, index, channel) * gains[0] * envelopes[0]
-                + sample(music, index, channel) * gains[1] * duck * envelopes[1]
+                + sample(music, music_start + index, channel) * gains[1] * duck * envelopes[1]
                 + sample(sfx, index, channel) * gains[2] * envelopes[2];
             check(
                 mixed.is_finite() && mixed.abs() < limit,
@@ -860,6 +895,7 @@ pub fn prepare_saved_original_mix_with_budget(
         sample_frames: voice.sample_frames,
         measured_voice: receipt(track.asset_id, &voice),
         original_music: receipt(music_id, &music),
+        music_source_start_sample: recipe.music_source_start_sample,
         original_sfx: sfx_source,
         voice_gain_db: f64::from(project.audio.mix.voice_gain_db),
         music_gain_db: f64::from(project.audio.mix.music_gain_db),

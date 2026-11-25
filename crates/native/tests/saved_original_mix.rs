@@ -161,6 +161,7 @@ fn fixture_with_seconds(seconds: u32) -> (tempfile::TempDir, StudioService, Proj
                     duck_attack_samples: 2_400,
                     duck_release_samples: 4_800,
                     voice_envelope: Default::default(),
+                    music_source_start_sample: None,
                     music_envelope: Default::default(),
                     sfx_envelope: Default::default(),
                 }),
@@ -457,6 +458,139 @@ fn saved_bus_mute_and_sample_fades_reopen_exactly_and_keep_original_source_custo
     assert_eq!(project.assets, assets);
     assert_eq!(project.audio.voice_tracks, voice_tracks);
     assert!(!all_muted.evidence().independently_verified_lufs);
+}
+
+#[test]
+fn saved_music_window_selects_exact_original_samples_and_reopens_without_source_rewrite() {
+    let (root, service, mut project) = fixture();
+    let profile_id = project.deliverables[0].id;
+    // Synthetic deterministic 3-second stereo PCM: each frame/channel differs.
+    let mut source = wav_with_frames(0, 144_000);
+    for (index, bytes) in source[44..].chunks_exact_mut(4).enumerate() {
+        let left = (index % 7000) as i16 - 3500;
+        let right = -left;
+        bytes[..2].copy_from_slice(&left.to_le_bytes());
+        bytes[2..].copy_from_slice(&right.to_le_bytes());
+    }
+    let path = root.path().join("long-music.wav");
+    fs::write(&path, &source).unwrap();
+    project = service
+        .import_asset_file(
+            project.id,
+            &project.stamp(),
+            "long-music",
+            &path,
+            "long-music.wav".into(),
+            "audio/wav".into(),
+        )
+        .unwrap()
+        .project;
+    let source_asset = project
+        .assets
+        .iter()
+        .find(|a| a.name == "long-music.wav")
+        .unwrap()
+        .clone();
+    let mut mix_intent = project.audio.mix.clone();
+    mix_intent.music_gain_db = 0.0;
+    apply(
+        &service,
+        &mut project,
+        "unity-music",
+        Change::SetMixIntent { mix: mix_intent },
+    );
+    let mut recipe = project.production_design.delivery_recipes[&profile_id].clone();
+    let mix = recipe.original_mix.as_mut().unwrap();
+    mix.music_asset_id = Some(source_asset.id);
+    mix.voice_envelope.muted = true;
+    mix.sfx_envelope.muted = true;
+    let save =
+        |service: &StudioService, project: &mut Project, request: &str, recipe: DeliveryRecipe| {
+            apply(
+                service,
+                project,
+                request,
+                Change::SetDeliveryRecipe {
+                    deliverable_profile_id: profile_id,
+                    recipe: Some(recipe),
+                },
+            );
+        };
+    save(&service, &mut project, "legacy-full-source", recipe.clone());
+    assert!(
+        prepare_saved_original_mix(&service, project.id, &project.stamp(), profile_id).is_err()
+    );
+    recipe
+        .original_mix
+        .as_mut()
+        .unwrap()
+        .music_source_start_sample = Some(0);
+    save(&service, &mut project, "explicit-zero", recipe.clone());
+    let zero =
+        prepare_saved_original_mix(&service, project.id, &project.stamp(), profile_id).unwrap();
+    assert_eq!(&zero.wav_bytes()[44..], &source[44..44 + 96_000 * 4]);
+    recipe
+        .original_mix
+        .as_mut()
+        .unwrap()
+        .music_source_start_sample = Some(48_000);
+    save(
+        &service,
+        &mut project,
+        "explicit-one-second",
+        recipe.clone(),
+    );
+    let before = project.clone();
+    let selected =
+        prepare_saved_original_mix(&service, project.id, &project.stamp(), profile_id).unwrap();
+    assert_eq!(selected.plan().music_source_start_sample, Some(48_000));
+    assert_eq!(selected.plan().original_music.sample_frames, 144_000);
+    assert_eq!(selected.plan().sample_frames, 96_000);
+    assert_eq!(
+        selected.plan().original_music.source_asset_sha256,
+        source_asset.content_sha256.clone().unwrap()
+    );
+    assert_eq!(
+        selected.plan().original_music.decoded_pcm_sha256,
+        hex::encode(Sha256::digest(&source[44..]))
+    );
+    assert_eq!(&selected.wav_bytes()[44..], &source[44 + 48_000 * 4..]);
+    assert_ne!(zero.wav_sha256(), selected.wav_sha256());
+    assert_ne!(zero.audio_inputs_sha256(), selected.audio_inputs_sha256());
+    assert!(zero.verify_project(&project, profile_id).is_err());
+    assert_eq!(service.project(project.id).unwrap(), before);
+    let mut forged = selected.plan().clone();
+    forged.music_source_start_sample = Some(0);
+    assert!(forged.validate(&project).is_err());
+    drop(service);
+    fs::remove_file(&path).unwrap();
+    let reopened = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
+    let saved = reopened.project(project.id).unwrap();
+    assert_eq!(saved, before);
+    let reread =
+        prepare_saved_original_mix(&reopened, saved.id, &saved.stamp(), profile_id).unwrap();
+    assert_eq!(reread.plan(), selected.plan());
+    assert_eq!(reread.wav_bytes(), selected.wav_bytes());
+    let digest = source_asset.content_sha256.unwrap();
+    assert_eq!(
+        reopened
+            .store()
+            .lock()
+            .read_blob(&digest, 1024 * 1024)
+            .unwrap(),
+        source
+    );
+    recipe
+        .original_mix
+        .as_mut()
+        .unwrap()
+        .music_source_start_sample = Some(48_001);
+    save(&reopened, &mut project, "past-original-end", recipe);
+    // Authored intent can be saved, but the real CAS decoder must refuse the
+    // one-sample overrun instead of padding, repeating or clipping the source.
+    assert!(
+        prepare_saved_original_mix(&reopened, project.id, &project.stamp(), profile_id).is_err()
+    );
 }
 
 fn wav_with_frames(level: i16, frames: u32) -> Vec<u8> {

@@ -70,6 +70,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
   const fields = Object.fromEntries([
     ["enabled", "Enable original mix recipe"],
     ["music_asset_id", "Original music asset"],
+    ["music_source_start_sample", "Music source start sample"],
     ["sfx_asset_id", "Original SFX asset"],
     ...numericFields.map(field => [field.key, field.label]),
     ...envelopeBuses.flatMap(bus => [
@@ -194,7 +195,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
       <AudioWaveform size={15} aria-hidden="true" /> Voice / music / SFX · original source mix
     </button>
     <div id={panelId} hidden={!expanded}>
-    <p className="production-help">Save an original mix recipe for each delivery profile, then request a local PCM audition of its exact saved sources and automation. The mixer decodes the imported voice and music, an optional imported SFX base, and the authored SFX cues in this delivery cut. Whole-source stems use stereo at 48 kHz with the same measured duration; the native service validates cue timing and source bytes.</p>
+    <p className="production-help">Save an original mix recipe for each delivery profile, then request a local PCM audition of its exact saved sources and automation. The mixer decodes the imported voice and music, an optional imported SFX base, and the authored SFX cues in this delivery cut. Voice and imported SFX base use whole-source stereo at 48 kHz with the same measured duration. Choose an explicit music start sample to consume a matching contiguous window of a longer original WAV. The native service validates cue timing and source bytes.</p>
     <label className="production-field"><span>Delivery language / profile</span>
       <select aria-label="Delivery language / profile" value={selectedProfile?.id ?? ""} disabled={project.deliverables.length === 0}
         onChange={event => { setProfileId(event.target.value); invalidateAudition(); }}>
@@ -218,6 +219,19 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit }
         {selectableSources.map(asset => <option key={asset.id} value={asset.id}>{asset.name} · sha256:{asset.content_sha256?.slice(0, 10)}</option>)}
       </select>
     </label>)}
+    <label className="production-field">
+      <span>Music source start sample</span>
+      <input id={fields.music_source_start_sample.controlId} aria-label="Music source start sample"
+        type="text" inputMode="numeric" maxLength={128} placeholder="Whole original source"
+        value={mixDraft.values.music_source_start_sample ?? ""} disabled={inputsDisabled || mixDraft.values.enabled !== "true"}
+        aria-invalid={mixDraft.conflicts.includes("music_source_start_sample")}
+        aria-describedby={fields.music_source_start_sample.controlId + "-help"}
+        onChange={event => setField("music_source_start_sample", event.target.value)} />
+      <small id={fields.music_source_start_sample.controlId + "-help"}>Blank uses the complete original music file. Zero or a positive integer selects the exact 48 kHz sample at which the full saved cut begins (48,000 = 1 second). Only 1:1 playback is supported; no repeat, pad or time stretch. Actual source length is checked when preparing PCM. A different music asset needs an explicit new window decision.</small>
+    </label>
+    {savedMix?.music_source_start_sample !== undefined && <p className="production-help" aria-label="Saved music source window">
+      Saved music starts at source sample {savedMix.music_source_start_sample}. Its end is the exclusive start plus the exact full-cut sample count. No source bytes have been changed.
+    </p>}
     <p className="production-help" role="status" aria-label={draftSourceStatus}>
       {draftSourceStatus}
     </p>

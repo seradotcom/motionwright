@@ -151,6 +151,7 @@ fn recipe(fixture: &Fixture) -> DeliveryRecipe {
             duck_attack_samples: 960,
             duck_release_samples: 4_800,
             voice_envelope: Default::default(),
+            music_source_start_sample: None,
             music_envelope: Default::default(),
             sfx_envelope: Default::default(),
         }),

@@ -106,6 +106,7 @@ fn fixture() -> (domain::Project, OriginalMixPlan, [Vec<u8>; 3]) {
         owner_mixing_approval_authenticated: false,
         is_mastered: false,
         voice_envelope: Default::default(),
+        music_source_start_sample: None,
         music_envelope: Default::default(),
         sfx_envelope: Default::default(),
     };
@@ -654,6 +655,7 @@ fn persisted_mix_recipe_rejects_an_unsaved_duck_or_source_override() {
                 duck_attack_samples: plan.duck_attack_samples,
                 duck_release_samples: plan.duck_release_samples,
                 voice_envelope: Default::default(),
+                music_source_start_sample: None,
                 music_envelope: Default::default(),
                 sfx_envelope: Default::default(),
             }),

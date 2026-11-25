@@ -14,6 +14,8 @@ export interface DeliveryAudioTargets {
   target_true_peak_dbtp: number | null;
 }
 export const originalMixEnvelopeKeys = ["voice_envelope", "music_envelope", "sfx_envelope"] as const;
+export const originalMixOptionalKeys = [...originalMixEnvelopeKeys, "music_source_start_sample"] as const;
+export const MAX_MUSIC_SOURCE_SAMPLE_FRAMES = 48_000 * 180;
 export const originalMixRequestKeys = [
   "music_asset_id", "sfx_asset_id", "sfx_gain_db",
   "duck_attenuation_db", "duck_attack_samples", "duck_release_samples",
@@ -56,6 +58,12 @@ export function assertAudioRecipeExtensions(recipe: { original_mix: unknown; aud
   if (Object.hasOwn(recipe, "audio_targets")) assertDeliveryAudioTargets(recipe.audio_targets);
   if (recipe.original_mix === null) return;
   if (!record(recipe.original_mix)) throw new Error("Invalid original mix.");
+  if (Object.hasOwn(recipe.original_mix, "music_source_start_sample")) {
+    const start = recipe.original_mix.music_source_start_sample;
+    if (typeof start !== "number" || !Number.isInteger(start) || start < 0
+      || start >= MAX_MUSIC_SOURCE_SAMPLE_FRAMES || typeof recipe.original_mix.music_asset_id !== "string")
+      throw new Error("Music source window requires a selected audio asset and a bounded exact start sample.");
+  }
   for (const key of originalMixEnvelopeKeys) {
     if (Object.hasOwn(recipe.original_mix, key)) assertOriginalMixBusEnvelope(recipe.original_mix[key]);
   }
@@ -99,8 +107,18 @@ function exactOutputSamples(scenes: Scene[]): bigint {
 export function validateAudioRecipeCut(project: Project, profileId: string, recipe: DeliveryRecipe): void {
   assertAudioRecipeExtensions(recipe);
   const envelopes = originalMixEnvelopeKeys.flatMap(key => recipe.original_mix?.[key] ? [recipe.original_mix[key]!] : []);
-  if (!envelopes.some(envelope => envelope.fade_in_samples || envelope.fade_out_samples)) return;
-  const samples = exactOutputSamples(selectedScenes(project, profileId));
+  const start = recipe.original_mix?.music_source_start_sample;
+  if (start === undefined && !envelopes.some(envelope => envelope.fade_in_samples || envelope.fade_out_samples)) return;
+  const scenes = selectedScenes(project, profileId);
+  const samples = exactOutputSamples(scenes);
+  if (start !== undefined) {
+    const profile = project.deliverables.find(value => value.id === profileId)!;
+    if (profile.audio_sample_rate_hz !== 48000 || scenes.length !== project.scenes.length
+      || scenes.some((scene, index) => scene.id !== project.scenes[index].id))
+      throw new Error("Music source windows require the full original cut at 48 kHz.");
+    if (samples < 48000n || BigInt(start) + samples > BigInt(MAX_MUSIC_SOURCE_SAMPLE_FRAMES))
+      throw new Error("Music source window must fit the existing 180-second decode budget and a cut of at least one second.");
+  }
   for (const envelope of envelopes) {
     if (BigInt(envelope.fade_in_samples) + BigInt(envelope.fade_out_samples) > samples) {
       throw new Error("Original mix fades overlap or exceed the exact selected-cut sample range.");

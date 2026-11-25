@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { assertAudioRecipeExtensions, canonicalAudioTargets, canonicalOriginalMix, originalMixEnvelopeKeys } from "./audioRecipeContract";
+import { assertAudioRecipeExtensions, canonicalAudioTargets, canonicalOriginalMix, originalMixOptionalKeys } from "./audioRecipeContract";
 import { sameProjectRevision } from "./projectMutation";
 import {
   canonicalRecipeField, decodeRecipeDraft, deliveryArchetypes, deliveryRoles, editRecipeField,
@@ -104,7 +104,7 @@ export function assertRecipeHistoryPayload(value: unknown): asserts value is Del
   const mix = value.original_mix;
   // Keep persisted history aligned with DeliveryRecipe and its validator.
   // Unknown fields require a shared wire contract before they can be accepted.
-  if (!record(mix) || !exact(mix, ["music_asset_id", "sfx_asset_id", "sfx_gain_db", "duck_attenuation_db", "duck_attack_samples", "duck_release_samples"], originalMixEnvelopeKeys))
+  if (!record(mix) || !exact(mix, ["music_asset_id", "sfx_asset_id", "sfx_gain_db", "duck_attenuation_db", "duck_attack_samples", "duck_release_samples"], originalMixOptionalKeys))
     throw new Error("The saved recipe history contains an invalid original mix.");
   for (const key of ["music_asset_id", "sfx_asset_id"]) if (mix[key] !== null && !uuid(mix[key]))
     throw new Error("The saved recipe history contains an invalid audio source identity.");

@@ -7,6 +7,8 @@ use std::fmt;
 use uuid::Uuid;
 
 pub const MAX_DELIVERY_SCENE_INTENTS: usize = 4_096;
+/// Existing full-cut PCM decode budget; authoring cannot expand it.
+pub const MAX_MUSIC_SOURCE_SAMPLE_FRAMES: u64 = 48_000 * 180;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DeliveryRecipeSchema {
@@ -193,6 +195,15 @@ impl OriginalMixBusEnvelope {
 #[serde(deny_unknown_fields)]
 pub struct OriginalMixRecipe {
     pub music_asset_id: Option<Uuid>,
+    /// Absent = legacy whole-source music. Present (including zero) selects a
+    /// contiguous 1:1 source-sample window with the exact saved cut length.
+    /// Source identity is the saved music asset; no resampling, looping or pad.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_music_source_start_sample"
+    )]
+    pub music_source_start_sample: Option<u32>,
     pub sfx_asset_id: Option<Uuid>,
     pub sfx_gain_db: f64,
     pub duck_attenuation_db: f64,
@@ -247,7 +258,68 @@ impl DeliveryRecipe {
     }
 }
 
+/// A present null must not silently become the legacy whole-source contract.
+pub fn deserialize_music_source_start_sample<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<u32>, D::Error> {
+    u32::deserialize(deserializer).map(Some)
+}
+
 impl OriginalMixRecipe {
+    /// Returns the explicit window's required length, not a measured source
+    /// duration. Native decoding independently checks the complete CAS WAV.
+    pub fn music_window_output_frames(
+        &self,
+        scenes: &[Scene],
+        profile: &DeliverableProfile,
+    ) -> Result<Option<u64>> {
+        let Some(start) = self.music_source_start_sample else {
+            return Ok(None);
+        };
+        if profile.audio_sample_rate_hz != 48_000
+            || (!profile.included_scene_ids.is_empty()
+                && !profile
+                    .included_scene_ids
+                    .iter()
+                    .copied()
+                    .eq(scenes.iter().map(|scene| scene.id)))
+        {
+            return Err(DomainError::Invalid(
+                "Music source windows require the full original cut at 48 kHz".into(),
+            ));
+        }
+        let mut duration = crate::RationalTime::ZERO;
+        for scene in scenes {
+            duration = duration.checked_add(scene.duration).map_err(|_| {
+                DomainError::Invalid("Music source window cut duration overflow".into())
+            })?;
+        }
+        if duration.num <= 0 || duration.den <= 0 {
+            return Err(DomainError::Invalid(
+                "Music source windows need a positive saved cut duration".into(),
+            ));
+        }
+        let numerator = i128::from(duration.num) * 48_000;
+        let denominator = i128::from(duration.den);
+        if numerator % denominator != 0 {
+            return Err(DomainError::Invalid(
+                "Music source window requires an exact 48 kHz output clock; no implicit snap"
+                    .into(),
+            ));
+        }
+        let frames = u64::try_from(numerator / denominator).map_err(|_| {
+            DomainError::Invalid("Music source window sample range overflow".into())
+        })?;
+        if frames < 48_000
+            || u64::from(start)
+                .checked_add(frames)
+                .is_none_or(|end| end > MAX_MUSIC_SOURCE_SAMPLE_FRAMES)
+        {
+            return Err(DomainError::Invalid("Music source window must fit the existing 180-second decode budget and a cut of at least one second".into()));
+        }
+        Ok(Some(frames))
+    }
+
     pub fn has_fades(&self) -> bool {
         self.voice_envelope.has_fades()
             || self.music_envelope.has_fades()
@@ -262,6 +334,11 @@ impl OriginalMixRecipe {
     }
 
     pub fn validate(&self, assets: &[Asset]) -> Result<()> {
+        if self.music_source_start_sample.is_some_and(|start| {
+            self.music_asset_id.is_none() || u64::from(start) >= MAX_MUSIC_SOURCE_SAMPLE_FRAMES
+        }) {
+            return Err(DomainError::Invalid("Music source window requires a selected audio asset and a bounded exact start sample".into()));
+        }
         if !self.sfx_gain_db.is_finite() || !(-80.0..=12.0).contains(&self.sfx_gain_db) {
             return Err(DomainError::Invalid(
                 "delivery recipe SFX gain must be finite and within -80..12 dB".into(),
@@ -323,6 +400,13 @@ impl ProductionDesign {
                 ));
             }
             recipe.validate(scenes, assets)?;
+            if let Some(mix) = &recipe.original_mix {
+                let profile = profiles
+                    .iter()
+                    .find(|profile| profile.id == *profile_id)
+                    .expect("profile existence checked above");
+                mix.music_window_output_frames(scenes, profile)?;
+            }
             if let Some(mix) = &recipe.original_mix
                 && mix.has_fades()
             {
@@ -448,6 +532,7 @@ mod tests {
             duck_attack_samples: 960,
             duck_release_samples: 4_800,
             voice_envelope: Default::default(),
+            music_source_start_sample: None,
             music_envelope: Default::default(),
             sfx_envelope: Default::default(),
         }
@@ -460,6 +545,82 @@ mod tests {
                 recipe,
             })
             .unwrap();
+    }
+
+    #[test]
+    fn explicit_music_source_window_is_a_bounded_exact_saved_cut() {
+        let mut p = project();
+        let profile_id = p.deliverables[0].id;
+        let asset_id = Uuid::now_v7();
+        p.assets.push(Asset {
+            id: asset_id,
+            name: "music.wav".into(),
+            media_type: "audio/wav".into(),
+            content_sha256: Some("a".repeat(64)),
+            source_revision: None,
+        });
+        let mut intent = mix();
+        intent.music_asset_id = Some(asset_id);
+        assert!(
+            serde_json::to_value(&intent)
+                .unwrap()
+                .get("music_source_start_sample")
+                .is_none()
+        );
+        let legacy = variant_dependency_fingerprint(&p, profile_id).unwrap();
+        intent.music_source_start_sample = Some(0);
+        assert_eq!(
+            intent
+                .music_window_output_frames(&p.scenes, &p.deliverables[0])
+                .unwrap(),
+            Some(192_000)
+        );
+        assert_eq!(
+            serde_json::from_value::<OriginalMixRecipe>(serde_json::to_value(&intent).unwrap())
+                .unwrap(),
+            intent
+        );
+        let mut null_wire = serde_json::to_value(&intent).unwrap();
+        null_wire["music_source_start_sample"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<OriginalMixRecipe>(null_wire).is_err());
+        let mut saved = recipe(&p);
+        saved.original_mix = Some(intent.clone());
+        set(&mut p, profile_id, Some(saved.clone()));
+        let first = variant_dependency_fingerprint(&p, profile_id).unwrap();
+        assert_ne!(legacy.audio_inputs_sha256, first.audio_inputs_sha256);
+        saved
+            .original_mix
+            .as_mut()
+            .unwrap()
+            .music_source_start_sample = Some(48_000);
+        set(&mut p, profile_id, Some(saved.clone()));
+        let second = variant_dependency_fingerprint(&p, profile_id).unwrap();
+        assert_ne!(first.audio_inputs_sha256, second.audio_inputs_sha256);
+        assert_eq!(first.frame_inputs_sha256, second.frame_inputs_sha256);
+        let before = p.clone();
+        for value in [Some(8_639_999), Some(8_640_000)] {
+            let mut invalid = saved.clone();
+            invalid
+                .original_mix
+                .as_mut()
+                .unwrap()
+                .music_source_start_sample = value;
+            assert!(
+                p.apply_change(&Change::SetDeliveryRecipe {
+                    deliverable_profile_id: profile_id,
+                    recipe: Some(invalid)
+                })
+                .is_err()
+            );
+            assert_eq!(p, before);
+        }
+        let mut partial = p.deliverables[0].clone();
+        partial.included_scene_ids = vec![p.scenes[0].id];
+        assert!(
+            p.apply_change(&Change::UpsertDeliverable { profile: partial })
+                .is_err()
+        );
+        assert_eq!(p, before);
     }
 
     #[test]
