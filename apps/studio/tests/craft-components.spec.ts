@@ -109,3 +109,54 @@ test("typographic focus and contrast remain editable through grouped motion, asp
   await page.getByRole("button", { name: "Canvas object TypographyContrast / headline", exact: true }).click();
   await expect(page.getByLabel("Canvas fill", { exact: true })).toHaveValue("#FFAA22");
 });
+
+test("delivery Hero text reflows into visible original lines without rewriting the saved source or local wording",async({page})=>{
+  const button=(name:string)=>page.getByRole("button",{name,exact:true});
+  await page.goto("/");
+  await button("Add scene").click();
+  await page.getByLabel("New scene name").fill("Original responsive copy");
+  await button("Add").click();
+  const open=async()=>{
+    await button("Production").click();
+    await page.getByLabel("Production working scene",{exact:true}).selectOption({label:"Original responsive copy"});
+    await button("Components").click();
+  };
+  await open();
+  await page.getByLabel("Component layout",{exact:true}).selectOption("product_hero_reveal");
+  await page.getByLabel("Headline",{exact:true}).fill("An original idea");
+  await page.getByLabel("Supporting copy",{exact:true}).fill("The supporting source.");
+  await page.getByLabel("Animate entrance",{exact:true}).uncheck();
+  await button("16:9").click();
+  await expect(button("Add to scene")).toBeEnabled();
+  await button("Add to scene").click();
+  await expect(button("Update component")).toBeVisible();
+  const read=async()=>page.evaluate(async()=>{
+    const path="/src/api.ts";return (await (await import(/* @vite-ignore */ path)).bootstrap()).project as import("../src/types").Project;
+  });
+  const original=await read();
+  const scene=original.scenes.find(row=>row.name==="Original responsive copy")!;
+  const heading=scene.nodes.find(node=>node.name==="ProductHeroReveal / headline")!;
+  const profile=original.deliverables[0];
+  await button("Deliver").click();
+  await page.locator('.delivery-profile-row[data-profile-id="'+profile.id+'"]').click();
+  const editor=page.getByLabel("Delivery text for "+heading.name+" in "+scene.name,{exact:true});
+  await editor.fill("Ideas claras para todos");
+  await expect(button("Save profile")).toBeEnabled();
+  await button("Save profile").click();
+  await expect(button("Save profile")).toBeDisabled();
+  await open();
+  await page.getByLabel("Editor preview timebase",{exact:true}).selectOption(profile.id);
+  await button("9:16").click();
+  await button("Settled").click();
+  const study=page.getByRole("img",{name:/^ProductHeroReveal 9:16/});
+  const copy=study.locator('[data-canvas-node-id="'+heading.id+'"] > text');
+  await expect(copy).toHaveAttribute("data-text-origin","profile");
+  await expect(copy.locator("tspan")).toHaveText(["Ideas claras para","todos"]);
+  await button("Enlarge study").click();
+  const expanded=page.getByRole("img",{name:"Expanded editorial composition study",exact:true});
+  await expect(expanded.locator('[data-canvas-node-id="'+heading.id+'"] tspan')).toHaveText(["Ideas claras para","todos"]);
+  await button("Close expanded study").click();
+  const saved=await read();
+  expect(saved.scenes.find(row=>row.id===scene.id)!.nodes).toEqual(scene.nodes);
+  expect(saved.deliverables.find(row=>row.id===profile.id)!.text_overrides[heading.id]).toBe("Ideas claras para todos");
+});

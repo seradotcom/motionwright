@@ -1404,11 +1404,10 @@ fn subject(
         .ok_or_else(|| invalid("Canvas node layer projection is missing"))?;
     let content = match node.kind.as_str() {
         "text" => {
-            let text = context
-                .profile
-                .text_overrides
-                .get(&node.id)
-                .or(node.text.as_ref())
+            // responsive_scene resolves the delivery-local copy exactly once.
+            let text = node
+                .text
+                .as_ref()
                 .filter(|text| !text.is_empty())
                 .ok_or_else(|| invalid(format!("Text node {} has no text", node.id)))?;
             if text.len() > 16_384 {

@@ -1,9 +1,9 @@
 //! Lossless admission of a deliberately bounded editable entrance grammar.
 //! Unsupported keyframes remain errors; this is not a universal keyframe translator.
 use motionwright_domain::{
-    CanvasNode, DeliverableProfile, DomainError, FieldDistribution, FramingStrategy,
-    MotionInterpolation, MotionProperty, Project, RationalTime, Scene, merge_component_nodes,
-    realize_procedural_field_for_output, realize_product_hero,
+    CanvasNode, DeliverableProfile, DomainError, FieldDistribution, FramingStrategy, HeroLayout,
+    MotionInterpolation, MotionProperty, Project, RationalTime, Scene, hero_node_id,
+    merge_component_nodes, realize_procedural_field_for_output, realize_product_hero,
 };
 use semwright_native_sdk::{Error, ErrorCode, Result};
 
@@ -110,6 +110,78 @@ fn domain(error: DomainError) -> Error {
     Error::new(ErrorCode::Unsupported, error.to_string())
 }
 
+/// Layout-only line breaks may replace spaces, never other authored characters.
+fn same_variant_copy(raw: &str, wrapped: &str) -> bool {
+    !wrapped.split('\n').any(|line| line.trim().is_empty())
+        && raw.replace('\n', " ") == wrapped.replace('\n', " ")
+}
+
+fn fit_variant_hero_text(node: &mut CanvasNode, layout: HeroLayout, headline: bool) -> Result<()> {
+    let fail = || {
+        domain(DomainError::Invalid(format!(
+            "Delivery Hero {} copy exceeds its responsive text budget; author a shorter variant or intentional line break",
+            node.name
+        )))
+    };
+    let text = node.text.as_deref().ok_or_else(fail)?;
+    let font = node.style.font_size.ok_or_else(fail)?;
+    let advance = font * node.style.line_height.unwrap_or(1.12);
+    if ![font, advance, node.width, node.height]
+        .iter()
+        .all(|v| v.is_finite() && *v > 0.0)
+    {
+        return Err(fail());
+    }
+    // Maintain the generator's semantic line ceilings. Further split its
+    // lines only when the actual retained font/box requires it.
+    let role_limit = if headline {
+        if layout == HeroLayout::EditorialQuote {
+            4
+        } else {
+            3
+        }
+    } else if matches!(
+        layout,
+        HeroLayout::TypographyFocus | HeroLayout::EditorialQuote
+    ) {
+        3
+    } else {
+        4
+    };
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        let mut line = String::new();
+        for word in paragraph.split(' ') {
+            let count = word.chars().count();
+            if count == 0 || count as f64 * font * 0.56 > node.width * 0.96 {
+                return Err(fail());
+            }
+            if !line.is_empty()
+                && (line.chars().count() + 1 + count) as f64 * font * 0.56 > node.width * 0.96
+            {
+                lines.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+        lines.push(line);
+    }
+    if lines.is_empty()
+        || lines.len() > role_limit
+        || advance * (lines.len() - 1) as f64 + font * 1.4 > node.height
+    {
+        return Err(fail());
+    }
+    let fitted = lines.join("\n");
+    if !same_variant_copy(text, &fitted) {
+        return Err(fail());
+    }
+    node.text = Some(fitted);
+    Ok(())
+}
+
 /// Reflow generated fields only. Human overrides merge against the saved baseline;
 /// an ambiguous position/copy change blocks this variant instead of overwriting it.
 pub(crate) fn responsive_scene(
@@ -118,54 +190,104 @@ pub(crate) fn responsive_scene(
     profile: &DeliverableProfile,
 ) -> Result<Scene> {
     let mut output = scene.clone();
-    if profile.framing_strategy != FramingStrategy::Replan {
-        return Ok(output);
-    }
-    if profile.width == 1920 && profile.height == 1080 {
-        return Ok(output);
-    }
-    if let Some(hero) = project
-        .production_design
-        .heroes
-        .iter()
-        .find(|hero| hero.scene_id == scene.id)
+    let replan = profile.framing_strategy == FramingStrategy::Replan;
+    let resized = replan && (profile.width != 1920 || profile.height != 1080);
+    let mut wrapped_overrides = std::collections::BTreeMap::new();
+    if replan
+        && let Some(hero) = project
+            .production_design
+            .heroes
+            .iter()
+            .find(|hero| hero.scene_id == scene.id)
     {
-        let mut incoming =
-            realize_product_hero(hero.id, &hero.config, profile.width, profile.height)
-                .map_err(domain)?;
-        let sx = f64::from(profile.width) / 1920.0;
-        let sy = f64::from(profile.height) / 1080.0;
-        let size_scale = sx.min(sy);
-        // Invert the existing Film projection, so its transform stays authoritative.
-        for node in &mut incoming {
-            let destination_y = node.y;
-            let center_x = node.x + node.width / 2.0;
-            let center_y = node.y + node.height / 2.0;
-            node.width /= size_scale;
-            node.height /= size_scale;
-            node.x = center_x / sx - node.width / 2.0;
-            node.y = center_y / sy - node.height / 2.0;
-            if let Some(size) = &mut node.style.font_size {
-                *size /= size_scale;
-            }
-            node.style.stroke_width /= size_scale;
-            for key in &mut node.keyframes {
-                if key.property == MotionProperty::Y {
-                    key.value = node.y + (key.value - destination_y) / sy;
+        let mut config = hero.config.clone();
+        let mut selected = std::collections::BTreeSet::new();
+        // Measured evidence and step roles have distinct semantic contracts.
+        if !matches!(
+            config.layout,
+            HeroLayout::MetricEvidence | HeroLayout::StepSequence
+        ) {
+            for (role, copy) in [
+                ("headline", &mut config.headline),
+                ("body", &mut config.body),
+            ] {
+                let id = hero_node_id(hero.id, role);
+                if let Some(raw) = profile.text_overrides.get(&id) {
+                    *copy = raw.clone();
+                    selected.insert(id);
                 }
             }
         }
-        output.nodes =
-            merge_component_nodes(&hero.baseline, &output.nodes, &incoming).map_err(domain)?;
+        if resized || !selected.is_empty() {
+            let mut incoming =
+                realize_product_hero(hero.id, &config, profile.width, profile.height)
+                    .map_err(domain)?;
+            for node in &mut incoming {
+                if selected.contains(&node.id) {
+                    let raw = &profile.text_overrides[&node.id];
+                    let wrapped = node.text.as_ref().filter(|text| same_variant_copy(raw, text))
+                    .ok_or_else(|| domain(DomainError::Invalid("Delivery Hero copy cannot be wrapped without altering authored characters or whitespace".into())))?;
+                    wrapped_overrides.insert(
+                        node.id,
+                        (
+                            wrapped.clone(),
+                            config.layout,
+                            node.id == hero_node_id(hero.id, "headline"),
+                        ),
+                    );
+                    // Explicit local text has precedence over the source text only.
+                    // Geometry, style and locks still use the three-way merge.
+                    node.text = hero
+                        .baseline
+                        .iter()
+                        .find(|base| base.id == node.id)
+                        .ok_or_else(|| {
+                            domain(DomainError::Invalid(
+                                "Delivery Hero baseline identity missing".into(),
+                            ))
+                        })?
+                        .text
+                        .clone();
+                }
+            }
+            let sx = f64::from(profile.width) / 1920.0;
+            let sy = f64::from(profile.height) / 1080.0;
+            let size_scale = sx.min(sy);
+            // Invert the existing Film projection, so its transform stays authoritative.
+            for node in &mut incoming {
+                if !resized {
+                    continue;
+                }
+                let destination_y = node.y;
+                let center_x = node.x + node.width / 2.0;
+                let center_y = node.y + node.height / 2.0;
+                node.width /= size_scale;
+                node.height /= size_scale;
+                node.x = center_x / sx - node.width / 2.0;
+                node.y = center_y / sy - node.height / 2.0;
+                if let Some(size) = &mut node.style.font_size {
+                    *size /= size_scale;
+                }
+                node.style.stroke_width /= size_scale;
+                for key in &mut node.keyframes {
+                    if key.property == MotionProperty::Y {
+                        key.value = node.y + (key.value - destination_y) / sy;
+                    }
+                }
+            }
+            output.nodes =
+                merge_component_nodes(&hero.baseline, &output.nodes, &incoming).map_err(domain)?;
+        }
     }
-    if let Some(field) = project
-        .production_design
-        .procedural_fields
-        .iter()
-        .find(|field| {
-            field.scene_id == scene.id
-                && field.config.distribution == FieldDistribution::AdaptiveGrid
-        })
+    if resized
+        && let Some(field) = project
+            .production_design
+            .procedural_fields
+            .iter()
+            .find(|field| {
+                field.scene_id == scene.id
+                    && field.config.distribution == FieldDistribution::AdaptiveGrid
+            })
     {
         let incoming = realize_procedural_field_for_output(
             field.id,
@@ -176,6 +298,17 @@ pub(crate) fn responsive_scene(
         .map_err(domain)?;
         output.nodes =
             merge_component_nodes(&field.baseline, &output.nodes, &incoming).map_err(domain)?;
+    }
+    // Resolve effective copy once. Do not reapply the unwrapped delivery map.
+    for node in &mut output.nodes {
+        if let Some((copy, layout, headline)) = wrapped_overrides.get(&node.id) {
+            node.text = Some(copy.clone());
+            fit_variant_hero_text(node, *layout, *headline)?;
+        } else if let Some(copy) = profile.text_overrides.get(&node.id) {
+            if node.kind == "text" {
+                node.text = Some(copy.clone());
+            }
+        }
     }
     Ok(output)
 }

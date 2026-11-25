@@ -11,7 +11,7 @@ import { reviewBoundaryAppearance } from "./boundaryAppearanceReview";
 import CompositionStudy from "./CompositionStudy";
 import SceneCompositionStudy from "./SceneCompositionStudy";
 import { buildComponentSceneStudy, type ComponentSceneStudy } from "./componentSceneStudy";
-import { sampleProfileLayout } from "./profileComposition";
+import { resolvedProfileTextOverrides, sampleProfileLayout } from "./profileComposition";
 import { canvasBackground, inheritedTextInk } from "./canvasInheritedInk";
 import { emptyProductionDesign, parseSceneBoundaryEndpoint, realizeProductHero, sameValue, sceneBoundaryNarrativeRoles, sceneBoundaryArchetypes } from "./creativeProduction";
 import ComponentRevisionReview, { useComponentRevisionReview } from "./ComponentRevisionReview";
@@ -521,7 +521,7 @@ function HeroWorkbench({ project, scene, commit, commitCamera, busy, playhead, o
       <div className="production-viewer-toolbar"><div><strong>Composition study</strong><span>{instance ? "Proposed scene with authored objects" : "Uncommitted component parameters"} · editorial preview</span></div>
         <div className="production-button-row"><div className="production-segmented" aria-label="Preview aspect">{aspects.map(value => <button key={value.label} aria-pressed={value.label===aspect.label} onClick={() => setAspect(value)}>{value.label}</button>)}</div><button className="secondary-button" disabled={viewLoading || !!viewIssue || !scene} onClick={()=>setExpanded(true)}>Enlarge study</button></div></div>
       <div className={"production-preview-mat " + (aspect.height>aspect.width?"portrait":"")}>
-        {viewLoading ? <p role="status">Preparing the editable study…</p> : viewIssue ? <p role={error ? "status" : "alert"} className="production-error">The current scene study is unavailable: {viewIssue}</p> : <CompositionStudy nodes={nodes} width={aspect.width} height={aspect.height} time={localTime} background={background} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides} label={`${familyName} ${aspect.label}, editorial frame at ${localTime.toFixed(3)} seconds`}/>}
+        {viewLoading ? <p role="status">Preparing the editable study…</p> : viewIssue ? <p role={error ? "status" : "alert"} className="production-error">The current scene study is unavailable: {viewIssue}</p> : <CompositionStudy nodes={nodes} width={aspect.width} height={aspect.height} time={localTime} background={background} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={visual?.context ? resolvedProfileTextOverrides(nodes,visual.context.profile) : displayProfile?.text_overrides} label={`${familyName} ${aspect.label}, editorial frame at ${localTime.toFixed(3)} seconds`}/>}
       </div>
       <div className="production-transport"><span className="mono">{localTime.toFixed(3)} s</span>
         <input aria-label="Component playhead" type="range" min={0} max={scene?seconds(scene.duration):6} step={1/30} value={localTime} disabled={!scene} onChange={e => onSeek(seconds(scene!.start)+Number(e.target.value))}/>
@@ -535,7 +535,7 @@ function HeroWorkbench({ project, scene, commit, commitCamera, busy, playhead, o
           time={localTime} background={background} ink={inheritedTextInk(project.visual_language.palette)} label={label}/></div>}/>}
     </section>
     {expanded && scene && !viewLoading && !viewIssue && <ExpandedStudy nodes={nodes} width={aspect.width} height={aspect.height} time={localTime} duration={seconds(scene.duration)} background={background}
-      description={instance ? "Complete proposed scene · authored object edits and sampled camera · Native pixels remain separate" : undefined} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides} onSeek={time=>onSeek(seconds(scene.start)+time)} onClose={()=>setExpanded(false)}/>}
+      description={instance ? "Complete proposed scene · authored object edits and sampled camera · Native pixels remain separate" : undefined} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={visual?.context ? resolvedProfileTextOverrides(nodes,visual.context.profile) : displayProfile?.text_overrides} onSeek={time=>onSeek(seconds(scene.start)+time)} onClose={()=>setExpanded(false)}/>}
   </div>;
 }
 

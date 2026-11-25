@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { DeliverableProfile, Project, Scene } from "./types";
 import CompositionStudy from "./CompositionStudy";
 import { canvasBackground, inheritedTextInk } from "./canvasInheritedInk";
-import { reflowSceneForProfile, sampleProfileLayout } from "./profileComposition";
+import { reflowSceneForProfile, resolvedProfileTextOverrides, sampleProfileLayout } from "./profileComposition";
 import { proceduralGridDimensions, proceduralGridDimensionsForOutput } from "./proceduralField";
 
 type Props = { project: Project; scene: Scene; profile: DeliverableProfile; time: number; label: string };
@@ -33,13 +33,14 @@ export default function ProfileCompositionStudy({ project, scene, profile, time,
       <p className="production-help">{profile.name} · {profile.width} × {profile.height} · {profile.framing_strategy === "replan" ? "Replan" : "Crop"}{grid ? " · " + grid.columns + " columns × " + grid.rows + " rows" : ""}</p>
       <div className="production-preview-mat" style={{ height: 320, flex: "none", padding: 8 }}>
         <CompositionStudy nodes={sampled.nodes} width={profile.width} height={profile.height} time={0}
-          background={canvasBackground(project.visual_language.palette)} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={profile.text_overrides} label={label}/>
+          background={canvasBackground(project.visual_language.palette)} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={resolvedProfileTextOverrides(sampled.nodes,profile)} label={label}/>
       </div>
       {sampled.boundaryIssues.length > 0 && <div className="production-error" role="status" aria-label={label + " boundary warnings"}>
         <p>{sampled.boundaryIssues.length} sampled object bounds need review. Geometry has not been shrunk or clamped.</p>
         <ul>{sampled.boundaryIssues.map((issue, index) => <li key={index}>{issue}</li>)}</ul>
       </div>}
       <p className="production-help">Output layout at {time.toFixed(3)} s from the current source revision. Compatible object edits remain; conflicting edits stop this variant.
+        Delivery-local Hero headlines and supporting copy use the selected aspect's line budget. Layout-only line breaks do not modify saved copy.
         Font shaping, media, full motion admission and rendered pixels require Native preview.</p>
     </div>;
   } catch (reason) {

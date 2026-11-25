@@ -174,3 +174,134 @@ fn unsupported_font_weight_is_rejected_before_an_expensive_native_render() {
         Some(650)
     );
 }
+
+#[test]
+fn saved_delivery_hero_copy_is_wrapped_once_in_native_film_after_reopen() {
+    use motionwright_service::StudioService;
+    use semwright_motion_authoring::SubjectContent;
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("responsive-copy.sqlite3");
+    let service = StudioService::open(&db).unwrap();
+    let initial = service.create_project("Responsive original copy").unwrap();
+    let mut p = service
+        .apply(
+            initial.id,
+            &RevisionStamp::from(&initial),
+            "add-hero-scene",
+            &Change::AddScene {
+                name: "Reveal".into(),
+                objective: "Original copy".into(),
+                duration_seconds: 6,
+            },
+        )
+        .unwrap()
+        .project;
+    let scene_id = p.scenes[0].id;
+    let instance_id = Uuid::new_v4();
+    p = service
+        .apply(
+            p.id,
+            &RevisionStamp::from(&p),
+            "add-hero",
+            &Change::UpsertProductHero {
+                instance_id,
+                scene_id,
+                config: HeroConfig {
+                    headline: "An original idea".into(),
+                    motion: false,
+                    ..HeroConfig::default()
+                },
+            },
+        )
+        .unwrap()
+        .project;
+    let heading_id = hero_node_id(instance_id, "headline");
+    let mut profile = p.deliverables[1].clone();
+    profile
+        .text_overrides
+        .insert(heading_id, "Ideas claras para todos".into());
+    let profile_id = profile.id;
+    p = service
+        .apply(
+            p.id,
+            &RevisionStamp::from(&p),
+            "save-local-copy",
+            &Change::UpsertDeliverable { profile },
+        )
+        .unwrap()
+        .project;
+    let options = FilmBuildOptions {
+        frame_rate: Rate::new(30, 1).unwrap(),
+        font_family: MOTION_CANVAS_FONT_FAMILY.into(),
+        mono_font_family: MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+        scene_intents: vec![SceneFilmIntent {
+            scene_id,
+            role: NarrativeRole::Reveal,
+            archetype: Archetype::ObjectSpotlight,
+        }],
+    };
+    let film = build_motion_canvas_segments(&p, profile_id, &options)
+        .unwrap()
+        .remove(0)
+        .film;
+    let root = format!("node-{}", heading_id.simple());
+    let lines = film
+        .shots()
+        .flat_map(|shot| &shot.subjects)
+        .filter(|subject| subject.parent.as_deref() == Some(root.as_str()))
+        .map(|subject| match &subject.content {
+            SubjectContent::Text { runs, wrap, .. } => {
+                assert!(!wrap);
+                runs[0].text.clone()
+            }
+            _ => panic!("expected original editable line"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(lines, ["Ideas claras para", "todos"]);
+    assert_eq!(
+        p.scenes[0]
+            .nodes
+            .iter()
+            .find(|node| node.id == heading_id)
+            .unwrap()
+            .text
+            .as_deref(),
+        Some("An original idea")
+    );
+    assert_eq!(
+        p.deliverables
+            .iter()
+            .find(|item| item.id == profile_id)
+            .unwrap()
+            .text_overrides[&heading_id],
+        "Ideas claras para todos"
+    );
+    drop(service);
+    let reopened = StudioService::open(&db).unwrap();
+    let source = reopened.project(p.id).unwrap();
+    assert_eq!(source, p);
+    assert_eq!(
+        build_motion_canvas_segments(&source, profile_id, &options)
+            .unwrap()
+            .remove(0)
+            .film,
+        film
+    );
+    for copy in [
+        "A".repeat(60),
+        "Ideas  claras".into(),
+        "Un texto\n\nOtro texto".into(),
+    ] {
+        let mut candidate = source.clone();
+        candidate
+            .deliverables
+            .iter_mut()
+            .find(|item| item.id == profile_id)
+            .unwrap()
+            .text_overrides
+            .insert(heading_id, copy);
+        let before = candidate.clone();
+        assert!(build_motion_canvas_segments(&candidate, profile_id, &options).is_err());
+        assert_eq!(candidate, before);
+    }
+}

@@ -123,3 +123,66 @@ it("validates retained group motion before profile sampling can erase its tracks
   expect(()=>sampleProfileLayout(p,scene,profile(p),0)).toThrow("hierarchy is unresolved");
   expect(scene).toEqual(original);
 });
+
+describe("delivery-local Hero copy is realized before the output layout",()=>{
+  async function heroSource(){
+    const p=base();
+    return applyChange(p,{type:"upsert_product_hero",scene_id:p.scenes[0].id,
+      instance_id:"00000000-0000-4000-8000-000000000005",
+      config:{...defaultHeroConfig(),motion:false,headline:"An original idea",body:"The supporting source."}});
+  }
+  it("retains all authored words and local copy after three aspect-specific line layouts",async()=>{
+    let p=await heroSource();
+    const heading=p.scenes[0].nodes.find(node=>node.name.endsWith(" / headline"))!;
+    p=await applyChange(p,{type:"update_canvas_style",scene_id:p.scenes[0].id,node_id:heading.id,
+      style:{...heading.style,fill:"#FFAA22"}});
+    const source=structuredClone(p);
+    for(const [width,height,copy] of [[1920,1080,"A clear idea for all"],[1080,1080,"Ideas claras para todos"],
+      [1080,1920,"Klare Ideen f\u00fcr alle"]] as const){
+      const target={...profile(p,width,height),text_overrides:{[heading.id]:copy}};
+      const projected=await reflowSceneForProfile(p,p.scenes[0],target);
+      const result=projected.nodes.find(node=>node.id===heading.id)!;
+      expect(result.text?.replaceAll("\n"," ")).toBe(copy);
+      expect(result.style.fill).toBe("#FFAA22");
+      expect(result.id).toBe(heading.id);
+      expect(target.text_overrides[heading.id]).toBe(copy);
+      expect(projected.nodes.map(node=>node.id)).toEqual(p.scenes[0].nodes.map(node=>node.id));
+      if(height>width)expect(result.text).toBe("Klare Ideen f\u00fcr\nalle");
+      expect(p).toEqual(source);
+    }
+  });
+  it("uses a saved local exception over source copy, then reopens without changing either",async()=>{
+    let p=await heroSource();
+    const heading=p.scenes[0].nodes.find(node=>node.name.endsWith(" / headline"))!;
+    const target={...profile(p,1080,1920),text_overrides:{[heading.id]:"Ideas claras para todos"}};
+    p=await applyChange(p,{type:"upsert_deliverable",profile:target});
+    const saved=structuredClone(p);
+    const stored=p.deliverables.find(item=>item.id===target.id)!;
+    const result=await reflowSceneForProfile(p,p.scenes[0],stored);
+    expect(result.nodes.find(node=>node.id===heading.id)?.text).toBe("Ideas claras para\ntodos");
+    const reopened:Project=JSON.parse(JSON.stringify(p));
+    expect(await reflowSceneForProfile(reopened,reopened.scenes[0],reopened.deliverables.find(item=>item.id===target.id)!)).toEqual(result);
+    expect(p).toEqual(saved);
+    expect(heading.text).toBe("An original idea");
+  });
+  it("reports overlong, whitespace-changing and manually conflicting variants without replacing source",async()=>{
+    const p=await heroSource(),heading=p.scenes[0].nodes.find(node=>node.name.endsWith(" / headline"))!;
+    for(const copy of ["A".repeat(60),"Ideas  claras","Un texto\n\nOtro texto"]){
+      const target={...profile(p),text_overrides:{[heading.id]:copy}};
+      await expect(reflowSceneForProfile(p,p.scenes[0],target)).rejects.toThrow();
+    }
+    heading.x+=5;
+    const before=structuredClone(p);
+    await expect(reflowSceneForProfile(p,p.scenes[0],{...profile(p),text_overrides:{[heading.id]:"Ideas claras para todos"}}))
+      .rejects.toThrow(/override conflict/);
+    expect(p).toEqual(before);
+  });
+  it("keeps Crop and ordinary noncomponent overrides literal, without a second wrapping pass",async()=>{
+    const p=await heroSource(),heading=p.scenes[0].nodes.find(node=>node.name.endsWith(" / headline"))!;
+    const raw="  Literal\ncopy  ";
+    const target={...profile(p),framing_strategy:"crop" as const,text_overrides:{[heading.id]:raw}};
+    expect((await reflowSceneForProfile(p,p.scenes[0],target)).nodes.find(node=>node.id===heading.id)?.text).toBe(raw);
+    p.production_design=emptyProductionDesign();
+    expect((await reflowSceneForProfile(p,p.scenes[0],{...target,framing_strategy:"replan"})).nodes.find(node=>node.id===heading.id)?.text).toBe(raw);
+  });
+});
