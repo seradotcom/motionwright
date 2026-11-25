@@ -1657,6 +1657,427 @@ impl ProductionClient {
     }
 }
 
+const MOTION_BLEND_PLAN_COMMAND: &str = "driver.motion-canvas.composition.plan";
+const MOTION_BLEND_TAG: &str = "film-v2-subject-blend-v1";
+
+#[derive(Debug, Clone)]
+struct MotionBlendAdmission {
+    descriptor_sha256: String,
+    provider_generation: u64,
+    catalog_revision: u64,
+    connection_identity: String,
+}
+
+impl MotionBlendAdmission {
+    fn from_discovery(
+        description: &Value,
+        inspection: &Value,
+        connection_identity: String,
+    ) -> NativeResult<Self> {
+        let fail = || {
+            Error::new(
+                ErrorCode::Unsupported,
+                "Current Motion Canvas owner has not established Film v2 subject blend support (descriptor 1.1, tag, authoring version 2)",
+            )
+        };
+        // The fixed core read uses the original envelope route; refuse a
+        // contradictory/dry-run response even on that private transport.
+        if description
+            .pointer("/execution/dry_run")
+            .and_then(Value::as_bool)
+            != Some(false)
+            || description
+                .get("provenance_checked")
+                .and_then(Value::as_bool)
+                != Some(true)
+            || inspection
+                .pointer("/execution/dry_run")
+                .and_then(Value::as_bool)
+                != Some(false)
+            || inspection
+                .get("provenance_checked")
+                .and_then(Value::as_bool)
+                != Some(true)
+        {
+            return Err(fail());
+        }
+        let data = description.get("data").ok_or_else(fail)?;
+        let metadata = data.get("provenance").ok_or_else(fail)?;
+        let descriptor_sha256 = metadata
+            .get("descriptor_sha256")
+            .and_then(Value::as_str)
+            .filter(|value| is_sha256(value))
+            .ok_or_else(fail)?;
+        let revision = data
+            .get("revision")
+            .and_then(Value::as_u64)
+            .ok_or_else(fail)?;
+        let provenance = inspection
+            .pointer("/execution/provenance")
+            .ok_or_else(fail)?;
+        if data.get("schema_version").and_then(Value::as_u64) != Some(1)
+            || data
+                .get("availability_is_authorization")
+                .and_then(Value::as_bool)
+                != Some(false)
+            || data.pointer("/capability/name").and_then(Value::as_str)
+                != Some(MOTION_BLEND_PLAN_COMMAND)
+            || data.pointer("/capability/version").and_then(Value::as_str) != Some("1.1")
+            || data
+                .pointer("/policy_preview/preview_only")
+                .and_then(Value::as_bool)
+                != Some(true)
+            || data
+                .pointer("/policy_preview/execution_rechecks")
+                .and_then(Value::as_bool)
+                != Some(true)
+            || data
+                .pointer("/policy_preview/state")
+                .and_then(Value::as_str)
+                .is_none_or(|state| state == "deny")
+            || metadata.get("provider").and_then(Value::as_str) != Some("driver:motion-canvas")
+            || metadata.get("source") != Some(&json!(SourceKind::Driver))
+            || !metadata
+                .get("tags")
+                .and_then(Value::as_array)
+                .is_some_and(|tags| {
+                    tags.iter()
+                        .any(|tag| tag.as_str() == Some(MOTION_BLEND_TAG))
+                })
+            || !data
+                .get("routes")
+                .and_then(Value::as_array)
+                .is_some_and(|routes| {
+                    routes
+                        .iter()
+                        .filter(|route| {
+                            route.get("provider_id").and_then(Value::as_str)
+                                == Some("driver:motion-canvas")
+                                && route.get("available").and_then(Value::as_bool) == Some(true)
+                        })
+                        .count()
+                        == 1
+                })
+            || inspection
+                .pointer("/data/authoring_version")
+                .and_then(Value::as_u64)
+                != Some(u64::from(
+                    semwright_motion_authoring::AUTHORING_BLEND_VERSION,
+                ))
+            || provenance.get("provider").and_then(Value::as_str) != Some("driver:motion-canvas")
+            || provenance.get("source") != Some(&json!(SourceKind::Driver))
+            || provenance.get("catalog_revision").and_then(Value::as_u64) != Some(revision)
+            || provenance.get("provider_version") != metadata.get("source_version")
+        {
+            return Err(fail());
+        }
+        let provider_generation = provenance
+            .get("provider_generation")
+            .and_then(Value::as_u64)
+            .ok_or_else(fail)?;
+        Ok(Self {
+            descriptor_sha256: descriptor_sha256.to_owned(),
+            provider_generation,
+            catalog_revision: revision,
+            connection_identity,
+        })
+    }
+
+    fn require_provider(&self, receipt: &Value) -> NativeResult<()> {
+        let provenance = receipt
+            .pointer("/result/execution/provenance")
+            .ok_or_else(|| backend("Film v2 native receipt lacks original provider provenance"))?;
+        if provenance.get("provider").and_then(Value::as_str) != Some("driver:motion-canvas")
+            || provenance.get("source") != Some(&json!(SourceKind::Driver))
+            || provenance
+                .get("provider_generation")
+                .and_then(Value::as_u64)
+                != Some(self.provider_generation)
+            || provenance.get("catalog_revision").and_then(Value::as_u64)
+                != Some(self.catalog_revision)
+        {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Motion Canvas provider or catalog changed after blend admission",
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_plan(
+        &self,
+        receipt: &Value,
+        film: &semwright_motion_authoring::Film,
+    ) -> NativeResult<()> {
+        self.require_provider(receipt)?;
+        let provenance = receipt
+            .pointer("/result/execution/provenance")
+            .ok_or_else(|| backend("Film v2 plan provenance is absent"))?;
+        let expected = serde_json::to_value(film)
+            .map_err(|_| invalid("Canonical Film v2 cannot be encoded"))?;
+        let intent = semwright_semantic_composition::canonical_digest(film)
+            .map_err(|_| invalid("Canonical Film v2 cannot be hashed"))?;
+        let data = response_data(receipt)?;
+        if provenance.get("capability_version").and_then(Value::as_str) != Some("1.1")
+            || provenance.get("descriptor_sha256").and_then(Value::as_str)
+                != Some(self.descriptor_sha256.as_str())
+            || data
+                .pointer("/plan/body/profile/version")
+                .and_then(Value::as_u64)
+                != Some(u64::from(film.version))
+            || data
+                .pointer("/plan/body/profile/id")
+                .and_then(Value::as_str)
+                != Some("semwright-motion-authoring")
+            || data.pointer("/plan/body/intent") != Some(&expected)
+            || data
+                .pointer("/plan/body/intent_digest")
+                .and_then(Value::as_str)
+                != Some(intent.as_str())
+            || data.get("repair").and_then(Value::as_bool) != Some(false)
+            || data
+                .get("plan_ref")
+                .and_then(Value::as_str)
+                .is_none_or(|value| !is_sha256(value))
+            || data.get("plan_ref") != data.pointer("/plan/digest")
+        {
+            return Err(backend(
+                "Motion Canvas did not return the exact admitted Film v2 plan; no apply was dispatched",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod motion_blend_admission_tests {
+    use super::*;
+
+    fn observations() -> (Value, Value) {
+        let description = json!({"provenance_checked":true,"execution":{"dry_run":false},
+            "data":{"schema_version":1,"revision":9,"availability_is_authorization":false,
+                "capability":{"name":MOTION_BLEND_PLAN_COMMAND,"version":"1.1"},
+                "provenance":{"provider":"driver:motion-canvas","source":"driver","source_version":"1.0.0",
+                    "descriptor_sha256":"a".repeat(64),"tags":["composition",MOTION_BLEND_TAG]},
+                "routes":[{"provider_id":"driver:motion-canvas","available":true}],
+                "policy_preview":{"state":"allow","preview_only":true,"execution_rechecks":true}}});
+        let inspection = json!({"provenance_checked":true,"data":{"authoring_version":2},
+            "execution":{"dry_run":false,"provenance":{"provider":"driver:motion-canvas","source":"driver",
+                "catalog_revision":9,"provider_generation":7,"provider_version":"1.0.0"}}});
+        (description, inspection)
+    }
+
+    #[test]
+    fn native_blend_rejects_a_substituted_plan_before_apply() {
+        use motionwright_domain::{
+            BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle, Project,
+        };
+        use semwright_motion_authoring::{Archetype, NarrativeRole};
+        let mut project = Project::new("Saved Film v2 plan fixture").unwrap();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Blend".into(),
+                objective: "Original source".into(),
+                duration_seconds: 2,
+            })
+            .unwrap();
+        let scene_id = project.scenes[0].id;
+        let shape = CanvasNode {
+            id: Uuid::now_v7(),
+            name: "Blend rectangle".into(),
+            kind: "rectangle".into(),
+            parent_id: None,
+            x: 240.0,
+            y: 240.0,
+            width: 160.0,
+            height: 120.0,
+            rotation_deg: 0.0,
+            opacity: 1.0,
+            text: None,
+            coordinate_space: CoordinateSpace::ProjectPixels,
+            z_index: 1,
+            style: NodeStyle {
+                fill: Some("#C06040".into()),
+                blend_mode: BlendMode::Screen,
+                ..NodeStyle::default()
+            },
+            relations: vec![],
+            property_locks: std::collections::BTreeSet::new(),
+            keyframes: vec![],
+        };
+        project
+            .apply_change(&Change::AddCanvasNode {
+                scene_id,
+                node: shape,
+            })
+            .unwrap();
+        let options = FilmBuildOptions {
+            frame_rate: Rate::new(30, 1).unwrap(),
+            font_family: crate::film::MOTION_CANVAS_FONT_FAMILY.into(),
+            mono_font_family: crate::film::MOTION_CANVAS_MONO_FONT_FAMILY.into(),
+            scene_intents: vec![crate::film::SceneFilmIntent {
+                scene_id,
+                role: NarrativeRole::Mechanism,
+                archetype: Archetype::Statement,
+            }],
+        };
+        let film = plan_motion_canvas_segments(&project, project.deliverables[0].id, &options)
+            .unwrap()
+            .remove(0)
+            .film;
+        let digest = semwright_semantic_composition::canonical_digest(&film).unwrap();
+        let (description, inspection) = observations();
+        let admission = MotionBlendAdmission::from_discovery(
+            &description,
+            &inspection,
+            "original-owner".into(),
+        )
+        .unwrap();
+        let mut plan = json!({"result":{"execution":inspection["execution"].clone(),"data":{
+            "repair":false,"plan_ref":"b".repeat(64),
+            "plan":{"digest":"b".repeat(64),"body":{"profile":{"id":"semwright-motion-authoring","version":2},
+                "intent":&film,"intent_digest":digest.as_str()}}
+        }}});
+        plan["result"]["execution"]["provenance"]["capability_version"] = json!("1.1");
+        plan["result"]["execution"]["provenance"]["descriptor_sha256"] = json!("a".repeat(64));
+        admission.require_plan(&plan, &film).unwrap();
+        for (path, replacement) in [
+            ("/result/data/plan/body/intent/version", json!(1)),
+            ("/result/data/plan/body/profile/version", json!(1)),
+            (
+                "/result/data/plan/body/intent_digest",
+                json!("c".repeat(64)),
+            ),
+            ("/result/data/plan/digest", json!("d".repeat(64))),
+            ("/result/data/repair", json!(true)),
+            (
+                "/result/execution/provenance/capability_version",
+                json!("1"),
+            ),
+            (
+                "/result/execution/provenance/descriptor_sha256",
+                json!("e".repeat(64)),
+            ),
+        ] {
+            let mut changed = plan.clone();
+            *changed.pointer_mut(path).unwrap() = replacement;
+            assert!(admission.require_plan(&changed, &film).is_err(), "{path}");
+        }
+    }
+
+    #[test]
+    fn native_blend_requires_explicit_current_descriptor_tag_and_driver_version() {
+        let (description, inspection) = observations();
+        let admission = MotionBlendAdmission::from_discovery(
+            &description,
+            &inspection,
+            "original-owner".into(),
+        )
+        .unwrap();
+        assert_eq!(admission.provider_generation, 7);
+        for (path, replacement) in [
+            ("/data/capability/version", json!("1")),
+            ("/data/provenance/tags", json!(["composition"])),
+            ("/data/provenance/provider", json!("driver:other")),
+            ("/data/provenance/descriptor_sha256", json!("bad")),
+            ("/data/routes/0/available", json!(false)),
+            ("/data/policy_preview/state", json!("deny")),
+            ("/execution/dry_run", json!(true)),
+        ] {
+            let mut changed = description.clone();
+            *changed.pointer_mut(path).unwrap() = replacement;
+            assert!(
+                MotionBlendAdmission::from_discovery(
+                    &changed,
+                    &inspection,
+                    "original-owner".into()
+                )
+                .is_err(),
+                "{path}"
+            );
+        }
+        for (path, replacement) in [
+            ("/data/authoring_version", json!(1)),
+            ("/execution/provenance/catalog_revision", json!(10)),
+            ("/execution/provenance/provider_generation", Value::Null),
+            ("/execution/provenance/provider_version", json!("0.9.0")),
+        ] {
+            let mut changed = inspection.clone();
+            *changed.pointer_mut(path).unwrap() = replacement;
+            assert!(
+                MotionBlendAdmission::from_discovery(
+                    &description,
+                    &changed,
+                    "original-owner".into()
+                )
+                .is_err(),
+                "{path}"
+            );
+        }
+        let mut receipt = json!({"result":{"execution":inspection["execution"].clone()}});
+        admission.require_provider(&receipt).unwrap();
+        receipt["result"]["execution"]["provenance"]["provider_generation"] = json!(8);
+        assert!(admission.require_provider(&receipt).is_err());
+    }
+}
+
+impl ProductionCoordinator {
+    /// Fixed read-only discovery on the existing authenticated owner connection,
+    /// before creating a productive accounting root or importing managed fonts.
+    /// No caller chooses a catalog command or gains a new effect capability.
+    async fn negotiate_motion_blend(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+    ) -> NativeResult<MotionBlendAdmission> {
+        let current = || -> NativeResult<()> {
+            let project = self.service.project(project_id).map_err(storage_error)?;
+            if RevisionStamp::from(&project) != *expected
+                || self.client.connection().resource != expected.resource
+            {
+                return Err(Error::new(
+                    ErrorCode::StaleReference,
+                    "Film v2 source or owner changed during discovery",
+                ));
+            }
+            Ok(())
+        };
+        current()?;
+        let connection_identity = self.client.connection().identity()?;
+        let described = self
+            .client
+            .execute_with_authority(
+                "capabilities.describe",
+                json!({"name": MOTION_BLEND_PLAN_COMMAND}),
+                false,
+                Some(ExpectedAuthority {
+                    provider: "semwright-core",
+                    source: SourceKind::Builtin,
+                    provider_generation_required: false,
+                }),
+                None,
+            )
+            .await?;
+        current()?;
+        let inspected = self
+            .client
+            .execute("driver.motion-canvas.composition.inspect", json!({}), false)
+            .await?;
+        current()?;
+        if self.client.connection().identity()? != connection_identity {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "Film v2 owner connection changed during discovery",
+            ));
+        }
+        MotionBlendAdmission::from_discovery(
+            &described.value,
+            &inspected.value,
+            connection_identity,
+        )
+    }
+}
+
 fn response_data(value: &Value) -> NativeResult<&Value> {
     value
         .pointer("/result/data")
@@ -3222,6 +3643,19 @@ impl ProductionCoordinator {
     ) -> NativeResult<motion_canvas_window::MotionCanvasSegmentCapture> {
         let capture_end = capture.end;
         let render_scale = capture.scale;
+        let blend = capture.blend_admission.as_ref();
+        if segment.film.version == semwright_motion_authoring::AUTHORING_BLEND_VERSION {
+            let admission = blend
+                .ok_or_else(|| invalid("Film v2 requires the current owner blend discovery"))?;
+            if self.client.connection().identity()? != admission.connection_identity {
+                return Err(Error::new(
+                    ErrorCode::StaleReference,
+                    "Film v2 owner connection changed before capture",
+                ));
+            }
+        } else if blend.is_some() {
+            return Err(invalid("Film v1 must retain its original provider path"));
+        }
         if capture_end == 0 || capture_end > segment.frame_count {
             return Err(invalid(
                 "Native capture prefix is outside its canonical Film",
@@ -3256,6 +3690,9 @@ impl ProductionCoordinator {
             )
             .await?;
         self.revalidate_retained_brand_font_staging()?;
+        if let Some(admission) = blend {
+            admission.require_plan(&planned, &segment.film)?;
+        }
         let plan_ref = required_string(
             response_data(&planned)?,
             "/plan_ref",
@@ -3276,6 +3713,23 @@ impl ProductionCoordinator {
             .await?;
         self.revalidate_retained_brand_font_staging()?;
         let applied_data = response_data(&applied)?;
+        if let Some(admission) = blend {
+            admission
+                .require_provider(&applied)
+                .map_err(|error| error.uncertain())?;
+            let digest =
+                semwright_semantic_composition::canonical_digest(&segment.film).map_err(|_| {
+                    backend("Applied Film v2 digest could not be calculated").uncertain()
+                })?;
+            if applied_data.get("plan_ref").and_then(Value::as_str) != Some(plan_ref.as_str())
+                || applied_data.get("intent_digest").and_then(Value::as_str)
+                    != Some(digest.as_str())
+            {
+                return Err(
+                    backend("Applied Film v2 identity differs from the original plan").uncertain(),
+                );
+            }
+        }
         if applied_data.get("applied").and_then(Value::as_bool) != Some(true)
             || applied_data.get("execution_status").and_then(Value::as_str) != Some("completed")
         {
@@ -3316,6 +3770,11 @@ impl ProductionCoordinator {
             .await?;
         self.revalidate_retained_brand_font_staging()
             .map_err(unconfirmed_started_motion_render)?;
+        if let Some(admission) = blend {
+            admission
+                .require_provider(&started)
+                .map_err(unconfirmed_started_motion_render)?;
+        }
         let start_origin = match started.get("replayed").and_then(Value::as_bool) {
             Some(false) => MotionCanvasStartOrigin::FreshAuthenticatedCall,
             Some(true) => MotionCanvasStartOrigin::StoredReceiptReplay,
@@ -3428,6 +3887,11 @@ impl ProductionCoordinator {
             .map_err(unconfirmed_started_motion_render)?;
         self.revalidate_retained_brand_font_staging()
             .map_err(unconfirmed_started_motion_render)?;
+        if let Some(admission) = blend {
+            admission
+                .require_provider(&rendered)
+                .map_err(unconfirmed_started_motion_render)?;
+        }
         let rendered_data = response_data(&rendered).map_err(unconfirmed_started_motion_render)?;
         require_acknowledged_motion_job(rendered_data, &job_ref, "result")?;
         if rendered_data.get("state").and_then(Value::as_str) != Some("succeeded") {
@@ -3460,6 +3924,26 @@ impl ProductionCoordinator {
             .await?;
         self.revalidate_retained_brand_font_staging()?;
         let verification = response_data(&verified)?.clone();
+        if let Some(admission) = blend {
+            admission
+                .require_provider(&verified)
+                .map_err(unconfirmed_started_motion_render)?;
+            let digest = semwright_semantic_composition::canonical_digest(&segment.film)
+                .map_err(|_| backend("Film v2 measurement digest cannot be calculated"))?;
+            if verification
+                .pointer("/measurement/intent_digest")
+                .and_then(Value::as_str)
+                != Some(digest.as_str())
+                || verification
+                    .pointer("/measurement/validation/plan_digest")
+                    .and_then(Value::as_str)
+                    != Some(plan_ref.as_str())
+            {
+                return Err(unconfirmed_started_motion_render(backend(
+                    "Film v2 verification is not bound to its original plan and intent",
+                )));
+            }
+        }
 
         let verification_micros = motion_canvas_window::elapsed_micros(phase_started);
         Ok(motion_canvas_window::MotionCanvasSegmentCapture {
@@ -3561,6 +4045,19 @@ impl ProductionCoordinator {
             ));
         }
 
+        let blend_admission = if segments.iter().any(|segment| {
+            segment.film.version == semwright_motion_authoring::AUTHORING_BLEND_VERSION
+        }) {
+            if self.active_hybrid_budget.is_some() {
+                return Err(Error::new(
+                    ErrorCode::Unsupported,
+                    "Experimental hybrid root has no Film v2 blend admission",
+                ));
+            }
+            Some(self.negotiate_motion_blend(project_id, expected).await?)
+        } else {
+            None
+        };
         let scene_ids = segments
             .iter()
             .flat_map(|segment| segment.scene_ids.iter().copied())
@@ -3580,6 +4077,13 @@ impl ProductionCoordinator {
                     motion_canvas_window::MotionCanvasCaptureSpec {
                         end: segment.frame_count,
                         scale: MotionCanvasWindowScale::Full,
+                        blend_admission: if segment.film.version
+                            == semwright_motion_authoring::AUTHORING_BLEND_VERSION
+                        {
+                            blend_admission.clone()
+                        } else {
+                            None
+                        },
                     },
                 )
                 .await?;

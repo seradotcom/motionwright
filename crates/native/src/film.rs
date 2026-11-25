@@ -17,11 +17,12 @@ use motionwright_domain::{
 };
 use semwright_media_time::{CueGraph, Rate, Rational};
 use semwright_motion_authoring::{
-    AUTHORING_VERSION, Archetype, AspectFamily, AssetRef, Beat as AuthoringBeat, Channel,
-    EditorialSystem, Film, FontFallback, FontSpec, Insets, Invocation, Layer, MediaFit,
-    MotionEasing, NarrativeRole, Operand, OutputProfile, Point, Primitive, Sequence, Shot, Size,
-    SpatialIntent, StartAnchor, Subject, SubjectContent, TemporalConstraint, TemporalGraph,
-    TemporalSpan, TextDirection, TextRun, VisualConstraint, realize,
+    AUTHORING_BLEND_VERSION, AUTHORING_VERSION, Archetype, AspectFamily, AssetRef,
+    Beat as AuthoringBeat, Channel, EditorialSystem, Film, FontFallback, FontSpec, Insets,
+    Invocation, Layer, MediaFit, MotionEasing, NarrativeRole, Operand, OutputProfile, Point,
+    Primitive, Sequence, Shot, Size, SpatialIntent, StartAnchor, Subject, SubjectBlendMode,
+    SubjectContent, TemporalConstraint, TemporalGraph, TemporalSpan, TextDirection, TextRun,
+    VisualConstraint, realize,
 };
 use semwright_native_sdk::{Error, ErrorCode, Result as NativeResult};
 use semwright_semantic_composition::Digest;
@@ -1232,9 +1233,17 @@ fn validate_node_projection(node: &CanvasNode, font_family: &str) -> NativeResul
             node.id
         )));
     }
-    if node.style.blend_mode != BlendMode::Normal {
+    // Non-normal native compositing is a leaf operation. Existing static
+    // normal Group/Clip ancestry is preserved; blending an entire saved group
+    // would require a distinct cache/isolation and ordering contract.
+    if node.style.blend_mode != BlendMode::Normal
+        && !matches!(
+            node.kind.as_str(),
+            "shape" | "rectangle" | "circle" | "text"
+        )
+    {
         return Err(unsupported(format!(
-            "Canvas node {} uses a blend mode that canonical Film cannot preserve yet",
+            "Canvas node {} uses non-normal blend on an unsupported subject kind",
             node.id
         )));
     }
@@ -1500,7 +1509,12 @@ fn subject(
                     && key.value == 0.0
             }),
             clip_intentional: node.kind == "clip_group",
-            blend_mode: semwright_motion_authoring::SubjectBlendMode::Normal,
+            blend_mode: match node.style.blend_mode {
+                BlendMode::Normal => SubjectBlendMode::Normal,
+                BlendMode::Multiply => SubjectBlendMode::Multiply,
+                BlendMode::Screen => SubjectBlendMode::Screen,
+                BlendMode::Add => SubjectBlendMode::Add,
+            },
         },
         constraints,
     ))
@@ -1666,7 +1680,27 @@ fn projected_shot(
     };
     motionwright_domain::validate_static_native_group_order(scene)
         .map_err(|error| unsupported(error.to_string()))?;
+    if has_camera_reframe(context.project, scene)
+        && scene
+            .nodes
+            .iter()
+            .any(|node| node.style.blend_mode != BlendMode::Normal)
+    {
+        return Err(unsupported(
+            "Native non-normal blend with animated camera reframe needs an exact cache-boundary projection",
+        ));
+    }
     for node in &scene.nodes {
+        if node.style.blend_mode != BlendMode::Normal
+            && scene
+                .nodes
+                .iter()
+                .any(|child| child.parent_id == Some(node.id))
+        {
+            return Err(unsupported(
+                "Native non-normal blend cannot reinterpret a painted subject subtree",
+            ));
+        }
         let (mut mapped, mut node_constraints) =
             subject(node, &layer_names, &subject_context, identity.beat_scope)?;
         if let Some(parent) = motionwright_domain::static_native_group_parent(node, scene) {
@@ -1695,6 +1729,11 @@ fn projected_shot(
                 if runs.len() == 1 && runs[0].text.contains('\n')
         );
         if node.kind == "text" && (context.component_texts.contains(&node.id) || has_hard_lines) {
+            if mapped.blend_mode != SubjectBlendMode::Normal {
+                return Err(unsupported(
+                    "Non-normal blend on generated fixed text requires verified combined glyph-subtree compositing",
+                ));
+            }
             let (mut lines, mut constraints) = if context.component_texts.contains(&node.id) {
                 fixed_component_text(node, mapped, projection.object_scale)?
             } else {
@@ -1736,9 +1775,9 @@ fn projected_shot(
                 .iter()
                 .find(|capture| capture.id == link.capture_id)
                 .ok_or_else(|| invalid("Stage screenshot source was removed"))?;
-            if node.rotation_deg != 0.0 {
+            if node.rotation_deg != 0.0 || node.style.blend_mode != BlendMode::Normal {
                 return Err(unsupported(
-                    "A rotated source-capture card requires a dedicated coupled tile transform",
+                    "A rotated or non-normal blended source-capture card requires a dedicated coupled tile projection",
                 ));
             }
             let mut tile = node.clone();
@@ -2769,8 +2808,21 @@ fn build_segment(
             "Canonical Film supports at most 128 selected media and font assets",
         ));
     }
+    // Select the new protocol only when a retained projected subject really
+    // needs it. Normal-only projects keep their existing v1 wire and digest.
+    let version = if sequences
+        .iter()
+        .flat_map(|sequence| &sequence.beats)
+        .flat_map(|beat| &beat.shots)
+        .flat_map(|shot| &shot.subjects)
+        .any(|subject| !subject.blend_mode.is_normal())
+    {
+        AUTHORING_BLEND_VERSION
+    } else {
+        AUTHORING_VERSION
+    };
     let film = Film {
-        version: AUTHORING_VERSION,
+        version,
         id: format!("mw-{}-{segment_index}", project.id.simple()),
         output,
         editorial: EditorialSystem {
@@ -3088,6 +3140,201 @@ mod tests {
             })
             .unwrap();
         project
+    }
+
+    #[test]
+    fn native_subject_blend_selects_v2_only_for_saved_non_normal_leaves() {
+        let (baseline, parent_id, child_id) = clipped_opacity_source();
+        let options = fixture_options(&baseline);
+        let profile_id = baseline.deliverables[0].id;
+        let original = build_motion_canvas_segments(&baseline, profile_id, &options).unwrap();
+        assert!(
+            original
+                .iter()
+                .all(|segment| segment.film.version == AUTHORING_VERSION)
+        );
+        assert!(original.iter().all(|segment| {
+            !serde_json::to_string(&segment.film)
+                .unwrap()
+                .contains("blend_mode")
+        }));
+        for (mode, native) in [
+            (BlendMode::Multiply, SubjectBlendMode::Multiply),
+            (BlendMode::Screen, SubjectBlendMode::Screen),
+            (BlendMode::Add, SubjectBlendMode::Add),
+        ] {
+            let mut project = baseline.clone();
+            let child = project.scenes[0]
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == child_id)
+                .unwrap();
+            child.style.blend_mode = mode;
+            let before = project.clone();
+            let segments = build_motion_canvas_segments(&project, profile_id, &options).unwrap();
+            assert_eq!(segments.len(), original.len());
+            assert_eq!(segments[0].frame_count, original[0].frame_count);
+            let film = &segments[0].film;
+            assert_eq!(film.version, AUTHORING_BLEND_VERSION);
+            let shot = film
+                .shots()
+                .find(|shot| {
+                    shot.subjects
+                        .iter()
+                        .any(|subject| subject.id == subject_id(child_id, None))
+                })
+                .unwrap();
+            let selected = shot
+                .subjects
+                .iter()
+                .find(|subject| subject.id == subject_id(child_id, None))
+                .unwrap();
+            let parent = shot
+                .subjects
+                .iter()
+                .find(|subject| subject.id == subject_id(parent_id, None))
+                .unwrap();
+            assert_eq!(selected.blend_mode, native);
+            assert_eq!(selected.parent.as_deref(), Some(parent.id.as_str()));
+            assert_eq!(parent.blend_mode, SubjectBlendMode::Normal);
+            assert!(parent.clip_intentional);
+            let baseline_subject = original[0]
+                .film
+                .shots()
+                .flat_map(|shot| &shot.subjects)
+                .find(|subject| subject.id == selected.id)
+                .unwrap();
+            assert_eq!(selected.layout, baseline_subject.layout);
+            assert_eq!(selected.layer, baseline_subject.layer);
+            let encoded = serde_json::to_vec(film).unwrap();
+            assert_eq!(serde_json::from_slice::<Film>(&encoded).unwrap(), *film);
+            let mut forbidden_v1 = film.clone();
+            forbidden_v1.version = AUTHORING_VERSION;
+            assert!(forbidden_v1.validate().is_err());
+            assert_eq!(project, before);
+        }
+    }
+
+    #[test]
+    fn native_blend_refuses_unmapped_group_fixed_text_and_rotation() {
+        let (baseline, parent_id, child_id) = clipped_opacity_source();
+        let profile_id = baseline.deliverables[0].id;
+        for mode in ["group", "hard_lines", "rotation"] {
+            let mut source = baseline.clone();
+            match mode {
+                "group" => {
+                    source.scenes[0]
+                        .nodes
+                        .iter_mut()
+                        .find(|node| node.id == parent_id)
+                        .unwrap()
+                        .style
+                        .blend_mode = BlendMode::Screen
+                }
+                "hard_lines" => {
+                    let text = source.scenes[0]
+                        .nodes
+                        .iter_mut()
+                        .find(|node| node.kind == "text")
+                        .unwrap();
+                    text.text = Some("One\nTwo".into());
+                    text.style.blend_mode = BlendMode::Multiply;
+                }
+                "rotation" => {
+                    let child = source.scenes[0]
+                        .nodes
+                        .iter_mut()
+                        .find(|node| node.id == child_id)
+                        .unwrap();
+                    child.rotation_deg = 15.0;
+                    child.style.blend_mode = BlendMode::Add;
+                }
+                _ => unreachable!(),
+            }
+            let before = source.clone();
+            assert!(
+                build_motion_canvas_segments(&source, profile_id, &fixture_options(&source))
+                    .is_err(),
+                "{mode}"
+            );
+            assert_eq!(source, before);
+        }
+    }
+
+    #[test]
+    fn native_blend_reads_the_exact_saved_project_after_sqlite_reopen() {
+        use motionwright_domain::RevisionStamp;
+        use motionwright_service::StudioService;
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("blend.sqlite3");
+        let service = StudioService::open(&db).unwrap();
+        let initial = service
+            .create_project("Original native blend source")
+            .unwrap();
+        let mut saved = service
+            .apply(
+                initial.id,
+                &RevisionStamp::from(&initial),
+                "blend-scene",
+                &Change::AddScene {
+                    name: "Original overlap".into(),
+                    objective: "Blend saved subjects".into(),
+                    duration_seconds: 2,
+                },
+            )
+            .unwrap()
+            .project;
+        let scene_id = saved.scenes[0].id;
+        let mut base = node("shape", None);
+        base.style.fill = Some("#6080A0".into());
+        base.style.stroke = None;
+        base.style.stroke_width = 0.0;
+        let mut overlay = node("rectangle", None);
+        overlay.x += 80.0;
+        overlay.z_index = base.z_index + 1;
+        overlay.style.fill = Some("#C06040".into());
+        overlay.style.stroke = None;
+        overlay.style.stroke_width = 0.0;
+        overlay.style.blend_mode = BlendMode::Multiply;
+        let overlay_id = overlay.id;
+        for (id, source) in [("blend-base", base), ("blend-overlay", overlay)] {
+            saved = service
+                .apply(
+                    saved.id,
+                    &RevisionStamp::from(&saved),
+                    id,
+                    &Change::AddCanvasNode {
+                        scene_id,
+                        node: source,
+                    },
+                )
+                .unwrap()
+                .project;
+        }
+        let options = fixture_options(&saved);
+        let film = build_motion_canvas_segments(&saved, saved.deliverables[0].id, &options)
+            .unwrap()
+            .remove(0)
+            .film;
+        assert_eq!(film.version, AUTHORING_BLEND_VERSION);
+        assert_eq!(
+            film.shots()
+                .flat_map(|shot| &shot.subjects)
+                .find(|subject| subject.id == subject_id(overlay_id, None))
+                .unwrap()
+                .blend_mode,
+            SubjectBlendMode::Multiply
+        );
+        drop(service);
+        let reopened = StudioService::open(&db).unwrap();
+        let original = reopened.project(saved.id).unwrap();
+        assert_eq!(original, saved);
+        let after = build_motion_canvas_segments(&original, original.deliverables[0].id, &options)
+            .unwrap()
+            .remove(0)
+            .film;
+        assert_eq!(after, film);
+        assert_eq!(reopened.project(saved.id).unwrap(), saved);
     }
 
     #[test]

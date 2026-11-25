@@ -153,9 +153,9 @@ export default function CanvasStructureEditor({
           </label>
         </div>
         {draft.fields.blend_mode.raw !== "normal" && <p className="semantic-footnote" role="status" aria-label="Canvas blend compatibility">
-          Multiply, Screen and Add use the saved composition background in the source study. The current Native Film
-          profile requires Normal and will reject another mode before rendering. Keep this mode for source editing
-          or explicitly choose Normal for that Native profile.
+          Multiply, Screen and Add use the saved composition background in the source study. Native Motion Canvas
+          requires a verified Film v2 provider for supported leaf objects. Unsupported group, camera, fixed-text
+          or renderer combinations are refused before rendering; the saved blend is never silently replaced with Normal.
         </p>}
         {node.kind === "text" && <div className="canvas-style-grid typography-grid">
           {(["font_size","font_weight","line_height"] as const).map(field => {

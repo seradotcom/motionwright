@@ -984,6 +984,12 @@ impl HybridBudgetPlan {
 
         let segments = plan_motion_canvas_segments(&project, deliverable_id, options)?;
         supported(
+            segments.iter().all(|segment| {
+                segment.film.version == semwright_motion_authoring::AUTHORING_VERSION
+            }),
+            "Experimental hybrid root has no Film v2 blend admission",
+        )?;
+        supported(
             segments.len() == 2,
             "Hybrid MC source partition is not exactly two runs",
         )?;

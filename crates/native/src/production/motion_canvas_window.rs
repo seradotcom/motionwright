@@ -73,10 +73,11 @@ impl MotionCanvasWindowScale {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct MotionCanvasCaptureSpec {
     pub(super) end: u64,
     pub(super) scale: MotionCanvasWindowScale,
+    pub(super) blend_admission: Option<MotionBlendAdmission>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -692,6 +693,18 @@ impl ProductionCoordinator {
         // The existing durable receipts are inspected before any native call.
         // Cold has no implicit replay/fallback; warm is an explicit token read.
         require_uncaptured_identity(&self.service, project_id, &prefix)?;
+        let blend_admission =
+            if plan.segment.film.version == semwright_motion_authoring::AUTHORING_BLEND_VERSION {
+                if self.active_hybrid_budget.is_some() {
+                    return Err(Error::new(
+                        ErrorCode::Unsupported,
+                        "Experimental hybrid root has no Film v2 blend admission",
+                    ));
+                }
+                Some(self.negotiate_motion_blend(project_id, expected).await?)
+            } else {
+                None
+            };
         let scoped = self.with_motion_scene_boundary_scope(
             &project,
             request.deliverable_id,
@@ -708,6 +721,7 @@ impl ProductionCoordinator {
                 MotionCanvasCaptureSpec {
                     end: plan.segment_window.end,
                     scale: request.render_scale,
+                    blend_admission,
                 },
             )
             .await?;

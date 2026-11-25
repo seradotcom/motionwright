@@ -78,7 +78,7 @@ test("Studio commits the chosen blend and reuses it when returning to Canvas",as
   const mode=page.getByLabel("Canvas blend mode",{exact:true});
   await expect(mode).toHaveValue("normal");
   await mode.selectOption("screen");
-  await expect(page.getByLabel("Canvas blend compatibility")).toContainText("requires Normal");
+  await expect(page.getByLabel("Canvas blend compatibility")).toContainText("requires a verified Film v2 provider");
   await page.getByRole("button",{name:"Commit style",exact:true}).click();
   await expect(page.getByRole("button",{name:"Commit style",exact:true})).toBeDisabled();
   const read=async()=>page.evaluate(async()=>{
