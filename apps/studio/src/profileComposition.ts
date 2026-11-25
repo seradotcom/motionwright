@@ -5,6 +5,7 @@ import { sampledSceneCamera } from "./cameraReframe";
 import { previewTransform } from "./canvasMotion";
 import { resolveCanvasRelations } from "./canvasFollow";
 import { alignmentScale } from "./canvasAlignment";
+import { nativeGroupOrderIssue } from "./nativeGroupHierarchy";
 
 /** Source-only counterpart of native expressive::responsive_scene. It never
  * changes the Project or authorizes a render. Film still admits every property. */
@@ -39,6 +40,9 @@ export interface ProfileLayoutSample { nodes: CanvasNode[]; boundaryIssues: stri
 /** Samples the authored geometry before applying Film's position/size projection.
  * This is an editorial layout, not font shaping, decoded media or native pixels. */
 export function sampleProfileLayout(project: Project, scene: Scene, profile: DeliverableProfile, time: number): ProfileLayoutSample {
+  // Validate the retained tree before sampling erases tracks and relations.
+  const hierarchyIssue = nativeGroupOrderIssue(scene);
+  if (hierarchyIssue) throw new Error("Output layout hierarchy is unresolved: " + hierarchyIssue);
   const sampled = sampledSceneCamera(scene, project.production_design?.camera_reframes, time);
   if (!sampled.camera) throw new Error(sampled.issue);
   if (sampled.camera.zoom !== 1 || sampled.camera.rotation_deg !== 0)

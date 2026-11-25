@@ -87,7 +87,8 @@ describe("parented Canvas editorial visibility", () => {
     const group = rootText();
     group.id = "018f0000-0000-7000-8000-0000000003a1";
     group.kind = "group"; group.parent_id = null;
-    group.text = null; group.z_index = 1;
+    group.text = null; group.z_index = 3;
+    group.keyframes = []; group.relations = []; group.rotation_deg = 0; group.opacity = 1;
     const child = rootText();
     child.id = "018f0000-0000-7000-8000-0000000003a2";
     child.parent_id = group.id;

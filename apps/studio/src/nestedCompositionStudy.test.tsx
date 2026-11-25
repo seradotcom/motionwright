@@ -27,3 +27,26 @@ describe("nested composition study", () => {
     expect(hidden).toContain('<rect x="900" y="800" width="0" height="0"');
   });
 });
+
+describe("unsupported retained hierarchy stays visible as an error", () => {
+  it("never drops group motion, blend or opacity to draw flattened descendants", () => {
+    const base=structuredClone(fixtureProject.scenes[0].nodes[0]);
+    Object.assign(base,{id:"parent",kind:"group",parent_id:null,keyframes:[],relations:[],rotation_deg:0,opacity:1,z_index:1});
+    base.style.blend_mode="normal";
+    const leaf={...structuredClone(base),id:"leaf",kind:"rectangle",parent_id:base.id,z_index:2};
+    for(const changed of [{...base,rotation_deg:10},{...base,opacity:.5},
+      {...base,style:{...base.style,blend_mode:"screen" as const}},
+      {...base,keyframes:[{at:{num:"1",den:"1"},property:"x" as const,value:25,interpolation:"linear" as const}]}]) {
+      const source=structuredClone([changed,leaf]);
+      const html=renderToStaticMarkup(<CompositionStudy nodes={source} time={0} background="#000000" label="Unsupported group"/>);
+      expect(html).toContain('role="alert"');expect(html).toContain("No flattened fallback");
+      expect(html).not.toContain("<svg");expect(source).toEqual([changed,leaf]);
+    }
+  });
+  it("rejects an unrecognized saved blend without injecting arbitrary CSS", () => {
+    const node=structuredClone(fixtureProject.scenes[0].nodes[0]);
+    node.style.blend_mode="url(untrusted)" as never;
+    const html=renderToStaticMarkup(<CompositionStudy nodes={[node]} time={0} background="#000000" label="Unknown blend"/>);
+    expect(html).toContain('role="alert"');expect(html).not.toContain("<svg");expect(html).not.toContain("url(untrusted)");
+  });
+});

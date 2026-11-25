@@ -112,3 +112,14 @@ describe("responsive procedural composition in the existing profile path", () =>
     await expect(realizeProceduralFieldForOutput(ID, { ...config(), count: 65 }, 1080, 1920)).rejects.toThrow("budget");
   });
 });
+
+it("validates retained group motion before profile sampling can erase its tracks", () => {
+  const p=base(),scene=p.scenes[0];
+  const node=structuredClone(fixtureProject.scenes[0].nodes[0]);
+  Object.assign(node,{kind:"group",parent_id:null,keyframes:[{at:{num:"1",den:"1"},property:"x",value:25,interpolation:"linear"}],
+    relations:[],rotation_deg:0,opacity:1});
+  scene.nodes=[node];
+  const original=structuredClone(scene);
+  expect(()=>sampleProfileLayout(p,scene,profile(p),0)).toThrow("hierarchy is unresolved");
+  expect(scene).toEqual(original);
+});

@@ -4,6 +4,7 @@ import { cameraSvgTransform } from "./canvasCamera";
 import { isStaticNativeGroup, nativeGroupOrderIssue, staticNativeGroupAncestors } from "./nativeGroupHierarchy";
 import { intersectRectangularClips } from "./canvasClip";
 import { previewTransform } from "./canvasMotion";
+import { canvasBlendStyle } from "./canvasBlend";
 import { resolveCanvasRelations, type FollowClock } from "./canvasFollow";
 function safePaint(value: string | null, fallback: string): string { return value && /^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(value) ? value : fallback; }
 
@@ -17,13 +18,18 @@ export default function CompositionStudy({ nodes, width=1920, height=1080, time,
   const clipIds = new Map(clipGroups.map((group, index) => [group.id, prefix + "-" + index]));
   const hierarchyIssue = nativeGroupOrderIssue({nodes});
   const alignment = resolveCanvasRelations(nodes, undefined, false, relationClock);
+  if (hierarchyIssue) return <p className="production-error" role="alert" aria-label={label + " hierarchy unavailable"}>
+    The saved hierarchy cannot be displayed: {hierarchyIssue} No flattened fallback was drawn.</p>;
+  const unknownBlend = nodes.find(node => canvasBlendStyle(node.style.blend_mode) === null);
+  if (unknownBlend) return <p className="production-error" role="alert" aria-label={label + " blend unavailable"}>
+    The saved blend mode for {unknownBlend.name} cannot be displayed. No normal-blend fallback was drawn.</p>;
   if (alignment.issue) return <p className="production-error" role="alert" aria-label={label + " relation unavailable"}>The saved relation cannot be displayed: {alignment.issue}</p>;
   const cameraTransform = camera ? cameraSvgTransform(camera, width, height) : null;
   if (camera && cameraTransform === null) return <p className="production-error" role="alert" aria-label={label + " camera unavailable"}>The saved camera cannot be displayed. No terminal-pose fallback was drawn.</p>;
-  return <svg className="production-study" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={label}
+  return <svg className="production-study" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={label} style={{isolation:"isolate"}}
     data-camera-center-x={camera?.center_x} data-camera-center-y={camera?.center_y}
     data-camera-zoom={camera?.zoom} data-camera-rotation={camera?.rotation_deg}>
-    {nodes.some(node => node.parent_id !== null) && <desc>Static Group descendants retain saved world coordinates and every ancestor's rectangular Clip plane. Native Film defines authoritative transforms and relations. {hierarchyIssue ?? ""}</desc>}
+    {nodes.some(node => node.parent_id !== null) && <desc>Static Group descendants retain saved world coordinates and every ancestor's rectangular Clip plane. Native Film defines authoritative transforms and relations.</desc>}
     {alignment.participants.size > 0 && <desc>{alignment.issue ? "Authored relation unresolved: " + alignment.issue : "Authored static alignment or Follow resolved for this editorial study, not native glyph or pixel evidence."}</desc>}
     <defs>{clipGroups.map(group => {
       const ancestors = staticNativeGroupAncestors(group, {nodes});
@@ -48,7 +54,11 @@ export default function CompositionStudy({ nodes, width=1920, height=1080, time,
       const clipId = clipParent ? clipIds.get(clipParent.id) : undefined;
       // Apply the world-space rectangular clipping plane outside the local
       // rotation, so a rotated child is clipped by its actual parent plane.
-      return <g key={node.id} clipPath={clipId ? "url(#" + clipId + ")" : undefined}><g data-canvas-node-id={node.id} data-parent-id={node.parent_id ?? undefined} opacity={t.opacity} transform={rotation}>
+      // Blend the complete clipped object against earlier layers and the saved
+      // composition surface. Local fill/stroke opacity is resolved before blend.
+      const blend = canvasBlendStyle(node.style.blend_mode)!;
+      return <g key={node.id} clipPath={clipId ? "url(#" + clipId + ")" : undefined}
+        style={blend === "normal" ? undefined : {mixBlendMode:blend}}><g data-canvas-node-id={node.id} data-parent-id={node.parent_id ?? undefined} opacity={t.opacity} transform={rotation}>
         {node.kind === "text" ? <text data-text-origin={fromProfile ? "profile" : "source"} x={t.x} y={t.y+size*.88} fill={node.style.fill == null ? safePaint(ink, "#F2F4F3") : safePaint(node.style.fill, "#F2F4F3")}
           fontFamily={node.style.font_family === "IBM Plex Mono" ? '"IBM Plex Mono", ui-monospace, monospace' : '"Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif'} fontSize={size} fontWeight={node.style.font_weight ?? 400}>
           {textValue.split("\n").map((line,i) => <tspan key={i} x={t.x} dy={i===0?0:size*(node.style.line_height ?? 1.12)}>{line}</tspan>)}

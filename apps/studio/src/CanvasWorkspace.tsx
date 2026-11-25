@@ -6,7 +6,7 @@ import { contextLabelNode } from "./contextLabel";
 import CompositionStudy from "./CompositionStudy";
 import CreativePatchWorkbench from "./CreativePatchWorkbench";
 import { timelineSelectionScope, type TimelineEditorRequest } from "./timelineSelection";
-import { inheritedTextInk } from "./canvasInheritedInk";
+import { canvasBackground, inheritedTextInk } from "./canvasInheritedInk";
 import "./canvas-source-study.css";
 import { sampledSceneCamera } from "./cameraReframe";
 import { isStaticNativeGroup, nativeGroupOrderIssue, nativeGroupTreeRows, staticNativeGroupAncestors, staticNativeGroupParent } from "./nativeGroupHierarchy";
@@ -1155,7 +1155,7 @@ export default function CanvasWorkspace({
               <CompositionStudy nodes={scene.nodes.map(node => ({...node,...stageTransform(node),
                 keyframes: ["group","clip_group"].includes(node.kind) ? node.keyframes : [], relations: []}))}
                 time={viewTime} camera={viewCamera.camera}
-                background={project.visual_language.palette.find(token => ["surface","background"].includes(token.name.toLowerCase()))?.value ?? "#0F1216"}
+                background={canvasBackground(project.visual_language.palette)}
                 ink={inheritedTextInk(project.visual_language.palette)} label="Editable Canvas source composition"/>
             </div>}
             <div className="canvas-safe-area" style={{ inset: (scene.camera.safe_margin * 100) + "%" }}>

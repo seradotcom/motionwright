@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { DeliverableProfile, Project, Scene } from "./types";
 import CompositionStudy from "./CompositionStudy";
-import { inheritedTextInk } from "./canvasInheritedInk";
+import { canvasBackground, inheritedTextInk } from "./canvasInheritedInk";
 import { reflowSceneForProfile, sampleProfileLayout } from "./profileComposition";
 import { proceduralGridDimensions, proceduralGridDimensionsForOutput } from "./proceduralField";
 
@@ -33,7 +33,7 @@ export default function ProfileCompositionStudy({ project, scene, profile, time,
       <p className="production-help">{profile.name} · {profile.width} × {profile.height} · {profile.framing_strategy === "replan" ? "Replan" : "Crop"}{grid ? " · " + grid.columns + " columns × " + grid.rows + " rows" : ""}</p>
       <div className="production-preview-mat" style={{ height: 320, flex: "none", padding: 8 }}>
         <CompositionStudy nodes={sampled.nodes} width={profile.width} height={profile.height} time={0}
-          background="#0C1723" ink={inheritedTextInk(project.visual_language.palette)} textOverrides={profile.text_overrides} label={label}/>
+          background={canvasBackground(project.visual_language.palette)} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={profile.text_overrides} label={label}/>
       </div>
       {sampled.boundaryIssues.length > 0 && <div className="production-error" role="status" aria-label={label + " boundary warnings"}>
         <p>{sampled.boundaryIssues.length} sampled object bounds need review. Geometry has not been shrunk or clamped.</p>

@@ -5,3 +5,9 @@ export function inheritedTextInk(palette: readonly { name: string; value: string
   const token = palette.find(item => /^(?:text|ink)$/i.test(item.name));
   return token?.value ?? null;
 }
+
+/** First saved surface/background token, with the same order in every study.
+ * CompositionStudy applies the closed paint validation before SVG rendering. */
+export function canvasBackground(palette: readonly { name: string; value: string }[]): string {
+  return palette.find(token => /^(?:surface|background)$/i.test(token.name))?.value ?? "#0F1216";
+}

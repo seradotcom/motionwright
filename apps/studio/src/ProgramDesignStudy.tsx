@@ -1,7 +1,7 @@
 import SceneCompositionStudy from "./SceneCompositionStudy";
 import { sampleProgramCaption } from "./programCaption";
 import "./program-caption.css";
-import { inheritedTextInk } from "./canvasInheritedInk";
+import { canvasBackground, inheritedTextInk } from "./canvasInheritedInk";
 import type { DeliverableProfile, Project, Scene } from "./types";
 
 /** This is a bounded source-Canvas representation, never a substitute for
@@ -27,8 +27,7 @@ export default function ProgramDesignStudy({
 }: {
   project: Project; scene: Scene; time: number; profile: DeliverableProfile | null;
 }) {
-  const surface = project.visual_language.palette.find(token =>
-    ["surface", "background"].includes(token.name.toLowerCase()))?.value ?? "#0F1216";
+  const surface = canvasBackground(project.visual_language.palette);
   const ink = inheritedTextInk(project.visual_language.palette);
   const cutScope = programSceneCutScope(scene, profile);
   const caption = sampleProgramCaption(project, scene, time, profile);

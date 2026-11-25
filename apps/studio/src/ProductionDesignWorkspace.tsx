@@ -12,7 +12,7 @@ import CompositionStudy from "./CompositionStudy";
 import SceneCompositionStudy from "./SceneCompositionStudy";
 import { buildComponentSceneStudy, type ComponentSceneStudy } from "./componentSceneStudy";
 import { sampleProfileLayout } from "./profileComposition";
-import { inheritedTextInk } from "./canvasInheritedInk";
+import { canvasBackground, inheritedTextInk } from "./canvasInheritedInk";
 import { emptyProductionDesign, parseSceneBoundaryEndpoint, realizeProductHero, sameValue, sceneBoundaryNarrativeRoles, sceneBoundaryArchetypes } from "./creativeProduction";
 import ComponentRevisionReview, { useComponentRevisionReview } from "./ComponentRevisionReview";
 import { bootstrap, projectHistory, savedNativeWindowFilmOptions, sceneBoundaryAuthoringContext } from "./api";
@@ -475,7 +475,7 @@ function HeroWorkbench({ project, scene, commit, commitCamera, busy, playhead, o
     catch (reason) { return { nodes: [] as CanvasNode[], boundaryIssues: [] as string[], issue: reason instanceof Error ? reason.message : String(reason) }; }
   }, [visualCurrent, visual, localTime]);
   const nodes = sampled.nodes, viewIssue = error ?? sampled.issue, viewLoading = !error && (previewLoading || !visualCurrent);
-  const background = project.visual_language.palette.find(t => ["surface","background"].includes(t.name.toLowerCase()))?.value ?? "#0F1216";
+  const background = canvasBackground(project.visual_language.palette);
   const locked = project.locks.some(lock => ["project:"+project.id,"scene:"+scene?.id].includes(lock.resource) && ["content","position","style","timing","renderer"].includes(lock.kind));
   const canApply = !!scene && scene.renderer === "motion-canvas" && seconds(scene.duration)>=2 && !editor.blocked && !error && !viewLoading && !locked && (!instance || revisionReview.ready);
   return <div className="production-split">
@@ -720,7 +720,7 @@ function BoundaryEndpointEditor({ label, raw, edit, project, scene, profile, bus
 }) {
   const { endpoint, error } = readEndpointInput(raw);
   const availableAssets = project.assets.filter(asset => asset.content_sha256);
-  const background = project.visual_language.palette.find(token => ["surface", "background"].includes(token.name.toLowerCase()))?.value ?? "#0F1216";
+  const background = canvasBackground(project.visual_language.palette);
   function copyScene() {
     if (scene) edit(JSON.stringify({ nodes: scene.nodes, camera: scene.camera, assets: [] }, null, 2));
   }
