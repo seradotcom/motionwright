@@ -63,9 +63,9 @@ mod motion_canvas_window;
 pub use motion_canvas_window::{
     MotionCanvasCachedWindowFrame, MotionCanvasCaptureTimings, MotionCanvasStartOrigin,
     MotionCanvasWindowCapture, MotionCanvasWindowCost, MotionCanvasWindowEvidence,
-    MotionCanvasWindowRequest, MotionCanvasWindowSummary, MotionCanvasWindowUse,
-    MotionCanvasWindowValidation, read_cached_motion_canvas_window_frame,
-    reuse_motion_canvas_window,
+    MotionCanvasWindowRaster, MotionCanvasWindowRequest, MotionCanvasWindowScale,
+    MotionCanvasWindowSummary, MotionCanvasWindowUse, MotionCanvasWindowValidation,
+    read_cached_motion_canvas_window_frame, reuse_motion_canvas_window,
 };
 mod native_runtime_versions;
 #[cfg(test)]
@@ -3194,7 +3194,7 @@ impl ProductionCoordinator {
         prefix: &str,
         index: usize,
         segment: &crate::film::MotionCanvasSegment,
-        capture_end: u64,
+        capture: motion_canvas_window::MotionCanvasCaptureSpec,
     ) -> NativeResult<motion_canvas_window::MotionCanvasSegmentCapture> {
         self.require_motion_staging_admission(project_id, expected)?;
         // Register the accepted scope before its first await. A dropped future
@@ -3202,12 +3202,7 @@ impl ProductionCoordinator {
         let custody = self.begin_retained_font_capture(project_id, expected, prefix)?;
         let result = self
             .capture_motion_canvas_segment_inner(
-                project_id,
-                expected,
-                prefix,
-                index,
-                segment,
-                capture_end,
+                project_id, expected, prefix, index, segment, capture,
             )
             .await;
         if let Some(custody) = custody {
@@ -3223,8 +3218,10 @@ impl ProductionCoordinator {
         prefix: &str,
         index: usize,
         segment: &crate::film::MotionCanvasSegment,
-        capture_end: u64,
+        capture: motion_canvas_window::MotionCanvasCaptureSpec,
     ) -> NativeResult<motion_canvas_window::MotionCanvasSegmentCapture> {
+        let capture_end = capture.end;
+        let render_scale = capture.scale;
         if capture_end == 0 || capture_end > segment.frame_count {
             return Err(invalid(
                 "Native capture prefix is outside its canonical Film",
@@ -3309,7 +3306,7 @@ impl ProductionCoordinator {
                     "profile": {
                         "first_frame": 0,
                         "end_frame_exclusive": capture_end,
-                        "scale": "full",
+                        "scale": render_scale.provider_name(),
                         "transparent": false,
                         "timeout_ms": MOTION_RENDER_TIMEOUT_MS
                     }
@@ -3580,7 +3577,10 @@ impl ProductionCoordinator {
                     &prefix,
                     index,
                     &segment,
-                    segment.frame_count,
+                    motion_canvas_window::MotionCanvasCaptureSpec {
+                        end: segment.frame_count,
+                        scale: MotionCanvasWindowScale::Full,
+                    },
                 )
                 .await?;
             let verification = capture.verification;
@@ -9701,6 +9701,7 @@ os._exit(0)
         let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
         let expected = RevisionStamp::from(&project);
         let request = MotionCanvasWindowRequest {
+            render_scale: crate::production::MotionCanvasWindowScale::Full,
             deliverable_id: project.deliverables[0].id,
             source_scene_id: project.scenes[0].id,
             source_window: motionwright_domain::SourceFrameWindow { start: 10, end: 20 },
@@ -10135,6 +10136,7 @@ os._exit(0)
                         &project.stamp(),
                         &parent,
                         &MotionCanvasWindowRequest {
+                            render_scale: crate::production::MotionCanvasWindowScale::Full,
                             deliverable_id: project.deliverables[0].id,
                             source_scene_id: project.scenes[0].id,
                             source_window: motionwright_domain::SourceFrameWindow {
@@ -11021,6 +11023,7 @@ os._exit(0)
                         &expected,
                         &parent,
                         &MotionCanvasWindowRequest {
+                            render_scale: crate::production::MotionCanvasWindowScale::Full,
                             deliverable_id: deliverable,
                             source_scene_id: selected_scene,
                             source_window,

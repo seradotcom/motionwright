@@ -1,7 +1,7 @@
 import type { NativeFrameSelection } from "./nativeFrameSelection";
 import type {
   DeliverableProfile, MotionCanvasFilmOptions, NativeWindowRenderResponse,
-  Project, RationalTime, Scene, SourceFrameWindow,
+  Project, RationalTime, Scene, SourceFrameWindow, NativeWindowScale, NativeWindowRaster,
 } from "./types";
 
 export const NATIVE_WINDOW_MAX_SOURCE_FRAME = 1_080_000;
@@ -109,10 +109,32 @@ export function nativeWindowCutRange(project: Project, scene: Scene, profile: De
   return { start: at(selected.start), end: at(selected.end) };
 }
 
+/** Exact provider raster policy. Full keeps the original wire contract. */
+export function nativeWindowRaster(profile: DeliverableProfile, scale: NativeWindowScale): NativeWindowRaster | undefined {
+  require(scale === "full" || scale === "half" || scale === "quarter", "Unsupported native preview raster scale.");
+  if (scale === "full") return undefined;
+  const divisor = scale === "half" ? 2 : 4;
+  const width = profile.width / divisor, height = profile.height / divisor;
+  require(integer(width) && integer(height) && width > 0 && height > 0 && width <= 4096
+    && height <= 4096 && width * height <= 8847360, "Reduced native preview requires exact integral dimensions within the provider bounds.");
+  return {scale,width,height};
+}
+
+export function requireNativeWindowRasterPng(bytes: Uint8Array, raster: NativeWindowRaster): void {
+  require(bytes.length >= 33 && [137,80,78,71,13,10,26,10].every((value,index)=>bytes[index]===value), "Reduced native PNG header is incomplete or invalid.");
+  const view = new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+  require(view.getUint32(8) === 13 && view.getUint32(12) === 0x49484452
+    && view.getUint32(16) === raster.width && view.getUint32(20) === raster.height,
+    "Native PNG dimensions differ from the admitted reduced raster.");
+}
+
 export interface NativeWindowIntent {
   project_id: string; generation: string; revision: number; branch_id: string;
   request_id: string; reuse_token: string | null;
-  window: { deliverable_id: string; source_scene_id: string; source_window: SourceFrameWindow; options: MotionCanvasFilmOptions };
+  /** Local expectation; not a provider dimension override. */
+  expected_raster?: NativeWindowRaster;
+  window: { deliverable_id: string; source_scene_id: string; source_window: SourceFrameWindow; options: MotionCanvasFilmOptions;
+    render_scale?: Exclude<NativeWindowScale,"full"> };
 }
 export interface NativeWindowReceipt { kind: "window"; intent: NativeWindowIntent; response: NativeWindowRenderResponse }
 export interface NativeWindowFrameSelection extends NativeFrameSelection {
@@ -120,7 +142,8 @@ export interface NativeWindowFrameSelection extends NativeFrameSelection {
 }
 
 export function createNativeWindowIntent(project: Project, scene: Scene, profile: DeliverableProfile,
-  selected: SourceFrameWindow, options: MotionCanvasFilmOptions, requestId: string, reuseToken: string | null = null): NativeWindowIntent {
+  selected: SourceFrameWindow, options: MotionCanvasFilmOptions, requestId: string, reuseToken: string | null = null,
+  renderScale: NativeWindowScale = "full"): NativeWindowIntent {
   currentScene(project, scene, profile); rate(options.frame_rate); checkRange(selected);
   require(options.frame_rate.num === Number(profile.frame_rate.num) && options.frame_rate.den === Number(profile.frame_rate.den),
     "Window options use a different saved delivery frame rate.");
@@ -128,16 +151,20 @@ export function createNativeWindowIntent(project: Project, scene: Scene, profile
   require(integer(project.revision) && text(project.id) && text(project.generation) && text(project.active_branch), "The saved project scope is invalid.");
   require(text(requestId) && requestId.trim() === requestId && requestId.length <= 96, "A new bounded original request identity is required.");
   require(reuseToken === null || text(reuseToken), "The original window token is invalid.");
+  const raster = nativeWindowRaster(profile, renderScale);
   return structuredClone({ project_id: project.id, generation: project.generation, revision: project.revision,
     branch_id: project.active_branch, request_id: requestId, reuse_token: reuseToken,
-    window: { deliverable_id: profile.id, source_scene_id: scene.id, source_window: selected, options } });
+    ...(raster ? { expected_raster: raster } : {}),
+    window: { deliverable_id: profile.id, source_scene_id: scene.id, source_window: selected, options,
+      ...(raster ? { render_scale: raster.scale } : {}) } });
 }
 function intentIdentity(intent: NativeWindowIntent): unknown {
-  return [intent.project_id, intent.generation, intent.revision, intent.branch_id, intent.window];
+  return [intent.project_id, intent.generation, intent.revision, intent.branch_id, intent.window, intent.expected_raster];
 }
 export function nativeWindowIntentMatches(intent: NativeWindowIntent, project: Project, scene: Scene,
-  profile: DeliverableProfile, selected: SourceFrameWindow, options: MotionCanvasFilmOptions): boolean {
-  try { return same(intentIdentity(intent), intentIdentity(createNativeWindowIntent(project, scene, profile, selected, options, intent.request_id, intent.reuse_token))); }
+  profile: DeliverableProfile, selected: SourceFrameWindow, options: MotionCanvasFilmOptions,
+  renderScale: NativeWindowScale = intent.window.render_scale ?? "full"): boolean {
+  try { return same(intentIdentity(intent), intentIdentity(createNativeWindowIntent(project, scene, profile, selected, options, intent.request_id, intent.reuse_token, renderScale))); }
   catch { return false; }
 }
 
@@ -148,7 +175,17 @@ export function acceptNativeWindowReceipt(intent: NativeWindowIntent, input: unk
   checkRange(intent.window.source_window); rate(intent.window.options.frame_rate);
   keys(input, ["window", "preview"]);
   const summary = input.window, grant = input.preview;
-  keys(summary, ["generation", "revision", "deliverable_id", "source_scene_id", "source_window", "segment_window", "original_prefix", "frame_rate", "preview_only", "master_eligible", "validation", "cost"]);
+  const raster = intent.expected_raster;
+  require(raster === undefined ? intent.window.render_scale === undefined
+    : raster.scale === intent.window.render_scale && (raster.scale === "half" || raster.scale === "quarter")
+      && integer(raster.width) && integer(raster.height) && raster.width > 0 && raster.height > 0
+      && raster.width <= 4096 && raster.height <= 4096 && raster.width * raster.height <= 8847360,
+    "Native window raster intent is malformed.");
+  keys(summary, ["generation", "revision", "deliverable_id", "source_scene_id", "source_window", "segment_window", "original_prefix", "frame_rate", "preview_only", "master_eligible", "validation", "cost", ...(raster ? ["raster"] : [])]);
+  if (raster) {
+    keys(summary.raster, ["scale", "width", "height"]);
+    require(same(summary.raster, raster), "Native window response does not identify the requested reduced raster.");
+  }
   keys(grant, ["token", "segment_id", "scene_ids", "frame_count"]);
   require(summary.generation === intent.generation && summary.revision === intent.revision
     && summary.deliverable_id === intent.window.deliverable_id && summary.source_scene_id === intent.window.source_scene_id
@@ -273,7 +310,7 @@ function decodeWindowUncertainty(key: string, raw: string, project: Project): Na
   const scene = project.scenes.find(item => item.id === intent.window.source_scene_id);
   const profile = project.deliverables.find(item => item.id === intent.window.deliverable_id);
   require(scene && profile, "The original native window source is missing; its marker was preserved.");
-  const verified = createNativeWindowIntent(project, scene, profile, intent.window.source_window, intent.window.options, intent.request_id);
+  const verified = createNativeWindowIntent(project, scene, profile, intent.window.source_window, intent.window.options, intent.request_id, null, intent.window.render_scale ?? "full");
   require(key === uncertaintyKey(verified) && same(verified, intent), "The native window uncertainty copy is incomplete or altered.");
   return verified;
 }

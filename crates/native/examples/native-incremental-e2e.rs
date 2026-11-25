@@ -1066,6 +1066,7 @@ async fn native_stage(
                 &stamp,
                 request_id,
                 &MotionCanvasWindowRequest {
+                    render_scale: motionwright_native::production::MotionCanvasWindowScale::Full,
                     deliverable_id: project.deliverables[0].id,
                     source_scene_id: middle_id(&project)?,
                     source_window: SourceFrameWindow {

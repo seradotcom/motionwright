@@ -17,6 +17,75 @@ const MAX_WINDOW_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_WINDOW_FRAME_BYTES: u64 = 24 * 1024 * 1024;
 const MAX_SELECTED_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Native raster scale, independent of the saved Film and master profile.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MotionCanvasWindowScale {
+    #[default]
+    Full,
+    Half,
+    Quarter,
+}
+
+impl MotionCanvasWindowScale {
+    pub fn is_full(&self) -> bool {
+        *self == Self::Full
+    }
+
+    pub(super) fn provider_name(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Half => "half",
+            Self::Quarter => "quarter",
+        }
+    }
+
+    fn raster(self, width: u32, height: u32) -> NativeResult<Option<MotionCanvasWindowRaster>> {
+        if self.is_full() {
+            return Ok(None);
+        }
+        let divisor = match self {
+            Self::Half => 2,
+            Self::Quarter => 4,
+            Self::Full => 1,
+        };
+        if !width.is_multiple_of(divisor) || !height.is_multiple_of(divisor) {
+            return Err(invalid(
+                "Reduced native preview requires exact integral scaled dimensions",
+            ));
+        }
+        let (width, height) = (width / divisor, height / divisor);
+        if width == 0
+            || height == 0
+            || width > 4096
+            || height > 4096
+            || u64::from(width) * u64::from(height) > 8_847_360
+        {
+            return Err(invalid(
+                "Reduced native preview exceeds the pinned provider raster bounds",
+            ));
+        }
+        Ok(Some(MotionCanvasWindowRaster {
+            scale: self,
+            width,
+            height,
+        }))
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct MotionCanvasCaptureSpec {
+    pub(super) end: u64,
+    pub(super) scale: MotionCanvasWindowScale,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct MotionCanvasWindowRaster {
+    pub scale: MotionCanvasWindowScale,
+    pub width: u32,
+    pub height: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MotionCanvasWindowRequest {
@@ -24,6 +93,8 @@ pub struct MotionCanvasWindowRequest {
     pub source_scene_id: Uuid,
     pub source_window: SourceFrameWindow,
     pub options: FilmBuildOptions,
+    #[serde(default, skip_serializing_if = "MotionCanvasWindowScale::is_full")]
+    pub render_scale: MotionCanvasWindowScale,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -109,6 +180,8 @@ pub struct MotionCanvasWindowEvidence {
     pub generation: Uuid,
     pub revision: u64,
     pub request: MotionCanvasWindowRequest,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raster: Option<MotionCanvasWindowRaster>,
     pub segment_id: String,
     pub segment_index: usize,
     pub segment_window: SourceFrameWindow,
@@ -132,6 +205,8 @@ pub struct MotionCanvasWindowSummary {
     pub frame_rate: Rate,
     pub preview_only: bool,
     pub master_eligible: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raster: Option<MotionCanvasWindowRaster>,
     pub validation: MotionCanvasWindowValidation,
     pub cost: MotionCanvasWindowCost,
 }
@@ -149,6 +224,7 @@ impl MotionCanvasWindowEvidence {
             frame_rate: self.request.options.frame_rate,
             preview_only: true,
             master_eligible: false,
+            raster: self.raster,
             validation: self.validation.clone(),
             cost: self.cost.clone(),
         }
@@ -216,6 +292,11 @@ fn request_plan(
             "Native window prefix exceeds the existing PNG sequence bound",
         ));
     }
+    // Check dimensions before any provider plan, apply or render.
+    request.render_scale.raster(
+        plan.segment.film.output.width,
+        plan.segment.film.output.height,
+    )?;
     Ok(plan)
 }
 
@@ -360,6 +441,10 @@ struct ManifestPlan {
     first_frame: u64,
     end_frame_exclusive: u64,
     frame_count: u64,
+    #[serde(default)]
+    width: Option<u32>,
+    #[serde(default)]
+    height: Option<u32>,
 }
 #[derive(Deserialize)]
 struct RenderManifest {
@@ -371,6 +456,7 @@ fn selected_originals(
     root: &Path,
     artifact: &Value,
     selected: SourceFrameWindow,
+    raster: Option<MotionCanvasWindowRaster>,
 ) -> NativeResult<Vec<FrameManifest>> {
     let directory = artifact
         .get("directory")
@@ -417,6 +503,13 @@ fn selected_originals(
             "Native window manifest is not an exhaustive zero-origin prefix",
         ));
     }
+    if let Some(raster) = raster
+        && (parsed.plan.width != Some(raster.width) || parsed.plan.height != Some(raster.height))
+    {
+        return Err(backend(
+            "Native window manifest does not identify the requested reduced raster",
+        ));
+    }
     let mut output = Vec::new();
     let mut total = 0_u64;
     for (index, mut frame) in parsed.frames.into_iter().enumerate() {
@@ -445,6 +538,23 @@ fn selected_originals(
         }
     }
     Ok(output)
+}
+
+/// The manifest SHA and existing Store capture bind the complete bytes.
+/// Check actual reduced raster dimensions, not merely the requested scale.
+fn require_window_raster(bytes: &[u8], raster: MotionCanvasWindowRaster) -> NativeResult<()> {
+    if bytes.len() < 33
+        || !bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+        || bytes[8..12] != 13_u32.to_be_bytes()
+        || &bytes[12..16] != b"IHDR"
+        || bytes[16..20] != raster.width.to_be_bytes()
+        || bytes[20..24] != raster.height.to_be_bytes()
+    {
+        return Err(backend(
+            "Native window PNG dimensions differ from the admitted reduced raster",
+        ));
+    }
+    Ok(())
 }
 
 fn frame_key(
@@ -574,6 +684,10 @@ impl ProductionCoordinator {
             SceneRequestFamily::Motion,
         )?;
         let plan = request_plan(&project, request)?;
+        let raster = request.render_scale.raster(
+            plan.segment.film.output.width,
+            plan.segment.film.output.height,
+        )?;
         let prefix = format!("{request_id}:motion:{}", plan.segment_index);
         // The existing durable receipts are inspected before any native call.
         // Cold has no implicit replay/fallback; warm is an explicit token read.
@@ -591,7 +705,10 @@ impl ProductionCoordinator {
                 &prefix,
                 plan.segment_index,
                 &plan.segment,
-                plan.segment_window.end,
+                MotionCanvasCaptureSpec {
+                    end: plan.segment_window.end,
+                    scale: request.render_scale,
+                },
             )
             .await?;
         let validation = validate_prefix_measurement(
@@ -611,6 +728,7 @@ impl ProductionCoordinator {
             &self.client.connection().output_root,
             &capture.artifact,
             plan.segment_window,
+            raster,
         )?;
         let frames = request.source_window.end - request.source_window.start;
         let mut evidence = MotionCanvasWindowEvidence {
@@ -618,6 +736,7 @@ impl ProductionCoordinator {
             generation: project.generation,
             revision: project.revision,
             request: request.clone(),
+            raster,
             segment_id: plan.segment.id,
             segment_index: plan.segment_index,
             segment_window: plan.segment_window,
@@ -670,6 +789,20 @@ impl ProductionCoordinator {
                     let key = frame_key(&evidence, offset as u64, &frame.sha256)?;
                     let path =
                         output_artifact_path(&output_root, &frame.file, MAX_WINDOW_FRAME_BYTES)?;
+                    // Check reduced PNG dimensions before publishing a proxy.
+                    // The verified Store capture checks the same complete digest.
+                    if let Some(raster) = evidence.raster {
+                        let bytes = read_verified_production_artifact(
+                            &output_root,
+                            &frame.file,
+                            &frame.sha256,
+                            MAX_WINDOW_FRAME_BYTES,
+                        )?;
+                        if bytes.len() as u64 != frame.bytes {
+                            return Err(backend("Native window PNG byte count changed"));
+                        }
+                        require_window_raster(&bytes, raster)?;
+                    }
                     // Compare the manifest descriptor during Store staging, before
                     // publishing the proxy payload or cache metadata.
                     let record = cache_service
@@ -750,7 +883,12 @@ pub fn reuse_motion_canvas_window(
     let plan = request_plan(&project, request)?;
     let digest = canonical_digest(&plan.segment.film)
         .map_err(|_| invalid("Current canonical Film digest cannot be encoded"))?;
-    if original.film_digest != digest.as_str()
+    let raster = request.render_scale.raster(
+        plan.segment.film.output.width,
+        plan.segment.film.output.height,
+    )?;
+    if original.raster != raster
+        || original.film_digest != digest.as_str()
         || original.segment_id != plan.segment.id
         || original.segment_index != plan.segment_index
         || original.segment_window != plan.segment_window
@@ -873,6 +1011,9 @@ pub fn read_cached_motion_canvas_window_frame(
             "Native cache payload is not the original bounded PNG",
         ));
     }
+    if let Some(raster) = original.raster {
+        require_window_raster(&bytes, raster)?;
+    }
     require_scope(
         &store
             .load_project(frame.key.project_id)
@@ -887,6 +1028,69 @@ mod tests {
     use super::*;
     use motionwright_domain::Change;
     use semwright_motion_authoring::{Archetype, NarrativeRole};
+
+    #[test]
+    fn reduced_window_raster_preserves_film_and_refuses_foreign_png_or_scale() {
+        let (_directory, _service, project, original) = fixture();
+        let full = request_plan(&project, &original.request).unwrap();
+        let legacy = serde_json::to_value(&original.request).unwrap();
+        assert!(legacy.get("render_scale").is_none());
+        assert!(
+            serde_json::from_value::<MotionCanvasWindowRequest>(legacy.clone())
+                .unwrap()
+                .render_scale
+                .is_full()
+        );
+        let mut reduced = original.request.clone();
+        reduced.render_scale = MotionCanvasWindowScale::Half;
+        let planned = request_plan(&project, &reduced).unwrap();
+        assert_eq!(
+            canonical_digest(&full.segment.film).unwrap(),
+            canonical_digest(&planned.segment.film).unwrap()
+        );
+        assert_eq!(full.segment_window, planned.segment_window);
+        let raster = reduced
+            .render_scale
+            .raster(
+                planned.segment.film.output.width,
+                planned.segment.film.output.height,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!((raster.width, raster.height), (960, 540));
+        assert_eq!(
+            serde_json::to_value(&reduced).unwrap()["render_scale"],
+            "half"
+        );
+        let mut wrong = legacy;
+        wrong["render_scale"] = json!("double");
+        assert!(serde_json::from_value::<MotionCanvasWindowRequest>(wrong).is_err());
+        assert!(MotionCanvasWindowScale::Quarter.raster(1918, 1080).is_err());
+        assert_eq!(
+            MotionCanvasWindowScale::Quarter
+                .raster(1920, 1080)
+                .unwrap()
+                .unwrap()
+                .width,
+            480
+        );
+        let mut header = vec![0; 33];
+        header[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        header[8..12].copy_from_slice(&13_u32.to_be_bytes());
+        header[12..16].copy_from_slice(b"IHDR");
+        header[16..20].copy_from_slice(&raster.width.to_be_bytes());
+        header[20..24].copy_from_slice(&raster.height.to_be_bytes());
+        require_window_raster(&header, raster).unwrap();
+        header[16..20].copy_from_slice(&1920_u32.to_be_bytes());
+        assert!(require_window_raster(&header, raster).is_err());
+        let mut other = original.clone();
+        other.request = reduced;
+        other.raster = Some(raster);
+        assert_ne!(
+            frame_key(&original, 0, &"ab".repeat(32)).unwrap(),
+            frame_key(&other, 0, &"ab".repeat(32)).unwrap()
+        );
+    }
 
     fn fixture() -> (
         tempfile::TempDir,
@@ -951,6 +1155,7 @@ mod tests {
             .unwrap()
             .project;
         let request = MotionCanvasWindowRequest {
+            render_scale: crate::production::MotionCanvasWindowScale::Full,
             deliverable_id: project.deliverables[0].id,
             source_scene_id: scene_id,
             source_window: SourceFrameWindow { start: 10, end: 12 },
@@ -1007,6 +1212,7 @@ mod tests {
             generation: project.generation,
             revision: project.revision,
             request,
+            raster: None,
             segment_id: plan.segment.id,
             segment_index: 0,
             segment_window: plan.segment_window,

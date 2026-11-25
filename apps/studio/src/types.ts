@@ -558,6 +558,12 @@ export interface MotionCanvasRenderEvidence {
 
 /** Original source-frame coordinates. All ranges are half-open. */
 export interface SourceFrameWindow { start: number; end: number; }
+export type NativeWindowScale = "full" | "half" | "quarter";
+export interface NativeWindowRaster {
+  scale: Exclude<NativeWindowScale, "full">;
+  width: number;
+  height: number;
+}
 export interface MotionCanvasWindowSummary {
   generation: string;
   revision: number;
@@ -569,6 +575,7 @@ export interface MotionCanvasWindowSummary {
   frame_rate: { num: number; den: number };
   preview_only: true;
   master_eligible: false;
+  raster?: NativeWindowRaster;
   validation: {
     verdict: "PASS" | "UNKNOWN";
     native_frame_coverage: "PASS" | "UNKNOWN";

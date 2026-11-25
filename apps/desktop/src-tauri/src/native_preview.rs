@@ -1044,6 +1044,7 @@ mod tests {
         };
         // This backend-only fixture tests the origin barrier, not native pixels.
         MotionCanvasWindowEvidence {
+            raster: None,
             project_resource: project.resource_key(),
             generation: project.generation,
             revision: project.revision,

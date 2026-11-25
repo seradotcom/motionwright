@@ -2,7 +2,7 @@ import { CircleDashed, RefreshCw, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { readNativePreviewFrame } from "./api";
 import type { NativeFrameSelection } from "./nativeFrameSelection";
-import type { NativeWindowReceipt } from "./nativeWindowPreview";
+import { requireNativeWindowRasterPng, type NativeWindowReceipt } from "./nativeWindowPreview";
 import {
   NativePreviewByteCache, planNativePreviewRead,
   previewTier, requireBoundedNativePng,
@@ -37,7 +37,7 @@ export default function NativeFrameStage({
   const scope=[
     project.id,project.generation,project.active_branch,project.revision,selection.token,selection.segmentId,
     windowReceipt ? JSON.stringify(["window",windowReceipt.response.window.source_window,
-      windowReceipt.response.window.segment_window,windowReceipt.response.window.original_prefix]) : "full",
+      windowReceipt.response.window.segment_window,windowReceipt.response.window.original_prefix,windowReceipt.response.window.raster]) : "full",
   ].join(":");
   const activeScope=useRef(scope);
   activeScope.current=scope;
@@ -124,6 +124,7 @@ export default function NativeFrameStage({
       void readNativePreviewFrame(project,selection.token,index)
         .then(bytes=>{
           requireBoundedNativePng(bytes);
+          if(windowReceipt?.response.window.raster) requireNativeWindowRasterPng(bytes,windowReceipt.response.window.raster);
           if(disposed)return;
           cache.current.put(index,bytes);
           if(currentlyRequested.current.frameIndex===index)
@@ -212,6 +213,7 @@ export default function NativeFrameStage({
       {windowReceipt&&<span>Source frame {windowReceipt.response.window.source_window.start+(ready?.frameIndex??selection.frameIndex)};
         segment frame {windowReceipt.response.window.segment_window.start+(ready?.frameIndex??selection.frameIndex)};
         {" "+windowReceipt.response.window.validation.verdict+" · preview only · not a master"}</span>}
+      {windowReceipt?.response.window.raster && <span>Native {windowReceipt.response.window.raster.scale} raster {windowReceipt.response.window.raster.width} x {windowReceipt.response.window.raster.height}; not full-resolution source fidelity.</span>}
       <span>{previewTier(editorialPlaying)==="sampled_scrub"
         ?"Sampled source PNG during scrub · up to 4 reads/s"
         :"Settled exact source PNG · no synthesized frames"}

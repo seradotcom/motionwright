@@ -285,7 +285,8 @@ type SyntheticWindowRequest = {
   project_id: string; generation: string; revision: number; request_id: string;
   effect_grant: string; reuse_token: string | null;
   window: { deliverable_id: string; source_scene_id: string;
-    source_window: { start: number; end: number }; options: import("../src/types").MotionCanvasFilmOptions };
+    source_window: { start: number; end: number }; options: import("../src/types").MotionCanvasFilmOptions;
+    render_scale?: "half"|"quarter" };
 };
 type SyntheticWindowTrace = { command: string; request: Record<string, unknown> };
 interface SyntheticWindowHarness {
@@ -370,8 +371,22 @@ async function installNativeWindowFixture(page: RecipeFixturePage) {
     const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
     const current = (request: { project_id?: unknown; generation?: unknown; revision?: unknown }) =>
       request.project_id === state.project.id && request.generation === state.project.generation && request.revision === state.project.revision;
-    const bytes = () => {
-      if (!state.invalidDecode) return Uint8Array.from(atob(fixturePng), char => char.charCodeAt(0));
+    const raster = (request: SyntheticWindowRequest) => {
+      const scale=request.window.render_scale;
+      if(!scale)return undefined;
+      const profile=state.project.deliverables.find(p=>p.id===request.window.deliverable_id)!;
+      const divisor=scale==="half"?2:4;
+      return {scale,width:profile.width/divisor,height:profile.height/divisor};
+    };
+    const bytes = (request?: SyntheticWindowRequest) => {
+      if (!state.invalidDecode) {
+        const reduced=request&&raster(request);
+        if(!reduced)return Uint8Array.from(atob(fixturePng), char => char.charCodeAt(0));
+        const canvas=document.createElement("canvas");canvas.width=reduced.width;canvas.height=reduced.height;
+        const context=canvas.getContext("2d")!;context.fillStyle="#465160";
+        context.fillRect(0,0,canvas.width,canvas.height);
+        return Uint8Array.from(atob(canvas.toDataURL("image/png").split(",")[1]), char=>char.charCodeAt(0));
+      }
       // Both API and bounded-PNG guards admit this signature and length. The
       // actual browser decoder rejects the missing PNG chunks, invoking onError.
       const malformed = new Uint8Array(40);
@@ -442,6 +457,7 @@ async function installNativeWindowFixture(page: RecipeFixturePage) {
             source_scene_id: original.window.source_scene_id, source_window: structuredClone(source), segment_window: segment,
             original_prefix: { start: 0, end: segment.end }, frame_rate: structuredClone(original.window.options.frame_rate),
             preview_only: true, master_eligible: false,
+            ...(raster(original)?{raster:raster(original)}:{}),
             validation: { verdict: "UNKNOWN", native_frame_coverage: "UNKNOWN", pass_checks: 3, unknown_checks: 1, unknown_findings: 0 },
             cost: { operation: warm ? "explicit_original_reuse" : "native_prefix", original_prefix_pngs: segment.end,
               selected_pngs: count, reused_original_pngs: warm ? count : 0, start_calls_observed: warm ? 0 : 1,
@@ -465,9 +481,9 @@ async function installNativeWindowFixture(page: RecipeFixturePage) {
           throw new Error("Synthetic PNG read requires only its current grant and token-local frame.");
         }
         if (state.holdFrames) return new Promise(resolve => {
-          pendingFrames.push(() => resolve(bytes())); state.pendingFrames = pendingFrames.length;
+          pendingFrames.push(() => resolve(bytes(grant.request))); state.pendingFrames = pendingFrames.length;
         });
-        return bytes();
+        return bytes(grant.request);
       }
       throw new Error("Unsupported synthetic Window command; no Full/master fallback: " + command);
     } };
@@ -713,5 +729,40 @@ test("Window PNG browser decode failure retries only the selected frame on an ex
   await expect.poll(() => frame.getByRole("img").evaluate(image => (image as HTMLImageElement).naturalWidth)).toBe(1);
   expect(await nativeWindowTrace(page, "preview_native_frame")).toEqual([before[0], before[0]]);
   expect((await nativeWindowTrace(page, "render_motion_canvas_window")).length).toBe(1);
+  await expectNoWindowPromotion(page);
+});
+
+test("reduced native window selection uses provider raster identity without changing delivery or reusing a different scale",async({page})=>{
+  const boot=await installNativeWindowFixture(page);
+  const revision=await prepareWindowThroughUi(page,boot);
+  const profile=boot.project.deliverables[0];
+  const scale=page.getByLabel("Native preview resolution",{exact:true});
+  await scale.selectOption("half");
+  await page.getByLabel("Source window start frame",{exact:true}).fill("0");
+  await page.getByLabel("Source window end frame (exclusive)",{exact:true}).fill("2");
+  expect(await nativeWindowTrace(page,"render_motion_canvas_window")).toEqual([]);
+  await page.getByRole("button",{name:"Capture native window",exact:true}).click();
+  const evidence=page.getByLabel("Native window evidence");
+  await expect(evidence).toContainText("Provider-rendered half raster: "+profile.width/2+" x "+profile.height/2);
+  const request=(await nativeWindowTrace(page,"render_motion_canvas_window"))[0] as unknown as SyntheticWindowRequest;
+  expect(request.window.render_scale).toBe("half");
+  expect(request.reuse_token).toBeNull();
+  expect(Object.keys(request.window).sort()).toEqual(["deliverable_id","options","render_scale","source_scene_id","source_window"]);
+  await page.getByRole("button",{name:"Show window frames",exact:true}).click();
+  const frame=page.getByRole("region",{name:"Native window PNG frame preview",exact:true});
+  await expect.poll(()=>frame.getByRole("img").evaluate(image=>(image as HTMLImageElement).naturalWidth)).toBe(profile.width/2);
+  await expect(frame).toContainText("not full-resolution source fidelity");
+  await page.getByRole("button",{name:"Reuse original window",exact:true}).click();
+  await expect.poll(async()=>(await nativeWindowTrace(page,"render_motion_canvas_window")).length).toBe(2);
+  await expect(page.getByRole("button",{name:"Capture native window",exact:true})).toBeEnabled();
+  const reuse=(await nativeWindowTrace(page,"render_motion_canvas_window"))[1] as unknown as SyntheticWindowRequest;
+  expect(reuse.window.render_scale).toBe("half");expect(reuse.reuse_token).toBeTruthy();
+  await scale.selectOption("quarter");
+  await expect(evidence).toHaveCount(0);
+  await expect(frame).toHaveCount(0);
+  await expect(page.getByRole("button",{name:"Reuse original window",exact:true})).toBeDisabled();
+  await page.getByRole("button",{name:"Capture native window",exact:true}).click();
+  await expect(evidence).toContainText("Provider-rendered quarter raster: "+profile.width/4+" x "+profile.height/4);
+  await expect(page.locator(".revision-chip")).toHaveText("r"+revision);
   await expectNoWindowPromotion(page);
 });

@@ -1100,7 +1100,7 @@ export async function renderMotionCanvasWindow(
     throw new Error("Native window intent belongs to another saved source.");
   }
   const options = savedFilmOptions(project, profile.id, intent.window.options);
-  const submitted = createNativeWindowIntent(project, scene, profile, intent.window.source_window, options, intent.request_id, intent.reuse_token);
+  const submitted = createNativeWindowIntent(project, scene, profile, intent.window.source_window, options, intent.request_id, intent.reuse_token, intent.window.render_scale ?? "full");
   beforeDispatch?.();
   const grant = await issueEffectGrant("render_local", project, submitted.request_id);
   beforeDispatch?.();

@@ -106,7 +106,7 @@ import { nativeFrameAtPlayhead } from "./nativeFrameSelection";
 import {
   clearConfirmedNativeWindow, createNativeWindowIntent, markNativeWindowUncertain,
   nativeWindowCutRange, nativeWindowFrameAtPlayhead, nativeWindowIntentMatches,
-  nativeWindowReuseToken, nativeWindowSceneBounds, parseNativeWindowRange, readNativeWindowUncertainties,
+  nativeWindowReuseToken, nativeWindowSceneBounds, nativeWindowRaster, parseNativeWindowRange, readNativeWindowUncertainties,
   NATIVE_WINDOW_UNCERTAINTY_PREFIX,
   type NativeWindowIntent, type NativeWindowReceipt, type NativeWindowUncertaintyClaim,
 } from "./nativeWindowPreview";
@@ -239,6 +239,7 @@ function IconButton({
 }
 
 interface NativeWindowEditorState {
+  renderScale?: import("./types").NativeWindowScale;
   startRaw: string;
   endRaw: string;
   receipt: NativeWindowReceipt | null;
@@ -300,8 +301,10 @@ export function PreviewSurface({
     } catch (reason) { windowInputIssue = reason instanceof Error ? reason.message : "The saved source window is unavailable."; }
   }
   const windowEditor = windowEditors?.[windowDraftKey] ?? { startRaw: defaultBounds.start, endRaw: defaultBounds.end, receipt: null, pending: null, error: null };
+  const windowScale = windowEditor.renderScale ?? "full";
   if (scene && profile && !windowInputIssue) {
     try {
+      nativeWindowRaster(profile, windowScale);
       windowOptions = savedNativeWindowFilmOptions(project, profile.id);
       windowRange = parseNativeWindowRange(scene, windowOptions.frame_rate, windowEditor.startRaw, windowEditor.endRaw);
       cutRange = nativeWindowCutRange(project, scene, profile, windowRange, windowOptions.frame_rate);
@@ -321,20 +324,20 @@ export function PreviewSurface({
     catch (reason) { return { unresolvedWindows: [], windowCopyIssue: reason instanceof Error ? reason.message : "The original window outcome copy is unavailable." }; }
   }, [desktopMode, onWindowEditors, project, windowEditors, windowStorageVersion]);
   const currentWindowReceipt = scene && profile && windowRange && windowOptions && windowEditor.receipt
-    && nativeWindowIntentMatches(windowEditor.receipt.intent, project, scene, profile, windowRange, windowOptions)
+    && nativeWindowIntentMatches(windowEditor.receipt.intent, project, scene, profile, windowRange, windowOptions, windowScale)
     ? windowEditor.receipt : null;
   const windowFrame = nativeWindowFrameAtPlayhead(project, scene, profile, currentWindowReceipt, playhead);
   const windowAuthorityKey = JSON.stringify(["window", project.id, project.generation, project.active_branch,
-    project.revision, scene?.id, profile?.id, windowEditor.startRaw, windowEditor.endRaw, windowOptions,
+    project.revision, scene?.id, profile?.id, windowEditor.startRaw, windowEditor.endRaw, windowOptions, windowScale,
     currentWindowReceipt?.response.preview.token]);
   const windowDispatchContext = JSON.stringify([project.id, project.generation, project.active_branch,
-    project.revision, scene?.id, profile?.id, windowEditor.startRaw, windowEditor.endRaw, windowOptions]);
-  const windowCurrent = useRef({ context: windowDispatchContext, epoch: 0, project, scene, profile, range: windowRange, options: windowOptions });
+    project.revision, scene?.id, profile?.id, windowEditor.startRaw, windowEditor.endRaw, windowOptions, windowScale]);
+  const windowCurrent = useRef({ context: windowDispatchContext, epoch: 0, project, scene, profile, range: windowRange, options: windowOptions, scale: windowScale });
   if (windowCurrent.current.context !== windowDispatchContext) {
     windowCurrent.current = { context: windowDispatchContext, epoch: windowCurrent.current.epoch + 1,
-      project, scene, profile, range: windowRange, options: windowOptions };
+      project, scene, profile, range: windowRange, options: windowOptions, scale: windowScale };
   } else {
-    windowCurrent.current = { ...windowCurrent.current, project, scene, profile, range: windowRange, options: windowOptions };
+    windowCurrent.current = { ...windowCurrent.current, project, scene, profile, range: windowRange, options: windowOptions, scale: windowScale };
   }
   const windowMounted = useRef(false);
   const windowDispatchBusy = useRef(false);
@@ -354,7 +357,7 @@ export function PreviewSurface({
     const originalEpoch = windowCurrent.current.epoch;
     const originalContext = windowCurrent.current.context;
     let intent: NativeWindowIntent;
-    try { intent = createNativeWindowIntent(project, scene, profile, windowRange, windowOptions, crypto.randomUUID()); }
+    try { intent = createNativeWindowIntent(project, scene, profile, windowRange, windowOptions, crypto.randomUUID(), null, windowScale); }
     catch (reason) {
       updateWindow(key, initial, value => ({ ...value, error: reason instanceof Error ? reason.message : "The saved window intent is invalid." }));
       return;
@@ -368,7 +371,7 @@ export function PreviewSurface({
       const now = windowCurrent.current;
       return windowMounted.current && now.epoch === originalEpoch && now.context === originalContext
         && now.scene !== null && now.profile !== null && now.range !== null && now.options !== null
-        && nativeWindowIntentMatches(intent, now.project, now.scene, now.profile, now.range, now.options);
+        && nativeWindowIntentMatches(intent, now.project, now.scene, now.profile, now.range, now.options, now.scale);
     };
     const beforeDispatch = () => {
       if (!fresh()) throw new Error("Window selection changed while preparing its grant; no native command was dispatched.");
@@ -498,6 +501,15 @@ export function PreviewSurface({
                   style={{ width: "12ch", maxWidth: "100%" }} value={windowEditor.endRaw}
                   onChange={event => { const raw = event.target.value; updateWindow(windowDraftKey, windowEditor, value => ({ ...value, endRaw: raw, error: null })); }} />
               </label>
+              <label style={{ display: "grid", gap: 3, minWidth: 0 }}>Native preview resolution
+                <select aria-label="Native preview resolution" value={windowScale} disabled={anyWindowPending}
+                  onChange={event => { const scale = event.target.value as import("./types").NativeWindowScale;
+                    updateWindow(windowDraftKey, windowEditor, value => ({ ...value, renderScale: scale, error: null })); }}>
+                  <option value="full">Full raster</option>
+                  <option value="half">Half raster (50%)</option>
+                  <option value="quarter">Quarter raster (25%)</option>
+                </select>
+              </label>
               <button type="button" className="button compact" disabled={!desktopMode || !scene || !profile || !windowRange || !windowOptions
                 || anyWindowPending || unresolvedWindows.length > 0 || windowCopyIssue !== null}
                 onClick={() => { void captureWindow(false); }}>Capture native window</button>
@@ -510,6 +522,7 @@ export function PreviewSurface({
             {windowInputIssue && <p role="status" style={{ margin: 0 }}>{windowInputIssue}</p>}
             {cutRange && windowRange && <p style={{ margin: 0 }} aria-label="Selected native window coordinates">
               Source frames {windowRange.start} to {windowRange.end} (end excluded); selected cut {formatTime(seconds(cutRange.start), rate, mode)} to {formatTime(seconds(cutRange.end), rate, mode)}.
+              {profile && windowScale !== "full" && <span> Native preview raster {profile.width / (windowScale === "half" ? 2 : 4)} x {profile.height / (windowScale === "half" ? 2 : 4)}. Saved delivery resolution unchanged.</span>}
             </p>}
             {anyWindowPending && <p role="status" style={{ margin: 0 }}>Waiting for the original window request. No native request will be retried.</p>}
             {(windowCopyIssue || (unresolvedWindows.length > 0 && !anyWindowPending)) && <p role="alert" style={{ margin: 0 }}>
@@ -519,6 +532,7 @@ export function PreviewSurface({
             {windowEditor.error && <p role="alert" style={{ margin: 0 }}>{windowEditor.error}</p>}
             {currentWindowReceipt && <div role="status" aria-label="Native window evidence" style={{ minWidth: 0 }}>
               <strong>WINDOW · {currentWindowReceipt.response.window.validation.verdict} · PREVIEW ONLY · NOT A MASTER</strong>
+              {currentWindowReceipt.response.window.raster && <p style={{ margin: "4px 0 0" }}>Provider-rendered {currentWindowReceipt.response.window.raster.scale} raster: {currentWindowReceipt.response.window.raster.width} x {currentWindowReceipt.response.window.raster.height}. Not full-resolution fidelity evidence.</p>}
               <p style={{ margin: "4px 0 0" }}>Source frames {currentWindowReceipt.response.window.source_window.start} to {currentWindowReceipt.response.window.source_window.end} (end excluded). Coverage {currentWindowReceipt.response.window.validation.native_frame_coverage}.</p>
               <details style={{ marginTop: 4, minWidth: 0 }}>
                 <summary>Capture details</summary>

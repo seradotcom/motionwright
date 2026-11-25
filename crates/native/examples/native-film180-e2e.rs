@@ -3356,6 +3356,7 @@ mod window_cycle {
     fn selected_request(project: &Project) -> FixtureResult<MotionCanvasWindowRequest> {
         let options = authored_options(project)?;
         Ok(MotionCanvasWindowRequest {
+            render_scale: motionwright_native::production::MotionCanvasWindowScale::Full,
             deliverable_id: project.deliverables[0].id,
             source_scene_id: project.scenes[1].id,
             source_window: ORIGINAL_WINDOW,

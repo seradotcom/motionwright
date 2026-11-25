@@ -3,7 +3,7 @@ import { fixtureProject } from "./fixture";
 import {
   acceptNativeWindowReceipt, createNativeWindowIntent, nativeWindowCutRange,
   nativeWindowFrameAtPlayhead, nativeWindowIntentMatches, nativeWindowReuseToken,
-  nativeWindowSceneBounds, parseNativeWindowRange,
+  nativeWindowSceneBounds, nativeWindowRaster, requireNativeWindowRasterPng, parseNativeWindowRange,
   clearConfirmedNativeWindow, markNativeWindowUncertain, readNativeWindowUncertainties,
   type NativeWindowIntent,
 } from "./nativeWindowPreview";
@@ -304,5 +304,41 @@ describe("native Window authority uses source frames and the original bounded re
     peerStore.values.set(peerCopy.key, "{incomplete preserved original");
     expect(() => readNativeWindowUncertainties(peerStore.surface, f.project)).toThrow();
     expect(peerStore.surface.getItem(peerCopy.key)).toBe("{incomplete preserved original");
+  });
+});
+
+describe("actual native preview raster selection", () => {
+  it("retains original source and timing, separates cache reuse and rejects substituted dimensions", () => {
+    const f=selected(),before=structuredClone(f.project);
+    const half=createNativeWindowIntent(f.project,f.scene,f.profile,f.range,f.options,"half-window",null,"half");
+    const quarter=createNativeWindowIntent(f.project,f.scene,f.profile,f.range,f.options,"quarter-window",null,"quarter");
+    expect(half.window.render_scale).toBe("half");
+    expect(half.expected_raster).toEqual({scale:"half",width:f.profile.width/2,height:f.profile.height/2});
+    expect(f.intent.window).not.toHaveProperty("render_scale");
+    expect(quarter.window.source_window).toEqual(half.window.source_window);
+    expect(quarter.window.options).toEqual(half.window.options);
+    const actual=reply(half);actual.window.raster=half.expected_raster!;
+    const retained=acceptNativeWindowReceipt(half,actual);
+    expect(nativeWindowReuseToken(half,retained)).toBe(token);
+    expect(nativeWindowReuseToken(quarter,retained)).toBeNull();
+    expect(nativeWindowReuseToken(f.intent,retained)).toBeNull();
+    expect(nativeWindowIntentMatches(half,f.project,f.scene,f.profile,f.range,f.options,"quarter")).toBe(false);
+    expect(()=>acceptNativeWindowReceipt(half,reply(half))).toThrow();
+    expect(()=>acceptNativeWindowReceipt(f.intent,actual)).toThrow();
+    expect(()=>acceptNativeWindowReceipt(half,{...actual,window:{...actual.window,raster:quarter.expected_raster}})).toThrow();
+    expect(()=>nativeWindowRaster({...f.profile,width:1918},"quarter")).toThrow();
+    expect(f.project).toEqual(before);
+  });
+  it("checks the actual reduced PNG header dimensions before display",()=>{
+    const f=selected(),raster=nativeWindowRaster(f.profile,"half")!;
+    const bytes=new Uint8Array(33);
+    bytes.set([137,80,78,71,13,10,26,10]);
+    const view=new DataView(bytes.buffer);
+    view.setUint32(8,13);view.setUint32(12,0x49484452);
+    view.setUint32(16,raster.width);view.setUint32(20,raster.height);
+    expect(()=>requireNativeWindowRasterPng(bytes,raster)).not.toThrow();
+    view.setUint32(16,f.profile.width);
+    expect(()=>requireNativeWindowRasterPng(bytes,raster)).toThrow(/dimensions/);
+    expect(()=>requireNativeWindowRasterPng(bytes.subarray(0,12),raster)).toThrow();
   });
 });

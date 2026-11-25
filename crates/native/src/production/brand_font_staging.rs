@@ -1730,6 +1730,7 @@ mod tests {
             let expected = RevisionStamp::from(&project);
             let options = queued_film_options(&project);
             let request = MotionCanvasWindowRequest {
+                render_scale: crate::production::MotionCanvasWindowScale::Full,
                 deliverable_id: project.deliverables[0].id,
                 source_scene_id: Uuid::new_v4(),
                 source_window: motionwright_domain::SourceFrameWindow { start: 0, end: 1 },
@@ -2120,6 +2121,7 @@ mod tests {
             let expected = RevisionStamp::from(&project);
             let options = queued_film_options(&project);
             let request = MotionCanvasWindowRequest {
+                render_scale: crate::production::MotionCanvasWindowScale::Full,
                 deliverable_id: project.deliverables[0].id,
                 source_scene_id: Uuid::new_v4(),
                 source_window: motionwright_domain::SourceFrameWindow { start: 0, end: 1 },
@@ -2189,6 +2191,7 @@ mod tests {
                     .all(|profile| profile.id != absent_deliverable)
             );
             let request = MotionCanvasWindowRequest {
+                render_scale: crate::production::MotionCanvasWindowScale::Full,
                 deliverable_id: absent_deliverable,
                 source_scene_id: Uuid::new_v4(),
                 source_window: motionwright_domain::SourceFrameWindow { start: 0, end: 1 },
