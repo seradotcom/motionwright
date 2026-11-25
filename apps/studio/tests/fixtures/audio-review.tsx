@@ -1,6 +1,7 @@
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import AudioReviewTransport from "../../src/AudioReviewTransport";
+import NativeAvReview from "../../src/NativeAvReview";
 import { audioReviewScope, type AudioReviewRequest } from "../../src/audioReviewClock";
 import { useLocalAudioElement } from "../../src/audioReviewPlayback";
 import { fixtureBootstrap } from "../../src/fixture";
@@ -32,8 +33,14 @@ function Fixture() {
   const [session,setSession]=useState<{key:number;request:AudioReviewRequest}|null>({key:1,request:{
     scope:audioReviewScope(initial),kind:"mix",sourceId:initial.deliverables[0].id,label:"Synthetic full-cut review",wav:original}});
   const other=useLocalAudioElement();
+  const [native,setNative]=useState(false);
   return <main>
     <h1>Synthetic component transport fixture</h1>
+    <button onClick={()=>setNative(value=>!value)}>{native?"Close":"Open"} synthetic MP4 component</button>
+    {native&&<div style={{position:"relative",width:420,height:300}}>
+      <NativeAvReview project={project} exportToken="synthetic-media-clock" embedded
+        seekTimeSeconds={playhead} onMediaTime={setPlayhead} onMediaPlay={()=>setDesign(false)} editorialPlaying={design}/>
+    </div>}
     <output aria-label="Observed project playhead">{playhead.toFixed(6)}</output>
     <output aria-label="Observed design playback">{String(design)}</output>
     <button onClick={()=>setPlayhead(3)}>Seek project to three seconds</button>

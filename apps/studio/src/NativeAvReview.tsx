@@ -1,5 +1,6 @@
 import { CircleDashed, RefreshCw, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useLocalMediaElement } from "./audioReviewPlayback";
 import { readNativeAvAudioQc, readVerifiedNativeAvReview, readNativeAudioQcReceiptInventory, readNativeAudioQcReceipt } from "./api";
 import {
   audioQcStatusLabel, audioQcUnavailableText, createNativeAvReadGuard,
@@ -54,8 +55,10 @@ export default function NativeAvReview({
   const [storedMetadata, storeMetadata] = useState<{ key: string; value: string | null } | null>(null);
   const metadata = storedMetadata?.key === readKey ? storedMetadata.value : null;
   const setMetadata = (value: string | null) => storeMetadata({ key: readKey, value });
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const localPlayer = useLocalMediaElement<HTMLVideoElement>();
+  const videoRef = localPlayer.element;
   const lastReportedMediaTimeRef = useRef<number | null>(null);
+  const editorSeekRef = useRef<number | null>(null);
   // React Strict Mode replays effect setup/cleanup during mount. Reuse the
   // same in-flight read without caching settled media beyond the active view.
   const pendingRef = useRef<{ key: string; promise: Promise<Uint8Array> } | null>(null);
@@ -66,6 +69,7 @@ export default function NativeAvReview({
     setPlayback({ kind: "loading" });
     setMetadata(null);
     lastReportedMediaTimeRef.current = null;
+    editorSeekRef.current = null;
     const existing = pendingRef.current;
     const promise = existing?.key === readKey ? existing.promise
       : readVerifiedNativeAvReview(project, exportToken);
@@ -114,7 +118,11 @@ export default function NativeAvReview({
       return;
     }
     if (Math.abs(player.currentTime - requested) >= 0.015) {
+      // An explicit editor seek hands the clock back to the editor. Continuing
+      // playback here would immediately overwrite the exact selected frame.
+      player.pause();
       try {
+        editorSeekRef.current = requested;
         player.currentTime = requested;
       } catch {
         // Some WebViews require loadedmetadata; that event re-applies the seek.
@@ -136,7 +144,7 @@ export default function NativeAvReview({
       {playback.kind === "ready" ? (
         <video
           key={playback.url}
-          ref={videoRef}
+          ref={localPlayer.bind}
           src={playback.url}
           controls
           playsInline
@@ -148,7 +156,8 @@ export default function NativeAvReview({
             if (typeof seekTimeSeconds === "number" && Number.isFinite(seekTimeSeconds)
               && Number.isFinite(video.duration)) {
               try {
-                video.currentTime = Math.max(0, Math.min(seekTimeSeconds, video.duration));
+                editorSeekRef.current = Math.max(0, Math.min(seekTimeSeconds, video.duration));
+                video.currentTime = editorSeekRef.current;
               } catch {
                 // Some native decoders reject seeks until the initial frame is ready.
               }
@@ -160,9 +169,25 @@ export default function NativeAvReview({
               );
             }
           }}
-          onPlay={() => { if (visibleKey.current === readKey) onMediaPlay?.(); }}
-          onTimeUpdate={(event) => {
+          onPlay={(event) => {
+            if (visibleKey.current !== readKey) { event.currentTarget.pause(); return; }
+            localPlayer.claim();
+            onMediaPlay?.();
+          }}
+          onSeeking={(event) => {
             if (visibleKey.current !== readKey) return;
+            if (editorSeekRef.current !== null && Math.abs(event.currentTarget.currentTime - editorSeekRef.current) < 0.015) return;
+            editorSeekRef.current = null;
+            // A seek made in the media controls owns the clock; a seek applied
+            // from the editor only mirrors it and cannot steal audio playback.
+            localPlayer.claim();
+          }}
+          onSeeked={(event) => {
+            if (editorSeekRef.current !== null && Math.abs(event.currentTarget.currentTime - editorSeekRef.current) < 0.015)
+              editorSeekRef.current = null;
+          }}
+          onTimeUpdate={(event) => {
+            if (visibleKey.current !== readKey || !localPlayer.ownsPlayback()) return;
             const current = event.currentTarget.currentTime;
             if (!Number.isFinite(current)) return;
             lastReportedMediaTimeRef.current = current;

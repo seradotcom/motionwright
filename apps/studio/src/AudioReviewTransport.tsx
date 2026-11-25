@@ -31,7 +31,7 @@ function MappedAudioReview({ project, request, clock, playhead, editorialPlaying
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const frame = useRef<number | null>(null), lastEmitted = useRef<number | null>(null);
-  const suppressPauseSample = useRef(false);
+  const suppressPauseSample = useRef(false), editorSeek = useRef<number | null>(null);
   const live = useRef({ playhead, onSeek, clock }); live.current = { playhead, onSeek, clock };
   const inside = projectToAudioMedia(clock, playhead) !== null;
   const stopFrame = () => { if (frame.current !== null) cancelAnimationFrame(frame.current); frame.current = null; };
@@ -74,7 +74,9 @@ function MappedAudioReview({ project, request, clock, playhead, editorialPlaying
       setNotice("The project playhead is outside this reviewed audio range. Seek to an included scene or the audio start.");
       return;
     }
-    if (Math.abs(element.currentTime - next) > .5 / clock.sampleRate) element.currentTime = next;
+    if (Math.abs(element.currentTime - next) > .5 / clock.sampleRate) {
+      editorSeek.current = next; element.currentTime = next;
+    }
     lastEmitted.current = playhead; setNotice(null);
   }, [playhead, editorialPlaying, clock]);
   const metadata = () => {
@@ -88,7 +90,7 @@ function MappedAudioReview({ project, request, clock, playhead, editorialPlaying
     }
     readyRef.current = true; setReady(true); setError(null);
     const next = projectToAudioMedia(clock, live.current.playhead);
-    if (next !== null) { element.currentTime = next; lastEmitted.current = live.current.playhead; }
+    if (next !== null) { editorSeek.current = next; element.currentTime = next; lastEmitted.current = live.current.playhead; }
   };
   return <section className="audio-review-transport" aria-label="Timeline audio review">
     <div className="audio-review-heading">
@@ -102,10 +104,18 @@ function MappedAudioReview({ project, request, clock, playhead, editorialPlaying
           if (!readyRef.current || !inside || error) { player.pause(); return; }
           suppressPauseSample.current = false; player.claim(); setNotice(null); stopFrame(); tick();
         }}
-        onPause={() => { stopFrame(); if (!suppressPauseSample.current) publish(); suppressPauseSample.current = false; }}
-        onSeeking={() => { if (readyRef.current) publish(); }}
-        onTimeUpdate={() => { if (readyRef.current && !player.element.current?.paused) publish(); }}
-        onEnded={() => { stopFrame(); publish(); }}
+        onPause={() => { stopFrame(); if (!suppressPauseSample.current && player.ownsPlayback()) publish(); suppressPauseSample.current = false; }}
+        onSeeking={(event) => {
+          if (!readyRef.current) return;
+          if (editorSeek.current !== null && Math.abs(event.currentTarget.currentTime - editorSeek.current) < .5 / clock.sampleRate) return;
+          editorSeek.current = null; player.claim(); publish();
+        }}
+        onSeeked={(event) => {
+          if (editorSeek.current !== null && Math.abs(event.currentTarget.currentTime - editorSeek.current) < .5 / clock.sampleRate)
+            editorSeek.current = null;
+        }}
+        onTimeUpdate={() => { if (readyRef.current && player.ownsPlayback() && !player.element.current?.paused) publish(); }}
+        onEnded={() => { stopFrame(); if (player.ownsPlayback()) publish(); }}
         onError={() => { readyRef.current = false; setReady(false); stopFrame(); setError("The local decoder could not read this verified WAV."); }}/>
       <button type="button" className="button compact" disabled={!ready || !!error}
         onClick={() => { const first = audioMediaToProject(clock, 0); if (first !== null) onSeek(first); }}>
