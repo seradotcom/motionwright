@@ -466,16 +466,22 @@ export async function realizeProductHero(id: string, config: HeroConfig, w = 192
 async function realizeTypographyHero(id: string, config: HeroConfig, w: number, h: number): Promise<CanvasNode[]> {
   const contrast = config.layout === "typography_contrast", compact = h >= w;
   const scale = Math.min(w, h) / 1080, left = w * .10;
-  const headline = wrapCopy(config.headline, contrast ? compact ? 19 : 20 : compact ? 22 : 27, 3);
-  const body = wrapCopy(config.body, contrast ? compact ? 34 : 24 : compact ? 36 : 56, contrast ? 4 : 3);
+  const headlineWidth = w * (contrast && !compact ? .46 : .80);
+  const headlineFontSize = (contrast ? compact ? 70 : 76 : compact ? 72 : 88) * scale;
+  const bodyWidth = w * (contrast && !compact ? .28 : .80);
+  const bodyFontSize = (contrast ? compact ? 36 : 38 : 30) * scale;
+  const fitColumns = (cap: number, width: number, fontSize: number) =>
+    Math.min(cap, Math.floor(width * .96 / (fontSize * .56)));
+  const headline = wrapCopy(config.headline, fitColumns(contrast ? compact ? 19 : 20 : compact ? 22 : 27, headlineWidth, headlineFontSize), 3);
+  const body = wrapCopy(config.body, fitColumns(contrast ? compact ? 34 : 24 : compact ? 36 : 56, bodyWidth, bodyFontSize), contrast ? 4 : 3);
   const entries: Array<[string, string, number, number, number, number, number, number]> = [
     ["eyebrow", config.eyebrow, left, h * .12, w * .80, h * .05, 23 * scale, 500],
     ["headline", headline, left, h * (contrast ? .24 : .26),
-      w * (contrast && !compact ? .46 : .80), h * (contrast ? compact ? .25 : .35 : .32),
-      (contrast ? compact ? 70 : 76 : compact ? 72 : 88) * scale, 600],
+      headlineWidth, h * (contrast ? compact ? .25 : .35 : .32),
+      headlineFontSize, 600],
     ["body", body, contrast && !compact ? w * .62 : left, h * (contrast ? compact ? .58 : .35 : .66),
-      w * (contrast && !compact ? .28 : .80), h * (contrast ? compact ? .18 : .28 : .15),
-      (contrast ? compact ? 36 : 38 : 30) * scale, 400],
+      bodyWidth, h * (contrast ? compact ? .18 : .28 : .15),
+      bodyFontSize, 400],
     ["wordmark", config.wordmark, left, h * .86, w * .20, h * .05, 27 * scale, 600],
     ["rule", "", contrast && !compact ? w * .58 : left, h * (contrast ? compact ? .535 : .235 : .60),
       contrast && !compact ? 3 * scale : w * (contrast ? .80 : .32), contrast && !compact ? h * .45 : 3 * scale, 0, 400],

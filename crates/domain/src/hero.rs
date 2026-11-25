@@ -515,26 +515,53 @@ fn realize_typography_hero(
     let compact = h >= w;
     let scale = w.min(h) / 1080.0;
     let left = w * 0.10;
+    let headline_width = w * if contrast && !compact { 0.46 } else { 0.80 };
+    let headline_font_size = (if contrast {
+        if compact { 70.0 } else { 76.0 }
+    } else if compact {
+        72.0
+    } else {
+        88.0
+    }) * scale;
+    let body_width = w * if contrast && !compact { 0.28 } else { 0.80 };
+    let body_font_size = (if contrast {
+        if compact { 36.0 } else { 38.0 }
+    } else {
+        30.0
+    }) * scale;
+    // Do not allow the wrapper to produce lines wider than the declared
+    // text box. Keep the original editorial caps and the subsequent guard.
+    let fit_columns = |cap: usize, width: f64, font_size: f64| {
+        cap.min((width * 0.96 / (font_size * 0.56)).floor() as usize)
+    };
     let headline = wrap_copy(
         &config.headline,
-        if contrast {
-            if compact { 19 } else { 20 }
-        } else if compact {
-            22
-        } else {
-            27
-        },
+        fit_columns(
+            if contrast {
+                if compact { 19 } else { 20 }
+            } else if compact {
+                22
+            } else {
+                27
+            },
+            headline_width,
+            headline_font_size,
+        ),
         3,
     )?;
     let body = wrap_copy(
         &config.body,
-        if contrast {
-            if compact { 34 } else { 24 }
-        } else if compact {
-            36
-        } else {
-            56
-        },
+        fit_columns(
+            if contrast {
+                if compact { 34 } else { 24 }
+            } else if compact {
+                36
+            } else {
+                56
+            },
+            body_width,
+            body_font_size,
+        ),
         if contrast { 4 } else { 3 },
     )?;
     let entries = [
@@ -553,19 +580,13 @@ fn realize_typography_hero(
             headline,
             left,
             h * if contrast { 0.24 } else { 0.26 },
-            w * if contrast && !compact { 0.46 } else { 0.80 },
+            headline_width,
             h * if contrast {
                 if compact { 0.25 } else { 0.35 }
             } else {
                 0.32
             },
-            (if contrast {
-                if compact { 70.0 } else { 76.0 }
-            } else if compact {
-                72.0
-            } else {
-                88.0
-            }) * scale,
+            headline_font_size,
             600,
         ),
         (
@@ -577,17 +598,13 @@ fn realize_typography_hero(
             } else {
                 0.66
             },
-            w * if contrast && !compact { 0.28 } else { 0.80 },
+            body_width,
             h * if contrast {
                 if compact { 0.18 } else { 0.28 }
             } else {
                 0.15
             },
-            (if contrast {
-                if compact { 36.0 } else { 38.0 }
-            } else {
-                30.0
-            }) * scale,
+            body_font_size,
             400,
         ),
         (

@@ -3021,6 +3021,7 @@ fn seed_procedural(
         reveal_step_frames: if animated { 6 } else { 0 },
         reveal_duration_frames: 18,
         influence: None,
+        path: None,
     };
     let project = service
         .apply(

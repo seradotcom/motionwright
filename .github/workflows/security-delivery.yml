@@ -471,16 +471,16 @@ jobs:
           cohort_status=0
           selected_check() { "$@" || cohort_status=1; }
           selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-domain --lib nested_static_group_order_validates_all_ancestors_and_sibling_scopes -- --test-threads=1
-          selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-domain --test camera_reframe --test procedural_fields --test craft_components --test caption_emphasis --test production_design --test scene_beat_timeline --test delivery_family_propagation --test native_capsule_source_atomicity -- --test-threads=1
+          selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-domain --test camera_reframe --test procedural_fields --test craft_components --test caption_emphasis --test production_design --test scene_beat_timeline --test delivery_family_propagation --test native_capsule_source_atomicity --test music_clock -- --test-threads=1
           selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-native --lib film::tests:: -- --test-threads=1
           selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-native --test procedural_fields --test craft_components --test native_caption_burn_in -- --test-threads=1
           selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-native --lib hyperframes::tests:: -- --test-threads=1
-          selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-native --test blender_studio_recipe --test blender_static_camera_source -- --test-threads=1
+          selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-native --test blender_studio_recipe --test blender_static_camera_source --test voice_audition -- --test-threads=1
           selected_check cargo test --locked --jobs 2 -p motionwright-native --lib original_blender_plan_ -- --test-threads=1
           selected_check cargo test --locked --jobs 2 -p motionwright-native --lib lit_scene_projects_the_saved_orthographic_zoom_and_roll_into_native_camera -- --test-threads=1
           selected_check cargo test --locked --jobs 2 -p motionwright-domain --lib explicit_music_source_window_is_a_bounded_exact_saved_cut -- --test-threads=1
           selected_check cargo test --locked --jobs 2 -p motionwright-native --test saved_original_mix saved_music_window_selects_exact_original_samples_and_reopens_without_source_rewrite -- --test-threads=1
-          selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-service --test scene_beat_timeline --test delivery_family_persistence --test native_capsule_source_import -- --test-threads=1
+          selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-service --test scene_beat_timeline --test delivery_family_persistence --test native_capsule_source_import --test music_cut_persistence -- --test-threads=1
           exit "$cohort_status"
       - name: Build the exact-source StudioService test transport
         run: cargo build --locked --jobs 2 -p motionwright-service --example studio_review_session

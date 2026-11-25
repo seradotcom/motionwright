@@ -13,6 +13,7 @@ const request = "00000000-0000-4000-8000-000000000006", writer = "00000000-0000-
 const layouts: HeroLayout[] = ["typography_focus", "typography_contrast"];
 const copy = [
   ["One clear idea", "Space for the supporting thought."],
+  ["A deliberate original idea", "An independently authored supporting idea with clear intent"],
   ["Una idea clara", "Espacio para lo que importa."],
   ["Une idée claire", "Un espace pour le sens du message."],
 ];
@@ -42,6 +43,7 @@ describe("original editable headline and contrast typography", () => {
         if (node.kind === "text") {
           const font = node.style.font_size!, lines = node.text!.split("\n");
           expect(font * ((lines.length - 1) * 1.12 + 1.4)).toBeLessThanOrEqual(node.height * .96);
+          expect(Math.max(...lines.map(line => Array.from(line).length)) * font * .56).toBeLessThanOrEqual(node.width * .96);
         }
       }
     }

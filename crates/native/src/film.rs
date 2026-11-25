@@ -5418,7 +5418,7 @@ mod tests {
                 for (at, value, interpolation) in [
                     (RationalTime::ZERO, 0.0, MotionInterpolation::Linear),
                     (
-                        RationalTime::new(1, 4).unwrap(),
+                        RationalTime::new(4, 15).unwrap(),
                         1.0,
                         MotionInterpolation::EaseOutCubic,
                     ),
@@ -7862,7 +7862,7 @@ mod tests {
                 }
             }
             let opacity = |target: &mut CanvasNode, values: [f64; 3]| {
-                for (frame, value) in [0, 15, 30].into_iter().zip(values) {
+                for (frame, value) in [0, 15, 29].into_iter().zip(values) {
                     target.keyframes.push(CanvasKeyframe {
                         at: RationalTime::new(frame, 30).unwrap(),
                         property: MotionProperty::Opacity,

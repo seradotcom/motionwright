@@ -64,7 +64,8 @@ fn exact_split_serializes_and_conditional_inverse_preserves_later_content_and_dr
     let encoded = serde_json::to_vec(&operation).unwrap();
     let decoded: Change = serde_json::from_slice(&encoded).unwrap();
     project.apply_change(&decoded).unwrap();
-    assert_eq!(project.revision, original.revision + 1);
+    // Domain projection does not commit a Store revision.
+    assert_eq!(project.revision, original.revision);
     assert_eq!(
         project.scenes[0].beats[0].id,
         original.scenes[0].beats[0].id
