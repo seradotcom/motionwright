@@ -230,7 +230,7 @@ for path in iter_source_files(ROOT):
             # the committed preview helper under the admitted runner's owned
             # process group/deadline; no shell or project-selected executable.
             "crates/native/examples/native-incremental-e2e.rs":
-                "543d0339a02763c295c9093722d5c8eacbce56b4097cb5d8e7d9bbb84d08a8b0",
+                "19cb956685fc30eebd6ff5b2b8ea282988d8b40d39b64f94cc175d16a1624e6d",
         }
         reviewed_process_fixture = (
             rel in reviewed_process_fixture_sources
