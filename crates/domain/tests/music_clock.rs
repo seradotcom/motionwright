@@ -76,6 +76,7 @@ fn music_window_origin_maps_both_edit_operations_without_rewriting_source_marks(
         original_mix: Some(OriginalMixRecipe {
             music_asset_id: Some(asset_id),
             music_source_start_sample: Some(24_001),
+            voice_cut_sha256: None,
             sfx_asset_id: None,
             sfx_gain_db: -8.0,
             duck_attenuation_db: 14.0,

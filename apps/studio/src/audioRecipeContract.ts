@@ -14,7 +14,7 @@ export interface DeliveryAudioTargets {
   target_true_peak_dbtp: number | null;
 }
 export const originalMixEnvelopeKeys = ["voice_envelope", "music_envelope", "sfx_envelope"] as const;
-export const originalMixOptionalKeys = [...originalMixEnvelopeKeys, "music_source_start_sample"] as const;
+export const originalMixOptionalKeys = [...originalMixEnvelopeKeys, "music_source_start_sample", "voice_cut_sha256"] as const;
 export const MAX_MUSIC_SOURCE_SAMPLE_FRAMES = 48_000 * 180;
 export const originalMixRequestKeys = [
   "music_asset_id", "sfx_asset_id", "sfx_gain_db",
@@ -64,6 +64,9 @@ export function assertAudioRecipeExtensions(recipe: { original_mix: unknown; aud
       || start >= MAX_MUSIC_SOURCE_SAMPLE_FRAMES || typeof recipe.original_mix.music_asset_id !== "string")
       throw new Error("Music source window requires a selected audio asset and a bounded exact start sample.");
   }
+  if (Object.hasOwn(recipe.original_mix, "voice_cut_sha256") &&
+      (typeof recipe.original_mix.voice_cut_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(recipe.original_mix.voice_cut_sha256)))
+    throw new Error("Voice cut requires a lower-case SHA-256 binding.");
   for (const key of originalMixEnvelopeKeys) {
     if (Object.hasOwn(recipe.original_mix, key)) assertOriginalMixBusEnvelope(recipe.original_mix[key]);
   }
@@ -113,9 +116,9 @@ export function validateAudioRecipeCut(project: Project, profileId: string, reci
   const samples = exactOutputSamples(scenes);
   if (start !== undefined) {
     const profile = project.deliverables.find(value => value.id === profileId)!;
-    if (profile.audio_sample_rate_hz !== 48000 || scenes.length !== project.scenes.length
-      || scenes.some((scene, index) => scene.id !== project.scenes[index].id))
-      throw new Error("Music source windows require the full original cut at 48 kHz.");
+    if (profile.audio_sample_rate_hz !== 48000 || (recipe.original_mix?.voice_cut_sha256 === undefined &&
+      (scenes.length !== project.scenes.length || scenes.some((scene, index) => scene.id !== project.scenes[index].id))))
+      throw new Error("Music source windows require the full original cut at 48 kHz or a saved voice cut binding.");
     if (samples < 48000n || BigInt(start) + samples > BigInt(MAX_MUSIC_SOURCE_SAMPLE_FRAMES))
       throw new Error("Music source window must fit the existing 180-second decode budget and a cut of at least one second.");
   }

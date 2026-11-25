@@ -14,6 +14,7 @@ export interface OriginalMixRecipe {
   music_asset_id: string | null;
   /** Explicit 1:1 window; absent preserves the historical whole-source mix. */
   music_source_start_sample?: number;
+  voice_cut_sha256?: string;
   sfx_asset_id: string | null;
   sfx_gain_db: number;
   duck_attenuation_db: number;
@@ -39,7 +40,7 @@ const numberFields = ["sfx_gain_db", "duck_attenuation_db", "duck_attack_samples
 const decimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
 export const mixEnvelopeFields = ["muted", "fade_in_samples", "fade_out_samples"] as const;
 const mixEnvelopeKeys = originalMixEnvelopeKeys.flatMap(bus => mixEnvelopeFields.map(field => bus + ":" + field));
-const mixKeys = ["enabled", "music_asset_id", "music_source_start_sample", "sfx_asset_id", ...numberFields, ...mixEnvelopeKeys];
+const mixKeys = ["enabled", "music_asset_id", "music_source_start_sample", "voice_cut_sha256", "sfx_asset_id", ...numberFields, ...mixEnvelopeKeys];
 const ownKeys = (value: unknown, keys: readonly string[], label: string, optional: readonly string[] = []): Record<string, unknown> => {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid " + label + ".");
   const record = value as Record<string, unknown>;
@@ -147,6 +148,7 @@ export function recipeFields(recipe: DeliveryRecipe | null, group: RecipeGroup):
     enabled: recipe?.original_mix ? "true" : "false",
     music_asset_id: mix.music_asset_id ?? "", sfx_asset_id: mix.sfx_asset_id ?? "",
     music_source_start_sample: mix.music_source_start_sample === undefined ? "" : String(mix.music_source_start_sample),
+    voice_cut_sha256: mix.voice_cut_sha256 ?? "",
     ...Object.fromEntries(numberFields.map(key => [key, String(mix[key])])),
     ...Object.fromEntries(originalMixEnvelopeKeys.flatMap(bus => [
       [bus + ":muted", String(mix[bus]?.muted ?? false)],
@@ -247,6 +249,12 @@ export function proposedDeliveryRecipe(current: DeliveryRecipe | null, draft: Re
     } else if (recipe.original_mix.music_source_start_sample !== undefined
       && recipe.original_mix.music_asset_id !== current?.original_mix?.music_asset_id) {
       throw new Error("Clear or explicitly revise the saved music source window before changing its source asset.");
+    }
+    if (Object.hasOwn(draft.edits, "voice_cut_sha256")) {
+      const binding = fields.voice_cut_sha256;
+      if (!binding) delete recipe.original_mix.voice_cut_sha256;
+      else if (/^[a-f0-9]{64}$/.test(binding)) recipe.original_mix.voice_cut_sha256 = binding;
+      else throw new Error("Review an exact original voice cut before saving its binding.");
     }
     for (const bus of originalMixEnvelopeKeys) {
       // Untouched buses retain their exact saved optional representation.

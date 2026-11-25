@@ -1,6 +1,7 @@
 import type { Project, RationalTime } from "./types";
 import { selectedAudioScenes } from "./audioRecipeContract";
 import { voiceAuditionSource } from "./voiceAudition";
+import { deriveVoiceCut, isOriginalVoiceMontage } from "./voiceCut";
 
 /** View-only mapping of verified PCM to the saved project. Exact rational
  * boundaries are accumulated before conversion to the browser's media clock. */
@@ -61,9 +62,20 @@ export function buildAudioReviewClock(project: Project, source: AudioReviewSourc
     const voice = voiceAuditionSource(project, profile.voice_track_id).track;
     if (voice.sample_rate_hz !== 48000 || voice.channels !== 2)
       return fail("The saved original mix requires the existing stereo 48-kHz voice source.");
-    if (profile.included_scene_ids.length && (profile.included_scene_ids.length !== project.scenes.length ||
-        profile.included_scene_ids.some((id, index) => id !== project.scenes[index].id)))
-      return fail("The current Native original mix supports the complete original cut. A partial or reordered delivery requires a different admitted audio realization.");
+    const binding = project.production_design?.delivery_recipes?.[profile.id]?.original_mix?.voice_cut_sha256;
+    if (isOriginalVoiceMontage(project, profile)) {
+      if (!binding || !/^[a-f0-9]{64}$/.test(binding))
+        return fail("The complete original cut is the default. Review and save an explicit voice cut binding for the montage.");
+      const cut = deriveVoiceCut(project, profile);
+      // Media is admitted only by the separately source-verified Native API.
+      // The exact saved scope and native output length are checked by playback.
+      const at = (samples: number) => fraction(BigInt(samples), 48000n);
+      return {sampleRate: 48000, sampleCount: cut.outputFrames, spans: cut.spans.map(span => ({
+        outputStart: at(span.outputStart), outputEnd: at(span.outputStart + span.sourceEnd - span.sourceStart),
+        projectStart: at(span.sourceStart), projectEnd: at(span.sourceEnd),
+      }))};
+    }
+    if (binding !== undefined) return fail("Saved voice cut binding is stale; clear or review it.");
     sampleRate = 48000; duration = ZERO; spans = [];
     const scenes = selectedAudioScenes(project, profile.id);
     if (!scenes.length || scenes.length > 512) return fail("Audio review needs a bounded nonempty saved cut.");

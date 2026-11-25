@@ -633,9 +633,15 @@ fn preflight_audio_source(
             "MLT FFV1 preparation does not match the canonical future AV profile and source fingerprint",
         ));
     }
+    let output_duration = if let Some(mix) = saved_mix {
+        motionwright_domain::RationalTime::new(mix.plan().sample_frames as i64, 48_000)
+            .map_err(|_| invalid("Saved mix output duration is invalid"))?
+    } else {
+        track.measured_duration
+    };
     measured_voice_matches_cut(
-        track.measured_duration.num,
-        track.measured_duration.den,
+        output_duration.num,
+        output_duration.den,
         recipe.total_frames,
         recipe.provider_profile.fps_num,
         recipe.provider_profile.fps_den,
@@ -699,7 +705,7 @@ fn preflight_audio_source(
     }
     let samples = verify_measured_voice_file(voice)?;
     if let Some(mix) = saved_mix
-        && (mix.plan().sample_frames != samples
+        && (mix.plan().measured_voice.sample_frames != samples
             || mix.plan().measured_voice.source_asset_sha256 != voice.sha256)
     {
         return Err(stale(
@@ -792,7 +798,7 @@ fn preflight_audio_source(
         voice_track_id: track.id,
         audio_sha256,
         audio_size_bytes,
-        audio_pcm_frames: samples,
+        audio_pcm_frames: saved_mix.map_or(samples, |mix| mix.plan().sample_frames),
         audio_sample_rate: 48_000,
         audio_channels: 2,
         video_input_sha256: recipe.input_sha256.clone(),

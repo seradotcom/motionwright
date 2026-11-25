@@ -42,6 +42,7 @@ mod semantic_graph;
 mod semantic_sfx;
 mod stage_capture;
 mod voice_alignment;
+mod voice_cut;
 pub use branch_combination::*;
 pub use brand_campaign::*;
 pub use brand_governance::*;
@@ -85,6 +86,7 @@ pub use semantic_sfx::*;
 pub use stage_capture::*;
 
 pub use voice_alignment::*;
+pub use voice_cut::*;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -1492,6 +1494,25 @@ impl Project {
                 }
                 if let Some(recipe) = recipe {
                     recipe.validate(&self.scenes, &self.assets)?;
+                    let binding = recipe
+                        .original_mix
+                        .as_ref()
+                        .and_then(|mix| mix.voice_cut_sha256.as_deref());
+                    let previous = self
+                        .production_design
+                        .delivery_recipes
+                        .get(deliverable_profile_id)
+                        .and_then(|recipe| recipe.original_mix.as_ref())
+                        .and_then(|mix| mix.voice_cut_sha256.as_deref());
+                    if let Some(binding) = binding.filter(|binding| Some(*binding) != previous) {
+                        let profile = self
+                            .deliverables
+                            .iter()
+                            .find(|profile| profile.id == *deliverable_profile_id)
+                            .expect("profile existence checked above");
+                        delivery::validate_localized_voice_authority(self, profile)?;
+                        resolve_original_voice_cut(self, profile, Some(binding))?;
+                    }
                     self.production_design
                         .delivery_recipes
                         .insert(*deliverable_profile_id, recipe.clone());

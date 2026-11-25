@@ -204,6 +204,13 @@ pub struct OriginalMixRecipe {
         deserialize_with = "deserialize_music_source_start_sample"
     )]
     pub music_source_start_sample: Option<u32>,
+    /// Explicit editorial binding to exact source voice/ordered sample spans.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_voice_cut_sha256"
+    )]
+    pub voice_cut_sha256: Option<String>,
     pub sfx_asset_id: Option<Uuid>,
     pub sfx_gain_db: f64,
     pub duck_attenuation_db: f64,
@@ -265,6 +272,24 @@ pub fn deserialize_music_source_start_sample<'de, D: Deserializer<'de>>(
     u32::deserialize(deserializer).map(Some)
 }
 
+pub fn deserialize_voice_cut_sha256<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    if !valid_voice_cut_sha256(&value) {
+        return Err(de::Error::custom(
+            "Voice cut requires a lower-case SHA-256 binding",
+        ));
+    }
+    Ok(Some(value))
+}
+fn valid_voice_cut_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 impl OriginalMixRecipe {
     /// Returns the explicit window's required length, not a measured source
     /// duration. Native decoding independently checks the complete CAS WAV.
@@ -277,7 +302,8 @@ impl OriginalMixRecipe {
             return Ok(None);
         };
         if profile.audio_sample_rate_hz != 48_000
-            || (!profile.included_scene_ids.is_empty()
+            || (self.voice_cut_sha256.is_none()
+                && !profile.included_scene_ids.is_empty()
                 && !profile
                     .included_scene_ids
                     .iter()
@@ -285,11 +311,11 @@ impl OriginalMixRecipe {
                     .eq(scenes.iter().map(|scene| scene.id)))
         {
             return Err(DomainError::Invalid(
-                "Music source windows require the full original cut at 48 kHz".into(),
+                "Music source windows require the full original cut at 48 kHz or a saved voice cut binding".into(),
             ));
         }
         let mut duration = crate::RationalTime::ZERO;
-        for scene in scenes {
+        for scene in crate::delivery::scenes_for_profile(scenes, profile)? {
             duration = duration.checked_add(scene.duration).map_err(|_| {
                 DomainError::Invalid("Music source window cut duration overflow".into())
             })?;
@@ -334,6 +360,15 @@ impl OriginalMixRecipe {
     }
 
     pub fn validate(&self, assets: &[Asset]) -> Result<()> {
+        if self
+            .voice_cut_sha256
+            .as_deref()
+            .is_some_and(|value| !valid_voice_cut_sha256(value))
+        {
+            return Err(DomainError::Invalid(
+                "Voice cut requires a lower-case SHA-256 binding".into(),
+            ));
+        }
         if self.music_source_start_sample.is_some_and(|start| {
             self.music_asset_id.is_none() || u64::from(start) >= MAX_MUSIC_SOURCE_SAMPLE_FRAMES
         }) {
@@ -533,6 +568,7 @@ mod tests {
             duck_release_samples: 4_800,
             voice_envelope: Default::default(),
             music_source_start_sample: None,
+            voice_cut_sha256: None,
             music_envelope: Default::default(),
             sfx_envelope: Default::default(),
         }

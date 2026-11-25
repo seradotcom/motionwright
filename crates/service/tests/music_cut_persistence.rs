@@ -193,6 +193,7 @@ fn saved_source_window_conforms_the_original_grid_and_reopens_exactly() {
         original_mix: Some(OriginalMixRecipe {
             music_asset_id: Some(asset.id),
             music_source_start_sample: Some(24_001),
+            voice_cut_sha256: None,
             sfx_asset_id: None,
             sfx_gain_db: -8.0,
             duck_attenuation_db: 14.0,

@@ -645,6 +645,9 @@ pub fn variant_dependency_fingerprint(
     validate_localized_voice_authority(project, profile)?;
     let recipe = project.production_design.delivery_recipes.get(&profile_id);
     let original_mix = recipe.and_then(|recipe| recipe.original_mix.as_ref());
+    if let Some(binding) = original_mix.and_then(|mix| mix.voice_cut_sha256.as_deref()) {
+        crate::resolve_original_voice_cut(project, profile, Some(binding))?;
+    }
     // An explicitly bound voice is the delivery's source, independently of
     // the Audio workspace's active editorial take. Realization still requires
     // an explicit binding, reviewed timing and verified original PCM.
@@ -1620,6 +1623,7 @@ mod tests {
                         duck_release_samples: 4_800,
                         voice_envelope: Default::default(),
                         music_source_start_sample: None,
+                        voice_cut_sha256: None,
                         music_envelope: Default::default(),
                         sfx_envelope: Default::default(),
                     }),

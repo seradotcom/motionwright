@@ -123,6 +123,12 @@ pub struct OriginalMixPlan {
         deserialize_with = "motionwright_domain::deserialize_music_source_start_sample"
     )]
     pub music_source_start_sample: Option<u32>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "motionwright_domain::deserialize_voice_cut_sha256"
+    )]
+    pub voice_cut_sha256: Option<String>,
     pub original_sfx: OriginalSfxSource,
     pub voice_gain_db: f64,
     pub music_gain_db: f64,
@@ -252,12 +258,21 @@ impl OriginalMixPlan {
             .ok_or_else(|| {
                 MixError::Unsupported("Delivery profile measured voice is unavailable".into())
             })?;
+        let cut = motionwright_domain::resolve_original_voice_cut(
+            project,
+            profile,
+            self.voice_cut_sha256.as_deref(),
+        )
+        .map_err(|error| mix_unsupported(error.to_string()))?;
+        let source_frames = time_to_sample(track.measured_duration)?;
         check(
-            track.sample_rate_hz == 48000
+            source_frames <= maximum_samples(budget)
+                && cut.as_ref().map_or(source_frames, |cut| cut.output_frames)
+                    == self.sample_frames
+                && track.sample_rate_hz == 48000
                 && track.channels == 2
                 && track.asset_id == self.measured_voice.asset_id
                 && track.source_sha256 == self.measured_voice.source_asset_sha256
-                && time_to_sample(track.measured_duration)? == self.sample_frames
                 && project.assets.iter().any(|asset| {
                     asset.id == track.asset_id
                         && asset.content_sha256.as_deref() == Some(track.source_sha256.as_str())
@@ -269,7 +284,7 @@ impl OriginalMixPlan {
                 .validate_for_sample_frames(self.sample_frames)
                 .map_err(|error| mix_unsupported(error.to_string()))?;
         }
-        check_stem(&self.measured_voice, project, self.sample_frames)?;
+        check_stem(&self.measured_voice, project, source_frames)?;
         let music_frames = self.original_music.sample_frames;
         let music_start = u64::from(self.music_source_start_sample.unwrap_or(0));
         check(
@@ -352,7 +367,8 @@ impl OriginalMixPlan {
                     && saved.voice_envelope == self.voice_envelope
                     && saved.music_envelope == self.music_envelope
                     && saved.sfx_envelope == self.sfx_envelope
-                    && saved.music_source_start_sample == self.music_source_start_sample,
+                    && saved.music_source_start_sample == self.music_source_start_sample
+                    && saved.voice_cut_sha256 == self.voice_cut_sha256,
                 "Mix sources, music window or envelopes differ from the saved delivery recipe",
             )?;
             if let Some(frames) = saved
@@ -366,11 +382,11 @@ impl OriginalMixPlan {
             }
         } else {
             check(
-                self.music_source_start_sample.is_none(),
-                "An explicit music source window requires a saved delivery recipe",
+                self.music_source_start_sample.is_none() && self.voice_cut_sha256.is_none(),
+                "An explicit source window or voice cut requires a saved delivery recipe",
             )?;
         }
-        let accepted = reviewed_voice_windows(project, track.id)?;
+        let accepted = mix_voice_windows(project, track.id, cut.as_ref())?;
         check(
             accepted == self.voice_windows,
             "Mix duck windows differ from the project's source-bound reviewed transcript",
@@ -509,8 +525,29 @@ pub fn render_original_source_mix_with_budget(
     let mut started = 0_usize;
     // Bounds and the full original PCM digest were checked before this loop.
     let music_start = plan.music_source_start_sample.unwrap_or(0) as usize;
+    let profile = project
+        .deliverables
+        .iter()
+        .find(|p| p.id == plan.deliverable_profile_id)
+        .ok_or_else(|| mix_unsupported("Mix delivery disappeared"))?;
+    let cut = motionwright_domain::resolve_original_voice_cut(
+        project,
+        profile,
+        plan.voice_cut_sha256.as_deref(),
+    )
+    .map_err(|error| mix_unsupported(error.to_string()))?;
+    let mut cut_index = 0usize;
     for index in 0..plan.sample_frames as usize {
         let at = index as u64;
+        let voice_index = if let Some(cut) = &cut {
+            while cut_index + 1 < cut.spans.len() && cut.spans[cut_index + 1].output_start <= at {
+                cut_index += 1;
+            }
+            let span = &cut.spans[cut_index];
+            (span.source_start + at - span.output_start) as usize
+        } else {
+            index
+        };
         let duck = if music_duck_active {
             while started < plan.voice_windows.len()
                 && plan.voice_windows[started].start_sample <= at
@@ -530,7 +567,7 @@ pub fn render_original_source_mix_with_budget(
         let envelopes = [plan.voice_envelope, plan.music_envelope, plan.sfx_envelope]
             .map(|envelope| bus_envelope_gain(&envelope, index as u64, plan.sample_frames));
         for channel in 0..2 {
-            let mixed = sample(voice, index, channel) * gains[0] * envelopes[0]
+            let mixed = sample(voice, voice_index, channel) * gains[0] * envelopes[0]
                 + sample(music, music_start + index, channel) * gains[1] * duck * envelopes[1]
                 + sample(sfx, index, channel) * gains[2] * envelopes[2];
             check(
@@ -679,6 +716,34 @@ pub fn reviewed_voice_windows(
     Ok(windows)
 }
 
+fn mix_voice_windows(
+    project: &Project,
+    track_id: Uuid,
+    cut: Option<&motionwright_domain::OriginalVoiceCut>,
+) -> Result<Vec<VoiceActivityWindow>> {
+    let original = reviewed_voice_windows(project, track_id)?;
+    let Some(cut) = cut else {
+        return Ok(original);
+    };
+    let mut output = Vec::new();
+    for span in &cut.spans {
+        for window in &original {
+            if window.start_sample < span.source_end && window.end_exclusive > span.source_start {
+                check(
+                    window.start_sample >= span.source_start
+                        && window.end_exclusive <= span.source_end,
+                    "Reviewed voice interval crosses a selected scene boundary; re-align before conforming the cut",
+                )?;
+                output.push(VoiceActivityWindow {
+                    start_sample: span.output_start + window.start_sample - span.source_start,
+                    end_exclusive: span.output_start + window.end_exclusive - span.source_start,
+                });
+            }
+        }
+    }
+    Ok(output)
+}
+
 fn saved_mix_inputs(
     project: &Project,
     profile_id: Uuid,
@@ -706,16 +771,12 @@ fn saved_mix_inputs(
             && project.audio.mix.target_true_peak_dbfs.is_none(),
         "Saved mix has no native loudness/true-peak certification; measurement targets remain unsupported",
     )?;
-    check(
-        profile.included_scene_ids.is_empty()
-            || profile.included_scene_ids
-                == project
-                    .scenes
-                    .iter()
-                    .map(|scene| scene.id)
-                    .collect::<Vec<_>>(),
-        "Saved original mix requires the full original cut; no implicit audio trim, reorder or padding",
-    )?;
+    motionwright_domain::resolve_original_voice_cut(
+        project,
+        profile,
+        recipe.voice_cut_sha256.as_deref(),
+    )
+    .map_err(|error| mix_unsupported(error.to_string()))?;
     let voice_id = profile.voice_track_id.ok_or_else(|| {
         MixError::Unsupported("Bind one measured voice to the saved mix delivery profile".into())
     })?;
@@ -829,6 +890,13 @@ pub fn prepare_saved_original_mix_with_budget(
         .validate()
         .map_err(|error| MixError::Unsupported(error.to_string()))?;
     let (recipe, track, profile) = saved_mix_inputs(&project, profile_id)?;
+    let cut = motionwright_domain::resolve_original_voice_cut(
+        &project,
+        profile,
+        recipe.voice_cut_sha256.as_deref(),
+    )
+    .map_err(|error| mix_unsupported(error.to_string()))?;
+    let voice_windows = mix_voice_windows(&project, track.id, cut.as_ref())?;
     let music_id = recipe.music_asset_id.ok_or_else(|| {
         MixError::Unsupported(
             "Saved original mix has no selected music asset; no invented silent source".into(),
@@ -858,6 +926,9 @@ pub fn prepare_saved_original_mix_with_budget(
             })
     };
     let voice = decode(track.asset_id)?;
+    let output_frames = cut
+        .as_ref()
+        .map_or(voice.sample_frames, |cut| cut.output_frames);
     let music = decode(music_id)?;
     let base_sfx = recipe
         .sfx_asset_id
@@ -876,7 +947,7 @@ pub fn prepare_saved_original_mix_with_budget(
         expected,
         profile_id,
         base_sfx,
-        voice.sample_frames,
+        output_frames,
         budget,
     )?;
     let plan = OriginalMixPlan {
@@ -888,10 +959,11 @@ pub fn prepare_saved_original_mix_with_budget(
         language: profile.language.clone(),
         sample_rate: 48_000,
         channels: 2,
-        sample_frames: voice.sample_frames,
+        sample_frames: output_frames,
         measured_voice: receipt(track.asset_id, &voice),
         original_music: receipt(music_id, &music),
         music_source_start_sample: recipe.music_source_start_sample,
+        voice_cut_sha256: recipe.voice_cut_sha256.clone(),
         original_sfx: sfx_source,
         voice_gain_db: f64::from(project.audio.mix.voice_gain_db),
         music_gain_db: f64::from(project.audio.mix.music_gain_db),
@@ -902,7 +974,7 @@ pub fn prepare_saved_original_mix_with_budget(
         voice_envelope: recipe.voice_envelope,
         music_envelope: recipe.music_envelope,
         sfx_envelope: recipe.sfx_envelope,
-        voice_windows: reviewed_voice_windows(&project, track.id)?,
+        voice_windows,
         sample_peak_guard_dbfs: -1.0,
         source_classification: "ORIGINAL_LICENSED_SOURCE_REQUIRED_NOT_SPEECH_VERIFIED".into(),
         owner_mixing_approval_authenticated: false,

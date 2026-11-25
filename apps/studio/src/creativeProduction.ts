@@ -1,5 +1,6 @@
 import type { CreativePatchRecord } from "./creativeUndo";
 import { validateDeliveryRecipe, type DeliveryRecipe } from "./deliveryRecipe";
+import { requireCurrentVoiceCut } from "./voiceCut";
 import type { ComponentDistillationProposal } from "./componentDistillation";
 import type { ProductStageInstance } from "./productStage";
 import type { CameraReframe } from "./cameraReframe";
@@ -720,7 +721,12 @@ export async function applyProductionDesignChange(project: Project, change: Prod
       design.plan = structuredClone(change.plan); break;
     case "set_delivery_recipe": {
       if (!project.deliverables.some(profile => profile.id === change.deliverable_profile_id)) throw new Error("The delivery profile no longer exists.");
-      if (change.recipe) validateDeliveryRecipe(project, change.deliverable_profile_id, change.recipe);
+      if (change.recipe) {
+        validateDeliveryRecipe(project, change.deliverable_profile_id, change.recipe);
+        const binding = change.recipe.original_mix?.voice_cut_sha256;
+        if (binding !== undefined && binding !== design.delivery_recipes?.[change.deliverable_profile_id]?.original_mix?.voice_cut_sha256)
+          await requireCurrentVoiceCut(project, project.deliverables.find(profile => profile.id === change.deliverable_profile_id)!, binding);
+      }
       const recipes = { ...design.delivery_recipes };
       if (change.recipe) recipes[change.deliverable_profile_id] = structuredClone(change.recipe);
       else delete recipes[change.deliverable_profile_id];

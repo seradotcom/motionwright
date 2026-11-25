@@ -2402,7 +2402,11 @@ async fn assemble_av_master(
         .first()
         .ok_or_else(|| "Native AV mastering requires one verified visual segment.".to_string())?;
     validate_master_voice_timing(
-        selected_voice.measured_duration,
+        original_mix_native::delivery_voice_output_duration(
+            &project,
+            profile,
+            selected_voice.measured_duration,
+        )?,
         segment.frame_count,
         motion.frame_rate.num,
         motion.frame_rate.den,
@@ -2613,7 +2617,11 @@ async fn assemble_multisegment_av_master(
         .find(|track| track.id == request.voice_track_id)
         .ok_or_else(|| "Selected measured voice take is missing.".to_string())?;
     validate_master_voice_timing(
-        selected_voice.measured_duration,
+        original_mix_native::delivery_voice_output_duration(
+            &project,
+            profile,
+            selected_voice.measured_duration,
+        )?,
         total_frames,
         render.frame_rate.num,
         render.frame_rate.den,

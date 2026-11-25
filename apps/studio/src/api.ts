@@ -3,6 +3,7 @@ import type { NativeAudioQcReceiptHint, NativeAudioQcReceiptInventoryResponse } 
 import { validateTranscriptEmphasis } from "./transcriptEmphasis";
 import type { OtioEditPreview } from "./otioCutReview";
 import { savedOriginalMixAuditionRequest } from "./audioRecipeContract";
+import { requireCurrentVoiceCut } from "./voiceCut";
 import { originalVoiceAuditionRequest, verifyOriginalVoiceAuditionBytes } from "./voiceAudition";
 import { readNativeAvAudioQcResponse, readNativeAudioQcReceiptInventoryResponse } from "./nativeAvAudioQc";
 import { claimFields, claimRaw, parseClaimRaw } from "./claimSourceDraft";
@@ -2656,6 +2657,7 @@ export async function nativeOriginalMixAudition(
         Number.isInteger(value)&&value>=1&&value<=48000)){
     throw new Error('Original mixing needs saved source-bound assets, explicit preview-use rights confirmation and bounded sample gains.');
   }
+  const cut = await requireCurrentVoiceCut(project, profile, mix.voice_cut_sha256);
   const request = savedOriginalMixAuditionRequest(project, options, mix);
   const result=await invoke<Uint8Array|ArrayBuffer|number[]>('native_original_mix_audition',{request});
   const bytes=result instanceof Uint8Array?result:
@@ -2673,6 +2675,8 @@ export async function nativeOriginalMixAudition(
      bytes[36]!==100||bytes[37]!==97||bytes[38]!==116||bytes[39]!==97||
      view.getUint32(40,true)!==bytes.byteLength-44)
     throw new Error("Native source mixer returned a malformed or mismatched stereo PCM payload.");
+  if (cut && bytes.byteLength !== 44 + cut.outputFrames * 4)
+    throw new Error("Native audition does not cover the exact reviewed original voice cut.");
   return bytes;
 }
 

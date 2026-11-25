@@ -162,6 +162,7 @@ fn fixture_with_seconds(seconds: u32) -> (tempfile::TempDir, StudioService, Proj
                     duck_release_samples: 4_800,
                     voice_envelope: Default::default(),
                     music_source_start_sample: None,
+                    voice_cut_sha256: None,
                     music_envelope: Default::default(),
                     sfx_envelope: Default::default(),
                 }),
@@ -1176,5 +1177,242 @@ fn localized_saved_mixes_follow_explicit_voice_and_survive_reopen_without_switch
         assert_eq!(mixed.wav_bytes(), expected.wav_bytes());
         assert_eq!(mixed.audio_inputs_sha256(), expected.audio_inputs_sha256());
     }
+    assert_eq!(reopened.project(project.id).unwrap(), project);
+}
+
+#[test]
+fn explicit_voice_montage_uses_exact_original_samples_and_reopens_without_replay() {
+    let root = tempfile::tempdir().unwrap();
+    let db = root.path().join("studio.sqlite3");
+    let service = StudioService::open(&db).unwrap();
+    let mut project = service
+        .create_project("Synthetic exact source montage")
+        .unwrap();
+    for n in 0..3 {
+        apply(
+            &service,
+            &mut project,
+            &format!("scene-{n}"),
+            Change::AddScene {
+                name: format!("Scene {n}"),
+                objective: "Original sample clock".into(),
+                duration_seconds: 2,
+            },
+        );
+    }
+    let mut voice_wav = wav_with_frames(0, 288_000);
+    for (frame, stereo) in voice_wav[44..].chunks_exact_mut(4).enumerate() {
+        let level = ((frame / 96_000 + 1) * 1_000) as i16;
+        stereo[..2].copy_from_slice(&level.to_le_bytes());
+        stereo[2..].copy_from_slice(&level.to_le_bytes());
+    }
+    let voice_path = root.path().join("voice.wav");
+    fs::write(&voice_path, &voice_wav).unwrap();
+    project = service
+        .import_voice_file(
+            project.id,
+            &RevisionStamp::from(&project),
+            "voice",
+            &voice_path,
+            VoiceImportMetadata {
+                name: "voice.wav".into(),
+                media_type: "audio/wav".into(),
+                label: "Synthetic PCM, not speech".into(),
+            },
+        )
+        .unwrap()
+        .project;
+    let track = project.audio.voice_tracks[0].clone();
+    for (i, (start, end)) in [(1, 2), (9, 10), (17, 19)].into_iter().enumerate() {
+        apply(
+            &service,
+            &mut project,
+            &format!("interval-{i}"),
+            Change::AddTranscriptSegment {
+                segment: TranscriptSegment {
+                    id: Uuid::new_v4(),
+                    voice_track_id: track.id,
+                    start: RationalTime::new(start, 4).unwrap(),
+                    end: RationalTime::new(end, 4).unwrap(),
+                    text: format!("Synthetic interval {i}"),
+                    speaker: None,
+                    alignment: AlignmentEvidence::Manual,
+                    emphasis: vec![],
+                },
+            },
+        );
+    }
+    let mut source_ids = Vec::new();
+    for (name, frames) in [("music", 288_000), ("sfx", 192_000)] {
+        let path = root.path().join(format!("{name}.wav"));
+        fs::write(&path, wav_with_frames(500, frames)).unwrap();
+        project = service
+            .import_asset_file(
+                project.id,
+                &RevisionStamp::from(&project),
+                name,
+                &path,
+                format!("{name}.wav"),
+                "audio/wav".into(),
+            )
+            .unwrap()
+            .project;
+        source_ids.push(
+            project
+                .assets
+                .iter()
+                .find(|asset| asset.name == format!("{name}.wav"))
+                .unwrap()
+                .id,
+        );
+    }
+    let mut profile = project.deliverables[0].clone();
+    profile.voice_track_id = Some(track.id);
+    profile.language = "en".into();
+    profile.included_scene_ids = vec![project.scenes[2].id, project.scenes[0].id];
+    let profile_id = profile.id;
+    apply(
+        &service,
+        &mut project,
+        "montage",
+        Change::UpsertDeliverable { profile },
+    );
+    let cut =
+        motionwright_domain::derive_original_voice_cut(&project, &project.deliverables[0]).unwrap();
+    let muted = motionwright_domain::OriginalMixBusEnvelope {
+        muted: true,
+        ..Default::default()
+    };
+    let mut recipe = DeliveryRecipe {
+        original_mix: Some(OriginalMixRecipe {
+            music_asset_id: Some(source_ids[0]),
+            sfx_asset_id: Some(source_ids[1]),
+            music_source_start_sample: None,
+            voice_cut_sha256: None,
+            sfx_gain_db: -8.0,
+            duck_attenuation_db: 14.0,
+            duck_attack_samples: 2_400,
+            duck_release_samples: 4_800,
+            voice_envelope: Default::default(),
+            music_envelope: muted,
+            sfx_envelope: muted,
+        }),
+        ..Default::default()
+    };
+    apply(
+        &service,
+        &mut project,
+        "unbound-mix",
+        Change::SetDeliveryRecipe {
+            deliverable_profile_id: profile_id,
+            recipe: Some(recipe.clone()),
+        },
+    );
+    assert!(
+        prepare_saved_original_mix(
+            &service,
+            project.id,
+            &RevisionStamp::from(&project),
+            profile_id
+        )
+        .is_err()
+    );
+    recipe.original_mix.as_mut().unwrap().voice_cut_sha256 = Some("b".repeat(64));
+    let before = project.clone();
+    assert!(
+        service
+            .apply(
+                project.id,
+                &RevisionStamp::from(&project),
+                "forged-binding",
+                &Change::SetDeliveryRecipe {
+                    deliverable_profile_id: profile_id,
+                    recipe: Some(recipe.clone())
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(service.project(project.id).unwrap(), before);
+    recipe.original_mix.as_mut().unwrap().voice_cut_sha256 = Some(cut.sha256.clone());
+    recipe
+        .original_mix
+        .as_mut()
+        .unwrap()
+        .music_source_start_sample = Some(0);
+    apply(
+        &service,
+        &mut project,
+        "reviewed-binding",
+        Change::SetDeliveryRecipe {
+            deliverable_profile_id: profile_id,
+            recipe: Some(recipe),
+        },
+    );
+    let mixed = prepare_saved_original_mix(
+        &service,
+        project.id,
+        &RevisionStamp::from(&project),
+        profile_id,
+    )
+    .unwrap();
+    assert_eq!(mixed.plan().measured_voice.sample_frames, 288_000);
+    assert_eq!(mixed.plan().sample_frames, 192_000);
+    assert_eq!(
+        mixed.plan().voice_cut_sha256.as_deref(),
+        Some(cut.sha256.as_str())
+    );
+    assert_eq!(
+        mixed
+            .plan()
+            .voice_windows
+            .iter()
+            .map(|w| (w.start_sample, w.end_exclusive))
+            .collect::<Vec<_>>(),
+        vec![(12_000, 36_000), (108_000, 120_000)]
+    );
+    for (frame, level) in [(0, 3000), (95_999, 3000), (96_000, 1000), (191_999, 1000)] {
+        assert_eq!(sample(mixed.wav_bytes(), frame, 0), level);
+        assert_eq!(sample(mixed.wav_bytes(), frame, 1), level);
+    }
+    assert_eq!(service.project(project.id).unwrap(), project);
+    drop(service);
+    let reopened = StudioService::open(&db).unwrap();
+    let restored = reopened.project(project.id).unwrap();
+    assert_eq!(restored, project);
+    let replay = prepare_saved_original_mix(
+        &reopened,
+        restored.id,
+        &RevisionStamp::from(&restored),
+        profile_id,
+    )
+    .unwrap();
+    assert_eq!(replay.wav_bytes(), mixed.wav_bytes());
+    assert_eq!(
+        reopened
+            .store()
+            .lock()
+            .read_blob(&track.source_sha256, 2 * 1024 * 1024)
+            .unwrap(),
+        voice_wav
+    );
+    let mut changed = restored.deliverables[0].clone();
+    changed.included_scene_ids.reverse();
+    project = restored;
+    apply(
+        &reopened,
+        &mut project,
+        "change-order",
+        Change::UpsertDeliverable { profile: changed },
+    );
+    assert!(
+        prepare_saved_original_mix(
+            &reopened,
+            project.id,
+            &RevisionStamp::from(&project),
+            profile_id
+        )
+        .is_err()
+    );
+    assert!(mixed.verify_project(&project, profile_id).is_err());
     assert_eq!(reopened.project(project.id).unwrap(), project);
 }

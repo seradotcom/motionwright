@@ -1,8 +1,10 @@
+import { validateVoiceCutIntervals } from "./voiceCut";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { AudioWaveform, ShieldCheck } from "lucide-react";
 import { nativeOriginalMixAudition } from "./api";
 import { audioReviewScope, buildAudioReviewClock, type AudioReviewActions } from "./audioReviewClock";
 import { useLocalAudioElement } from "./audioReviewPlayback";
+import { useVoiceCutReview } from "./useVoiceCutReview";
 import { originalMixEnvelopeKeys, requireOriginalMixSfx, selectedOriginalMixCues } from "./audioRecipeContract";
 import { RecipeDraftReview, containRecipeKeyboard } from "./DeliveryProfiles";
 import { savedDeliveryRecipe, useDeliveryRecipeDraft, validateDeliveryRecipe } from "./deliveryRecipe";
@@ -47,6 +49,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
   const mixDraft = useDeliveryRecipeDraft(project, selectedProfile?.id ?? "", "mix", commit);
   const recipe = selectedProfile ? savedDeliveryRecipe(project, selectedProfile.id) : null;
   const savedMix = recipe?.original_mix ?? null;
+  const voiceCut = useVoiceCutReview(project, selectedProfile);
   const sourceAudio = useMemo(() => project.assets.filter(asset =>
     wavTypes.includes(asset.media_type) && /^[a-f0-9]{64}$/.test(asset.content_sha256 ?? "")), [project.assets]);
   const selectedVoice = project.audio.voice_tracks.find(track => track.id === selectedProfile?.voice_track_id);
@@ -75,6 +78,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
     ["enabled", "Enable original mix recipe"],
     ["music_asset_id", "Original music asset"],
     ["music_source_start_sample", "Music source start sample"],
+    ["voice_cut_sha256", "Reviewed original voice cut binding"],
     ["sfx_asset_id", "Original SFX asset"],
     ...numericFields.map(field => [field.key, field.label]),
     ...envelopeBuses.flatMap(bus => [
@@ -140,6 +144,14 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
     }
   }
   if (savedMix) {
+    if (voiceCut.montage && (!voiceCut.digest || savedMix.voice_cut_sha256 !== voiceCut.digest))
+      blockers.push(voiceCut.error ?? "Review and save the exact original voice cut binding before playback.");
+    if (voiceCut.cut && selectedProfile) {
+      try { validateVoiceCutIntervals(project, selectedProfile, voiceCut.cut); }
+      catch (failure) { blockers.push(explain(failure)); }
+    }
+    if (!voiceCut.montage && savedMix.voice_cut_sha256 !== undefined)
+      blockers.push("Saved voice cut binding is stale; clear it before playback.");
     if (!savedMix.music_asset_id) blockers.push("The saved recipe needs an original music source.");
     if (!sourceAudio.some(asset => asset.id === savedMix.music_asset_id)
         || (savedMix.sfx_asset_id !== null && !sourceAudio.some(asset => asset.id === savedMix.sfx_asset_id))) {
@@ -202,7 +214,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
       <AudioWaveform size={15} aria-hidden="true" /> Voice / music / SFX · original source mix
     </button>
     <div id={panelId} hidden={!expanded}>
-    <p className="production-help">Save an original mix recipe for each delivery profile, then request a local PCM audition of its exact saved sources and automation. The mixer decodes the imported voice and music, an optional imported SFX base, and the authored SFX cues in this delivery cut. Voice and imported SFX base use whole-source stereo at 48 kHz with the same measured duration. Choose an explicit music start sample to consume a matching contiguous window of a longer original WAV. The native service validates cue timing and source bytes.</p>
+    <p className="production-help">Save an original mix recipe for each delivery profile, then request a local PCM audition of its exact saved sources and automation. The mixer decodes the imported voice and music, an optional imported SFX base, and the authored SFX cues in this delivery cut. Voice uses the original stereo 48-kHz take. A reviewed montage binding conforms it by selected scene ranges. Imported SFX base must already match the output cut; semantic cues follow the saved scene schedule. Choose an explicit music start sample to consume a matching contiguous window of a longer original WAV. The native service validates cue timing and source bytes.</p>
     <label className="production-field"><span>Delivery language / profile</span>
       <select aria-label="Delivery language / profile" value={selectedProfile?.id ?? ""} disabled={project.deliverables.length === 0}
         onChange={event => { setProfileId(event.target.value); invalidateAudition(); }}>
@@ -215,6 +227,25 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
         disabled={inputsDisabled} onChange={event => setField("enabled", String(event.target.checked))} />
       Enable original mix recipe
     </label>
+    {(voiceCut.montage || mixDraft.values.voice_cut_sha256) && <section aria-label="Original voice cut review" className="production-notice">
+      <strong>Conform original narration to saved cut</strong>
+      <p className="production-help">The original WAV is never modified. Review the exact ordered source samples (exclusive ends) and output offsets; no stretch, pad or inferred word cut.</p>
+      {voiceCut.error && <p role="status">{voiceCut.error}</p>}
+      {voiceCut.cut && <>
+        <p>{voiceCut.cut.sourceFrames} source samples to {voiceCut.cut.outputFrames} output samples at 48 kHz.</p>
+        <table><thead><tr><th>Scene</th><th>Source samples</th><th>Output start</th></tr></thead>
+          <tbody>{voiceCut.cut.spans.map(span => <tr key={span.sceneId}>
+            <td>{project.scenes.find(scene => scene.id === span.sceneId)?.name ?? span.sceneId}</td>
+            <td>{span.sourceStart}?{span.sourceEnd}</td><td>{span.outputStart}</td>
+          </tr>)}</tbody></table>
+        <p role="status">{voiceCut.digest && mixDraft.values.voice_cut_sha256 === voiceCut.digest
+          ? "Exact cut binding selected." : "Review required; the current cut is not bound."}</p>
+        <button type="button" className="button button-secondary" disabled={inputsDisabled || mixDraft.values.enabled !== "true" || !voiceCut.digest}
+          onClick={() => {if (voiceCut.digest) setField("voice_cut_sha256", voiceCut.digest);}}>Bind reviewed original voice cut</button>
+      </>}
+      {mixDraft.values.voice_cut_sha256 && <button type="button" className="button button-secondary" disabled={inputsDisabled}
+        onClick={() => setField("voice_cut_sha256", "")}>Clear original voice cut binding</button>}
+    </section>}
     {([
       ["music_asset_id", "Original music asset", "Select imported WAV music"],
       ["sfx_asset_id", "Original SFX asset", "No imported base; use authored cues in this cut"],

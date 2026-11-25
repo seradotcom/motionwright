@@ -47,6 +47,34 @@ fn required_optional_sfx_asset<'de, D: Deserializer<'de>>(
     Option::<Uuid>::deserialize(deserializer)
 }
 
+/// Select the conformed duration only after exact saved source binding
+/// validation. No effect, no new timing or implicit audio trim.
+pub(crate) fn delivery_voice_output_duration(
+    project: &Project,
+    profile: &motionwright_domain::DeliverableProfile,
+    original: motionwright_domain::RationalTime,
+) -> Result<motionwright_domain::RationalTime, String> {
+    let Some(recipe) = project
+        .production_design
+        .delivery_recipes
+        .get(&profile.id)
+        .and_then(|recipe| recipe.original_mix.as_ref())
+    else {
+        return Ok(original);
+    };
+    let cut = motionwright_domain::resolve_original_voice_cut(
+        project,
+        profile,
+        recipe.voice_cut_sha256.as_deref(),
+    )
+    .map_err(|error| error.to_string())?;
+    match cut {
+        Some(cut) => motionwright_domain::RationalTime::new(cut.output_frames as i64, 48_000)
+            .map_err(|error| error.to_string()),
+        None => Ok(original),
+    }
+}
+
 /// Shared read-only preparation, before a render effect grant is consumed.
 /// Existing public requests retain their shape; production intent is saved by
 /// the existing SetDeliveryRecipe operation, never by an audition side effect.
@@ -349,6 +377,7 @@ pub(crate) mod tests {
                         duck_release_samples: 4_800,
                         voice_envelope: Default::default(),
                         music_source_start_sample: None,
+                        voice_cut_sha256: None,
                         music_envelope: Default::default(),
                         sfx_envelope: Default::default(),
                     }),

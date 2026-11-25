@@ -12,7 +12,8 @@ import DeliveryVariantImpactReview from "./DeliveryVariantImpactReview";
 import DeliveryFamilyWorkbench from "./DeliveryFamilyWorkbench";
 import CaptionReadabilityReview from "./CaptionReadabilityReview";
 import { inspectCaptionReadability } from "./captionReadability";
-import { useDeliveryRecipeDraft } from "./deliveryRecipe";
+import { useDeliveryRecipeDraft, savedDeliveryRecipe } from "./deliveryRecipe";
+import { useVoiceCutReview } from "./useVoiceCutReview";
 import { recipeHasWork } from "./deliveryRecipeDraft";
 import {
   captureDeliveryDispatch, useProfileMetadataDraft, retainedProfileMetadataCopies,
@@ -596,9 +597,14 @@ export default function DeliveryProfiles({
     ? currentMotion.preview?.find((handle) =>
       handle.segment_id === currentMotion.segments[0].segment_id)?.token ?? null
     : null;
-  const voiceDurationSeconds = selectedVoice
-    ? Number(selectedVoice.measured_duration.num) / Number(selectedVoice.measured_duration.den)
-    : Number.NaN;
+  const savedVoiceMix = selected ? savedDeliveryRecipe(project, selected.id)?.original_mix : null;
+  const voiceCutReview = useVoiceCutReview(project, selected);
+  const voiceDurationSeconds = savedVoiceMix && (voiceCutReview.montage || savedVoiceMix.voice_cut_sha256 !== undefined)
+    ? (voiceCutReview.cut && voiceCutReview.digest && savedVoiceMix.voice_cut_sha256 === voiceCutReview.digest
+      ? voiceCutReview.cut.outputFrames / 48000 : Number.NaN)
+    : selectedVoice
+      ? Number(selectedVoice.measured_duration.num) / Number(selectedVoice.measured_duration.den)
+      : Number.NaN;
   const motionFrameRate = currentMotion
     ? currentMotion.frame_rate.num / currentMotion.frame_rate.den : Number.NaN;
   const nativeVideoSeconds = currentMotion?.segments.length === 1
@@ -1673,13 +1679,13 @@ export default function DeliveryProfiles({
               )}
               {multiSourceToken && verifiedWavIntent && !multiVoiceAligned && (
                 <div className="delivery-truth-note warning">
-                  <CircleDashed size={14} /> Measured voice must match the entire native
-                  multi-segment cut within one 48 kHz PCM sample. No padding or retiming.
+                  <CircleDashed size={14} /> Verified voice or explicitly conformed saved mix must match the entire native
+                  multi-segment cut within one 48 kHz PCM sample. Review the original voice cut binding in Audio; no padding or retiming.
                 </div>
               )}
               {masterPreviewToken && verifiedWavIntent && !voiceAligned && (
                 <div className="delivery-truth-note warning">
-                  <CircleDashed size={14} /> The measured voice duration must match the exact native video cut (within one 48 kHz sample). Edit the cut or re-author audio; no silent padding or retiming.
+                  <CircleDashed size={14} /> The verified voice or explicitly conformed saved mix must match the exact video cut (within one 48 kHz sample). Review the original voice cut binding in Audio; no silent padding or retiming.
                 </div>
               )}
               {!masterProfileSupported && (
