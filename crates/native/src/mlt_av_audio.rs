@@ -118,6 +118,23 @@ fn wave_sample_frames_for_format<R: Read + Seek>(
     expected_rate: u32,
     expected_channels: u16,
 ) -> NativeResult<u64> {
+    Ok(wave_pcm_index_for_format(
+        file,
+        file_len,
+        require_pcm16,
+        expected_rate,
+        expected_channels,
+    )?
+    .0)
+}
+
+fn wave_pcm_index_for_format<R: Read + Seek>(
+    file: &mut R,
+    file_len: u64,
+    require_pcm16: bool,
+    expected_rate: u32,
+    expected_channels: u16,
+) -> NativeResult<(u64, u64, u64)> {
     file.rewind()
         .map_err(|_| stale("Imported WAV cannot be rewound"))?;
     let mut riff = [0_u8; 12];
@@ -133,7 +150,7 @@ fn wave_sample_frames_for_format<R: Read + Seek>(
     }
     let mut pos = 12_u64;
     let mut format: Option<u16> = None;
-    let mut audio_bytes: Option<u64> = None;
+    let mut audio_bytes: Option<(u64, u64)> = None;
     for _ in 0..256 {
         if pos == file_len {
             break;
@@ -195,7 +212,7 @@ fn wave_sample_frames_for_format<R: Read + Seek>(
                     "WAV contains ambiguous duplicate audio sample chunks",
                 ));
             }
-            audio_bytes = Some(size);
+            audio_bytes = Some((pos + 8, size));
         }
         pos = end
             .checked_add(size % 2)
@@ -212,13 +229,14 @@ fn wave_sample_frames_for_format<R: Read + Seek>(
     let align = u64::from(
         format.ok_or_else(|| unsupported("Measured WAV is missing a supported format chunk"))?,
     );
-    let size = audio_bytes.ok_or_else(|| unsupported("Measured WAV is missing sample data"))?;
+    let (offset, size) =
+        audio_bytes.ok_or_else(|| unsupported("Measured WAV is missing sample data"))?;
     if size == 0 || align == 0 || size % align != 0 {
         return Err(unsupported(
             "Measured WAV does not contain complete stereo PCM frames",
         ));
     }
-    Ok(size / align)
+    Ok((size / align, offset, align))
 }
 
 /// Bounded, read-only local listening to one selected measured original
@@ -322,6 +340,223 @@ pub fn read_measured_voice_audition(
         ));
     }
     Ok(bytes)
+}
+
+/// Private fields bind the original source and the exact derived voice-only WAV.
+/// This value is not deserializable or a grant, and never adds an imported asset.
+pub struct PreparedVoiceCut {
+    stamp: RevisionStamp,
+    profile_id: Uuid,
+    track_id: Uuid,
+    asset_id: Uuid,
+    source_sha256: String,
+    source_pcm_sha256: String,
+    cut_sha256: String,
+    source_frames: u64,
+    output_frames: u64,
+    audio_inputs_sha256: String,
+    wav_sha256: String,
+    wav: Vec<u8>,
+}
+
+impl PreparedVoiceCut {
+    pub fn wav_bytes(&self) -> &[u8] {
+        &self.wav
+    }
+    pub fn wav_sha256(&self) -> &str {
+        &self.wav_sha256
+    }
+    pub fn audio_inputs_sha256(&self) -> &str {
+        &self.audio_inputs_sha256
+    }
+    pub fn source_sha256(&self) -> &str {
+        &self.source_sha256
+    }
+    pub fn source_pcm_sha256(&self) -> &str {
+        &self.source_pcm_sha256
+    }
+    pub fn cut_sha256(&self) -> &str {
+        &self.cut_sha256
+    }
+    pub fn source_frames(&self) -> u64 {
+        self.source_frames
+    }
+    pub fn output_frames(&self) -> u64 {
+        self.output_frames
+    }
+    pub fn track_id(&self) -> Uuid {
+        self.track_id
+    }
+    pub fn asset_id(&self) -> Uuid {
+        self.asset_id
+    }
+    pub fn profile_id(&self) -> Uuid {
+        self.profile_id
+    }
+
+    pub fn verify_project(&self, project: &Project, profile_id: Uuid) -> NativeResult<()> {
+        if self.stamp != project.stamp() || self.profile_id != profile_id {
+            return Err(stale(
+                "Prepared voice-only cut belongs to another saved revision or profile",
+            ));
+        }
+        let (profile, cut) = voice_only_cut_inputs(project, profile_id)?;
+        let track = project
+            .audio
+            .voice_tracks
+            .iter()
+            .find(|track| Some(track.id) == profile.voice_track_id)
+            .ok_or_else(|| stale("Prepared voice-only take is absent"))?;
+        let fingerprint = motionwright_domain::variant_dependency_fingerprint(project, profile_id)
+            .map_err(|e| unsupported(e.to_string()))?;
+        if track.id != self.track_id
+            || track.asset_id != self.asset_id
+            || track.source_sha256 != self.source_sha256
+            || cut.sha256 != self.cut_sha256
+            || cut.source_frames != self.source_frames
+            || cut.output_frames != self.output_frames
+            || fingerprint.audio_inputs_sha256 != self.audio_inputs_sha256
+            || self.wav.len() as u64 != 44 + self.output_frames * 4
+            || hex::encode(Sha256::digest(&self.wav)) != self.wav_sha256
+        {
+            return Err(stale(
+                "Prepared voice-only source identity, clock or exact WAV changed",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn voice_only_cut_inputs(
+    project: &Project,
+    profile_id: Uuid,
+) -> NativeResult<(&DeliverableProfile, motionwright_domain::OriginalVoiceCut)> {
+    motionwright_domain::validate_deliverable_voice_authority(project, profile_id)
+        .map_err(|e| unsupported(e.to_string()))?;
+    let profile = project
+        .deliverables
+        .iter()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| unsupported("Voice-only delivery profile is absent"))?;
+    let recipe = project
+        .production_design
+        .delivery_recipes
+        .get(&profile_id)
+        .ok_or_else(|| unsupported("Save an explicitly reviewed voice-only cut"))?;
+    if recipe.original_mix.is_some()
+        || project.audio.mix.voice_gain_db != 0.0
+        || project.audio.mix.target_lufs.is_some()
+        || project.audio.mix.target_true_peak_dbfs.is_some()
+        || !project
+            .validated_sfx_schedule_for_profile(profile_id)
+            .map_err(|e| unsupported(e.to_string()))?
+            .is_empty()
+    {
+        return Err(unsupported(
+            "Voice-only cut cannot discard authored gain, original mix or selected SFX",
+        ));
+    }
+    let cut = motionwright_domain::resolve_original_voice_cut(
+        project,
+        profile,
+        recipe.voice_only_cut_sha256.as_deref(),
+    )
+    .map_err(|e| unsupported(e.to_string()))?
+    .ok_or_else(|| unsupported("No reviewed voice-only montage is selected"))?;
+    Ok((profile, cut))
+}
+
+/// Reuse Storage's exact CAS read and the existing bounded RIFF index. Only
+/// PCM16 is admitted: copying the selected byte ranges does not resample,
+/// normalize, round samples, or re-encode a higher-bit-depth original.
+pub fn prepare_saved_voice_cut(
+    service: &StudioService,
+    project_id: Uuid,
+    expected: &RevisionStamp,
+    profile_id: Uuid,
+    budget: motionwright_service::OriginalMixDecodeBudget,
+) -> NativeResult<PreparedVoiceCut> {
+    let project = service
+        .project(project_id)
+        .map_err(|_| stale("Voice-only source project is unavailable"))?;
+    if project.stamp() != *expected {
+        return Err(stale("Voice-only source revision changed"));
+    }
+    let (profile, cut) = voice_only_cut_inputs(&project, profile_id)?;
+    let track = project
+        .audio
+        .voice_tracks
+        .iter()
+        .find(|track| Some(track.id) == profile.voice_track_id)
+        .ok_or_else(|| stale("Voice-only source take is absent"))?;
+    let (max_frames, max_bytes) = match budget {
+        motionwright_service::OriginalMixDecodeBudget::Audition15Seconds => {
+            (48_000 * 15, 8 * 1024 * 1024)
+        }
+        motionwright_service::OriginalMixDecodeBudget::FullCut180Seconds => {
+            (48_000 * 180, 64 * 1024 * 1024)
+        }
+    };
+    if cut.source_frames > max_frames || cut.output_frames > max_frames {
+        return Err(unsupported(
+            "Voice-only cut exceeds the selected bounded source duration",
+        ));
+    }
+    let original = {
+        let shared = service.store();
+        let store = shared.lock();
+        let before = store
+            .load_project(project_id)
+            .map_err(|_| stale("Voice-only source project is unavailable"))?;
+        if before.stamp() != *expected {
+            return Err(stale("Voice-only source revision changed"));
+        }
+        store
+            .read_blob(&track.source_sha256, max_bytes)
+            .map_err(|_| stale("Voice-only original WAV is missing or changed"))?
+    };
+    let (frames, offset, align) = wave_pcm_index_for_format(
+        &mut std::io::Cursor::new(&original),
+        original.len() as u64,
+        true,
+        48_000,
+        2,
+    )?;
+    if frames != cut.source_frames || align != 4 {
+        return Err(stale(
+            "Voice-only source WAV sample count differs from its reviewed source clock",
+        ));
+    }
+    let original_pcm = &original[offset as usize..(offset + frames * 4) as usize];
+    let mut pcm = Vec::with_capacity((cut.output_frames * 4) as usize);
+    for span in &cut.spans {
+        pcm.extend_from_slice(
+            &original_pcm[(span.source_start * 4) as usize..(span.source_end * 4) as usize],
+        );
+    }
+    let mut wav = Vec::new();
+    crate::original_mix::write_pcm16_wave(&pcm, &mut wav).map_err(|e| e.into_native())?;
+    let fingerprint = motionwright_domain::variant_dependency_fingerprint(&project, profile_id)
+        .map_err(|e| unsupported(e.to_string()))?;
+    let result = PreparedVoiceCut {
+        stamp: expected.clone(),
+        profile_id,
+        track_id: track.id,
+        asset_id: track.asset_id,
+        source_sha256: track.source_sha256.clone(),
+        source_pcm_sha256: hex::encode(Sha256::digest(original_pcm)),
+        cut_sha256: cut.sha256,
+        source_frames: cut.source_frames,
+        output_frames: cut.output_frames,
+        audio_inputs_sha256: fingerprint.audio_inputs_sha256,
+        wav_sha256: hex::encode(Sha256::digest(&wav)),
+        wav,
+    };
+    let latest = service
+        .project(project_id)
+        .map_err(|_| stale("Voice-only source project became unavailable"))?;
+    result.verify_project(&latest, profile_id)?;
+    Ok(result)
 }
 
 fn verify_measured_voice_file(voice: &VerifiedMasterVoice) -> NativeResult<u64> {
@@ -500,9 +735,35 @@ pub(crate) fn preflight_multi_segment_saved_mix(
         recipe,
         prepared,
         voice,
-        Some(saved_mix),
+        Some(AudioOverride::Mix(saved_mix)),
         owner_output_root,
     )
+}
+
+pub(crate) fn preflight_multi_segment_voice_cut(
+    project: &Project,
+    deliverable_id: Uuid,
+    recipe: &MltNativeVideoRecipe,
+    prepared: &MltPreparedMezzanines,
+    voice: &VerifiedMasterVoice,
+    cut: &PreparedVoiceCut,
+    owner_output_root: &Path,
+) -> NativeResult<MultiSegmentAudioReadiness> {
+    preflight_audio_source(
+        project,
+        deliverable_id,
+        recipe,
+        prepared,
+        voice,
+        Some(AudioOverride::VoiceCut(cut)),
+        owner_output_root,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum AudioOverride<'a> {
+    Mix(&'a PreparedOriginalMix),
+    VoiceCut(&'a PreparedVoiceCut),
 }
 
 fn preflight_audio_source(
@@ -511,9 +772,17 @@ fn preflight_audio_source(
     recipe: &MltNativeVideoRecipe,
     prepared: &MltPreparedMezzanines,
     voice: &VerifiedMasterVoice,
-    saved_mix: Option<&PreparedOriginalMix>,
+    audio_override: Option<AudioOverride<'_>>,
     owner_output_root: &Path,
 ) -> NativeResult<MultiSegmentAudioReadiness> {
+    let saved_mix = match audio_override {
+        Some(AudioOverride::Mix(mix)) => Some(mix),
+        _ => None,
+    };
+    let voice_cut = match audio_override {
+        Some(AudioOverride::VoiceCut(cut)) => Some(cut),
+        _ => None,
+    };
     project.validate().map_err(|error| {
         invalid(format!(
             "Project contains invalid versioned semantics: {error}",
@@ -574,7 +843,15 @@ fn preflight_audio_source(
         .validated_sfx_schedule_for_profile(deliverable_id)
         .map_err(|error| invalid(error.to_string()))?
         .is_empty();
-    if has_saved_mix != saved_mix.is_some() || (consumes_sfx && saved_mix.is_none()) {
+    let has_voice_cut = project
+        .production_design
+        .delivery_recipes
+        .get(&deliverable_id)
+        .is_some_and(|recipe| recipe.voice_only_cut_sha256.is_some());
+    if has_saved_mix != saved_mix.is_some()
+        || has_voice_cut != voice_cut.is_some()
+        || (consumes_sfx && saved_mix.is_none())
+    {
         return Err(unsupported(
             "Native master cannot omit a saved mix or replace authored semantic SFX with a voice-only WAV",
         ));
@@ -582,6 +859,9 @@ fn preflight_audio_source(
     if let Some(mix) = saved_mix {
         mix.verify_project(project, deliverable_id)
             .map_err(|error| stale(format!("Saved mix is not current source content: {error}")))?;
+    }
+    if let Some(cut) = voice_cut {
+        cut.verify_project(project, deliverable_id)?;
     }
     for (resource, generation, revision, profile_id) in [
         (
@@ -636,6 +916,9 @@ fn preflight_audio_source(
     let output_duration = if let Some(mix) = saved_mix {
         motionwright_domain::RationalTime::new(mix.plan().sample_frames as i64, 48_000)
             .map_err(|_| invalid("Saved mix output duration is invalid"))?
+    } else if let Some(cut) = voice_cut {
+        motionwright_domain::RationalTime::new(cut.output_frames() as i64, 48_000)
+            .map_err(|_| invalid("Voice-only cut output duration is invalid"))?
     } else {
         track.measured_duration
     };
@@ -712,8 +995,17 @@ fn preflight_audio_source(
             "Saved mix differs from the exact measured voice sample clock",
         ));
     }
+    if let Some(cut) = voice_cut
+        && (cut.source_frames() != samples || cut.source_sha256() != voice.sha256)
+    {
+        return Err(stale(
+            "Voice-only cut differs from the exact measured source WAV",
+        ));
+    }
     let (audio_sha256, audio_size_bytes) = if let Some(mix) = saved_mix {
         (mix.wav_sha256().to_string(), mix.wav_bytes().len() as u64)
+    } else if let Some(cut) = voice_cut {
+        (cut.wav_sha256().to_string(), cut.wav_bytes().len() as u64)
     } else {
         (track.source_sha256.clone(), voice.size_bytes)
     };
@@ -787,6 +1079,17 @@ fn preflight_audio_source(
             ))
             .map_err(|_| invalid("Saved mix source fingerprint could not be serialized"))?,
         ))
+    } else if let Some(cut) = voice_cut {
+        hex::encode(Sha256::digest(
+            serde_json::to_vec(&(
+                "native-saved-voice-only-cut-v1",
+                &source_fingerprint,
+                cut.audio_inputs_sha256(),
+                cut.cut_sha256(),
+                cut.wav_sha256(),
+            ))
+            .map_err(|_| invalid("Voice-only cut source fingerprint could not be serialized"))?,
+        ))
     } else {
         source_fingerprint
     };
@@ -798,7 +1101,10 @@ fn preflight_audio_source(
         voice_track_id: track.id,
         audio_sha256,
         audio_size_bytes,
-        audio_pcm_frames: saved_mix.map_or(samples, |mix| mix.plan().sample_frames),
+        audio_pcm_frames: saved_mix
+            .map(|mix| mix.plan().sample_frames)
+            .or_else(|| voice_cut.map(PreparedVoiceCut::output_frames))
+            .unwrap_or(samples),
         audio_sample_rate: 48_000,
         audio_channels: 2,
         video_input_sha256: recipe.input_sha256.clone(),

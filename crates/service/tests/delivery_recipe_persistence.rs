@@ -123,6 +123,7 @@ fn fixture() -> Fixture {
 fn recipe(fixture: &Fixture) -> DeliveryRecipe {
     DeliveryRecipe {
         schema: DeliveryRecipeSchema::V1,
+        voice_only_cut_sha256: None,
         scene_intents: fixture
             .project
             .scenes

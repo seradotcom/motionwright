@@ -54,7 +54,10 @@ export function assertOriginalMixBusEnvelope(value: unknown): asserts value is O
   }
 }
 /** Presence matters: outer null/undefined is not the optional-field contract. */
-export function assertAudioRecipeExtensions(recipe: { original_mix: unknown; audio_targets?: unknown }): void {
+export function assertAudioRecipeExtensions(recipe: { original_mix: unknown; audio_targets?: unknown; voice_only_cut_sha256?: unknown }): void {
+  if (Object.hasOwn(recipe, "voice_only_cut_sha256") &&
+    (recipe.original_mix !== null || typeof recipe.voice_only_cut_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(recipe.voice_only_cut_sha256)))
+    throw new Error("Voice-only cut requires an exact SHA-256 binding and no original mix.");
   if (Object.hasOwn(recipe, "audio_targets")) assertDeliveryAudioTargets(recipe.audio_targets);
   if (recipe.original_mix === null) return;
   if (!record(recipe.original_mix)) throw new Error("Invalid original mix.");

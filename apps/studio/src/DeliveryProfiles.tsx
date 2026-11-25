@@ -597,10 +597,11 @@ export default function DeliveryProfiles({
     ? currentMotion.preview?.find((handle) =>
       handle.segment_id === currentMotion.segments[0].segment_id)?.token ?? null
     : null;
-  const savedVoiceMix = selected ? savedDeliveryRecipe(project, selected.id)?.original_mix : null;
+  const savedVoiceRecipe = selected ? savedDeliveryRecipe(project, selected.id) : null;
+  const savedVoiceBinding = savedVoiceRecipe?.original_mix?.voice_cut_sha256 ?? savedVoiceRecipe?.voice_only_cut_sha256;
   const voiceCutReview = useVoiceCutReview(project, selected);
-  const voiceDurationSeconds = savedVoiceMix && (voiceCutReview.montage || savedVoiceMix.voice_cut_sha256 !== undefined)
-    ? (voiceCutReview.cut && voiceCutReview.digest && savedVoiceMix.voice_cut_sha256 === voiceCutReview.digest
+  const voiceDurationSeconds = (savedVoiceRecipe?.original_mix && voiceCutReview.montage || savedVoiceBinding !== undefined)
+    ? (voiceCutReview.cut && voiceCutReview.digest && savedVoiceBinding === voiceCutReview.digest
       ? voiceCutReview.cut.outputFrames / 48000 : Number.NaN)
     : selectedVoice
       ? Number(selectedVoice.measured_duration.num) / Number(selectedVoice.measured_duration.den)

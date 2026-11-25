@@ -211,6 +211,21 @@ pub fn stage_original_mix_wav(
     )
 }
 
+pub fn stage_voice_cut_wav(
+    owner_output_root: &Path,
+    cut: &motionwright_native::mlt_av_audio::PreparedVoiceCut,
+    master_identity: &str,
+) -> Result<MltAudioArtifact, String> {
+    let mut input = std::io::Cursor::new(cut.wav_bytes());
+    stage_verified_wav_reader(
+        owner_output_root,
+        &mut input,
+        cut.wav_sha256(),
+        cut.wav_bytes().len() as u64,
+        master_identity,
+    )
+}
+
 fn stage_verified_wav_reader<R: Read + Seek>(
     owner_output_root: &Path,
     input: &mut R,

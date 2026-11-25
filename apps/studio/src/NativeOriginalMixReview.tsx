@@ -1,7 +1,7 @@
 import { validateVoiceCutIntervals } from "./voiceCut";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { AudioWaveform, ShieldCheck } from "lucide-react";
-import { nativeOriginalMixAudition } from "./api";
+import { nativeOriginalMixAudition, readOriginalVoiceCutAudition } from "./api";
 import { audioReviewScope, buildAudioReviewClock, type AudioReviewActions } from "./audioReviewClock";
 import { useLocalAudioElement } from "./audioReviewPlayback";
 import { useVoiceCutReview } from "./useVoiceCutReview";
@@ -44,11 +44,12 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
   const [expanded, setExpanded] = useState(false);
   const panelId = useId();
   const [profileId, setProfileId] = useState(() => project.deliverables.find(profile =>
-    savedDeliveryRecipe(project, profile.id)?.original_mix)?.id ?? project.deliverables[0]?.id ?? "");
+    savedDeliveryRecipe(project, profile.id)?.original_mix || savedDeliveryRecipe(project, profile.id)?.voice_only_cut_sha256)?.id ?? project.deliverables[0]?.id ?? "");
   const selectedProfile = project.deliverables.find(profile => profile.id === profileId) ?? project.deliverables[0] ?? null;
   const mixDraft = useDeliveryRecipeDraft(project, selectedProfile?.id ?? "", "mix", commit);
   const recipe = selectedProfile ? savedDeliveryRecipe(project, selectedProfile.id) : null;
   const savedMix = recipe?.original_mix ?? null;
+  const voiceOnly = !savedMix && recipe?.voice_only_cut_sha256 !== undefined;
   const voiceCut = useVoiceCutReview(project, selectedProfile);
   const sourceAudio = useMemo(() => project.assets.filter(asset =>
     wavTypes.includes(asset.media_type) && /^[a-f0-9]{64}$/.test(asset.content_sha256 ?? "")), [project.assets]);
@@ -68,7 +69,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
   const draftBlocksAudition = mixDraft.dirty || mixDraft.awaiting || mixDraft.pending
     || mixDraft.conflicts.length > 0 || mixDraft.recoveryBlocked || mixDraft.sourceBehind;
   const scope = JSON.stringify([project.id, project.generation, project.active_branch, project.revision,
-    selectedProfile?.id, selectedVoice?.id, savedMix, project.audio.mix,
+    selectedProfile?.id, selectedVoice?.id, savedMix, recipe?.voice_only_cut_sha256, project.audio.mix,
     mixDraft.values, draftBlocksAudition]);
   const liveScope = useRef(scope);
   liveScope.current = scope;
@@ -118,8 +119,8 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
   if (!desktopMode) blockers.push("Local PCM audition requires the desktop native service. Recipe authoring and saving are available here.");
   if (!selectedProfile) blockers.push("Create a delivery profile before saving or auditioning an original mix recipe.");
   if (draftBlocksAudition) blockers.push("Save or resolve the pending original mix recipe before auditioning; playback uses only saved values.");
-  if (!savedMix) blockers.push("Save an enabled original mix recipe for this profile before auditioning.");
-  if (selectedProfile && (selectedProfile.audio_sample_rate_hz !== 48_000 || !["en", "es", "de", "en-US", "es-MX", "es-ES", "de-DE"].includes(selectedProfile.language))) {
+  if (!savedMix && !voiceOnly) blockers.push("Save an enabled original mix recipe or reviewed voice-only cut for this profile before auditioning.");
+  if (selectedProfile && (selectedProfile.audio_sample_rate_hz !== 48_000 || (savedMix && !["en", "es", "de", "en-US", "es-MX", "es-ES", "de-DE"].includes(selectedProfile.language)))) {
     blockers.push("This local audition supports saved 48-kHz delivery profiles with language en, es, de, en-US, es-MX, es-ES or de-DE.");
   }
   if (selectedProfile && recipe) {
@@ -137,9 +138,9 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
       blockers.push("The delivery's measured voice must still reference its exact imported WAV digest.");
     }
     const voiceSegments = project.audio.transcript.filter(segment => segment.voice_track_id === selectedVoice.id);
-    if (voiceSegments.length === 0 || voiceSegments.some(segment => segment.alignment.kind !== "manual"
+    if (savedMix && (voiceSegments.length === 0 || voiceSegments.some(segment => segment.alignment.kind !== "manual"
         && !(segment.alignment.kind === "measured" && segment.alignment.source_sha256 === selectedVoice.source_sha256
-          && (segment.alignment.confidence_millis ?? 0) >= 800))) {
+          && (segment.alignment.confidence_millis ?? 0) >= 800)))) {
       blockers.push("Music ducking requires every transcript interval for the delivery voice to have manually aligned or high-confidence source-bound measured timing.");
     }
   }
@@ -167,12 +168,23 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
       catch (failure) { blockers.push(explain(failure)); }
     }
   }
+  if (voiceOnly && selectedProfile) {
+    if (!voiceCut.montage || !voiceCut.digest || recipe?.voice_only_cut_sha256 !== voiceCut.digest)
+      blockers.push(voiceCut.error ?? "Review and save the exact voice-only cut binding before playback.");
+    if (project.audio.mix.voice_gain_db !== 0 || project.audio.mix.target_lufs !== null
+      || project.audio.mix.target_true_peak_dbfs !== null)
+      blockers.push("Voice-only cut cannot discard authored voice gain or global mastering targets.");
+    try {
+      if (selectedOriginalMixCues(project, selectedProfile.id).length)
+        blockers.push("Voice-only cut cannot discard selected authored SFX. Save an original mix instead.");
+    } catch (failure) { blockers.push(explain(failure)); }
+  }
   const eligible = blockers.length === 0 && selfAttested && !working;
   const inputsDisabled = !selectedProfile || mixDraft.locked || mixDraft.sourceBehind;
 
   const preview = async () => {
-    if (!eligible || inFlight.current || !selectedProfile || !savedMix?.music_asset_id) return;
-    const options: OriginalMixPreviewOptions = {
+    if (!eligible || inFlight.current || !selectedProfile || (!voiceOnly && !savedMix?.music_asset_id)) return;
+    const options: OriginalMixPreviewOptions | null = savedMix?.music_asset_id ? {
       deliverable_profile_id: selectedProfile.id,
       music_asset_id: savedMix.music_asset_id,
       sfx_asset_id: savedMix.sfx_asset_id,
@@ -181,7 +193,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
       duck_attack_samples: savedMix.duck_attack_samples,
       duck_release_samples: savedMix.duck_release_samples,
       owner_attests_preview_rights: true,
-    };
+    } : null;
     const ticket = ++serial.current, originalScope = scope;
     inFlight.current = true;
     setWorking(true);
@@ -189,7 +201,9 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
     setPlaybackEnabled(false);
     setAudition(null);
     try {
-      const wav = await nativeOriginalMixAudition(project, options);
+      const wav = voiceOnly
+        ? await readOriginalVoiceCutAudition(project, selectedProfile.id, selfAttested)
+        : await nativeOriginalMixAudition(project, options!);
       if (!mounted.current || ticket !== serial.current || liveScope.current !== originalScope) return;
       const owned = new Uint8Array(wav.length);
       owned.set(wav);
@@ -227,6 +241,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
         disabled={inputsDisabled} onChange={event => setField("enabled", String(event.target.checked))} />
       Enable original mix recipe
     </label>
+    <p className="production-help">Leave the mix disabled to save and audition only the reviewed original narration cut, without music or SFX.</p>
     {(voiceCut.montage || mixDraft.values.voice_cut_sha256) && <section aria-label="Original voice cut review" className="production-notice">
       <strong>Conform original narration to saved cut</strong>
       <p className="production-help">The original WAV is never modified. Review the exact ordered source samples (exclusive ends) and output offsets; no stretch, pad or inferred word cut.</p>
@@ -236,11 +251,11 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
         <table><thead><tr><th>Scene</th><th>Source samples</th><th>Output start</th></tr></thead>
           <tbody>{voiceCut.cut.spans.map(span => <tr key={span.sceneId}>
             <td>{project.scenes.find(scene => scene.id === span.sceneId)?.name ?? span.sceneId}</td>
-            <td>{span.sourceStart}?{span.sourceEnd}</td><td>{span.outputStart}</td>
+            <td>{span.sourceStart} to {span.sourceEnd}</td><td>{span.outputStart}</td>
           </tr>)}</tbody></table>
         <p role="status">{voiceCut.digest && mixDraft.values.voice_cut_sha256 === voiceCut.digest
           ? "Exact cut binding selected." : "Review required; the current cut is not bound."}</p>
-        <button type="button" className="button button-secondary" disabled={inputsDisabled || mixDraft.values.enabled !== "true" || !voiceCut.digest}
+        <button type="button" className="button button-secondary" disabled={inputsDisabled || !voiceCut.digest}
           onClick={() => {if (voiceCut.digest) setField("voice_cut_sha256", voiceCut.digest);}}>Bind reviewed original voice cut</button>
       </>}
       {mixDraft.values.voice_cut_sha256 && <button type="button" className="button button-secondary" disabled={inputsDisabled}
@@ -328,16 +343,18 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
       These targets are retained when editing this recipe; audition does not certify them.
     </p>}
     <RecipeDraftReview controller={mixDraft} title="Original mix" revision={project.revision} fields={fields}
-      saveLabel="Save original mix recipe" clearLabel="Clear saved original mix recipe" hasSavedGroup={savedMix !== null}
+      saveLabel="Save original mix recipe" clearLabel="Clear saved original mix recipe" hasSavedGroup={savedMix !== null || voiceOnly}
       blockedReason={!selectedProfile ? "Create a delivery profile before saving these inputs."
         : working ? "Wait for the current local audition before saving a recipe change." : null} />
     <div className="portable-plan" aria-label="Saved global mix and audition policy"
       style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 150px), 1fr))" }}>
       <div><span>Saved voice gain</span><strong>{project.audio.mix.voice_gain_db} dB</strong></div>
       <div><span>Saved music gain</span><strong>{project.audio.mix.music_gain_db} dB</strong></div>
-      <div><span>Sample peak guard policy</span><strong>{ORIGINAL_MIX_SAMPLE_PEAK_GUARD_DBFS} dBFS · fixed</strong></div>
+      <div><span>Sample peak guard policy</span><strong>{voiceOnly ? "Not applied to voice-only source" : ORIGINAL_MIX_SAMPLE_PEAK_GUARD_DBFS + " dBFS (fixed)"}</strong></div>
     </div>
-    <p className="production-help">Audition uses the delivery's explicitly bound measured voice{selectedVoice ? " (" + selectedVoice.label + ")" : ""} and the saved global voice/music gains shown above. It does not change the active Audio take. The sample peak guard is a native mixer policy; it is separate from LUFS and true-peak targets.</p>
+    <p className="production-help">{voiceOnly
+      ? "Voice-only audition copies the reviewed original PCM16 sample ranges without gain, music, SFX or normalization. It does not change the active Audio take."
+      : <>Audition uses the delivery's explicitly bound measured voice{selectedVoice ? " (" + selectedVoice.label + ")" : ""} and the saved global voice/music gains shown above. It does not change the active Audio take. The sample peak guard is a native mixer policy; it is separate from LUFS and true-peak targets.</>}</p>
     {blockers.length > 0 && <section aria-label="Original mix audition requirements">
       <ul className="production-help">{blockers.map(reason => <li key={reason}>{reason}</li>)}</ul>
     </section>}
@@ -375,12 +392,12 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
         <button type="button" className="button button-secondary" disabled={!!reviewProblem}
           onClick={()=>{if(!currentAudition||!selectedProfile||reviewProblem)return;player.pause();audioReview.open({
             kind:"mix",sourceId:selectedProfile.id,scope:audioReviewScope(project),
-            label:selectedProfile.name+" original mix",wav:currentAudition.wav});}}>
-          Review saved mix on project timeline
+            label:selectedProfile.name+(voiceOnly?" voice-only cut":" original mix"),wav:currentAudition.wav});}}>
+          {voiceOnly ? "Review saved voice cut on project timeline" : "Review saved mix on project timeline"}
         </button>
         {reviewProblem&&<p role="status" className="production-help">{reviewProblem}</p>}
       </div>}
-      <p>Source, clock and sample-peak guards passed for this PCM. Integrated LUFS, true peak, listening intelligibility and editorial approval require separate measurement and review. No timeline event or mastered deliverable was created.</p>
+      <p>{voiceOnly ? "Original source and exact selected sample clock verified. No mixing or sample-peak normalization was performed." : "Source, clock and sample-peak guards passed for this PCM."} Integrated LUFS, true peak, listening intelligibility and editorial approval require separate measurement and review. No timeline event or mastered deliverable was created.</p>
     </div>}
     </div>
   </section>;

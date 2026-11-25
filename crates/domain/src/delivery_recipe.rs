@@ -33,6 +33,14 @@ pub struct DeliveryRecipe {
         deserialize_with = "deserialize_optional_audio_targets"
     )]
     pub audio_targets: Option<DeliveryAudioTargets>,
+    /// Explicit original narration montage when no multi-bus mix is enabled.
+    /// Absent retains the original whole-WAV route and legacy wire bytes.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_voice_cut_sha256"
+    )]
+    pub voice_only_cut_sha256: Option<String>,
 }
 
 /// Profile-owned QC intent, independent of whether a music/SFX mix is saved.
@@ -225,6 +233,13 @@ pub struct OriginalMixRecipe {
 }
 
 impl DeliveryRecipe {
+    pub fn voice_cut_binding(&self) -> Option<&str> {
+        self.original_mix
+            .as_ref()
+            .and_then(|mix| mix.voice_cut_sha256.as_deref())
+            .or(self.voice_only_cut_sha256.as_deref())
+    }
+
     pub fn validate(&self, scenes: &[Scene], assets: &[Asset]) -> Result<()> {
         if self.scene_intents.len() > MAX_DELIVERY_SCENE_INTENTS {
             return Err(DomainError::Invalid(
@@ -239,6 +254,15 @@ impl DeliveryRecipe {
                     "delivery recipe scene intents require existing, unique scene ids".into(),
                 ));
             }
+        }
+        if self
+            .voice_only_cut_sha256
+            .as_deref()
+            .is_some_and(|value| self.original_mix.is_some() || !valid_voice_cut_sha256(value))
+        {
+            return Err(DomainError::Invalid(
+                "Voice-only cut requires an exact binding and no original mix".into(),
+            ));
         }
         if let Some(mix) = &self.original_mix {
             mix.validate(assets)?;
@@ -544,6 +568,7 @@ mod tests {
     fn recipe(project: &Project) -> DeliveryRecipe {
         DeliveryRecipe {
             schema: DeliveryRecipeSchema::V1,
+            voice_only_cut_sha256: None,
             scene_intents: project
                 .scenes
                 .iter()

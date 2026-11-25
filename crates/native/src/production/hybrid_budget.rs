@@ -956,8 +956,10 @@ impl HybridBudgetPlan {
                     .production_design
                     .delivery_recipes
                     .get(&deliverable_id)
-                    .is_none_or(|recipe| recipe.original_mix.is_none()),
-            "The hybrid native route cannot discard authored mixing or captions",
+                    .is_none_or(|recipe| {
+                        recipe.original_mix.is_none() && recipe.voice_only_cut_sha256.is_none()
+                    }),
+            "The hybrid native route cannot discard authored mixing, voice-cut conform or captions",
         )?;
 
         let mut counts = Vec::with_capacity(project.scenes.len());

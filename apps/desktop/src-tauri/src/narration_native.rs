@@ -40,6 +40,14 @@ pub struct VoiceAuditionScope {
     track_id: Uuid,
     source_sha256: String,
     owner_attests_preview_rights: bool,
+    #[serde(default, deserialize_with = "present_voice_cut_profile")]
+    deliverable_profile_id: Option<Uuid>,
+}
+
+fn present_voice_cut_profile<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Uuid>, D::Error> {
+    Uuid::deserialize(deserializer).map(Some)
 }
 
 #[tauri::command]
@@ -62,7 +70,24 @@ pub async fn read_original_voice_audition(
     let project_id = request.project_id;
     let track_id = request.track_id;
     let source_sha256 = request.source_sha256;
+    let profile_id = request.deliverable_profile_id;
     let bytes = crate::desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        if let Some(profile_id) = profile_id {
+            let cut = motionwright_native::mlt_av_audio::prepare_saved_voice_cut(
+                &service,
+                project_id,
+                &expected,
+                profile_id,
+                motionwright_service::OriginalMixDecodeBudget::Audition15Seconds,
+            )
+            .map_err(|e| e.to_string())?;
+            if cut.track_id() != track_id || cut.source_sha256() != source_sha256 {
+                return Err(
+                    "Voice-only audition source differs from the explicitly selected take".into(),
+                );
+            }
+            return Ok(cut.wav_bytes().to_vec());
+        }
         motionwright_native::mlt_av_audio::read_measured_voice_audition(
             &service,
             project_id,

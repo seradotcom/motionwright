@@ -645,7 +645,7 @@ pub fn variant_dependency_fingerprint(
     validate_localized_voice_authority(project, profile)?;
     let recipe = project.production_design.delivery_recipes.get(&profile_id);
     let original_mix = recipe.and_then(|recipe| recipe.original_mix.as_ref());
-    if let Some(binding) = original_mix.and_then(|mix| mix.voice_cut_sha256.as_deref()) {
+    if let Some(binding) = recipe.and_then(crate::DeliveryRecipe::voice_cut_binding) {
         crate::resolve_original_voice_cut(project, profile, Some(binding))?;
     }
     // An explicitly bound voice is the delivery's source, independently of
@@ -741,6 +741,9 @@ pub fn variant_dependency_fingerprint(
         "voice_source": source_asset(selected_voice.map(|track| track.asset_id)),
         "mix": &project.audio.mix,
     });
+    if let Some(binding) = recipe.and_then(|recipe| recipe.voice_only_cut_sha256.as_deref()) {
+        audio_inputs["voice_only_cut_sha256"] = serde_json::json!(binding);
+    }
     if let Some(mix) = original_mix {
         // Ducking consumes interval times and timing admission, not transcript
         // wording, speakers or another profile's authored recipe.

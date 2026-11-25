@@ -1392,6 +1392,50 @@ impl ProductionCoordinator {
             .iter()
             .find(|profile| profile.id == deliverable_id)
             .ok_or_else(|| invalid("Measured voice delivery profile is absent"))?;
+        if project
+            .production_design
+            .delivery_recipes
+            .get(&deliverable_id)
+            .is_some_and(|recipe| recipe.voice_only_cut_sha256.is_some())
+        {
+            let cut = crate::mlt_av_audio::prepare_saved_voice_cut(
+                &self.service,
+                project.id,
+                expected,
+                deliverable_id,
+                OriginalMixDecodeBudget::FullCut180Seconds,
+            )?;
+            let voice_source = MeasuredVoiceSource {
+                voice_track_id: cut.track_id(),
+                asset_id: cut.asset_id(),
+                decoded_pcm_sha256: cut.source_pcm_sha256().to_owned(),
+                source_cut_sha256: cut.cut_sha256().to_owned(),
+            };
+            let binding = SourceBinding {
+                schema: "motionwright.measured-voice-analysis-source/1",
+                caller_request_id: caller_request_id.to_owned(),
+                lane,
+                project_id: project.id,
+                project_resource: project.resource_key(),
+                generation: project.generation,
+                revision: project.revision,
+                deliverable_id,
+                connection_identity: self.client.connection().identity()?,
+                audio_inputs_sha256: cut.audio_inputs_sha256().to_owned(),
+                source_plan_sha256: digest(&voice_source)?,
+                measured_voice_source: Some(voice_source),
+                wav_sha256: cut.wav_sha256().to_owned(),
+                wav_bytes: cut.wav_bytes().len() as u64,
+                sample_frames: cut.output_frames(),
+                sample_rate: 48_000,
+                channels: 2,
+            };
+            require_current(
+                &self.service.project(project.id).map_err(storage_error)?,
+                expected,
+            )?;
+            return Ok((cut.wav_bytes().to_vec(), binding));
+        }
         let scene_ids = project
             .scenes
             .iter()
@@ -1400,7 +1444,7 @@ impl ProductionCoordinator {
         if !profile.included_scene_ids.is_empty() && profile.included_scene_ids != scene_ids {
             return Err(Error::new(
                 ErrorCode::Unsupported,
-                "Measured voice analysis retains the complete original cut until a typed voice-cut binding exists",
+                "Measured voice analysis requires an explicitly reviewed voice-only cut binding for a montage",
             ));
         }
         let schedule = project

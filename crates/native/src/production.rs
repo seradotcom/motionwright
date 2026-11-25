@@ -3791,6 +3791,30 @@ impl ProductionCoordinator {
                     "Staged soundtrack differs from the saved source mix or exact visual cut",
                 ));
             }
+        } else if project
+            .production_design
+            .delivery_recipes
+            .get(&deliverable_id)
+            .is_some_and(|recipe| recipe.voice_only_cut_sha256.is_some())
+        {
+            let cut = crate::mlt_av_audio::prepare_saved_voice_cut(
+                &self.service,
+                project_id,
+                expected,
+                deliverable_id,
+                motionwright_service::OriginalMixDecodeBudget::FullCut180Seconds,
+            )?;
+            let audio_clock = u128::from(cut.output_frames()) * u128::from(motion.frame_rate.num);
+            let video_clock =
+                u128::from(segment.frame_count) * u128::from(motion.frame_rate.den) * 48_000;
+            if cut.wav_sha256() != audio.sha256
+                || audio_clock.abs_diff(video_clock) > u128::from(motion.frame_rate.num)
+            {
+                return Err(Error::new(
+                    ErrorCode::StaleReference,
+                    "Staged soundtrack differs from the reviewed voice-only cut or exact visual clock",
+                ));
+            }
         }
 
         let token = hex::encode(Sha256::digest(request_id.as_bytes()));

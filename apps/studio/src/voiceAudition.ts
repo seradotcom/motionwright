@@ -55,3 +55,29 @@ export async function verifyOriginalVoiceAuditionBytes(value:unknown,expectedSha
   if(hash!==expectedSha)throw new Error("Original take WAV digest differs from the measured source.");
   return owned;
 }
+
+/** A derivative has a different digest than the original. The owner command
+ * verifies full original CAS bytes and the saved binding; WebView verifies the
+ * closed PCM16 response shape and exact output sample count before playback. */
+export function verifyVoiceCutAuditionBytes(value: unknown, frames: number): Uint8Array {
+  if (!Number.isSafeInteger(frames) || frames < 48000 || frames > 720000)
+    throw new Error("Voice-only audition has an invalid reviewed sample count.");
+  const size = 44 + frames * 4;
+  let bytes: Uint8Array;
+  if (value instanceof Uint8Array) bytes = value;
+  else if (value instanceof ArrayBuffer) bytes = new Uint8Array(value);
+  else if (Array.isArray(value) && value.length === size &&
+    value.every(v=>typeof v==="number"&&Number.isInteger(v)&&v>=0&&v<=255)) bytes=Uint8Array.from(value);
+  else throw new Error("Voice-only audition did not return exact bounded PCM bytes.");
+  if (bytes.length !== size) throw new Error("Voice-only audition differs from the reviewed output duration.");
+  const view = new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+  const marker=(at:number,n:number)=>String.fromCharCode(...bytes.subarray(at,at+n));
+  if (marker(0,4)!=="RIFF" || marker(8,8)!=="WAVEfmt " || marker(36,4)!=="data"
+    || view.getUint32(4,true)!==size-8 || view.getUint32(16,true)!==16
+    || view.getUint16(20,true)!==1 || view.getUint16(22,true)!==2
+    || view.getUint32(24,true)!==48000 || view.getUint32(28,true)!==192000
+    || view.getUint16(32,true)!==4 || view.getUint16(34,true)!==16
+    || view.getUint32(40,true)!==frames*4)
+    throw new Error("Voice-only audition is not the exact canonical stereo PCM16 output.");
+  return new Uint8Array(bytes);
+}

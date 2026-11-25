@@ -653,8 +653,18 @@ pub fn write_mix_wav_with_budget<W: Write>(
 ) -> Result<OriginalMixEvidence> {
     let (pcm, evidence) =
         render_original_source_mix_with_budget(plan, project, voice, music, sfx, budget)?;
+    write_pcm16_wave(&pcm, out)?;
+    Ok(evidence)
+}
+
+pub(crate) fn write_pcm16_wave<W: Write>(pcm: &[u8], out: &mut W) -> Result<()> {
     let n = u32::try_from(pcm.len())
         .map_err(|_| MixError::Unsupported("RIFF output byte budget exceeded".into()))?;
+    if n == 0 || n % 4 != 0 || n > 48_000 * 180 * 4 {
+        return Err(mix_unsupported(
+            "PCM WAV output must contain bounded complete stereo samples",
+        ));
+    }
     let mut header = Vec::with_capacity(44);
     header.extend_from_slice(b"RIFF");
     header.extend_from_slice(&(36 + n).to_le_bytes());
@@ -670,9 +680,9 @@ pub fn write_mix_wav_with_budget<W: Write>(
     header.extend_from_slice(&n.to_le_bytes());
     out.write_all(&header)
         .map_err(|e| MixError::Unsupported(format!("RIFF header could not be written: {e}")))?;
-    out.write_all(&pcm)
+    out.write_all(pcm)
         .map_err(|e| MixError::Unsupported(format!("PCM source could not be written: {e}")))?;
-    Ok(evidence)
+    Ok(())
 }
 
 /// Derive sample windows from the existing authored transcript. Measured

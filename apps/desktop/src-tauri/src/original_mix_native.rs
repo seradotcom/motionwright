@@ -54,18 +54,16 @@ pub(crate) fn delivery_voice_output_duration(
     profile: &motionwright_domain::DeliverableProfile,
     original: motionwright_domain::RationalTime,
 ) -> Result<motionwright_domain::RationalTime, String> {
-    let Some(recipe) = project
-        .production_design
-        .delivery_recipes
-        .get(&profile.id)
-        .and_then(|recipe| recipe.original_mix.as_ref())
-    else {
+    let Some(recipe) = project.production_design.delivery_recipes.get(&profile.id) else {
         return Ok(original);
     };
+    if recipe.original_mix.is_none() && recipe.voice_only_cut_sha256.is_none() {
+        return Ok(original);
+    }
     let cut = motionwright_domain::resolve_original_voice_cut(
         project,
         profile,
-        recipe.voice_cut_sha256.as_deref(),
+        recipe.voice_cut_binding(),
     )
     .map_err(|error| error.to_string())?;
     match cut {
@@ -92,6 +90,38 @@ pub(crate) async fn saved_mix_for_master(
         OriginalMixDecodeBudget::FullCut180Seconds,
     )
     .await
+}
+
+pub(crate) async fn saved_voice_cut_for_master(
+    owner: crate::desktop_owner::DesktopOwner,
+    service: &StudioService,
+    project: &Project,
+    profile_id: Uuid,
+) -> Result<Option<motionwright_native::mlt_av_audio::PreparedVoiceCut>, String> {
+    if !project
+        .production_design
+        .delivery_recipes
+        .get(&profile_id)
+        .is_some_and(|recipe| recipe.voice_only_cut_sha256.is_some())
+    {
+        return Ok(None);
+    }
+    let service = service.clone();
+    let project_id = project.id;
+    let expected = project.stamp();
+    crate::desktop_owner::spawn_blocking(owner, move || {
+        motionwright_native::mlt_av_audio::prepare_saved_voice_cut(
+            &service,
+            project_id,
+            &expected,
+            profile_id,
+            OriginalMixDecodeBudget::FullCut180Seconds,
+        )
+        .map(Some)
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| "Voice-only cut preparation failed".to_string())?
 }
 
 // The existing audition and master share one source factory. Their budgets

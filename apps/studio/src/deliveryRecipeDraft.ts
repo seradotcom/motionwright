@@ -73,11 +73,13 @@ function checkOwner(state: RecipeAuthorState, project: Project): string {
 export function recipeFingerprint(recipe: DeliveryRecipe | null): string {
   if (!recipe) return "null";
   const targets = canonicalAudioTargets(recipe);
-  if (!recipe.scene_intents.length && !recipe.original_mix && !Object.hasOwn(targets, "audio_targets")) return "null";
+  if (!recipe.scene_intents.length && !recipe.original_mix && !Object.hasOwn(targets, "audio_targets")
+    && recipe.voice_only_cut_sha256 === undefined) return "null";
   return JSON.stringify({ schema: recipe.schema,
     scene_intents: recipe.scene_intents.map(intent => ({ scene_id: intent.scene_id, role: intent.role, archetype: intent.archetype }))
       .sort((a, b) => a.scene_id.localeCompare(b.scene_id)),
-    original_mix: canonicalOriginalMix(recipe.original_mix), ...targets });
+    original_mix: canonicalOriginalMix(recipe.original_mix), ...targets,
+    ...(recipe.voice_only_cut_sha256 === undefined ? {} : { voice_only_cut_sha256: recipe.voice_only_cut_sha256 }) });
 }
 /** History payloads are untrusted JSON. Check the current wire shape and its
  * existing domain bounds, but not membership in today's Project: a later event
@@ -85,7 +87,7 @@ export function recipeFingerprint(recipe: DeliveryRecipe | null): string {
  */
 export function assertRecipeHistoryPayload(value: unknown): asserts value is DeliveryRecipe | null {
   if (value === null) return;
-  if (!record(value) || !exact(value, ["schema", "scene_intents", "original_mix"], ["audio_targets"])
+  if (!record(value) || !exact(value, ["schema", "scene_intents", "original_mix"], ["audio_targets", "voice_only_cut_sha256"])
     || value.schema !== "motionwright.delivery-recipe/1" || !Array.isArray(value.scene_intents)
     || value.scene_intents.length > 4096) throw new Error("The saved recipe history contains an invalid recipe payload.");
   const scenes = new Set<string>();
@@ -99,7 +101,8 @@ export function assertRecipeHistoryPayload(value: unknown): asserts value is Del
     scenes.add(sceneId.toLowerCase());
   }
   assertAudioRecipeExtensions({ original_mix: value.original_mix,
-    ...(Object.hasOwn(value, "audio_targets") ? { audio_targets: value.audio_targets } : {}) });
+    ...(Object.hasOwn(value, "audio_targets") ? { audio_targets: value.audio_targets } : {}),
+    ...(Object.hasOwn(value, "voice_only_cut_sha256") ? { voice_only_cut_sha256: value.voice_only_cut_sha256 } : {}) });
   if (value.original_mix === null) return;
   const mix = value.original_mix;
   // Keep persisted history aligned with DeliveryRecipe and its validator.
@@ -598,7 +601,9 @@ export function useDeliveryRecipeDraft(project: Project, profileId: string, grou
       const saved = recipeFields(savedDeliveryRecipe(live.current.project, profileId), group);
       const retainDecision = session.readBlocked || session.unreadableOwn !== null;
       let next = editRecipeAuthorState(observedState(session, live.current.project), field, raw, saved, retainDecision);
-      if (group === "mix" && field !== "enabled") next = editRecipeAuthorState(next, "enabled", "true", saved, retainDecision);
+      // Voice cut binding is shared by both audio modes; it is not a mix-only edit.
+      if (group === "mix" && field !== "enabled" && field !== "voice_cut_sha256")
+        next = editRecipeAuthorState(next, "enabled", "true", saved, retainDecision);
       session.error = null; session.message = null; replace(session, next);
     } catch (failure) { session.error = explain(failure); notify(session); }
   };

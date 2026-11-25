@@ -1428,4 +1428,58 @@ fn explicit_voice_montage_uses_exact_original_samples_and_reopens_without_replay
     );
     assert!(mixed.verify_project(&project, profile_id).is_err());
     assert_eq!(reopened.project(project.id).unwrap(), project);
+
+    // Switch explicitly to the new standalone source; no synthetic music/SFX.
+    let binding =
+        motionwright_domain::derive_original_voice_cut(&project, &project.deliverables[0]).unwrap();
+    apply(
+        &reopened,
+        &mut project,
+        "reviewed-voice-only",
+        Change::SetDeliveryRecipe {
+            deliverable_profile_id: profile_id,
+            recipe: Some(DeliveryRecipe {
+                voice_only_cut_sha256: Some(binding.sha256.clone()),
+                ..Default::default()
+            }),
+        },
+    );
+    let original = motionwright_native::mlt_av_audio::prepare_saved_voice_cut(
+        &reopened,
+        project.id,
+        &project.stamp(),
+        profile_id,
+        motionwright_service::OriginalMixDecodeBudget::Audition15Seconds,
+    )
+    .unwrap();
+    assert_eq!(original.cut_sha256(), binding.sha256);
+    assert_eq!(original.source_sha256(), track.source_sha256);
+    assert_eq!(original.source_frames(), 288_000);
+    assert_eq!(original.output_frames(), 192_000);
+    for (frame, level) in [(0, 1000), (95_999, 1000), (96_000, 3000), (191_999, 3000)] {
+        assert_eq!(sample(original.wav_bytes(), frame, 0), level);
+        assert_eq!(sample(original.wav_bytes(), frame, 1), level);
+    }
+    assert_eq!(reopened.project(project.id).unwrap(), project);
+    drop(reopened);
+    let restored = StudioService::open(&db).unwrap();
+    let saved = restored.project(project.id).unwrap();
+    let replay = motionwright_native::mlt_av_audio::prepare_saved_voice_cut(
+        &restored,
+        saved.id,
+        &saved.stamp(),
+        profile_id,
+        motionwright_service::OriginalMixDecodeBudget::FullCut180Seconds,
+    )
+    .unwrap();
+    assert_eq!(replay.wav_bytes(), original.wav_bytes());
+    assert_eq!(
+        restored
+            .store()
+            .lock()
+            .read_blob(&track.source_sha256, 2 * 1024 * 1024)
+            .unwrap(),
+        voice_wav
+    );
+    assert_eq!(saved, project);
 }

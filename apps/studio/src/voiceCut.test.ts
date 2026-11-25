@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { verifyVoiceCutAuditionBytes } from "./voiceAudition";
 import { fixtureBootstrap } from "./fixture";
 import { deriveVoiceCut, requireCurrentVoiceCut, validateVoiceCutIntervals, voiceCutDigest } from "./voiceCut";
 import { audioSampleToProject, buildAudioReviewClock, projectToAudioMedia } from "./audioReviewClock";
@@ -94,5 +95,49 @@ describe("explicit original voice montage binding", () => {
       (p:ReturnType<typeof fixture>)=>{p.profile.included_scene_ids=["missing"];},
       (p:ReturnType<typeof fixture>)=>{p.track.source_sha256="b".repeat(64);},
     ]) { const data=fixture(); mutate(data); expect(()=>deriveVoiceCut(data.project,data.profile)).toThrow(); }
+  });
+});
+
+describe("standalone voice-only cut", () => {
+  it("saves the explicit cut without music or SFX, preserves history and maps the source clock", async () => {
+    const {project,profile} = fixture(), digest=await voiceCutDigest(deriveVoiceCut(project,profile).wire);
+    const legacy=emptyDeliveryRecipe();
+    const draft=newRecipeDraft(recipeDraftScope(project,profile.id,"mix"),"mix",project.revision);
+    const next=proposedDeliveryRecipe(legacy,editRecipeField(draft,"voice_cut_sha256",digest,recipeFields(legacy,"mix")));
+    expect(next.original_mix).toBeNull();
+    expect(next.voice_only_cut_sha256).toBe(digest);
+    expect(recipeFingerprint(next)).not.toBe(recipeFingerprint(legacy));
+    validateDeliveryRecipe(project,profile.id,next);
+    assertRecipeHistoryPayload(next);
+    expect(()=>assertRecipeHistoryPayload({...next,original_mix:defaultOriginalMix()})).toThrow();
+    expect(()=>assertRecipeHistoryPayload({...next,voice_only_cut_sha256:null})).toThrow();
+    await applyProductionDesignChange(project,{type:"set_delivery_recipe",deliverable_profile_id:profile.id,recipe:next});
+    const clock=buildAudioReviewClock(project,{kind:"mix",sourceId:profile.id});
+    expect(clock.sampleCount).toBe(192000);
+    expect(audioSampleToProject(clock,0)).toEqual({num:"4",den:"1"});
+    expect(audioSampleToProject(clock,96000)).toEqual({num:"0",den:"1"});
+    expect(projectToAudioMedia(clock,3)).toBeNull();
+    const enabled=proposedDeliveryRecipe(next,editRecipeField(draft,"enabled","true",recipeFields(next,"mix")));
+    expect(enabled.voice_only_cut_sha256).toBeUndefined();
+    expect(enabled.original_mix?.voice_cut_sha256).toBe(digest);
+    const disabled=proposedDeliveryRecipe(enabled,editRecipeField(draft,"enabled","false",recipeFields(enabled,"mix")));
+    expect(disabled).toEqual(next);
+    profile.included_scene_ids.reverse();
+    await expect(applyProductionDesignChange(project,{type:"set_delivery_recipe",deliverable_profile_id:profile.id,recipe:enabled})).rejects.toThrow();
+    expect(proposedDeliveryRecipe(next,editRecipeField(draft,"voice_cut_sha256","",recipeFields(next,"mix")))).toEqual(legacy);
+  });
+  it("requires canonical PCM16 output bytes and exact reviewed frame count", () => {
+    const frames=48000, bytes=new Uint8Array(44+frames*4), view=new DataView(bytes.buffer);
+    bytes.set(new TextEncoder().encode("RIFF"),0);
+    bytes.set(new TextEncoder().encode("WAVEfmt "),8);
+    bytes.set(new TextEncoder().encode("data"),36);
+    view.setUint32(4,bytes.length-8,true);view.setUint32(16,16,true);
+    view.setUint16(20,1,true);view.setUint16(22,2,true);
+    view.setUint32(24,48000,true);view.setUint32(28,192000,true);
+    view.setUint16(32,4,true);view.setUint16(34,16,true);view.setUint32(40,frames*4,true);
+    expect(verifyVoiceCutAuditionBytes(bytes,frames)).toEqual(bytes);
+    expect(()=>verifyVoiceCutAuditionBytes(bytes,frames+1)).toThrow();
+    view.setUint16(34,24,true);
+    expect(()=>verifyVoiceCutAuditionBytes(bytes,frames)).toThrow();
   });
 });

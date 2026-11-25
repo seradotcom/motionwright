@@ -4,7 +4,7 @@ import { validateTranscriptEmphasis } from "./transcriptEmphasis";
 import type { OtioEditPreview } from "./otioCutReview";
 import { savedOriginalMixAuditionRequest } from "./audioRecipeContract";
 import { requireCurrentVoiceCut } from "./voiceCut";
-import { originalVoiceAuditionRequest, verifyOriginalVoiceAuditionBytes } from "./voiceAudition";
+import { originalVoiceAuditionRequest, verifyOriginalVoiceAuditionBytes, verifyVoiceCutAuditionBytes } from "./voiceAudition";
 import { readNativeAvAudioQcResponse, readNativeAudioQcReceiptInventoryResponse } from "./nativeAvAudioQc";
 import { claimFields, claimRaw, parseClaimRaw } from "./claimSourceDraft";
 export { nativePaidGenerationJournal, nativePaidGenerationPreflight, nativePaidGenerationReservePreflight } from "./generationJournalApi";
@@ -2629,6 +2629,22 @@ export async function readOriginalVoiceAudition(project:Project,trackId:string,c
   const request=originalVoiceAuditionRequest(project,trackId,confirmed);
   const result=await invoke<unknown>("read_original_voice_audition",{request});
   return verifyOriginalVoiceAuditionBytes(result,request.source_sha256);
+}
+
+/** Read the exact saved, conformed PCM16 source from the existing owner command.
+ * The original-take API retains its independent full-file digest contract. */
+export async function readOriginalVoiceCutAudition(project: Project, profileId: string, confirmed: boolean): Promise<Uint8Array> {
+  if (!isTauri()) throw new Error("Voice-only cut listening requires the Motionwright desktop runtime.");
+  const profile = project.deliverables.find(profile => profile.id === profileId);
+  const recipe = savedDeliveryRecipe(project, profileId);
+  if (!profile?.voice_track_id || !recipe || recipe.original_mix || !recipe.voice_only_cut_sha256)
+    throw new Error("Save an explicitly reviewed voice-only cut before auditioning.");
+  const cut = await requireCurrentVoiceCut(project, profile, recipe.voice_only_cut_sha256);
+  if (!cut || cut.sourceFrames > 720000 || cut.outputFrames > 720000)
+    throw new Error("Local voice-only cut audition supports original sources up to 15 seconds.");
+  const request = { ...originalVoiceAuditionRequest(project, profile.voice_track_id, confirmed), deliverable_profile_id: profileId };
+  const result = await invoke<unknown>("read_original_voice_audition", {request});
+  return verifyVoiceCutAuditionBytes(result, cut.outputFrames);
 }
 
 export async function nativeOriginalMixAudition(

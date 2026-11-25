@@ -1,5 +1,5 @@
 import type { CreativePatchRecord } from "./creativeUndo";
-import { validateDeliveryRecipe, type DeliveryRecipe } from "./deliveryRecipe";
+import { recipeVoiceCutBinding, validateDeliveryRecipe, type DeliveryRecipe } from "./deliveryRecipe";
 import { requireCurrentVoiceCut } from "./voiceCut";
 import type { ComponentDistillationProposal } from "./componentDistillation";
 import type { ProductStageInstance } from "./productStage";
@@ -723,8 +723,10 @@ export async function applyProductionDesignChange(project: Project, change: Prod
       if (!project.deliverables.some(profile => profile.id === change.deliverable_profile_id)) throw new Error("The delivery profile no longer exists.");
       if (change.recipe) {
         validateDeliveryRecipe(project, change.deliverable_profile_id, change.recipe);
-        const binding = change.recipe.original_mix?.voice_cut_sha256;
-        if (binding !== undefined && binding !== design.delivery_recipes?.[change.deliverable_profile_id]?.original_mix?.voice_cut_sha256)
+        const binding = recipeVoiceCutBinding(change.recipe);
+        const previous = design.delivery_recipes?.[change.deliverable_profile_id];
+        if (binding !== undefined && (binding !== recipeVoiceCutBinding(previous)
+          || Boolean(previous?.original_mix) !== Boolean(change.recipe.original_mix)))
           await requireCurrentVoiceCut(project, project.deliverables.find(profile => profile.id === change.deliverable_profile_id)!, binding);
       }
       const recipes = { ...design.delivery_recipes };

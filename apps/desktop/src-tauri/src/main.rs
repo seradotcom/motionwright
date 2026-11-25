@@ -44,7 +44,7 @@ mod runtime_profile_files;
 mod runtime_profiles;
 
 use av_master::{
-    canonical_av_request_id, stage_measured_wav, stage_original_mix_wav,
+    canonical_av_request_id, stage_measured_wav, stage_original_mix_wav, stage_voice_cut_wav,
     validate_master_voice_timing,
 };
 use caption_export::{CaptionExportResponse, ExportCaptionRequest};
@@ -2419,6 +2419,13 @@ async fn assemble_av_master(
         request.deliverable_id,
     )
     .await?;
+    let voice_cut = original_mix_native::saved_voice_cut_for_master(
+        owner.worker_owner(),
+        &state.service,
+        &project,
+        request.deliverable_id,
+    )
+    .await?;
 
     // This is a production mutation and consumes only the corresponding
     // one-time revision/request-scoped local render effect capability.
@@ -2459,9 +2466,9 @@ async fn assemble_av_master(
         &segment.fingerprint,
         saved_mix
             .as_ref()
-            .map_or(selected_voice.source_sha256.as_str(), |mix| {
-                mix.audio_inputs_sha256()
-            }),
+            .map(|mix| mix.audio_inputs_sha256())
+            .or_else(|| voice_cut.as_ref().map(|cut| cut.audio_inputs_sha256()))
+            .unwrap_or(selected_voice.source_sha256.as_str()),
     );
     let output_root = connection.output_root.clone();
     let export_root = output_root.clone();
@@ -2476,6 +2483,11 @@ async fn assemble_av_master(
             mix.verify_project(&latest, mix.plan().deliverable_profile_id)
                 .map_err(|error| error.to_string())?;
             stage_original_mix_wav(&output_root, &mix, &stable_identity)
+        } else if let Some(cut) = voice_cut {
+            let latest = service.project(id).map_err(sanitized)?;
+            cut.verify_project(&latest, cut.profile_id())
+                .map_err(|e| e.to_string())?;
+            stage_voice_cut_wav(&output_root, &cut, &stable_identity)
         } else {
             let source = service
                 .verified_master_voice(id, &base, track)
@@ -2667,6 +2679,13 @@ async fn assemble_multisegment_av_master(
         request.deliverable_id,
     )
     .await?;
+    let voice_cut = original_mix_native::saved_voice_cut_for_master(
+        owner.worker_owner(),
+        &state.service,
+        &project,
+        request.deliverable_id,
+    )
+    .await?;
 
     // This is a mutating native production request. Authorization is a
     // scoped, short-lived, single-use desktop effect grant.
@@ -2701,9 +2720,9 @@ async fn assemble_multisegment_av_master(
         &hex::encode(source_digest.finalize()),
         saved_mix
             .as_ref()
-            .map_or(selected_voice.source_sha256.as_str(), |mix| {
-                mix.audio_inputs_sha256()
-            }),
+            .map(|mix| mix.audio_inputs_sha256())
+            .or_else(|| voice_cut.as_ref().map(|cut| cut.audio_inputs_sha256()))
+            .unwrap_or(selected_voice.source_sha256.as_str()),
     );
     // Source + speaker identity are 256-bit hashed into the stage name.
     // The native MLT subrequest is still short enough to accommodate typed
@@ -2721,6 +2740,11 @@ async fn assemble_multisegment_av_master(
             mix.verify_project(&latest, mix.plan().deliverable_profile_id)
                 .map_err(|error| error.to_string())?;
             stage_original_mix_wav(&root, &mix, &stable)
+        } else if let Some(cut) = voice_cut {
+            let latest = service.project(id).map_err(sanitized)?;
+            cut.verify_project(&latest, cut.profile_id())
+                .map_err(|e| e.to_string())?;
+            stage_voice_cut_wav(&root, &cut, &stable)
         } else {
             let original = service
                 .verified_master_voice(id, &source, voice_track)

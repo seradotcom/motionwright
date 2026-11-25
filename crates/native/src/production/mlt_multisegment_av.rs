@@ -563,6 +563,22 @@ impl ProductionCoordinator {
         } else {
             None
         };
+        let voice_cut = if project
+            .production_design
+            .delivery_recipes
+            .get(&deliverable_id)
+            .is_some_and(|recipe| recipe.voice_only_cut_sha256.is_some())
+        {
+            Some(crate::mlt_av_audio::prepare_saved_voice_cut(
+                &self.service,
+                project_id,
+                expected,
+                deliverable_id,
+                motionwright_service::OriginalMixDecodeBudget::FullCut180Seconds,
+            )?)
+        } else {
+            None
+        };
         // Re-derive the bounded pure PCM result from canonical CAS/recipe. The
         // staged audio receipt alone never authorizes a different soundtrack.
         let audio_readiness = match &saved_mix {
@@ -573,6 +589,15 @@ impl ProductionCoordinator {
                 &visual.source,
                 &voice,
                 mix,
+                output_root,
+            )?,
+            None if voice_cut.is_some() => crate::mlt_av_audio::preflight_multi_segment_voice_cut(
+                &project,
+                deliverable_id,
+                &recipe,
+                &visual.source,
+                &voice,
+                voice_cut.as_ref().expect("voice cut is present"),
                 output_root,
             )?,
             None => preflight_multi_segment_audio(

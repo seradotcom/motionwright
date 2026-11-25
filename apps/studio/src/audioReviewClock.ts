@@ -62,7 +62,8 @@ export function buildAudioReviewClock(project: Project, source: AudioReviewSourc
     const voice = voiceAuditionSource(project, profile.voice_track_id).track;
     if (voice.sample_rate_hz !== 48000 || voice.channels !== 2)
       return fail("The saved original mix requires the existing stereo 48-kHz voice source.");
-    const binding = project.production_design?.delivery_recipes?.[profile.id]?.original_mix?.voice_cut_sha256;
+    const recipe = project.production_design?.delivery_recipes?.[profile.id];
+    const binding = recipe?.original_mix?.voice_cut_sha256 ?? recipe?.voice_only_cut_sha256;
     if (isOriginalVoiceMontage(project, profile)) {
       if (!binding || !/^[a-f0-9]{64}$/.test(binding))
         return fail("The complete original cut is the default. Review and save an explicit voice cut binding for the montage.");

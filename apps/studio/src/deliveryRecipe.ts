@@ -29,7 +29,12 @@ export interface DeliveryRecipe {
   scene_intents: DeliverySceneIntent[];
   original_mix: OriginalMixRecipe | null;
   audio_targets?: DeliveryAudioTargets;
+  /** Explicit narration conform without a multi-bus mix. */
+  voice_only_cut_sha256?: string;
 }
+export const recipeVoiceCutBinding = (recipe: DeliveryRecipe | null | undefined): string | undefined =>
+  recipe?.original_mix?.voice_cut_sha256 ?? recipe?.voice_only_cut_sha256;
+
 export type RecipeGroup = "film" | "mix" | "targets";
 export const deliveryRoles: MotionCanvasNarrativeRole[] = ["hook", "problem", "mechanism", "evidence", "comparison", "reveal", "payoff", "cta"];
 export const deliveryArchetypes: MotionCanvasArchetype[] = ["statement", "split_explanation", "architecture_reveal", "comparison", "metric", "timeline", "code_focus", "diagram_build", "object_spotlight", "evidence_frame", "product_proof", "endcard"];
@@ -108,7 +113,7 @@ export function parseDeliveryAudioTarget(raw: string): number | null {
 /** Mirrors the typed wire for UI feedback. The Rust service remains canonical. */
 export function validateDeliveryRecipe(project: Project, profileId: string, candidate: unknown): asserts candidate is DeliveryRecipe {
   if (!uuid.test(profileId) || !project.deliverables.some(profile => profile.id.toLowerCase() === profileId.toLowerCase())) throw new Error("The delivery profile no longer exists.");
-  const recipe = ownKeys(candidate, ["schema", "scene_intents", "original_mix"], "delivery recipe", ["audio_targets"]);
+  const recipe = ownKeys(candidate, ["schema", "scene_intents", "original_mix"], "delivery recipe", ["audio_targets", "voice_only_cut_sha256"]);
   if (recipe.schema !== "motionwright.delivery-recipe/1") throw new Error("Unsupported delivery recipe schema.");
   if (!Array.isArray(recipe.scene_intents) || recipe.scene_intents.length > 4096) throw new Error("Delivery scene intent is outside the bounded collection.");
   const seen = new Set<string>();
@@ -148,7 +153,7 @@ export function recipeFields(recipe: DeliveryRecipe | null, group: RecipeGroup):
     enabled: recipe?.original_mix ? "true" : "false",
     music_asset_id: mix.music_asset_id ?? "", sfx_asset_id: mix.sfx_asset_id ?? "",
     music_source_start_sample: mix.music_source_start_sample === undefined ? "" : String(mix.music_source_start_sample),
-    voice_cut_sha256: mix.voice_cut_sha256 ?? "",
+    voice_cut_sha256: recipeVoiceCutBinding(recipe) ?? "",
     ...Object.fromEntries(numberFields.map(key => [key, String(mix[key])])),
     ...Object.fromEntries(originalMixEnvelopeKeys.flatMap(bus => [
       [bus + ":muted", String(mix[bus]?.muted ?? false)],
@@ -250,12 +255,6 @@ export function proposedDeliveryRecipe(current: DeliveryRecipe | null, draft: Re
       && recipe.original_mix.music_asset_id !== current?.original_mix?.music_asset_id) {
       throw new Error("Clear or explicitly revise the saved music source window before changing its source asset.");
     }
-    if (Object.hasOwn(draft.edits, "voice_cut_sha256")) {
-      const binding = fields.voice_cut_sha256;
-      if (!binding) delete recipe.original_mix.voice_cut_sha256;
-      else if (/^[a-f0-9]{64}$/.test(binding)) recipe.original_mix.voice_cut_sha256 = binding;
-      else throw new Error("Review an exact original voice cut before saving its binding.");
-    }
     for (const bus of originalMixEnvelopeKeys) {
       // Untouched buses retain their exact saved optional representation.
       if (!mixEnvelopeFields.some(field => Object.hasOwn(draft.edits, bus + ":" + field))) continue;
@@ -271,6 +270,18 @@ export function proposedDeliveryRecipe(current: DeliveryRecipe | null, draft: Re
         delete recipe.original_mix[bus];
       else recipe.original_mix[bus] = envelope;
     }
+  }
+  if (draft.group === "mix") {
+    // A mode change explicitly authored by the owner may keep the exact reviewed
+    // source binding; a changed source/order is still rejected by the authority.
+    const binding = fields.voice_cut_sha256;
+    if (binding && !/^[a-f0-9]{64}$/.test(binding))
+      throw new Error("Review an exact original voice cut before saving its binding.");
+    delete recipe.voice_only_cut_sha256;
+    if (recipe.original_mix) {
+      if (binding) recipe.original_mix.voice_cut_sha256 = binding;
+      else delete recipe.original_mix.voice_cut_sha256;
+    } else if (binding) recipe.voice_only_cut_sha256 = binding;
   }
   return recipe;
 }

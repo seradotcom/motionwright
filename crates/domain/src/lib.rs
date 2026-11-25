@@ -1494,17 +1494,17 @@ impl Project {
                 }
                 if let Some(recipe) = recipe {
                     recipe.validate(&self.scenes, &self.assets)?;
-                    let binding = recipe
-                        .original_mix
-                        .as_ref()
-                        .and_then(|mix| mix.voice_cut_sha256.as_deref());
                     let previous = self
                         .production_design
                         .delivery_recipes
-                        .get(deliverable_profile_id)
-                        .and_then(|recipe| recipe.original_mix.as_ref())
-                        .and_then(|mix| mix.voice_cut_sha256.as_deref());
-                    if let Some(binding) = binding.filter(|binding| Some(*binding) != previous) {
+                        .get(deliverable_profile_id);
+                    let binding = recipe.voice_cut_binding();
+                    if let Some(binding) = binding.filter(|binding| {
+                        Some(*binding) != previous.and_then(DeliveryRecipe::voice_cut_binding)
+                            || previous.is_some_and(|old| {
+                                old.original_mix.is_some() != recipe.original_mix.is_some()
+                            })
+                    }) {
                         let profile = self
                             .deliverables
                             .iter()

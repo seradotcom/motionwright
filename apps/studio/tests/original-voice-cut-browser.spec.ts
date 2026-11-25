@@ -60,4 +60,16 @@ test("review and save a noncontiguous original voice cut without replacing sourc
   const cleared=await readStudioProject(page);
   expect(cleared.production_design?.delivery_recipes?.[profile.id]?.original_mix?.voice_cut_sha256).toBeUndefined();
   expect(cleared.assets).toEqual(before.assets);
+  await panel.getByLabel("Enable original mix recipe",{exact:true}).uncheck();
+  await review.getByRole("button",{name:"Bind reviewed original voice cut",exact:true}).click();
+  await expect(panel.getByLabel("Enable original mix recipe",{exact:true})).not.toBeChecked();
+  await save.click();
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r"+(cleared.revision+1));
+  const voiceOnly=await readStudioProject(page);
+  expect(voiceOnly.production_design?.delivery_recipes?.[profile.id]?.original_mix).toBeNull();
+  expect(voiceOnly.production_design?.delivery_recipes?.[profile.id]?.voice_only_cut_sha256).toBe(binding);
+  expect(voiceOnly.assets).toEqual(before.assets);expect(voiceOnly.audio).toEqual(before.audio);
+  await button(page,"Canvas").click();await open();
+  await expect(review).toContainText("Exact cut binding selected.");
+  await expect(panel.getByLabel("Enable original mix recipe",{exact:true})).not.toBeChecked();
 });
