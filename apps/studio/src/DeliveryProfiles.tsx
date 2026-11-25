@@ -1083,7 +1083,7 @@ export default function DeliveryProfiles({
                 <summary>Review pending output fields ({Object.keys(profileDraft.edits).length})</summary>
                 {Object.entries(profileDraft.edits).map(([field, edit]) => {
                   const label = field.startsWith("text:")
-                    ? "Localized text " + (project.scenes.flatMap(scene => scene.nodes).find(node => node.id === field.slice(5))?.name ?? field.slice(5))
+                    ? "Delivery text " + (project.scenes.flatMap(scene => scene.nodes).find(node => node.id === field.slice(5))?.name ?? field.slice(5))
                     : field.replaceAll("_", " ");
                   const sent = profileDraft.sentFields[field];
                   return <div key={field} role="group" aria-label={label + " pending input"}>
@@ -1346,31 +1346,45 @@ export default function DeliveryProfiles({
                 currentProjectState={currentProjectState} commit={change => { noteNativeInput(); liveFilm.current.ready = false; return commitRecipe(change); }} /> }
             </>}
 
-            {(localizedVariant || Object.keys(draft.text_overrides).length > 0) && (
-              <section className="caption-export-panel" aria-label="Localized text">
+            {(textNodes.length > 0 || Object.keys(draft.text_overrides).length > 0) && (
+              <section className="caption-export-panel" aria-label={localizedVariant ? "Localized text" : "Delivery text overrides"}>
                 <header>
                   <div>
-                    <strong>Localized canvas text</strong>
-                    <span>Every text object is explicit for a locale derivative; native verification still enforces no truncation.</span>
+                    <strong>{localizedVariant ? "Localized canvas text" : "Text for this delivery"}</strong>
+                    <span>{localizedVariant
+                      ? "Every text object needs explicit wording for this locale. Line breaks are preserved."
+                      : "Create local wording for this delivery, or inherit the current source text. Line breaks are preserved."}</span>
                   </div>
                   <span className={localizedVariant ? "status-pill status-unknown" : "status-pill status-current"}>
-                    {localizedVariant ? "LOCALE VARIANT" : "OVERRIDES"}
+                    {localizedVariant ? "LOCALE VARIANT" : "DELIVERY TEXT"}
                   </span>
                 </header>
                 <div className="localized-text-ledger">
-                  {textNodes.map(({ scene, node }) => (
-                    <label key={node.id}>
-                      <span>
-                        <strong>{scene.name} · {node.name}</strong>
-                        <small>{node.text ?? "No source text"}</small>
-                      </span>
-                      <input
-                        value={profileDraft.values["text:" + node.id] ?? ""}
-                        placeholder={localizedVariant ? "Required localized text" : "Optional override"}
-                        onChange={(event) => setProfileField("text:" + node.id, event.target.value)}
-                      />
-                    </label>
-                  ))}
+                  {textNodes.map(({ scene, node }) => {
+                    const value=profileDraft.values["text:" + node.id] ?? "";
+                    return <div className="delivery-text-entry" key={node.id}>
+                      <label>
+                        <span>
+                          <strong>{scene.name} · {node.name}</strong>
+                          <small className="delivery-source-text">{node.text ?? "No source text"}</small>
+                          <small>{value !== "" ? "Local wording" : localizedVariant ? "Translation required" : "Inherits source text"}</small>
+                        </span>
+                        <textarea rows={3} value={value}
+                          aria-label={"Delivery text for " + node.name + " in " + scene.name}
+                          placeholder={localizedVariant ? "Required localized text" : "Optional override"}
+                          onChange={event => setProfileField("text:" + node.id, event.target.value)} />
+                      </label>
+                      {!localizedVariant && <div className="delivery-text-actions">
+                        <button type="button" className="button"
+                          aria-label={"Use source text for " + node.name + " in " + scene.name}
+                          disabled={value === ""}
+                          onClick={() => setProfileField("text:" + node.id, "")}>Use source text</button>
+                        {value === "" && node.text && <button type="button" className="button"
+                          aria-label={"Customize source text for " + node.name + " in " + scene.name}
+                          onClick={() => setProfileField("text:" + node.id, node.text!)}>Customize source text</button>}
+                      </div>}
+                    </div>;
+                  })}
                 </div>
                 {localizedVariant && textNodes.some(({ node }) => !draft.text_overrides[node.id]?.trim()) && (
                   <div className="delivery-truth-note warning"><CircleDashed size={14} /> Localized derivatives require explicit text for every canvas text object.</div>

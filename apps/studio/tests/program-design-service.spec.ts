@@ -75,7 +75,7 @@ test("Timeline Program renders actual saved Canvas text, style and selected loca
     await page.getByLabel("Language / locale",{exact:true}).fill("es-MX");
     const locale=page.getByRole("region",{name:"Localized text",exact:true});
     await expect(locale).toBeVisible();
-    const editors=locale.locator(".localized-text-ledger input");
+    const editors=locale.locator(".localized-text-ledger textarea");
     expect(await editors.count()).toBeGreaterThan(0);
     for(let i=0;i<await editors.count();i++) await editors.nth(i).fill("Variante visual localizada "+i);
     await button(page,"Save profile").click();

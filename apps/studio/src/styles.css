@@ -3851,7 +3851,7 @@ select:focus {
 .delivery-field-grid textarea,
 .caption-controls input,
 .caption-controls select,
-.localized-text-ledger input {
+.localized-text-ledger textarea {
   width: 100%;
   min-height: 34px;
   padding: 6px 9px;
@@ -3860,7 +3860,8 @@ select:focus {
   color: var(--text);
   background: var(--surface-2);
 }
-.delivery-field-grid textarea {
+.delivery-field-grid textarea,
+.localized-text-ledger textarea {
   resize: vertical;
   min-height: 74px;
   font: inherit;
@@ -3938,6 +3939,16 @@ select:focus {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+.delivery-text-entry {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.delivery-text-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
 .localized-text-ledger label {
   display: grid;
   grid-template-columns: minmax(180px, 0.8fr) minmax(240px, 1.2fr);
@@ -3957,6 +3968,14 @@ select:focus {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+.localized-text-ledger .delivery-source-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.delivery-text-entry label {
+  align-items: start;
+  border-bottom: 0;
 }
 .caption-controls {
   display: grid;

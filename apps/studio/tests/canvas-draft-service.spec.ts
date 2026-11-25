@@ -1604,7 +1604,7 @@ test("saved localized profile text overrides the editorial SVG across two revisi
     await page.getByLabel("Language / locale", { exact: true }).fill("es-MX");
     const localized = page.getByRole("region", { name: "Localized text", exact: true });
     await expect(localized).toBeVisible();
-    const editors = localized.locator(".localized-text-ledger input");
+    const editors = localized.locator(".localized-text-ledger textarea");
     const editorCount = await editors.count();
     expect(editorCount).toBeGreaterThan(0);
     for (let index = 0; index < editorCount; index++) {
@@ -1652,7 +1652,7 @@ test("saved localized profile text overrides the editorial SVG across two revisi
     await page.getByRole("combobox", { name: "Editor preview timebase", exact: true }).selectOption(variant.id);
     await expect(page.getByLabel("Profile name", { exact: true })).toHaveValue(variant.name);
     const editorsNext = page.getByRole("region", { name: "Localized text", exact: true })
-      .locator(".localized-text-ledger input");
+      .locator(".localized-text-ledger textarea");
     for (let index = 0; index < await editorsNext.count(); index++) {
       await editorsNext.nth(index).fill("Segunda decisión localizada " + index);
     }
