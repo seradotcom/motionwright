@@ -111,7 +111,7 @@ test("a sampled native frame becomes a user-authored scoped repair, never an aut
         if (command === "issue_effect_grant") return { token: "synthetic-test-grant" };
         if (command === "render_motion_canvas") return structuredClone(nativeReceipt);
         if (command === "preview_native_frame") {
-          const request = args?.request as { token: string };
+          const request = args?.request as { token: string; frame_index: number };
           if (request.token !== "synthetic-review-token") throw new Error("Unknown synthetic grant");
           // The fixture matches the declared output dimensions, but it is not
           // a renderer artifact or a source of product evidence.
@@ -121,6 +121,7 @@ test("a sampled native frame becomes a user-authored scoped repair, never an aut
           if (!ctx) throw new Error("Browser fixture canvas unavailable");
           ctx.fillStyle = "#283441";
           ctx.fillRect(0, 0, nativeWidth, nativeHeight);
+          if(request.frame_index>0){ctx.fillStyle="#ffffff";ctx.fillRect(0,0,10,10);}
           const encoded = canvas.toDataURL("image/png").split(",")[1];
           return Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
         }
@@ -146,6 +147,19 @@ test("a sampled native frame becomes a user-authored scoped repair, never an aut
   await page.getByRole("button", { name: "Native inspection", exact: true }).click();
   await page.getByRole("button", { name: "Inspect current native frames" }).click();
   await expect(page.getByRole("button", { name: /Inspect native frame 0/ })).toBeVisible();
+  const exact=page.getByRole("region",{name:"Full-resolution native frame comparison"});
+  const beforeCompare=await page.evaluate(()=>(window as unknown as {__REVIEW_TEST_COMMANDS__:string[]}).__REVIEW_TEST_COMMANDS__.slice());
+  await exact.getByRole("button",{name:"Compare original frame pixels"}).click();
+  await expect(exact.getByLabel("Decoded pixel comparison measurements")).toContainText("100 / "+profile.width*profile.height);
+  await expect(exact.getByLabel("Decoded pixel comparison measurements")).toContainText("215 / 255");
+  await expect(exact.getByAltText("Full-resolution RGBA delta map")).toBeVisible();
+  const compareCommands=await page.evaluate(()=>(window as unknown as {__REVIEW_TEST_COMMANDS__:string[]}).__REVIEW_TEST_COMMANDS__.slice());
+  expect(compareCommands.slice(beforeCompare.length)).toEqual(["preview_native_frame","preview_native_frame"]);
+  await exact.getByLabel("Full-resolution view").selectOption("onion");
+  await expect(exact.getByAltText("Second original native PNG at 50% opacity")).toBeVisible();
+  await page.getByLabel("Compare with").selectOption("2");
+  await expect(exact.getByLabel("Decoded pixel comparison measurements")).toHaveCount(0);
+  await expect(page.locator(".revision-chip")).toHaveText(revision);
   await page.getByLabel("Affected object").selectOption(target!.id);
   await page.getByLabel("Violated constraint").fill("Legibility and continuity of the selected text");
   await page.getByLabel("What is visible in this frame").fill("The current entry visually overlaps a neighboring element.");

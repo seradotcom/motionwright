@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Eye, Flag, RefreshCw } from "lucide-react";
 import { readNativePreviewFrame } from "./api";
+import NativeExactFrameComparison from "./NativeExactFrameComparison";
 import { planNativeInspection } from "./nativeInspection";
 import { nativeFindingSource, nativeFindingUnknown, nativeFindingCurrent } from "./nativeFindingDraft";
 import { useNativeFindingDraft } from "./useNativeFindingDraft";
@@ -107,6 +108,8 @@ export default function NativeInspectionWorkbench({project,scene,displayProfile,
         <img src={sample.url} alt={`Native frame ${sample.frameIndex}, source r${plan.revision}`} draggable={false}/><span>f{sample.frameIndex} · {seconds(sample.timelineTime).toFixed(3)} s</span><small>SHA-256 {sample.pngSha256.slice(0,12)}…</small></button>)}</div>
       {first && second && <><div className="production-button-row"><label className="production-field"><span>Compare with</span><select value={secondIndex} onChange={e=>setSecondIndex(Number(e.target.value))}>{currentSamples.map((sample,index)=><option key={sample.frameIndex} value={index}>Frame {sample.frameIndex} · {seconds(sample.timelineTime).toFixed(3)} s</option>)}</select></label><label className="production-field"><span>Inspection mode</span><select value={mode} onChange={e=>setMode(e.target.value as "onion"|"difference")}><option value="onion">50% onion overlay</option><option value="difference">Channel difference</option></select></label></div>
         <NativeComparison first={first} second={second} mode={mode}/><p className="production-help">Comparison uses downsampled, color-managed browser thumbnails. Source PNG digests are preserved; zero thumbnail difference is not an assertion of full-resolution equivalence.</p>
+        <NativeExactFrameComparison key={JSON.stringify([signature,first.frameIndex,first.pngSha256,second.frameIndex,second.pngSha256])}
+          project={project} plan={plan} first={first} second={second} busy={busy||loading}/>
         </>}
     </>}
     <section className="native-inspection-finding" aria-label="Native finding author input">
