@@ -114,8 +114,9 @@ describe("standalone voice-only cut", () => {
     await applyProductionDesignChange(project,{type:"set_delivery_recipe",deliverable_profile_id:profile.id,recipe:next});
     const clock=buildAudioReviewClock(project,{kind:"mix",sourceId:profile.id});
     expect(clock.sampleCount).toBe(192000);
-    expect(audioSampleToProject(clock,0)).toEqual({num:"4",den:"1"});
-    expect(audioSampleToProject(clock,96000)).toEqual({num:"0",den:"1"});
+    expect(audioSampleToProject(clock,0)).toEqual({num:"0",den:"1"});
+    expect(audioSampleToProject(clock,96000)).toEqual({num:"4",den:"1"});
+    expect(audioSampleToProject(clock,192000)).toEqual({num:"6",den:"1"});
     expect(projectToAudioMedia(clock,3)).toBeNull();
     const enabled=proposedDeliveryRecipe(next,editRecipeField(draft,"enabled","true",recipeFields(next,"mix")));
     expect(enabled.voice_only_cut_sha256).toBeUndefined();

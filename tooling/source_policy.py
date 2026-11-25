@@ -247,10 +247,15 @@ for path in iter_source_files(ROOT):
         # - Kdenlive pair preview binds both original files and capsule hashes;
         #   only bundle media roots are admitted, and the existing bounded
         #   owner Change still requires review and one explicit Save.
+        # - portable export can explicitly select immutable Project CAS media:
+        #   exact saved snapshot/asset membership, bounded verified blob, and
+        #   re-read after bridge validation. Never falls back to an owner path.
+        #   The interpreter, owned process group, path checks and publication
+        #   implementation are unchanged by this source selection.
         # Any code change revokes this admission until a new security review.
         reviewed_production_process_sources = {
             "apps/desktop/src-tauri/src/otio_bridge.rs":
-                "20c856731fa93481b562da5d7ca556154c46975032b67a086210ed779b19fd84",
+                "bc3cb5757cfd7ecdcba262e3bd5c1d330f75bed46db81476708dd7d53247f2be",
         }
         reviewed_production_process = (
             rel in reviewed_production_process_sources

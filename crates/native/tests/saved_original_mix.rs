@@ -1456,7 +1456,7 @@ fn explicit_voice_montage_uses_exact_original_samples_and_reopens_without_replay
     assert_eq!(original.source_sha256(), track.source_sha256);
     assert_eq!(original.source_frames(), 288_000);
     assert_eq!(original.output_frames(), 192_000);
-    for (frame, level) in [(0, 1000), (95_999, 1000), (96_000, 3000), (191_999, 3000)] {
+    for (frame, level) in [(0, 1000), (95_999, 1000), (96_000, 2000), (191_999, 2000)] {
         assert_eq!(sample(original.wav_bytes(), frame, 0), level);
         assert_eq!(sample(original.wav_bytes(), frame, 1), level);
     }

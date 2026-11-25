@@ -817,6 +817,10 @@ fn consumed_voice_and_transcript_windows_invalidate_only_the_selected_mix() {
     );
     assert_eq!(f.service.project(p.id).unwrap(), p);
 
+    let before_active_switch = [
+        variant_dependency_fingerprint(&p, a).unwrap(),
+        variant_dependency_fingerprint(&p, b).unwrap(),
+    ];
     fs::write(&voice_path, wav(19)).unwrap();
     p = f
         .service
@@ -833,13 +837,36 @@ fn consumed_voice_and_transcript_windows_invalidate_only_the_selected_mix() {
         )
         .unwrap()
         .project;
+    let active = p.audio.active_voice_track_id.unwrap();
+    assert_ne!(active, voice);
+    for (id, before) in [a, b].into_iter().zip(before_active_switch) {
+        let profile = p
+            .deliverables
+            .iter()
+            .find(|profile| profile.id == id)
+            .unwrap();
+        assert_eq!(profile.voice_track_id, Some(voice));
+        let after = variant_dependency_fingerprint(&p, id).unwrap();
+        assert_eq!(after.audio_inputs_sha256, before.audio_inputs_sha256);
+        assert_eq!(after.caption_inputs_sha256, before.caption_inputs_sha256);
+        assert_eq!(after.frame_inputs_sha256, before.frame_inputs_sha256);
+        assert_eq!(after.master_inputs_sha256, before.master_inputs_sha256);
+        assert_eq!(after.profile_sha256, before.profile_sha256);
+    }
+    let mut candidate = p.clone();
+    candidate
+        .deliverables
+        .iter_mut()
+        .find(|profile| profile.id == a)
+        .unwrap()
+        .voice_track_id = Some(active);
     assert!(
-        variant_dependency_fingerprint(&p, a)
+        variant_dependency_fingerprint(&candidate, a)
             .unwrap_err()
             .to_string()
-            .contains("profile voice differs")
+            .contains("no transcript timing evidence")
     );
-    assert!(variant_dependency_fingerprint(&p, b).is_ok());
+    assert_eq!(f.service.project(p.id).unwrap(), p);
     p = apply(&f.service, &p, "remove-original-mix", change(a, None));
     assert!(variant_dependency_fingerprint(&p, a).is_ok());
 }

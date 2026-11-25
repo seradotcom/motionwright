@@ -492,6 +492,7 @@ jobs:
           cargo test --locked --jobs 2 -p motionwright-domain --lib delivery_recipe:: -- --test-threads=1
           cargo test --no-fail-fast --locked --jobs 2 -p motionwright-native --test original_mix --test saved_original_mix -- --test-threads=1
           cargo test --no-fail-fast --locked --jobs 2 -p motionwright-service --test delivery_recipe_persistence --test music_cut_persistence -- --test-threads=1
+          cargo test --locked --jobs 2 -p motionwright-native --lib production::audio_analysis::tests:: -- --test-threads=1
           cargo test --locked --jobs 2 -p motionwright-native --test saved_mix_native_consumers --no-run
       - name: Build the exact-source StudioService test transport
         run: cargo build --locked --jobs 2 -p motionwright-service --example studio_review_session
