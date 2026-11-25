@@ -161,3 +161,72 @@ fn unsupported_animation_drift_fails_before_external_provider_effect() {
         build_motion_canvas_segments(&project, project.deliverables[0].id, &options).unwrap_err();
     assert!(error.message.contains("motion keyframes"));
 }
+
+#[test]
+fn delivery_local_step_copy_retains_original_index_and_disclosure() {
+    use semwright_motion_authoring::SubjectContent;
+    let (mut project, options, instance_id) = fixture(false);
+    let heading = hero_node_id(instance_id, "headline");
+    let body = hero_node_id(instance_id, "body");
+    let index = hero_node_id(instance_id, "wordmark");
+    let disclosure = hero_node_id(instance_id, "disclosure");
+    let mut profile = project.deliverables[1].clone();
+    let profile_id = profile.id;
+    let heading_copy = "Revisa la fuente";
+    let body_copy = "Conserva el origen y revisa cada detalle del material.";
+    profile.text_overrides.insert(heading, heading_copy.into());
+    profile.text_overrides.insert(body, body_copy.into());
+    profile.text_overrides.insert(index, "02 / 04".into());
+    project
+        .apply_change(&Change::UpsertDeliverable {
+            profile: profile.clone(),
+        })
+        .unwrap();
+    let before = project.clone();
+    let film = build_motion_canvas_segments(&project, profile_id, &options)
+        .unwrap()
+        .remove(0)
+        .film;
+    let lines = |id: Uuid| -> Vec<String> {
+        let root = format!("node-{}", id.simple());
+        film.shots()
+            .flat_map(|shot| &shot.subjects)
+            .filter(|subject| subject.parent.as_deref() == Some(root.as_str()))
+            .map(|subject| match &subject.content {
+                SubjectContent::Text { runs, .. } => runs[0].text.clone(),
+                _ => panic!("expected editable native text line"),
+            })
+            .collect()
+    };
+    assert_eq!(lines(heading).join(" "), heading_copy);
+    assert_eq!(lines(body).join(" "), body_copy);
+    assert!(lines(body).len() > 1);
+    assert_eq!(lines(index), ["02 / 04"]);
+    assert!(
+        lines(disclosure)
+            .join(" ")
+            .contains("NOT AN OBSERVED WORKFLOW")
+    );
+    assert_eq!(project, before);
+    for target in [index, disclosure] {
+        let mut changed = profile.clone();
+        changed.text_overrides.insert(target, "Verified 99".into());
+        assert!(
+            project
+                .apply_change(&Change::UpsertDeliverable {
+                    profile: changed.clone()
+                })
+                .is_err()
+        );
+        assert_eq!(project, before);
+        // Old persisted wire bytes remain readable, but cannot become Film.
+        let mut historical = before.clone();
+        *historical
+            .deliverables
+            .iter_mut()
+            .find(|item| item.id == profile_id)
+            .unwrap() = changed;
+        assert!(historical.validate().is_ok());
+        assert!(build_motion_canvas_segments(&historical, profile_id, &options).is_err());
+    }
+}

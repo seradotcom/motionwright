@@ -6,6 +6,7 @@ import { previewTransform } from "./canvasMotion";
 import { resolveCanvasRelations } from "./canvasFollow";
 import { alignmentScale } from "./canvasAlignment";
 import { nativeGroupOrderIssue } from "./nativeGroupHierarchy";
+import { deliveryTextSourceConflict, protectedDeliveryText } from "./deliveryTextSources";
 
 /** Additional line breaks follow actual retained box/font geometry, never
  * resize the type or change an authored character. Native glyphs are unmeasured. */
@@ -42,6 +43,8 @@ function fitVariantHeroText(node: CanvasNode, layout: string | undefined, headli
 export async function reflowSceneForProfile(project: Project, scene: Scene, profile: DeliverableProfile): Promise<Scene> {
   if (![profile.width, profile.height].every(value => Number.isInteger(value) && value >= 320 && value <= 7680))
     throw new Error("Output layout dimensions are out of bounds.");
+  const sourceConflict=deliveryTextSourceConflict(project,profile,scene);
+  if(sourceConflict) throw new Error(sourceConflict);
   const output = structuredClone(scene);
   const replan = profile.framing_strategy === "replan";
   const resized = replan && (profile.width !== 1920 || profile.height !== 1080);
@@ -49,18 +52,24 @@ export async function reflowSceneForProfile(project: Project, scene: Scene, prof
   const hero = replan ? project.production_design?.heroes.find(value => value.scene_id === scene.id) : undefined;
   if (hero) {
     const config = structuredClone(hero.config), selected = new Set<string>();
-    if (config.layout !== "metric_evidence" && config.layout !== "step_sequence") {
-      for (const role of ["headline","body"] as const) {
-        const id = await heroNodeId(hero.id,role);
-        if (Object.hasOwn(profile.text_overrides,id)) {
-          config[role] = profile.text_overrides[id];
-          selected.add(id);
-        }
+    for (const role of ["headline","body"] as const) {
+      const id=await heroNodeId(hero.id,role), retained=protectedDeliveryText(project,scene,id);
+      if(retained) config[role]=retained.value;
+      else if (Object.hasOwn(profile.text_overrides,id)) {
+        config[role]=profile.text_overrides[id];
+        selected.add(id);
       }
     }
     if (resized || selected.size) {
       const incoming = await realizeProductHero(hero.id, config, profile.width, profile.height);
-      for (const node of incoming) if (selected.has(node.id)) {
+      for (const node of incoming) {
+        if(protectedDeliveryText(project,scene,node.id)){
+          const baseline=hero.baseline.find(base=>base.id===node.id);
+          if(!baseline)throw new Error("Protected Hero baseline identity missing.");
+          node.text=baseline.text;
+          continue;
+        }
+        if(!selected.has(node.id))continue;
         const raw = profile.text_overrides[node.id], wrapped = node.text;
         if (wrapped === null || wrapped.split("\n").some(line=>!line.trim())
             || raw.replaceAll("\n"," ") !== wrapped.replaceAll("\n"," "))
@@ -97,6 +106,8 @@ export async function reflowSceneForProfile(project: Project, scene: Scene, prof
     } else if (node.kind === "text" && Object.hasOwn(profile.text_overrides,node.id)) {
       node.text = profile.text_overrides[node.id];
     }
+    const retained=protectedDeliveryText(project,scene,node.id);
+    if(retained && node.text!==retained.value)throw new Error(retained.reason+": "+node.name);
   }
   return output;
 }

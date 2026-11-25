@@ -59,3 +59,66 @@ test("StepSequence invalid copy fails closed without creating nodes or increment
   await page.getByLabel("Component layout").selectOption("product_hero_reveal");
   await expect(page.getByRole("heading",{name:"ProductHeroReveal"})).toBeVisible();
 });
+
+test("delivery StepSequence preserves its original index and disclosure while reflowing local copy",async({page})=>{
+  const button=(name:string)=>page.getByRole("button",{name,exact:true});
+  await page.goto("/");
+  await button("Add scene").click();
+  await page.getByLabel("New scene name").fill("Original step variant");
+  await button("Add").click();
+  const open=async()=>{
+    await button("Production").click();
+    await page.getByLabel("Production working scene",{exact:true}).selectOption({label:"Original step variant"});
+    await button("Components").click();
+  };
+  await open();
+  await page.getByLabel("Component layout",{exact:true}).selectOption("step_sequence");
+  await page.getByLabel("Step heading",{exact:true}).fill("Inspect");
+  await page.getByLabel("What happens at this step",{exact:true}).fill("Retain the original source.");
+  await page.getByLabel("Step index (e.g. 01 / 03)",{exact:true}).fill("02 / 04");
+  await page.getByLabel("Animate entrance",{exact:true}).uncheck();
+  await button("16:9").click();
+  await expect(button("Add to scene")).toBeEnabled();
+  await button("Add to scene").click();
+  await expect(button("Update component")).toBeVisible();
+  const read=async()=>page.evaluate(async()=>{
+    const path="/src/api.ts";return (await (await import(/* @vite-ignore */ path)).bootstrap()).project as import("../src/types").Project;
+  });
+  const original=await read();
+  const scene=original.scenes.find(row=>row.name==="Original step variant")!;
+  const heading=scene.nodes.find(node=>node.name==="StepSequence / headline")!;
+  const body=scene.nodes.find(node=>node.name==="StepSequence / body")!;
+  const index=scene.nodes.find(node=>node.name==="StepSequence / wordmark")!;
+  const notice=scene.nodes.find(node=>node.name==="StepSequence / disclosure")!;
+  const profile=original.deliverables[0];
+  await button("Deliver").click();
+  await page.locator('.delivery-profile-row[data-profile-id="'+profile.id+'"]').click();
+  for(const node of [index,notice]){
+    const input=page.getByLabel("Delivery text for "+node.name+" in "+scene.name,{exact:true});
+    await expect(input).toHaveAttribute("readonly","");
+    await button("Retain exact source text for "+node.name+" in "+scene.name).click();
+    await expect(input).toHaveValue(node.text!);
+  }
+  const title="Revisa la fuente",copy="Conserva el origen y revisa cada detalle del material.";
+  await page.getByLabel("Delivery text for "+heading.name+" in "+scene.name,{exact:true}).fill(title);
+  await page.getByLabel("Delivery text for "+body.name+" in "+scene.name,{exact:true}).fill(copy);
+  await expect(button("Save profile")).toBeEnabled();
+  await button("Save profile").click();
+  await expect(button("Save profile")).toBeDisabled();
+  await open();
+  await page.getByLabel("Editor preview timebase",{exact:true}).selectOption(profile.id);
+  await button("9:16").click();
+  await button("Settled").click();
+  const study=page.getByRole("img",{name:/^StepSequence 9:16/});
+  const selected=study.locator('[data-canvas-node-id="'+body.id+'"] > text');
+  await expect(selected).toHaveAttribute("data-text-origin","profile");
+  const lines=await selected.locator("tspan").allTextContents();
+  expect(lines.length).toBeGreaterThan(1);expect(lines.join(" ")).toBe(copy);
+  await expect(study.locator('[data-canvas-node-id="'+index.id+'"] > text')).toContainText("02 / 04");
+  await expect(study).toContainText("NOT AN OBSERVED WORKFLOW");
+  const saved=await read();
+  expect(saved.scenes.find(row=>row.id===scene.id)!.nodes).toEqual(scene.nodes);
+  expect(saved.deliverables.find(row=>row.id===profile.id)!.text_overrides).toMatchObject({
+    [heading.id]:title,[body.id]:copy,[index.id]:index.text,[notice.id]:notice.text,
+  });
+});

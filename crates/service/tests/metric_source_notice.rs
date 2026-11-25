@@ -62,6 +62,35 @@ fn metric_disclosure_edits_are_rejected_without_persistent_changes() {
         );
         assert_eq!(service.project(p.id).unwrap(), p);
     }
+    let mut profile = p.deliverables[0].clone();
+    profile
+        .text_overrides
+        .insert(node_id, "Verified and approved".into());
+    assert!(
+        service
+            .apply(
+                p.id,
+                &p.stamp(),
+                "forged-delivery-disclosure",
+                &Change::UpsertDeliverable {
+                    profile: profile.clone()
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(service.project(p.id).unwrap(), p);
+    profile.text_overrides.insert(
+        node_id,
+        p.scenes[0]
+            .nodes
+            .iter()
+            .find(|node| node.id == node_id)
+            .unwrap()
+            .text
+            .clone()
+            .unwrap(),
+    );
+    p = write(&service, &p, Change::UpsertDeliverable { profile });
     drop(service);
 
     let reopened = StudioService::open(&db).unwrap();

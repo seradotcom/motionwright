@@ -211,6 +211,131 @@ pub(crate) fn validate_deliverables(profiles: &[DeliverableProfile]) -> Result<(
     Ok(())
 }
 
+/// Delivery-local copy cannot replace independently bound source values or
+/// the original attached component's evidence-status wording. Historical
+/// profiles remain readable; a stale override is a conflict on save/render,
+/// not an instruction to rewrite a measured datum or erase an old project.
+pub fn protected_delivery_text<'a>(
+    project: &'a Project,
+    scene: &'a crate::Scene,
+    node_id: Uuid,
+) -> Option<(&'a str, &'static str)> {
+    let hero = project
+        .production_design
+        .heroes
+        .iter()
+        .find(|hero| hero.scene_id == scene.id);
+    if let Some(hero) = hero
+        && matches!(
+            hero.config.layout,
+            crate::HeroLayout::MetricEvidence
+                | crate::HeroLayout::StepSequence
+                | crate::HeroLayout::ContrastComparison
+                | crate::HeroLayout::EditorialQuote
+        )
+        && node_id == crate::hero_node_id(hero.id, "disclosure")
+    {
+        return hero
+            .baseline
+            .iter()
+            .find(|node| node.id == node_id)
+            .and_then(|node| node.text.as_deref())
+            .map(|text| {
+                (
+                    text,
+                    "Attached component evidence disclosure must retain its original wording",
+                )
+            });
+    }
+    if let Some(binding) = project
+        .production_design
+        .measured_bindings
+        .iter()
+        .find(|binding| binding.scene_id == scene.id && binding.node_id == node_id)
+        && let crate::MeasuredOutput::Text { value } = &binding.baseline
+    {
+        return Some((
+            value.as_str(),
+            "Measured text must retain its bound value and units",
+        ));
+    }
+    if let Some(hero) = hero
+        && hero.config.layout == crate::HeroLayout::StepSequence
+        && node_id == crate::hero_node_id(hero.id, "wordmark")
+    {
+        return scene
+            .nodes
+            .iter()
+            .find(|node| node.id == node_id)
+            .and_then(|node| node.text.as_deref())
+            .map(|text| {
+                (
+                    text,
+                    "Step index must retain the current authored sequence label",
+                )
+            });
+    }
+    None
+}
+
+/// Read-only scoped admission used by both the saved profile write and native
+/// output projection. An explicit identical value is allowed for localized
+/// derivatives; absence continues to inherit the current source.
+pub fn validate_delivery_text_sources_for_scene(
+    project: &Project,
+    scene: &crate::Scene,
+    profile: &DeliverableProfile,
+) -> Result<()> {
+    if let Some(hero) = project
+        .production_design
+        .heroes
+        .iter()
+        .find(|hero| hero.scene_id == scene.id)
+        && matches!(
+            hero.config.layout,
+            crate::HeroLayout::MetricEvidence
+                | crate::HeroLayout::StepSequence
+                | crate::HeroLayout::ContrastComparison
+                | crate::HeroLayout::EditorialQuote
+        )
+    {
+        let id = crate::hero_node_id(hero.id, "disclosure");
+        let expected = hero.baseline.iter().find(|node| node.id == id);
+        let actual = scene.nodes.iter().find(|node| node.id == id);
+        if !matches!((expected, actual), (Some(base), Some(node)) if {
+            let mut normalized = node.clone();
+            normalized.property_locks = base.property_locks.clone();
+            base.kind == "text" && normalized == *base
+        }) {
+            return Err(DomainError::Invalid("Attached component evidence disclosure differs from its original source; restore it or explicitly detach before output".into()));
+        }
+    }
+    for node in &scene.nodes {
+        if let Some(raw) = profile.text_overrides.get(&node.id)
+            && let Some((expected, reason)) = protected_delivery_text(project, scene, node.id)
+            && raw != expected
+        {
+            return Err(DomainError::Invalid(format!(
+                "{reason}: {}. Restore the exact source wording or detach the binding before authoring a replacement.",
+                node.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_delivery_text_sources(
+    project: &Project,
+    profile: &DeliverableProfile,
+) -> Result<()> {
+    for scene in &project.scenes {
+        if profile.included_scene_ids.is_empty() || profile.included_scene_ids.contains(&scene.id) {
+            validate_delivery_text_sources_for_scene(project, scene, profile)?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_deliverable_context(project: &Project) -> Result<()> {
     let profile_ids: HashSet<_> = project
         .deliverables

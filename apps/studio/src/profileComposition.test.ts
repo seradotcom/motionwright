@@ -186,3 +186,61 @@ describe("delivery-local Hero copy is realized before the output layout",()=>{
     expect((await reflowSceneForProfile(p,p.scenes[0],{...target,framing_strategy:"replan"})).nodes.find(node=>node.id===heading.id)?.text).toBe(raw);
   });
 });
+
+describe("specialized delivery copy and protected source semantics",()=>{
+  async function source(layout:"metric_evidence"|"step_sequence"){
+    const p=base();
+    return applyChange(p,{type:"upsert_product_hero",scene_id:p.scenes[0].id,
+      instance_id:"00000000-0000-4000-8000-000000000005",
+      config:{...defaultHeroConfig(),layout,motion:false,headline:layout==="metric_evidence"?"42% growth":"Inspect",
+        body:"Retain the original source.",wordmark:layout==="metric_evidence"?"DATA":"02 / 04"}});
+  }
+  it("reflows both specialized titles and body without replacing the step index or evidence disclaimer",async()=>{
+    for(const layout of ["metric_evidence","step_sequence"] as const){
+      const p=await source(layout),scene=p.scenes[0],before=structuredClone(p);
+      const headline=scene.nodes[1],body=scene.nodes[2],wordmark=scene.nodes[3],notice=scene.nodes[5];
+      for(const [width,height] of [[1920,1080],[1080,1080],[1080,1920]]){
+        const title=layout==="metric_evidence"?"42% en total":"Revisa la fuente";
+        const explanation="Conserva el origen y revisa cada detalle del material.";
+        const target={...profile(p,width,height),text_overrides:{[headline.id]:title,[body.id]:explanation,
+          [notice.id]:notice.text!,[wordmark.id]:wordmark.text!}};
+        const out=await reflowSceneForProfile(p,scene,target);
+        expect(out.nodes[1].text?.replaceAll("\n"," ")).toBe(title);
+        expect(out.nodes[2].text?.replaceAll("\n"," ")).toBe(explanation);
+        expect(out.nodes[2].text).toContain("\n");
+        expect(out.nodes[3].text).toBe(wordmark.text);
+        expect(out.nodes[5].text).toBe(notice.text);
+        expect(out.nodes.map(node=>node.id)).toEqual(scene.nodes.map(node=>node.id));
+        expect(p).toEqual(before);
+      }
+    }
+  });
+  it("rejects changed disclosure and sequence label at Save and at output projection",async()=>{
+    for(const layout of ["metric_evidence","step_sequence"] as const){
+      let p=await source(layout);
+      const scene=p.scenes[0],notice=scene.nodes[5],wordmark=scene.nodes[3],before=structuredClone(p);
+      for(const targetId of layout==="step_sequence"?[notice.id,wordmark.id]:[notice.id]){
+        const target={...profile(p),text_overrides:{[targetId]:"Verified 99"}};
+        await expect(applyChange(p,{type:"upsert_deliverable",profile:target})).rejects.toThrow(/disclosure|Step index/);
+        await expect(reflowSceneForProfile(p,scene,target)).rejects.toThrow(/disclosure|Step index/);
+      }
+      expect(p).toEqual(before);
+      const exact={...profile(p),text_overrides:{[notice.id]:notice.text!,[wordmark.id]:wordmark.text!}};
+      p=await applyChange(p,{type:"upsert_deliverable",profile:exact});
+      expect(p.deliverables.find(item=>item.id===exact.id)?.text_overrides).toEqual(exact.text_overrides);
+      const reopened:Project=JSON.parse(JSON.stringify(p));
+      const output=await reflowSceneForProfile(reopened,reopened.scenes[0],reopened.deliverables.find(item=>item.id===exact.id)!);
+      expect(output.nodes[5].text).toBe(notice.text);
+    }
+  });
+  it("rejects a historical StepSequence with missing or altered original disclosure without rewriting it",async()=>{
+    const p=await source("step_sequence");
+    const scene=p.scenes[0];
+    scene.nodes[5].opacity=0;
+    const before=structuredClone(p);
+    await expect(reflowSceneForProfile(p,scene,profile(p))).rejects.toThrow(/disclosure differs/);
+    scene.nodes.pop();
+    await expect(reflowSceneForProfile(p,scene,profile(p))).rejects.toThrow(/disclosure differs/);
+    expect(p.scenes[0].nodes).toEqual(before.scenes[0].nodes.slice(0,-1));
+  });
+});

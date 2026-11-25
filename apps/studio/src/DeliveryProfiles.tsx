@@ -10,6 +10,7 @@ import {
 import VariantContinuityReview from "./VariantContinuityReview";
 import DeliveryVariantImpactReview from "./DeliveryVariantImpactReview";
 import DeliveryFamilyWorkbench from "./DeliveryFamilyWorkbench";
+import { deliveryTextSourceConflict, protectedDeliveryText } from "./deliveryTextSources";
 import CaptionReadabilityReview from "./CaptionReadabilityReview";
 import { inspectCaptionReadability } from "./captionReadability";
 import { useDeliveryRecipeDraft, savedDeliveryRecipe } from "./deliveryRecipe";
@@ -507,6 +508,7 @@ export default function DeliveryProfiles({
       );
   }, [draft?.included_scene_ids, project.scenes, customCut]);
 
+  const protectedCopyConflict = draft ? deliveryTextSourceConflict(project,draft) : null;
   const profileTranscript = useMemo(
     () => draft?.voice_track_id
       ? project.audio.transcript.filter((segment) => segment.voice_track_id === draft.voice_track_id)
@@ -827,7 +829,10 @@ export default function DeliveryProfiles({
 
   const saveProfile = () => {
     noteNativeInput();
-    void run("save", profileDraft.save);
+    void run("save", async () => {
+      if(protectedCopyConflict)throw new Error(protectedCopyConflict);
+      await profileDraft.save();
+    });
   };
 
   const removeProfile = () => {
@@ -1369,30 +1374,38 @@ export default function DeliveryProfiles({
                 <div className="localized-text-ledger">
                   {textNodes.map(({ scene, node }) => {
                     const value=profileDraft.values["text:" + node.id] ?? "";
+                    const retained=protectedDeliveryText(project,scene,node.id);
                     return <div className="delivery-text-entry" key={node.id}>
                       <label>
                         <span>
                           <strong>{scene.name} · {node.name}</strong>
                           <small className="delivery-source-text">{node.text ?? "No source text"}</small>
-                          <small>{value !== "" ? "Local wording" : localizedVariant ? "Translation required" : "Inherits source text"}</small>
+                          <small>{retained ? retained.reason : value !== "" ? "Local wording" : localizedVariant ? "Translation required" : "Inherits source text"}</small>
                         </span>
-                        <textarea rows={3} value={value}
+                        <textarea rows={3} value={value} readOnly={!!retained}
                           aria-label={"Delivery text for " + node.name + " in " + scene.name}
                           placeholder={localizedVariant ? "Required localized text" : "Optional override"}
                           onChange={event => setProfileField("text:" + node.id, event.target.value)} />
                       </label>
+                      {retained && <div className="delivery-text-actions">
+                        <button type="button" className="button"
+                          aria-label={"Retain exact source text for " + node.name + " in " + scene.name}
+                          disabled={value===retained.value}
+                          onClick={()=>setProfileField("text:"+node.id,retained.value)}>Retain exact source text</button>
+                      </div>}
                       {!localizedVariant && <div className="delivery-text-actions">
                         <button type="button" className="button"
                           aria-label={"Use source text for " + node.name + " in " + scene.name}
                           disabled={value === ""}
                           onClick={() => setProfileField("text:" + node.id, "")}>Use source text</button>
-                        {value === "" && node.text && <button type="button" className="button"
+                        {!retained && value === "" && node.text && <button type="button" className="button"
                           aria-label={"Customize source text for " + node.name + " in " + scene.name}
                           onClick={() => setProfileField("text:" + node.id, node.text!)}>Customize source text</button>}
                       </div>}
                     </div>;
                   })}
                 </div>
+                {protectedCopyConflict && <div className="delivery-truth-note warning" role="alert">{protectedCopyConflict}</div>}
                 {localizedVariant && textNodes.some(({ node }) => !draft.text_overrides[node.id]?.trim()) && (
                   <div className="delivery-truth-note warning"><CircleDashed size={14} /> Localized derivatives require explicit text for every canvas text object.</div>
                 )}
@@ -1404,7 +1417,7 @@ export default function DeliveryProfiles({
 
             <div className="delivery-editor-actions">
               <button type="button" className="button button-primary"
-                disabled={!dirty || emptyCustomCut || busy !== null || profileDraft.pending || profileDraft.awaiting || profileDraft.locked
+                disabled={!dirty || emptyCustomCut || !!protectedCopyConflict || busy !== null || profileDraft.pending || profileDraft.awaiting || profileDraft.locked
                   || profileDraft.sourceBehind || profileDraft.recoveryBlocked || profileDraft.conflicts.length > 0}
                 onClick={saveProfile}>
                 <Save size={14} /> {busy === "save" ? "Saving…" : "Save profile"}

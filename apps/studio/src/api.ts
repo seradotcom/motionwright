@@ -1,4 +1,5 @@
 import { applyDeliverySettingPropagation } from "./deliveryFamily";
+import { deliveryTextSourceConflict } from "./deliveryTextSources";
 import type { NativeAudioQcReceiptHint, NativeAudioQcReceiptInventoryResponse } from "./types";
 import { validateTranscriptEmphasis } from "./transcriptEmphasis";
 import type { OtioEditPreview } from "./otioCutReview";
@@ -2092,6 +2093,8 @@ async function simulateChange(project: Project, change: Change, requestId: strin
     case "upsert_deliverable": {
       assertUnlocked(next, projectResource(next), ["content"]);
       const profile = structuredClone(change.profile);
+      const sourceConflict=deliveryTextSourceConflict(next,profile);
+      if(sourceConflict)throw new Error(sourceConflict);
       const frameRate = Number(profile.frame_rate.num) / Number(profile.frame_rate.den);
       if (
         !profile.name.trim() || profile.name.length > 160 ||

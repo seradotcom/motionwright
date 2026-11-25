@@ -189,6 +189,8 @@ pub(crate) fn responsive_scene(
     scene: &Scene,
     profile: &DeliverableProfile,
 ) -> Result<Scene> {
+    motionwright_domain::validate_delivery_text_sources_for_scene(project, scene, profile)
+        .map_err(domain)?;
     let mut output = scene.clone();
     let replan = profile.framing_strategy == FramingStrategy::Replan;
     let resized = replan && (profile.width != 1920 || profile.height != 1080);
@@ -202,20 +204,21 @@ pub(crate) fn responsive_scene(
     {
         let mut config = hero.config.clone();
         let mut selected = std::collections::BTreeSet::new();
-        // Measured evidence and step roles have distinct semantic contracts.
-        if !matches!(
-            config.layout,
-            HeroLayout::MetricEvidence | HeroLayout::StepSequence
-        ) {
-            for (role, copy) in [
-                ("headline", &mut config.headline),
-                ("body", &mut config.body),
-            ] {
-                let id = hero_node_id(hero.id, role);
-                if let Some(raw) = profile.text_overrides.get(&id) {
-                    *copy = raw.clone();
-                    selected.insert(id);
-                }
+        // Free editorial copy uses the aspect grammar in all eight families.
+        // Data-bound values, protected disclosures and the source step index
+        // are literal; a responsive generator must not replace those values.
+        for (role, copy) in [
+            ("headline", &mut config.headline),
+            ("body", &mut config.body),
+        ] {
+            let id = hero_node_id(hero.id, role);
+            if let Some((literal, _)) =
+                motionwright_domain::protected_delivery_text(project, scene, id)
+            {
+                *copy = literal.to_owned();
+            } else if let Some(raw) = profile.text_overrides.get(&id) {
+                *copy = raw.clone();
+                selected.insert(id);
             }
         }
         if resized || !selected.is_empty() {
@@ -223,7 +226,21 @@ pub(crate) fn responsive_scene(
                 realize_product_hero(hero.id, &config, profile.width, profile.height)
                     .map_err(domain)?;
             for node in &mut incoming {
-                if selected.contains(&node.id) {
+                if motionwright_domain::protected_delivery_text(project, scene, node.id).is_some() {
+                    // Preserve current source text through the field-level merge,
+                    // even if a regenerated layout would wrap the old baseline.
+                    node.text = hero
+                        .baseline
+                        .iter()
+                        .find(|base| base.id == node.id)
+                        .ok_or_else(|| {
+                            domain(DomainError::Invalid(
+                                "Protected Hero baseline identity missing".into(),
+                            ))
+                        })?
+                        .text
+                        .clone();
+                } else if selected.contains(&node.id) {
                     let raw = &profile.text_overrides[&node.id];
                     let wrapped = node.text.as_ref().filter(|text| same_variant_copy(raw, text))
                     .ok_or_else(|| domain(DomainError::Invalid("Delivery Hero copy cannot be wrapped without altering authored characters or whitespace".into())))?;
@@ -308,6 +325,15 @@ pub(crate) fn responsive_scene(
             if node.kind == "text" {
                 node.text = Some(copy.clone());
             }
+        }
+        if let Some((literal, reason)) =
+            motionwright_domain::protected_delivery_text(project, scene, node.id)
+            && node.text.as_deref() != Some(literal)
+        {
+            return Err(domain(DomainError::Invalid(format!(
+                "{reason}: {}",
+                node.name
+            ))));
         }
     }
     Ok(output)

@@ -1318,6 +1318,7 @@ impl Project {
             candidate.apply_change_in_place(change)?;
             if let Change::UpsertDeliverable { profile } = change {
                 delivery::validate_localized_voice_authority(&candidate, profile)?;
+                delivery::validate_delivery_text_sources(&candidate, profile)?;
             }
             *self = candidate;
             return Ok(());

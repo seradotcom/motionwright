@@ -139,6 +139,30 @@ orders,Orders,123000,count
     );
     assert_eq!(p.scenes[0].nodes[0].text.as_deref(), Some("Orders · 123"));
     assert_eq!(p.production_design.measured_bindings[0].id, binding_id);
+    let mut delivery = p.deliverables[0].clone();
+    delivery.text_overrides.insert(text.id, "Orders 999".into());
+    assert!(
+        service
+            .apply(
+                p.id,
+                &p.stamp(),
+                "forged-delivery-value",
+                &Change::UpsertDeliverable {
+                    profile: delivery.clone()
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(service.project(p.id).unwrap(), p);
+    delivery
+        .text_overrides
+        .insert(text.id, p.scenes[0].nodes[0].text.clone().unwrap());
+    p = apply(
+        &service,
+        &p,
+        "retain-exact-measured-copy",
+        Change::UpsertDeliverable { profile: delivery },
+    );
     drop(service);
     let reopened = StudioService::open(&path).unwrap();
     assert_eq!(reopened.project(p.id).unwrap(), p);

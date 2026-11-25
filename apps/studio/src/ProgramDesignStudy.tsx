@@ -2,6 +2,7 @@ import SceneCompositionStudy from "./SceneCompositionStudy";
 import { sampleProgramCaption } from "./programCaption";
 import "./program-caption.css";
 import { canvasBackground, inheritedTextInk } from "./canvasInheritedInk";
+import { deliveryTextSourceConflict } from "./deliveryTextSources";
 import type { DeliverableProfile, Project, Scene } from "./types";
 
 /** This is a bounded source-Canvas representation, never a substitute for
@@ -31,12 +32,14 @@ export default function ProgramDesignStudy({
   const ink = inheritedTextInk(project.visual_language.palette);
   const cutScope = programSceneCutScope(scene, profile);
   const caption = sampleProgramCaption(project, scene, time, profile);
+  const sourceConflict = profile && cutScope!=="excluded" ? deliveryTextSourceConflict(project,profile,scene) : null;
   return <div className="program-design-study" aria-label="Saved Canvas editorial design monitor"
     data-source-revision={project.revision} data-selected-profile-id={profile?.id ?? ""}
     data-output-cut-scope={cutScope}>
-    <SceneCompositionStudy scene={scene} frameRate={profile?.frame_rate} cameraReframes={project.production_design?.camera_reframes} time={time}
-      background={surface} ink={ink} textOverrides={cutScope === "excluded" ? undefined : profile?.text_overrides}
-      label="Program Canvas editorial study: not native output"/>
+    {sourceConflict ? <p className="production-error" role="alert">Delivery source layout unavailable: {sourceConflict}</p>
+      : <SceneCompositionStudy scene={scene} frameRate={profile?.frame_rate} cameraReframes={project.production_design?.camera_reframes} time={time}
+        background={surface} ink={ink} textOverrides={cutScope === "excluded" ? undefined : profile?.text_overrides}
+        label="Program Canvas editorial study: not native output"/>}
     {caption && <div className="program-caption-study" aria-label="Program caption source study" data-source-revision={project.revision}
       data-caption-id={caption.cue?.id ?? ""} data-caption-voice-id={caption.cue?.voice_track_id ?? ""}>
       <small>Caption source · {profile?.burn_in_captions ? "burn-in" : "sidecar"} · shared playhead</small>

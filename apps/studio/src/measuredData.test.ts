@@ -174,3 +174,23 @@ describe("measured data and explicit units",()=>{
       .toBe("Old project remains editable");
   });
 });
+
+it("delivery-local overrides cannot replace a measured value, and a changed datum invalidates the old explicit copy without blocking the source update",async()=>{
+  const {project,assets,sceneA,nodeIds}=seeded();
+  let p=await applyChange(project,{type:"upsert_measured_table",table:report(assets[0],1,12500)});
+  p=await applyChange(p,{type:"upsert_measured_binding",binding_id:counterId,scene_id:sceneA.id,node_id:nodeIds[0],
+    table_id:tableId,datum_key:"conversion",view:{kind:"label",decimals:2}});
+  const id=p.deliverables[0].id;
+  const target={...p.deliverables[0],text_overrides:{[nodeIds[0]]:"Conversion \u00b7 99.00%"}};
+  const before=structuredClone(p);
+  await expect(applyChange(p,{type:"upsert_deliverable",profile:target})).rejects.toThrow(/Measured text/);
+  expect(p).toEqual(before);
+  p=await applyChange(p,{type:"upsert_deliverable",profile:{...target,text_overrides:{[nodeIds[0]]:p.scenes[0].nodes[0].text!}}});
+  p=await applyChange(p,{type:"upsert_measured_table",table:report(assets[1],2,37500)});
+  const stale=p.deliverables.find(item=>item.id===id)!;
+  expect(stale.text_overrides[nodeIds[0]]).toBe("Conversion \u00b7 12.50%");
+  expect(p.scenes[0].nodes[0].text).toBe("Conversion \u00b7 37.50%");
+  await expect(applyChange(p,{type:"upsert_deliverable",profile:stale})).rejects.toThrow(/Measured text/);
+  p=await applyChange(p,{type:"upsert_deliverable",profile:{...stale,text_overrides:{}}});
+  expect(p.deliverables.find(item=>item.id===id)?.text_overrides).toEqual({});
+});
