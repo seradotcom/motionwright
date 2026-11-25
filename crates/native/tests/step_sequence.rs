@@ -159,7 +159,14 @@ fn unsupported_animation_drift_fails_before_external_provider_effect() {
     node.keyframes.last_mut().unwrap().interpolation = MotionInterpolation::EaseInOut;
     let error =
         build_motion_canvas_segments(&project, project.deliverables[0].id, &options).unwrap_err();
-    assert!(error.message.contains("motion keyframes"));
+    assert_eq!(error.code, semwright_native_sdk::ErrorCode::Unsupported);
+    assert!(
+        error.message.contains("motion keyframes")
+            || error.message.contains("geometry keys")
+            || error.message.contains("opacity keys"),
+        "unexpected refusal: {}",
+        error.message
+    );
 }
 
 #[test]

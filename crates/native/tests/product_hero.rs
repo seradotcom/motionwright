@@ -93,7 +93,14 @@ fn easing_drift_and_extra_keys_are_rejected_not_approximated() {
     let key = p.scenes[0].nodes[0].keyframes.last_mut().unwrap();
     key.interpolation = MotionInterpolation::EaseInOut;
     let error = build_motion_canvas_segments(&p, p.deliverables[0].id, &options).unwrap_err();
-    assert!(error.message.contains("motion keyframes"));
+    assert_eq!(error.code, semwright_native_sdk::ErrorCode::Unsupported);
+    assert!(
+        error.message.contains("motion keyframes")
+            || error.message.contains("geometry keys")
+            || error.message.contains("opacity keys"),
+        "unexpected refusal: {}",
+        error.message
+    );
     let (mut p, options, _) = fixture();
     p.scenes[0].nodes[0].keyframes.push(CanvasKeyframe {
         at: RationalTime::new(2, 1).unwrap(),
@@ -139,15 +146,52 @@ fn reduced_motion_is_static_and_does_not_fake_an_animated_result() {
 #[test]
 fn motion_is_not_restarted_for_each_editorial_beat() {
     let (mut p, options, _) = fixture();
-    p.scenes[0].beats.push(Beat {
-        id: Uuid::new_v4(),
-        label: "Beat".into(),
-        objective: "Test explicit continuity boundary".into(),
-        start: RationalTime::ZERO,
-        duration: RationalTime::new(6, 1).unwrap(),
-    });
-    let error = build_motion_canvas_segments(&p, p.deliverables[0].id, &options).unwrap_err();
-    assert!(error.message.contains("continuity mapping"));
+    let profile = p.deliverables[0].id;
+    let baseline = build_motion_canvas_segments(&p, profile, &options).unwrap();
+    let before = realize(&baseline[0].film).unwrap();
+    let scene = p.scenes[0].id;
+    for (start, duration) in [
+        (RationalTime::ZERO, RationalTime::new(1, 3).unwrap()),
+        (
+            RationalTime::new(1, 3).unwrap(),
+            RationalTime::new(17, 3).unwrap(),
+        ),
+    ] {
+        p.scenes[0].beats.push(Beat {
+            id: Uuid::new_v4(),
+            label: "Beat".into(),
+            objective: "Test explicit continuity boundary".into(),
+            start,
+            duration,
+        });
+    }
+    let saved = p.clone();
+    let actual = build_motion_canvas_segments(&p, profile, &options).unwrap();
+    assert_eq!(actual.len(), 1);
+    assert_eq!(actual[0].frame_count, 180);
+    assert_eq!(
+        serde_json::to_value(&actual[0].film.sequences).unwrap(),
+        serde_json::to_value(&baseline[0].film.sequences).unwrap()
+    );
+    let after = realize(&actual[0].film).unwrap();
+    assert_eq!(
+        format!("{:?}", before.instructions),
+        format!("{:?}", after.instructions)
+    );
+    assert_eq!(
+        actual[0].film.timing.spans.len(),
+        baseline[0].film.timing.spans.len() + 2
+    );
+    for beat in &p.scenes[0].beats {
+        let id = format!("editorial-beat-{}-{}", scene.simple(), beat.id.simple());
+        let interval = after.schedule.interval(&id).unwrap();
+        assert_eq!(interval.start, beat.start);
+        assert_eq!(interval.end, beat.start.checked_add(beat.duration).unwrap());
+    }
+    assert_eq!(p, saved);
+    p.scenes[0].beats.pop();
+    let error = build_motion_canvas_segments(&p, profile, &options).unwrap_err();
+    assert!(error.message.contains("cover the full scene duration"));
 }
 
 #[test]

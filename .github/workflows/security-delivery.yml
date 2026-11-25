@@ -505,7 +505,8 @@ jobs:
         if: inputs.first_use_case == 'delivery-hero'
         run: |
           set -euo pipefail
-          cargo test --locked --jobs 2 -p motionwright-native --test product_hero -- --test-threads=1
+          cargo test --no-fail-fast --locked --jobs 2 -p motionwright-native --test product_hero --test step_sequence --test craft_components -- --test-threads=1
+          cargo test --no-fail-fast --locked --jobs 2 -p motionwright-service --test measured_data --test metric_source_notice -- --test-threads=1
           cargo test --locked --jobs 2 -p motionwright-native --lib film::tests::localized_text_override_enters_canonical_film -- --exact --test-threads=1
       - name: Build the exact-source StudioService test transport
         run: cargo build --locked --jobs 2 -p motionwright-service --example studio_review_session
@@ -544,8 +545,8 @@ jobs:
               specs=(tests/native-static-rotation-service.spec.ts tests/native-follow-service.spec.ts)
               selected_cases='saved shape rotation persists|saved Follow inherits translation' ;;
             delivery-hero)
-              specs=(tests/craft-components.spec.ts)
-              selected_cases='delivery Hero text reflows into visible original lines without rewriting the saved source or local wording' ;;
+              specs=(tests/craft-components.spec.ts tests/step-sequence.spec.ts)
+              selected_cases='delivery Hero text reflows into visible original lines without rewriting the saved source or local wording|delivery StepSequence preserves its original index and disclosure while reflowing local copy' ;;
             native-preview-blend)
               specs=(tests/composition-blend.spec.ts tests/native-preview.spec.ts)
               selected_cases='Studio commits the chosen blend and reuses it when returning to Canvas|reduced native window selection uses provider raster identity' ;;
@@ -569,7 +570,7 @@ jobs:
           result = json.loads(Path(os.environ["PLAYWRIGHT_JSON_OUTPUT_FILE"]).read_text(encoding="utf-8"))
           stats = result["stats"]
           selection = os.environ["MOTIONWRIGHT_FIRST_USE_CASE"]
-          expected = {"all": 9, "static-group": 1, "static-alignment": 1, "static-layout": 2, "follow": 1, "follow-ui": 1, "static-rotation": 2, "creative-batch": 25, "audio-cut": 5, "native-preview-blend": 2, "delivery-hero": 1}[selection]
+          expected = {"all": 9, "static-group": 1, "static-alignment": 1, "static-layout": 2, "follow": 1, "follow-ui": 1, "static-rotation": 2, "creative-batch": 25, "audio-cut": 5, "native-preview-blend": 2, "delivery-hero": 2}[selection]
           assert stats["expected"] == expected, stats
           assert all(stats.get(key, 0) == 0 for key in ("unexpected","flaky","skipped")), stats
           if selection == "delivery-hero":
