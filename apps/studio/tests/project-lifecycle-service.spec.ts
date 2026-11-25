@@ -75,8 +75,12 @@ test("first-use native keyboard sequence submits one exact creation from the tit
   await page.goto("/"); await openLibrary(page);
   await expect(dialog(page).getByText("No saved projects", { exact: true })).toBeVisible();
   await expect(dialog(page).getByRole("heading", { name: "Project library", exact: true })).toBeFocused();
-  await page.keyboard.press("Shift+Tab");
+  // The initial heading is intentionally not a tab stop. Tab enters the
+  // first control, and reverse navigation wraps to the footer Close control.
+  await page.keyboard.press("Tab");
   await expect(button(page, "Close project library")).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(dialog(page).getByRole("button", { name: "Close", exact: true })).toBeFocused();
   await page.keyboard.press("Shift+Tab");
   await expect(button(page, "Create editable motion example")).toBeFocused();
   await page.keyboard.press("Shift+Tab");

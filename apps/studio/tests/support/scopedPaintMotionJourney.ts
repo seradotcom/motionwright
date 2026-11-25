@@ -8,11 +8,25 @@ export async function openPaintMotionProposal(page: Page, sceneId: string) {
   await proposalButton(page, "Scoped changes").click();
 }
 export async function readStudioProject(page: Page): Promise<Project> {
-  return page.evaluate(async () => {
+  const revision = page.locator(".command-bar .revision-chip");
+  await expect(revision).toHaveText(/^r\d+$/);
+  const visible = await revision.innerText();
+  const project = await page.evaluate(async () => {
+    if ("__MOTIONWRIGHT_SERVICE_TEST_TRANSPORT__" in window) {
+      const libraryPath = "/src/projectLibrary.ts";
+      const library = await import(/* @vite-ignore */ libraryPath);
+      const selected = library.readProjectSelection();
+      if (selected.status !== "remembered") throw new Error("Actual Service project selection is unavailable.");
+      return library.openProjectFromLibrary(selected.projectId);
+    }
     const path = "/src/api.ts";
     const api = await import(/* @vite-ignore */ path);
-    return (await api.bootstrap()).project;
+    const project = (await api.bootstrap()).project;
+    if (!project) throw new Error("No project returned by Studio bootstrap.");
+    return project;
   });
+  expect("r" + project.revision).toBe(visible);
+  return project;
 }
 export async function queuePaintMotionProposal(page: Page, target: CanvasNode) {
   await page.getByLabel("Patch target object").selectOption(target.id);

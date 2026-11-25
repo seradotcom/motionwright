@@ -31,7 +31,7 @@ test("saves nested Clip Group Clip composition and continues the same child pose
       has:page.locator('[id="canvas-draft-'+node.id+'-x"]'),
     });
     const reparent=async(node:CanvasNode,parent:CanvasNode)=>{
-      await page.locator(".canvas-tree-row").filter({hasText:node.name}).click();
+      await page.locator(".canvas-tree-row").filter({has:page.getByText(node.name,{exact:true})}).click();
       const panel=inspector(node);
       await expect(panel).toHaveCount(1);
       await panel.getByLabel("Canvas parent",{exact:true}).selectOption(parent.id);
@@ -62,7 +62,7 @@ test("saves nested Clip Group Clip composition and continues the same child pose
     await expect(revision).toHaveText("r"+(++expectedRevision));
     child=(await savedScene()).nodes.find(node=>node.id===child.id)!;
     expect(child.rotation_deg).toBe(37);
-    const row=page.locator(".canvas-tree-row").filter({hasText:child.name});
+    const row=page.locator(".canvas-tree-row").filter({has:page.getByText(child.name,{exact:true})});
     await expect(row).toHaveAttribute("data-tree-depth","3");
     const pose=page.getByRole("region",{name:"Native pose animation"});
     for(const [label,value] of [

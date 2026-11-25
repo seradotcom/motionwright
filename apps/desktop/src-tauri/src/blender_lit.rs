@@ -664,8 +664,8 @@ pub fn read_attempt(
     if (state == "completed") != saved_assets.is_some() {
         return Err(UNCONFIRMED.into());
     }
-    if let Some(saved) = &saved_assets {
-        if saved.capsule_id != intent.capsule_id
+    if let Some(saved) = &saved_assets
+        && (saved.capsule_id != intent.capsule_id
             || saved.expected_after.resource != current.resource_key()
             || saved.expected_after.generation != intent.request.source.generation
             || saved.expected_after.revision <= intent.request.source.revision
@@ -676,10 +676,9 @@ pub fn read_attempt(
             || saved.width == 0
             || saved.height == 0
             || saved.image.bytes == 0
-            || saved.image.bytes > MAX_PNG
-        {
-            return Err(UNCONFIRMED.into());
-        }
+            || saved.image.bytes > MAX_PNG)
+    {
+        return Err(UNCONFIRMED.into());
     }
     if terminal {
         let outcome = receipt

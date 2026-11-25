@@ -521,9 +521,12 @@ test("saved scene camera follows the same playhead without writes and survives S
   const service = await setup(info), observations: Record<string, unknown> = { kind: "shared scene camera" };
   let final: Project | undefined, primary: Failure | undefined;
   try {
-    const initial = await unlocked(service);
-    const scene = initial.scenes.find(value => value.name === "Independent synthetic scene");
-    if (!scene || scene.nodes.length) throw new Error("The actual Service fixture must provide its empty independent source scene.");
+    const initial = await service.apply(await unlocked(service), {
+      type: "add_scene", name: "Independent shared camera scene",
+      objective: "Verify the saved shared playhead without altering the existing fixture scene", duration_seconds: 6,
+    });
+    const scene = initial.scenes.find(value => value.name === "Independent shared camera scene");
+    if (!scene || scene.nodes.length) throw new Error("The actual Service must provide its new empty source scene.");
     observations.initial = initial;
     await service.attachFixturePage(page, initial.id); await page.goto("/");
     await page.locator(".tree-row").filter({ hasText: scene.name }).click();

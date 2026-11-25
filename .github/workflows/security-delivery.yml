@@ -475,7 +475,7 @@ jobs:
           selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-native --lib film::tests:: -- --test-threads=1
           selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-native --test procedural_fields --test craft_components --test native_caption_burn_in -- --test-threads=1
           selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-native --lib hyperframes::tests:: -- --test-threads=1
-          selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-native --test blender_studio_recipe --test blender_static_camera_source --test voice_audition -- --test-threads=1
+          selected_check cargo test --no-fail-fast --locked --jobs 2 -p motionwright-native --test blender_studio_recipe --test blender_static_camera_source --test voice_audition --test manim_editable_projection -- --test-threads=1
           selected_check cargo test --locked --jobs 2 -p motionwright-native --lib original_blender_plan_ -- --test-threads=1
           selected_check cargo test --locked --jobs 2 -p motionwright-native --lib lit_scene_projects_the_saved_orthographic_zoom_and_roll_into_native_camera -- --test-threads=1
           selected_check cargo test --locked --jobs 2 -p motionwright-domain --lib explicit_music_source_window_is_a_bounded_exact_saved_cut -- --test-threads=1
