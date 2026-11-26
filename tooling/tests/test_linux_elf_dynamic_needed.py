@@ -211,6 +211,30 @@ class DynamicNeededSourceTests(unittest.TestCase):
     def test_total_budget_is_enforced_before_read(self):
         with self.assertRaisesRegex(ValueError, "total_budget"):
             self.scan(max_bytes=len(self.raw) - 1)
+        # The retained media-bundled AppImage has 645 actual ELF members.
+        # Reproduce that count using tiny inert originals, not a large package
+        # or a synthetic success report for the real candidate.
+        members = []
+        for index in range(645):
+            name = f"usr/lib/member-{index}.so"
+            (self.root / name).write_bytes(self.raw)
+            members.append(descriptor(self.raw, name))
+        self.original["roots"][0]["members"] = members
+        result = self.scan(max_bytes=len(self.raw) * len(members))
+        self.assertEqual(result["scanned"], len(members))
+        self.assertEqual(result["total_bytes"], len(self.raw) * len(members))
+        with mock.patch.object(needed, "MAX_ELF_MEMBERS", len(members) - 1):
+            with mock.patch.object(needed.inventory.capture, "stable_read") as read:
+                with self.assertRaisesRegex(ValueError, "roster_limit"):
+                    self.scan()
+                read.assert_not_called()
+        with mock.patch.object(needed, "MAX_BINARY", len(self.raw) - 1):
+            with mock.patch.object(needed.inventory.capture, "stable_read") as read:
+                with self.assertRaisesRegex(ValueError, "member_identity"):
+                    self.scan()
+                read.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "total_budget"):
+            self.scan(max_bytes=needed.MAX_ALL_BYTES + 1)
 
     def test_unique_and_ambiguous_soname_edges_are_scoped(self):
         payload = self.scan()

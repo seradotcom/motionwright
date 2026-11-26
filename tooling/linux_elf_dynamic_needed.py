@@ -20,8 +20,11 @@ import candidate_package_inventory as inventory
 
 SCHEMA = "motionwright.linux-appimage-elf-needed-survey/2"
 MAX_BINARY = 128 * 1024 * 1024
-MAX_ALL_BYTES = 384 * 1024 * 1024
-MAX_ELF_MEMBERS = 500
+# The original media-bundled AppImage from run 45780909469 contains
+# 645 ELF originals / 543,213,607 bytes. Keep a finite scan envelope;
+# the independent package inventory still caps the complete AppImage.
+MAX_ALL_BYTES = 576 * 1024 * 1024
+MAX_ELF_MEMBERS = 768
 MAX_NEEDED_PER_MEMBER = 512
 MAX_DYNAMIC_SIZE = 1024 * 1024
 MAX_STRTAB = 2 * 1024 * 1024

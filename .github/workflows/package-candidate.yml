@@ -1957,13 +1957,15 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
       - name: Preserve failed Linux package originals for bounded diagnosis
-        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle' && steps.linux_package_inventory.outcome == 'failure' }}
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle' && steps.linux_package_inventory.outcome != 'skipped' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: motionwright-linux-failed-package-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ env.MW_LINUX_BUNDLE_ROOT }}/bundle/appimage/*.AppImage
             ci-evidence/linux-candidate.json
+            ci-evidence/linux-appimage-prelaunch.json
+            ci-evidence/linux-appimage-window.json
           compression-level: 0
           if-no-files-found: error
           retention-days: 3
