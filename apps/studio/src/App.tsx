@@ -4,6 +4,7 @@ import {
 } from "./projectBundleImport";
 import CommandPalette, { type EditorCommand } from "./CommandPalette";
 import AudioReviewTransport from "./AudioReviewTransport";
+import OriginalAssetPreviewButton from "./OriginalAssetPreview";
 import { audioReviewScope, buildAudioReviewClock, type AudioReviewActions, type AudioReviewRequest } from "./audioReviewClock";
 import { assertPortableExportReceipt, inspectPortableMaterials } from "./portableMaterialReport";
 import SceneInspector from "./SceneInspector";
@@ -1395,6 +1396,8 @@ function ProjectRail({
                 <span>{asset.name}</span>
                 <small>{asset.media_type}</small>
               </div>
+              <OriginalAssetPreviewButton key={JSON.stringify([project.id,project.generation,project.revision,asset.id])}
+                project={project} asset={asset} disabled={!desktopMode}/>
               <button
                 type="button"
                 className="plain-icon asset-remove"
@@ -1805,7 +1808,7 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (libraryOpen || !project) return;
+      if (libraryOpen || !project || event.defaultPrevented || document.querySelector("dialog[open]")) return;
       if (isPaletteShortcut(event)) {
         event.preventDefault();
         event.stopPropagation();

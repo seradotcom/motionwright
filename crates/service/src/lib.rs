@@ -66,6 +66,7 @@ pub struct VerifiedMasterVoice {
 }
 
 use motionwright_domain::{Change, DomainError, Project, RenderTailInspectRequest, RevisionStamp};
+pub use motionwright_storage::{ASSET_MEDIA_RANGE_BYTES, VerifiedAssetMedia};
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, StorageError, Store};
 pub use motionwright_storage::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, BlobDescriptor,
@@ -743,6 +744,30 @@ impl StudioService {
             .into());
         }
         store.read_blob(digest, MAX_SFX_WAV_BYTES)
+    }
+
+    /// Original Project media only. Hash outside the Store mutex, then recheck
+    /// the original stamp before admitting a retained, bounded source reader.
+    pub fn verified_asset_media(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        asset_id: Uuid,
+        sha256: &str,
+    ) -> StorageResult<motionwright_storage::VerifiedAssetMedia> {
+        let source = self
+            .store
+            .lock()
+            .open_asset_media_source(project_id, expected, asset_id, sha256)?;
+        let verified = source.verify()?;
+        let current = self.project(project_id)?;
+        if current.generation != expected.generation || current.revision != expected.revision {
+            return Err(DomainError::Invalid(
+                "Project changed during original media preparation".into(),
+            )
+            .into());
+        }
+        Ok(verified)
     }
 
     pub fn registered_capture_png(

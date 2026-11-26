@@ -1,3 +1,5 @@
+mod asset_preview;
+mod asset_preview_protocol;
 mod av_delivery;
 mod av_master;
 mod blender_lit;
@@ -112,6 +114,7 @@ struct AppState {
     preview: NativePreviewRegistry,
     av_delivery: NativeMasterDeliveryRegistry,
     av_review: av_delivery::streaming::ReviewStreams,
+    asset_previews: asset_preview::AssetPreviews,
     runtime_connections: RuntimeConnectionRegistry,
     runtime_profiles: runtime_profiles::RuntimeProfiles,
     native_renders: hyperframes_render::RenderRegistry,
@@ -1317,6 +1320,50 @@ async fn workflow_overview(
         proposals,
         promotions,
     })
+}
+
+#[tauri::command]
+async fn asset_preview_open(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: asset_preview::OpenRequest,
+) -> Result<asset_preview::Descriptor, String> {
+    let project_id = request.project_id;
+    let generation = request.generation;
+    let revision = request.revision;
+    let service = state.service.clone();
+    let previews = state.asset_previews.clone();
+    let preparation = state
+        .av_review
+        .admit_preparation()
+        .ok_or("Original media read capacity is busy; try after current readers finish.")?;
+    let descriptor = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        let _preparation = preparation;
+        previews.prepare(&service, &request)
+    })
+    .await
+    .map_err(|_| "Original media preparation failed.".to_owned())??;
+    if let Err(error) = owner.begin_phase() {
+        state.asset_previews.close(descriptor.stream_token);
+        return Err(error);
+    }
+    let current = state.service.project(project_id);
+    if !current
+        .is_ok_and(|project| project.generation == generation && project.revision == revision)
+    {
+        state.asset_previews.close(descriptor.stream_token);
+        return Err("Project changed during original media preparation.".into());
+    }
+    Ok(descriptor)
+}
+
+#[tauri::command]
+fn asset_preview_close(
+    _owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: asset_preview::CloseRequest,
+) {
+    state.asset_previews.close(request.stream_token);
 }
 
 /// Bounded immutable PNG source read on a worker, with no Native render call.
@@ -4574,6 +4621,26 @@ fn main() {
                 });
             },
         )
+        .register_asynchronous_uri_scheme_protocol(
+            asset_preview::SCHEME,
+            |context, request, responder| {
+                let app = context.app_handle().clone();
+                let label = context.webview_label().to_owned();
+                let Some(permit) = app
+                    .try_state::<AppState>()
+                    .and_then(|state| state.av_review.admit_read())
+                else {
+                    responder.respond(av_delivery::streaming::failure(
+                        tauri::http::StatusCode::SERVICE_UNAVAILABLE,
+                    ));
+                    return;
+                };
+                tauri::async_runtime::spawn_blocking(move || {
+                    let _permit = permit;
+                    responder.respond(asset_preview_protocol::handle(&app, &label, request));
+                });
+            },
+        )
         .setup(|app| {
             let owner = desktop_owner::DesktopOwner::new();
             app.manage(owner.clone());
@@ -4615,6 +4682,7 @@ fn main() {
                 preview: NativePreviewRegistry::default(),
                 av_delivery: NativeMasterDeliveryRegistry::default(),
                 av_review: av_delivery::streaming::ReviewStreams::default(),
+                asset_previews: asset_preview::AssetPreviews::default(),
                 runtime_connections: RuntimeConnectionRegistry::new(&data_dir)?,
                 runtime_profiles: runtime_profiles::RuntimeProfiles::new(&data_dir),
                 native_renders: hyperframes_render::RenderRegistry::default(),
@@ -4659,6 +4727,8 @@ fn main() {
             workflow_action,
             workflow_stored_completion,
             registered_capture_png,
+            asset_preview_open,
+            asset_preview_close,
             production_jobs,
             mlt_cleanup_inventory,
             read_original_native_job_status,

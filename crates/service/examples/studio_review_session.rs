@@ -55,6 +55,10 @@ mod otio_bridge;
 #[allow(dead_code)]
 mod capture_source_preview;
 
+#[path = "../../../apps/desktop/src-tauri/src/asset_preview.rs"]
+#[allow(dead_code)]
+mod asset_preview;
+
 use effect_grants::{EffectGrantRegistry, EffectKind, EffectScope};
 use motionwright_domain::{
     AlignmentEvidence, CanvasNode, Change, CreativePatch, CueEvidence, GraphAuthoringContext,
@@ -399,6 +403,7 @@ pub struct Session {
     database: PathBuf,
     service: StudioService,
     grants: EffectGrantRegistry,
+    asset_previews: asset_preview::AssetPreviews,
     workspace_session: Uuid,
     desktop_invoke_fixture: bool,
     read_only_handoff_completed: bool,
@@ -439,6 +444,7 @@ impl Session {
             database,
             service,
             grants: EffectGrantRegistry::default(),
+            asset_previews: asset_preview::AssetPreviews::default(),
             workspace_session: Uuid::now_v7(),
             desktop_invoke_fixture: false,
             read_only_handoff_completed: false,
@@ -643,6 +649,36 @@ impl Session {
 
     fn dispatch(&mut self, command: &str, args: Value) -> Result<Value, String> {
         match command {
+            "asset_preview_open" => {
+                let bound: asset_preview::OpenRequest = request(args)?;
+                let mut value = encoded(self.asset_previews.prepare(&self.service, &bound)?)?;
+                if self.desktop_invoke_fixture {
+                    // Browser transport only; bytes/ranges still come from the
+                    // original Rust reader, not a fabricated native master.
+                    value["url"] = json!(format!(
+                        "http://motionwright-asset.localhost/{}",
+                        value["stream_token"]
+                            .as_str()
+                            .ok_or("missing source stream")?
+                    ));
+                }
+                Ok(value)
+            }
+            "asset_preview_close" => {
+                let bound: asset_preview::CloseRequest = request(args)?;
+                self.asset_previews.close(bound.stream_token);
+                Ok(Value::Null)
+            }
+            "asset_preview_test_range" => {
+                let bound: asset_preview::RangeRequest = request(args)?;
+                match self.asset_previews.read(&self.service, &bound) {
+                    Ok(response) => encoded(response),
+                    Err(status) => Ok(
+                        json!({"status": status, "media_type": "application/octet-stream",
+                        "content_length": 0, "content_range": null, "body": []}),
+                    ),
+                }
+            }
             "registered_capture_png" => {
                 let bound: capture_source_preview::CapturePngRequest = request(args)?;
                 encoded(capture_source_preview::read(&self.service, &bound)?)

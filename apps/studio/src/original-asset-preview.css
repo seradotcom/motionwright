@@ -1,0 +1,15 @@
+.original-asset-preview {
+  width: min(860px, calc(100vw - 48px)); max-height: calc(100vh - 48px);
+  overflow: auto; padding: 24px; border: 1px solid #42505a; border-radius: 14px;
+  background: #101820; color: #eef3f5; box-shadow: 0 24px 80px #0009;
+}
+.original-asset-preview::backdrop { background: #03080dbb; }
+.original-asset-preview header { display: flex; align-items: start; justify-content: space-between; gap: 20px; }
+.original-asset-preview h2 { margin: 0 0 8px; font-size: 22px; }
+.original-asset-preview p { line-height: 1.5; }
+.original-asset-preview video { display: block; width: 100%; max-height: 55vh; background: #000; }
+.original-asset-preview audio { display: block; width: 100%; margin: 24px 0; }
+.original-asset-preview dl { display: grid; grid-template-columns: 100px 1fr; gap: 8px 16px; font-size: 12px; }
+.original-asset-preview dd { margin: 0; }
+.original-asset-digest { overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+.original-asset-preview footer { display: flex; justify-content: end; margin-top: 20px; }

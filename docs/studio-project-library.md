@@ -38,6 +38,18 @@ is lost, use the library's recovery entry to inspect that request's outcome.
 An unconfirmed creation does not authorize another automatic creation. A local
 copy, a submitted request and a confirmed saved project are separate states.
 
+## Inspect original imported media
+
+Choose **Preview original** beside an MP4 or WAV in Assets. The player opens the
+immutable source retained with the project, so the original import path can be
+unavailable after saving and reopening. Playback, seeking and audio controls
+operate on that source. Files up to 1 GiB are read in bounded ranges.
+
+Closing the player releases its reader. A change to the current project or
+revision closes the preview; open it again to inspect the newly selected state.
+Changed source bytes or an unavailable codec produce a visible error. The media
+preview does not change the timeline or create a deliverable.
+
 ## Canvas object drafts
 
 The object inspector retains raw text and the six base transform fields: X, Y,

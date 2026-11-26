@@ -38,6 +38,8 @@
     "allow-workflow-action",
     "allow-workflow-stored-completion",
     "allow-registered-capture-png",
+    "allow-asset-preview-open",
+    "allow-asset-preview-close",
     "allow-production-jobs",
     "allow-mlt-cleanup-inventory",
     "allow-read-original-native-job-status",

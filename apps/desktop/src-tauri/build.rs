@@ -33,6 +33,8 @@ fn main() {
             "workflow_action",
             "workflow_stored_completion",
             "registered_capture_png",
+            "asset_preview_open",
+            "asset_preview_close",
             "production_jobs",
             "mlt_cleanup_inventory",
             "read_original_native_job_status",

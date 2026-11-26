@@ -16,8 +16,13 @@ use uuid::Uuid;
 #[cfg(test)]
 mod apply_crash_tests;
 mod apply_receipt_binding;
+mod asset_media;
 #[cfg(test)]
 mod blob_hash_tests;
+pub use asset_media::{
+    ASSET_MEDIA_MAX_BYTES, ASSET_MEDIA_RANGE_BYTES, AssetMediaKind, AssetMediaSource,
+    VerifiedAssetMedia,
+};
 mod capture_evidence;
 mod cas_retention;
 #[cfg(test)]
