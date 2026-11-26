@@ -31,6 +31,19 @@ describe("imported original media descriptor",()=>{
     for(const field of ["path","export_token","effect_grant","receipt","verified_native"])
       expect(()=>parseAssetPreview({...source(),[field]:"caller"},project,asset)).toThrow();
   });
+  it("binds bounded static PNG and JPEG sources without executable image formats",()=>{
+    for(const media_type of ["image/png","image/jpeg"]){
+      const image={...asset,media_type};
+      const saved={...project,assets:[image]};
+      const descriptor={...source(),media_type,size_bytes:16*1024*1024};
+      expect(assetPreviewSupported(image)).toBe(true);
+      expect(parseAssetPreview(descriptor,saved,image).media_type).toBe(media_type);
+      expect(()=>parseAssetPreview({...descriptor,size_bytes:16*1024*1024+1},saved,image)).toThrow();
+      expect(()=>parseAssetPreview({...descriptor,media_type:"video/mp4"},saved,image)).toThrow();
+    }
+    for(const media_type of ["image/svg+xml","image/gif","text/html"])
+      expect(assetPreviewSupported({...asset,media_type})).toBe(false);
+  });
   it("preserves byte, range and supported-type bounds",()=>{
     for(const patch of [{size_bytes:0},{size_bytes:2**30+1},{size_bytes:12.5},
       {max_range_bytes:2**30},{stream_token:"../private"},{stream_token:"00000000-0000-0000-0000-000000000000"}])

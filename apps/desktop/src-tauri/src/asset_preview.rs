@@ -183,10 +183,14 @@ impl AssetPreviews {
         if !descriptor.current(&project) {
             return Err(410);
         }
+        // Image elements make one whole-file request. Assemble only the bounded
+        // static image kinds, keeping each retained read under the shared 4 MiB cap.
+        let whole_image =
+            request.range.is_none() && matches!(descriptor.media_type, "image/png" | "image/jpeg");
         let (start, end, partial) = match byte_range(
             request.range.as_deref(),
             descriptor.size_bytes,
-            request.method == "HEAD",
+            request.method == "HEAD" || whole_image,
         ) {
             Ok(value) => value,
             Err(()) => {
@@ -202,12 +206,25 @@ impl AssetPreviews {
         let body = if request.method == "HEAD" {
             Vec::new()
         } else {
-            entry
-                .source
-                .lock()
-                .map_err(|_| 503u16)?
-                .read_range(start, end)
-                .map_err(|_| 410u16)?
+            let mut source = entry.source.lock().map_err(|_| 503u16)?;
+            if whole_image {
+                if !source.media_kind().is_image()
+                    || descriptor.size_bytes > source.media_kind().maximum_bytes()
+                {
+                    return Err(410);
+                }
+                let mut body =
+                    Vec::with_capacity(usize::try_from(descriptor.size_bytes).map_err(|_| 410u16)?);
+                let mut offset = 0;
+                while offset < descriptor.size_bytes {
+                    let last = (offset + ASSET_MEDIA_RANGE_BYTES).min(descriptor.size_bytes) - 1;
+                    body.extend_from_slice(&source.read_range(offset, last).map_err(|_| 410u16)?);
+                    offset = last + 1;
+                }
+                body
+            } else {
+                source.read_range(start, end).map_err(|_| 410u16)?
+            }
         };
         let current = self.find(request.stream_token)?;
         if !Arc::ptr_eq(&entry, &current) {
@@ -462,5 +479,82 @@ mod tests {
                 .unwrap_err(),
             410
         );
+    }
+
+    #[test]
+    fn original_image_whole_response_is_bounded_while_ranges_and_owner_expiry_stay_exact() {
+        // A valid static PNG with a 5 MiB ancillary text chunk exercises the
+        // ordinary <img> request across several retained read blocks.
+        let png = include_bytes!("../icons/icon.png");
+        let mut bytes = png[..33].to_vec();
+        let mut text = vec![b'x'; 5 * 1024 * 1024];
+        text[..8].copy_from_slice(b"fixture\0");
+        bytes.extend_from_slice(&(text.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(b"tEXt");
+        bytes.extend_from_slice(&text);
+        bytes.extend_from_slice(&1707777216_u32.to_be_bytes());
+        bytes.extend_from_slice(&png[33..]);
+        let root = tempfile::tempdir().unwrap();
+        let service = StudioService::open(root.path().join("image.sqlite3")).unwrap();
+        let project = service.create_project("Original static image").unwrap();
+        let input = root.path().join("original.png");
+        std::fs::write(&input, &bytes).unwrap();
+        let project = service
+            .import_asset_file(
+                project.id,
+                &project.stamp(),
+                "import-image",
+                &input,
+                "Original.png".into(),
+                "image/png".into(),
+            )
+            .unwrap()
+            .project;
+        std::fs::remove_file(input).unwrap();
+        let asset = project.assets.last().unwrap();
+        let open = OpenRequest {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            asset_id: asset.id,
+            sha256: asset.content_sha256.clone().unwrap(),
+        };
+        let registry = AssetPreviews::default();
+        let first = registry.prepare(&service, &open).unwrap();
+        let mut request = RangeRequest {
+            stream_token: first.stream_token,
+            method: "GET".into(),
+            range: None,
+        };
+        let full = registry.read(&service, &request).unwrap();
+        assert_eq!(full.status, 200);
+        assert_eq!(full.media_type, "image/png");
+        assert_eq!(full.content_length, bytes.len() as u64);
+        assert!(full.content_range.is_none());
+        assert_eq!(full.body, bytes);
+        request.range = Some("bytes=4194300-4194310".into());
+        let range = registry.read(&service, &request).unwrap();
+        assert_eq!(range.status, 206);
+        assert_eq!(range.body, bytes[4_194_300..=4_194_310]);
+        request.method = "HEAD".into();
+        request.range = None;
+        let head = registry.read(&service, &request).unwrap();
+        assert_eq!(head.content_length, bytes.len() as u64);
+        assert!(head.body.is_empty());
+        registry.close(first.stream_token);
+        assert_eq!(registry.read(&service, &request).unwrap_err(), 410);
+        let second = registry.prepare(&service, &open).unwrap();
+        request.stream_token = second.stream_token;
+        service
+            .apply(
+                project.id,
+                &project.stamp(),
+                "change-after-image-review",
+                &motionwright_domain::Change::RenameProject {
+                    title: "Later image source".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(registry.read(&service, &request).unwrap_err(), 410);
     }
 }

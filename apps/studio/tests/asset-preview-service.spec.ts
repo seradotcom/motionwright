@@ -78,3 +78,68 @@ test("Assets plays original MP4 and WAV from real CAS after input deletion and S
     if(!finalized)await service.close();
   }
 });
+
+
+test("Assets decodes original PNG and JPEG from reopened CAS with exact bytes and private-reader cleanup",async({page},info)=>{
+  // Genuine static fixtures encoded by Chromium before import. No image response
+  // is fabricated; the displayed bytes subsequently come from the Rust CAS reader.
+  const encoded=await page.evaluate(()=>{
+    const canvas=document.createElement("canvas");canvas.width=32;canvas.height=16;
+    const context=canvas.getContext("2d")!;
+    context.fillStyle="#ed4b30";context.fillRect(0,0,16,16);
+    context.fillStyle="#196fd6";context.fillRect(16,0,16,16);
+    return [canvas.toDataURL("image/png").split(",")[1],canvas.toDataURL("image/jpeg",.9).split(",")[1]];
+  });
+  const originals=[
+    {name:"Brand original.png",mime:"image/png",bytes:Buffer.from(encoded[0],"base64")},
+    {name:"Product original.jpg",mime:"image/jpeg",bytes:Buffer.from(encoded[1],"base64")},
+  ];
+  const service=await ScopedChangeService.create({databasePath:info.outputPath("service","images.sqlite3"),desktopInvokeFixture:true});
+  let finalized=false;
+  try{
+    let project=(await service.fixtureBootstrap()).project;
+    await mkdir(info.outputPath("image-originals"),{recursive:true});
+    for(const item of originals){
+      const path=info.outputPath("image-originals",item.name.replaceAll(" ","-"));
+      await writeFile(path,item.bytes,{flag:"wx"});
+      project=await service.importAsset(project,path,item.name,item.mime);
+      await unlink(path);
+    }
+    const saved=project;
+    await service.close();await service.start();
+    await page.route("http://motionwright-asset.localhost/**",async route=>{
+      const request=route.request(),token=new URL(request.url()).pathname.slice(1);
+      const response=await service.invoke<{status:number;media_type:string;content_length:number;content_range:string|null;body:number[]}>(
+        "asset_preview_test_range",{request:{stream_token:token,method:request.method(),range:request.headers()["range"]??null}});
+      const headers:Record<string,string>={"content-type":response.media_type,"content-length":String(response.content_length),
+        "cache-control":"no-store","x-content-type-options":"nosniff"};
+      if(response.content_range)headers["content-range"]=response.content_range;
+      await route.fulfill({status:response.status,headers,body:Buffer.from(response.body)});
+    });
+    await service.attachFixturePage(page,project.id);await page.goto("/");
+    for(const item of originals){
+      await page.getByRole("button",{name:"Preview original "+item.name,exact:true}).click();
+      const dialog=page.getByRole("dialog",{name:"Original imported media",exact:true});
+      const image=dialog.getByRole("img",{name:"Original image "+item.name,exact:true});
+      await expect(image).toBeVisible();
+      await expect.poll(()=>image.evaluate((node:HTMLImageElement)=>node.complete&&node.naturalWidth===32&&node.naturalHeight===16)).toBe(true);
+      await expect(dialog.getByText("32 \u00d7 16 pixels",{exact:true})).toBeVisible();
+      await expect(dialog.locator("audio,video")).toHaveCount(0);
+      const token=new URL((await image.getAttribute("src"))!).pathname.slice(1);
+      const actual=await service.invoke<{status:number;media_type:string;body:number[]}>("asset_preview_test_range",
+        {request:{stream_token:token,method:"GET",range:null}});
+      expect(actual.status).toBe(200);expect(actual.media_type).toBe(item.mime);
+      expect(sha(Buffer.from(actual.body))).toBe(sha(item.bytes));
+      await dialog.getByRole("button",{name:"Close preview",exact:true}).click();
+      await expect(dialog).toHaveCount(0);
+      await expect.poll(async()=> (await service.invoke<{status:number}>("asset_preview_test_range",
+        {request:{stream_token:token,method:"HEAD",range:null}})).status).toBe(410);
+    }
+    expect(await service.project(project.id)).toEqual(saved);
+    const closed=await service.finalizeClosedStore(info.outputPath("closed-store"),saved,[],[async()=>{await page.close();}]);
+    finalized=true;expect(closed.oracle?.project).toEqual(saved);expect(service.lifecycleTaints).toEqual([]);
+  }finally{
+    if(!page.isClosed())await page.close();
+    if(!finalized)await service.close();
+  }
+});
