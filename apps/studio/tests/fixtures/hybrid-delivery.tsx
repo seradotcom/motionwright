@@ -17,7 +17,8 @@ let project:Project=structuredClone(fixtureBootstrap.project);
 project.locks=[];project.revision=20;
 const twoSource=new URLSearchParams(location.search).get("layout")==="manim-first";
 const sceneCount=twoSource?2:3;
-const duration=6/sceneCount;
+const duration=2;
+const frameCount=sceneCount*duration*30;
 project.scenes=project.scenes.slice(0,sceneCount);
 project.scenes.forEach((scene,index)=>{
   scene.renderer=index===(twoSource?0:1)?"manim-community":"motion-canvas";
@@ -38,7 +39,7 @@ const grant="11111111-1111-4111-8111-111111111111";
 const mux="22222222-2222-4222-8222-222222222222";
 let holdGrant=false,grantReply:(()=>void)|null=null,unknown=false;
 let holdMaster=false,masterReply:(()=>void)|null=null;
-const hint=()=>({mux_receipt_id:mux,master_sha256:"c".repeat(64),frame_count:180,fps_num:30,fps_den:1});
+const hint=()=>({mux_receipt_id:mux,master_sha256:"c".repeat(64),frame_count:frameCount,fps_num:30,fps_den:1});
 const scope=(request:Record<string,unknown>)=>({
   project_id:request.project_id,generation:request.generation,revision:request.revision,
   deliverable_id:request.deliverable_id,
@@ -54,7 +55,7 @@ Object.assign(window,{__TAURI_INTERNALS__:{invoke:async(command:string,args:{req
   if(command==="native_hybrid_preflight")return {
     schema:"motionwright.hybrid-source-preflight/1",...scope(request),
     project_sha256:"a".repeat(64),source_audio_sha256:"b".repeat(64),
-    source_count:sceneCount,frame_count:180,width:1920,height:1080,fps_num:30,fps_den:1,
+    source_count:sceneCount,frame_count:frameCount,width:1920,height:1080,fps_num:30,fps_den:1,
   };
   if(command==="issue_effect_grant"){
     if(holdGrant&&request.effect==="render_local"){
@@ -66,7 +67,7 @@ Object.assign(window,{__TAURI_INTERNALS__:{invoke:async(command:string,args:{req
     if(unknown)throw {schema:"motionwright.hybrid-desktop-failure/1",status:"unknown",stage:"master",
       outcome_known:false,may_have_native_effects:true,automatic_retry:false,message:"Synthetic original mux reply is unknown."};
     const completed={schema:"motionwright.hybrid-desktop-master/1",status:"completed",...scope(request),
-      master_sha256:"c".repeat(64),frame_count:180,fps_num:30,fps_den:1,saved_master:hint(),
+      master_sha256:"c".repeat(64),frame_count:frameCount,fps_num:30,fps_den:1,saved_master:hint(),
       review_warning:null,automatic_retry:false};
     if(holdMaster){holdMaster=false;return new Promise(resolve=>{masterReply=()=>resolve(completed);});}
     return completed;

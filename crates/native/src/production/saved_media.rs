@@ -228,9 +228,16 @@ impl SavedMasterReceiptContext {
             _ => false,
         };
         let maximum = self.maximum_bytes()?;
+        let authored_hybrid_frames = if self.schema == HYBRID_CONTEXT_SCHEMA {
+            let rate = Rate::new(30, 1).map_err(|_| invalid("Original hybrid rate is invalid"))?;
+            super::hybrid_budget::authored_hybrid_ranges(project, rate)?
+                .last()
+                .map(|range| range.end)
+        } else {
+            None
+        };
         if (self.schema == HYBRID_CONTEXT_SCHEMA
-            && (args.get("frame_count").and_then(Value::as_u64)
-                != Some(super::hybrid_mlt::FRAME_COUNT)
+            && (args.get("frame_count").and_then(Value::as_u64) != authored_hybrid_frames
                 || args.get("width").and_then(Value::as_u64) != Some(1920)
                 || args.get("height").and_then(Value::as_u64) != Some(1080)
                 || args.get("fps_num").and_then(Value::as_u64) != Some(30)

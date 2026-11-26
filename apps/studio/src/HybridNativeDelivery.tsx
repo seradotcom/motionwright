@@ -31,8 +31,8 @@ export default function HybridNativeDelivery({
       <span>Combine Motion Canvas and Manim with the original voice track in one MP4.</span></div></header>
     <p className="delivery-truth-note">
       Use one static Manim scene with one Motion Canvas scene on either or both sides.
-      Use contiguous, frame-aligned scenes totaling six seconds at 1920 × 1080 and 30 fps,
-      with one original six-second stereo 48 kHz WAV.
+      Use contiguous, frame-aligned scenes totaling one to six seconds at 1920 × 1080 and 30 fps.
+      The original stereo 48 kHz WAV must match the cut length.
       Save the scene intent and output profile before checking sources.
     </p>
     <div className="delivery-editor-actions">
@@ -45,7 +45,7 @@ export default function HybridNativeDelivery({
       <button type="button" className="button compact" onClick={onOpenAudio}>Review original voice</button>
     </div>
     {source&&<p role="status"><CircleCheck size={14} aria-hidden="true"/>
-      {" "}{source.source_count} sources checked for six seconds of video. Creating the master requires your render permission.
+      {" "}{source.source_count} sources checked for {(source.frame_count/source.fps_num).toFixed(2)} s of video. Creating the master requires your render permission.
     </p>}
     {runtimeIssue&&<p className="delivery-truth-note">{runtimeIssue}</p>}
     {attempt?.status==="dispatching"&&<p role="status">
@@ -58,7 +58,7 @@ export default function HybridNativeDelivery({
     {result&&<>
       <div className="portable-plan" aria-label="Completed original hybrid master" role="status">
         <div><span>Saved source</span><strong>r{result.revision}</strong></div>
-        <div><span>Master</span><strong>6.00 s · H.264/AAC</strong></div>
+        <div><span>Master</span><strong>{(result.frame_count/result.fps_num).toFixed(2)} s · H.264/AAC</strong></div>
         <div><span>Original SHA-256</span><code>{result.master_sha256}</code></div>
       </div>
       {result.review_warning&&<p role="status">{result.review_warning}</p>}

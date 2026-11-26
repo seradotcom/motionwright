@@ -106,8 +106,8 @@ outcome certainty and possible prior effects, with automatic retry disabled.
 No caller path, Native result, resource budget or replacement owner is accepted.
 
 This Linux route accepts one static Manim scene and one Motion Canvas scene on
-either or both sides. Contiguous, frame-aligned contributions total 180 frames.
-The 1080p30 Rec.709 H264/AAC master uses original stereo 48 kHz PCM and the
+either or both sides. Contiguous, frame-aligned contributions total 30 to 180 frames.
+The 1080p30 Rec.709 H264/AAC master uses original stereo 48 kHz PCM of the exact cut length and the
 bundled text fonts, with a 32 MiB cap. MLT inserts each source at its saved cut boundary after
 verifying the original contribution's frame count.
 

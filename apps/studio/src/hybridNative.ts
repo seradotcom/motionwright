@@ -4,13 +4,13 @@ import {parseSavedMasterInventory,type SavedMasterHint} from "./savedNativeMedia
 export interface HybridSourcePreflight {
   schema:"motionwright.hybrid-source-preflight/1";
   project_id:string;generation:string;revision:number;deliverable_id:string;
-  project_sha256:string;source_count:2|3;frame_count:180;width:1920;height:1080;
+  project_sha256:string;source_count:2|3;frame_count:number;width:1920;height:1080;
   fps_num:30;fps_den:1;source_audio_sha256:string;
 }
 export interface HybridMasterResult {
   schema:"motionwright.hybrid-desktop-master/1";status:"completed";
   project_id:string;generation:string;revision:number;deliverable_id:string;
-  master_sha256:string;frame_count:180;fps_num:30;fps_den:1;
+  master_sha256:string;frame_count:number;fps_num:30;fps_den:1;
   saved_master:SavedMasterHint|null;review_warning:string|null;automatic_retry:false;
 }
 export interface HybridFailure {
@@ -19,6 +19,9 @@ export interface HybridFailure {
   may_have_native_effects:boolean;automatic_retry:false;message:string;
 }
 const sha=/^[0-9a-f]{64}$/;
+function validFrameCount(value:unknown):value is number {
+  return typeof value==="number"&&Number.isSafeInteger(value)&&value>=30&&value<=180;
+}
 function closed(value:unknown,keys:readonly string[]):Record<string,unknown> {
   if(!value||typeof value!=="object"||Array.isArray(value)
     ||Object.keys(value).length!==keys.length||keys.some(key=>!Object.hasOwn(value,key)))
@@ -36,18 +39,18 @@ export function parseHybridPreflight(value:unknown,project:Project,profile:strin
     "project_sha256","source_count","frame_count","width","height","fps_num","fps_den","source_audio_sha256"]);
   scope(data,project,profile);
   if(data.schema!=="motionwright.hybrid-source-preflight/1"||(data.source_count!==2&&data.source_count!==3)
-    ||data.frame_count!==180||data.width!==1920||data.height!==1080||data.fps_num!==30||data.fps_den!==1
+    ||!validFrameCount(data.frame_count)||data.width!==1920||data.height!==1080||data.fps_num!==30||data.fps_den!==1
     ||typeof data.project_sha256!=="string"||!sha.test(data.project_sha256)
     ||typeof data.source_audio_sha256!=="string"||!sha.test(data.source_audio_sha256))
     throw new Error("The hybrid source projection exceeds the supported original route.");
   return data as unknown as HybridSourcePreflight;
 }
-export function parseHybridMaster(value:unknown,project:Project,profile:string):HybridMasterResult {
+export function parseHybridMaster(value:unknown,project:Project,profile:string,expectedFrames:number):HybridMasterResult {
   const data=closed(value,["schema","status","project_id","generation","revision","deliverable_id",
     "master_sha256","frame_count","fps_num","fps_den","saved_master","review_warning","automatic_retry"]);
   scope(data,project,profile);
   if(data.schema!=="motionwright.hybrid-desktop-master/1"||data.status!=="completed"
-    ||data.automatic_retry!==false||data.frame_count!==180||data.fps_num!==30||data.fps_den!==1
+    ||data.automatic_retry!==false||!validFrameCount(data.frame_count)||data.frame_count!==expectedFrames||data.fps_num!==30||data.fps_den!==1
     ||typeof data.master_sha256!=="string"||!sha.test(data.master_sha256))
     throw new Error("The hybrid master result is invalid. Inspect the original operation before rendering again.");
   if(data.saved_master===null) {
@@ -60,7 +63,7 @@ export function parseHybridMaster(value:unknown,project:Project,profile:string):
       items:[data.saved_master],truncated:false,
     },project,profile);
     const hint=inventory.items[0];
-    if(hint.master_sha256!==data.master_sha256||hint.frame_count!==180
+    if(hint.master_sha256!==data.master_sha256||hint.frame_count!==data.frame_count
       ||hint.fps_num!==30||hint.fps_den!==1||data.review_warning!==null)
       throw new Error("The saved receipt does not identify the completed original hybrid master.");
   }

@@ -15,7 +15,7 @@ const complete=()=>({schema:"motionwright.hybrid-desktop-master/1",status:"compl
 describe("original hybrid Desktop result",()=>{
   it("admits only the current finite source and the completed original receipt",()=>{
     expect(parseHybridPreflight(source(),project,profile)).toEqual(source());
-    expect(parseHybridMaster(complete(),project,profile)).toEqual(complete());
+    expect(parseHybridMaster(complete(),project,profile,180)).toEqual(complete());
   });
   it("admits a two-source cut and refuses unbounded source counts",()=>{
     expect(parseHybridPreflight({...source(),source_count:2},project,profile).source_count).toBe(2);
@@ -23,30 +23,38 @@ describe("original hybrid Desktop result",()=>{
       expect(()=>parseHybridPreflight({...source(),source_count},project,profile)).toThrow();
     }
   });
+  it("uses the original preflight clock for a shorter cut and its saved master",()=>{
+    const frame_count=120;
+    const preflight=parseHybridPreflight({...source(),frame_count},project,profile);
+    const result={...complete(),frame_count,saved_master:{...hint(),frame_count}};
+    expect(parseHybridMaster(result,project,profile,preflight.frame_count)).toEqual(result);
+    expect(()=>parseHybridMaster(result,project,profile,180)).toThrow();
+    expect(()=>parseHybridPreflight({...source(),frame_count:29},project,profile)).toThrow();
+  });
   it("preserves known completion after the review owner closes",()=>{
     const value={...complete(),saved_master:null,
       review_warning:"The original master completed. Open saved masters to recover it; do not render it again."};
-    expect(parseHybridMaster(value,project,profile).status).toBe("completed");
-    expect(parseHybridMaster(value,project,profile).automatic_retry).toBe(false);
-    expect(()=>parseHybridMaster({...value,review_warning:null},project,profile)).toThrow();
+    expect(parseHybridMaster(value,project,profile,180).status).toBe("completed");
+    expect(parseHybridMaster(value,project,profile,180).automatic_retry).toBe(false);
+    expect(()=>parseHybridMaster({...value,review_warning:null},project,profile,180)).toThrow();
   });
   it("rejects foreign generations, revisions and profiles",()=>{
     for(const patch of [{project_id:"other"},{generation:"other"},{revision:project.revision+1},{deliverable_id:"other"}]){
       expect(()=>parseHybridPreflight({...source(),...patch},project,profile)).toThrow();
-      expect(()=>parseHybridMaster({...complete(),...patch},project,profile)).toThrow();
+      expect(()=>parseHybridMaster({...complete(),...patch},project,profile,180)).toThrow();
     }
   });
   it("refuses changed clocks, digests and caller authority in source and master responses",()=>{
     for(const patch of [{frame_count:181},{fps_num:60},{fps_den:0},{path:"private/output"},{grant:"forged"}]){
       expect(()=>parseHybridPreflight({...source(),...patch},project,profile)).toThrow();
-      expect(()=>parseHybridMaster({...complete(),...patch},project,profile)).toThrow();
+      expect(()=>parseHybridMaster({...complete(),...patch},project,profile,180)).toThrow();
     }
     expect(()=>parseHybridPreflight({...source(),project_sha256:"bad"},project,profile)).toThrow();
-    expect(()=>parseHybridMaster({...complete(),automatic_retry:true},project,profile)).toThrow();
+    expect(()=>parseHybridMaster({...complete(),automatic_retry:true},project,profile,180)).toThrow();
   });
   it("does not adopt another master or a changed saved clock",()=>{
     for(const patch of [{master_sha256:"d".repeat(64)},{frame_count:181},{fps_num:60},{path:"private/file"}])
-      expect(()=>parseHybridMaster({...complete(),saved_master:{...hint(),...patch}},project,profile)).toThrow();
+      expect(()=>parseHybridMaster({...complete(),saved_master:{...hint(),...patch}},project,profile,180)).toThrow();
   });
   it("keeps UNKNOWN and partial effects explicit without creating a retry",()=>{
     const value={schema:"motionwright.hybrid-desktop-failure/1",status:"unknown",stage:"master",

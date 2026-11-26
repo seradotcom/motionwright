@@ -561,6 +561,14 @@ impl HybridNativeSources {
         self.scope.plan.manim_ordinal
     }
 
+    pub(super) fn frame_count(&self) -> u64 {
+        self.scope.plan.total_frames
+    }
+
+    pub(super) fn original_audio_bytes(&self) -> u64 {
+        self.scope.plan.source_audio_bytes
+    }
+
     /// Selector of the original PCM already staged after the first charged
     /// native admission. This never copies bytes, grants access or restages a
     /// failed operation. The sealed master continuation verifies it again.
@@ -700,6 +708,35 @@ fn exact_frames(num: i64, den: i64, rate: Rate) -> NativeResult<u64> {
     u64::try_from(numerator / denominator)
         .map_err(|_| invalid("Hybrid native clock overflows its frame bound"))
 }
+/// Return the exact whole-frame spans of the saved full cut for production
+/// and cold original-media recovery.
+pub(super) fn authored_hybrid_ranges(
+    project: &Project,
+    rate: Rate,
+) -> NativeResult<Vec<Range<u64>>> {
+    supported(
+        (2..=3).contains(&project.scenes.len()),
+        "The admitted hybrid clock requires two or three contributions",
+    )?;
+    let mut ranges = Vec::with_capacity(project.scenes.len());
+    let mut cursor = 0;
+    for scene in &project.scenes {
+        let start = exact_frames(scene.start.num, scene.start.den, rate)?;
+        let frames = exact_frames(scene.duration.num, scene.duration.den, rate)?;
+        supported(
+            start == cursor && frames > 0,
+            "The admitted hybrid cut requires contiguous nonempty contributions",
+        )?;
+        cursor = bounded_add(cursor, frames)?;
+        ranges.push(start..cursor);
+    }
+    supported(
+        (30..=180).contains(&cursor),
+        "The admitted hybrid cut contains 30 to 180 canonical frames",
+    )?;
+    Ok(ranges)
+}
+
 fn operation_key(project: &Project, deliverable_id: Uuid) -> String {
     // Deliberately the SAME key as the pre-existing MC root. A new label,
     // renderer route, coordinator or process cannot buy replacement credit.
@@ -1079,25 +1116,11 @@ impl HybridBudgetPlan {
             "The hybrid native route cannot discard authored mixing, voice-cut conform or captions",
         )?;
 
-        let mut segment_ranges = Vec::with_capacity(project.scenes.len());
-        let mut cursor = 0;
-        for scene in &project.scenes {
-            let start = exact_frames(scene.start.num, scene.start.den, options.frame_rate)?;
-            let frames = exact_frames(scene.duration.num, scene.duration.den, options.frame_rate)?;
-            supported(
-                start == cursor && frames > 0,
-                "The admitted hybrid cut requires contiguous nonempty contributions",
-            )?;
-            cursor = bounded_add(cursor, frames)?;
-            segment_ranges.push(start..cursor);
-        }
-        // This guard describes the currently implemented finite route. Costs
-        // below use the actual canonical clocks, never a caller's limits or a
-        // global replacement for the general MC or Manim producers.
-        supported(
-            cursor == super::hybrid_mlt::FRAME_COUNT,
-            "The admitted hybrid cut contains 180 canonical frames",
-        )?;
+        let segment_ranges = authored_hybrid_ranges(&project, options.frame_rate)?;
+        let cursor = segment_ranges
+            .last()
+            .ok_or_else(|| invalid("Hybrid saved cut is empty"))?
+            .end;
 
         let segments = plan_motion_canvas_segments(&project, deliverable_id, options)?;
         supported(
