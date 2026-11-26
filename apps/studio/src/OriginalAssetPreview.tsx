@@ -16,12 +16,7 @@ export default function OriginalAssetPreviewButton({project,asset,disabled}:{pro
 function OriginalAssetPreview({project,asset,onClose}:{project:Project;asset:Asset;onClose:()=>void}){
   const dialog=useRef<HTMLDialogElement>(null),heading=useRef<HTMLHeadingElement>(null);
   const media=useRef<HTMLMediaElement|null>(null);
-  const attachMedia=useCallback((node:HTMLMediaElement|null)=>{
-    if(media.current&&media.current!==node){
-      media.current.pause();media.current.removeAttribute("src");media.current.load();
-    }
-    media.current=node;
-  },[]);
+  const attachMedia=useCallback((node:HTMLMediaElement|null)=>{media.current=node;},[]);
   const [attempt,setAttempt]=useState(0),[descriptor,setDescriptor]=useState<AssetPreviewDescriptor|null>(null);
   const [error,setError]=useState<string|null>(null),[ready,setReady]=useState(false),[duration,setDuration]=useState<number|null>(null);
   useEffect(()=>{
@@ -40,10 +35,17 @@ function OriginalAssetPreview({project,asset,onClose}:{project:Project;asset:Ass
     },reason=>{if(current)setError(reason instanceof Error?reason.message:"Original media is unavailable.");});
     return()=>{
       current=false;
-      if(media.current){media.current.pause();media.current.removeAttribute("src");media.current.load();}
       if(owned)void closeAssetPreview(owned.stream_token).catch(()=>undefined);
     };
   },[project.id,project.generation,project.revision,asset.id,asset.content_sha256,attempt]);
+  useEffect(()=>{
+    const element=media.current,url=descriptor?.url;
+    if(!element||!url)return;
+    // Own setup and teardown together. React can replay ref attachment without
+    // rewriting an unchanged JSX src attribute; a ref cleanup must not erase it.
+    element.setAttribute("src",url);element.load();
+    return()=>{element.pause();element.removeAttribute("src");element.load();};
+  },[descriptor?.url]);
   const loaded=()=>{
     const value=media.current?.duration;
     if(value!==undefined&&Number.isFinite(value)&&value>0)setDuration(value);
@@ -57,9 +59,9 @@ function OriginalAssetPreview({project,asset,onClose}:{project:Project;asset:Ass
     <p>Review the original file saved with this project. This preview does not change the edit or create a rendered deliverable.</p>
     {descriptor&&(descriptor.media_type==="video/mp4"?
       <video ref={attachMedia} aria-label={"Original video "+asset.name} controls playsInline preload="metadata"
-        src={descriptor.url} onLoadedMetadata={loaded} onCanPlay={()=>setReady(true)} onError={failed}/>:
+        onLoadedMetadata={loaded} onCanPlay={()=>setReady(true)} onError={failed}/>:
       <audio ref={attachMedia} aria-label={"Original audio "+asset.name} controls preload="metadata"
-        src={descriptor.url} onLoadedMetadata={loaded} onCanPlay={()=>setReady(true)} onError={failed}/>)}
+        onLoadedMetadata={loaded} onCanPlay={()=>setReady(true)} onError={failed}/>)}
     {!descriptor&&!error&&<p role="status">Checking the saved original...</p>}
     {ready&&!error&&<p role="status">Original media ready{duration!==null?" · "+duration.toFixed(2)+" seconds":""}</p>}
     {error&&<div><p role="alert">{error}</p><button type="button" className="button" onClick={()=>setAttempt(value=>value+1)}>Reopen original media</button></div>}

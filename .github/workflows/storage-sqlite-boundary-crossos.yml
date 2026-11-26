@@ -80,9 +80,9 @@ jobs:
           head=os.environ["GITHUB_SHA"]
           reviewed_source="2c4fc01736d69a5c7b11de05d96d2590c09ac836"
           source_lock_reviewed_source="7d3e0386f65ea531cfaa3e7723afab29c55eba3e"
-          foundation_reviewed_source="82e4d73fba8b726fe941a03cce0f340169d3ebfb"
+          foundation_reviewed_source="4f21f7d19c2726c85dbb36563abb4549b552d95b"
           desktop_workflow_lock_reviewed_source="26dff8aa23c6bfff474ee578d4add5f5b48e5179"
-          pins={'crates/storage/src/portability.rs': '746d3318d4000c4cd1eca8ccce4a23d7e93f7625e007da1c3a517916e212c793', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': 'c58529d8d104d00956db1415972dccc53bc261d03dcd9f5f5460addc20d6a93b', 'Cargo.lock': '6e143501c967c5623c26964ecfc471ebfb861f598a88b38dcab1562e966b6ea2', 'SOURCE_LOCK.json': '234ddd72a087d58a766707affdf9b1e3bbc1d0f7cb4f24a5b532e006155a9550'}
+          pins={'crates/storage/src/portability.rs': '746d3318d4000c4cd1eca8ccce4a23d7e93f7625e007da1c3a517916e212c793', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': 'b689913bf16bec44fcdfdbad3b1dc5f8f9cec33ef1cd675b75777cf446de0c33', 'Cargo.lock': '6e143501c967c5623c26964ecfc471ebfb861f598a88b38dcab1562e966b6ea2', 'SOURCE_LOCK.json': '234ddd72a087d58a766707affdf9b1e3bbc1d0f7cb4f24a5b532e006155a9550'}
           assert re.fullmatch(r"[0-9a-f]{40}",head)
           en={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
           en.update(GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_SYSTEM=os.devnull,GIT_CONFIG_GLOBAL=os.devnull,GIT_NO_LAZY_FETCH="1",GIT_TERMINAL_PROMPT="0")
@@ -230,9 +230,9 @@ jobs:
           head=os.environ["GITHUB_SHA"]
           reviewed_source="2c4fc01736d69a5c7b11de05d96d2590c09ac836"
           source_lock_reviewed_source="7d3e0386f65ea531cfaa3e7723afab29c55eba3e"
-          foundation_reviewed_source="82e4d73fba8b726fe941a03cce0f340169d3ebfb"
+          foundation_reviewed_source="4f21f7d19c2726c85dbb36563abb4549b552d95b"
           desktop_workflow_lock_reviewed_source="26dff8aa23c6bfff474ee578d4add5f5b48e5179"
-          pins={'crates/storage/src/portability.rs': '746d3318d4000c4cd1eca8ccce4a23d7e93f7625e007da1c3a517916e212c793', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': 'c58529d8d104d00956db1415972dccc53bc261d03dcd9f5f5460addc20d6a93b', 'Cargo.lock': '6e143501c967c5623c26964ecfc471ebfb861f598a88b38dcab1562e966b6ea2', 'SOURCE_LOCK.json': '234ddd72a087d58a766707affdf9b1e3bbc1d0f7cb4f24a5b532e006155a9550'}
+          pins={'crates/storage/src/portability.rs': '746d3318d4000c4cd1eca8ccce4a23d7e93f7625e007da1c3a517916e212c793', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': 'b689913bf16bec44fcdfdbad3b1dc5f8f9cec33ef1cd675b75777cf446de0c33', 'Cargo.lock': '6e143501c967c5623c26964ecfc471ebfb861f598a88b38dcab1562e966b6ea2', 'SOURCE_LOCK.json': '234ddd72a087d58a766707affdf9b1e3bbc1d0f7cb4f24a5b532e006155a9550'}
           assert re.fullmatch(r"[0-9a-f]{40}",head)
           en={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
           en.update(GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_SYSTEM=os.devnull,GIT_CONFIG_GLOBAL=os.devnull,GIT_NO_LAZY_FETCH="1",GIT_TERMINAL_PROMPT="0")
