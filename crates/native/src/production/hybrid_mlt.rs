@@ -40,10 +40,16 @@ impl HybridNativeTimeline {
 /// This is a retained native return, not a grant or a human acceptance.
 pub struct HybridNativeMaster {
     evidence: Value,
+    master_sha256: String,
 }
 impl HybridNativeMaster {
     pub fn evidence(&self) -> &Value {
         &self.evidence
+    }
+
+    /// Identity of the already verified original master, never a read grant.
+    pub fn sha256(&self) -> &str {
+        &self.master_sha256
     }
 }
 
@@ -1010,7 +1016,9 @@ impl ProductionCoordinator {
                 == sources.project,
             "Hybrid editable source changed during native mastering",
         )?;
+        let master_sha256 = text_at(&master, "/artifact/sha256")?;
         Ok(HybridNativeMaster {
+            master_sha256,
             evidence: json!({"schema":"motionwright.native.hybrid-master/1",
             "project_sha256":sources.project_sha256,"frame_count":FRAME_COUNT,
             "original_native_return":original,"master":master,"complete_video_observation":color,

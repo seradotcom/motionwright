@@ -287,6 +287,23 @@ jobs:
       - name: Shared original asset URI and retained reader contracts
         if: inputs.verification_scope == 'desktop-compile' && inputs.first_use_case == 'asset-media'
         run: cargo test --locked --jobs 2 -p motionwright-service --example studio_review_session asset_preview::tests -- --test-threads=1
+      - name: Bounded hybrid Desktop admission and original root continuity
+        if: inputs.verification_scope == 'desktop-compile' && inputs.first_use_case == 'camera-spatial'
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/hybrid-desktop-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.log"
+          cargo test --locked --jobs 2 -p motionwright-native --lib hybrid_ -- --test-threads=1 | tee "$log"
+          grep -E 'test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "$log"
+          if test "$RUNNER_OS" = Linux; then
+            grep -F 'hybrid_source_preflight_uses_saved_mc_intents_without_root_receipt_or_output ... ok' "$log"
+            grep -F 'hybrid_source_preflight_rejects_stale_foreign_clock_and_changed_original_without_effects ... ok' "$log"
+          fi
+          cargo test --locked --jobs 2 -p motionwright-desktop native_hybrid::tests:: -- --test-threads=1 | tee "$log"
+          grep -F '4 passed; 0 failed; 0 ignored' "$log"
+          cargo test --locked --jobs 2 -p motionwright-desktop effect_grants -- --test-threads=1
+          cargo test --locked --jobs 2 -p motionwright-desktop desktop_owner -- --test-threads=1
+          cargo clippy --locked --jobs 2 -p motionwright-native --lib -- -D warnings
       - name: Effect-grant boundary regressions
         if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope)
         run: cargo test --locked --jobs 2 -p motionwright-desktop effect_grants

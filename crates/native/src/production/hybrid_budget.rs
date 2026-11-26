@@ -552,6 +552,36 @@ impl HybridNativeSources {
     pub fn evidence(&self) -> &Value {
         &self.evidence
     }
+
+    /// Selector of the original PCM already staged after the first charged
+    /// native admission. This never copies bytes, grants access or restages a
+    /// failed operation. The sealed master continuation verifies it again.
+    pub fn original_audio(&self) -> MltAudioArtifact {
+        MltAudioArtifact {
+            relative_path: format!("{}-source.wav", self.namespace),
+            sha256: self.scope.plan.source_audio_sha256.clone(),
+            sample_rate: 48_000,
+            channels: 2,
+        }
+    }
+}
+
+/// Read-only source projection, not a renderer result, budget or permission.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HybridSourcePreflight {
+    pub schema: &'static str,
+    pub project_id: Uuid,
+    pub generation: Uuid,
+    pub revision: u64,
+    pub deliverable_id: Uuid,
+    pub project_sha256: String,
+    pub source_count: usize,
+    pub frame_count: u64,
+    pub width: u32,
+    pub height: u32,
+    pub fps_num: u32,
+    pub fps_den: u32,
+    pub source_audio_sha256: String,
 }
 
 #[derive(Debug, Clone)]
@@ -2091,6 +2121,44 @@ impl ProductionCoordinator {
         grant.require_unused_snapshots(&format!("mw-hybrid-{}", &source_project_sha256[..20]))?;
         self.hybrid_project_grant = Some(Arc::new(HybridProjectGrant::Ci(Box::new(grant))));
         Ok(self)
+    }
+
+    /// Compile every saved contribution and verify the original WAV before a
+    /// Desktop render permission is requested. No root, receipt, native call,
+    /// output file or owner authority is created by this query.
+    pub fn preflight_native_hybrid_sources(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        deliverable_id: Uuid,
+        options: &FilmBuildOptions,
+    ) -> NativeResult<HybridSourcePreflight> {
+        let plan = HybridBudgetPlan::build(self, project_id, expected, deliverable_id, options)?;
+        self.require_no_unresolved_scene_requests(
+            project_id,
+            &format!("{}-mc", plan.request_prefix),
+            SceneRequestFamily::Motion,
+        )?;
+        self.require_no_unresolved_scene_requests(
+            project_id,
+            &format!("{}-manim", plan.request_prefix),
+            SceneRequestFamily::Manim,
+        )?;
+        Ok(HybridSourcePreflight {
+            schema: "motionwright.hybrid-source-preflight/1",
+            project_id,
+            generation: expected.generation,
+            revision: expected.revision,
+            deliverable_id,
+            project_sha256: plan.project_sha256,
+            source_count: plan.project.scenes.len(),
+            frame_count: plan.total_frames,
+            width: plan.width,
+            height: plan.height,
+            fps_num: options.frame_rate.num,
+            fps_den: options.frame_rate.den,
+            source_audio_sha256: plan.source_audio_sha256,
+        })
     }
 
     pub(super) fn with_native_hybrid_scope(

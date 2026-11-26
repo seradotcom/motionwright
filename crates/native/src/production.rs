@@ -49,7 +49,7 @@ mod hybrid_budget;
 mod hybrid_mlt;
 mod hybrid_owner;
 mod hyperframes;
-pub use hybrid_budget::HybridNativeSources;
+pub use hybrid_budget::{HybridNativeSources, HybridSourcePreflight};
 pub use hybrid_mlt::{HybridNativeMaster, HybridNativeTimeline};
 mod manim_graph;
 mod manim_graph_profile;

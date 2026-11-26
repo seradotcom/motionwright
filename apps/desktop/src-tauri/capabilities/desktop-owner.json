@@ -53,6 +53,8 @@
     "allow-read-original-blender-lit-still",
     "allow-preview-blender-lit-still",
     "allow-native-blender-product-attempt",
+    "allow-native-hybrid-preflight",
+    "allow-render-native-hybrid-master",
     "allow-motion-canvas-preflight",
     "allow-render-motion-canvas",
     "allow-saved-motion-capture-inventory",

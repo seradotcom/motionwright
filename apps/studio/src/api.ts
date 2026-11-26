@@ -1,3 +1,4 @@
+import {parseHybridPreflight,parseHybridMaster,HybridNativeOperationError,type HybridSourcePreflight,type HybridMasterResult} from "./hybridNative";
 import {parseSavedMotionCaptureInventory,parseSavedMotionCaptureHint,parseRecoveredMotionCapture,type SavedMotionCaptureHint,type SavedMotionCaptureInventory} from "./savedMotionCapture";
 import {parseSavedMasterInventory, parseSavedMasterExportReceipt,type SavedMasterHint,type SavedMasterInventory} from "./savedNativeMedia";
 import { parseNativeAvPlayback, verifiedNativeReviewBytes, type NativeAvPlayback } from "./nativeAvMedia";
@@ -1071,6 +1072,49 @@ export async function preflightMotionCanvas(
       options: savedOptions,
     },
   });
+}
+
+/** Read-only source and local owner preflight; this creates no render permission. */
+export async function preflightNativeHybrid(
+  project:Project,deliverableId:string,options:MotionCanvasFilmOptions,
+):Promise<HybridSourcePreflight>{
+  if(!isTauri())throw new Error("Hybrid production requires the Motionwright desktop runtime.");
+  const source=structuredClone(project);
+  const savedOptions=savedFilmOptions(source,deliverableId,options);
+  try{
+    const value=await invoke<unknown>("native_hybrid_preflight",{request:{
+      project_id:source.id,generation:source.generation,revision:source.revision,
+      deliverable_id:deliverableId,options:savedOptions,
+    }});
+    return parseHybridPreflight(value,source,deliverableId);
+  }catch(error){throw new HybridNativeOperationError(error,false);}
+}
+
+/** One original mixed producer, with the normal render permission and draft barriers.
+ * A returned completion remains valid if subsequent read-only discovery is unavailable.
+ * A4 callers reuse the saved-master review/delivery surface with saved_master.
+ */
+export async function renderNativeHybridMaster(
+  project:Project,deliverableId:string,options:MotionCanvasFilmOptions,
+  beforeDispatch:NativeDeliveryDispatchCheck,
+):Promise<HybridMasterResult>{
+  if(!isTauri())throw new Error("Hybrid production requires the Motionwright desktop runtime.");
+  const source=structuredClone(project);
+  const savedOptions=savedFilmOptions(source,deliverableId,options);
+  beforeDispatch();
+  await preflightNativeHybrid(source,deliverableId,savedOptions);
+  beforeDispatch();
+  const requestId=crypto.randomUUID();
+  const grant=await issueEffectGrant("render_local",source,requestId);
+  beforeDispatch();
+  try{
+    const value=await invoke<unknown>("render_native_hybrid_master",{request:{
+      project_id:source.id,generation:source.generation,revision:source.revision,
+      deliverable_id:deliverableId,options:savedOptions,
+      request_id:requestId,effect_grant:grant.token,
+    }});
+    return parseHybridMaster(value,source,deliverableId);
+  }catch(error){throw new HybridNativeOperationError(error,true);}
 }
 
 export async function renderMotionCanvas(

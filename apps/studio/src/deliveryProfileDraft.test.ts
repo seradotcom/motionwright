@@ -1554,3 +1554,88 @@ describe("saved Film font source selection at the existing API boundary", () => 
     expect(sample.options).toEqual(originalOptions);
   });
 });
+
+
+describe("hybrid bounded producer admission",()=>{
+  function projection(sample:Sample){
+    return {schema:"motionwright.hybrid-source-preflight/1",project_id:sample.project.id,
+      generation:sample.project.generation,revision:sample.project.revision,deliverable_id:sample.profileId,
+      project_sha256:"a".repeat(64),source_count:3,frame_count:180,width:1920,height:1080,
+      fps_num:30,fps_den:1,source_audio_sha256:"b".repeat(64)};
+  }
+  function completion(sample:Sample){
+    return {schema:"motionwright.hybrid-desktop-master/1",status:"completed",project_id:sample.project.id,
+      generation:sample.project.generation,revision:sample.project.revision,deliverable_id:sample.profileId,
+      master_sha256:"c".repeat(64),frame_count:180,fps_num:30,fps_den:1,saved_master:null,
+      review_warning:"The original master completed. Open saved masters to recover it; do not render it again.",
+      automatic_retry:false};
+  }
+  it("blocks pending drafts before the read-only preflight or permission request",async()=>{
+    const sample=source(),changed=new Error("Pending local intent");
+    await expect(api.renderNativeHybridMaster(sample.project,sample.profileId,sample.options,()=>{throw changed;})).rejects.toBe(changed);
+    expect(invokeFixture).not.toHaveBeenCalled();
+  });
+  it("does not request a grant when the gesture changes during source preflight",async()=>{
+    const sample=source(),held=deferred<ReturnType<typeof projection>>();
+    let current=true;const changed=new Error("Changed during read-only projection");
+    invokeFixture.mockReturnValue(held.promise);
+    const pending=api.renderNativeHybridMaster(sample.project,sample.profileId,sample.options,()=>{if(!current)throw changed;});
+    const rejected=expect(pending).rejects.toBe(changed);
+    current=false;held.resolve(projection(sample));await rejected;
+    expect(invokeFixture.mock.calls.map(call=>call[0])).toEqual(["native_hybrid_preflight"]);
+  });
+  it("does not dispatch after a grant dialog outlives its original gesture",async()=>{
+    const sample=source(),held=deferred<{token:string}>();
+    let current=true;const changed=new Error("Changed during normal render permission");
+    invokeFixture.mockImplementation((command:string)=>{
+      if(command==="native_hybrid_preflight")return Promise.resolve(projection(sample));
+      if(command==="issue_effect_grant")return held.promise;
+      throw new Error("Unexpected native dispatch");
+    });
+    const pending=api.renderNativeHybridMaster(sample.project,sample.profileId,sample.options,()=>{if(!current)throw changed;});
+    const rejected=expect(pending).rejects.toBe(changed);
+    await vi.waitFor(()=>expect(invokeFixture).toHaveBeenCalledTimes(2));
+    current=false;held.resolve({token:grantToken});await rejected;
+    expect(invokeFixture.mock.calls.map(call=>call[0])).toEqual(["native_hybrid_preflight","issue_effect_grant"]);
+  });
+  it("keeps completed production when subsequent review is unavailable, without another dispatch",async()=>{
+    const sample=source(),raw=JSON.stringify(sample.project),check=vi.fn();
+    const completed=completion(sample);
+    invokeFixture.mockImplementation((command:string)=>{
+      if(command==="native_hybrid_preflight")return Promise.resolve(projection(sample));
+      if(command==="issue_effect_grant")return Promise.resolve({token:grantToken});
+      if(command==="render_native_hybrid_master")return Promise.resolve(completed);
+      throw new Error("Unexpected retry or follow-up effect");
+    });
+    await expect(api.renderNativeHybridMaster(sample.project,sample.profileId,sample.options,check)).resolves.toEqual(completed);
+    expect(check).toHaveBeenCalledTimes(3);
+    expect(invokeFixture.mock.calls.map(call=>call[0])).toEqual([
+      "native_hybrid_preflight","issue_effect_grant","render_native_hybrid_master",
+    ]);
+    expect(invokeFixture.mock.calls[1][1].request).toEqual({
+      effect:"render_local",project_id:sample.project.id,generation:sample.project.generation,
+      revision:sample.project.revision,subject:requestId,
+    });
+    expect(invokeFixture.mock.calls[2][1].request).toEqual({
+      project_id:sample.project.id,generation:sample.project.generation,revision:sample.project.revision,
+      deliverable_id:sample.profileId,options:sample.options,request_id:requestId,effect_grant:grantToken,
+    });
+    expect(JSON.stringify(sample.project)).toBe(raw);
+  });
+  it("keeps a native UNKNOWN as UNKNOWN without a second render or fresh permission",async()=>{
+    const sample=source();
+    const unknown={schema:"motionwright.hybrid-desktop-failure/1",status:"unknown",stage:"master",
+      outcome_known:false,may_have_native_effects:true,automatic_retry:false,message:"Original result is unknown."};
+    invokeFixture.mockImplementation((command:string)=>{
+      if(command==="native_hybrid_preflight")return Promise.resolve(projection(sample));
+      if(command==="issue_effect_grant")return Promise.resolve({token:grantToken});
+      if(command==="render_native_hybrid_master")return Promise.reject(unknown);
+      throw new Error("Unexpected retry");
+    });
+    await expect(api.renderNativeHybridMaster(sample.project,sample.profileId,sample.options,()=>{}))
+      .rejects.toMatchObject({failure:unknown});
+    expect(invokeFixture.mock.calls.map(call=>call[0])).toEqual([
+      "native_hybrid_preflight","issue_effect_grant","render_native_hybrid_master",
+    ]);
+  });
+});

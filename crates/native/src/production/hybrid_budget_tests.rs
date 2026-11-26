@@ -1107,3 +1107,138 @@ async fn conflicting_original_wave_is_preserved_and_never_enters_sdk_after_charg
     assert!(receipts.iter().any(|row| row.stage == "dispatching"));
     assert!(receipts.iter().any(|row| row.stage == "failed_known"));
 }
+
+#[test]
+fn hybrid_source_preflight_uses_saved_mc_intents_without_root_receipt_or_output() {
+    let f = fixture();
+    let owner = ProductionCoordinator::new(f.service.clone(), f.connection.clone()).unwrap();
+    let mut options = f.options.clone();
+    options.scene_intents.retain(|intent| {
+        [f.project.scenes[0].id, f.project.scenes[2].id].contains(&intent.scene_id)
+    });
+    let source = owner
+        .preflight_native_hybrid_sources(f.project.id, &f.project.stamp(), f.deliverable, &options)
+        .unwrap();
+    assert_eq!(source.schema, "motionwright.hybrid-source-preflight/1");
+    assert_eq!(source.project_id, f.project.id);
+    assert_eq!(source.generation, f.project.generation);
+    assert_eq!(source.revision, f.project.revision);
+    assert_eq!(source.deliverable_id, f.deliverable);
+    assert_eq!(source.source_count, 3);
+    assert_eq!(
+        (source.width, source.height, source.frame_count),
+        (1920, 1080, 180)
+    );
+    assert_eq!((source.fps_num, source.fps_den), (30, 1));
+    assert_eq!(source.project_sha256, project_digest(&f.project).unwrap());
+    assert_eq!(
+        source.source_audio_sha256,
+        f.project.audio.voice_tracks[0].source_sha256
+    );
+    assert_eq!(f.service.project(f.project.id).unwrap(), f.project);
+    assert!(
+        f.service
+            .production_receipts(f.project.id, 32)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(owner.active_hybrid_budget.is_none());
+    assert!(owner.hybrid_project_grant.is_none());
+    assert_eq!(owner.client.execute_calls.load(Ordering::SeqCst), 0);
+    let roots: i64 = rusqlite::Connection::open(f.directory.path().join("hybrid.sqlite3"))
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM production_operation_roots",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(roots, 0);
+    assert_eq!(fs::read_dir(&f.connection.output_root).unwrap().count(), 0);
+    let serialized = serde_json::to_value(source).unwrap();
+    assert_eq!(serialized.as_object().unwrap().len(), 13);
+    for key in [
+        "args",
+        "path",
+        "output_root",
+        "receipt",
+        "grant",
+        "limits",
+        "native_verified",
+    ] {
+        assert!(serialized.get(key).is_none());
+    }
+}
+
+#[test]
+fn hybrid_source_preflight_rejects_stale_foreign_clock_and_changed_original_without_effects() {
+    let f = fixture();
+    let owner = ProductionCoordinator::new(f.service.clone(), f.connection.clone()).unwrap();
+    for stamp in [
+        RevisionStamp {
+            revision: f.project.revision + 1,
+            ..f.project.stamp()
+        },
+        RevisionStamp {
+            generation: Uuid::new_v4(),
+            ..f.project.stamp()
+        },
+        RevisionStamp {
+            resource: "project:foreign".into(),
+            ..f.project.stamp()
+        },
+    ] {
+        assert!(
+            owner
+                .preflight_native_hybrid_sources(f.project.id, &stamp, f.deliverable, &f.options)
+                .is_err()
+        );
+    }
+    let mut wrong_clock = f.options.clone();
+    wrong_clock.frame_rate = Rate::new(24, 1).unwrap();
+    assert!(
+        owner
+            .preflight_native_hybrid_sources(
+                f.project.id,
+                &f.project.stamp(),
+                f.deliverable,
+                &wrong_clock,
+            )
+            .is_err()
+    );
+    let original = f
+        .service
+        .verified_master_voice(
+            f.project.id,
+            &f.project.stamp(),
+            f.project.audio.voice_tracks[0].id,
+        )
+        .unwrap();
+    fs::write(original.path, b"changed original WAV").unwrap();
+    assert!(
+        owner
+            .preflight_native_hybrid_sources(
+                f.project.id,
+                &f.project.stamp(),
+                f.deliverable,
+                &f.options,
+            )
+            .is_err()
+    );
+    assert!(
+        f.service
+            .production_receipts(f.project.id, 32)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(owner.client.execute_calls.load(Ordering::SeqCst), 0);
+    let roots: i64 = rusqlite::Connection::open(f.directory.path().join("hybrid.sqlite3"))
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM production_operation_roots",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(roots, 0);
+}

@@ -81,3 +81,31 @@ limits. Delivery still verifies the original video, source WAV, decoded PCM and
 current project/owner before a new destination grant. Historical muxes without
 that context remain unavailable to this reader; no receipt is backfilled and no
 old production permission, accounting root or unresolved outcome is restored.
+
+
+### Desktop admission for the finite hybrid master
+
+Studio integrations can use preflightNativeHybrid and renderNativeHybridMaster
+from apps/studio/src/api.ts. Studio and the Rust boundary both check options against the saved delivery recipe.
+The render helper requires the existing delivery draft barrier and checks it
+before preflight, after preflight and after the normal RenderLocal permission.
+The Desktop commands are native_hybrid_preflight and render_native_hybrid_master;
+only the provisioned local owner webview may invoke them.
+
+The read-only preflight compiles both Motion Canvas sources and the static Manim
+source, verifies the original WAV and observes the existing local owner. It
+creates no root, receipt, staged file or renderer invocation. The render keeps
+one coordinator through sources, timeline and master. Original audio is selected
+from the sealed source result; staging remains after the first charged admission.
+
+A completed response contains the original master SHA and, when discovery is
+available, a saved-master hint for the existing review and fresh-permission
+delivery APIs. Lost review capacity or a closed owner after completion keeps
+the completion and a recovery notice. Failures retain their stage, original
+outcome certainty and possible prior effects, with automatic retry disabled.
+No caller path, Native result, resource budget or replacement owner is accepted.
+
+This entry point retains the implemented Linux MC/static-Manim/MC route:
+three contiguous 60-frame contributions, 1080p30 Rec.709 H264/AAC, original
+stereo 48 kHz PCM, the original bundled text fonts, and a 32 MiB master. It does not extend the hybrid creative
+vocabulary or establish global Phase 1, G2/G3 or human acceptance.

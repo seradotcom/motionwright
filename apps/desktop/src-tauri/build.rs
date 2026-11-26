@@ -48,6 +48,8 @@ fn main() {
             "read_original_blender_lit_still",
             "preview_blender_lit_still",
             "native_blender_product_attempt",
+            "native_hybrid_preflight",
+            "render_native_hybrid_master",
             "motion_canvas_preflight",
             "render_motion_canvas",
             "saved_motion_capture_inventory",

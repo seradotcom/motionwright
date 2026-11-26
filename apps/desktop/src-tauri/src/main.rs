@@ -39,6 +39,7 @@ use av_delivery::{
 use media_integrity::{
     PortableMediaVerification, VerifyPortableMediaRequest, verify_portable_media,
 };
+mod native_hybrid;
 mod native_preview;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod runtime_profile_bundle;
@@ -2096,6 +2097,24 @@ async fn native_blender_product_attempt(
         .map_err(|_| blender_product::read_task_failure())?;
     blender_product::ensure_read_current(&state.service, &snapshot.project)?;
     Ok(snapshot)
+}
+
+#[tauri::command]
+async fn native_hybrid_preflight(
+    owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: native_hybrid::HybridPreflightRequest,
+) -> Result<motionwright_native::production::HybridSourcePreflight, native_hybrid::HybridFailure> {
+    native_hybrid::preflight(owner, &state, request).await
+}
+
+#[tauri::command]
+async fn render_native_hybrid_master(
+    owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: native_hybrid::HybridRenderRequest,
+) -> Result<native_hybrid::HybridRenderResponse, native_hybrid::HybridFailure> {
+    native_hybrid::render(owner, &state, request).await
 }
 
 #[tauri::command]
@@ -4742,6 +4761,8 @@ fn main() {
             read_original_blender_lit_still,
             preview_blender_lit_still,
             native_blender_product_attempt,
+            native_hybrid_preflight,
+            render_native_hybrid_master,
             motion_canvas_preflight,
             render_motion_canvas,
             saved_motion_capture_inventory,
