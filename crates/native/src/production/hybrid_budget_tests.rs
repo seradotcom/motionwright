@@ -737,6 +737,47 @@ async fn hybrid_dispatch_rechecks_a_peer_commit_before_the_durable_debit() {
 }
 
 #[test]
+fn hybrid_saved_cut_preserves_unequal_contributions_and_frame_reservations() {
+    let mut f = fixture();
+    for (index, frames) in [45, 70, 65].into_iter().enumerate() {
+        let scene_id = f.project.scenes[index].id;
+        change(
+            &f.service,
+            &mut f.project,
+            &format!("authored-duration-{index}"),
+            Change::SetSceneDuration {
+                scene_id,
+                duration: RationalTime::new(frames, 30).unwrap(),
+            },
+        );
+    }
+
+    let owner = ProductionCoordinator::new(f.service.clone(), f.connection.clone()).unwrap();
+    let preflight = owner
+        .preflight_native_hybrid_sources(
+            f.project.id,
+            &f.project.stamp(),
+            f.deliverable,
+            &f.options,
+        )
+        .unwrap();
+    assert_eq!(preflight.frame_count, 180);
+    assert!(owner.active_hybrid_budget.is_none());
+    let scoped = owner
+        .with_native_hybrid_scope(f.project.id, &f.project.stamp(), f.deliverable, &f.options)
+        .unwrap();
+    let scope = scoped.active_hybrid_budget.as_ref().unwrap();
+    let plan = &scope.plan;
+    for (index, (start, frames)) in [(0, 45), (45, 70), (115, 65)].into_iter().enumerate() {
+        let contribution = &plan.source_plan["contributions"][index];
+        assert_eq!(contribution["output_start_frame"], start);
+        assert_eq!(contribution["frame_count"], frames);
+    }
+    assert_eq!(plan.limits.render_frames, 650); // 110 MC + 70 Manim + 110 FFV1 + 180 visual + 180 mux.
+    assert_eq!(scoped.client.execute_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn unsupported_hybrid_clock_and_static_source_are_refused_before_any_root_or_native_effect() {
     let mut f = fixture();
     let scene_id = f.project.scenes[1].id;

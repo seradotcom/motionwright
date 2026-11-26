@@ -553,6 +553,10 @@ impl HybridNativeSources {
         &self.evidence
     }
 
+    pub(super) fn segment_frames(&self) -> [u64; 3] {
+        self.scope.plan.segment_frames
+    }
+
     /// Selector of the original PCM already staged after the first charged
     /// native admission. This never copies bytes, grants access or restages a
     /// failed operation. The sealed master continuation verifies it again.
@@ -611,6 +615,7 @@ struct HybridBudgetPlan {
     manim_plan_sha256: String,
     manim_profile: Value,
     manim_frames: u64,
+    segment_frames: [u64; 3],
     total_frames: u64,
     width: u32,
     height: u32,
@@ -1059,23 +1064,23 @@ impl HybridBudgetPlan {
             "The hybrid native route cannot discard authored mixing, voice-cut conform or captions",
         )?;
 
-        let mut counts = Vec::with_capacity(project.scenes.len());
+        let mut counts = [0; 3];
         let mut cursor = 0;
-        for scene in &project.scenes {
+        for (count, scene) in counts.iter_mut().zip(&project.scenes) {
             let start = exact_frames(scene.start.num, scene.start.den, options.frame_rate)?;
             let frames = exact_frames(scene.duration.num, scene.duration.den, options.frame_rate)?;
             supported(
-                start == cursor && frames == 60,
-                "The admitted hybrid cut requires contiguous sixty-frame contributions",
+                start == cursor && frames > 0,
+                "The admitted hybrid cut requires contiguous nonempty contributions",
             )?;
             cursor = bounded_add(cursor, frames)?;
-            counts.push(frames);
+            *count = frames;
         }
         // This guard describes the currently implemented finite route. Costs
         // below use the actual canonical clocks, never a caller's limits or a
         // global replacement for the general MC or Manim producers.
         supported(
-            cursor == 180,
+            cursor == super::hybrid_mlt::FRAME_COUNT,
             "The admitted hybrid cut contains 180 canonical frames",
         )?;
 
@@ -1336,6 +1341,7 @@ impl HybridBudgetPlan {
             manim_plan_sha256: source.closure.plan_sha256,
             manim_profile,
             manim_frames,
+            segment_frames: counts,
             total_frames: cursor,
             width,
             height,

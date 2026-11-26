@@ -106,9 +106,10 @@ outcome certainty and possible prior effects, with automatic retry disabled.
 No caller path, Native result, resource budget or replacement owner is accepted.
 
 This entry point retains the implemented Linux MC/static-Manim/MC route:
-three contiguous 60-frame contributions, 1080p30 Rec.709 H264/AAC, original
-stereo 48 kHz PCM, the original bundled text fonts, and a 32 MiB master. It does not extend the hybrid creative
-vocabulary or establish global Phase 1, G2/G3 or human acceptance.
+three contiguous, frame-aligned contributions totaling 180 frames, 1080p30
+Rec.709 H264/AAC, original stereo 48 kHz PCM, the original bundled text fonts,
+and a 32 MiB master. MLT inserts each source at its saved cut boundary after
+verifying the original contribution's frame count.
 
 
 The Output profiles panel now exposes this route for saved mixed-renderer cuts:

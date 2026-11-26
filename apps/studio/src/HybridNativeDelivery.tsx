@@ -30,8 +30,9 @@ export default function HybridNativeDelivery({
     <header><div><strong>Native hybrid master</strong>
       <span>Combine Motion Canvas and Manim with the original voice track in one MP4.</span></div></header>
     <p className="delivery-truth-note">
-      Supported cut: Motion Canvas / static Manim / Motion Canvas, two seconds each,
-      1920 × 1080 at 30 fps, with one original six-second stereo 48 kHz WAV.
+      Supported cut: Motion Canvas / static Manim / Motion Canvas. Use three contiguous,
+      frame-aligned scenes totaling six seconds at 1920 × 1080 and 30 fps,
+      with one original six-second stereo 48 kHz WAV.
       Save the scene intent and output profile before checking sources.
     </p>
     <div className="delivery-editor-actions">
