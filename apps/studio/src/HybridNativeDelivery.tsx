@@ -30,8 +30,8 @@ export default function HybridNativeDelivery({
     <header><div><strong>Native hybrid master</strong>
       <span>Combine Motion Canvas and Manim with the original voice track in one MP4.</span></div></header>
     <p className="delivery-truth-note">
-      Supported cut: Motion Canvas / static Manim / Motion Canvas. Use three contiguous,
-      frame-aligned scenes totaling six seconds at 1920 × 1080 and 30 fps,
+      Use one static Manim scene with one Motion Canvas scene on either or both sides.
+      Use contiguous, frame-aligned scenes totaling six seconds at 1920 × 1080 and 30 fps,
       with one original six-second stereo 48 kHz WAV.
       Save the scene intent and output profile before checking sources.
     </p>
@@ -45,7 +45,7 @@ export default function HybridNativeDelivery({
       <button type="button" className="button compact" onClick={onOpenAudio}>Review original voice</button>
     </div>
     {source&&<p role="status"><CircleCheck size={14} aria-hidden="true"/>
-      {" "}Three sources checked for six seconds of video. Creating the master requires your render permission.
+      {" "}{source.source_count} sources checked for six seconds of video. Creating the master requires your render permission.
     </p>}
     {runtimeIssue&&<p className="delivery-truth-note">{runtimeIssue}</p>}
     {attempt?.status==="dispatching"&&<p role="status">

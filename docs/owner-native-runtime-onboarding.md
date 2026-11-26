@@ -105,10 +105,10 @@ the completion and a recovery notice. Failures retain their stage, original
 outcome certainty and possible prior effects, with automatic retry disabled.
 No caller path, Native result, resource budget or replacement owner is accepted.
 
-This entry point retains the implemented Linux MC/static-Manim/MC route:
-three contiguous, frame-aligned contributions totaling 180 frames, 1080p30
-Rec.709 H264/AAC, original stereo 48 kHz PCM, the original bundled text fonts,
-and a 32 MiB master. MLT inserts each source at its saved cut boundary after
+This Linux route accepts one static Manim scene and one Motion Canvas scene on
+either or both sides. Contiguous, frame-aligned contributions total 180 frames.
+The 1080p30 Rec.709 H264/AAC master uses original stereo 48 kHz PCM and the
+bundled text fonts, with a 32 MiB cap. MLT inserts each source at its saved cut boundary after
 verifying the original contribution's frame count.
 
 

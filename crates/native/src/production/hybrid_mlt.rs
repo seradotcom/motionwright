@@ -491,7 +491,7 @@ async fn reference(
 }
 
 impl ProductionCoordinator {
-    /// Assemble exactly the retained MC/Manim/MC originals. Neither a JSON
+    /// Assemble exactly the retained Motion Canvas and static Manim originals. Neither a JSON
     /// caller nor another project can construct the input source capability.
     pub async fn assemble_native_hybrid_timeline(
         &self,
@@ -503,43 +503,49 @@ impl ProductionCoordinator {
         let expected = &sources.expected;
         let output = &scoped.client.connection().output_root;
         let namespace = &sources.namespace;
-        let segment_frames = sources.segment_frames();
-        let [first_frames, manim_frames, _] = segment_frames;
-        let cut_frames = [first_frames, first_frames + manim_frames];
-        let starts = [0, cut_frames[0], cut_frames[1]];
-        let ends = [cut_frames[0], cut_frames[1], FRAME_COUNT];
+        let ranges = sources.segment_ranges();
+        let manim_ordinal = sources.manim_ordinal();
+        let manim_range = &ranges[manim_ordinal];
+        let manim_frames = manim_range.end - manim_range.start;
+        // Preserve the original sequence name in the three-source route so the
+        // same saved input never presents different arguments under an old ID.
+        let sequence_name = if ranges.len() == 3 {
+            SEQUENCE_NAME
+        } else {
+            "Original Motionwright two-source cut"
+        };
         require(
-            sources.motion_canvas.segments.len() == 2,
+            sources.motion_canvas.segments.len() + 1 == ranges.len(),
             "Hybrid source lost a native MC contribution",
         )?;
-        let mut clips = Vec::with_capacity(3);
+        let mut clips = Vec::with_capacity(ranges.len());
         let mut originals = Vec::new();
-        // The middle contribution is the real static Manim native MP4, not an
+        // The Manim contribution is the real static native MP4, not an
         // invented MC manifest or a renderer label on a different source.
         let manim = &sources.manim;
         require(
             manim.get("renderer").and_then(Value::as_str) == Some("manim-community")
                 && manim.get("project_revision").and_then(Value::as_u64) == Some(expected.revision)
-                && manim.get("scene_id") == Some(&json!(sources.project.scenes[1].id))
+                && manim.get("scene_id") == Some(&json!(sources.project.scenes[manim_ordinal].id))
                 && manim
                     .pointer("/artifact/static_source")
                     .is_some_and(|source| source.is_object())
                 && manim
                     .pointer("/artifact/static_source_custody_error")
                     .is_none(),
-            "Hybrid middle contribution lacks its retained original static Manim source",
+            "Hybrid Manim contribution lacks its retained original static source",
         )?;
         let original = manim
             .pointer("/result/result/data/artifact")
             .ok_or_else(|| {
-                backend("Hybrid middle contribution lacks its original native Manim artifact")
+                backend("Hybrid Manim contribution lacks its original native artifact")
             })?;
         let manim_path = text_at(original, "/relative_path")?;
         let manim_descriptor = json!({"root":"output","path":manim_path,
             "sha256":original.get("sha256"),"bytes":original.get("bytes")});
         let manim_media = artifact(output, &manim_descriptor, &manim_path, MEDIA_MAX_BYTES)?;
         let report = original.get("decoded_video").ok_or_else(|| {
-            backend("Hybrid middle contribution lacks its original decoded-video report")
+            backend("Hybrid Manim contribution lacks its original decoded-video report")
         })?;
         let report_path = text_at(report, "/relative_path")?;
         require(
@@ -564,10 +570,11 @@ impl ProductionCoordinator {
                     .get("frames")
                     .and_then(Value::as_array)
                     .is_some_and(|frames| frames.len() == manim_frames as usize),
-            "Hybrid middle contribution differs from its planned native frame count",
+            "Hybrid Manim contribution differs from its planned native frame count",
         )?;
-        for (index, segment) in sources.motion_canvas.segments.iter().enumerate() {
-            let ordinal = index * 2;
+        let motion_ordinals = (0..ranges.len()).filter(|&index| index != manim_ordinal);
+        for (ordinal, segment) in motion_ordinals.zip(&sources.motion_canvas.segments) {
+            let range = &ranges[ordinal];
             let manifest = text_at(&segment.artifact, "/manifest")?;
             let manifest_sha = text_at(&segment.artifact, "/manifest_sha256")?;
             // Read the pinned manifest immediately before the real encoder.
@@ -585,12 +592,12 @@ impl ProductionCoordinator {
                 output,
                 response_data(&original)?,
                 &path,
-                segment_frames[ordinal],
+                range.end - range.start,
             )?;
             originals.push(original);
             clips.push(actual);
         }
-        clips.insert(1, manim_media);
+        clips.insert(manim_ordinal, manim_media);
 
         let provider_profile = crate::mlt_edit_plan::MltOwnedVideoProfile {
             width: 1920,
@@ -624,7 +631,7 @@ impl ProductionCoordinator {
             &format!("{request}:mlt:sequence-create"),
             "driver.mlt-video.sequence.create",
             session,
-            json!({"name":SEQUENCE_NAME}),
+            json!({"name":sequence_name}),
         )
         .await?;
         let sequence = created(&created_sequence, "sequence")?;
@@ -642,7 +649,7 @@ impl ProductionCoordinator {
         let _ = created(&created_track, "track")?;
         session = next;
         let mut edit_receipts = vec![created_sequence, created_track];
-        for (index, clip) in clips.iter().enumerate() {
+        for (index, (clip, range)) in clips.iter().zip(ranges).enumerate() {
             // Rehash every actual contribution before import; a provider ref
             // from an earlier native revision is never carried across edits.
             artifact(output, &clip.descriptor(), &clip.path, MEDIA_MAX_BYTES)?;
@@ -658,7 +665,7 @@ impl ProductionCoordinator {
                 &format!("{request}:mlt:sequence-ref:{index}"),
                 &session,
                 None,
-                SEQUENCE_NAME,
+                sequence_name,
             )
             .await?;
             let track = reference(
@@ -679,13 +686,13 @@ impl ProductionCoordinator {
                 "driver.mlt-video.clip.insert",
                 session,
                 json!({"sequence":sequence,"track":track,"asset":asset,
-                    "start":starts[index],"source_in":0,"source_out":segment_frames[index],
+                    "start":range.start,"source_in":0,"source_out":range.end-range.start,
                     "name":format!("Original hybrid cut {index}"),"ripple":false}),
             )
             .await?;
             let _ = created(&inserted, "clip")?;
             require(
-                inserted.get("after_frames").and_then(Value::as_u64) == Some(ends[index]),
+                inserted.get("after_frames").and_then(Value::as_u64) == Some(range.end),
                 "Hybrid MLT edit changed an original cut boundary",
             )?;
             edit_receipts.push(imported);
@@ -699,7 +706,7 @@ impl ProductionCoordinator {
             &format!("{request}:mlt:final-sequence-ref"),
             &session,
             None,
-            SEQUENCE_NAME,
+            sequence_name,
         )
         .await?;
         let duration = scoped
@@ -863,10 +870,16 @@ impl ProductionCoordinator {
             scoped.service.project(id).map_err(storage_error)? == sources.project,
             "Hybrid editable source changed during native assembly",
         )?;
+        let source_segment_frames: Vec<_> =
+            ranges.iter().map(|range| range.end - range.start).collect();
+        let cut_frames: Vec<_> = ranges[..ranges.len() - 1]
+            .iter()
+            .map(|range| range.end)
+            .collect();
         let evidence = json!({"schema":"motionwright.native.hybrid-timeline/1",
             "project_sha256":sources.project_sha256,"project_resource":sources.project.resource_key(),
             "generation":expected.generation,"revision":expected.revision,
-            "frame_count":FRAME_COUNT,"source_segment_frames":segment_frames,"cut_frames":cut_frames,
+            "frame_count":FRAME_COUNT,"source_segment_frames":source_segment_frames,"cut_frames":cut_frames,
             "native_render_profile":"lossless-video-only","transport_pcm_audio":false,
             "native_frame_count_observed":FRAME_COUNT,"artifact_path":visual.path,
             "artifact_sha256":visual.sha256,"artifact_bytes":visual.bytes,

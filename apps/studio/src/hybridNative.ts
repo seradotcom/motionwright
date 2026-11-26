@@ -4,7 +4,7 @@ import {parseSavedMasterInventory,type SavedMasterHint} from "./savedNativeMedia
 export interface HybridSourcePreflight {
   schema:"motionwright.hybrid-source-preflight/1";
   project_id:string;generation:string;revision:number;deliverable_id:string;
-  project_sha256:string;source_count:3;frame_count:180;width:1920;height:1080;
+  project_sha256:string;source_count:2|3;frame_count:180;width:1920;height:1080;
   fps_num:30;fps_den:1;source_audio_sha256:string;
 }
 export interface HybridMasterResult {
@@ -35,7 +35,7 @@ export function parseHybridPreflight(value:unknown,project:Project,profile:strin
   const data=closed(value,["schema","project_id","generation","revision","deliverable_id",
     "project_sha256","source_count","frame_count","width","height","fps_num","fps_den","source_audio_sha256"]);
   scope(data,project,profile);
-  if(data.schema!=="motionwright.hybrid-source-preflight/1"||data.source_count!==3
+  if(data.schema!=="motionwright.hybrid-source-preflight/1"||(data.source_count!==2&&data.source_count!==3)
     ||data.frame_count!==180||data.width!==1920||data.height!==1080||data.fps_num!==30||data.fps_den!==1
     ||typeof data.project_sha256!=="string"||!sha.test(data.project_sha256)
     ||typeof data.source_audio_sha256!=="string"||!sha.test(data.source_audio_sha256))

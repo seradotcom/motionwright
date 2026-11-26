@@ -17,6 +17,12 @@ describe("original hybrid Desktop result",()=>{
     expect(parseHybridPreflight(source(),project,profile)).toEqual(source());
     expect(parseHybridMaster(complete(),project,profile)).toEqual(complete());
   });
+  it("admits a two-source cut and refuses unbounded source counts",()=>{
+    expect(parseHybridPreflight({...source(),source_count:2},project,profile).source_count).toBe(2);
+    for(const source_count of [1,4,2.5,"2"]){
+      expect(()=>parseHybridPreflight({...source(),source_count},project,profile)).toThrow();
+    }
+  });
   it("preserves known completion after the review owner closes",()=>{
     const value={...complete(),saved_master:null,
       review_warning:"The original master completed. Open saved masters to recover it; do not render it again."};

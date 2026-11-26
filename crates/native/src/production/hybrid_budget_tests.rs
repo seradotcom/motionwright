@@ -118,6 +118,11 @@ fn connection(directory: &Path, resource: String) -> ProductionConnection {
 }
 
 fn fixture() -> Fixture {
+    use RendererKind::{ManimCommunity, MotionCanvas};
+    fixture_with_layout(&[MotionCanvas, ManimCommunity, MotionCanvas])
+}
+
+fn fixture_with_layout(layout: &[RendererKind]) -> Fixture {
     let directory = tempfile::tempdir().unwrap();
     let service = StudioService::open(directory.path().join("hybrid.sqlite3")).unwrap();
     let mut project = service
@@ -138,7 +143,7 @@ fn fixture() -> Fixture {
         "fixture-matte",
         Change::SetVisualLanguage { visual_language },
     );
-    for index in 0..3 {
+    for (index, renderer) in layout.iter().cloned().enumerate() {
         change(
             &service,
             &mut project,
@@ -146,19 +151,16 @@ fn fixture() -> Fixture {
             Change::AddScene {
                 name: format!("Contribution {index}"),
                 objective: "Budget-bound native accounting fixture".into(),
-                duration_seconds: 2,
+                duration_seconds: 6 / layout.len() as i64,
             },
         );
         let scene_id = project.scenes.last().unwrap().id;
-        if index == 1 {
+        if renderer != RendererKind::MotionCanvas {
             change(
                 &service,
                 &mut project,
                 "fixture-static-manim",
-                Change::SetSceneRenderer {
-                    scene_id,
-                    renderer: RendererKind::ManimCommunity,
-                },
+                Change::SetSceneRenderer { scene_id, renderer },
             );
         }
         let node = CanvasNode {
@@ -775,6 +777,53 @@ fn hybrid_saved_cut_preserves_unequal_contributions_and_frame_reservations() {
     }
     assert_eq!(plan.limits.render_frames, 650); // 110 MC + 70 Manim + 110 FFV1 + 180 visual + 180 mux.
     assert_eq!(scoped.client.execute_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn hybrid_two_sources_preserve_renderer_order_and_exact_cut_origin() {
+    use RendererKind::{ManimCommunity, MotionCanvas};
+    for (layout, expected_renderers, motion_ordinal) in [
+        (
+            [MotionCanvas, ManimCommunity],
+            ["motion_canvas", "manim_static"],
+            0,
+        ),
+        (
+            [ManimCommunity, MotionCanvas],
+            ["manim_static", "motion_canvas"],
+            1,
+        ),
+    ] {
+        let f = fixture_with_layout(&layout);
+        let owner = ProductionCoordinator::new(f.service.clone(), f.connection).unwrap();
+        let report = owner
+            .preflight_native_hybrid_sources(
+                f.project.id,
+                &f.project.stamp(),
+                f.deliverable,
+                &f.options,
+            )
+            .unwrap();
+        assert_eq!(report.source_count, 2);
+        let scoped = owner
+            .with_native_hybrid_scope(f.project.id, &f.project.stamp(), f.deliverable, &f.options)
+            .unwrap();
+        let scope = scoped.active_hybrid_budget.as_ref().unwrap();
+        assert_eq!(scope.plan.segment_ranges, [0..90, 90..180]);
+        assert_eq!(scope.plan.manim_ordinal, 1 - motion_ordinal);
+        assert_eq!(scope.plan.motion[0].output_ordinal, motion_ordinal);
+        assert_eq!(scope.plan.limits.render_frames, 630);
+        let contributions = scope.plan.source_plan["contributions"].as_array().unwrap();
+        assert_eq!(contributions.len(), 2);
+        for (index, (contribution, renderer)) in
+            contributions.iter().zip(expected_renderers).enumerate()
+        {
+            assert_eq!(contribution["renderer"], renderer);
+            assert_eq!(contribution["output_start_frame"], index * 90);
+            assert_eq!(contribution["frame_count"], 90);
+        }
+        assert_eq!(scoped.client.execute_calls.load(Ordering::SeqCst), 0);
+    }
 }
 
 #[test]

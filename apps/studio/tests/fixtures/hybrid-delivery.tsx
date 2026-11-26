@@ -15,10 +15,13 @@ interface Harness {
 declare global {interface Window {__HYBRID_DELIVERY__:Harness}}
 let project:Project=structuredClone(fixtureBootstrap.project);
 project.locks=[];project.revision=20;
-project.scenes=project.scenes.slice(0,3);
+const twoSource=new URLSearchParams(location.search).get("layout")==="manim-first";
+const sceneCount=twoSource?2:3;
+const duration=6/sceneCount;
+project.scenes=project.scenes.slice(0,sceneCount);
 project.scenes.forEach((scene,index)=>{
-  scene.renderer=index===1?"manim-community":"motion-canvas";
-  scene.start={num:String(index*2),den:"1"};scene.duration={num:"2",den:"1"};
+  scene.renderer=index===(twoSource?0:1)?"manim-community":"motion-canvas";
+  scene.start={num:String(index*duration),den:"1"};scene.duration={num:String(duration),den:"1"};
 });
 for(const branch of project.branches)if(branch.id===project.active_branch)branch.head_revision=20;
 const profile=project.deliverables[0];
@@ -51,7 +54,7 @@ Object.assign(window,{__TAURI_INTERNALS__:{invoke:async(command:string,args:{req
   if(command==="native_hybrid_preflight")return {
     schema:"motionwright.hybrid-source-preflight/1",...scope(request),
     project_sha256:"a".repeat(64),source_audio_sha256:"b".repeat(64),
-    source_count:3,frame_count:180,width:1920,height:1080,fps_num:30,fps_den:1,
+    source_count:sceneCount,frame_count:180,width:1920,height:1080,fps_num:30,fps_den:1,
   };
   if(command==="issue_effect_grant"){
     if(holdGrant&&request.effect==="render_local"){
