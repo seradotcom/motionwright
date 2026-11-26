@@ -80,7 +80,7 @@ describe("audio recipe consumer regressions", () => {
 });
 
 import {
-  assertDeliveryAudioTargets, assertOriginalMixBusEnvelope, canonicalOriginalMix,
+  assertDeliveryAudioTargets, assertOriginalMixBusEnvelope, assertOriginalMixSilenceRelease, canonicalOriginalMix,
   requireOriginalMixSfx, savedOriginalMixAuditionRequest, selectedOriginalMixCues,
 } from "./audioRecipeContract";
 import type { OriginalMixPreviewOptions } from "./nativeMixTypes";
@@ -219,5 +219,64 @@ describe("closed source-bound audition consumer", () => {
     expect(() => requireOriginalMixSfx(project, id(404), recipe.original_mix!)).toThrow(/profile/);
     project.deliverables[0].included_scene_ids = [id(404)];
     expect(() => requireOriginalMixSfx(project, project.deliverables[0].id, recipe.original_mix!)).toThrow(/scene/);
+  });
+});
+
+
+describe("original mix silence release authoring and closed wire",()=>{
+  function releaseFixture(){
+    const {project,profileId,recipe}=sample();
+    const scene={...project.scenes[0],start:{num:"0",den:"1"},duration:{num:"2",den:"1"}};
+    project.scenes=[scene];
+    const assetId=id(401),voiceId=id(402),sha="a".repeat(64);
+    project.assets=[{id:assetId,name:"Synthetic voice timing fixture",media_type:"audio/wav",content_sha256:sha,source_revision:null}];
+    project.audio.voice_tracks=[{id:voiceId,asset_id:assetId,label:"Synthetic voice timing",sample_rate_hz:48000,channels:2,
+      measured_duration:{num:"2",den:"1"},source_sha256:sha,loudness_lufs:null,true_peak_dbfs:null}];
+    project.audio.active_voice_track_id=voiceId;
+    project.audio.transcript=[{id:id(403),voice_track_id:voiceId,start:{num:"1",den:"2"},end:{num:"1",den:"1"},
+      text:"Synthetic reviewed timing",speaker:null,alignment:{kind:"manual"},emphasis:[]}];
+    project.deliverables[0]={...project.deliverables[0],included_scene_ids:[],voice_track_id:voiceId,audio_sample_rate_hz:48000};
+    return {project,profileId,recipe};
+  }
+  it("requires both exact sample counts and retains all unrelated saved intent through authoring and recovery",()=>{
+    const {project,profileId,recipe}=releaseFixture(),scope=recipeDraftScope(project,profileId,"mix");
+    const values=recipeFields(recipe,"mix");
+    expect(values.silence_fade_samples).toBe("");
+    expect(values.silence_hold_samples).toBe("");
+    let draft=editRecipeField(newRecipeDraft(scope,"mix",project.revision),"silence_fade_samples","12000",values);
+    expect(()=>proposedDeliveryRecipe(recipe,draft)).toThrow(/both silence release/);
+    draft=editRecipeField(draft,"silence_hold_samples","12000",values);
+    const proposed=proposedDeliveryRecipe(recipe,draft);
+    const expected=structuredClone(recipe);
+    expected.original_mix!.silence_release={fade_samples:12000,silence_samples:12000};
+    expect(proposed).toEqual(expected);
+    expect(()=>validateDeliveryRecipe(project,profileId,proposed)).not.toThrow();
+    expect(()=>assertRecipeHistoryPayload(proposed)).not.toThrow();
+    expect(recipeFingerprint(proposed)).not.toBe(recipeFingerprint(recipe));
+    expect(recipeFields(JSON.parse(JSON.stringify(proposed)),"mix")).toMatchObject({silence_fade_samples:"12000",silence_hold_samples:"12000"});
+    const edited=editRecipeField(newRecipeDraft(scope,"mix",project.revision),"sfx_gain_db","-11",recipeFields(proposed,"mix"));
+    expect(proposedDeliveryRecipe(proposed,edited).original_mix!.silence_release).toEqual(expected.original_mix!.silence_release);
+    let clear=editRecipeField(newRecipeDraft(scope,"mix",project.revision),"silence_fade_samples","",recipeFields(proposed,"mix"));
+    clear=editRecipeField(clear,"silence_hold_samples","",recipeFields(proposed,"mix"));
+    expect(proposedDeliveryRecipe(proposed,clear)).toEqual(recipe);
+  });
+  it("rejects malformed releases, fractional clocks, voice overlap and missing reviewed sources",()=>{
+    const {project,profileId,recipe}=releaseFixture();
+    for(const malformed of [null,{}, {fade_samples:1,silence_samples:12000},{fade_samples:12000,silence_samples:0},
+      {fade_samples:12000.5,silence_samples:12000},{fade_samples:12000,silence_samples:12000,approved:true},
+      {fade_samples:8640000,silence_samples:1}]){
+      expect(()=>assertOriginalMixSilenceRelease(malformed)).toThrow();
+    }
+    recipe.original_mix!.silence_release={fade_samples:48000,silence_samples:12000};
+    expect(()=>validateDeliveryRecipe(project,profileId,recipe)).toThrow(/reviewed narration interval/);
+    recipe.original_mix!.silence_release={fade_samples:12000,silence_samples:12000};
+    project.audio.transcript[0].end={num:"7",den:"4"};
+    expect(()=>validateDeliveryRecipe(project,profileId,recipe)).toThrow(/reviewed narration interval/);
+    project.audio.transcript[0].end={num:"1",den:"1"};
+    project.audio.transcript[0].alignment={kind:"unknown"};
+    expect(()=>validateDeliveryRecipe(project,profileId,recipe)).toThrow(/reviewed voice timing/);
+    project.audio.transcript[0].alignment={kind:"manual"};
+    project.deliverables[0].voice_track_id=null;
+    expect(()=>validateDeliveryRecipe(project,profileId,recipe)).toThrow(/bound original stereo/);
   });
 });

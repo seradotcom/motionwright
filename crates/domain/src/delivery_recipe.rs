@@ -199,6 +199,43 @@ impl OriginalMixBusEnvelope {
     }
 }
 
+/// Explicit terminal editorial release on the complete original 48-kHz mix.
+/// No silence is appended and no original source bytes are modified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OriginalMixSilenceRelease {
+    pub fade_samples: u32,
+    pub silence_samples: u32,
+}
+
+impl OriginalMixSilenceRelease {
+    /// Exact inclusive fade start. At least one earlier sample remains
+    /// unattenuated; the requested tail lies inside the existing cut.
+    pub fn fade_start(&self, sample_frames: u64) -> Result<u64> {
+        let length = u64::from(self.fade_samples) + u64::from(self.silence_samples);
+        if self.fade_samples < 2
+            || self.silence_samples == 0
+            || !(48_000..=MAX_MUSIC_SOURCE_SAMPLE_FRAMES).contains(&sample_frames)
+            || length >= sample_frames
+        {
+            return Err(DomainError::Invalid(
+                "Silence release requires a gradual fade and positive silent tail inside the exact original cut".into(),
+            ));
+        }
+        Ok(sample_frames - length)
+    }
+}
+
+pub fn deserialize_silence_release<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<OriginalMixSilenceRelease>, D::Error> {
+    let release = OriginalMixSilenceRelease::deserialize(deserializer)?;
+    release
+        .fade_start(MAX_MUSIC_SOURCE_SAMPLE_FRAMES)
+        .map_err(de::Error::custom)?;
+    Ok(Some(release))
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OriginalMixRecipe {
@@ -230,6 +267,14 @@ pub struct OriginalMixRecipe {
     pub music_envelope: OriginalMixBusEnvelope,
     #[serde(default, skip_serializing_if = "OriginalMixBusEnvelope::is_neutral")]
     pub sfx_envelope: OriginalMixBusEnvelope,
+    /// Optional versioned reader extension: motionwright.original-mix-silence-release/1.
+    /// Absence preserves the exact historical mix bytes and gain function.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_silence_release"
+    )]
+    pub silence_release: Option<OriginalMixSilenceRelease>,
 }
 
 impl DeliveryRecipe {
@@ -314,6 +359,22 @@ fn valid_voice_cut_sha256(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+fn exact_release_samples(time: crate::RationalTime) -> Result<u64> {
+    let numerator = i128::from(time.num) * 48_000;
+    let denominator = i128::from(time.den);
+    if numerator < 0 || denominator <= 0 || numerator % denominator != 0 {
+        return Err(DomainError::Invalid(
+            "Silence release requires exact 48-kHz sample boundaries".into(),
+        ));
+    }
+    u64::try_from(numerator / denominator)
+        .ok()
+        .filter(|frames| *frames <= MAX_MUSIC_SOURCE_SAMPLE_FRAMES)
+        .ok_or_else(|| {
+            DomainError::Invalid("Silence release exceeds the original mix sample budget".into())
+        })
+}
+
 impl OriginalMixRecipe {
     /// Returns the explicit window's required length, not a measured source
     /// duration. Native decoding independently checks the complete CAS WAV.
@@ -370,6 +431,143 @@ impl OriginalMixRecipe {
         Ok(Some(frames))
     }
 
+    /// Check the authored output clock independently of actual source decoding.
+    pub fn silence_release_output_frames(
+        &self,
+        scenes: &[Scene],
+        profile: &DeliverableProfile,
+    ) -> Result<Option<u64>> {
+        let Some(release) = self.silence_release else {
+            return Ok(None);
+        };
+        if profile.audio_sample_rate_hz != 48_000
+            || (self.voice_cut_sha256.is_none()
+                && !profile.included_scene_ids.is_empty()
+                && !profile
+                    .included_scene_ids
+                    .iter()
+                    .copied()
+                    .eq(scenes.iter().map(|scene| scene.id)))
+        {
+            return Err(DomainError::Invalid(
+                "Silence release requires the complete original 48-kHz cut or an explicit reviewed voice cut".into(),
+            ));
+        }
+        let mut duration = crate::RationalTime::ZERO;
+        for scene in crate::delivery::scenes_for_profile(scenes, profile)? {
+            duration = duration.checked_add(scene.duration).map_err(|_| {
+                DomainError::Invalid("Silence release output duration overflow".into())
+            })?;
+        }
+        let frames = exact_release_samples(duration)?;
+        release.fade_start(frames)?;
+        Ok(Some(frames))
+    }
+
+    /// A release may resolve music and SFX, but must not attenuate any selected
+    /// reviewed narration interval, even if the current voice is muted.
+    /// Revalidate on Save and again before original source preparation.
+    pub fn validate_silence_release_source(
+        &self,
+        project: &crate::Project,
+        profile: &DeliverableProfile,
+    ) -> Result<Option<u64>> {
+        let Some(frames) = self.silence_release_output_frames(&project.scenes, profile)? else {
+            return Ok(None);
+        };
+        let fade_start = self
+            .silence_release
+            .expect("release length checked")
+            .fade_start(frames)?;
+        crate::delivery::validate_localized_voice_authority(project, profile)?;
+        let track = project
+            .audio
+            .voice_tracks
+            .iter()
+            .find(|track| Some(track.id) == profile.voice_track_id)
+            .ok_or_else(|| {
+                DomainError::Invalid(
+                    "Silence release requires an explicitly bound original voice".into(),
+                )
+            })?;
+        if track.sample_rate_hz != 48_000
+            || track.channels != 2
+            || !project.assets.iter().any(|asset| {
+                asset.id == track.asset_id
+                    && asset.content_sha256.as_deref() == Some(track.source_sha256.as_str())
+                    && asset.media_type.starts_with("audio/")
+            })
+        {
+            return Err(DomainError::Invalid(
+                "Silence release requires the exact imported stereo 48-kHz voice".into(),
+            ));
+        }
+        let source_frames = exact_release_samples(track.measured_duration)?;
+        let cut =
+            crate::resolve_original_voice_cut(project, profile, self.voice_cut_sha256.as_deref())?;
+        if cut.as_ref().map_or(source_frames, |cut| cut.output_frames) != frames {
+            return Err(DomainError::Invalid(
+                "Silence release voice and output cut sample counts differ".into(),
+            ));
+        }
+        let mut original = Vec::new();
+        for segment in project
+            .audio
+            .transcript
+            .iter()
+            .filter(|segment| segment.voice_track_id == track.id)
+        {
+            let reviewed = match &segment.alignment {
+                crate::AlignmentEvidence::Manual => true,
+                crate::AlignmentEvidence::Measured {
+                    source_sha256,
+                    confidence_millis: Some(confidence),
+                    ..
+                } => source_sha256 == &track.source_sha256 && *confidence >= 800,
+                _ => false,
+            };
+            let start = exact_release_samples(segment.start)?;
+            let end = exact_release_samples(segment.end)?;
+            if !reviewed || start >= end || end > source_frames {
+                return Err(DomainError::Invalid(
+                    "Silence release requires source-bound reviewed voice timing".into(),
+                ));
+            }
+            original.push((start, end));
+        }
+        let mut selected = Vec::new();
+        if let Some(cut) = cut {
+            for span in cut.spans {
+                for &(start, end) in &original {
+                    if start < span.source_end && end > span.source_start {
+                        if start < span.source_start || end > span.source_end {
+                            return Err(DomainError::Invalid(
+                                "Silence release cannot cross a selected reviewed voice boundary"
+                                    .into(),
+                            ));
+                        }
+                        selected.push((
+                            span.output_start + start - span.source_start,
+                            span.output_start + end - span.source_start,
+                        ));
+                    }
+                }
+            }
+        } else {
+            selected = original;
+        }
+        selected.sort_unstable();
+        if !(1..=64).contains(&selected.len())
+            || selected.windows(2).any(|pair| pair[0].1 > pair[1].0)
+            || selected.iter().any(|&(_, end)| end > fade_start)
+        {
+            return Err(DomainError::Invalid(
+                "Silence release must follow every selected reviewed narration interval".into(),
+            ));
+        }
+        Ok(Some(frames))
+    }
+
     pub fn has_fades(&self) -> bool {
         self.voice_envelope.has_fades()
             || self.music_envelope.has_fades()
@@ -384,6 +582,9 @@ impl OriginalMixRecipe {
     }
 
     pub fn validate(&self, assets: &[Asset]) -> Result<()> {
+        if let Some(release) = self.silence_release {
+            release.fade_start(MAX_MUSIC_SOURCE_SAMPLE_FRAMES)?;
+        }
         if self
             .voice_cut_sha256
             .as_deref()
@@ -465,6 +666,7 @@ impl ProductionDesign {
                     .find(|profile| profile.id == *profile_id)
                     .expect("profile existence checked above");
                 mix.music_window_output_frames(scenes, profile)?;
+                mix.silence_release_output_frames(scenes, profile)?;
             }
             if let Some(mix) = &recipe.original_mix
                 && mix.has_fades()
@@ -591,6 +793,7 @@ mod tests {
             duck_attenuation_db: 8.0,
             duck_attack_samples: 960,
             duck_release_samples: 4_800,
+            silence_release: None,
             voice_envelope: Default::default(),
             music_source_start_sample: None,
             voice_cut_sha256: None,
@@ -936,6 +1139,55 @@ mod tests {
         }
         let repeated = r#"{"muted":false,"muted":true,"fade_in_samples":0,"fade_out_samples":0}"#;
         assert!(serde_json::from_str::<OriginalMixBusEnvelope>(repeated).is_err());
+    }
+
+    #[test]
+    fn silence_release_is_a_closed_optional_wire_with_exact_in_cut_sample_bounds() {
+        let legacy = mix();
+        let wire = serde_json::to_value(&legacy).unwrap();
+        assert!(wire.get("silence_release").is_none());
+        assert_eq!(
+            serde_json::from_value::<OriginalMixRecipe>(wire.clone()).unwrap(),
+            legacy
+        );
+        let mut valid = wire.clone();
+        valid["silence_release"] =
+            serde_json::json!({"fade_samples":12000,"silence_samples":12000});
+        let decoded = serde_json::from_value::<OriginalMixRecipe>(valid.clone()).unwrap();
+        assert_eq!(
+            decoded.silence_release.unwrap().fade_start(96000).unwrap(),
+            72000
+        );
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), valid);
+        for bad in [
+            serde_json::Value::Null,
+            serde_json::json!({}),
+            serde_json::json!({"fade_samples":1,"silence_samples":12000}),
+            serde_json::json!({"fade_samples":12000,"silence_samples":0}),
+            serde_json::json!({"fade_samples":12000.5,"silence_samples":12000}),
+            serde_json::json!({"fade_samples":12000,"silence_samples":12000,"approved":true}),
+            serde_json::json!({"fade_samples":8640000,"silence_samples":1}),
+        ] {
+            let mut forged = wire.clone();
+            forged["silence_release"] = bad;
+            assert!(serde_json::from_value::<OriginalMixRecipe>(forged).is_err());
+        }
+        assert!(
+            OriginalMixSilenceRelease {
+                fade_samples: 24000,
+                silence_samples: 24000
+            }
+            .fade_start(48000)
+            .is_err()
+        );
+        assert!(
+            OriginalMixSilenceRelease {
+                fade_samples: 12000,
+                silence_samples: 12000
+            }
+            .fade_start(47999)
+            .is_err()
+        );
     }
 
     #[test]

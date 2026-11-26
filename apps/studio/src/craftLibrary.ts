@@ -72,7 +72,7 @@ export const CRAFT_LIBRARY:readonly CraftDefinition[]=[
   entry("sound","focus-hit","Focus hit","bounded_partial","Existing semantic sound cue authoring and source-bound PCM mixing.","Needs approved cue, selected voice/output clock and real mix; no sample audio invented."),
   entry("sound","transition-tail","Transition tail","bounded_partial","Original cue and envelope timing against the saved output clock.","No arbitrary transition-linked audio generator or invented native playback."),
   entry("sound","energy-bed","Energy bed","bounded_partial","Original music source, reviewed cut and voice-aware mix.","Requires authorized music bytes and a valid saved mix recipe."),
-  entry("sound","silence-release","Silence release","spec_only","Deliberate silence as an editorial resolution.",none),
+  entry("sound","silence-release","Silence release","bounded_partial","Fade the three verified original buses into an exact silent tail without extending the cut.","Open Audio, then Original mix. Requires an exact 48-kHz saved cut, original sources and reviewed narration before the fade. PCM silence is not encoded-output or listening acceptance."),
 ];
 const previewId="00000000-0000-4000-8000-000000000031";
 export const craftDefinition=(id:string)=>CRAFT_LIBRARY.find(item=>item.id===id);

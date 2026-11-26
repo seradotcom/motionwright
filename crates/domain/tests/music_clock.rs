@@ -82,6 +82,7 @@ fn music_window_origin_maps_both_edit_operations_without_rewriting_source_marks(
             duck_attenuation_db: 14.0,
             duck_attack_samples: 2400,
             duck_release_samples: 4800,
+            silence_release: None,
             voice_envelope: Default::default(),
             music_envelope: Default::default(),
             sfx_envelope: Default::default(),

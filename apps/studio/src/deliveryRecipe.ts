@@ -1,5 +1,5 @@
-import { assertDeliveryAudioTargets, assertOriginalMixBusEnvelope, originalMixEnvelopeKeys, originalMixOptionalKeys, MAX_MUSIC_SOURCE_SAMPLE_FRAMES, validateAudioRecipeCut } from "./audioRecipeContract";
-import type { DeliveryAudioTargets, OriginalMixBusEnvelope } from "./audioRecipeContract";
+import { assertDeliveryAudioTargets, assertOriginalMixBusEnvelope, assertOriginalMixSilenceRelease, originalMixEnvelopeKeys, originalMixOptionalKeys, MAX_MUSIC_SOURCE_SAMPLE_FRAMES, validateAudioRecipeCut } from "./audioRecipeContract";
+import type { DeliveryAudioTargets, OriginalMixBusEnvelope, OriginalMixSilenceRelease } from "./audioRecipeContract";
 import type { MotionCanvasArchetype, MotionCanvasNarrativeRole, Project } from "./types";
 
 export { assertDeliveryAudioTargets } from "./audioRecipeContract";
@@ -23,6 +23,7 @@ export interface OriginalMixRecipe {
   voice_envelope?: OriginalMixBusEnvelope;
   music_envelope?: OriginalMixBusEnvelope;
   sfx_envelope?: OriginalMixBusEnvelope;
+  silence_release?: OriginalMixSilenceRelease;
 }
 export interface DeliveryRecipe {
   schema: "motionwright.delivery-recipe/1";
@@ -45,7 +46,8 @@ const numberFields = ["sfx_gain_db", "duck_attenuation_db", "duck_attack_samples
 const decimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
 export const mixEnvelopeFields = ["muted", "fade_in_samples", "fade_out_samples"] as const;
 const mixEnvelopeKeys = originalMixEnvelopeKeys.flatMap(bus => mixEnvelopeFields.map(field => bus + ":" + field));
-const mixKeys = ["enabled", "music_asset_id", "music_source_start_sample", "voice_cut_sha256", "sfx_asset_id", ...numberFields, ...mixEnvelopeKeys];
+export const silenceReleaseFields=["silence_fade_samples","silence_hold_samples"] as const;
+const mixKeys = ["enabled", "music_asset_id", "music_source_start_sample", "voice_cut_sha256", "sfx_asset_id", ...numberFields, ...mixEnvelopeKeys,...silenceReleaseFields];
 const ownKeys = (value: unknown, keys: readonly string[], label: string, optional: readonly string[] = []): Record<string, unknown> => {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid " + label + ".");
   const record = value as Record<string, unknown>;
@@ -154,6 +156,8 @@ export function recipeFields(recipe: DeliveryRecipe | null, group: RecipeGroup):
     music_asset_id: mix.music_asset_id ?? "", sfx_asset_id: mix.sfx_asset_id ?? "",
     music_source_start_sample: mix.music_source_start_sample === undefined ? "" : String(mix.music_source_start_sample),
     voice_cut_sha256: recipeVoiceCutBinding(recipe) ?? "",
+    silence_fade_samples: mix.silence_release?String(mix.silence_release.fade_samples):"",
+    silence_hold_samples: mix.silence_release?String(mix.silence_release.silence_samples):"",
     ...Object.fromEntries(numberFields.map(key => [key, String(mix[key])])),
     ...Object.fromEntries(originalMixEnvelopeKeys.flatMap(bus => [
       [bus + ":muted", String(mix[bus]?.muted ?? false)],
@@ -200,6 +204,10 @@ export function canonicalRecipeField(group: RecipeGroup, key: string, raw: strin
     catch { return raw; }
   }
   if (group === "mix" && (numberFields as readonly string[]).includes(key) && decimal.test(raw.trim()) && Number.isFinite(Number(raw))) return String(Number(raw));
+  if(group==="mix"&&(silenceReleaseFields as readonly string[]).includes(key)){
+    if(!raw.trim())return "";
+    try{return String(parseOriginalMixSamples(raw));}catch{return raw;}
+  }
   if (group === "mix" && mixEnvelopeKeys.includes(key) && key.endsWith("_samples")) {
     try { return String(parseOriginalMixSamples(raw)); } catch { return raw; }
   }
@@ -254,6 +262,16 @@ export function proposedDeliveryRecipe(current: DeliveryRecipe | null, draft: Re
     } else if (recipe.original_mix.music_source_start_sample !== undefined
       && recipe.original_mix.music_asset_id !== current?.original_mix?.music_asset_id) {
       throw new Error("Clear or explicitly revise the saved music source window before changing its source asset.");
+    }
+    if(silenceReleaseFields.some(field=>Object.hasOwn(draft.edits,field))){
+      const fade=fields.silence_fade_samples.trim(),hold=fields.silence_hold_samples.trim();
+      if(!fade&&!hold)delete recipe.original_mix.silence_release;
+      else{
+        if(!fade||!hold)throw new Error("Enter both silence release sample counts, or clear both to remove the release.");
+        const release={fade_samples:parseOriginalMixSamples(fade),silence_samples:parseOriginalMixSamples(hold)};
+        assertOriginalMixSilenceRelease(release);
+        recipe.original_mix.silence_release=release;
+      }
     }
     for (const bus of originalMixEnvelopeKeys) {
       // Untouched buses retain their exact saved optional representation.

@@ -199,6 +199,7 @@ fn saved_source_window_conforms_the_original_grid_and_reopens_exactly() {
             duck_attenuation_db: 14.0,
             duck_attack_samples: 2400,
             duck_release_samples: 4800,
+            silence_release: None,
             voice_envelope: Default::default(),
             music_envelope: Default::default(),
             sfx_envelope: Default::default(),

@@ -142,6 +142,12 @@ pub struct OriginalMixPlan {
     pub music_envelope: OriginalMixBusEnvelope,
     #[serde(default, skip_serializing_if = "OriginalMixBusEnvelope::is_neutral")]
     pub sfx_envelope: OriginalMixBusEnvelope,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "motionwright_domain::deserialize_silence_release"
+    )]
+    pub silence_release: Option<motionwright_domain::OriginalMixSilenceRelease>,
     pub voice_windows: Vec<VoiceActivityWindow>,
     pub sample_peak_guard_dbfs: f64,
     pub source_classification: String,
@@ -367,10 +373,20 @@ impl OriginalMixPlan {
                     && saved.voice_envelope == self.voice_envelope
                     && saved.music_envelope == self.music_envelope
                     && saved.sfx_envelope == self.sfx_envelope
+                    && saved.silence_release == self.silence_release
                     && saved.music_source_start_sample == self.music_source_start_sample
                     && saved.voice_cut_sha256 == self.voice_cut_sha256,
                 "Mix sources, music window or envelopes differ from the saved delivery recipe",
             )?;
+            if let Some(frames) = saved
+                .validate_silence_release_source(project, profile)
+                .map_err(|error| mix_unsupported(error.to_string()))?
+            {
+                check(
+                    frames == self.sample_frames,
+                    "Silence release requires the exact verified output sample count",
+                )?;
+            }
             if let Some(frames) = saved
                 .music_window_output_frames(&project.scenes, profile)
                 .map_err(|error| mix_unsupported(error.to_string()))?
@@ -382,8 +398,10 @@ impl OriginalMixPlan {
             }
         } else {
             check(
-                self.music_source_start_sample.is_none() && self.voice_cut_sha256.is_none(),
-                "An explicit source window or voice cut requires a saved delivery recipe",
+                self.music_source_start_sample.is_none()
+                    && self.voice_cut_sha256.is_none()
+                    && self.silence_release.is_none(),
+                "An explicit source window, voice cut or silence release requires a saved delivery recipe",
             )?;
         }
         let accepted = mix_voice_windows(project, track.id, cut.as_ref())?;
@@ -504,6 +522,15 @@ pub fn render_original_source_mix_with_budget(
     digest_pcm(music, &plan.original_music, limit_samples)?;
     plan.original_sfx
         .verify_pcm(sfx, (limit_samples * 4) as usize)?;
+    let release = plan
+        .silence_release
+        .map(|release| {
+            release
+                .fade_start(plan.sample_frames)
+                .map(|start| (start, release))
+        })
+        .transpose()
+        .map_err(|error| mix_unsupported(error.to_string()))?;
     let gains = [plan.voice_gain_db, plan.music_gain_db, plan.sfx_gain_db].map(db_to_gain);
     let limit = db_to_gain(plan.sample_peak_guard_dbfs);
     // A muted narration bus cannot trigger audible music ducking. A muted
@@ -566,6 +593,18 @@ pub fn render_original_source_mix_with_budget(
         lowest_duck = lowest_duck.min(duck);
         let envelopes = [plan.voice_envelope, plan.music_envelope, plan.sfx_envelope]
             .map(|envelope| bus_envelope_gain(&envelope, index as u64, plan.sample_frames));
+        // Apply the authored master release after the three verified buses.
+        // Retain the existing unclipped-mix guard, including the silent tail.
+        let release_gain = release.map_or(1.0, |(start, release)| {
+            let silence_start = plan.sample_frames - u64::from(release.silence_samples);
+            if at >= silence_start {
+                0.0
+            } else if at <= start {
+                1.0
+            } else {
+                (silence_start - at) as f64 / f64::from(release.fade_samples)
+            }
+        });
         for channel in 0..2 {
             let mixed = sample(voice, voice_index, channel) * gains[0] * envelopes[0]
                 + sample(music, music_start + index, channel) * gains[1] * duck * envelopes[1]
@@ -577,7 +616,9 @@ pub fn render_original_source_mix_with_budget(
             // PCM input uses sample / 32768.0 for both signs. Invert that
             // exact scale when quantizing: 32767.0 introduces a one-LSB
             // attenuation of otherwise unchanged original PCM16 samples.
-            let quantized = (mixed * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
+            let quantized = (mixed * release_gain * 32768.0)
+                .round()
+                .clamp(-32768.0, 32767.0) as i16;
             // These receipt fields measure the actual emitted PCM, not the
             // unquantized mixing accumulator (which may round to silence).
             // Independent true-peak and LUFS verification are still required.
@@ -776,6 +817,9 @@ fn saved_mix_inputs(
     recipe
         .validate(&project.assets)
         .map_err(|error| MixError::Unsupported(error.to_string()))?;
+    recipe
+        .validate_silence_release_source(project, profile)
+        .map_err(|error| mix_unsupported(error.to_string()))?;
     check(
         project.audio.mix.target_lufs.is_none()
             && project.audio.mix.target_true_peak_dbfs.is_none(),
@@ -984,6 +1028,7 @@ pub fn prepare_saved_original_mix_with_budget(
         voice_envelope: recipe.voice_envelope,
         music_envelope: recipe.music_envelope,
         sfx_envelope: recipe.sfx_envelope,
+        silence_release: recipe.silence_release,
         voice_windows,
         sample_peak_guard_dbfs: -1.0,
         source_classification: "ORIGINAL_LICENSED_SOURCE_REQUIRED_NOT_SPEECH_VERIFIED".into(),

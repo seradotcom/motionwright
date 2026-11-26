@@ -2,6 +2,7 @@ import type { DeliveryRecipe, OriginalMixRecipe } from "./deliveryRecipe";
 import type { OriginalMixPreviewOptions } from "./nativeMixTypes";
 import type { Project, Scene } from "./types";
 import type { SemanticSfxCue } from "./semanticSfx";
+import { deriveVoiceCut, isOriginalVoiceMontage } from "./voiceCut";
 
 /** Exact optional fields admitted by the shared domain audio contract. */
 export interface OriginalMixBusEnvelope {
@@ -9,12 +10,16 @@ export interface OriginalMixBusEnvelope {
   fade_in_samples: number;
   fade_out_samples: number;
 }
+export interface OriginalMixSilenceRelease {
+  fade_samples:number;
+  silence_samples:number;
+}
 export interface DeliveryAudioTargets {
   target_lufs: number | null;
   target_true_peak_dbtp: number | null;
 }
 export const originalMixEnvelopeKeys = ["voice_envelope", "music_envelope", "sfx_envelope"] as const;
-export const originalMixOptionalKeys = [...originalMixEnvelopeKeys, "music_source_start_sample", "voice_cut_sha256"] as const;
+export const originalMixOptionalKeys = [...originalMixEnvelopeKeys, "music_source_start_sample", "voice_cut_sha256", "silence_release"] as const;
 export const MAX_MUSIC_SOURCE_SAMPLE_FRAMES = 48_000 * 180;
 export const originalMixRequestKeys = [
   "music_asset_id", "sfx_asset_id", "sfx_gain_db",
@@ -53,6 +58,15 @@ export function assertOriginalMixBusEnvelope(value: unknown): asserts value is O
     }
   }
 }
+export function assertOriginalMixSilenceRelease(value:unknown): asserts value is OriginalMixSilenceRelease {
+  const release=closed(value,["fade_samples","silence_samples"],"original mix silence release");
+  if(typeof release.fade_samples!=="number"||typeof release.silence_samples!=="number"||
+    !Number.isSafeInteger(release.fade_samples)||!Number.isSafeInteger(release.silence_samples)||
+    release.fade_samples<2||release.silence_samples<1||
+    release.fade_samples+release.silence_samples>=MAX_MUSIC_SOURCE_SAMPLE_FRAMES)
+    throw new Error("Silence release requires a gradual fade and positive silent tail inside the exact original cut.");
+}
+
 /** Presence matters: outer null/undefined is not the optional-field contract. */
 export function assertAudioRecipeExtensions(recipe: { original_mix: unknown; audio_targets?: unknown; voice_only_cut_sha256?: unknown }): void {
   if (Object.hasOwn(recipe, "voice_only_cut_sha256") &&
@@ -73,6 +87,8 @@ export function assertAudioRecipeExtensions(recipe: { original_mix: unknown; aud
   for (const key of originalMixEnvelopeKeys) {
     if (Object.hasOwn(recipe.original_mix, key)) assertOriginalMixBusEnvelope(recipe.original_mix[key]);
   }
+  if(Object.hasOwn(recipe.original_mix,"silence_release"))
+    assertOriginalMixSilenceRelease(recipe.original_mix.silence_release);
 }
 export function selectedAudioScenes(project: Project, profileId: string): Scene[] {
   const profile = project.deliverables.find(profile => profile.id === profileId);
@@ -109,9 +125,62 @@ function exactOutputSamples(scenes: Scene[]): bigint {
   if (samples > (1n << 64n) - 1n) throw new Error("Mix output sample count is too large.");
   return samples;
 }
+/** A saved release resolves the exact selected original clock. The service
+ * independently recomputes the source-bound voice-cut digest and admission. */
+export function validateSilenceReleaseCut(project:Project,profileId:string,mix:OriginalMixRecipe):void{
+  const release=mix.silence_release;
+  if(!release)return;
+  assertOriginalMixSilenceRelease(release);
+  const profile=project.deliverables.find(item=>item.id===profileId);
+  if(!profile||profile.audio_sample_rate_hz!==48000)
+    throw new Error("Silence release requires the exact original 48-kHz output clock.");
+  const frames=exactOutputSamples(selectedAudioScenes(project,profileId));
+  const length=BigInt(release.fade_samples)+BigInt(release.silence_samples);
+  if(frames<48000n||frames>BigInt(MAX_MUSIC_SOURCE_SAMPLE_FRAMES)||length>=frames)
+    throw new Error("Silence release requires a gradual fade and positive silent tail inside the exact original cut.");
+  const fadeStart=Number(frames-length);
+  const track=project.audio.voice_tracks.find(item=>item.id===profile.voice_track_id);
+  if(!track||track.sample_rate_hz!==48000||track.channels!==2||!project.assets.some(asset=>
+    asset.id===track.asset_id&&asset.content_sha256===track.source_sha256&&asset.media_type.startsWith("audio/")))
+    throw new Error("Silence release requires the explicitly bound original stereo 48-kHz voice.");
+  const sample=(time:{num:string;den:string})=>{
+    if(!/^(0|[1-9][0-9]{0,18})$/.test(time.num)||!/^[1-9][0-9]{0,18}$/.test(time.den))
+      throw new Error("Silence release requires exact 48-kHz sample boundaries.");
+    const n=BigInt(time.num)*48000n,d=BigInt(time.den);
+    if(n%d||n/d>BigInt(MAX_MUSIC_SOURCE_SAMPLE_FRAMES))
+      throw new Error("Silence release requires exact 48-kHz sample boundaries.");
+    return Number(n/d);
+  };
+  const sourceFrames=sample(track.measured_duration);
+  const montage=isOriginalVoiceMontage(project,profile);
+  if(montage!==!!mix.voice_cut_sha256)
+    throw new Error("Review the exact selected original voice cut before authoring silence release.");
+  const cut=montage?deriveVoiceCut(project,profile):null;
+  if((cut?.outputFrames??sourceFrames)!==Number(frames))
+    throw new Error("Silence release voice and output cut sample counts differ.");
+  const windows=project.audio.transcript.filter(segment=>segment.voice_track_id===track.id).map(segment=>{
+    const reviewed=segment.alignment.kind==="manual"||(segment.alignment.kind==="measured"&&
+      segment.alignment.source_sha256===track.source_sha256&&(segment.alignment.confidence_millis??0)>=800);
+    const start=sample(segment.start),end=sample(segment.end);
+    if(!reviewed||start>=end||end>sourceFrames)
+      throw new Error("Silence release requires source-bound reviewed voice timing.");
+    return {start,end};
+  });
+  const selected=cut?cut.spans.flatMap(span=>windows.filter(window=>window.start<span.sourceEnd&&window.end>span.sourceStart).map(window=>{
+    if(window.start<span.sourceStart||window.end>span.sourceEnd)
+      throw new Error("Silence release cannot cross a selected reviewed voice boundary.");
+    return {start:span.outputStart+window.start-span.sourceStart,end:span.outputStart+window.end-span.sourceStart};
+  })):windows;
+  selected.sort((a,b)=>a.start-b.start);
+  if(!selected.length||selected.length>64||selected.some((window,index)=>window.end>fadeStart||
+    (index>0&&selected[index-1].end>window.start)))
+    throw new Error("Silence release must follow every selected reviewed narration interval.");
+}
+
 /** UI feedback only. The service and native decoder repeat canonical admission. */
 export function validateAudioRecipeCut(project: Project, profileId: string, recipe: DeliveryRecipe): void {
   assertAudioRecipeExtensions(recipe);
+  if(recipe.original_mix?.silence_release)validateSilenceReleaseCut(project,profileId,recipe.original_mix);
   const envelopes = originalMixEnvelopeKeys.flatMap(key => recipe.original_mix?.[key] ? [recipe.original_mix[key]!] : []);
   const start = recipe.original_mix?.music_source_start_sample;
   if (start === undefined && !envelopes.some(envelope => envelope.fade_in_samples || envelope.fade_out_samples)) return;
@@ -143,6 +212,9 @@ export function canonicalOriginalMix(mix: OriginalMixRecipe | null): Record<stri
       if (envelope.muted || envelope.fade_in_samples || envelope.fade_out_samples) {
         result[key] = { muted: envelope.muted, fade_in_samples: envelope.fade_in_samples, fade_out_samples: envelope.fade_out_samples };
       }
+    } else if(key==="silence_release"){
+      const release=mix.silence_release!;
+      result[key]={fade_samples:release.fade_samples,silence_samples:release.silence_samples};
     } else result[key] = mix[key as keyof OriginalMixRecipe];
   }
   return result;

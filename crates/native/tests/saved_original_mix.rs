@@ -160,6 +160,7 @@ fn fixture_with_seconds(seconds: u32) -> (tempfile::TempDir, StudioService, Proj
                     duck_attenuation_db: 14.0,
                     duck_attack_samples: 2_400,
                     duck_release_samples: 4_800,
+                    silence_release: None,
                     voice_envelope: Default::default(),
                     music_source_start_sample: None,
                     voice_cut_sha256: None,
@@ -1298,6 +1299,7 @@ fn explicit_voice_montage_uses_exact_original_samples_and_reopens_without_replay
             duck_attenuation_db: 14.0,
             duck_attack_samples: 2_400,
             duck_release_samples: 4_800,
+            silence_release: None,
             voice_envelope: Default::default(),
             music_envelope: muted,
             sfx_envelope: muted,
@@ -1487,4 +1489,153 @@ fn explicit_voice_montage_uses_exact_original_samples_and_reopens_without_replay
         voice_wav
     );
     assert_eq!(saved, project);
+}
+
+#[test]
+fn saved_silence_release_keeps_original_pcm_clock_and_protects_reviewed_voice_after_reopen() {
+    use motionwright_domain::{OriginalMixSilenceRelease, variant_dependency_fingerprint};
+    let (root, service, mut project) = fixture();
+    let profile_id = project.deliverables[0].id;
+    let before = project.clone();
+    let baseline = prepare_saved_original_mix(
+        &service,
+        project.id,
+        &RevisionStamp::from(&project),
+        profile_id,
+    )
+    .unwrap();
+    let before_fp = variant_dependency_fingerprint(&project, profile_id).unwrap();
+    let mut recipe = project.production_design.delivery_recipes[&profile_id].clone();
+    let mut invalid = recipe.clone();
+    invalid.original_mix.as_mut().unwrap().silence_release = Some(OriginalMixSilenceRelease {
+        fade_samples: 48000,
+        silence_samples: 12000,
+    });
+    let rejected = service
+        .apply(
+            project.id,
+            &RevisionStamp::from(&project),
+            "release-overlaps-reviewed-voice",
+            &Change::SetDeliveryRecipe {
+                deliverable_profile_id: profile_id,
+                recipe: Some(invalid),
+            },
+        )
+        .unwrap_err();
+    assert!(rejected.to_string().contains("reviewed narration interval"));
+    assert_eq!(service.project(project.id).unwrap(), before);
+
+    let release = OriginalMixSilenceRelease {
+        fade_samples: 12000,
+        silence_samples: 12000,
+    };
+    recipe.original_mix.as_mut().unwrap().silence_release = Some(release);
+    apply(
+        &service,
+        &mut project,
+        "save-terminal-silence",
+        Change::SetDeliveryRecipe {
+            deliverable_profile_id: profile_id,
+            recipe: Some(recipe.clone()),
+        },
+    );
+    assert_eq!(project.revision, before.revision + 1);
+    assert_eq!(project.assets, before.assets);
+    assert_eq!(project.audio, before.audio);
+    assert_eq!(project.scenes, before.scenes);
+    let after_fp = variant_dependency_fingerprint(&project, profile_id).unwrap();
+    assert_eq!(before_fp.frame_inputs_sha256, after_fp.frame_inputs_sha256);
+    assert_eq!(
+        before_fp.caption_inputs_sha256,
+        after_fp.caption_inputs_sha256
+    );
+    assert_ne!(before_fp.audio_inputs_sha256, after_fp.audio_inputs_sha256);
+    assert!(baseline.verify_project(&project, profile_id).is_err());
+    let prepared = prepare_saved_original_mix(
+        &service,
+        project.id,
+        &RevisionStamp::from(&project),
+        profile_id,
+    )
+    .unwrap();
+    assert_eq!(prepared.plan().silence_release, Some(release));
+    assert_eq!(prepared.plan().sample_frames, 96000);
+    assert_eq!(prepared.wav_bytes().len(), baseline.wav_bytes().len());
+    assert_eq!(
+        &prepared.wav_bytes()[..44 + 72000 * 4],
+        &baseline.wav_bytes()[..44 + 72000 * 4]
+    );
+    for channel in 0..2 {
+        let initial = sample(prepared.wav_bytes(), 72000, channel);
+        assert_eq!(initial, sample(baseline.wav_bytes(), 72000, channel));
+        let midpoint = sample(prepared.wav_bytes(), 78000, channel);
+        assert!((i32::from(midpoint) * 2 - i32::from(initial)).abs() <= 2);
+    }
+    assert!(
+        prepared.wav_bytes()[44 + 84000 * 4..]
+            .iter()
+            .all(|byte| *byte == 0)
+    );
+    assert_eq!(
+        prepared.evidence().rendered_pcm_sha256,
+        hex::encode(Sha256::digest(&prepared.wav_bytes()[44..]))
+    );
+    assert_ne!(prepared.wav_sha256(), baseline.wav_sha256());
+    assert!(!prepared.evidence().independently_verified_lufs);
+    assert!(!prepared.evidence().independently_verified_true_peak);
+    assert!(!prepared.evidence().listening_intelligibility_approved);
+    assert!(!prepared.evidence().owner_release_approved);
+    let mut forged = prepared.plan().clone();
+    forged.silence_release = None;
+    assert!(forged.validate(&project).is_err());
+    let expected = RevisionStamp::from(&project);
+    drop(service);
+    let reopened = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
+    assert_eq!(reopened.project(project.id).unwrap(), project);
+    let again = prepare_saved_original_mix(&reopened, project.id, &expected, profile_id).unwrap();
+    assert_eq!(again.wav_bytes(), prepared.wav_bytes());
+    assert_eq!(again.audio_inputs_sha256(), prepared.audio_inputs_sha256());
+    for asset in &before.assets {
+        let digest = asset.content_sha256.as_deref().unwrap();
+        let bytes = reopened
+            .store()
+            .lock()
+            .read_blob(digest, 1024 * 1024)
+            .unwrap();
+        assert_eq!(hex::encode(Sha256::digest(&bytes)), digest);
+    }
+
+    // A later timing edit may invalidate an otherwise retained release.
+    let voice_id = project.audio.voice_tracks[0].id;
+    apply(
+        &reopened,
+        &mut project,
+        "late-reviewed-words",
+        Change::AddTranscriptSegment {
+            segment: TranscriptSegment {
+                emphasis: Vec::new(),
+                id: Uuid::new_v4(),
+                voice_track_id: voice_id,
+                start: RationalTime::new(3, 2).unwrap(),
+                end: RationalTime::new(7, 4).unwrap(),
+                text: "Synthetic reviewed interval now crosses the release".into(),
+                speaker: None,
+                alignment: AlignmentEvidence::Manual,
+            },
+        },
+    );
+    assert_eq!(
+        project.production_design.delivery_recipes[&profile_id],
+        recipe
+    );
+    assert!(
+        prepare_saved_original_mix(
+            &reopened,
+            project.id,
+            &RevisionStamp::from(&project),
+            profile_id
+        )
+        .is_err()
+    );
+    assert_eq!(reopened.project(project.id).unwrap(), project);
 }

@@ -140,6 +140,7 @@ fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         duck_attenuation_db: 14.0,
         duck_attack_samples: 2400,
         duck_release_samples: 4800,
+        silence_release: None,
         voice_envelope: Default::default(),
         music_source_start_sample: None,
         voice_cut_sha256: None,

@@ -81,6 +81,8 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
     ["music_source_start_sample", "Music source start sample"],
     ["voice_cut_sha256", "Reviewed original voice cut binding"],
     ["sfx_asset_id", "Original SFX asset"],
+    ["silence_fade_samples", "Silence release fade samples"],
+    ["silence_hold_samples", "Terminal silence samples"],
     ...numericFields.map(field => [field.key, field.label]),
     ...envelopeBuses.flatMap(bus => [
       [bus.key + ":muted", "Mute " + bus.label.toLowerCase() + " bus"],
@@ -328,6 +330,25 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
           })}
         </div>
       </section>)}
+    </section>
+    <section aria-label="Original mix silence release">
+      <h4>Silence release</h4>
+      <p className="production-help">Fade all three original buses together, then retain an exact silent tail inside the saved cut.
+        No new samples, source trimming or duration change. The fade must follow every reviewed narration interval.
+        Enter both 48-kHz sample counts (48,000 = one second), or clear both to remove this release.
+        Only the verified original mixed PCM is guaranteed silent; encoded output and intelligibility require separate review.</p>
+      <div className="delivery-field-grid">
+        {(["silence_fade_samples","silence_hold_samples"] as const).map(key=><label className="production-field" key={key}>
+          <span>{fields[key].label}</span>
+          <input id={fields[key].controlId} aria-label={fields[key].label} type="text" inputMode="numeric" maxLength={128}
+            value={mixDraft.values[key]??""} aria-invalid={mixDraft.conflicts.includes(key)}
+            disabled={inputsDisabled||mixDraft.values.enabled!=="true"}
+            onChange={event=>setField(key,event.target.value)}/>
+        </label>)}
+      </div>
+      {savedMix?.silence_release&&<p className="production-help" aria-label="Saved silence release">
+        Saved master release: fade {savedMix.silence_release.fade_samples} samples, then {savedMix.silence_release.silence_samples} silent samples at the end of the original cut.
+      </p>}
     </section>
     {savedMix && originalMixEnvelopeKeys.some(key => savedMix[key]) && <section aria-label="Saved bus envelopes">
       <h4>Saved bus envelopes</h4>

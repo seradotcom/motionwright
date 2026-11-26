@@ -1514,6 +1514,16 @@ impl Project {
                         delivery::validate_localized_voice_authority(self, profile)?;
                         resolve_original_voice_cut(self, profile, Some(binding))?;
                     }
+                    if let Some(mix) = recipe.original_mix.as_ref()
+                        && mix.silence_release.is_some()
+                    {
+                        let profile = self
+                            .deliverables
+                            .iter()
+                            .find(|profile| profile.id == *deliverable_profile_id)
+                            .expect("profile existence checked above");
+                        mix.validate_silence_release_source(self, profile)?;
+                    }
                     self.production_design
                         .delivery_recipes
                         .insert(*deliverable_profile_id, recipe.clone());

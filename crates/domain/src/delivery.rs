@@ -1749,6 +1749,7 @@ mod tests {
                         duck_attenuation_db: 8.0,
                         duck_attack_samples: 960,
                         duck_release_samples: 4_800,
+                        silence_release: None,
                         voice_envelope: Default::default(),
                         music_source_start_sample: None,
                         voice_cut_sha256: None,
