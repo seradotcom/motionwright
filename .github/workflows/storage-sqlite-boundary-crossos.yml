@@ -81,8 +81,8 @@ jobs:
           reviewed_source="2c4fc01736d69a5c7b11de05d96d2590c09ac836"
           source_lock_reviewed_source="7d3e0386f65ea531cfaa3e7723afab29c55eba3e"
           foundation_reviewed_source="05975b7aa0a12425052d3952c7720fd40c54b686"
-          desktop_workflow_lock_reviewed_source="26dff8aa23c6bfff474ee578d4add5f5b48e5179"
-          pins={'crates/storage/src/portability.rs': '9d6ed15f8504f2daa63731f4ec029d9f5e2c155b202654c2f36402652f92897d', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': '41f53787adf21102c9298f15f3996c6cf91b94d8841ba56c6da95590648ef582', 'Cargo.lock': '6e143501c967c5623c26964ecfc471ebfb861f598a88b38dcab1562e966b6ea2', 'SOURCE_LOCK.json': '234ddd72a087d58a766707affdf9b1e3bbc1d0f7cb4f24a5b532e006155a9550'}
+          workspace_lock_source="789e45310b79ea915aee6e7d23db3b0486a3ff92"
+          pins={'crates/storage/src/portability.rs': '9d6ed15f8504f2daa63731f4ec029d9f5e2c155b202654c2f36402652f92897d', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': '41f53787adf21102c9298f15f3996c6cf91b94d8841ba56c6da95590648ef582', 'Cargo.lock': '530b926a45a8a688ae04e86757c81f3bc4f7498f0ed01e9dd4d67c460b2015f8', 'SOURCE_LOCK.json': '234ddd72a087d58a766707affdf9b1e3bbc1d0f7cb4f24a5b532e006155a9550'}
           assert re.fullmatch(r"[0-9a-f]{40}",head)
           en={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
           en.update(GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_SYSTEM=os.devnull,GIT_CONFIG_GLOBAL=os.devnull,GIT_NO_LAZY_FETCH="1",GIT_TERMINAL_PROMPT="0")
@@ -151,8 +151,8 @@ jobs:
           "tree_sha":git("rev-parse","HEAD^{tree}").decode().strip(),
           "reviewed_source_sha":reviewed_source,"source_lock_reviewed_source_sha":source_lock_reviewed_source,
           "foundation_reviewed_source_sha":foundation_reviewed_source,
-          "desktop_workflow_lock_reviewed_source_sha":desktop_workflow_lock_reviewed_source,
-          "source_pin_reviewed_sources":{rel:(desktop_workflow_lock_reviewed_source if rel=="Cargo.lock" else foundation_reviewed_source if rel in ("crates/storage/src/lib.rs","crates/storage/src/portability.rs") else source_lock_reviewed_source if rel=="SOURCE_LOCK.json" else reviewed_source) for rel in pins},"run_id":os.environ["GITHUB_RUN_ID"],"attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+          "desktop_workflow_lock_reviewed_source_sha":workspace_lock_source,
+          "source_pin_reviewed_sources":{rel:(workspace_lock_source if rel=="Cargo.lock" else foundation_reviewed_source if rel in ("crates/storage/src/lib.rs","crates/storage/src/portability.rs") else source_lock_reviewed_source if rel=="SOURCE_LOCK.json" else reviewed_source) for rel in pins},"run_id":os.environ["GITHUB_RUN_ID"],"attempt":os.environ["GITHUB_RUN_ATTEMPT"],
           "job_key":os.environ["GITHUB_JOB"],"sources":identity,
           "expected_named_cases":{k:list(v) for k,v in wanted.items()},"expected_total_invocations_per_OS":11,
           "actual_Rust_run":"NOT_RUN_SOURCE_CHECK_ONLY","G2_crash_atomicity":"NOT_RUN"}
@@ -231,8 +231,8 @@ jobs:
           reviewed_source="2c4fc01736d69a5c7b11de05d96d2590c09ac836"
           source_lock_reviewed_source="7d3e0386f65ea531cfaa3e7723afab29c55eba3e"
           foundation_reviewed_source="05975b7aa0a12425052d3952c7720fd40c54b686"
-          desktop_workflow_lock_reviewed_source="26dff8aa23c6bfff474ee578d4add5f5b48e5179"
-          pins={'crates/storage/src/portability.rs': '9d6ed15f8504f2daa63731f4ec029d9f5e2c155b202654c2f36402652f92897d', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': '41f53787adf21102c9298f15f3996c6cf91b94d8841ba56c6da95590648ef582', 'Cargo.lock': '6e143501c967c5623c26964ecfc471ebfb861f598a88b38dcab1562e966b6ea2', 'SOURCE_LOCK.json': '234ddd72a087d58a766707affdf9b1e3bbc1d0f7cb4f24a5b532e006155a9550'}
+          workspace_lock_source="789e45310b79ea915aee6e7d23db3b0486a3ff92"
+          pins={'crates/storage/src/portability.rs': '9d6ed15f8504f2daa63731f4ec029d9f5e2c155b202654c2f36402652f92897d', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': '41f53787adf21102c9298f15f3996c6cf91b94d8841ba56c6da95590648ef582', 'Cargo.lock': '530b926a45a8a688ae04e86757c81f3bc4f7498f0ed01e9dd4d67c460b2015f8', 'SOURCE_LOCK.json': '234ddd72a087d58a766707affdf9b1e3bbc1d0f7cb4f24a5b532e006155a9550'}
           assert re.fullmatch(r"[0-9a-f]{40}",head)
           en={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
           en.update(GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_SYSTEM=os.devnull,GIT_CONFIG_GLOBAL=os.devnull,GIT_NO_LAZY_FETCH="1",GIT_TERMINAL_PROMPT="0")
@@ -301,8 +301,8 @@ jobs:
           "tree_sha":git("rev-parse","HEAD^{tree}").decode().strip(),
           "reviewed_source_sha":reviewed_source,"source_lock_reviewed_source_sha":source_lock_reviewed_source,
           "foundation_reviewed_source_sha":foundation_reviewed_source,
-          "desktop_workflow_lock_reviewed_source_sha":desktop_workflow_lock_reviewed_source,
-          "source_pin_reviewed_sources":{rel:(desktop_workflow_lock_reviewed_source if rel=="Cargo.lock" else foundation_reviewed_source if rel in ("crates/storage/src/lib.rs","crates/storage/src/portability.rs") else source_lock_reviewed_source if rel=="SOURCE_LOCK.json" else reviewed_source) for rel in pins},"run_id":os.environ["GITHUB_RUN_ID"],"attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+          "desktop_workflow_lock_reviewed_source_sha":workspace_lock_source,
+          "source_pin_reviewed_sources":{rel:(workspace_lock_source if rel=="Cargo.lock" else foundation_reviewed_source if rel in ("crates/storage/src/lib.rs","crates/storage/src/portability.rs") else source_lock_reviewed_source if rel=="SOURCE_LOCK.json" else reviewed_source) for rel in pins},"run_id":os.environ["GITHUB_RUN_ID"],"attempt":os.environ["GITHUB_RUN_ATTEMPT"],
           "job_key":os.environ["GITHUB_JOB"],"sources":identity,
           "expected_named_cases":{k:list(v) for k,v in wanted.items()},"expected_total_invocations_per_OS":11,
           "actual_Rust_run":"NOT_RUN_SOURCE_CHECK_ONLY","G2_crash_atomicity":"NOT_RUN"}
