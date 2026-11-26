@@ -386,7 +386,7 @@ test("UI refuses to offer native mastering for incompatible measured voice durat
   await page.getByRole("button", { name: "Render native segments" }).click();
   const panel = page.getByRole("region", { name: "Canonical audiovisual mastering" });
   await expect(panel.getByRole("button", { name: "Assemble native AV master" })).toBeDisabled();
-  await expect(panel).toContainText("must match the exact native video cut");
+  await expect(panel).toContainText("must match the exact video cut (within one 48 kHz sample)");
 });
 
 test("browser demo never claims native AV master authority", async ({ page }) => {

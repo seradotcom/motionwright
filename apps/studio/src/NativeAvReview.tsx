@@ -1,7 +1,8 @@
 import { CircleDashed, RefreshCw, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useLocalMediaElement } from "./audioReviewPlayback";
-import { readNativeAvAudioQc, readVerifiedNativeAvReview, readNativeAudioQcReceiptInventory, readNativeAudioQcReceipt } from "./api";
+import type {NativeAvPlayback} from "./nativeAvMedia";
+import { readNativeAvAudioQc, prepareVerifiedNativeAvReview, readNativeAudioQcReceiptInventory, readNativeAudioQcReceipt } from "./api";
 import {
   audioQcStatusLabel, audioQcUnavailableText, createNativeAvReadGuard,
   formatAudioMilli, nativeAvReadScope,
@@ -15,7 +16,8 @@ type PlaybackState =
 
 /**
  * Real H.264/AAC MP4 bytes from the existing Semwright owner artifact.
- * The browser receives no host path, only the verified bounded binary IPC.
+ * The browser receives no host path. Original bytes arrive through bounded,
+ * independently rechecked media ranges or the legacy small binary IPC reply.
  */
 export default function NativeAvReview({
   project,
@@ -61,7 +63,7 @@ export default function NativeAvReview({
   const editorSeekRef = useRef<number | null>(null);
   // React Strict Mode replays effect setup/cleanup during mount. Reuse the
   // same in-flight read without caching settled media beyond the active view.
-  const pendingRef = useRef<{ key: string; promise: Promise<Uint8Array> } | null>(null);
+  const pendingRef = useRef<{ key: string; promise: Promise<NativeAvPlayback> } | null>(null);
 
   useEffect(() => {
     const ticket = guard.current.begin(readKey);
@@ -72,7 +74,7 @@ export default function NativeAvReview({
     editorSeekRef.current = null;
     const existing = pendingRef.current;
     const promise = existing?.key === readKey ? existing.promise
-      : readVerifiedNativeAvReview(project, exportToken);
+      : prepareVerifiedNativeAvReview(project, exportToken, deliverableId, masterSha256);
     if (!existing || existing.key !== readKey) {
       pendingRef.current = { key: readKey, promise };
       const release = () => {
@@ -82,13 +84,16 @@ export default function NativeAvReview({
       void promise.then(release, release);
     }
     void promise
-      .then((bytes) => {
+      .then((source) => {
         if (!guard.current.isCurrent(ticket, visibleKey.current)) return;
-        // Copy the read-only Tauri IPC view before it is owned by a Blob.
-        const media = new Uint8Array(bytes.byteLength);
-        media.set(bytes);
-        objectUrl = URL.createObjectURL(new Blob([media.buffer], { type: "video/mp4" }));
-        setPlayback({ kind: "ready", url: objectUrl });
+        if(source.kind==="stream"){
+          setPlayback({kind:"ready",url:source.url});
+        }else{
+          // Legacy small binary responses retain their previous playback path.
+          const media=new Uint8Array(source.bytes.byteLength);media.set(source.bytes);
+          objectUrl=URL.createObjectURL(new Blob([media.buffer],{type:"video/mp4"}));
+          setPlayback({kind:"ready",url:objectUrl});
+        }
       })
       .catch(() => {
         if (guard.current.isCurrent(ticket, visibleKey.current)) {
@@ -139,7 +144,7 @@ export default function NativeAvReview({
       role="region" aria-label="Native master playback review">
       <div className="native-av-review-header">
         <strong>Native H.264/AAC review</strong>
-        <span>Original master · source r{project.revision}{reviewOnly ? " · review only · no export" : ""} · at most 16 MiB</span>
+        <span>Original master from source r{project.revision}.{reviewOnly ? " Review only; export unavailable." : ""}</span>
       </div>
       {playback.kind === "ready" ? (
         <video
@@ -207,7 +212,7 @@ export default function NativeAvReview({
       ) : playback.kind === "loading" ? (
         <div className="native-av-review-state" role="status">
           <CircleDashed size={19} aria-hidden="true" />
-          <span>Checking source digest and loading a bounded MP4…</span>
+          <span>Checking the original master and preparing local playback…</span>
         </div>
       ) : (
         <div className="native-av-review-state" role="alert">

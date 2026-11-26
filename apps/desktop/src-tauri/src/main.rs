@@ -110,6 +110,7 @@ struct AppState {
     production_font_staging_custody: ProductionFontStagingCustody,
     preview: NativePreviewRegistry,
     av_delivery: NativeMasterDeliveryRegistry,
+    av_review: av_delivery::streaming::ReviewStreams,
     runtime_connections: RuntimeConnectionRegistry,
     runtime_profiles: runtime_profiles::RuntimeProfiles,
     native_renders: hyperframes_render::RenderRegistry,
@@ -2948,12 +2949,13 @@ async fn verify_local_media_integrity(
         .map_err(|_| "Portable media verification task failed.".to_string())?
 }
 
-/// Read a completed, owner-verified native AV master, bounded to 16 MiB.
+/// Prepare bounded playback of the exact completed native master. Legacy
+/// callers may still request the original small-file binary IPC response.
 #[tauri::command]
 async fn review_native_av_master(
     mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
-    request: MasterReviewRequest,
+    request: av_delivery::streaming::PlaybackRequest,
 ) -> Result<tauri::ipc::Response, String> {
     let project = state
         .service
@@ -2963,9 +2965,25 @@ async fn review_native_av_master(
         return Err("Native AV preview belongs to a previous project revision.".into());
     }
     let source = state.av_delivery.resolve(&project, request.export_token)?;
-    let data = desktop_owner::spawn_blocking(owner.worker_owner(), move || source.review_bytes())
+    let response = if request.stream {
+        let streams = state.av_review.clone();
+        let token = request.export_token;
+        let descriptor = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+            streams.prepare(&source, token)
+        })
         .await
-        .map_err(|_| "Native AV preview read task failed.".to_string())??;
+        .map_err(|_| "Native AV playback preparation task failed.".to_string())??;
+        tauri::ipc::Response::new(
+            serde_json::to_string(&descriptor)
+                .map_err(|_| "Native AV playback response is unavailable.".to_string())?,
+        )
+    } else {
+        let data =
+            desktop_owner::spawn_blocking(owner.worker_owner(), move || source.review_bytes())
+                .await
+                .map_err(|_| "Native AV preview read task failed.".to_string())??;
+        tauri::ipc::Response::new(data)
+    };
     owner.begin_phase()?;
     let latest = state
         .service
@@ -2974,7 +2992,7 @@ async fn review_native_av_master(
     if latest.generation != request.generation || latest.revision != request.revision {
         return Err("Project changed during native AV preview readback.".into());
     }
-    Ok(tauri::ipc::Response::new(data))
+    Ok(response)
 }
 
 /// Read current QC for an existing session-authorized master. This command
@@ -4076,6 +4094,32 @@ fn main() {
     tauri::Builder::default()
         .plugin(desktop_owner::lifecycle_plugin())
         .plugin(tauri_plugin_dialog::init())
+        .register_asynchronous_uri_scheme_protocol(
+            av_delivery::streaming::SCHEME,
+            |context, request, responder| {
+                let app = context.app_handle().clone();
+                let native_webview_label = context.webview_label().to_owned();
+                let Some(permit) = app
+                    .try_state::<AppState>()
+                    .and_then(|state| state.av_review.admit_read())
+                else {
+                    responder.respond(av_delivery::streaming::failure(
+                        tauri::http::StatusCode::SERVICE_UNAVAILABLE,
+                    ));
+                    return;
+                };
+                // Admission bounds queued workers before any file IO. Native
+                // owner authentication still happens inside the actual worker.
+                tauri::async_runtime::spawn_blocking(move || {
+                    let _permit = permit;
+                    responder.respond(av_delivery::streaming::handle(
+                        &app,
+                        &native_webview_label,
+                        request,
+                    ));
+                });
+            },
+        )
         .setup(|app| {
             let owner = desktop_owner::DesktopOwner::new();
             app.manage(owner.clone());
@@ -4116,6 +4160,7 @@ fn main() {
                 production_font_staging_custody: ProductionFontStagingCustody::default(),
                 preview: NativePreviewRegistry::default(),
                 av_delivery: NativeMasterDeliveryRegistry::default(),
+                av_review: av_delivery::streaming::ReviewStreams::default(),
                 runtime_connections: RuntimeConnectionRegistry::new(&data_dir)?,
                 runtime_profiles: runtime_profiles::RuntimeProfiles::new(&data_dir),
                 native_renders: hyperframes_render::RenderRegistry::default(),

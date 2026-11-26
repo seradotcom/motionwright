@@ -1,3 +1,4 @@
+import { parseNativeAvPlayback, verifiedNativeReviewBytes, type NativeAvPlayback } from "./nativeAvMedia";
 import { applyDeliverySettingPropagation } from "./deliveryFamily";
 import { deliveryTextSourceConflict } from "./deliveryTextSources";
 import type { NativeAudioQcReceiptHint, NativeAudioQcReceiptInventoryResponse } from "./types";
@@ -1293,14 +1294,20 @@ export async function readVerifiedNativeAvReview(
       export_token: exportToken,
     },
   });
-  const bytes = data instanceof Uint8Array ? data
-    : data instanceof ArrayBuffer ? new Uint8Array(data)
-      : Array.isArray(data) ? Uint8Array.from(data) : null;
-  if (!bytes || bytes.length < 12 || bytes.length > 16 * 1024 * 1024 ||
-    bytes[4] !== 102 || bytes[5] !== 116 || bytes[6] !== 121 || bytes[7] !== 112) {
-    throw new Error("Verified native AV review returned an invalid or unbounded MP4.");
-  }
-  return bytes;
+  return verifiedNativeReviewBytes(data);
+}
+
+/** Prepare local byte-range playback through the same owner read boundary.
+ * This is a media read only; it never requests a render or measurement. */
+export async function prepareVerifiedNativeAvReview(
+  project:Project, exportToken:string, deliverableId:string|null=null, masterSha256:string|null=null,
+):Promise<NativeAvPlayback> {
+  if(!isTauri())throw new Error("Native AV review requires the desktop runtime.");
+  const data=await invoke<unknown>("review_native_av_master",{
+    request:{project_id:project.id,generation:project.generation,revision:project.revision,
+      export_token:exportToken,stream:true},
+  });
+  return parseNativeAvPlayback(data,{project,exportToken,deliverableId,masterSha256});
 }
 
 /** Reopen numeric audio QC for the same opaque master token. This command has

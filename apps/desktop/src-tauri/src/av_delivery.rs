@@ -1,3 +1,5 @@
+pub(crate) mod streaming;
+
 use motionwright_domain::{Project, RevisionStamp};
 use motionwright_native::production::{
     AudioAnalysisLane, MltAvMasterEvidence, MltMultisegmentAvMasterEvidence, ProductionConnection,

@@ -1782,7 +1782,7 @@ export default function DeliveryProfiles({
                 </div>
               )}
               <div className="delivery-truth-note">
-                <CircleDashed size={14} /> Native master playback is an explicit, SHA-256-verified local review action limited to 16 MiB. For ordinary approved masters, larger MP4 files must be exported for external playback. Decoder compatibility, timeline synchronization and human mix approval remain separate.
+                <CircleDashed size={14} /> Review the original MP4 locally, including masters up to 1 GiB. Playback depends on this device’s decoder. Publication and human mix approval remain separate.
               </div>
             </section>
 

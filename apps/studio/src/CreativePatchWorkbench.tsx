@@ -287,9 +287,9 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
       </article>)}</section>}
     <CanvasArrangementControls draft={draft} project={project} scene={scene} disabled={lockedUi || !scene || nativeSource !== null}
       stale={draftStale} initiallyOpen={arrangementOpen} onChange={update}/>
-    <FocusTransferControls key={scope} project={project} scene={scene} profile={displayProfile} draft={draft}
+    <FocusTransferControls key={"focus:"+scope} project={project} scene={scene} profile={displayProfile} draft={draft}
       disabled={lockedUi||draftStale||backupBlocked||nativeSource!==null} onChange={update}/>
-    <MeasuredComparisonControls key={scope} project={project} scene={scene} draft={draft}
+    <MeasuredComparisonControls key={"measured:"+scope} project={project} scene={scene} draft={draft}
       disabled={lockedUi||draftStale||backupBlocked||nativeSource!==null} onChange={update}/>
     <div className="production-plan-grid">
       <section className="production-patch-editor" aria-label="Scoped proposal editor">

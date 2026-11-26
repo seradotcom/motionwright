@@ -188,6 +188,22 @@ impl DesktopOwner {
         Ok(())
     }
 
+    /// Only native UriSchemeContext may select this label. The registered
+    /// WebView still needs the same private resource marker and trusted document.
+    pub(crate) fn authorize_protocol(
+        &self,
+        app: &tauri::AppHandle<Wry>,
+        native_webview_label: &str,
+    ) -> Result<(), String> {
+        if native_webview_label != OWNER_LABEL {
+            return Err(OWNER_UNAVAILABLE.to_owned());
+        }
+        let webview = app
+            .get_webview(native_webview_label)
+            .ok_or_else(|| OWNER_UNAVAILABLE.to_owned())?;
+        self.authorize_invoke(&webview)
+    }
+
     fn allows_navigation(&self, target: &Url) -> bool {
         let Ok(state) = self.inner.lifecycle.lock() else {
             return false;
