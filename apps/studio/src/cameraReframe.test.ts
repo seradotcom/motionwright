@@ -3,7 +3,8 @@ import {applyChange} from "./api";
 import {emptyProductionDesign} from "./creativeProduction";
 import {fixtureProject} from "./fixture";
 import {rationalSeconds} from "./types";
-import {cameraPreviewOffset,validateCameraReframe} from "./cameraReframe";
+import {cameraPreviewOffset,cameraPoseAt,sampledSceneCamera,validateCameraReframe,CAMERA_DETAIL_RETURN_VERSION} from "./cameraReframe";
+import {sampleProfileLayout} from "./profileComposition";
 import {nativePoseEdit,type NativePoseDraft} from "./nativePoseDraft";
 import {previewTransform} from "./canvasMotion";
 import type {CameraReframe} from "./cameraReframe";
@@ -287,4 +288,51 @@ it("composes nonzero terminal orientation, exact intermediate poses and independ
   unsafe.scenes[0].nodes[0].keyframes.find(key=>key.property==="x"&&key.at.num==="1"&&key.at.den==="1")!.value=0;
   await expect(applyChange(unsafe,{type:"upsert_camera_reframe",reframe:camera})).rejects.toThrow(/crop/);
   expect(JSON.stringify(composed)).toBe(before);
+});
+
+
+it("detail return samples the same planar transform at approach, hold and exact final context across every output",async()=>{
+  const {project,camera}=source();
+  const scene=project.scenes[0];
+  for(const profile of project.deliverables){
+    profile.frame_rate={num:"30",den:"1"};profile.framing_strategy="replan";profile.included_scene_ids=[];
+  }
+  scene.nodes[0].style.stroke=null;scene.nodes[0].style.stroke_width=0;
+  scene.nodes[0].style.blend_mode="normal";scene.nodes[0].rotation_deg=0;scene.nodes[0].opacity=1;
+  scene.nodes[0].coordinate_space="project_pixels";
+  const rig:CameraReframe={...camera,component_version:CAMERA_DETAIL_RETURN_VERSION,
+    end_center_x:camera.start_center_x,end_center_y:camera.start_center_y,
+    detail_return:{center_x:980,center_y:548,zoom:1.15,approach_frames:30,hold_frames:30}};
+  const original=structuredClone(project);
+  const saved=await applyChange(project,{type:"upsert_camera_reframe",reframe:rig});
+  expect(project).toEqual(original);
+  expect(saved.scenes[0].nodes).toEqual(scene.nodes);
+  expect(saved.scenes[0].camera).toEqual(scene.camera);
+  expect(cameraPoseAt(rig,0)).toEqual({center_x:960,center_y:540,zoom:1});
+  for(const time of [1,1.5,2])expect(cameraPoseAt(rig,time)).toEqual({center_x:980,center_y:548,zoom:1.15});
+  expect(cameraPoseAt(rig,3)).toEqual({center_x:960,center_y:540,zoom:1});
+  for(const profile of saved.deliverables){
+    const initial=sampleProfileLayout(saved,saved.scenes[0],profile,0).nodes[0];
+    const detail=sampleProfileLayout(saved,saved.scenes[0],profile,1.5).nodes[0];
+    const middle=sampleProfileLayout(saved,saved.scenes[0],profile,.5).nodes[0];
+    const returned=sampleProfileLayout(saved,saved.scenes[0],profile,3.5).nodes[0];
+    expect(detail.width/initial.width).toBeCloseTo(1.15,10);
+    expect(middle.x).toBeCloseTo((initial.x+detail.x)/2,8);
+    expect(middle.y).toBeCloseTo((initial.y+detail.y)/2,8);
+    expect(middle.width).toBeCloseTo((initial.width+detail.width)/2,8);
+    expect(returned).toEqual(initial);
+    expect(sampledSceneCamera(saved.scenes[0],[rig],1.5).camera?.zoom).toBe(1.15);
+  }
+  const reopened:Project=JSON.parse(JSON.stringify(saved));
+  const detached=await applyChange(reopened,{type:"detach_camera_reframe",id:rig.id});
+  expect(detached.scenes[0].nodes).toEqual(scene.nodes);expect(detached.scenes[0].camera).toEqual(scene.camera);
+  expect(detached.production_design?.camera_reframes).toEqual([]);
+  for(const bad of [
+    {...rig,detail_return:{...rig.detail_return!,hold_frames:0}},
+    {...rig,detail_return:{...rig.detail_return!,zoom:1.5}},
+    {...rig,end_center_x:970},
+    {...rig,duration_frames:180},
+  ])expect(()=>validateCameraReframe(bad,scene)).toThrow();
+  const wrongRate={...saved.deliverables[0],frame_rate:{num:"25",den:"1"}};
+  await expect(applyChange(saved,{type:"upsert_deliverable",profile:wrongRate})).rejects.toThrow(/30fps Replan/);
 });

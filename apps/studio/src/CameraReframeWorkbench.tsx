@@ -5,7 +5,7 @@ import { seconds } from "./types";
 import CompositionStudy from "./CompositionStudy";
 import { bootstrap } from "./api";
 import { inheritedTextInk } from "./canvasInheritedInk";
-import { CAMERA_REFRAME_VERSION, cameraPreviewOffset, validateCameraReframe } from "./cameraReframe";
+import { CAMERA_REFRAME_VERSION,CAMERA_DETAIL_RETURN_VERSION,cameraPoseAt,cameraPreviewOffset,validateCameraReframe,validateCameraDetailReturnProfiles } from "./cameraReframe";
 import type { CameraReframe } from "./cameraReframe";
 import {
   acknowledgeCameraDraft, armCameraDraft, cameraAcknowledged, cameraDraftChanged, cameraDraftValue,
@@ -62,6 +62,12 @@ function newDraft(scene:Scene|null):CameraReframe{
     component_version:CAMERA_REFRAME_VERSION,start_center_x:center.center_x,
     start_center_y:center.center_y,end_center_x:center.center_x+12,
     end_center_y:center.center_y+4,duration_frames:90};
+}
+function newDetailDraft(scene:Scene):CameraReframe{
+  const camera=scene.camera;
+  return {id:crypto.randomUUID(),scene_id:scene.id,component_version:CAMERA_DETAIL_RETURN_VERSION,
+    start_center_x:camera.center_x,start_center_y:camera.center_y,end_center_x:camera.center_x,end_center_y:camera.center_y,
+    duration_frames:90,detail_return:{center_x:camera.center_x,center_y:camera.center_y,zoom:1.1,approach_frames:30,hold_frames:30}};
 }
 function message(error:unknown):string{return error instanceof Error?error.message:String(error);}
 export default function CameraReframeWorkbench({project,scene,busy,commitCamera,playhead,onSeek,onOpenCanvas,displayProfile}:Props){
@@ -123,12 +129,15 @@ export default function CameraReframeWorkbench({project,scene,busy,commitCamera,
   const problem=(()=>{
     if(!terminal)return "Select a Motion Canvas scene with original objects.";
     if(parseIssue)return parseIssue;
-    try{validateCameraReframe(draft,terminal);return null;}catch(e){return message(e);}
+    try{validateCameraReframe(draft,terminal);validateCameraDetailReturnProfiles(project,draft,terminal);return null;}catch(e){return message(e);}
   })();
   const authorityIssue=active&&scene?cameraSessionIssue(active,project,scene,stored):null;
   const canApply=!!commitCamera&&!!scene&&!!active&&!problem&&!authorityIssue&&!locked&&!busy&&!pending&&!backupWarning&&!inFlight.current;
+  const detailMode=active?Object.hasOwn(active.fields,"detail_zoom"):stored?.component_version===CAMERA_DETAIL_RETURN_VERSION;
   const offset=cameraPreviewOffset(draft,localTime);
-  const preview=!parseIssue?scene?.nodes.map(node=>({...node,x:node.x+offset.x,y:node.y+offset.y}))??[]:[];
+  const detailCamera=detailMode&&!problem&&scene?{...scene.camera,...cameraPoseAt(draft,localTime)}:undefined;
+  const preview=detailMode?(detailCamera?scene?.nodes??[]:[]):
+    !parseIssue?scene?.nodes.map(node=>({...node,x:node.x+offset.x,y:node.y+offset.y}))??[]:[];
   const background=project.visual_language.palette.find(t=>
     ["surface","background"].includes(t.name.toLowerCase()))?.value??"#0F1216";
 
@@ -186,6 +195,13 @@ export default function CameraReframeWorkbench({project,scene,busy,commitCamera,
       backup(next);
       setError(null);
     }catch(reason){setError(message(reason));}
+  };
+  const chooseDetailMode=(detail:boolean)=>{
+    const current=authorRef.current;
+    if(!scene||!current||stored||stale||locked||busy||pending||backupWarning||current.awaiting||
+      cameraDraftChanged(current)||inFlight.current||current.scope!==scope||scene.renderer!=="motion-canvas")return;
+    const next=createCameraDraft(project,scene,detail?newDetailDraft(scene):newDraft(scene));
+    setAuthor(next);backup(next);setError(null);
   };
   const reload=()=>{
     const current=authorRef.current;
@@ -255,8 +271,11 @@ export default function CameraReframeWorkbench({project,scene,busy,commitCamera,
     let attempt:CameraDraft;
     try{
       const value=operation==="upsert"?cameraDraftValue(current):null;
-      if(value)validateCameraReframe(value,{...scene,camera:{...scene.camera,
-        center_x:value.end_center_x,center_y:value.end_center_y}});
+      if(value){
+        const terminalScene={...scene,camera:{...scene.camera,center_x:value.end_center_x,center_y:value.end_center_y}};
+        validateCameraReframe(value,terminalScene);
+        validateCameraDetailReturnProfiles(project,value,terminalScene);
+      }
       attempt=armCameraDraft(current,project,scene,operation,value,crypto.randomUUID());
     }catch(reason){setError(message(reason));return;}
     if(!backup(attempt))return;
@@ -332,13 +351,23 @@ export default function CameraReframeWorkbench({project,scene,busy,commitCamera,
         <button type="button" className="secondary-button" disabled={!!active?.awaiting}
           onClick={reload}><RefreshCw size={14}/> Discard input and load saved Camera</button>
       </div>}
+      {!stored&&scene?.renderer==="motion-canvas"&&<label className="production-field"><span>Original camera movement</span>
+        <select aria-label="Camera movement" value={detailMode?"detail":"pan"} disabled={!active||stale||locked||busy||pending||!!backupWarning||!!active.awaiting||cameraDraftChanged(active)}
+          onChange={event=>chooseDetailMode(event.target.value==="detail")}>
+          <option value="pan">Planar reframe</option>
+          <option value="detail">Planar detail and return</option>
+        </select>
+        <small>Choose a movement before editing. Existing attached rigs retain their saved version until explicitly detached.</small>
+      </label>}
+      {detailMode&&<p className="production-help">Approach a bounded detail, hold it, then return to the exact same context.
+        The shared Native frame changes planar position and scale together. Only static independent original shapes and text, exact 30fps Replan outputs and uncropped endpoints are supported.</p>}
       <div className="production-plan-grid">
         {([
           ["start_center_x","Start center X"],
           ["start_center_y","Start center Y"],
           ["end_center_x","End center X"],
           ["end_center_y","End center Y"],
-        ] as const).map(([key,label])=><label className="production-field" key={key}>
+        ] as const).filter(([key])=>!detailMode||!key.startsWith("end_")).map(([key,label])=><label className="production-field" key={key}>
           <span>{label} · source pixels</span>
           <input aria-label={label} type="text" inputMode="decimal" role="spinbutton"
             aria-valuemin={key.endsWith("_x")?720:320} aria-valuemax={key.endsWith("_x")?1200:760}
@@ -346,17 +375,28 @@ export default function CameraReframeWorkbench({project,scene,busy,commitCamera,
             onChange={e=>patch(key,e.target.value)}/>
         </label>)}
       </div>
+      {detailMode&&<div className="production-plan-grid">
+        {([["detail_center_x","Detail center X"],["detail_center_y","Detail center Y"],["detail_zoom","Detail zoom"],
+          ["approach_frames","Approach frames"],["hold_frames","Detail hold frames"]] as const).map(([key,label])=>
+          <label className="production-field" key={key}><span>{label}</span>
+            <input aria-label={label} type="text" role="spinbutton" inputMode={key.endsWith("_frames")?"numeric":"decimal"}
+              value={fields[key]??""} disabled={!active||pending} onChange={event=>patch(key,event.target.value)}/>
+          </label>)}
+      </div>}
       <label className="production-field"><span>Duration · 30fps frames</span>
         <input aria-label="Camera duration frames" type="text" inputMode="numeric" role="spinbutton"
           aria-valuemin={12} aria-valuemax={180} value={fields.duration_frames}
           disabled={!active||pending} onChange={e=>patch("duration_frames",e.target.value)}/>
-        <small>12–180 frames; hold final camera position for the remaining scene.
-          Other frame rates require separate native acceptance.</small>
+        <small>{detailMode?"Total approach, detail hold and return frames (maximum 180); leave at least one final context frame.":"12-180 frames; hold final camera position for the remaining scene."}
+          {" "}Other frame rates require separate native acceptance.</small>
       </label>
-      <p className="production-help">({draft.start_center_x}, {draft.start_center_y}) to
+      {detailMode&&draft.detail_return?<p className="production-help">Context ({draft.start_center_x}, {draft.start_center_y}),
+        detail ({draft.detail_return.center_x}, {draft.detail_return.center_y}) at {draft.detail_return.zoom}x,
+        return over {draft.duration_frames-draft.detail_return.approach_frames-draft.detail_return.hold_frames} frames.
+      </p>:<p className="production-help">({draft.start_center_x}, {draft.start_center_y}) to
         ({draft.end_center_x}, {draft.end_center_y}), over
         {(draft.duration_frames/30).toFixed(3)} s. At most 80 pixels per axis.
-      </p>
+      </p>}
       {problem && <p role="status" className="production-error">{problem}</p>}
       {error && <p role="alert" className="production-error">{error}</p>}
       <button className="primary-button" disabled={!canApply} onClick={()=>void save()}>
@@ -380,9 +420,9 @@ export default function CameraReframeWorkbench({project,scene,busy,commitCamera,
         <span>1920 × 1080 original Canvas · editorial preview only</span></div></div>
       <div className="production-preview-mat">
         {preview.length?<CompositionStudy nodes={preview} width={1920} height={1080}
-          time={localTime} background={background} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
+          time={localTime} camera={detailCamera} background={background} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
           label={"Planar camera at "+localTime.toFixed(3)+" seconds, selected output profile editorial study"}/>:
-          <p role="status">Add a semantic Canvas object to preview the move.</p>}
+          <p role="status">{detailMode&&problem?"Resolve the detail-return source constraints before preview.":"Add a semantic Canvas object to preview the move."}</p>}
       </div>
       <div className="production-transport">
         <span className="mono">{localTime.toFixed(3)} s</span>

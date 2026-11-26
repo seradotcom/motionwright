@@ -171,6 +171,7 @@ fn seed(database: &Path) -> FixtureResult<Project> {
                 end_center_x: 1000.0,
                 end_center_y: 544.0,
                 duration_frames: 120,
+                detail_return: None,
             },
         },
     )?;

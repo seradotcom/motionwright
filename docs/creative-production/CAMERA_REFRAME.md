@@ -40,3 +40,36 @@ wrong-viewport evidence; no synthetic calibrator is promoted as native proof.
 The camera visual acceptance remains pending until the exact branch SHA
 passes the pinned workflow. Even then, a 2D pan is not an optical dolly,
 3D orbit, custom lens, cinematic lighting or human creative approval.
+
+
+## Motion Canvas v3: bounded planar detail and return
+
+The saved Camera Reframe may explicitly select version 3 with a closed
+detail_return object (center_x, center_y, zoom, approach_frames, hold_frames).
+The original context has unit zoom and the same start/end center. The return
+length is duration_frames minus approach and hold. Approach and return each
+require at least 12 exact 30fps frames, hold at least one frame, total at most
+180, and the scene must retain one final context frame. Zoom is 1.05-1.25 and
+detail center displacement is at most 80 source pixels per axis.
+
+Only static independent original rectangles, shapes, circles and text without
+rotation, strokes, hierarchy, keyframes, relations or nonnormal blend are
+admitted. All included profiles require Replan and exact 30fps. Source and
+detail bounds are checked at both endpoints; Native repeats the checks after
+responsive projection, with the segment's actual safe area. The linear shared
+frame's scale and position make each original corner follow a convex path
+between the two safe endpoints. Native emits four literal geometry tweens on
+one unpainted group across two exact spans, leaving the middle interval at the
+detail pose. No node, source text or original layer is replaced.
+
+Studio Camera keeps the full recoverable author draft and original response
+correlation, exposes a dedicated detail mode before attaching a rig, and samples
+the same implied center and scale in Camera, Canvas, Program and profile
+studies. The frame dependency fingerprint now includes selected camera source
+records (including legacy v1/v2); existing camera-specific fingerprints must
+be recomputed. Historical projects without camera moves retain their old
+fingerprints and v1/v2 source wire is unchanged.
+
+This is a bounded planar enlargement of the original composition, not optical
+dolly, lens focus, 3D orbit or measured glyph/pixel acceptance. Source/Service
+tests and a physical Native frame oracle remain distinct.

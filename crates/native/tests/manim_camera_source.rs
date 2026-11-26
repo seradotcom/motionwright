@@ -665,6 +665,7 @@ mod production {
                     end_center_x: 1000.0,
                     end_center_y: 520.0,
                     duration_frames: 24,
+                    detail_return: None,
                 },
             },
         );

@@ -830,6 +830,17 @@ pub fn variant_dependency_fingerprint(
                 .map_err(|_| DomainError::Invalid("delivery recipe serialization failed".into()))?;
         }
     }
+    let mut cameras = project
+        .production_design
+        .camera_reframes
+        .iter()
+        .filter(|camera| scenes.iter().any(|scene| scene.id == camera.scene_id))
+        .collect::<Vec<_>>();
+    cameras.sort_by_key(|camera| camera.scene_id);
+    if !cameras.is_empty() {
+        frame_inputs["camera_reframes"] = serde_json::to_value(cameras)
+            .map_err(|_| DomainError::Invalid("camera source serialization failed".into()))?;
+    }
     let frame_inputs_sha256 = digest_json(frame_inputs)?;
     let caption_inputs_sha256 = digest_json(serde_json::json!({
         "language": &profile.language,

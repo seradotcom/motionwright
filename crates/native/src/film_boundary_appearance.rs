@@ -132,8 +132,11 @@ fn cut_pose(
         reframe
             .validate(scene)
             .map_err(|error| contract("SceneBoundary camera", error))?;
-        if reframe.component_version != motionwright_domain::CAMERA_REFRAME_VERSION
-            || rate.num != 30
+        if !matches!(
+            reframe.component_version,
+            motionwright_domain::CAMERA_REFRAME_VERSION
+                | motionwright_domain::CAMERA_DETAIL_RETURN_VERSION
+        ) || rate.num != 30
             || rate.den != 1
         {
             return Err(loss("camera has no exact Motion Canvas cut projection"));

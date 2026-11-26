@@ -205,6 +205,18 @@ fn uses_continuous_visual_clock(scene: &Scene, camera_reframe: bool) -> bool {
     camera_reframe || scene.nodes.iter().any(|node| !node.keyframes.is_empty())
 }
 
+fn project_scene_span_cost(project: &Project, scene: &Scene) -> usize {
+    let extra = project
+        .production_design
+        .camera_reframes
+        .iter()
+        .any(|camera| {
+            camera.scene_id == scene.id
+                && camera.component_version == motionwright_domain::CAMERA_DETAIL_RETURN_VERSION
+        });
+    scene_span_cost(scene, has_camera_reframe(project, scene)) + usize::from(extra)
+}
+
 fn scene_span_cost(scene: &Scene, camera_reframe: bool) -> usize {
     let continuous = uses_continuous_visual_clock(scene, camera_reframe);
     let visual_shots = if continuous {
@@ -410,13 +422,12 @@ fn motion_canvas_runs(
             let candidate_duration = sub(end, first.start, "Film segment duration underflow")?;
             let span_cost = current
                 .iter()
-                .map(|item| scene_span_cost(item, has_camera_reframe(project, item)))
+                .map(|item| project_scene_span_cost(project, item))
                 .sum::<usize>();
             scene.start != last_end
                 || candidate_duration > max_duration
                 || current.len() >= MAX_SEQUENCES
-                || span_cost + scene_span_cost(&scene, has_camera_reframe(project, &scene)) + 1
-                    > MAX_TEMPORAL_SPANS
+                || span_cost + project_scene_span_cost(project, &scene) + 1 > MAX_TEMPORAL_SPANS
         } else {
             false
         };
@@ -1909,6 +1920,142 @@ struct CameraFilmContext<'a> {
     projection: LayoutProjection,
     output: &'a OutputProfile,
 }
+/// Two nonoverlapping literal transform spans on one unpainted root.
+/// All native subject identities, fixed text leaves and saved coordinates
+/// stay intact. Only the shared frame's position and scale are animated.
+fn attach_camera_detail_return(
+    shot: &mut Shot,
+    scene: &Scene,
+    reframe: &CameraReframe,
+    context: &CameraFilmContext<'_>,
+    spans: &mut Vec<TemporalSpan>,
+    constraints: &mut Vec<TemporalConstraint>,
+) -> NativeResult<()> {
+    let detail = reframe
+        .detail_return
+        .ok_or_else(|| invalid("Camera detail return parameters are missing"))?;
+    if !context.projection.enforce_safe_area || spans.len().saturating_add(2) > MAX_TEMPORAL_SPANS {
+        return Err(unsupported(
+            "Camera detail return requires Replan and two available temporal spans",
+        ));
+    }
+    let width = f64::from(context.output.width);
+    let height = f64::from(context.output.height);
+    let margin = (context.output.safe_area.left / width)
+        .max(context.output.safe_area.top / height)
+        .max(context.output.safe_area.right / width)
+        .max(context.output.safe_area.bottom / height);
+    reframe
+        .validate_detail_return_bounds(scene, width, height, margin)
+        .map_err(|error| unsupported(error.to_string()))?;
+    let frame_id = uid("camera-frame", reframe.id);
+    let layer = shot
+        .layers
+        .first()
+        .ok_or_else(|| invalid("Camera source has no native layer"))?
+        .id
+        .clone();
+    for subject in &mut shot.subjects {
+        if subject.parent.is_none() {
+            subject.parent = Some(frame_id.clone());
+        }
+    }
+    shot.subjects.insert(
+        0,
+        Subject {
+            id: frame_id.clone(),
+            role: "camera-detail-return-frame".into(),
+            parent: None,
+            layer,
+            content: SubjectContent::Group,
+            layout: SpatialIntent::Fixed {
+                position: Point { x: 0.0, y: 0.0 },
+                size: Size {
+                    width: 1.0,
+                    height: 1.0,
+                },
+            },
+            initially_visible: true,
+            clip_intentional: false,
+            blend_mode: SubjectBlendMode::Normal,
+        },
+    );
+    let zero = Point { x: 0.0, y: 0.0 };
+    let unit = Point { x: 1.0, y: 1.0 };
+    let shift = Point {
+        x: (reframe.end_center_x - detail.center_x)
+            * context.projection.position_scale_x
+            * detail.zoom,
+        y: (reframe.end_center_y - detail.center_y)
+            * context.projection.position_scale_y
+            * detail.zoom,
+    };
+    let zoom = Point {
+        x: detail.zoom,
+        y: detail.zoom,
+    };
+    let return_start = i64::from(detail.approach_frames) + i64::from(detail.hold_frames);
+    for (name, start, length, from_pos, to_pos, from_scale, to_scale) in [
+        (
+            "approach",
+            0,
+            i64::from(detail.approach_frames),
+            zero,
+            shift,
+            unit,
+            zoom,
+        ),
+        (
+            "return",
+            return_start,
+            i64::from(reframe.duration_frames) - return_start,
+            shift,
+            zero,
+            zoom,
+            unit,
+        ),
+    ] {
+        let span = format!("camera-detail-{name}-{}", reframe.id.simple());
+        let duration = RationalTime::new(length, 30).expect("validated detail duration");
+        spans.push(TemporalSpan {
+            id: span.clone(),
+            minimum: duration,
+            preferred: duration,
+            maximum: duration,
+            anchor: StartAnchor::Absolute {
+                time: add(
+                    context.scene_start,
+                    RationalTime::new(start, 30).expect("detail start"),
+                    "Camera detail start overflow",
+                )?,
+            },
+            preference_priority: 0,
+        });
+        constraints.push(TemporalConstraint::Contains {
+            id: format!("camera-detail-contains-{name}-{}", reframe.id.simple()),
+            parent: context.shot_span.to_owned(),
+            child: span.clone(),
+        });
+        for (channel, field, from, to) in [
+            (Channel::Position, "position", from_pos, to_pos),
+            (Channel::Scale, "scale", from_scale, to_scale),
+        ] {
+            shot.motion.push(Invocation {
+                id: format!("camera-detail-{name}-{field}-{}", reframe.id.simple()),
+                span_id: span.clone(),
+                easing: MotionEasing::Linear,
+                primitive: Primitive::GeometryTween {
+                    target: frame_id.clone(),
+                    channel,
+                    from: Operand::Vector(from),
+                    to: Operand::Vector(to),
+                },
+            });
+        }
+    }
+    Ok(())
+}
+
 fn attach_camera_reframe(
     shot: &mut Shot,
     scene: &Scene,
@@ -1924,6 +2071,9 @@ fn attach_camera_reframe(
         return Err(unsupported(
             "Bounded canonical camera reframe supports exact 30fps deliverables only",
         ));
+    }
+    if reframe.component_version == motionwright_domain::CAMERA_DETAIL_RETURN_VERSION {
+        return attach_camera_detail_return(shot, scene, reframe, context, spans, constraints);
     }
     if spans.len() >= MAX_TEMPORAL_SPANS {
         return Err(unsupported(
@@ -2309,7 +2459,7 @@ fn build_segment(
 
     let span_capacity = scenes
         .iter()
-        .map(|scene| scene_span_cost(scene, has_camera_reframe(project, scene)))
+        .map(|scene| project_scene_span_cost(project, scene))
         .sum::<usize>()
         + usize::from(scenes.len() > 1);
     if span_capacity > MAX_TEMPORAL_SPANS {
@@ -3424,6 +3574,7 @@ mod tests {
                     end_center_x: 980.0,
                     end_center_y: 550.0,
                     duration_frames: 30,
+                    detail_return: None,
                 },
             })
             .unwrap();
@@ -3589,6 +3740,7 @@ mod tests {
                         end_center_x: 960.0,
                         end_center_y: 540.0,
                         duration_frames: 30,
+                        detail_return: None,
                     });
             }
             let id = project.deliverables[0].id;
@@ -4190,6 +4342,7 @@ mod tests {
                 end_center_x: scene.camera.center_x,
                 end_center_y: scene.camera.center_y,
                 duration_frames: 45,
+                detail_return: None,
             };
             project
                 .apply_change(&Change::UpsertCameraReframe { reframe })
@@ -4884,6 +5037,7 @@ mod tests {
                         end_center_x: 960.0,
                         end_center_y: 540.0,
                         duration_frames: 45,
+                        detail_return: None,
                     },
                 })
                 .unwrap();
@@ -4905,6 +5059,7 @@ mod tests {
                     end_center_x: 960.0,
                     end_center_y: 540.0,
                     duration_frames: 45,
+                    detail_return: None,
                 },
             })
             .unwrap();
@@ -5424,6 +5579,7 @@ mod tests {
                                 end_center_x: saved_camera.center_x,
                                 end_center_y: saved_camera.center_y,
                                 duration_frames: 45,
+                                detail_return: None,
                             };
                             project
                                 .apply_change(&Change::UpsertCameraReframe { reframe })
@@ -5701,6 +5857,7 @@ mod tests {
                             end_center_x: camera.center_x,
                             end_center_y: camera.center_y,
                             duration_frames: 45,
+                            detail_return: None,
                         },
                     })
                     .unwrap();
@@ -5901,6 +6058,7 @@ mod tests {
                     end_center_x: camera.center_x,
                     end_center_y: camera.center_y,
                     duration_frames: 45,
+                    detail_return: None,
                 },
             })
             .unwrap();

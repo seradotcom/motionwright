@@ -2308,6 +2308,7 @@ fn seed_stage(
             end_center_x: 978.0,
             end_center_y: 540.0,
             duration_frames: 90,
+            detail_return: None,
         };
         service
             .apply(

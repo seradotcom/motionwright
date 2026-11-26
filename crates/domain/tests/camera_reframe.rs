@@ -63,6 +63,7 @@ fn reframe(scene_id: Uuid) -> CameraReframe {
         end_center_x: 980.0,
         end_center_y: 546.0,
         duration_frames: 90,
+        detail_return: None,
     }
 }
 #[test]
@@ -596,4 +597,140 @@ fn scoped_pose_moves_base_and_complete_track_atomically_under_camera_in_either_o
             .is_err()
     );
     assert_eq!(source, frozen);
+}
+
+#[test]
+fn detail_return_is_source_bound_and_invalidates_frames_without_rewriting_context() {
+    let (mut p, scene_id) = setup();
+    let before = p.scenes[0].clone();
+    let profile_id = p.deliverables[0].id;
+    let original = variant_dependency_fingerprint(&p, profile_id).unwrap();
+    let mut rig = reframe(scene_id);
+    rig.component_version = CAMERA_DETAIL_RETURN_VERSION;
+    rig.end_center_x = rig.start_center_x;
+    rig.end_center_y = rig.start_center_y;
+    rig.detail_return = Some(CameraDetailReturn {
+        center_x: 980.0,
+        center_y: 548.0,
+        zoom: 1.15,
+        approach_frames: 30,
+        hold_frames: 30,
+    });
+    p.apply_change(&Change::UpsertCameraReframe {
+        reframe: rig.clone(),
+    })
+    .unwrap();
+    assert_eq!(p.scenes[0].nodes, before.nodes);
+    assert_eq!(p.scenes[0].camera, before.camera);
+    let first = variant_dependency_fingerprint(&p, profile_id).unwrap();
+    assert_ne!(first.frame_inputs_sha256, original.frame_inputs_sha256);
+    assert_eq!(first.audio_inputs_sha256, original.audio_inputs_sha256);
+    assert_eq!(first.caption_inputs_sha256, original.caption_inputs_sha256);
+    let exact = serde_json::to_value(&p).unwrap();
+    assert_eq!(serde_json::from_value::<Project>(exact).unwrap(), p);
+
+    let mut revised = rig.clone();
+    revised.detail_return.as_mut().unwrap().hold_frames = 24;
+    p.apply_change(&Change::UpsertCameraReframe {
+        reframe: revised.clone(),
+    })
+    .unwrap();
+    let second = variant_dependency_fingerprint(&p, profile_id).unwrap();
+    assert_eq!(p.scenes[0].camera, before.camera);
+    assert_ne!(second.frame_inputs_sha256, first.frame_inputs_sha256);
+    assert_eq!(second.audio_inputs_sha256, first.audio_inputs_sha256);
+    assert_eq!(second.caption_inputs_sha256, first.caption_inputs_sha256);
+
+    for invalid in [
+        CameraReframe {
+            detail_return: None,
+            ..revised.clone()
+        },
+        CameraReframe {
+            component_version: CAMERA_REFRAME_VERSION,
+            ..revised.clone()
+        },
+        CameraReframe {
+            end_center_x: 970.0,
+            ..revised.clone()
+        },
+        CameraReframe {
+            duration_frames: 35,
+            ..revised.clone()
+        },
+        CameraReframe {
+            detail_return: Some(CameraDetailReturn {
+                zoom: 1.5,
+                ..revised.detail_return.unwrap()
+            }),
+            ..revised.clone()
+        },
+        CameraReframe {
+            detail_return: Some(CameraDetailReturn {
+                hold_frames: 0,
+                ..revised.detail_return.unwrap()
+            }),
+            ..revised.clone()
+        },
+    ] {
+        let saved = p.clone();
+        assert!(
+            p.apply_change(&Change::UpsertCameraReframe { reframe: invalid })
+                .is_err()
+        );
+        assert_eq!(p, saved);
+    }
+    for profile in [
+        DeliverableProfile {
+            frame_rate: RationalTime::new(25, 1).unwrap(),
+            ..p.deliverables[0].clone()
+        },
+        DeliverableProfile {
+            framing_strategy: FramingStrategy::Crop,
+            crop_approved: true,
+            ..p.deliverables[0].clone()
+        },
+    ] {
+        let saved = p.clone();
+        assert!(
+            p.apply_change(&Change::UpsertDeliverable { profile })
+                .is_err()
+        );
+        assert_eq!(p, saved);
+    }
+    let saved = p.clone();
+    assert!(
+        p.apply_change(&Change::SetSceneDuration {
+            scene_id,
+            duration: RationalTime::new(3, 1).unwrap()
+        })
+        .is_err()
+    );
+    assert_eq!(p, saved);
+    let mut unsafe_scene = p.scenes[0].clone();
+    unsafe_scene.nodes[0].x = 100.0;
+    assert!(revised.validate(&unsafe_scene).is_err());
+    let mut moving = p.scenes[0].clone();
+    let x = moving.nodes[0].x;
+    moving.nodes[0].keyframes.push(CanvasKeyframe {
+        at: RationalTime::ZERO,
+        property: MotionProperty::X,
+        value: x,
+        interpolation: MotionInterpolation::Linear,
+    });
+    assert!(revised.validate(&moving).is_err());
+    let mut wrong_wire = serde_json::to_value(&revised).unwrap();
+    wrong_wire["detail_return"] = serde_json::Value::Null;
+    assert!(serde_json::from_value::<CameraReframe>(wrong_wire).is_err());
+    assert!(
+        serde_json::to_value(reframe(scene_id))
+            .unwrap()
+            .get("detail_return")
+            .is_none()
+    );
+    p.apply_change(&Change::DetachCameraReframe { id: rig.id })
+        .unwrap();
+    assert_eq!(p.scenes[0].nodes, before.nodes);
+    assert_eq!(p.scenes[0].camera, before.camera);
+    assert!(p.production_design.camera_reframes.is_empty());
 }

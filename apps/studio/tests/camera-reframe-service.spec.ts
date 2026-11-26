@@ -980,3 +980,76 @@ test("Camera unconfirmed response cannot replay a real SQLite mutation",async({p
     }
   });
 }
+
+
+test("Camera detail and return retains v3 controls and exact context through actual Service reopen",async({page},info)=>{
+  const service=await ScopedChangeService.create({databasePath:info.outputPath("store","camera-detail-return.sqlite3"),desktopInvokeFixture:true});
+  let finalized=false;
+  try{
+    let project=(await service.fixtureBootstrap()).project;
+    for(const lock of [...project.locks])project=await service.apply(project,{type:"remove_lock",lock_id:lock.id});
+    const template=project.scenes[0].nodes[0];
+    expect(template).toBeDefined();
+    project=await service.apply(project,{type:"add_scene",name:"Original detail return",objective:"Planar original object detail",duration_seconds:6});
+    const sceneId=project.scenes.at(-1)!.id;
+    for(const [i,x] of [460,1050].entries()){
+      project=await service.apply(project,{type:"add_canvas_node",scene_id:sceneId,node:{...template,id:randomUUID(),name:"Original detail "+i,
+        kind:"rectangle",parent_id:null,x,y:420,width:175,height:120,rotation_deg:0,opacity:1,text:null,
+        coordinate_space:"project_pixels",z_index:i,relations:[],property_locks:[],keyframes:[],
+        style:{...template.style,fill:"#86C8D1",stroke:null,stroke_width:0,font_family:null,font_size:null,font_weight:null,line_height:null,blend_mode:"normal"}}});
+    }
+    const base=project,scene=base.scenes.find(item=>item.id===sceneId)!;
+    const writes=applyRequests(service).length;
+    await service.attachFixturePage(page,base.id);await page.goto("/");
+    const open=async()=>{
+      await button(page,"Production").click();await page.getByLabel("Production working scene",{exact:true}).selectOption(sceneId);
+      await button(page,"Camera").click();await expect(page.getByRole("heading",{name:"Camera Reframe",exact:true})).toBeVisible();
+    };
+    await open();
+    await page.getByLabel("Camera movement",{exact:true}).selectOption("detail");
+    await page.getByLabel("Detail center X",{exact:true}).fill("980");
+    await page.getByLabel("Detail center Y",{exact:true}).fill("548");
+    await page.getByLabel("Detail zoom",{exact:true}).fill("1e");
+    await expect(button(page,"Attach camera reframe")).toBeDisabled();
+    await page.reload();await open();
+    await expect(page.getByLabel("Camera movement",{exact:true})).toHaveValue("detail");
+    await expect(page.getByLabel("Detail zoom",{exact:true})).toHaveValue("1e");
+    await page.getByLabel("Detail zoom",{exact:true}).fill("1.15");
+    await page.getByLabel("Approach frames",{exact:true}).fill("30");
+    await page.getByLabel("Detail hold frames",{exact:true}).fill("30");
+    await page.getByLabel("Camera duration frames",{exact:true}).fill("90");
+    await expect(button(page,"Attach camera reframe")).toBeEnabled();
+    const playhead=page.getByLabel("Camera reframe playhead",{exact:true});
+    const svg=page.getByRole("region",{name:"Camera reframe editorial viewer",exact:true}).locator("svg.production-study");
+    await playhead.fill("1.5");await expect(svg).toHaveAttribute("data-camera-zoom","1.15");
+    await expect(svg).toHaveAttribute("data-camera-center-x","980");
+    await playhead.fill("3.5");await expect(svg).toHaveAttribute("data-camera-zoom","1");
+    await expect(svg).toHaveAttribute("data-camera-center-x","960");
+    expect(await service.project(base.id)).toEqual(base);
+    expect(applyRequests(service)).toHaveLength(writes);
+    await button(page,"Attach camera reframe").click();
+    await expect(page.locator(".command-bar .revision-chip")).toHaveText("r"+(base.revision+1));
+    const saved=await service.project(base.id);
+    const rig=saved.production_design?.camera_reframes?.find(item=>item.scene_id===sceneId);
+    expect(rig).toMatchObject({component_version:3,start_center_x:960,start_center_y:540,end_center_x:960,end_center_y:540,
+      duration_frames:90,detail_return:{center_x:980,center_y:548,zoom:1.15,approach_frames:30,hold_frames:30}});
+    expect(saved.scenes.find(item=>item.id===sceneId)?.nodes).toEqual(scene.nodes);
+    expect(saved.scenes.find(item=>item.id===sceneId)?.camera).toEqual(scene.camera);
+    await service.close();await service.start();await page.reload();await open();
+    await expect(page.getByLabel("Detail zoom",{exact:true})).toHaveValue("1.15");
+    await expect(page.getByLabel("Detail hold frames",{exact:true})).toHaveValue("30");
+    expect(await service.project(base.id)).toEqual(saved);
+    await button(page,"Detach, preserve final camera").click();
+    await expect(page.locator(".command-bar .revision-chip")).toHaveText("r"+(saved.revision+1));
+    const final=await service.project(base.id);
+    expect(final.production_design?.camera_reframes?.some(item=>item.id===rig?.id)).toBe(false);
+    expect(final.scenes.find(item=>item.id===sceneId)?.nodes).toEqual(scene.nodes);
+    expect(final.scenes.find(item=>item.id===sceneId)?.camera).toEqual(scene.camera);
+    expect((await service.history(base.id,base.revision,8)).map(event=>event.change.type)).toEqual(["upsert_camera_reframe","detach_camera_reframe"]);
+    const closure=await service.finalizeClosedStore(info.outputPath("closed-store"),final,[],[async()=>{await page.close();}]);
+    finalized=true;expect(closure.oracle?.project).toEqual(final);expect(service.lifecycleTaints).toEqual([]);
+  }finally{
+    if(!page.isClosed())await page.close();
+    if(!finalized)await service.close();
+  }
+});

@@ -12,6 +12,8 @@ use uuid::Uuid;
 pub const CAMERA_REFRAME_VERSION: u32 = 1;
 /// Closed Manim Community source contract; legacy Motion Canvas records stay v1.
 pub const CAMERA_REFRAME_MANIM_VERSION: u32 = 2;
+/// Explicit bounded detail-and-return on the original planar Motion Canvas.
+pub const CAMERA_DETAIL_RETURN_VERSION: u32 = 3;
 pub const CAMERA_REFRAME_FPS: i64 = 30;
 pub const CAMERA_REFRAME_MAX: usize = 16;
 pub const CAMERA_REF_CANVAS_WIDTH: f64 = 1920.0;
@@ -29,6 +31,31 @@ pub struct CameraReframe {
     pub end_center_y: f64,
     /// Exact 30fps duration; no silent shot/frame interpolation inference.
     pub duration_frames: u16,
+    /// Absent preserves the exact v1/v2 wire. Required only for v3.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_detail_return"
+    )]
+    pub detail_return: Option<CameraDetailReturn>,
+}
+
+/// The start/end centers are the same saved context. Approach and return
+/// use matching linear position/scale interpolation on one Native group.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CameraDetailReturn {
+    pub center_x: f64,
+    pub center_y: f64,
+    pub zoom: f64,
+    pub approach_frames: u16,
+    pub hold_frames: u16,
+}
+
+fn deserialize_detail_return<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<CameraDetailReturn>, D::Error> {
+    CameraDetailReturn::deserialize(deserializer).map(Some)
 }
 
 /// A common native transform frame keeps camera translation on a separate
@@ -329,7 +356,156 @@ fn camera_motion_start(node: &CanvasNode, scene: &Scene) -> Result<CanvasNode> {
 }
 
 impl CameraReframe {
+    fn validate_detail_return(&self, scene: &Scene) -> Result<()> {
+        let fail = |message: &str| DomainError::Invalid(format!("Camera detail return: {message}"));
+        let detail = self
+            .detail_return
+            .ok_or_else(|| fail("version 3 requires the complete detail parameters"))?;
+        if scene.id != self.scene_id
+            || scene.renderer != RendererKind::MotionCanvas
+            || scene.nodes.is_empty()
+            || scene.nodes.len() > 32
+        {
+            return Err(fail(
+                "requires a Motion Canvas scene with 1 to 32 original objects",
+            ));
+        }
+        // The terminal context is immutable during the move. Do not pretend
+        // arbitrary source rotation, hierarchy, blend or object animation can
+        // be coupled to this exact bounded planar zoom.
+        if scene.camera.zoom != 1.0
+            || scene.camera.rotation_deg != 0.0
+            || self.start_center_x != self.end_center_x
+            || self.start_center_y != self.end_center_y
+            || scene.camera.center_x != self.end_center_x
+            || scene.camera.center_y != self.end_center_y
+        {
+            return Err(fail(
+                "start and return must share the exact saved unit-zoom context",
+            ));
+        }
+        for (value, min, max) in [
+            (self.start_center_x, 720.0, 1200.0),
+            (self.start_center_y, 320.0, 760.0),
+            (detail.center_x, 720.0, 1200.0),
+            (detail.center_y, 320.0, 760.0),
+            (detail.zoom, 1.05, 1.25),
+            (scene.camera.safe_margin, 0.0, 0.49),
+        ] {
+            if !value.is_finite() || !(min..=max).contains(&value) {
+                return Err(fail("invalid bounded center, zoom or safe margin"));
+            }
+        }
+        if (detail.center_x - self.start_center_x).abs() > 80.0
+            || (detail.center_y - self.start_center_y).abs() > 80.0
+        {
+            return Err(fail(
+                "detail center may move at most 80 original pixels per axis",
+            ));
+        }
+        let used = u32::from(detail.approach_frames) + u32::from(detail.hold_frames);
+        if detail.approach_frames < 12
+            || detail.hold_frames < 1
+            || self.duration_frames > 180
+            || used + 12 > u32::from(self.duration_frames)
+            || RationalTime::new(i64::from(self.duration_frames) + 1, 30)
+                .map_err(|_| fail("invalid exact frame duration"))?
+                > scene.duration
+        {
+            return Err(fail(
+                "approach and return each need 12 frames, a positive hold, total at most 180 frames, and at least one final context frame",
+            ));
+        }
+        for node in &scene.nodes {
+            if !matches!(
+                node.kind.as_str(),
+                "shape" | "rectangle" | "circle" | "text"
+            ) || node.parent_id.is_some()
+                || !node.relations.is_empty()
+                || !node.keyframes.is_empty()
+                || node.coordinate_space != CoordinateSpace::ProjectPixels
+                || node.opacity != 1.0
+                || node.rotation_deg != 0.0
+                || node.style.blend_mode != BlendMode::Normal
+                || node.style.stroke.is_some()
+                || node.style.stroke_width != 0.0
+                || ![node.x, node.y, node.width, node.height]
+                    .iter()
+                    .all(|value| value.is_finite())
+                || node.width <= 0.0
+                || node.height <= 0.0
+            {
+                return Err(fail(
+                    "requires independent static original shapes/text without rotation, stroke, relation or blend writers",
+                ));
+            }
+        }
+        self.validate_detail_return_bounds(
+            scene,
+            1920.0,
+            1080.0,
+            scene.camera.safe_margin.max(0.05),
+        )
+    }
+
+    /// Match the native Replan geometry. With constant source frames, linear
+    /// scale and translation give every corner a convex path between these
+    /// two endpoints. This is geometry admission, not measured glyph pixels.
+    pub fn validate_detail_return_bounds(
+        &self,
+        scene: &Scene,
+        width: f64,
+        height: f64,
+        margin: f64,
+    ) -> Result<()> {
+        let detail = self
+            .detail_return
+            .ok_or_else(|| DomainError::Invalid("Missing camera detail parameters".into()))?;
+        let sx = width / 1920.0;
+        let sy = height / 1080.0;
+        let scale = sx.min(sy);
+        if ![width, height, margin].iter().all(|v| v.is_finite())
+            || width <= 0.0
+            || height <= 0.0
+            || !(0.0..0.5).contains(&margin)
+        {
+            return Err(DomainError::Invalid(
+                "Invalid camera detail output bounds".into(),
+            ));
+        }
+        for node in &scene.nodes {
+            for (cx, cy, zoom) in [
+                (self.start_center_x, self.start_center_y, 1.0),
+                (detail.center_x, detail.center_y, detail.zoom),
+            ] {
+                let x = width / 2.0 + (node.x + node.width / 2.0 - cx) * sx * zoom;
+                let y = height / 2.0 + (node.y + node.height / 2.0 - cy) * sy * zoom;
+                let hw = node.width * scale * zoom / 2.0;
+                let hh = node.height * scale * zoom / 2.0;
+                if x - hw + 1e-6 < width * margin
+                    || y - hh + 1e-6 < height * margin
+                    || x + hw - 1e-6 > width * (1.0 - margin)
+                    || y + hh - 1e-6 > height * (1.0 - margin)
+                {
+                    return Err(DomainError::Invalid(format!(
+                        "Camera detail return would crop original Canvas node {} in the selected safe area",
+                        node.id
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate(&self, scene: &Scene) -> Result<()> {
+        if self.component_version == CAMERA_DETAIL_RETURN_VERSION {
+            return self.validate_detail_return(scene);
+        }
+        if self.detail_return.is_some() {
+            return Err(DomainError::Invalid(
+                "Only camera detail-return version 3 may carry detail parameters".into(),
+            ));
+        }
         // Resolve the existing source relations once for the source camera
         // envelope. Native repeats projection with the selected output scale;
         // neither consumer mutates the original relation or keyframe list.
@@ -643,7 +819,11 @@ impl Project {
     }
 }
 impl ProductionDesign {
-    pub(crate) fn validate_camera_reframes(&self, scenes: &[Scene]) -> Result<()> {
+    pub(crate) fn validate_camera_reframes(
+        &self,
+        scenes: &[Scene],
+        profiles: &[DeliverableProfile],
+    ) -> Result<()> {
         if self.camera_reframes.len() > CAMERA_REFRAME_MAX {
             return Err(DomainError::Invalid(
                 "CameraReframe project capacity exceeded".into(),
@@ -664,6 +844,29 @@ impl ProductionDesign {
                     DomainError::Invalid("CameraReframe references a removed scene".into())
                 })?;
             reframe.validate(scene)?;
+            if reframe.component_version == CAMERA_DETAIL_RETURN_VERSION {
+                // Every selected delivery must consume the same complete
+                // source camera clock. No implicit crop or rate conversion.
+                for profile in profiles.iter().filter(|profile| {
+                    profile.included_scene_ids.is_empty()
+                        || profile.included_scene_ids.contains(&scene.id)
+                }) {
+                    if profile.frame_rate != RationalTime::new(30, 1).expect("camera fps")
+                        || profile.framing_strategy != FramingStrategy::Replan
+                    {
+                        return Err(DomainError::Invalid(format!(
+                            "Camera detail return requires exact 30fps Replan output: {}",
+                            profile.name
+                        )));
+                    }
+                    reframe.validate_detail_return_bounds(
+                        scene,
+                        f64::from(profile.width),
+                        f64::from(profile.height),
+                        scene.camera.safe_margin.max(0.05),
+                    )?;
+                }
+            }
         }
         Ok(())
     }
@@ -725,6 +928,7 @@ mod manim_camera_closed_pair_tests {
             end_center_x: 1000.0,
             end_center_y: 544.0,
             duration_frames: 24,
+            detail_return: None,
         }
     }
 

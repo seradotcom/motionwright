@@ -569,3 +569,29 @@ describe("Camera v2 recovered source identity",()=>{
     expect(cameraDraftValue(editCameraDraft(ack,"duration_frames","30")).component_version).toBe(2);
   });
 });
+
+
+it("retains complete v3 detail input and refuses an incomplete or wrong original acknowledgement",()=>{
+  const {project,scene,camera}=setup(),local=new MemoryStorage(),session=new MemoryStorage(),writer=uuid(121);
+  const detail:CameraReframe={...camera,component_version:3,end_center_x:camera.start_center_x,end_center_y:camera.start_center_y,
+    detail_return:{center_x:980,center_y:548,zoom:1.15,approach_frames:30,hold_frames:30}};
+  let draft=createCameraDraft(project,scene,detail);
+  draft=editCameraDraft(draft,"detail_zoom","1e");
+  draft=editCameraDraft(draft,"start_center_x","970");
+  writeCameraCopy(local,session,draft,writer);
+  const recovered=loadCameraCopy(local,session,cameraScope(project,scene))!.draft;
+  expect(recovered.fields.detail_zoom).toBe("1e");
+  expect(recovered.fields.start_center_x).toBe("970");
+  expect(recovered.fields.end_center_x).toBe("970");
+  expect(()=>cameraDraftValue(recovered)).toThrow(/complete finite Camera detail/);
+  const corrected=editCameraDraft(recovered,"detail_zoom","1.2"),source=cameraDraftValue(corrected);
+  expect(source.component_version).toBe(3);expect(source.detail_return?.zoom).toBe(1.2);
+  const sent=armCameraDraft(corrected,project,scene,"upsert",source,uuid(122));
+  const saved=structuredClone(project);saved.revision++;
+  saved.production_design=emptyProductionDesign();saved.production_design.camera_reframes=[structuredClone(source)];
+  expect(cameraAcknowledged(sent,saved,saved.scenes[0],uuid(122))).toBe(true);
+  saved.production_design.camera_reframes[0].detail_return!.hold_frames++;
+  expect(cameraAcknowledged(sent,saved,saved.scenes[0],uuid(122))).toBe(false);
+  saved.production_design.camera_reframes=[structuredClone(source)];
+  expect(cameraAcknowledged(sent,saved,saved.scenes[0])).toBe(false);
+});

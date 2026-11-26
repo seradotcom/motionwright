@@ -777,7 +777,7 @@ impl Project {
         }
         self.production_design.validate_capture_sources(self)?;
         self.production_design
-            .validate_camera_reframes(&self.scenes)?;
+            .validate_camera_reframes(&self.scenes, &self.deliverables)?;
         self.production_design
             .validate_creative_evaluators(self.revision)?;
         self.production_design.validate_identity_origins(self)?;

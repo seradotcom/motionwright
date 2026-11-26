@@ -14,6 +14,7 @@ import { resolveCanvasRelations } from "./canvasFollow";
 
 export const CAMERA_REFRAME_VERSION=1;
 export const CAMERA_REFRAME_MANIM_VERSION=2;
+export const CAMERA_DETAIL_RETURN_VERSION=3;
 export const CAMERA_REFRAME_FPS=30;
 export const CAMERA_REFRAME_MAX=16;
 export interface CameraReframe {
@@ -21,6 +22,16 @@ export interface CameraReframe {
   start_center_x:number;start_center_y:number;
   end_center_x:number;end_center_y:number;
   duration_frames:number;
+  detail_return?:CameraDetailReturn;
+}
+export interface CameraDetailReturn {
+  center_x:number;center_y:number;zoom:number;approach_frames:number;hold_frames:number;
+}
+export function isCameraDetailReturn(value:unknown):value is CameraDetailReturn{
+  if(!value||typeof value!=="object"||Array.isArray(value))return false;
+  const row=value as Record<string,unknown>,keys=["center_x","center_y","zoom","approach_frames","hold_frames"];
+  return Object.keys(row).length===keys.length&&keys.every(key=>Object.hasOwn(row,key)&&typeof row[key]==="number"&&Number.isFinite(row[key]))&&
+    Number.isSafeInteger(row.approach_frames)&&Number.isSafeInteger(row.hold_frames);
 }
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const KEYS=[
@@ -93,6 +104,61 @@ function cameraMotionPoses(node: Scene["nodes"][number], scene: Scene): PoseGeom
   return [draft.start, ...draft.waypoints.map(point => point.pose), node];
 }
 /** Source sampling and production admission share the exact same camera contract. */
+/** One exact shared geometry transform on original static objects. */
+function validateDetailReturn(source:CameraReframe,scene:Scene):void{
+  const detail=source.detail_return;
+  if(Object.keys(source).length!==KEYS.length+1||KEYS.some(key=>!Object.hasOwn(source,key))||!Object.hasOwn(source,"detail_return")||
+    !UUID.test(source.id)||!UUID.test(source.scene_id)||source.scene_id!==scene.id||!isCameraDetailReturn(detail))
+    invalid("version 3 requires the complete detail parameters");
+  if(scene.renderer!=="motion-canvas"||scene.nodes.length<1||scene.nodes.length>32)
+    invalid("detail return requires a Motion Canvas scene with 1 to 32 original objects");
+  if(scene.camera.zoom!==1||scene.camera.rotation_deg!==0||
+    source.start_center_x!==source.end_center_x||source.start_center_y!==source.end_center_y||
+    scene.camera.center_x!==source.end_center_x||scene.camera.center_y!==source.end_center_y)
+    invalid("detail start and return must share the exact saved unit-zoom context");
+  for(const [value,min,max] of [[source.start_center_x,720,1200],[source.start_center_y,320,760],
+    [detail.center_x,720,1200],[detail.center_y,320,760],[detail.zoom,1.05,1.25],[scene.camera.safe_margin,0,.49]])
+    if(!Number.isFinite(value)||value<min||value>max)invalid("invalid bounded detail center, zoom or safe margin");
+  if(Math.abs(detail.center_x-source.start_center_x)>80||Math.abs(detail.center_y-source.start_center_y)>80)
+    invalid("detail center may move at most 80 original pixels per axis");
+  let timingFits=false;
+  try{
+    timingFits=/^[1-9][0-9]{0,18}$/.test(scene.duration.num)&&/^[1-9][0-9]{0,18}$/.test(scene.duration.den)&&
+      Number.isSafeInteger(source.duration_frames)&&
+      BigInt(source.duration_frames+1)*BigInt(scene.duration.den)<=BigInt(scene.duration.num)*30n;
+  }catch{/* fail closed */}
+  if(detail.approach_frames<12||detail.hold_frames<1||source.duration_frames>180||
+    detail.approach_frames+detail.hold_frames+12>source.duration_frames||!timingFits)
+    invalid("approach and return each need 12 frames, a positive hold, total at most 180 frames, and at least one final context frame");
+  for(const node of scene.nodes){
+    if(!["shape","rectangle","circle","text"].includes(node.kind)||node.parent_id!==null||node.relations.length||node.keyframes.length||
+      node.coordinate_space!=="project_pixels"||node.opacity!==1||node.rotation_deg!==0||node.style.blend_mode!=="normal"||
+      node.style.stroke!==null||node.style.stroke_width!==0||![node.x,node.y,node.width,node.height].every(Number.isFinite)||
+      node.width<=0||node.height<=0)
+      invalid("detail return requires independent static original shapes/text without rotation, stroke, relation or blend writers");
+  }
+  validateCameraDetailReturnBounds(source,scene,1920,1080,Math.max(.05,scene.camera.safe_margin));
+}
+export function validateCameraDetailReturnBounds(source:CameraReframe,scene:Scene,width:number,height:number,margin:number):void{
+  const detail=source.detail_return;
+  if(!detail||![width,height,margin].every(Number.isFinite)||width<=0||height<=0||margin<0||margin>=.5)
+    invalid("invalid camera detail output bounds");
+  const sx=width/1920,sy=height/1080,scale=Math.min(sx,sy);
+  for(const node of scene.nodes)for(const [cx,cy,zoom] of [[source.start_center_x,source.start_center_y,1],[detail.center_x,detail.center_y,detail.zoom]]){
+    const x=width/2+(node.x+node.width/2-cx)*sx*zoom,y=height/2+(node.y+node.height/2-cy)*sy*zoom;
+    const hw=node.width*scale*zoom/2,hh=node.height*scale*zoom/2;
+    if(x-hw+1e-6<width*margin||y-hh+1e-6<height*margin||x+hw-1e-6>width*(1-margin)||y+hh-1e-6>height*(1-margin))
+      invalid("detail return would crop original Canvas node "+node.id+" in the selected safe area");
+  }
+}
+export function validateCameraDetailReturnProfiles(project:Project,source:CameraReframe,scene:Scene):void{
+  if(source.component_version!==CAMERA_DETAIL_RETURN_VERSION)return;
+  for(const profile of project.deliverables.filter(profile=>!profile.included_scene_ids.length||profile.included_scene_ids.includes(scene.id))){
+    if(profile.frame_rate.num!=="30"||profile.frame_rate.den!=="1"||profile.framing_strategy!=="replan")
+      invalid("detail return requires exact 30fps Replan output: "+profile.name);
+    validateCameraDetailReturnBounds(source,scene,profile.width,profile.height,Math.max(.05,scene.camera.safe_margin));
+  }
+}
 function validateCameraReframeCoordinates(source:CameraReframe,scene:Scene):void{
   if(!source || typeof source!=="object" || Array.isArray(source) ||
     Object.keys(source).sort().join("|")!==[...KEYS].sort().join("|"))
@@ -128,6 +194,7 @@ function validateCameraReframeTiming(source:CameraReframe,scene:Scene):void{
 }
 
 export function validateCameraReframeSource(source:CameraReframe,scene:Scene):void{
+  if(source.component_version===CAMERA_DETAIL_RETURN_VERSION){validateDetailReturn(source,scene);return;}
   validateCameraReframeCoordinates(source,scene);
   if(scene.camera.zoom!==1 || scene.camera.rotation_deg!==0)
     invalid("this planar reframe cannot represent optical zoom or 3D rotation");
@@ -135,6 +202,7 @@ export function validateCameraReframeSource(source:CameraReframe,scene:Scene):vo
 }
 
 export function validateCameraReframe(source:CameraReframe,scene:Scene):void{
+  if(source.component_version===CAMERA_DETAIL_RETURN_VERSION){validateDetailReturn(source,scene);return;}
   if(source.component_version===CAMERA_REFRAME_VERSION && scene.nodes.some(node=>node.relations.length)){
     const resolved=resolveCanvasRelations(scene.nodes,undefined,false,{duration:scene.duration,fps:{num:"30",den:"1"},continuous:true});
     if(resolved.issue) invalid(resolved.issue);
@@ -209,6 +277,7 @@ export function validateCameraReframes(project:Project):void{
     const scene=project.scenes.find(scene=>scene.id===move.scene_id);
     if(!scene)invalid("camera references an absent scene");
     validateCameraReframe(move,scene);
+    validateCameraDetailReturnProfiles(project,move,scene);
   }
 }
 type CameraChange=Extract<Change,{type:"upsert_camera_reframe"|"detach_camera_reframe"}>;
@@ -232,6 +301,7 @@ export function applyCameraReframeChange(project:Project,change:CameraChange):vo
     scene.camera.center_x=reframe.end_center_x;
     scene.camera.center_y=reframe.end_center_y;
     validateCameraReframe(reframe,scene);
+    validateCameraDetailReturnProfiles(project,reframe,scene);
     if(index>=0)moves[index]=structuredClone(reframe);
     else moves.push(structuredClone(reframe));
     scene.status="draft";
@@ -247,12 +317,27 @@ export function applyCameraReframeChange(project:Project,change:CameraChange):vo
   }
   project.production_design=design;
 }
-export function cameraPreviewOffset(move:CameraReframe,timeSeconds:number):{x:number;y:number}{
+export function cameraPoseAt(move:CameraReframe,timeSeconds:number):Pick<CameraState,"center_x"|"center_y"|"zoom">{
+  const detail=move.detail_return;
+  if(move.component_version===CAMERA_DETAIL_RETURN_VERSION&&detail){
+    const frame=Math.max(0,timeSeconds*CAMERA_REFRAME_FPS),returnStart=detail.approach_frames+detail.hold_frames;
+    const progress=frame<=detail.approach_frames?frame/detail.approach_frames:
+      frame<=returnStart?1:Math.max(0,(move.duration_frames-frame)/(move.duration_frames-returnStart));
+    const zoom=1+(detail.zoom-1)*progress;
+    // Native interpolates translation and scale together. Recover its implied
+    // center, rather than sampling a different linear camera trajectory.
+    const weight=progress*detail.zoom/zoom;
+    return {center_x:move.start_center_x+(detail.center_x-move.start_center_x)*weight,
+      center_y:move.start_center_y+(detail.center_y-move.start_center_y)*weight,zoom};
+  }
   const duration=move.duration_frames/CAMERA_REFRAME_FPS;
   const progress=Math.max(0,Math.min(1,timeSeconds/duration));
-  const cameraX=move.start_center_x+(move.end_center_x-move.start_center_x)*progress;
-  const cameraY=move.start_center_y+(move.end_center_y-move.start_center_y)*progress;
-  return {x:960-cameraX,y:540-cameraY};
+  return {center_x:move.start_center_x+(move.end_center_x-move.start_center_x)*progress,
+    center_y:move.start_center_y+(move.end_center_y-move.start_center_y)*progress,zoom:1};
+}
+export function cameraPreviewOffset(move:CameraReframe,timeSeconds:number):{x:number;y:number}{
+  const pose=cameraPoseAt(move,timeSeconds);
+  return {x:960-pose.center_x,y:540-pose.center_y};
 }
 
 
@@ -272,8 +357,7 @@ export function sampledSceneCamera(scene: Scene, moves: readonly CameraReframe[]
     if (!Number.isFinite(seconds(scene.duration)) || seconds(scene.duration) <= 0)
       invalid("camera source has no usable scene duration");
     validateCameraReframeSource(source, scene);
-    const offset = cameraPreviewOffset(source, time);
-    return { camera: { ...camera, center_x: 960 - offset.x, center_y: 540 - offset.y }, sourceId: source.id, issue: null };
+    return {camera:{...camera,...cameraPoseAt(source,time)},sourceId:source.id,issue:null};
   } catch (reason) {
     return { camera: null, sourceId: null, issue: reason instanceof Error ? reason.message : String(reason) };
   }

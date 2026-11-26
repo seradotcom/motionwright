@@ -1,11 +1,15 @@
 import type { Project, Scene } from "./types";
-import { CAMERA_REFRAME_VERSION, CAMERA_REFRAME_MANIM_VERSION, type CameraReframe } from "./cameraReframe";
+import { CAMERA_REFRAME_VERSION, CAMERA_REFRAME_MANIM_VERSION, CAMERA_DETAIL_RETURN_VERSION,isCameraDetailReturn,type CameraReframe } from "./cameraReframe";
 
 // Local author intent and its exact transport snapshot. Neither a recovery
 // record nor a pending ACK authorizes another service call.
 export const CAMERA_FIELDS = ["start_center_x","start_center_y","end_center_x","end_center_y","duration_frames"] as const;
-export type CameraField = typeof CAMERA_FIELDS[number];
-export type CameraRaw = Record<CameraField, string>;
+export const DETAIL_RETURN_FIELDS=["detail_center_x","detail_center_y","detail_zoom","approach_frames","hold_frames"] as const;
+type LegacyCameraField=typeof CAMERA_FIELDS[number];
+type DetailField=typeof DETAIL_RETURN_FIELDS[number];
+export type CameraField=LegacyCameraField|DetailField;
+export type CameraRaw=Record<LegacyCameraField,string>&Partial<Record<DetailField,string>>;
+const hasDetailFields=(fields:CameraRaw)=>DETAIL_RETURN_FIELDS.every(field=>Object.hasOwn(fields,field));
 export type CameraOperation = "upsert" | "detach";
 export interface CameraPending {
   id: string; revision: number; operation: CameraOperation;
@@ -29,8 +33,15 @@ const record = (value: unknown): value is Record<string,unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const uuid = (value: unknown): value is string =>
   typeof value === "string" && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
-export const cameraFields = (camera: CameraReframe): CameraRaw =>
-  Object.fromEntries(CAMERA_FIELDS.map(field => [field,String(camera[field])])) as CameraRaw;
+export const cameraFields = (camera: CameraReframe): CameraRaw => {
+  const fields=Object.fromEntries(CAMERA_FIELDS.map(field=>[field,String(camera[field])])) as CameraRaw;
+  if(camera.component_version===CAMERA_DETAIL_RETURN_VERSION&&camera.detail_return){
+    const detail=camera.detail_return;
+    Object.assign(fields,{detail_center_x:String(detail.center_x),detail_center_y:String(detail.center_y),
+      detail_zoom:String(detail.zoom),approach_frames:String(detail.approach_frames),hold_frames:String(detail.hold_frames)});
+  }
+  return fields;
+};
 export function createCameraDraft(project: Project, scene: Scene, source: CameraReframe): CameraDraft {
   return { schema:"motionwright.camera-draft/1",scope:cameraScope(project,scene),
     cameraId:source.id,sceneId:scene.id,baseRevision:project.revision,
@@ -38,25 +49,38 @@ export function createCameraDraft(project: Project, scene: Scene, source: Camera
     initial:cameraFields(source),fields:cameraFields(source),sequence:0,awaiting:null };
 }
 export function cameraDraftChanged(draft: CameraDraft): boolean {
-  return CAMERA_FIELDS.some(field => draft.fields[field] !== draft.initial[field]);
+  return [...CAMERA_FIELDS,...DETAIL_RETURN_FIELDS].some(field=>draft.fields[field]!==draft.initial[field]);
 }
 export function editCameraDraft(draft: CameraDraft, field: CameraField, raw: string): CameraDraft {
   if (raw.length > 64) throw new Error("A Camera parameter exceeds 64 characters.");
-  return {...draft,fields:{...draft.fields,[field]:raw},sequence:draft.sequence+1};
+  const fields={...draft.fields,[field]:raw};
+  if(hasDetailFields(draft.fields)){
+    if(field==="start_center_x")fields.end_center_x=raw;
+    if(field==="start_center_y")fields.end_center_y=raw;
+    if(field==="end_center_x"||field==="end_center_y")throw new Error("Detail return uses its original context as the final camera.");
+  }else if((DETAIL_RETURN_FIELDS as readonly string[]).includes(field))throw new Error("Choose a detail-return draft before editing its parameters.");
+  return {...draft,fields,sequence:draft.sequence+1};
 }
 const decimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
 // A saved component selects its own version. Renderer choice and foreign or
 // incomplete recovery records never imply migration of the authored camera.
 function validDraftSource(value:unknown,cameraId:string,sceneId:string):value is CameraReframe {
-  return record(value) && Object.keys(value).length===CAMERA_FIELDS.length+3 &&
-    value.id===cameraId && value.scene_id===sceneId && uuid(value.id) && uuid(value.scene_id) &&
-    (value.component_version===CAMERA_REFRAME_VERSION || value.component_version===CAMERA_REFRAME_MANIM_VERSION) &&
-    CAMERA_FIELDS.every(field=>typeof value[field]==="number" && Number.isFinite(value[field])) &&
-    Number.isSafeInteger(value.duration_frames);
+  if(!record(value)||value.id!==cameraId||value.scene_id!==sceneId||!uuid(value.id)||!uuid(value.scene_id)||
+    !CAMERA_FIELDS.every(field=>typeof value[field]==="number"&&Number.isFinite(value[field]))||
+    !Number.isSafeInteger(value.duration_frames))return false;
+  if(value.component_version===CAMERA_DETAIL_RETURN_VERSION)
+    return Object.keys(value).length===CAMERA_FIELDS.length+4&&isCameraDetailReturn(value.detail_return)&&
+      value.start_center_x===value.end_center_x&&value.start_center_y===value.end_center_y;
+  return Object.keys(value).length===CAMERA_FIELDS.length+3&&!Object.hasOwn(value,"detail_return")&&
+    (value.component_version===CAMERA_REFRAME_VERSION||value.component_version===CAMERA_REFRAME_MANIM_VERSION);
 }
 function draftComponentVersion(draft:CameraDraft):number {
-  if(draft.base===null)return CAMERA_REFRAME_VERSION;
-  if(!validDraftSource(draft.base,draft.cameraId,draft.sceneId))
+  const detail=hasDetailFields(draft.fields);
+  if(!detail&&DETAIL_RETURN_FIELDS.some(field=>Object.hasOwn(draft.fields,field)))
+    throw new Error("The detail-return draft is incomplete; original inputs were retained.");
+  if(draft.base===null)return detail?CAMERA_DETAIL_RETURN_VERSION:CAMERA_REFRAME_VERSION;
+  if(!validDraftSource(draft.base,draft.cameraId,draft.sceneId)||
+    detail!==(draft.base.component_version===CAMERA_DETAIL_RETURN_VERSION))
     throw new Error("The saved Camera source version or identity is invalid; original copies were retained.");
   return draft.base.component_version;
 }
@@ -70,6 +94,19 @@ export function cameraDraftValue(draft: CameraDraft): CameraReframe {
     if (!Number.isFinite(value) || (field === "duration_frames" && !Number.isSafeInteger(value)))
       throw new Error("Enter a finite Camera number; duration must be whole frames.");
     camera[field]=value;
+  }
+  if(camera.component_version===CAMERA_DETAIL_RETURN_VERSION){
+    const values=Object.fromEntries(DETAIL_RETURN_FIELDS.map(field=>{
+      const raw=draft.fields[field]?.trim()??"";
+      if(!decimal.test(raw)||!Number.isFinite(Number(raw))||
+        (field.endsWith("_frames")&&!Number.isSafeInteger(Number(raw))))
+        throw new Error("Enter a complete finite Camera detail number for "+field+".");
+      return [field,Number(raw)];
+    }));
+    camera.detail_return={center_x:values.detail_center_x,center_y:values.detail_center_y,zoom:values.detail_zoom,
+      approach_frames:values.approach_frames,hold_frames:values.hold_frames};
+    if(camera.start_center_x!==camera.end_center_x||camera.start_center_y!==camera.end_center_y)
+      throw new Error("Camera detail return must preserve the same context.");
   }
   return camera;
 }
@@ -90,6 +127,8 @@ export function rebaseCameraDraft(draft: CameraDraft,project:Project,scene:Scene
   const saved=project.production_design?.camera_reframes?.find(item=>item.scene_id===ownedScene.id)??null;
   if(saved&&saved.id!==draft.cameraId)
     throw new Error("Saved Camera identity changed. Restore the saved Camera explicitly.");
+  if(saved&&(saved.component_version===CAMERA_DETAIL_RETURN_VERSION)!==hasDetailFields(draft.fields))
+    throw new Error("Saved Camera detail mode changed. Restore the saved Camera explicitly.");
   return {...draft,baseRevision:project.revision,base:structuredClone(saved)};
 }
 export function armCameraDraft(draft:CameraDraft, project:Project,scene:Scene,
@@ -123,7 +162,13 @@ export function cameraAcknowledged(draft:CameraDraft,project:Project,scene:Scene
   return actual.id===expected.id && actual.scene_id===expected.scene_id &&
     actual.component_version===expected.component_version &&
     CAMERA_FIELDS.every(field=>Number.isFinite(actual[field]) &&
-      Number.isFinite(expected[field]) && actual[field]===expected[field]);
+      Number.isFinite(expected[field]) && actual[field]===expected[field])&&
+    (expected.component_version===CAMERA_DETAIL_RETURN_VERSION
+      ?isCameraDetailReturn(actual.detail_return)&&isCameraDetailReturn(expected.detail_return)&&
+        actual.detail_return.center_x===expected.detail_return.center_x&&actual.detail_return.center_y===expected.detail_return.center_y&&
+        actual.detail_return.zoom===expected.detail_return.zoom&&actual.detail_return.approach_frames===expected.detail_return.approach_frames&&
+        actual.detail_return.hold_frames===expected.detail_return.hold_frames
+      :!Object.hasOwn(actual,"detail_return")&&!Object.hasOwn(expected,"detail_return"));
 }
 
 export function acknowledgeCameraDraft(draft:CameraDraft,originalAttemptId:string,
@@ -164,8 +209,13 @@ export function validCameraDraft(value:unknown,scope:string):value is CameraDraf
     if(typeof value.initial[field]!=="string"||typeof value.fields[field]!=="string"||
       (value.initial[field] as string).length>64||(value.fields[field] as string).length>64)return false;
   }
-  const extra=Object.keys(value.fields).filter(field=>!CAMERA_FIELDS.includes(field as CameraField));
-  if(extra.length)return false;
+  const detail=DETAIL_RETURN_FIELDS.some(field=>Object.hasOwn(value.fields as object,field)||Object.hasOwn(value.initial as object,field));
+  if(detail&&DETAIL_RETURN_FIELDS.some(field=>typeof (value.fields as Record<string,unknown>)[field]!=="string"||
+    typeof (value.initial as Record<string,unknown>)[field]!=="string"||
+    ((value.fields as Record<string,string>)[field]).length>64||((value.initial as Record<string,string>)[field]).length>64))return false;
+  const allowed:readonly string[]=detail?[...CAMERA_FIELDS,...DETAIL_RETURN_FIELDS]:CAMERA_FIELDS;
+  if(Object.keys(value.fields).some(field=>!allowed.includes(field))||
+    Object.keys(value.initial).some(field=>!allowed.includes(field)))return false;
   if(value.awaiting!==null) {
     const sent=value.awaiting;
     if(!record(sent)||!uuid(sent.id)||typeof sent.revision!=="number"||
@@ -175,7 +225,10 @@ export function validCameraDraft(value:unknown,scope:string):value is CameraDraf
       (sent.operation==="upsert"&&!validDraftSource(sent.source,value.cameraId,value.sceneId))||
       (sent.operation==="detach"&&sent.source!==null))return false;
   }
-  if(value.base!==null&&!validDraftSource(value.base,value.cameraId,value.sceneId))return false;
+  if(value.base!==null&&(!validDraftSource(value.base,value.cameraId,value.sceneId)||
+    (value.base.component_version===CAMERA_DETAIL_RETURN_VERSION)!==detail))return false;
+  if(value.awaiting!==null&&record(value.awaiting)&&value.awaiting.operation==="upsert"&&
+    record(value.awaiting.source)&&(value.awaiting.source.component_version===CAMERA_DETAIL_RETURN_VERSION)!==detail)return false;
   return true;
 }
 export function decodeCameraCopy(raw:string,scope:string,writerId:string):CameraDraft {

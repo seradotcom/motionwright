@@ -1,7 +1,7 @@
 import type { CanvasNode, DeliverableProfile, Project, Scene } from "./types";
 import { heroNodeId, mergeComponentNodes, realizeProductHero } from "./creativeProduction";
 import { realizeProceduralFieldForOutput } from "./proceduralField";
-import { sampledSceneCamera } from "./cameraReframe";
+import { sampledSceneCamera,CAMERA_DETAIL_RETURN_VERSION,validateCameraDetailReturnBounds } from "./cameraReframe";
 import { previewTransform } from "./canvasMotion";
 import { resolveCanvasRelations } from "./canvasFollow";
 import { alignmentScale } from "./canvasAlignment";
@@ -126,8 +126,14 @@ export function sampleProfileLayout(project: Project, scene: Scene, profile: Del
   if (hierarchyIssue) throw new Error("Output layout hierarchy is unresolved: " + hierarchyIssue);
   const sampled = sampledSceneCamera(scene, project.production_design?.camera_reframes, time);
   if (!sampled.camera) throw new Error(sampled.issue);
-  if (sampled.camera.zoom !== 1 || sampled.camera.rotation_deg !== 0)
+  const detailSource=project.production_design?.camera_reframes?.find(camera=>camera.id===sampled.sourceId&&camera.component_version===CAMERA_DETAIL_RETURN_VERSION);
+  if ((!detailSource&&sampled.camera.zoom!==1)||sampled.camera.rotation_deg!==0)
     throw new Error("This output study requires the planar camera profile. Review other camera poses in Native.");
+  if(detailSource){
+    if(profile.framing_strategy!=="replan"||profile.frame_rate.num!=="30"||profile.frame_rate.den!=="1")
+      throw new Error("Camera detail return requires exact 30fps Replan output.");
+    validateCameraDetailReturnBounds(detailSource,scene,profile.width,profile.height,Math.max(.05,sampled.camera.safe_margin));
+  }
   if (![profile.width, profile.height].every(value => Number.isInteger(value) && value >= 320 && value <= 7680))
     throw new Error("Output layout dimensions are out of bounds.");
   const alignment = resolveCanvasRelations(scene.nodes, alignmentScale(profile.width, profile.height, profile.framing_strategy), false,
@@ -137,17 +143,21 @@ export function sampleProfileLayout(project: Project, scene: Scene, profile: Del
   if (!replan && profile.framing_strategy !== "crop") throw new Error("Unknown output framing strategy.");
   const scaleX = profile.width / 1920, scaleY = profile.height / 1080;
   const sx = replan ? scaleX : Math.max(scaleX, scaleY), sy = replan ? scaleY : sx;
-  const scale = replan ? Math.min(scaleX, scaleY) : sx;
-  const offsetX = (replan ? 0 : (profile.width - 1920 * scale) / 2) + (960 - sampled.camera.center_x) * sx;
-  const offsetY = (replan ? 0 : (profile.height - 1080 * scale) / 2) + (540 - sampled.camera.center_y) * sy;
+  const baseScale = replan ? Math.min(scaleX, scaleY) : sx;
+  const zoom=sampled.camera.zoom;
+  const scale=baseScale*zoom;
+  const offsetX = (replan ? 0 : (profile.width - 1920 * baseScale) / 2) + (960 - sampled.camera.center_x) * sx;
+  const offsetY = (replan ? 0 : (profile.height - 1080 * baseScale) / 2) + (540 - sampled.camera.center_y) * sy;
   const boundaryIssues: string[] = [];
   const nodes = scene.nodes.map(node => {
     const track = alignment.tracks.get(node.id);
     const pose = { ...previewTransform(track ? { ...node, keyframes: track } : node, time), ...alignment.positions.get(node.id) };
     const width = pose.width * scale, height = pose.height * scale;
     const projected: CanvasNode = { ...structuredClone(node), ...pose,
-      x: (pose.x + pose.width / 2) * sx + offsetX - width / 2,
-      y: (pose.y + pose.height / 2) * sy + offsetY - height / 2, width, height,
+      x: zoom===1?(pose.x+pose.width/2)*sx+offsetX-width/2:
+        profile.width/2+((pose.x+pose.width/2)*sx+offsetX-profile.width/2)*zoom-width/2,
+      y: zoom===1?(pose.y+pose.height/2)*sy+offsetY-height/2:
+        profile.height/2+((pose.y+pose.height/2)*sy+offsetY-profile.height/2)*zoom-height/2,width,height,
       style: { ...node.style, font_size: node.style.font_size === null ? null : node.style.font_size * scale,
         stroke_width: node.style.stroke_width * scale }, keyframes: [], relations: [] };
     if (replan && !["group", "clip_group"].includes(node.kind) && pose.opacity > 0) {
