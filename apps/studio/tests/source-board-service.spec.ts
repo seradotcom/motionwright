@@ -1,5 +1,5 @@
 import {createHash,randomUUID} from "node:crypto";
-import {mkdir,writeFile,unlink} from "node:fs/promises";
+import {mkdir,writeFile,unlink,readFile} from "node:fs/promises";
 import {expect,test,type Page,type TestInfo} from "@playwright/test";
 import type {Project} from "../src/types";
 import type {CaptureSourceRecord} from "../src/captureSource";
@@ -19,30 +19,58 @@ async function importOriginal(service:ScopedChangeService,project:Project,path:s
   return {project:next,asset:asset!};
 }
 async function captureFixture(service:ScopedChangeService,project:Project,fixture:Page,info:TestInfo,index:number){
-  // Deliberately synthetic original viewport raster. No customer UI, actual
-  // interaction recording, or independently attested production claim.
+  // Execute the existing admitted first-party scenario on actual Studio
+  // backed by this original Service. The fixture data remains synthetic.
+  project=await service.apply(project,{type:"rename_project",
+    title:index===0?"Source board before state":"Source board after state"});
+  const observed=project.revision;
+  const origin=new URL(info.project.use.baseURL!).origin;
+  expect(origin).toBe("http://127.0.0.1:1420");
+  const commit=process.env.GITHUB_SHA!;
+  expect(commit).toMatch(/^[0-9a-f]{40}$/);
+  const version=JSON.parse(await readFile("package.json","utf8")).version as string;
   await fixture.setViewportSize({width:1440,height:940});
-  const fill=index===0?"#245060":"#684020";
-  await fixture.setContent('<body style="margin:0;background:'+fill+'"><div style="position:absolute;left:100px;top:50px;width:80px;height:24px;background:#0B0B0B" class="revision-chip"></div><div style="position:absolute;left:300px;top:250px;width:'+ (index===0?"240":"600") +'px;height:120px;background:#D9E5E6"></div></body>');
-  const bytes=await fixture.screenshot({scale:"css",animations:"disabled"});
-  expect(sha(await fixture.screenshot({scale:"css",animations:"disabled"}))).toBe(sha(bytes));
+  if(index===0)await service.attachFixturePage(fixture,project.id);
+  const external:string[]=[];
+  await fixture.route("**/*",async route=>{
+    if(new URL(route.request().url()).origin!==origin){
+      external.push(route.request().url());await route.abort("blockedbyclient");
+    }else await route.continue();
+  });
+  await fixture.goto("/");
+  await button(fixture,"Production").click();
+  await expect(fixture.getByRole("heading",{name:"ProductHeroReveal",exact:true})).toBeVisible();
+  await fixture.addStyleTag({content:"* { animation: none !important; transition: none !important; caret-color: transparent !important; }"});
+  await fixture.evaluate(async()=>{await document.fonts.ready;});
+  expect(await fixture.locator("input[type=password]:visible").count()).toBe(0);
+  expect(await fixture.evaluate(()=>window.devicePixelRatio)).toBe(1);
+  const chip=fixture.locator(".revision-chip");
+  await expect(chip).toHaveText("r"+observed);
+  const box=await chip.boundingBox();expect(box).not.toBeNull();
+  const x=Math.floor(box!.x),y=Math.floor(box!.y);
+  const mask={selector:".revision-chip",x,y,width:Math.ceil(box!.x+box!.width)-x,
+    height:Math.ceil(box!.y+box!.height)-y,mask_color:"#0B0B0B"};
+  const capture=()=>fixture.screenshot({scale:"css",animations:"disabled",caret:"hide",
+    mask:[chip],maskColor:mask.mask_color,fullPage:false});
+  const bytes=await capture();
+  expect(sha(await capture())).toBe(sha(bytes));
+  expect(external).toEqual([]);
+  await fixture.unroute("**/*");
   const directory=info.outputPath("original-source-"+index);
   await mkdir(directory,{recursive:true});
   const image=await importOriginal(service,project,info.outputPath("original-source-"+index,"capture.png"),bytes,"image/png");
-  const observed=image.project.revision;
   project=await service.apply(image.project,{type:"add_claim",text:"Synthetic first-party source board fixture "+index,
     source:{kind:"project_revision",revision:observed},context:"synthetic-first-party-capture-validation",source_revision:"synthetic-board-test"});
   const claim=project.brief.claims.at(-1)!;
   const state=await importOriginal(service,project,info.outputPath("original-source-"+index,"fixture.json"),JSON.stringify({
     id:project.id,generation:project.generation,revision:observed,claims:[claim],
   }),"application/json");
-  const mask={selector:".revision-chip",x:100,y:50,width:80,height:24,mask_color:"#0B0B0B"};
   const screenshotSha=image.asset.content_sha256!,stateSha=state.asset.content_sha256!;
   const manifest=await importOriginal(service,state.project,info.outputPath("original-source-"+index,"manifest.json"),JSON.stringify({
     schema:"motionwright.first-party-capture-evidence/1",
-    app:{id:"motionwright-studio",version:"0.1.0",source_revision:"b".repeat(40)},
+    app:{id:"motionwright-studio",version,source_revision:commit},
     scenario:{id:"production-original-ui-local-v1",origin:"http://127.0.0.1:1420",route:"/",
-      actions:["fixture:synthetic-source-board-raster"],viewport:{width:1440,height:940,device_scale_factor:1},
+      actions:["open:/","click:Production"],viewport:{width:1440,height:940,device_scale_factor:1},
       browser:"chromium",fixture_kind:"synthetic-first-party-data",auth_mode:"none",external_requests:0,credential_fields:0},
     claim_id:claim.id,fixture_state_sha256:stateSha,redactions:[mask],
     capture:{path:"capture.png",sha256:screenshotSha,repeated_sha256:screenshotSha,pixel_equal:true,redacted:true,
@@ -54,7 +82,7 @@ async function captureFixture(service:ScopedChangeService,project:Project,fixtur
     screenshot_repeat_sha256:screenshotSha,manifest_asset_id:manifest.asset.id,manifest_sha256:manifest.asset.content_sha256!,
     fixture_state_asset_id:state.asset.id,fixture_state_sha256:stateSha,claim_id:claim.id,
     source_project_id:project.id,source_generation:project.generation,source_revision:observed,
-    app_id:"motionwright-studio",app_version:"0.1.0",source_commit:"b".repeat(40),
+    app_id:"motionwright-studio",app_version:version,source_commit:commit,
     scenario_id:"production-original-ui-local-v1",origin:"http://127.0.0.1:1420",route:"/",
     viewport_width:1440,viewport_height:940,device_scale_factor:1,redaction:mask,external_requests:0,credential_fields:0,
     declared_scope:"first-party-synthetic-fixture-only",

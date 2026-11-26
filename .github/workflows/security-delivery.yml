@@ -104,7 +104,7 @@ on:
         type: choice
         required: false
         default: all
-        options: [all, static-group, static-alignment, static-layout, follow, follow-ui, static-rotation, creative-batch, audio-cut, native-preview-blend, delivery-hero, measured-comparison, series-silence, camera-craft, source-boards]
+        options: [all, static-group, static-alignment, static-layout, follow, follow-ui, static-rotation, creative-batch, audio-cut, native-preview-blend, delivery-hero, measured-comparison, series-silence, camera-craft, source-boards, source-boards-ui]
       interchange_case:
         description: One original Studio flow for native-otio-real-media; no other suites
         type: choice
@@ -634,6 +634,9 @@ jobs:
             static-rotation)
               specs=(tests/native-static-rotation-service.spec.ts tests/native-follow-service.spec.ts)
               selected_cases='saved shape rotation persists|saved Follow inherits translation' ;;
+            source-boards-ui)
+              specs=(tests/source-board-service.spec.ts)
+              selected_cases='.' ;;
             source-boards)
               specs=(tests/source-board-service.spec.ts tests/craft-library.spec.ts)
               selected_cases='.' ;;
@@ -672,10 +675,12 @@ jobs:
           result = json.loads(Path(os.environ["PLAYWRIGHT_JSON_OUTPUT_FILE"]).read_text(encoding="utf-8"))
           stats = result["stats"]
           selection = os.environ["MOTIONWRIGHT_FIRST_USE_CASE"]
-          expected = {"all": 9, "static-group": 1, "static-alignment": 1, "static-layout": 2, "follow": 1, "follow-ui": 1, "static-rotation": 2, "creative-batch": 25, "audio-cut": 5, "native-preview-blend": 2, "delivery-hero": 7, "measured-comparison": 4, "series-silence": 5, "camera-craft": 13, "source-boards": 5}[selection]
+          expected = {"all": 9, "static-group": 1, "static-alignment": 1, "static-layout": 2, "follow": 1, "follow-ui": 1, "static-rotation": 2, "creative-batch": 25, "audio-cut": 5, "native-preview-blend": 2, "delivery-hero": 7, "measured-comparison": 4, "series-silence": 5, "camera-craft": 13, "source-boards": 5, "source-boards-ui": 1}[selection]
           assert stats["expected"] == expected, stats
           assert all(stats.get(key, 0) == 0 for key in ("unexpected","flaky","skipped")), stats
-          if selection == "source-boards":
+          if selection == "source-boards-ui":
+              print(f"SOURCE_BOARD_ORIGINAL_SERVICE_STUDIO=PASS; cases={expected}; real_Service_SQLite_cases=1; original_capture_sources=SYNTHETIC_FIRST_PARTY_ACTUAL_STUDIO; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+          elif selection == "source-boards":
               print(f"SOURCE_BOARD_STUDIO=PASS; cases={expected}; real_Service_SQLite_cases=1; browser_fixture_cases=4; original_capture_sources=SYNTHETIC_FIRST_PARTY; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           elif selection == "camera-craft":
               print(f"CAMERA_MASK_GRAPH_STUDIO=PASS; cases={expected}; real_Service_SQLite_cases=9; browser_fixture_cases=4; original_source=SYNTHETIC; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
