@@ -26,6 +26,10 @@ MAX_MEMBERS = 4096
 MAX_DEPTH = 16
 MAX_FILE = 512 * 1024 * 1024
 MAX_TOTAL = 512 * 1024 * 1024
+# Original 45776358779 carries 568,753,189 regular bytes with bundled WebKit
+# and GStreamer. Only AppImage gets this finite aggregate allowance; each
+# file, member count, descriptor identity and hardlink refusal stay bounded.
+APPIMAGE_MAX_TOTAL = 640 * 1024 * 1024
 MAX_REPORT = 32 * 1024 * 1024
 MAX_STREAM = 8 * 1024 * 1024
 SHA = re.compile(r"[0-9a-f]{64}")
@@ -51,12 +55,19 @@ CLAIMS = {
 
 
 class InventoryError(ValueError):
-    pass
+    def __init__(self, code, *, member_details=None):
+        super().__init__(code)
+        self.member_details = member_details
 
 
 def require(value, code):
     if not value:
         raise InventoryError(code)
+
+
+def package_byte_budget(kind=None):
+    require(kind is None or kind in PROFILES, "inventory_package_kind")
+    return APPIMAGE_MAX_TOTAL if kind == "appimage" else MAX_TOTAL
 
 
 def digest(raw):
@@ -113,10 +124,10 @@ def require_file_budget(path, info, limit=MAX_FILE):
     if info.st_nlink != 1 or not 0 <= info.st_size <= maximum:
         # Keep the refusal, but identify the original member so a packaging
         # defect does not require another full build just to locate it.
-        detail = json.dumps({"path": str(path), "bytes": info.st_size,
-                             "links": info.st_nlink, "max_bytes": maximum},
-                            ensure_ascii=True, sort_keys=True)
-        raise InventoryError("inventory_file_budget_or_hardlink:" + detail)
+        member = str(path) if not Path(path).is_absolute() else Path(path).name
+        detail = {"path": member[:1024], "bytes": info.st_size,
+                  "links": info.st_nlink, "max_bytes": maximum}
+        raise InventoryError("inventory_file_budget_or_hardlink", member_details=detail)
 
 
 def stable_file(path, limit=MAX_FILE):
@@ -207,17 +218,19 @@ def _namespace(root):
     return anchor, sorted(rows, key=lambda r: r["path"])
 
 
-def observe_tree(root, role):
-    """Enumerate actual names twice, including empty directories and links."""
+def observe_tree(root, role, *, kind=None):
+    """Enumerate actual names twice under the selected package's fixed budget."""
+    budget = package_byte_budget(kind)
     root = owned._validated_path(root)
     anchor, before = _namespace(root)
     rows, total = [], 0
     for row in before:
         if row["kind"] == "file":
+            require(row["stat"]["st_size"] <= budget - total, "inventory_total_budget")
             identity, native = stable_file(root / Path(*row["path"].split("/")),
-                                           MAX_TOTAL - total)
+                                           budget - total)
             total += identity["bytes"]
-            require(total <= MAX_TOTAL, "inventory_total_budget")
+            require(total <= budget, "inventory_total_budget")
             rows.append({**row, **identity, "native_format": native})
         else:
             rows.append(dict(row))
@@ -630,7 +643,8 @@ def validate(report):
                 "inventory_roster_digest_or_count")
         all_bytes += total
         all_members += len(rows)
-    require(all_bytes <= MAX_TOTAL and all_members <= MAX_MEMBERS, "inventory_aggregate_budget")
+    require(all_bytes <= package_byte_budget(context["kind"])
+            and all_members <= MAX_MEMBERS, "inventory_aggregate_budget")
     origins = report["origins"]
     require(isinstance(origins, list) and len(origins) <= MAX_MEMBERS * 4, "inventory_origin_budget")
     origin_ids = []
@@ -791,7 +805,7 @@ def observe_existing(*, repo, source, kind, artifact, receipt, roots, directory,
                 for path in roots.values()), "inventory_output_overlaps_observation")
     require(set(roots) == PROFILES[kind][1], "inventory_root_roles")
     directory = capture.new_directory(repo, directory)
-    observed = [observe_tree(path, role) for role, path in sorted(roots.items())]
+    observed = [observe_tree(path, role, kind=kind) for role, path in sorted(roots.items())]
     require(authenticate_inputs(repo, source, kind, artifact, receipt) == before,
             "inventory_inputs_changed")
     return _write_report(directory, compose(before, observed, nsis_listing=nsis_listing))
@@ -852,7 +866,7 @@ def extract_and_observe(*, repo, source, kind, artifact, receipt, work, director
         label, argv, cwd = commands[0]
         extraction.run_owned(argv, cwd, directory, label, env=environment,
                              stream_limit=MAX_STREAM, timeout=90)
-        observed = [observe_tree(path, role) for role, path in sorted(roots.items())]
+        observed = [observe_tree(path, role, kind=kind) for role, path in sorted(roots.items())]
         require(_tool_identities(commands) == tools, "inventory_extraction_tool_changed")
         require(authenticate_inputs(repo, source, kind, artifact, receipt) == before,
                 "inventory_inputs_changed")
@@ -889,7 +903,7 @@ def consume(*, repo, source, kind, artifact, receipt, directory, expected_sha256
     observed = report["roots"]
     if roots is not None:
         require(set(roots) == PROFILES[kind][1], "inventory_root_roles")
-        require([observe_tree(path, role) for role, path in sorted(roots.items())] == observed,
+        require([observe_tree(path, role, kind=kind) for role, path in sorted(roots.items())] == observed,
                 "inventory_live_member_set_changed")
     custody = report["custody"]
     allowed = {"inventory.json"}
@@ -974,6 +988,9 @@ def main(argv=None):
             OSError, ValueError, KeyError, TypeError) as error:
         detail = str(error)
         code = detail if re.fullmatch(r"[a-z][a-z0-9_]{0,95}", detail) else type(error).__name__
+        if isinstance(error, InventoryError) and error.member_details is not None:
+            print("candidate-package-member-refused:" + json.dumps(
+                error.member_details, ensure_ascii=True, sort_keys=True), file=sys.stderr)
         print("candidate-package-inventory-failed:" + code, file=sys.stderr)
         return 2
 

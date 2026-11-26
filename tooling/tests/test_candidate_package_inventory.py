@@ -7,6 +7,7 @@ These tests are not physical package observations or G2/G3 acceptance.
 from __future__ import annotations
 
 import copy
+import io
 import json
 import os
 from pathlib import Path
@@ -164,6 +165,26 @@ class InventoryFilesystemTests(unittest.TestCase):
             with self.assertRaisesRegex(inventory.InventoryError, "budget"):
                 inventory.observe_tree(self.payload, "payload")
 
+    def test_appimage_aggregate_allowance_stays_scoped_and_bounded(self):
+        self.write("file", b"123456789")
+        with mock.patch.object(inventory, "MAX_TOTAL", 8), \
+                mock.patch.object(inventory, "APPIMAGE_MAX_TOTAL", 12):
+            for kind in (None, "deb", "dmg", "nsis"):
+                with self.subTest(kind=kind), self.assertRaisesRegex(
+                        inventory.InventoryError, "inventory_total_budget"):
+                    inventory.observe_tree(self.payload, "payload", kind=kind)
+            observed = inventory.observe_tree(self.payload, "payload", kind="appimage")
+            self.assertEqual(observed["file_bytes"], 9)
+            report = inventory.compose(inputs("appimage"), [observed])
+            with mock.patch.object(inventory, "APPIMAGE_MAX_TOTAL", 8):
+                with self.assertRaisesRegex(inventory.InventoryError, "inventory_aggregate_budget"):
+                    inventory.validate(report)
+                with self.assertRaisesRegex(inventory.InventoryError, "inventory_total_budget"):
+                    inventory.observe_tree(self.payload, "payload", kind="appimage")
+            with mock.patch.object(inventory, "MAX_FILE", 8):
+                with self.assertRaisesRegex(inventory.InventoryError, "inventory_file_budget_or_hardlink"):
+                    inventory.observe_tree(self.payload, "payload", kind="appimage")
+
     def test_hardlinked_payload_is_refused(self):
         path = self.write("file", b"original")
         try:
@@ -171,12 +192,33 @@ class InventoryFilesystemTests(unittest.TestCase):
         except OSError as error:
             self.skipTest("filesystem cannot create hardlink: " + type(error).__name__)
         with self.assertRaisesRegex(inventory.InventoryError, "hardlink") as caught:
-            inventory.observe_tree(self.payload, "payload")
-        details = json.loads(str(caught.exception).split(":", 1)[1])
+            inventory.observe_tree(self.payload, "payload", kind="appimage")
+        self.assertEqual(str(caught.exception), "inventory_file_budget_or_hardlink")
+        details = caught.exception.member_details
         self.assertEqual(details["links"], 2)
         self.assertEqual(details["bytes"], len(b"original"))
         self.assertEqual(details["max_bytes"], inventory.MAX_FILE)
         self.assertEqual(details["path"], "alias")
+
+    def test_member_refusal_cli_preserves_code_and_bounded_details(self):
+        details = {"path": "usr/lib/source.so", "bytes": 7, "links": 2,
+                   "max_bytes": inventory.MAX_FILE}
+        failure = inventory.InventoryError("inventory_file_budget_or_hardlink",
+                                           member_details=details)
+        with mock.patch.object(inventory, "_profile") as profile, \
+                mock.patch.object(inventory, "extract_and_observe", side_effect=failure), \
+                mock.patch.dict(os.environ, {"GITHUB_WORKSPACE": str(ROOT)}), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as output:
+            profile.return_value.linux_source.return_value = "1" * 40
+            result = inventory.main(["extract", "--kind", "appimage",
+                "--artifact", str(self.base / "source.AppImage"),
+                "--candidate-receipt", str(self.base / "candidate.json"),
+                "--directory", str(self.base / "originals"),
+                "--work", str(self.base / "fresh")])
+        self.assertEqual(result, 2)
+        lines = output.getvalue().splitlines()
+        self.assertEqual(lines[-1], "candidate-package-inventory-failed:inventory_file_budget_or_hardlink")
+        self.assertEqual(json.loads(lines[0].split(":", 1)[1]), details)
 
     def test_symlinks_are_literals_and_external_target_is_never_read(self):
         self.write("file", b"original")

@@ -542,7 +542,7 @@ def main(argv=None):
     app = load(args.appimage_inventory, args.appimage_sha256)
     deb = load(args.deb_inventory, args.deb_sha256)
     pending, scope = unresolved_members(app, deb, source)
-    need(inventory.observe_tree(args.live_payload, "payload") == app["roots"][0],
+    need(inventory.observe_tree(args.live_payload, "payload", kind="appimage") == app["roots"][0],
          "origin_live_payload_changed")
     status_raw, status_receipt = captured_status()
     installed = installed_versions(status_raw)
