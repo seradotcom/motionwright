@@ -374,6 +374,8 @@ export default function DeliveryProfiles({
   onRenderEvidence,
   avEvidence,
   onAvEvidence,
+  multiAvEvidence,
+  onMultiAvEvidence,
   exportEvidence,
   onExportEvidence,
   onOpenAudio,
@@ -389,6 +391,8 @@ export default function DeliveryProfiles({
   onRenderEvidence: (evidence: MotionCanvasRenderEvidence) => void;
   avEvidence: MltAvMasterEvidence | null;
   onAvEvidence: (evidence: MltAvMasterEvidence) => void;
+  multiAvEvidence: NativeMultisegmentAvMasterEvidence | null;
+  onMultiAvEvidence: (evidence: NativeMultisegmentAvMasterEvidence) => void;
   exportEvidence: MasterExportReceipt | null;
   onExportEvidence: (receipt: MasterExportReceipt) => void;
 }) {
@@ -430,7 +434,6 @@ export default function DeliveryProfiles({
   const [trustedMediaSha256, setTrustedMediaSha256] = useState("");
   const [verifiedMedia, setVerifiedMedia] = useState<PortableMediaVerification | null>(null);
   const [showNativeAvReview, setShowNativeAvReview] = useState(false);
-  const [multiMaster, setMultiMaster] = useState<NativeMultisegmentAvMasterEvidence | null>(null);
   const [, refreshRetainedReviews] = useState(0);
   useEffect(() => retainedNativeAvReviewSelections.subscribe(() => refreshRetainedReviews(value => value + 1)), []);
   const [otioLosses, setOtioLosses] = useState<string[]>([]);
@@ -625,8 +628,8 @@ export default function DeliveryProfiles({
     && verifiedWavIntent && voiceAligned && masterPreviewToken && masterProfileSupported);
   const currentAv = avEvidence?.project_resource === "project:" + project.id && avEvidence.generation === project.generation
     && avEvidence.deliverable_id === selected?.id ? avEvidence : null;
-  const currentMultiMaster = multiMaster?.project_resource === "project:" + project.id && multiMaster.generation === project.generation
-    && multiMaster.deliverable_id === selected?.id ? multiMaster : null;
+  const currentMultiMaster = multiAvEvidence?.project_resource === "project:" + project.id && multiAvEvidence.generation === project.generation
+    && multiAvEvidence.deliverable_id === selected?.id ? multiAvEvidence : null;
   useEffect(() => {
     if (!selected) return;
     if (currentAv) retainOriginalMasterSelection(project, selected.id, currentAv);
@@ -940,7 +943,7 @@ export default function DeliveryProfiles({
       // view decides whether it may display it. No QC or export is adopted.
       retainOriginalMasterSelection(project, selected.id, verified);
       if (!gesture.stillCurrent()) { notePreviousNativeResult(); return; }
-      setMultiMaster(verified);
+      onMultiAvEvidence(verified);
       setMessage(verified.review_only
         ? "Native source-bound H.264/AAC captioned MP4 is available for read-only owner review. "
           + "Export is disabled: device-local decoded glyph pixels and human legibility remain unverified."

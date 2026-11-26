@@ -43,6 +43,7 @@ function render() {
     <DeliveryProfiles project={project} commit={legacyCommit} commitRecipe={commit}
       desktopMode={false} currentProjectState={() => ({ project, ...gate.activity })}
       renderEvidence={null} onRenderEvidence={unexpectedNative} avEvidence={null} onAvEvidence={unexpectedNative}
+      multiAvEvidence={null} onMultiAvEvidence={unexpectedNative}
       exportEvidence={null} onExportEvidence={unexpectedNative} onOpenAudio={unexpectedNative} />
   </StrictMode> : null));
 }

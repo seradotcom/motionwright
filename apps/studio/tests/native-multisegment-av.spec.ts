@@ -70,16 +70,16 @@ test("desktop multisegment " + (captioned ? "captioned MP4 remains review-only" 
     frame_rate: { num: 30, den: 1 },
     segments: [
       { segment_id: "source-01", scene_ids: [scenes[0].id],
-        frame_count: 240, plan_ref: "source-only-1",
+        frame_count: 210, plan_ref: "source-only-1",
         fingerprint: "synthetic-only-1", job_ref: "synthetic-only-1",
         artifact: {}, verification: {} },
       { segment_id: "source-02", scene_ids: [scenes[1].id],
-        frame_count: 240, plan_ref: "source-only-2",
+        frame_count: 270, plan_ref: "source-only-2",
         fingerprint: "synthetic-only-2", job_ref: "synthetic-only-2",
         artifact: {}, verification: {} },
     ],
     preview: [{ token, segment_id: "source-01",
-      scene_ids: [scenes[0].id], frame_count: 240 }],
+      scene_ids: [scenes[0].id], frame_count: 210 }],
   };
   const master = {
     project_resource: native.project_resource,
@@ -101,9 +101,9 @@ test("desktop multisegment " + (captioned ? "captioned MP4 remains review-only" 
       __MULTI_AV__: { sources: Array<Record<string, unknown>>;
         assemblies: Array<Record<string, unknown>>;
         exports: Array<Record<string, unknown>>;
-        reviews: Array<Record<string, unknown>>; effects: number };
+        reviews: Array<Record<string, unknown>>; effects: number; renders: number };
     };
-    shim.__MULTI_AV__ = { sources: [], assemblies: [], exports: [], reviews: [], effects: 0 };
+    shim.__MULTI_AV__ = { sources: [], assemblies: [], exports: [], reviews: [], effects: 0, renders: 0 };
     shim.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
         // Authoring is counted separately from the native-only operations below.
@@ -145,7 +145,7 @@ test("desktop multisegment " + (captioned ? "captioned MP4 remains review-only" 
           shim.__MULTI_AV__.effects++;
           return { token: "synthetic-effect-" + shim.__MULTI_AV__.effects };
         }
-        if (command === "render_motion_canvas") return structuredClone(original);
+        if (command === "render_motion_canvas") { shim.__MULTI_AV__.renders++; return structuredClone(original); }
         if (command === "preflight_multi_segment_mlt_readiness") {
           const request = args?.request as Record<string, unknown>;
           shim.__MULTI_AV__.sources.push(request);
@@ -158,9 +158,9 @@ test("desktop multisegment " + (captioned ? "captioned MP4 remains review-only" 
             mlt_profile: "h264-1080p", total_frames: 480,
             segments: [
               { segment_id: "source-01", scene_ids: original.segments[0].scene_ids,
-                start_frame: 0, frame_count: 240 },
+                start_frame: 0, frame_count: 210 },
               { segment_id: "source-02", scene_ids: original.segments[1].scene_ids,
-                start_frame: 240, frame_count: 240 },
+                start_frame: 210, frame_count: 270 },
             ],
             evidence_scope: "manifest-digest-verified-not-composited-mp4",
           };
@@ -244,6 +244,24 @@ test("desktop multisegment " + (captioned ? "captioned MP4 remains review-only" 
   expect(JSON.stringify(requests.assemblies[0]))
     .not.toMatch(/(source_options|filepath|output_root|manifest|audio_sha256|video_sha256|render_evidence)/);
 
+  // Exercise the real App workspace boundary. A retained read-only selector
+  // cannot replace the original master result or restore export eligibility.
+  await page.getByRole("button", { name: "Timeline", exact: true }).click();
+  await expect(receipt).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Program preview" }).getByRole("button", { name: "Review final AV" })).toBeVisible();
+  await page.getByRole("button", { name: "Deliver", exact: true }).click();
+  await expect(receipt).toContainText("2 semantic MLT segments");
+  await expect(receipt).toContainText(
+    captioned ? "CAPTION PIXELS NOT VERIFIED LOCALLY" : "export eligible",
+  );
+  const continued = await page.evaluate(() => (
+    (window as unknown as { __MULTI_AV__: { sources: unknown[];
+      assemblies: unknown[]; effects: number } }).__MULTI_AV__
+  ));
+  expect(continued.sources).toHaveLength(1);
+  expect(continued.assemblies).toHaveLength(1);
+  expect(continued.effects).toBe(2);
+
   const delivery = page.getByRole("region", { name: "Verified native MP4 delivery" });
   const exportButton = delivery.getByRole("button", { name: "Export verified MP4" });
   await expect(exportButton).toBeDisabled();
@@ -255,7 +273,7 @@ test("desktop multisegment " + (captioned ? "captioned MP4 remains review-only" 
     await expect(playback).toBeEnabled();
     await playback.click();
     await expect(page.getByRole("region", { name: "Native master playback review" }))
-      .toContainText("no export");
+      .toContainText("Review only; export unavailable.");
     const ipc = await page.evaluate(() => (
       (window as unknown as { __MULTI_AV__: { reviews: Record<string, unknown>[];
         exports: Record<string, unknown>[]; effects: number } }).__MULTI_AV__
@@ -266,8 +284,7 @@ test("desktop multisegment " + (captioned ? "captioned MP4 remains review-only" 
     });
     expect(ipc.exports).toHaveLength(0);
     expect(ipc.effects).toBe(2);
-    return;
-  }
+  } else {
   await expect(exportButton).toBeEnabled();
   await exportButton.click();
   await expect(page.getByLabel("Verified MP4 delivery receipt"))
@@ -283,5 +300,28 @@ test("desktop multisegment " + (captioned ? "captioned MP4 remains review-only" 
   });
   expect(sent.exports[0]).not.toHaveProperty("source_path");
   expect(sent.exports[0]).not.toHaveProperty("sha256");
+  }
+
+  // A new saved source revokes both current review and delivery eligibility,
+  // even though the original result remains inspectable as historical state.
+  await page.getByLabel(scenes[0].name + " narrative role").selectOption("hook");
+  await expect(exportButton).toBeDisabled();
+  await saveFixtureRecipe(page);
+  await expect(receipt).toContainText("STALE");
+  await expect(exportButton).toBeDisabled();
+  await page.getByRole("button", { name: "Timeline", exact: true }).click();
+  await page.getByRole("button", { name: "Deliver", exact: true }).click();
+  await page.getByLabel("Verified MP4 export path").fill("/tmp/stale-original-must-not-export.mp4");
+  await expect(receipt).toContainText("STALE");
+  await expect(exportButton).toBeDisabled();
+  const final = await page.evaluate(() => (
+    (window as unknown as { __MULTI_AV__: { renders: number; sources: unknown[];
+      assemblies: unknown[]; exports: unknown[]; effects: number } }).__MULTI_AV__
+  ));
+  expect(final.renders).toBe(1);
+  expect(final.sources).toHaveLength(1);
+  expect(final.assemblies).toHaveLength(1);
+  expect(final.exports).toHaveLength(captioned ? 0 : 1);
+  expect(final.effects).toBe(captioned ? 2 : 3);
 });
 }

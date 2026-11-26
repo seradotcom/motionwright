@@ -110,7 +110,7 @@ import {
   NATIVE_WINDOW_UNCERTAINTY_PREFIX,
   type NativeWindowIntent, type NativeWindowReceipt, type NativeWindowUncertaintyClaim,
 } from "./nativeWindowPreview";
-import { editorialTimeForMasterMedia, programMasterAtPlayhead } from "./programMaster";
+import { editorialTimeForMasterMedia, programMasterAtPlayhead, type ProgramAvEvidence } from "./programMaster";
 import { resolveSceneRenderReceipt } from "./renderReceipt";
 import WorkflowWorkspace from "./WorkflowWorkspace";
 import { RichAlternativesView, RichBriefView, RichNarrativeView } from "./CreativeWorkspaces";
@@ -123,6 +123,7 @@ import type {
   MotionCanvasRenderEvidence,
   MotionCanvasFilmOptions,
   MltAvMasterEvidence,
+  NativeMultisegmentAvMasterEvidence,
   MasterExportReceipt,
   Project,
   ProjectState,
@@ -274,7 +275,7 @@ export function PreviewSurface({
   mode: TimecodeMode;
   profile: Project["deliverables"][number] | null;
   renderEvidence: MotionCanvasRenderEvidence | null;
-  avEvidence: MltAvMasterEvidence | null;
+  avEvidence: ProgramAvEvidence | null;
   onInspectRender: () => void;
   onSeek: (seconds: number) => void;
   onPauseEditorial: () => void;
@@ -440,7 +441,7 @@ export function PreviewSurface({
           Program
           <span className="toolbar-divider" />
           <span className="muted">
-            {showingAv ? "Verified H.264/AAC master · decoded review" :
+            {showingAv ? (nativeAv?.reviewOnly ? "Original captioned MP4 · review only" : "Verified H.264/AAC master · decoded review") :
               showingWindow ? "Native window PNG · preview only · " + currentWindowReceipt!.response.window.validation.verdict :
               showingNative ? "Verified native PNG · sampled frames" :
               showingHistorical ? "Retained historical preview · not current" : "Design representation"}
@@ -603,6 +604,9 @@ export function PreviewSurface({
               embedded
               project={project}
               exportToken={nativeAv.exportToken}
+              deliverableId={nativeAv.profileId}
+              masterSha256={nativeAv.masterSha256}
+              reviewOnly={nativeAv.reviewOnly}
               editorialPlaying={editorialPlaying}
               seekTimeSeconds={nativeAv.mediaTimeSeconds}
               onMediaPlay={onPauseEditorial}
@@ -908,6 +912,8 @@ function DeliverView({
   onRenderEvidence,
   avEvidence,
   onAvEvidence,
+  multiAvEvidence,
+  onMultiAvEvidence,
   exportEvidence,
   onExportEvidence,
 }: {
@@ -922,6 +928,8 @@ function DeliverView({
   onRenderEvidence: (evidence: MotionCanvasRenderEvidence) => void;
   avEvidence: MltAvMasterEvidence | null;
   onAvEvidence: (evidence: MltAvMasterEvidence) => void;
+  multiAvEvidence: NativeMultisegmentAvMasterEvidence | null;
+  onMultiAvEvidence: (evidence: NativeMultisegmentAvMasterEvidence) => void;
   exportEvidence: MasterExportReceipt | null;
   onExportEvidence: (receipt: MasterExportReceipt) => void;
 }) {
@@ -1015,6 +1023,7 @@ function DeliverView({
         onOpenAudio={onOpenAudio} currentProjectState={currentProjectState}
         renderEvidence={renderEvidence} onRenderEvidence={onRenderEvidence}
         avEvidence={avEvidence} onAvEvidence={onAvEvidence}
+        multiAvEvidence={multiAvEvidence} onMultiAvEvidence={onMultiAvEvidence}
         exportEvidence={exportEvidence} onExportEvidence={onExportEvidence} />
 
       <OtioCutReviewWorkbench project={project} commit={commit} desktopMode={desktopMode}
@@ -1441,6 +1450,9 @@ export default function App() {
   const [nativeRenderReceipt, setNativeRenderReceipt] = useState<MotionCanvasRenderEvidence | null>(null);
   const [nativeWindowEditors, setNativeWindowEditors] = useState<NativeWindowEditors>({});
   const [nativeAvReceipt, setNativeAvReceipt] = useState<MltAvMasterEvidence | null>(null);
+  // Keep the original current-session multi-segment result across workspace
+  // navigation. Project opens clear it; Deliver still checks its full scope.
+  const [nativeMultiAvReceipt, setNativeMultiAvReceipt] = useState<NativeMultisegmentAvMasterEvidence | null>(null);
   const [nativeExportReceipt, setNativeExportReceipt] = useState<MasterExportReceipt | null>(null);
   const [timebaseProfileId, setTimebaseProfileId] = useState<string | null>(null);
   const [timecodeMode, setTimecodeMode] = useState<TimecodeMode>("ndf");
@@ -1490,6 +1502,7 @@ export default function App() {
     if (!sameScope) setTimecodeMode("ndf");
     setNativeRenderReceipt(null);
     setNativeAvReceipt(null);
+    setNativeMultiAvReceipt(null);
     setNativeExportReceipt(null);
   }, [setBoot]);
 
@@ -1510,6 +1523,7 @@ export default function App() {
     setPaletteOpen(false);
     setNativeRenderReceipt(null);
     setNativeAvReceipt(null);
+    setNativeMultiAvReceipt(null);
     setNativeExportReceipt(null);
   }, [publishOpenedProject]);
 
@@ -2187,7 +2201,8 @@ export default function App() {
           ])}
           scene={selectedScene} project={project} playhead={playhead}
           rate={timebaseRate} mode={displayMode} profile={selectedProfile}
-          renderEvidence={nativeRenderReceipt} avEvidence={nativeAvReceipt}
+          renderEvidence={nativeRenderReceipt}
+          avEvidence={nativeRenderReceipt && nativeRenderReceipt.segments.length > 1 ? nativeMultiAvReceipt : nativeAvReceipt}
           onInspectRender={() => setWorkspace("Deliver")}
           onSeek={seekTo} onPauseEditorial={() => setPlaying(false)}
           editorialPlaying={playing} desktopMode={boot.native_sdk.mode === "tauri"}
@@ -2231,6 +2246,8 @@ export default function App() {
             onRenderEvidence={(result) => setNativeRenderReceipt(result)}
             avEvidence={nativeAvReceipt}
             onAvEvidence={(result) => setNativeAvReceipt(result)}
+            multiAvEvidence={nativeMultiAvReceipt}
+            onMultiAvEvidence={(result) => setNativeMultiAvReceipt(result)}
             exportEvidence={nativeExportReceipt}
             onExportEvidence={(result) => setNativeExportReceipt(result)}
             onImportBundle={importPortableBundle}

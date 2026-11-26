@@ -1,33 +1,36 @@
 # Source-scoped native AV monitor in Timeline
 
-Motionwright's Program preview can review the **real Semwright MLT H.264/AAC master** for a known native Motion Canvas segment without switching out of the creative timeline. This uses the same source-verified, read-only, at-most-16 MiB media capability available in Deliver; no general MP4 path import, new backend or direct decoder subprocess is introduced.
+Motionwright's Program preview can review an original Semwright MLT H.264/AAC master for one or several known Motion Canvas segments. It uses the same bounded, read-only original-media reader as Deliver: MP4s up to 1 GiB are served through ranges of at most 4 MiB, with owner, revision and integrity checks described in [native AV review](native-av-review.md).
 
 ## Matching requirements
 
-The Program's **Review final AV** control is shown only if all evidence identities match the current project:
+**Review final AV** is available only for a current, source-bound result:
 
-- A nonempty ephemeral master export/read token was minted by the trusted owner Tauri production path in this session.
-- The MLT master and canonical Motion Canvas source evidence have identical project ID, generation, creative revision, deliverable ID, segment ID, frame count, and exact rational frame rate.
-- The selected scene is part of the exact ordered Motion Canvas segment. Other renderers, additional segments, missing scenes, altered deliverables or outdated project revisions are not eligible.
-- The sum of included scene durations matches the verified native frame count / FPS to one source frame. The UI does not silently stretch video, invent padding, merge unrendered scenes or reinterpret the output profile.
-- H.264/AAC MP4 is the explicitly certified master codec/container. All other profiles retain design/native PNG representations until the native output really exists.
+- The master has a nonempty session token returned by the trusted Tauri production path.
+- The master, source render and selected output profile agree on project, generation, revision and profile. The visual rate must equal the saved profile's rational rate.
+- A single-segment master matches that segment and its frame count. A multisegment master matches the ordered segment count and total frames; every segment has a distinct identity, known source scenes and a consistent duration.
+- All represented scenes are unique, retain their saved order and use Motion Canvas. An explicit profile cut cannot gain an omitted scene. Unrelated renderers and missing or stale sources remain in their other representations.
+- Scene durations agree with the original frame clock to one source frame. The monitor does not retime media or invent padding.
+- Multisegment results retain their exact H.264/AAC, 48 kHz stereo contract, original digest and review-only classification. Captioned originals without device-local glyph verification remain clearly labeled **review only**.
 
-The Program toolbar offers mutually exclusive **Design**, **native PNG frames** and **final AV** source modes. An AV view shows its verified source revision and is discarded automatically when scene/profile/source data no longer match. The originally authored scene and project stay unmodified when selecting a representation.
+The original multisegment result lives in the application session, so navigating from Deliver to Timeline and back retains its source and delivery eligibility. A new project open clears that session result. Export still requires a fresh explicit DeliverLocal permission, and an edited revision cannot reuse the previous result as current.
 
-## Clock reconciliation
+## One media clock across scenes
 
-The canonical Film segment may contain an explicitly selected subset of project scenes. It reflows those scenes onto a **zero-based output clock**. Motionwright derives the corresponding source-media time by summing the versioned durations of selected scenes *before* the current scene, then adding the current authored scene-relative playhead.
+The Film cut reflows its selected scenes onto a zero-based output clock. Program sums the saved durations before the current scene and adds its authored scene-relative playhead. This also maps a multisegment master and a cut that omits an interval from the original project.
 
-Moving the shared editorial playhead seeks the decoded MP4 to the correct output time; it does not alter its source or create a new creative revision. Conversely, playing the local MP4's own controls sends decoded media time back through the selected scene map, updating the same global editorial playhead and scene selection. Native video play explicitly stops the synthetic editorial transport to avoid independent clocks advancing concurrently. If the editor transport is subsequently started, it pauses the native decoder and uses the editorial playhead as the current seek source.
+Playing the original MP4 updates the shared editorial playhead and scene selection. Crossing into the next represented scene keeps the same video element and original read; it does not open another master or restart the decoder. An explicit editorial seek pauses playback and moves to the corresponding media position. Starting editorial preview pauses the decoder so two clocks cannot advance independently.
 
-The Video element can seek only as precisely as the specific WebView decoder permits. This is **not** a claim of sample-exact rendered playback, frame-perfect seek across WebViews, audio waveform sample-correlation, signed end-user media compatibility, or professional mix approval. The source files themselves remain SHA-256-verified immutable native artifacts; decoder behavior and creative quality require installed-device acceptance.
+At the end of the included cut, the mapped playhead stays inside the final represented scene. An unrelated scene shows its own representation. Returning to a represented scene can reuse the existing opt-in only while the same original master, profile and revision remain current. A different profile, revision or master consumes that choice and requires another explicit review.
 
-At the end of a selected cut, the mapped playhead is kept within the final included scene. Playback cannot accidentally jump into an unrelated next scene that the verified master did not render. Selection and seek never reinterpret a video from a different delivery profile as if it were from the chosen variant.
+The WebView determines seek precision. Frame-perfect seeking, sample correlation, caption glyph quality and human audiovisual approval remain separate installed-device checks. The original file retains its native source identity throughout review.
 
-## Evidence
+## Focused verification
 
-- Pure `programMaster.test.ts` verifies exact scene/segment/profile/generation/revision matching, rational-rate cuts, zero-based output time mapping, noncontiguous scene selections, the final-frame boundary, and failed-closed stale/forged inputs.
-- Browser `program-av-monitor.spec.ts` uses an explicitly synthetic Tauri bridge to test gating before/after native mastering, read-only token-only IPC, toggling, variant change, renderer change, and project revision invalidation. It deliberately does not fabricate a playable, real H.264/AAC asset.
-- Actual Semwright Motion Canvas and MLT AV master jobs are exercised by separate pinned-source CI lanes; installed-device decoder quality, true video/audio experience and the 60 independent product acceptance scenarios remain separate gates.
+The programMaster.test.ts suite covers single and multiple source segments, original identity, per-segment and aggregate clocks, duplicate or shuffled sources, omitted intervals, changed profiles and inconsistent caption review flags.
 
-No change to the pinned Semwright Native SDK, runtime authority or authorization model is introduced.
+The native-multisegment-av.spec.ts suite uses the real App workspace transitions with an explicitly synthetic Tauri bridge. It verifies that navigation preserves the original master, export requests use a fresh permission, captioned results remain restricted and edits make the old result historical.
+
+The program-multisegment-playback.spec.ts case plays an existing synthetic H.264/AAC clip through the actual Program component. It checks continuous decoding across a segment boundary, one original read, editorial seeking and cleanup after a revision change. This tests the component's media-clock behavior; it does not claim a Native render or installed-package acceptance.
+
+The single-segment browser contract remains covered by program-av-monitor.spec.ts. Actual Semwright Motion Canvas and MLT production evidence retains its own exact-source scope. No renderer, grant, publication or G2/G3 authority is created by these UI checks.
