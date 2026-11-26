@@ -80,9 +80,9 @@ jobs:
           head=os.environ["GITHUB_SHA"]
           reviewed_source="2c4fc01736d69a5c7b11de05d96d2590c09ac836"
           source_lock_reviewed_source="7d3e0386f65ea531cfaa3e7723afab29c55eba3e"
-          foundation_reviewed_source="05975b7aa0a12425052d3952c7720fd40c54b686"
-          workspace_lock_source="789e45310b79ea915aee6e7d23db3b0486a3ff92"
-          pins={'crates/storage/src/portability.rs': '9d6ed15f8504f2daa63731f4ec029d9f5e2c155b202654c2f36402652f92897d', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': '41f53787adf21102c9298f15f3996c6cf91b94d8841ba56c6da95590648ef582', 'Cargo.lock': '530b926a45a8a688ae04e86757c81f3bc4f7498f0ed01e9dd4d67c460b2015f8', 'SOURCE_LOCK.json': '234ddd72a087d58a766707affdf9b1e3bbc1d0f7cb4f24a5b532e006155a9550'}
+          foundation_reviewed_source="0f99152127edc9c540760755a9a7b1968e349683"
+          workspace_lock_source="0f99152127edc9c540760755a9a7b1968e349683"
+          pins={'crates/storage/src/portability.rs': '3412a1e3f904a74340d041eae476cc90a98c70ef90817f39cad11192bcd015b5', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': 'f3525e8fc0d51a8087e5327a6bf05aed990573310210b6b3d299f8ce135c3d76', 'Cargo.lock': '5e97f6d31851007bc66f1b2139771e4c7dc71f53f1e7d311b7c0319932735a32', 'SOURCE_LOCK.json': '234ddd72a087d58a766707affdf9b1e3bbc1d0f7cb4f24a5b532e006155a9550'}
           assert re.fullmatch(r"[0-9a-f]{40}",head)
           en={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
           en.update(GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_SYSTEM=os.devnull,GIT_CONFIG_GLOBAL=os.devnull,GIT_NO_LAZY_FETCH="1",GIT_TERMINAL_PROMPT="0")
@@ -230,9 +230,9 @@ jobs:
           head=os.environ["GITHUB_SHA"]
           reviewed_source="2c4fc01736d69a5c7b11de05d96d2590c09ac836"
           source_lock_reviewed_source="7d3e0386f65ea531cfaa3e7723afab29c55eba3e"
-          foundation_reviewed_source="05975b7aa0a12425052d3952c7720fd40c54b686"
-          workspace_lock_source="789e45310b79ea915aee6e7d23db3b0486a3ff92"
-          pins={'crates/storage/src/portability.rs': '9d6ed15f8504f2daa63731f4ec029d9f5e2c155b202654c2f36402652f92897d', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': '41f53787adf21102c9298f15f3996c6cf91b94d8841ba56c6da95590648ef582', 'Cargo.lock': '530b926a45a8a688ae04e86757c81f3bc4f7498f0ed01e9dd4d67c460b2015f8', 'SOURCE_LOCK.json': '234ddd72a087d58a766707affdf9b1e3bbc1d0f7cb4f24a5b532e006155a9550'}
+          foundation_reviewed_source="0f99152127edc9c540760755a9a7b1968e349683"
+          workspace_lock_source="0f99152127edc9c540760755a9a7b1968e349683"
+          pins={'crates/storage/src/portability.rs': '3412a1e3f904a74340d041eae476cc90a98c70ef90817f39cad11192bcd015b5', 'crates/storage/tests/foreign_sqlite_admission.rs': 'df73795f257a798b9d16f2c1aa04a92e724757e17b5ad7bdcd7b969dbe111c61', 'crates/storage/tests/event_cursor_boundary.rs': '0c00077bfa856094caaa09d878a25013ccdcf326914228da1c2c86812702143f', 'crates/storage/src/lib.rs': 'f3525e8fc0d51a8087e5327a6bf05aed990573310210b6b3d299f8ce135c3d76', 'Cargo.lock': '5e97f6d31851007bc66f1b2139771e4c7dc71f53f1e7d311b7c0319932735a32', 'SOURCE_LOCK.json': '234ddd72a087d58a766707affdf9b1e3bbc1d0f7cb4f24a5b532e006155a9550'}
           assert re.fullmatch(r"[0-9a-f]{40}",head)
           en={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
           en.update(GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_SYSTEM=os.devnull,GIT_CONFIG_GLOBAL=os.devnull,GIT_NO_LAZY_FETCH="1",GIT_TERMINAL_PROMPT="0")
