@@ -3017,10 +3017,10 @@ async fn review_native_av_master(
     if latest.generation != generation || latest.revision != revision {
         return Err("Project changed during native AV preview readback.".into());
     }
-    if let Some(original) = expected_connection {
-        if selected_connection_path(&state, project_id)? != original {
-            return Err("Original master recovery connection changed.".into());
-        }
+    if let Some(original) = expected_connection
+        && selected_connection_path(&state, project_id)? != original
+    {
+        return Err("Original master recovery connection changed.".into());
     }
     Ok(response)
 }

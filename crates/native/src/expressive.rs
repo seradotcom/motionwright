@@ -321,10 +321,10 @@ pub(crate) fn responsive_scene(
         if let Some((copy, layout, headline)) = wrapped_overrides.get(&node.id) {
             node.text = Some(copy.clone());
             fit_variant_hero_text(node, *layout, *headline)?;
-        } else if let Some(copy) = profile.text_overrides.get(&node.id) {
-            if node.kind == "text" {
-                node.text = Some(copy.clone());
-            }
+        } else if let Some(copy) = profile.text_overrides.get(&node.id)
+            && node.kind == "text"
+        {
+            node.text = Some(copy.clone());
         }
         if let Some((literal, reason)) =
             motionwright_domain::protected_delivery_text(project, scene, node.id)

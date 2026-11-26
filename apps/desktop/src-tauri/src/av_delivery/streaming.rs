@@ -195,10 +195,11 @@ impl ReviewStream {
     }
 
     fn read_range(&self, start: u64, end: u64) -> Result<Vec<u8>, StatusCode> {
-        // Never queue an unbounded collection of same-stream readers.
+        // Global admission bounds waiting workers to four. Serialize access to
+        // this descriptor so overlapping decoder seeks do not fail as busy.
         let mut file = self
             .file
-            .try_lock()
+            .lock()
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
         if start > end || end >= self.size || end - start >= MAX_RANGE_BYTES {
             return Err(StatusCode::RANGE_NOT_SATISFIABLE);

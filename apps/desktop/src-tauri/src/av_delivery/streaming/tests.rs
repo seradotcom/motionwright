@@ -445,3 +445,35 @@ fn playback_selectors_cannot_mix_receipt_hints_with_session_or_private_file_auth
     mixed["decoded_measurement_receipt_id"] = serde_json::json!(Uuid::new_v4());
     assert!(serde_json::from_value::<PlaybackSelection>(mixed).is_err());
 }
+
+#[test]
+fn overlapping_decoder_ranges_wait_within_admission_and_keep_exact_original_bytes() {
+    let fixture = Fixture::new(2 * BLOCK_BYTES + 257);
+    let streams = ReviewStreams::default();
+    let descriptor = streams.prepare(&fixture.source, fixture.token).unwrap();
+    let stream = streams.find(descriptor.stream_token).unwrap();
+    let barrier = std::sync::Barrier::new(MAX_ACTIVE_READS);
+    std::thread::scope(|scope| {
+        let mut workers = Vec::new();
+        for worker in 0..MAX_ACTIVE_READS {
+            let stream = stream.clone();
+            let permit = streams.admit_read().unwrap();
+            let original = &fixture.bytes;
+            let barrier = &barrier;
+            workers.push(scope.spawn(move || {
+                let _permit = permit;
+                barrier.wait();
+                for offset in 0..8 {
+                    let start =
+                        ((worker * 29137 + offset * 137389) % (original.len() - 1024)) as u64;
+                    let bytes = stream.read_range(start, start + 1023).unwrap();
+                    assert_eq!(bytes, original[start as usize..start as usize + 1024]);
+                }
+            }));
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+    });
+    assert_eq!(streams.active_reads.load(Ordering::Acquire), 0);
+}

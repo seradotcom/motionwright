@@ -261,6 +261,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libpipewire-0.3-dev pkg-config clang
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Install declared Linux MP4 playback dependencies
+        if: inputs.verification_scope == 'desktop-playback' && runner.os == 'Linux'
+        run: sudo apt-get install -y --no-install-recommends ffmpeg gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
+      - name: Decode synthetic H264 and AAC with the declared system plugins
+        if: inputs.verification_scope == 'desktop-playback' && runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          for element in qtdemux h264parse avdec_h264 aacparse avdec_aac; do
+            gst-inspect-1.0 "$element" >/dev/null
+          done
+          fixture="$RUNNER_TEMP/synthetic-playback-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.mp4"
+          ffmpeg -nostdin -hide_banner -loglevel error -n \
+            -f lavfi -i testsrc2=size=160x90:rate=30:duration=1 \
+            -f lavfi -i sine=frequency=440:sample_rate=48000:duration=1 \
+            -t 1 -c:v libx264 -threads 1 -pix_fmt yuv420p -c:a aac -movflags +faststart "$fixture"
+          timeout 30s gst-launch-1.0 -q filesrc location="$fixture" ! qtdemux name=demux \
+            demux.video_0 ! queue ! h264parse ! avdec_h264 ! fakesink sync=false \
+            demux.audio_0 ! queue ! aacparse ! avdec_aac ! fakesink sync=false
+          echo "LINUX_H264_AAC_PLUGIN_DECODE=PASS; source=SYNTHETIC; NativeHost=NOT_RUN; installed_WebView=NOT_VERIFIED"
       - name: Check bounded desktop command surface
         run: cargo check --locked --jobs 2 -p motionwright-desktop
       - name: Effect-grant boundary regressions
