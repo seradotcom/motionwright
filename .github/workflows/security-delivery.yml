@@ -426,8 +426,8 @@ jobs:
           cargo clippy --locked --jobs 2 -p motionwright-native --test desktop_workflow_route -- -D warnings
           log="$RUNNER_TEMP/workflow-original-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.log"
           cargo test --locked --jobs 2 -p motionwright-native --test desktop_workflow_route -- --test-threads=1 | tee "$log"
-          grep -F '14 passed; 0 failed; 0 ignored' "$log"
-          cargo test --locked --jobs 2 -p motionwright-desktop effect_grants -- --test-threads=1
+          # Includes the 11 exact effect-grant tests imported by this integration target.
+          grep -F '25 passed; 0 failed; 0 ignored' "$log"
       - name: Native owner lifetime and resource identity regressions
         if: contains(fromJSON('["desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope)
         run: cargo test --locked --jobs 2 -p motionwright-desktop desktop_owner -- --test-threads=1
