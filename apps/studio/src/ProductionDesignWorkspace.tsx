@@ -46,7 +46,7 @@ import NativeSourceWorkbench, { type NativeSourceServices } from "./NativeSource
 import ManimEditableSourceWorkbench from "./ManimEditableSourceWorkbench";
 import ComponentDistillationWorkbench from "./ComponentDistillationWorkbench";
 import CraftLibraryWorkbench from "./CraftLibraryWorkbench";
-import { craftProductCameraPreset,craftSourceBoardMode,craftGraphKind,craftAuthoringExample, type CraftDefinition, type CraftRoute} from "./craftLibrary";
+import { craftProductCameraPreset,craftSourceBoardMode,craftGraphKind,craftAuthoringExample,craftAudioTarget, type CraftAudioTarget, type CraftDefinition, type CraftRoute} from "./craftLibrary";
 import type { NativeReviewRepairDraft } from "./nativeReviewRepair";
 import "./production-design.css";
 
@@ -913,13 +913,17 @@ function SceneBoundaryWorkbench(props: { project: Project; scene: Scene | null; 
     <SceneBoundaryEditor key={productionScope(props.project, { kind: "boundary", sceneId: props.scene?.id ?? null, boundaryId: selected || null })} {...props} boundaryId={selected || null}/></>;
 }
 
-export default function ProductionDesignWorkspace(props:{timelineRequest?:TimelineEditorRequest|null;onTimelineRequestHandled?:(nonce:number)=>void;sourceServices:NativeSourceServices;graphServices:Pick<SemanticGraphWorkbenchProps,"commit"|"readContext"|"outcomeTransport"|"refreshProject"|"openReview">;project:Project;scene:Scene|null;commit:Commit; commitCamera:(change:Change)=>Promise<Project>;busy:boolean;playhead:number;onSeek:(time:number)=>void;onSelectScene:(id:string)=>void;onOpenCanvas:()=>void;onOpenRender:()=>void;displayProfile:DeliverableProfile|null;evidence:MotionCanvasRenderEvidence|null}) {
+export default function ProductionDesignWorkspace(props:{timelineRequest?:TimelineEditorRequest|null;onTimelineRequestHandled?:(nonce:number)=>void;sourceServices:NativeSourceServices;graphServices:Pick<SemanticGraphWorkbenchProps,"commit"|"readContext"|"outcomeTransport"|"refreshProject"|"openReview">;project:Project;scene:Scene|null;commit:Commit; commitCamera:(change:Change)=>Promise<Project>;busy:boolean;playhead:number;onSeek:(time:number)=>void;onSelectScene:(id:string)=>void;onOpenCanvas:()=>void;onOpenAudio?:(target:CraftAudioTarget)=>void;onOpenRender:()=>void;displayProfile:DeliverableProfile|null;evidence:MotionCanvasRenderEvidence|null}) {
   const [tab,setTab]=useState<"library"|"component"|"stage"|"plan"|"brand"|"sources"|"captures"|"source_board"|"data"|"procedural"|"camera"|"boundary"|"graph"|"impact"|"evaluator"|"identity"|"distillation"|"generation"|"patch"|"inspection"|"contrast">("component");
   const [repairDraft,setRepairDraft]=useState<NativeReviewRepairDraft|null>(null);
   const [catalogChoice,setCatalogChoice]=useState<CraftDefinition|null>(null);
   const openCraft=(route:CraftRoute,definition:CraftDefinition)=>{
     setRepairDraft(null);setCatalogChoice(definition);
-    if(route==="canvas")props.onOpenCanvas();else setTab(route);
+    if(route==="audio"){
+      const target=craftAudioTarget(definition);
+      if(target)props.onOpenAudio?.(target);
+    }else if(route==="canvas")props.onOpenCanvas();
+    else setTab(route);
   };
   useEffect(()=>{
     if (props.timelineRequest?.scope===timelineSelectionScope(props.project) && props.timelineRequest.selection.kind==="camera"

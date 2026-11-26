@@ -9,12 +9,14 @@ import {
   type SfxRecoveryEntry,
 } from "./semanticSfxDraft";
 import { sfxLiveTargets, useSemanticSfxDraft } from "./useSemanticSfxDraft";
+import type { CraftSoundPreset } from "./craftLibrary";
 import "./semantic-sfx-editor.css";
 
 type Props = {
   project: Project;
   commit: (change: Change) => Promise<Project>;
   onSeek: (seconds: number) => void;
+  craftPreset?: CraftSoundPreset;
 };
 
 type Option = { value: string; label: string };
@@ -179,10 +181,11 @@ export default function SemanticSfxEditor(props: Props) {
   return <SfxOwnerEditor key={sfxScope(props.project, "new")} {...props} />;
 }
 
-function SfxOwnerEditor({ project, commit, onSeek }: Props) {
+function SfxOwnerEditor({ project, commit, onSeek, craftPreset }: Props) {
   const owner = sfxScope(project, "new");
   const editorId = useId();
-  const [target, setTarget] = useState(() => selectedByOwner.get(owner) ?? "new");
+  const [preset] = useState(craftPreset);
+  const [target, setTarget] = useState(() => preset ? "new" : selectedByOwner.get(owner) ?? "new");
   const [catalogue, setCatalogue] = useState(() => catalogueFor(project));
   const [seekError, setSeekError] = useState<string | null>(null);
   const refreshCatalogue = useCallback(() => setCatalogue(previous => {
@@ -224,7 +227,7 @@ function SfxOwnerEditor({ project, commit, onSeek }: Props) {
     <section className="audio-editor-section semantic-sfx-editor" aria-labelledby={editorId + "-title"}>
       <div className="section-title-row sfx-section-heading">
         <div>
-          <h3 id={editorId + "-title"}>Sound events</h3>
+          <h3 id={editorId + "-title"} tabIndex={-1} data-craft-audio-target="sound-events">Sound events</h3>
           <p className="sfx-help">Place an imported WAV at a scene or beat anchor.</p>
         </div>
         <button className="button" type="button" onClick={() => select("new")}
@@ -295,7 +298,7 @@ function SfxOwnerEditor({ project, commit, onSeek }: Props) {
           {canOpenDraft ? (
             <SfxOpeningBoundary key={sfxScope(project, target)} target={target}
               catalogue={catalogue} select={select} refreshCatalogue={refreshCatalogue}>
-              <SfxDraftEditor project={project} commit={commit}
+              <SfxDraftEditor project={project} commit={commit} craftPreset={preset}
                 target={target} catalogue={catalogue} select={select} refreshCatalogue={refreshCatalogue} />
             </SfxOpeningBoundary>
           ) : (
@@ -399,6 +402,7 @@ function UnavailableSfxDraft({ target, catalogue, select, refreshCatalogue, open
 function SfxDraftEditor({
   project,
   commit,
+  craftPreset,
   target,
   catalogue,
   select,
@@ -429,8 +433,9 @@ function SfxDraftEditor({
   const copies = retainedCopies(catalogue.entries, session.copies);
   const saveDisabled = saving || blocked || missing || locked || unknown || Boolean(draft.pending);
   // Removing a saved event does not validate an unrelated, unfinished upsert draft.
-  const removeDisabled = isNew || saving || missing || locked || Boolean(conflict) ||
+  const draftActionBlocked = saving || missing || locked || Boolean(conflict) ||
     Boolean(draft.pending) || Boolean(session.storageError);
+  const removeDisabled = isNew || draftActionBlocked;
   const choiceDisabled = saving || missing || unknown || Boolean(draft.pending);
   const canSeparate = unknown && !saving && !reviewing && !missing && Boolean(
     draft.pending && outcome && outcome.project.revision > draft.pending.revision,
@@ -460,6 +465,12 @@ function SfxDraftEditor({
   return (
     <section className="sfx-draft" aria-labelledby={id + "-heading"}>
       <h4 id={id + "-heading"}>{isNew ? "New sound event draft" : "Edit sound event"}</h4>
+      {isNew && craftPreset && <button type="button" className="button compact" disabled={draftActionBlocked}
+        onClick={() => edit(craftPreset === "focus-hit"
+          ? {event:"ui_focus", tailPolicy:"within_scene"}
+          : {event:"transition", tailPolicy:"continue_across_cuts"})}>
+        {craftPreset === "focus-hit" ? "Apply Focus hit to draft" : "Apply Transition tail to draft"}
+      </button>}
       <dl className="sfx-identity">
         <div><dt>Sound ID</dt><dd className="sfx-id">{isNew ? "New event draft" : target}</dd></div>
         <div><dt>Edit base</dt><dd>Revision {draft.baseRevision}</dd></div>
