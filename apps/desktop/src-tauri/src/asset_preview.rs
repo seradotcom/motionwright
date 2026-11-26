@@ -14,6 +14,28 @@ const MAX_STREAMS: usize = 8;
 const UNAVAILABLE: &str =
     "The original imported media is unavailable at this saved project revision.";
 
+/// Parsed native URI parts only. The Desktop owner authorizes before this
+/// selector is interpreted; the selector itself conveys no authority.
+pub(crate) fn stream_token(
+    scheme: Option<&str>,
+    authority: Option<&str>,
+    path: &str,
+    has_query: bool,
+) -> Result<Uuid, ()> {
+    if !((scheme == Some(SCHEME) && authority == Some("localhost"))
+        || (scheme == Some("http") && authority == Some("motionwright-asset.localhost")))
+        || has_query
+    {
+        return Err(());
+    }
+    let value = path.strip_prefix('/').ok_or(())?;
+    let token = Uuid::parse_str(value).map_err(|_| ())?;
+    if token.to_string() != value {
+        return Err(());
+    }
+    Ok(token)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OpenRequest {
@@ -260,6 +282,42 @@ fn byte_range(raw: Option<&str>, size: u64, head: bool) -> Result<(u64, u64, boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn original_asset_protocol_rejects_remote_hosts_paths_queries_and_native_master_tokens() {
+        let id = Uuid::parse_str("e6fa0306-5606-42ec-9e07-56cbd17fa6ac").unwrap();
+        let path = format!("/{id}");
+        for (scheme, authority) in [
+            (Some(SCHEME), Some("localhost")),
+            (Some("http"), Some("motionwright-asset.localhost")),
+        ] {
+            assert_eq!(stream_token(scheme, authority, &path, false), Ok(id));
+        }
+        for (scheme, authority, query) in [
+            (Some("https"), Some("motionwright-asset.localhost"), false),
+            (Some("http"), Some("motionwright-asset.localhost:80"), false),
+            (
+                Some("http"),
+                Some("motionwright-asset.localhost.evil"),
+                false,
+            ),
+            (Some("motionwright-media"), Some("localhost"), false),
+            (Some(SCHEME), Some("localhost"), true),
+            (None, Some("localhost"), false),
+            (Some(SCHEME), None, false),
+        ] {
+            assert!(stream_token(scheme, authority, &path, query).is_err());
+        }
+        for wrong in [
+            format!("/{id}/extra"),
+            format!("/{id}?path=private"),
+            format!("/{}", id.simple()),
+            format!("/{}", id.to_string().to_uppercase()),
+            "/../private".into(),
+            id.to_string(),
+        ] {
+            assert!(stream_token(Some(SCHEME), Some("localhost"), &wrong, false).is_err());
+        }
+    }
     #[test]
     fn original_media_selection_is_closed_and_ranges_remain_bounded() {
         let selector = serde_json::json!({"project_id":Uuid::new_v4(),"generation":Uuid::new_v4(),

@@ -284,9 +284,9 @@ jobs:
           echo "LINUX_H264_AAC_PLUGIN_DECODE=PASS; source=SYNTHETIC; NativeHost=NOT_RUN; installed_WebView=NOT_VERIFIED"
       - name: Check bounded desktop command surface
         run: cargo check --locked --jobs 2 -p motionwright-desktop
-      - name: Original asset owner protocol and retained reader contracts
+      - name: Shared original asset URI and retained reader contracts
         if: inputs.verification_scope == 'desktop-compile' && inputs.first_use_case == 'asset-media'
-        run: cargo test --locked --jobs 2 -p motionwright-desktop asset_preview -- --test-threads=1
+        run: cargo test --locked --jobs 2 -p motionwright-service --example studio_review_session asset_preview::tests -- --test-threads=1
       - name: Effect-grant boundary regressions
         if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope)
         run: cargo test --locked --jobs 2 -p motionwright-desktop effect_grants

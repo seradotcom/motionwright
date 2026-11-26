@@ -2,29 +2,8 @@
 use crate::asset_preview::{self, RangeRequest};
 use tauri::{
     Manager,
-    http::{Request, Response, StatusCode, Uri, header},
+    http::{Request, Response, StatusCode, header},
 };
-use uuid::Uuid;
-
-fn token(uri: &Uri) -> Result<Uuid, StatusCode> {
-    let authority = uri.authority().map(|part| part.as_str());
-    if !((uri.scheme_str() == Some(asset_preview::SCHEME) && authority == Some("localhost"))
-        || (uri.scheme_str() == Some("http") && authority == Some("motionwright-asset.localhost")))
-        || uri.query().is_some()
-    {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let value = uri
-        .path()
-        .strip_prefix('/')
-        .ok_or(StatusCode::BAD_REQUEST)?;
-    let token = Uuid::parse_str(value).map_err(|_| StatusCode::BAD_REQUEST)?;
-    if token.to_string() != value {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    Ok(token)
-}
-
 pub fn handle(app: &tauri::AppHandle, label: &str, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
     let result = (|| {
         let owner = app
@@ -39,7 +18,13 @@ pub fn handle(app: &tauri::AppHandle, label: &str, request: Request<Vec<u8>>) ->
             return Err(StatusCode::BAD_REQUEST);
         }
         let selected = RangeRequest {
-            stream_token: token(request.uri())?,
+            stream_token: asset_preview::stream_token(
+                request.uri().scheme_str(),
+                request.uri().authority().map(|part| part.as_str()),
+                request.uri().path(),
+                request.uri().query().is_some(),
+            )
+            .map_err(|_| StatusCode::BAD_REQUEST)?,
             method: request.method().to_string(),
             range: request
                 .headers()
@@ -90,29 +75,4 @@ pub fn handle(app: &tauri::AppHandle, label: &str, request: Request<Vec<u8>>) ->
             .expect("fixed bounded source media headers"))
     })();
     result.unwrap_or_else(crate::av_delivery::streaming::failure)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn original_asset_protocol_rejects_remote_hosts_paths_queries_and_native_master_tokens() {
-        let id = Uuid::new_v4();
-        for url in [
-            format!("motionwright-asset://localhost/{id}"),
-            format!("http://motionwright-asset.localhost/{id}"),
-        ] {
-            assert_eq!(token(&url.parse().unwrap()), Ok(id));
-        }
-        for url in [
-            format!("https://motionwright-asset.localhost/{id}"),
-            format!("http://motionwright-asset.localhost:80/{id}"),
-            format!("http://motionwright-asset.localhost.evil/{id}"),
-            format!("motionwright-media://localhost/{id}"),
-            format!("motionwright-asset://localhost/{id}?path=private"),
-            "motionwright-asset://localhost/../private".into(),
-        ] {
-            assert!(token(&url.parse().unwrap()).is_err());
-        }
-    }
 }
