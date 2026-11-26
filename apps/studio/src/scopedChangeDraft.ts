@@ -38,6 +38,9 @@ export interface ScopedChangeDraft {
   parkedEditors: DraftEditor[];
   nativeSource: NativeReviewRepairDraft | null;
   arrangement?: ArrangementSelection;
+  /** Generated recipe admission depends on the whole saved source revision,
+   * not just the geometry fields that the resulting patch edits. */
+  recipeSource?: { kind: "focus_transfer" | "measured_comparison"; revision: number };
 }
 export interface DraftConflict {
   nodeId: string;
@@ -315,7 +318,8 @@ export function stageDraftFocusTransfer(draft:ScopedChangeDraft,project:Project,
     parkedEditors.push(updateEditor({nodeId:node.id,kind:"motion",text:node.text??"",transform:nodeTransform(node),source:sourceNode(node)}));
   }
   if(parkedEditors.length>128)throw new Error("The focus transfer would exceed the recoverable object input budget.");
-  return {...working,edits:result.edits,origins,editor,parkedEditors,rationale:working.rationale.trim()||result.rationale};
+  return {...working,edits:result.edits,origins,editor,parkedEditors,rationale:working.rationale.trim()||result.rationale,
+    recipeSource:{kind:"focus_transfer",revision:project.revision}};
 }
 
 /** Stage source-bound comparison as ordinary original object transforms. */
@@ -339,7 +343,8 @@ export function stageDraftMeasuredComparison(draft:ScopedChangeDraft,project:Pro
     parkedEditors.push(updateEditor({nodeId:node.id,kind:"transform",text:node.text??"",transform:nodeTransform(node),source:sourceNode(node)}));
   }
   if(parkedEditors.length>128)throw new Error("The comparison exceeds the recoverable object input budget.");
-  return {...working,edits:result.edits,origins,editor,parkedEditors,rationale:working.rationale.trim()||result.rationale};
+  return {...working,edits:result.edits,origins,editor,parkedEditors,rationale:working.rationale.trim()||result.rationale,
+    recipeSource:{kind:"measured_comparison",revision:project.revision}};
 }
 
 export function removeDraftEdit(draft: ScopedChangeDraft, nodeId: string, kind: DraftEdit["kind"]): ScopedChangeDraft {
@@ -347,6 +352,8 @@ export function removeDraftEdit(draft: ScopedChangeDraft, nodeId: string, kind: 
   return { ...draft, edits, origins: draft.origins.filter(origin => edits.some(edit => edit.node_id === origin.id)) };
 }
 export function draftPatch(draft: ScopedChangeDraft, sceneId: string): CreativePatch {
+  if(draft.recipeSource && draft.recipeSource.revision!==draft.baseRevision)
+    throw new Error("Restage the recipe on its saved source revision.");
   return { scene_id: sceneId, base_revision: draft.baseRevision, rationale: draft.rationale, edits: structuredClone(draft.edits) };
 }
 
@@ -446,6 +453,8 @@ function refreshEditors(draft: ScopedChangeDraft, scene: Scene): Pick<ScopedChan
 export function rebaseScopedDraft(draft: ScopedChangeDraft, project: Project, scene: Scene | null): ScopedChangeDraft {
   if (draft.scope !== scopedDraftScope(project, scene) || !scene) throw new Error("The proposal belongs to another project, branch or scene.");
   if (draft.nativeSource) throw new Error("Re-inspect current native frames before replacing a frame-bound repair source.");
+  if (draft.recipeSource && draft.recipeSource.revision !== project.revision)
+    throw new Error("Discard or retain this older proposal separately, then restage the recipe on the current saved source. Object-only rebase cannot validate its data, clock or output profile.");
   if (scopedDraftConflicts(draft, scene).length) throw new Error("Resolve overlapping object changes before reviewing this proposal on the current revision.");
   return { ...draft, baseRevision: project.revision,
     origins: [...new Set(draft.edits.map(edit => edit.node_id))].map(id => sourceNode(scene.nodes.find(item => item.id === id)!)),
@@ -458,13 +467,16 @@ export function rebaseScopedDraft(draft: ScopedChangeDraft, project: Project, sc
 export function retainUnqueuedInputs(draft: ScopedChangeDraft, project: Project, scene: Scene | null): ScopedChangeDraft {
   if (!scene || draft.scope !== scopedDraftScope(project, scene)) return draft;
   const next = { ...draft, baseRevision: project.revision, edits: [], origins: [], ...refreshEditors(draft, scene) };
+  // Only the matching committed proposal consumes its recipe source. Unqueued
+  // human input remains an ordinary draft, not a regenerated recipe.
+  delete next.recipeSource;
   if (!unqueuedInputCount(next)) return createScopedDraft(project, scene);
   return { ...next, parkedEditors: next.parkedEditors.filter(editor => editorHasInputs(next, editor)) };
 }
 
 export function scopedReviewKey(project: Project, scene: Scene | null, draft: ScopedChangeDraft, undoTarget: string | null): string {
   return JSON.stringify([scopedDraftScope(project, scene), project.revision, draft.baseRevision,
-    undoTarget ? { type: "undo_creative_patch", patch_id: undoTarget } : draftPatch(draft, scene?.id ?? ""), draft.nativeSource]);
+    undoTarget ? { type: "undo_creative_patch", patch_id: undoTarget } : draftPatch(draft, scene?.id ?? ""), draft.nativeSource, draft.recipeSource ?? null]);
 }
 
 export interface ReviewedScopedChange {
@@ -528,7 +540,11 @@ export function decodeScopedDraft(raw: string, scope: string): ScopedChangeDraft
           : edit.kind === "style" ? validScopedStyle(edit.style) : edit.kind === "motion" && validScopedMotion(edit.keyframes))) ||
       !Array.isArray(value.origins) || value.origins.length > 128 || !value.origins.every(validSource) ||
       !validEditor(value.editor) || !Array.isArray(value.parkedEditors) || value.parkedEditors.length > 128 || !value.parkedEditors.every(validEditor) ||
-      !validNativeSource(value.nativeSource) || (value.arrangement !== undefined && !validArrangementSelection(value.arrangement))) {
+      !validNativeSource(value.nativeSource) || (value.arrangement !== undefined && !validArrangementSelection(value.arrangement))
+      || (value.recipeSource !== undefined && (!record(value.recipeSource) ||
+        Object.keys(value.recipeSource).length !== 2 ||
+        typeof value.recipeSource.kind !== "string" || !["focus_transfer","measured_comparison"].includes(value.recipeSource.kind) ||
+        value.recipeSource.revision !== value.baseRevision || value.nativeSource !== null))) {
     throw new Error("Saved proposal has an unsupported shape or belongs to another editing scope.");
   }
   // Project validation and permission checks belong to the service. Only restore
@@ -543,6 +559,8 @@ export function decodeScopedDraft(raw: string, scope: string): ScopedChangeDraft
     origins: (value.origins as SourceNode[]).map(sourceNode),
     editor: cleanEditor(value.editor), parkedEditors: value.parkedEditors.map(cleanEditor),
     arrangement: value.arrangement ? { action: value.arrangement.action, nodeIds: [...value.arrangement.nodeIds] } : emptyArrangementSelection(),
+    ...(value.recipeSource ? {recipeSource:{kind:(value.recipeSource as NonNullable<ScopedChangeDraft["recipeSource"]>).kind,
+      revision:value.baseRevision as number}} : {}),
     nativeSource: value.nativeSource ? { schema: "motionwright.native-review-repair-draft/1",
       projectId: value.nativeSource.projectId, generation: value.nativeSource.generation, revision: value.nativeSource.revision,
       sceneId: value.nativeSource.sceneId, profileId: value.nativeSource.profileId, frameIndex: value.nativeSource.frameIndex,

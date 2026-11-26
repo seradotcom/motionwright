@@ -68,3 +68,68 @@ test("library focus transfer stages and reviews two exact opacity tracks in one 
   await undoArrangement(page,base.revision+2);
   expect((await readStudioProject(page)).scenes.find(item=>item.id===scene.id)!.nodes).toEqual(scene.nodes);
 });
+
+test("a recovered craft recipe cannot adopt a changed output clock through object-only rebase",async({page})=>{
+  await page.goto("/");
+  await button(page,"Add scene").click();
+  await page.getByLabel("New scene name").fill("Revision-bound focus");
+  await button(page,"Add").click();
+  await button(page,"Canvas").click();
+  await page.locator(".tree-row").filter({hasText:"Revision-bound focus"}).click();
+  for(let i=0;i<2;i++)await page.getByLabel("Create canvas object",{exact:true}).getByRole("button",{name:"rectangle",exact:true}).click();
+  const base=await readStudioProject(page),scene=base.scenes.find(item=>item.name==="Revision-bound focus")!;
+  const profile=base.deliverables[0];
+  const open=async()=>{
+    await button(page,"Production").click();
+    await page.getByLabel("Production working scene").selectOption(scene.id);
+    await button(page,"Scoped changes").click();
+  };
+  await open();
+  const editor=page.getByRole("region",{name:"Creative production workstation",exact:true});
+  const focus=editor.locator("summary:visible").filter({hasText:/^Focus transfer$/});
+  await expect(focus).toHaveCount(1);
+  await expect(editor.locator("summary:visible").filter({hasText:/^Measured state comparison$/})).toHaveCount(1);
+  await focus.click();
+  await editor.getByLabel("Focus transfer from",{exact:true}).selectOption(scene.nodes[0].id);
+  await editor.getByLabel("Focus transfer to",{exact:true}).selectOption(scene.nodes[1].id);
+  await editor.getByLabel("Focus transfer start frame",{exact:true}).fill("15");
+  await editor.getByLabel("Focus transfer end frame",{exact:true}).fill("45");
+  await expect(editor.getByRole("button",{name:"Stage focus transfer",exact:true})).toBeEnabled();
+  await editor.getByRole("button",{name:"Stage focus transfer",exact:true}).click();
+  const queue=editor.getByRole("region",{name:"Proposed edits",exact:true});
+  await expect(queue.getByLabel(/Remove proposed edit/)).toHaveCount(2);
+  await editor.getByRole("button",{name:"Preview scoped changes",exact:true}).click();
+  await expect(editor.getByText("Editorial diff prepared",{exact:true})).toBeVisible();
+  const storageKey=await page.evaluate(()=>Object.keys(sessionStorage).find(key=>key.startsWith("motionwright.scoped-change-draft.v1:"))!);
+  const raw=await page.evaluate(key=>sessionStorage.getItem(key)!,storageKey);
+  expect(JSON.parse(raw).recipeSource).toEqual({kind:"focus_transfer",revision:base.revision});
+  await button(page,"Deliver").click();
+  await page.locator('.delivery-profile-row[data-profile-id="'+profile.id+'"]').click();
+  await page.getByLabel("Frame rate",{exact:true}).selectOption("25/1");
+  await button(page,"Save profile").click();
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r"+(base.revision+1));
+  const changed=await readStudioProject(page);
+  expect(changed.scenes.find(item=>item.id===scene.id)!.nodes).toEqual(scene.nodes);
+  // The browser-only demo transport loses its in-memory document on reload.
+  // Re-seed precisely the observed saved revision, not a synthetic successful
+  // patch receipt. The session draft itself must survive the reload unchanged.
+  expect(changed.deliverables.find(item=>item.id===profile.id)?.frame_rate).toEqual({num:"25",den:"1"});
+  await page.route("**/src/fixture.ts",async route=>{
+    const response=await route.fetch();
+    await route.fulfill({response,body:(await response.text())+"\nfixtureBootstrap.project = "+JSON.stringify(changed)+";\n"});
+  });
+  await page.reload();await open();
+  await expect(editor.getByText("Generated recipe source changed.",{exact:true})).toBeVisible();
+  await expect(queue.getByLabel(/Remove proposed edit/)).toHaveCount(2);
+  await expect(editor.getByRole("button",{name:"Preview scoped changes",exact:true})).toBeDisabled();
+  await expect(editor.getByRole("button",{name:"Apply as one revision",exact:true})).toBeDisabled();
+  await editor.getByRole("button",{name:"Review on current revision",exact:true}).click();
+  await expect(editor.getByText(/restage the recipe on the current saved source/i)).toBeVisible();
+  expect(await readStudioProject(page)).toEqual(changed);
+  const retained=await page.evaluate(key=>sessionStorage.getItem(key)!,storageKey);
+  expect(JSON.parse(retained)).toEqual(JSON.parse(raw));
+  await editor.getByRole("button",{name:"Discard proposal",exact:true}).click();
+  await expect(editor.getByText("Generated recipe source changed.",{exact:true})).toHaveCount(0);
+  await expect(queue.getByLabel(/Remove proposed edit/)).toHaveCount(0);
+  expect(await readStudioProject(page)).toEqual(changed);
+});

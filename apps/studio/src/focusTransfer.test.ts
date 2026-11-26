@@ -3,7 +3,7 @@ import {fixtureProject} from "./fixture";
 import {emptyProductionDesign} from "./creativeProduction";
 import {applyChange} from "./api";
 import {focusTransferEdits} from "./focusTransfer";
-import {createScopedDraft,stageDraftFocusTransfer,draftPatch,encodeScopedDraft,decodeScopedDraft,scopedDraftScope,hydrateScopedDraft} from "./scopedChangeDraft";
+import {createScopedDraft,stageDraftFocusTransfer,draftPatch,encodeScopedDraft,decodeScopedDraft,scopedDraftScope,hydrateScopedDraft,rebaseScopedDraft,scopedDraftConflicts} from "./scopedChangeDraft";
 import {previewTransform} from "./canvasMotion";
 import type {CanvasNode,Project} from "./types";
 
@@ -65,4 +65,35 @@ describe("versioned focus transfer pattern",()=>{
     const stale={...createScopedDraft(p,scene),baseRevision:p.revision-1};
     expect(()=>stageDraftFocusTransfer(stale,p,scene,profile,input)).toThrow(/current scene/);
   });
+});
+
+it("never reuses a recovered generated transfer at a new output clock",async()=>{
+  const {p,scene,profile,input}=source();
+  const draft=stageDraftFocusTransfer(createScopedDraft(p,scene),p,scene,profile,input);
+  const next=await applyChange(p,{type:"upsert_deliverable",profile:{...p.deliverables[1],frame_rate:{num:"25",den:"1"}}});
+  const current=next.scenes[0],raw=encodeScopedDraft(draft);
+  expect(scopedDraftConflicts(draft,current)).toEqual([]);
+  const recovered=decodeScopedDraft(raw,scopedDraftScope(next,current));
+  const recoveryBytes=encodeScopedDraft(recovered);
+  expect(recovered).toEqual(draft);
+  expect(()=>rebaseScopedDraft(recovered,next,current)).toThrow(/restage.*recipe|recipe.*restage/i);
+  expect(encodeScopedDraft(recovered)).toBe(recoveryBytes);
+  expect(()=>stageDraftFocusTransfer(createScopedDraft(next,current),next,current,next.deliverables[0],input)).toThrow(/frame-aligned/);
+});
+
+it("recovery rejects malformed or relabeled recipe source without changing the original draft",()=>{
+  const {p,scene,profile,input}=source();
+  const draft=stageDraftFocusTransfer(createScopedDraft(p,scene),p,scene,profile,input);
+  for(const recipeSource of [
+    {kind:"focus_transfer",revision:p.revision+1},
+    {kind:"unrecognized",revision:p.revision},
+    {kind:["focus_transfer"],revision:p.revision},
+    {kind:"focus_transfer",revision:p.revision,extra:true},
+    null,
+  ]){
+    expect(()=>decodeScopedDraft(JSON.stringify({...draft,recipeSource}),draft.scope)).toThrow(/unsupported shape/);
+  }
+  const legacy={...draft};delete legacy.recipeSource;
+  expect(decodeScopedDraft(encodeScopedDraft(legacy),draft.scope).recipeSource).toBeUndefined();
+  expect(decodeScopedDraft(encodeScopedDraft(draft),draft.scope).recipeSource).toEqual(draft.recipeSource);
 });

@@ -4,7 +4,7 @@ import {emptyProductionDesign} from "./creativeProduction";
 import {applyChange} from "./api";
 import {applyMeasuredBinding,applyMeasuredTable,type MeasuredTable,type MeasuredView} from "./measuredData";
 import {measuredComparisonEdits,measuredComparisonRows} from "./measuredComparison";
-import {createScopedDraft,stageDraftMeasuredComparison,draftPatch,encodeScopedDraft,decodeScopedDraft,scopedDraftScope,hydrateScopedDraft} from "./scopedChangeDraft";
+import {createScopedDraft,stageDraftMeasuredComparison,draftPatch,encodeScopedDraft,decodeScopedDraft,scopedDraftScope,hydrateScopedDraft,rebaseScopedDraft,scopedDraftConflicts} from "./scopedChangeDraft";
 import {sampleProfileLayout} from "./profileComposition";
 import type {Asset,CanvasNode,Project} from "./types";
 
@@ -94,4 +94,20 @@ describe("measured state comparison authoring",()=>{
     p.deliverables[0].text_overrides[scene.nodes[0].id]="A forged figure";
     expect(()=>measuredComparisonEdits(p,scene,input)).toThrow(/Measured text/);
   });
+});
+
+it("retains a generated comparison's revision binding even when a new measured source leaves all geometry unchanged",async()=>{
+  const {p,scene,input,assets,table}=source();
+  const draft=stageDraftMeasuredComparison(createScopedDraft(p,scene),p,scene,input);
+  const retained=encodeScopedDraft(draft);
+  const next=await applyChange(p,{type:"upsert_measured_table",table:{...table,version:2,
+    source_asset_id:assets[1].id,source_sha256:assets[1].content_sha256!,rows:[table.rows[0],{...table.rows[1],unit:"count"}]}});
+  const current=next.scenes[0];
+  expect(scopedDraftConflicts(draft,current)).toEqual([]);
+  const recovered=decodeScopedDraft(retained,scopedDraftScope(next,current));
+  const recoveryBytes=encodeScopedDraft(recovered);
+  expect(recovered).toEqual(draft);
+  expect(()=>rebaseScopedDraft(recovered,next,current)).toThrow(/restage.*recipe|recipe.*restage/i);
+  expect(encodeScopedDraft(recovered)).toBe(recoveryBytes);
+  expect(()=>stageDraftMeasuredComparison(createScopedDraft(next,current),next,current,input)).toThrow(/identical units/);
 });

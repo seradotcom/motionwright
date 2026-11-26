@@ -74,7 +74,8 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
   const submitted = useRef<Review | null>(null);
   const nativeSource = draft.nativeSource;
   const sourceStale = nativeSource !== null && !nativeRepairDraftIsCurrent(project, scene, nativeSource, displayProfile?.id ?? null);
-  const draftStale = draft.baseRevision !== project.revision || sourceStale;
+  const recipeStale = draft.recipeSource !== undefined && draft.recipeSource.revision !== project.revision;
+  const draftStale = draft.baseRevision !== project.revision || sourceStale || recipeStale;
   const key = scopedReviewKey(project, scene, draft, undoTarget) + JSON.stringify(displayProfile?.id ?? null);
   const latest = useRef(key);
   latest.current = key;
@@ -257,6 +258,10 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
 
   return <div className="production-patch">
     <div className="production-section-title"><Eye size={18}/><div><h2>Scoped changes</h2><p>Stage a bounded proposal, inspect the difference and commit once.</p></div></div>
+    {recipeStale && <div className="production-notice" role="status">
+      <strong>Generated recipe source changed.</strong>
+      <span>Your original proposal remains retained. Discard it explicitly and restage the recipe on the current source; an object-only rebase cannot confirm the measured data or output clocks.</span>
+    </div>}
     {incomingRepair && scopedDraftHasWork(draft) && <div className="production-notice" role="status">
       <strong>A new native-frame observation is ready.</strong><span>Your existing proposal is still here.</span>
       <div className="production-button-row"><button className="secondary-button" disabled={lockedUi} onClick={() => beginRepair(incomingRepair)}>Replace draft with frame repair</button>
