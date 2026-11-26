@@ -6,7 +6,17 @@ Motionwright plays an already completed H.264/AAC MP4 inside its local Tauri edi
 
 Desktop creates a fresh Coordinator for each IPC invocation. Its backend-owned custody now retains the original Motion Canvas accounting root across the capture, direct MLT, multisegment MLT and optional audio-measurement calls. The retained root must match the exact live Store session, complete owner connection identity, source revision, Film options and original rendered-evidence digest. SQLite remains authoritative for the unchanged limits and cumulative debits; no new root or frame render is created to continue delivery.
 
-The private handle is never serialized. Reopening SQLite as a new Store, using another owner connection, losing the original handle or changing the original render cannot attach that budget. Closed Store identities and completed captures for superseded source revisions can leave the bounded memory registry; their durable receipts and spending remain intact. After an application restart, saved completed MP4s use the separate read-only recovery route below.
+The private handle is never serialized. A new Store session or caller-supplied render JSON cannot implicitly attach that budget. Closed Store identities and completed captures for superseded source revisions can leave the bounded memory registry; their durable receipts and spending remain intact. Explicit capture recovery below is required after losing that original live custody.
+
+## Reopen a complete Motion Canvas capture
+
+In Deliver, **Find saved capture** reads the original full-capture history for the current saved project and profile. **Reopen saved capture** verifies every original frame, restores the source-bound preview handles and makes the existing MP4 controls usable without rendering again. Pending profile/recipe edits and replies for superseded views cannot replace the current source.
+
+The complete producer adds closed private recovery context to its existing verification intent and result, without another receipt row or store. Recovery replans the exact committed Film and matches the original plan, apply, start, result and verification request digests, owner identity and typed Native provider provenance. Every selected atomic operation must retain its original intent and completion; missing, ambiguous, changed or UNKNOWN history is refused. The provider's original manifest digest and every indexed frame digest/length are checked with bounded reads.
+
+Only then does the backend reattach the existing SQLite accounting root to its new Store session. The original limits are independently rederived by the current planner, and all spent capacity and later delivery UNKNOWNs remain unchanged. Reopening is a read; future delivery still consumes its normal current effect grant and the remaining original budget. The worker limit and owner/source checks apply before and after reading. No root, debit, receipt or permission is recreated.
+
+This route covers one unambiguous complete capture of up to 64 segments and 36,000 frames using the same original owner connection and output files. It does not admit partial-window or experimental hybrid captures. Legacy receipts without the new context are never backfilled; those originals remain unavailable to this new cold-recovery path. Completed MP4s have the separate review route below.
 
 ## Current-session playback
 

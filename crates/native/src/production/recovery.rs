@@ -210,7 +210,30 @@ fn validate_motion_proof(
     evidence: &MotionCanvasRenderEvidence,
     previous_manifests: Option<&[String]>,
 ) -> NativeResult<Vec<String>> {
-    if evidence.segments.is_empty() || evidence.segments.len() > RECOVERY_MAX_SEGMENTS {
+    validate_motion_files(
+        root,
+        evidence,
+        previous_manifests,
+        RECOVERY_MAX_SEGMENTS,
+        RECOVERY_MAX_FRAMES,
+    )
+}
+
+pub(super) fn validate_saved_motion_proof(
+    root: &Path,
+    evidence: &MotionCanvasRenderEvidence,
+) -> NativeResult<Vec<String>> {
+    validate_motion_files(root, evidence, None, 64, 36_000)
+}
+
+fn validate_motion_files(
+    root: &Path,
+    evidence: &MotionCanvasRenderEvidence,
+    previous_manifests: Option<&[String]>,
+    max_segments: usize,
+    max_frames: u64,
+) -> NativeResult<Vec<String>> {
+    if evidence.segments.is_empty() || evidence.segments.len() > max_segments {
         return Err(invalid("Recovery Motion Canvas segment count is invalid"));
     }
     if previous_manifests.is_some_and(|items| items.len() != evidence.segments.len()) {
@@ -223,13 +246,13 @@ fn validate_motion_proof(
     let mut total_frames = 0_u64;
     for (segment_index, segment) in evidence.segments.iter().enumerate() {
         ensure_native_motion_verification(&segment.verification)?;
-        if segment.frame_count == 0 || segment.frame_count > RECOVERY_MAX_FRAMES {
+        if segment.frame_count == 0 || segment.frame_count > max_frames {
             return Err(invalid("Recovery segment frame count is out of bounds"));
         }
         total_frames = total_frames
             .checked_add(segment.frame_count)
             .ok_or_else(|| invalid("Recovery frame count overflow"))?;
-        if total_frames > RECOVERY_MAX_FRAMES {
+        if total_frames > max_frames {
             return Err(invalid("Recovery frame budget exceeded"));
         }
         if segment.artifact.get("frame_count").and_then(Value::as_u64) != Some(segment.frame_count)
@@ -246,7 +269,17 @@ fn validate_motion_proof(
         )?;
         let manifest_relative = format!("{directory}/artifact-manifest.json");
         let path = output_artifact_path(root, &manifest_relative, RECOVERY_MANIFEST_LIMIT)?;
-        let sha = sha256_file(&path)?;
+        let mut original_bytes = Vec::new();
+        fs::File::open(&path)
+            .map_err(|_| backend("Recovery manifest could not be opened"))?
+            .take(RECOVERY_MANIFEST_LIMIT + 1)
+            .read_to_end(&mut original_bytes)
+            .map_err(|_| backend("Recovery manifest could not be read"))?;
+        if original_bytes.is_empty() || original_bytes.len() as u64 > RECOVERY_MANIFEST_LIMIT {
+            return Err(invalid("Recovery manifest exceeded its bounded read"));
+        }
+        // Hash and parse the same bounded bytes, without a second path read.
+        let sha = hex::encode(Sha256::digest(&original_bytes));
         if let Some(known) = previous_manifests
             && known[segment_index] != sha
         {
@@ -266,10 +299,8 @@ fn validate_motion_proof(
                 "Recovery renderer manifest disagrees with provider",
             ));
         }
-        let manifest: Value = serde_json::from_slice(
-            &fs::read(path).map_err(|_| backend("Recovery manifest could not be read"))?,
-        )
-        .map_err(|_| backend("Recovery renderer manifest is malformed"))?;
+        let manifest: Value = serde_json::from_slice(&original_bytes)
+            .map_err(|_| backend("Recovery renderer manifest is malformed"))?;
         if manifest
             .pointer("/plan/frame_count")
             .and_then(Value::as_u64)

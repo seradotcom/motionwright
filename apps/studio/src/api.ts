@@ -1,3 +1,4 @@
+import {parseSavedMotionCaptureInventory,parseSavedMotionCaptureHint,parseRecoveredMotionCapture,type SavedMotionCaptureHint,type SavedMotionCaptureInventory} from "./savedMotionCapture";
 import {parseSavedMasterInventory,type SavedMasterHint,type SavedMasterInventory} from "./savedNativeMedia";
 import { parseNativeAvPlayback, verifiedNativeReviewBytes, type NativeAvPlayback } from "./nativeAvMedia";
 import { applyDeliverySettingPropagation } from "./deliveryFamily";
@@ -1084,6 +1085,26 @@ export async function renderMotionCanvas(
       options: savedOptions,
     },
   });
+}
+
+export async function readSavedMotionCaptureInventory(project:Project,deliverableId:string):Promise<SavedMotionCaptureInventory>{
+  if(!isTauri())throw new Error("Saved captures require the Motionwright desktop runtime.");
+  const value=await invoke<unknown>("saved_motion_capture_inventory",{request:{
+    project_id:project.id,generation:project.generation,revision:project.revision,deliverable_id:deliverableId,
+  }});
+  return parseSavedMotionCaptureInventory(value,project,deliverableId);
+}
+
+export async function recoverSavedMotionCapture(project:Project,deliverableId:string,hint:SavedMotionCaptureHint,
+  beforeRead?:NativeDeliveryDispatchCheck):Promise<MotionCanvasRenderEvidence>{
+  if(!isTauri())throw new Error("Saved captures require the Motionwright desktop runtime.");
+  parseSavedMotionCaptureHint(hint,project,deliverableId);
+  beforeRead?.();
+  const value=await invoke<unknown>("recover_saved_motion_capture",{request:{
+    project_id:project.id,generation:project.generation,revision:project.revision,
+    deliverable_id:deliverableId,receipt_id:hint.receipt_id,
+  }});
+  return parseRecoveredMotionCapture(value,project,deliverableId,hint);
 }
 
 /** One original Window call. Warm reuse never falls back to native capture.

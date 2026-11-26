@@ -51,6 +51,8 @@
     "allow-native-blender-product-attempt",
     "allow-motion-canvas-preflight",
     "allow-render-motion-canvas",
+    "allow-saved-motion-capture-inventory",
+    "allow-recover-saved-motion-capture",
     "allow-render-motion-canvas-window",
     "allow-preflight-multi-segment-mlt-readiness",
     "allow-assemble-av-master",

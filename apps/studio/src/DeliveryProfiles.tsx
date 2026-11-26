@@ -2,6 +2,8 @@ import { CircleCheck, CircleDashed, FileOutput, Play, Plus, Save, Trash2 } from 
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import NativeAvReview, { NativeAudioQcHistory } from "./NativeAvReview";
 import SavedNativeMasters from "./SavedNativeMasters";
+import SavedMotionCapturePanel from "./SavedMotionCapturePanel";
+import type {SavedMotionCaptureHint} from "./savedMotionCapture";
 import DeliveryAudioTargets from "./DeliveryAudioTargets";
 import { nativeAvSelectionFromEvidence, retainedNativeAvReviewSelections } from "./nativeAvAudioQc";
 import {
@@ -32,6 +34,7 @@ import {
   savedNativeFilmFontFamily,
   preflightMultiSegmentReadiness,
   renderMotionCanvas,
+  recoverSavedMotionCapture,
   productionRuntimeCompatibility,
 } from "./api";
 import type {
@@ -453,7 +456,7 @@ export default function DeliveryProfiles({
   const targetsDraft = useDeliveryRecipeDraft(project, selected?.id ?? "", "targets", commitRecipe);
   const visibleEvidence = renderEvidence?.generation === project.generation
     && renderEvidence.deliverable_id === selected?.id ? renderEvidence : null;
-  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "multi-source" | "master" | "multi-master" | "export-master" | "verify-media" | "new" | null>(null);
+  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "multi-source" | "master" | "multi-master" | "export-master" | "verify-media" | "recover-capture" | "new" | null>(null);
   const [preflight, setPreflight] = useState<{
     key: string;
     report: MotionCanvasProjectionPreflight;
@@ -967,6 +970,17 @@ export default function DeliveryProfiles({
       onAvEvidence(result);
       setMessage("Native H.264/AAC MP4 master recorded for r" + result.revision
         + " with " + result.frame_count + " native frames. Verify output metadata before distribution.");
+    });
+  };
+
+  const reopenSavedCapture = (hint:SavedMotionCaptureHint) => {
+    if(!selected||!renderReady)return;
+    void run("recover-capture",async()=>{
+      const gesture=prepareNativeDispatch("render");
+      const result=await recoverSavedMotionCapture(project,selected.id,hint,gesture.beforeDispatch);
+      if(!gesture.stillCurrent()){notePreviousNativeResult();return;}
+      onRenderEvidence(result);
+      setMessage("Saved native capture reopened: "+hint.frame_count+" original frames are ready for preview and MP4 preparation.");
     });
   };
 
@@ -1606,6 +1620,9 @@ export default function DeliveryProfiles({
               {motionScenes.length === 0 && (
                 <div className="delivery-truth-note warning"><CircleDashed size={14} /> This revision has no scenes assigned to Motion Canvas.</div>
               )}
+              {desktopMode && <SavedMotionCapturePanel project={project} deliverableId={selected.id}
+                blocked={!renderReady||busy!==null} onRecover={reopenSavedCapture} />}
+              {busy==="recover-capture"&&<p role="status">Verifying the saved capture and its original frames...</p>}
               {currentMotion && currentMotion.segments.length > 1 && (
                 <div className="delivery-multi-source" role="region"
                   aria-label="Multi-segment native MLT source readiness">
@@ -1623,7 +1640,7 @@ export default function DeliveryProfiles({
                   </button>
                   {!multiSourceToken && (
                     <span className="delivery-truth-note warning">
-                      Native source handles are not available in this desktop session. Render again to establish trusted source identity.
+                      Native source handles are not available in this desktop session. Find and reopen the saved capture above to recover its original source identity.
                     </span>
                   )}
                   {currentMultiSource && (

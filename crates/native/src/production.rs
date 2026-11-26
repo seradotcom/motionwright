@@ -61,6 +61,7 @@ mod mlt_multisegment_av;
 mod mlt_timeline;
 mod motion_canvas_window;
 mod saved_media;
+mod saved_motion;
 pub use motion_canvas_window::{
     MotionCanvasCachedWindowFrame, MotionCanvasCaptureTimings, MotionCanvasStartOrigin,
     MotionCanvasWindowCapture, MotionCanvasWindowCost, MotionCanvasWindowEvidence,
@@ -70,6 +71,9 @@ pub use motion_canvas_window::{
 };
 pub use saved_media::{
     SavedMasterReceiptHint, SavedMasterReceiptInventory, VerifiedOriginalMasterReview,
+};
+pub use saved_motion::{
+    RecoveredMotionCapture, SavedMotionCaptureHint, SavedMotionCaptureInventory,
 };
 mod native_runtime_versions;
 #[cfg(test)]
@@ -2990,6 +2994,8 @@ pub struct ProductionCoordinator {
     // A fresh process cannot silently reuse or remint the persisted root.
     motion_budget_roots: RetainedMotionRoots,
     active_motion_budget: Option<MotionRootBudgetScope>,
+    // Set only by the complete producer; Window and hybrid cannot mint this context.
+    saved_motion_capture: Option<std::sync::Arc<saved_motion::SavedMotionBase>>,
     // The mixed-renderer route owns one preflighted root across MC, static
     // Manim and its closed MLT continuation. No scoped client is public.
     active_hybrid_budget: Option<hybrid_budget::HybridRootBudgetScope>,
@@ -3021,6 +3027,7 @@ impl ProductionCoordinator {
             scene_boundary_scope: None,
             motion_budget_roots: custody.motion_budget_roots.clone(),
             active_motion_budget: None,
+            saved_motion_capture: None,
             active_hybrid_budget: None,
             hybrid_project_grant: None,
             #[cfg(test)]
@@ -3975,16 +3982,22 @@ impl ProductionCoordinator {
 
         let render_and_wait_micros = motion_canvas_window::elapsed_micros(phase_started);
         let phase_started = std::time::Instant::now();
+        let saved_context = self.saved_motion_capture.as_ref().map(|source| {
+            ReceiptDispatchContext::SavedMotion(saved_motion::SavedMotionReceiptContext::new(
+                source, index,
+            ))
+        });
         let verified = self
-            .execute(
+            .execute_with_receipt_origin_context(
                 project_id,
                 expected,
                 &format!("{prefix}:verify"),
-                "driver.motion-canvas.composition.verify",
+                ("driver.motion-canvas.composition.verify", false),
                 json!({"plan_ref": plan_ref, "job_ref": job_ref}),
-                false,
+                saved_context,
             )
-            .await?;
+            .await?
+            .into_legacy_value();
         self.revalidate_retained_brand_font_staging()?;
         let verification = response_data(&verified)?.clone();
         if let Some(admission) = blend {
@@ -4125,8 +4138,16 @@ impl ProductionCoordinator {
             .iter()
             .flat_map(|segment| segment.scene_ids.iter().copied())
             .collect::<Vec<_>>();
-        let scoped =
+        let mut scoped =
             self.with_motion_scene_boundary_scope(&project, deliverable_id, options, &scene_ids)?;
+        scoped.saved_motion_capture = saved_motion::SavedMotionBase::for_full(
+            &scoped,
+            &project,
+            request_id,
+            deliverable_id,
+            options,
+            &segments,
+        )?;
         let mut evidence = Vec::with_capacity(segments.len());
         for (index, segment) in segments.into_iter().enumerate() {
             let prefix = format!("{request_id}:motion:{index}");
@@ -5632,17 +5653,26 @@ impl ProductionCoordinator {
         dispatch_context: Option<ReceiptDispatchContext<'_>>,
     ) -> NativeResult<ReceiptExecutionOutcome> {
         let (command, mutation) = operation;
-        let (receipt_context, media_binding, audio_staging, saved_context) = match dispatch_context
-        {
-            #[cfg(test)]
-            Some(ReceiptDispatchContext::Audio(context)) => (Some(context), None, None, None),
-            Some(ReceiptDispatchContext::PreparedAudio(context, staging)) => {
-                (Some(context), None, Some(staging), None)
-            }
-            Some(ReceiptDispatchContext::Bound(binding)) => (None, Some(binding), None, None),
-            Some(ReceiptDispatchContext::SavedMaster(context)) => (None, None, None, Some(context)),
-            None => (None, None, None, None),
-        };
+        let (receipt_context, media_binding, audio_staging, saved_context, motion_context) =
+            match dispatch_context {
+                #[cfg(test)]
+                Some(ReceiptDispatchContext::Audio(context)) => {
+                    (Some(context), None, None, None, None)
+                }
+                Some(ReceiptDispatchContext::PreparedAudio(context, staging)) => {
+                    (Some(context), None, Some(staging), None, None)
+                }
+                Some(ReceiptDispatchContext::Bound(binding)) => {
+                    (None, Some(binding), None, None, None)
+                }
+                Some(ReceiptDispatchContext::SavedMaster(context)) => {
+                    (None, None, None, Some(context), None)
+                }
+                Some(ReceiptDispatchContext::SavedMotion(context)) => {
+                    (None, None, None, None, Some(context))
+                }
+                None => (None, None, None, None, None),
+            };
         let media_mutation = if let Some(binding) = media_binding {
             binding.check_connection(&self.client)?;
             binding.mutation_for(command)?
@@ -5667,6 +5697,13 @@ impl ProductionCoordinator {
                 "Original media context requires the existing closed mux",
             ));
         }
+        if motion_context.is_some()
+            && (command != "driver.motion-canvas.composition.verify" || mutation)
+        {
+            return Err(invalid(
+                "Saved capture context requires the original full verification",
+            ));
+        }
         let receipt_context = receipt_context.map(|context| context.payload());
         let media_context =
             media_binding.map(|binding| (binding.receipt_key(), binding.receipt_context()));
@@ -5679,6 +5716,9 @@ impl ProductionCoordinator {
             }
             if let Some(context) = &saved_context {
                 payload["original_media_reopen"] = context.payload();
+            }
+            if let Some(context) = &motion_context {
+                payload["original_motion_reopen"] = context.payload();
             }
             payload
         };
@@ -5700,6 +5740,9 @@ impl ProductionCoordinator {
         }
         if let Some(context) = &saved_context {
             context.check_current(self, &project)?;
+        }
+        if let Some(context) = &motion_context {
+            context.check_dispatch(self, &project, request_id)?;
         }
         let job_ref = args
             .get("job_ref")
@@ -5767,6 +5810,18 @@ impl ProductionCoordinator {
                     "Original mux source differs from its retained reopen context",
                 ));
             }
+            if prior.stage == "completed"
+                && let Some(recorded) = prior.payload.get("original_motion_reopen")
+                && motion_context
+                    .as_ref()
+                    .is_some_and(|context| context.payload() != *recorded)
+            {
+                return Err(invalid(
+                    "Saved capture source differs from its original reopen context",
+                ));
+            }
+            // A legacy completed result is returned unchanged. Replaying it
+            // cannot add missing capture context to old durable history.
             if prior.stage == "completed"
                 && let Some(result) = prior.payload.get("result")
             {
@@ -6144,6 +6199,7 @@ enum ReceiptDispatchContext<'a> {
     ),
     Bound(&'a provider_binding::BoundMediaContext),
     SavedMaster(saved_media::SavedMasterReceiptContext),
+    SavedMotion(saved_motion::SavedMotionReceiptContext),
 }
 
 // Private dispatch provenance. Stored JSON cannot construct an observed result.
@@ -6262,6 +6318,7 @@ mod tests {
         use super::*;
         use std::sync::atomic::Ordering;
         include!("production/root_budget_productive_tests.rs");
+        include!("production/root_budget_saved_capture_tests.rs");
     }
     #[cfg(unix)]
     use motionwright_domain::{BlendMode, CanvasNode, Change, CoordinateSpace, NodeStyle};

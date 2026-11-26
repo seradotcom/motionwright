@@ -2186,6 +2186,176 @@ async fn render_motion_canvas(
     Ok(NativePreviewRenderResponse { evidence, preview })
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedMotionRecoverRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    deliverable_id: Uuid,
+    receipt_id: Uuid,
+}
+
+#[derive(Serialize)]
+struct SavedMotionRecoverResponse {
+    receipt_id: Uuid,
+    capture_sha256: String,
+    #[serde(flatten)]
+    native: NativePreviewRenderResponse,
+}
+
+/// Discovery and recovery read the existing owner-selected SQLite/output roots.
+/// No provider is invoked and no effect grant is issued or restored.
+#[tauri::command]
+async fn saved_motion_capture_inventory(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: av_delivery::AudioQcInventoryRequest,
+) -> Result<motionwright_native::production::SavedMotionCaptureInventory, String> {
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err("Saved capture source changed; reopen the current project.".into());
+    }
+    let preparation = state
+        .av_review
+        .admit_preparation()
+        .ok_or("Saved capture read capacity is busy; retry after current readers finish.")?;
+    let path = selected_connection_path(&state, project.id)?
+        .ok_or("Select the original Semwright owner connection to find saved captures.")?;
+    let initial_path = path.clone();
+    let service = state.service.clone();
+    let custody = state.production_receipt_custody.clone();
+    let (result, identity) = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        let _preparation = preparation;
+        let connection = ProductionConnection::load(path)
+            .map_err(|_| "Original capture connection is unavailable.".to_string())?;
+        let identity = connection
+            .identity()
+            .map_err(|_| "Original capture connection identity is unavailable.".to_string())?;
+        let coordinator =
+            ProductionCoordinator::with_receipt_custody(service, connection, &custody)
+                .map_err(|_| "Original capture connection was rejected.".to_string())?;
+        let result = coordinator
+            .saved_motion_capture_inventory(project.id, &project.stamp(), request.deliverable_id)
+            .map_err(|error| format!("Saved capture discovery was blocked: {}", error.message))?;
+        Ok::<_, String>((result, identity))
+    })
+    .await
+    .map_err(|_| "Saved capture discovery task failed.".to_string())??;
+    owner.begin_phase()?;
+    saved_motion_read_still_current(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+        &initial_path,
+        &identity,
+    )?;
+    Ok(result)
+}
+
+fn saved_motion_read_still_current(
+    state: &AppState,
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    path: &std::path::Path,
+    identity: &str,
+) -> Result<(), String> {
+    audio_read_still_current(
+        state,
+        project_id,
+        generation,
+        revision,
+        Some(path.to_path_buf()),
+    )
+    .map_err(|_| "Saved capture source changed while reading.".to_string())?;
+    let current = ProductionConnection::load(path)
+        .and_then(|connection| connection.identity())
+        .map_err(|_| "Original capture connection changed while reading.".to_string())?;
+    if current != identity {
+        return Err("Original capture connection changed while reading.".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn recover_saved_motion_capture(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: SavedMotionRecoverRequest,
+) -> Result<SavedMotionRecoverResponse, String> {
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err("Saved capture source changed; reopen the current project.".into());
+    }
+    let preparation = state
+        .av_review
+        .admit_preparation()
+        .ok_or("Saved capture read capacity is busy; retry after current readers finish.")?;
+    let path = selected_connection_path(&state, project.id)?
+        .ok_or("Select the original Semwright owner connection to reopen this capture.")?;
+    let initial_path = path.clone();
+    let service = state.service.clone();
+    let custody = state.production_receipt_custody.clone();
+    let registry = state.preview.clone();
+    let (result, identity) = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        let _preparation = preparation;
+        let connection = ProductionConnection::load(path)
+            .map_err(|_| "Original capture connection is unavailable.".to_string())?;
+        let identity = connection
+            .identity()
+            .map_err(|_| "Original capture connection identity is unavailable.".to_string())?;
+        let coordinator =
+            ProductionCoordinator::with_receipt_custody(service, connection, &custody)
+                .map_err(|_| "Original capture connection was rejected.".to_string())?;
+        let original = coordinator
+            .recover_saved_motion_capture(
+                project.id,
+                &project.stamp(),
+                request.deliverable_id,
+                request.receipt_id,
+            )
+            .map_err(|error| format!("Saved capture recovery was blocked: {}", error.message))?;
+        let preview = registry.register_with_options(
+            original.owner_root(),
+            &project.resource_key(),
+            original.evidence(),
+            original.options(),
+        );
+        if preview.len() != original.evidence().segments.len() {
+            return Err("Original capture frame handles could not be recovered completely.".into());
+        }
+        let result = SavedMotionRecoverResponse {
+            receipt_id: original.receipt_id(),
+            capture_sha256: original.capture_sha256().into(),
+            native: NativePreviewRenderResponse {
+                evidence: original.evidence().clone(),
+                preview,
+            },
+        };
+        Ok::<_, String>((result, identity))
+    })
+    .await
+    .map_err(|_| "Saved capture recovery task failed.".to_string())??;
+    owner.begin_phase()?;
+    saved_motion_read_still_current(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+        &initial_path,
+        &identity,
+    )?;
+    Ok(result)
+}
+
 /// Explicit native prefix capture or read-only reuse of an original window.
 /// Both retain the existing RenderLocal scope and one-use request grant.
 #[tauri::command]
@@ -4326,6 +4496,8 @@ fn main() {
             native_blender_product_attempt,
             motion_canvas_preflight,
             render_motion_canvas,
+            saved_motion_capture_inventory,
+            recover_saved_motion_capture,
             render_motion_canvas_window,
             preflight_multi_segment_mlt_readiness,
             assemble_av_master,

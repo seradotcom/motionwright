@@ -46,6 +46,8 @@ fn main() {
             "native_blender_product_attempt",
             "motion_canvas_preflight",
             "render_motion_canvas",
+            "saved_motion_capture_inventory",
+            "recover_saved_motion_capture",
             "render_motion_canvas_window",
             "preflight_multi_segment_mlt_readiness",
             "assemble_av_master",
