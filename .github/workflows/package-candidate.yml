@@ -395,7 +395,7 @@ jobs:
           receipt=json.loads(Path(sys.argv[1]).read_bytes())
           assert receipt["status"]=="PASS" and receipt["executed_source_sha"]==sys.argv[2]
           assert len(receipt["steps"])==3
-          for step,expected in zip(receipt["steps"],(12,39,8),strict=True):
+          for step,expected in zip(receipt["steps"],(12,41,8),strict=True):
               counts=step["counts"]
               assert step["status"]=="PASS" and counts["tests_run"]==counts["passed"]==expected
               assert all(counts[key]==0 for key in ("failures","errors","skipped","expected_failures","unexpected_successes"))
