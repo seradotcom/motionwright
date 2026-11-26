@@ -664,9 +664,9 @@ fn spatial_camera_extension_preserves_legacy_wire_and_projects_real_positions() 
             );
         }
         let midpoint = product_frame150_origin(&source);
-        for axis in 0..3 {
+        for (axis, value) in midpoint.into_iter().enumerate() {
             assert!(
-                (midpoint[axis]
+                (value
                     - (poses[0].2[axis] + (poses[1].2[axis] - poses[0].2[axis]) * 149.0 / 299.0))
                     .abs()
                     < 1e-12
