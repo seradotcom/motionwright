@@ -6,6 +6,9 @@ use motionwright_domain::Project;
 use semwright_native_sdk::types::Execution;
 use std::collections::HashSet;
 
+mod delivery;
+pub use delivery::VerifiedSavedMasterDelivery;
+
 const COMMAND: &str = "driver.mlt-video.av.mux";
 const CONTEXT_KEY: &str = "original_media_reopen";
 const CONTEXT_SCHEMA: &str = "motionwright.original-media-reopen/1";
@@ -253,6 +256,7 @@ impl SavedMasterReceiptContext {
             .as_ref()
             .ok_or_else(|| backend("Original media provider is absent"))?;
         if execution.dry_run
+            || provenance.untrusted_metadata
             || provenance.provider != "driver:mlt-video"
             || provenance.source != SourceKind::Driver
             || provenance.provider_generation.is_none()
@@ -477,6 +481,28 @@ impl ProductionCoordinator {
         deliverable_id: Uuid,
         expected_master_sha256: &str,
     ) -> NativeResult<VerifiedOriginalMasterReview> {
+        self.recover_saved_master_parts(
+            project_id,
+            expected,
+            mux_receipt_id,
+            deliverable_id,
+            expected_master_sha256,
+        )
+        .map(|(original, _, _)| original)
+    }
+
+    fn recover_saved_master_parts(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        mux_receipt_id: Uuid,
+        deliverable_id: Uuid,
+        expected_master_sha256: &str,
+    ) -> NativeResult<(
+        VerifiedOriginalMasterReview,
+        ProductionReceipt,
+        SavedMasterReceiptContext,
+    )> {
         if !is_sha256(expected_master_sha256) || mux_receipt_id.is_nil() {
             return Err(invalid("Saved media selector is invalid"));
         }
@@ -583,20 +609,24 @@ impl ProductionCoordinator {
         let latest = current_project(self, project_id, expected)?;
         context.check_current(self, &latest)?;
         audio_analysis::receipt_history::verify_selected_atomic_history(&self.service, &selected)?;
-        Ok(VerifiedOriginalMasterReview {
-            project_id,
-            stamp: expected.clone(),
-            deliverable_id,
-            owner_root: self.client.connection().output_root.clone(),
-            relative_path: path.into(),
-            sha256: sha.into(),
-            bytes,
-            clock: (
-                observation.fps_num,
-                observation.fps_den,
-                observation.frame_count,
-            ),
-        })
+        Ok((
+            VerifiedOriginalMasterReview {
+                project_id,
+                stamp: expected.clone(),
+                deliverable_id,
+                owner_root: self.client.connection().output_root.clone(),
+                relative_path: path.into(),
+                sha256: sha.into(),
+                bytes,
+                clock: (
+                    observation.fps_num,
+                    observation.fps_den,
+                    observation.frame_count,
+                ),
+            },
+            selected,
+            context,
+        ))
     }
 }
 

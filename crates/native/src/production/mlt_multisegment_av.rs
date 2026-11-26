@@ -259,7 +259,7 @@ pub(super) fn verify_mux_artifact_file(
 /// A later path lookup or caller-supplied sample counter cannot stand in for
 /// these media bytes. Keeping the original handle also avoids a second path
 /// lookup while checking decoded PCM content.
-fn open_verified_mux_wav(
+pub(super) fn open_verified_mux_wav(
     path: &std::path::Path,
     expected_sha256: &str,
 ) -> NativeResult<semwright_audio_domain::wav::WaveReader<std::fs::File>> {
@@ -312,7 +312,7 @@ fn open_verified_mux_wav(
 /// check *all* authored windows and AAC packet presentation independently.
 /// A lost terminal right (or left) channel must not count as a successful
 /// product Native mux merely because the file digest and sample count exist.
-fn require_native_mux_stereo_tail<
+pub(super) fn require_native_mux_stereo_tail<
     R1: std::io::Read + std::io::Seek,
     R2: std::io::Read + std::io::Seek,
 >(

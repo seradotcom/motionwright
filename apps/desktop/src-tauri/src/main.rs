@@ -3107,6 +3107,103 @@ async fn export_native_av_master(
     Ok(receipt)
 }
 
+/// Qualify the original after a restart, then consume a NEW scoped local
+/// delivery grant. Old session tokens, QC JSON and receipt selectors never
+/// authorize a copy. No Native render, measurement or receipt write occurs.
+#[tauri::command]
+async fn export_saved_native_av_master(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: av_delivery::SavedMasterExportRequest,
+) -> Result<MasterExportReceipt, String> {
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err("Saved MP4 delivery belongs to a previous project revision.".into());
+    }
+    let connection_path = selected_connection_path(&state, project.id)?
+        .ok_or("Choose the original owner connection before delivering a saved MP4.")?;
+    let expected_path = connection_path.clone();
+    let service = state.service.clone();
+    let custody = state.production_receipt_custody.clone();
+    let selection = request.selection();
+    let preparation = state
+        .av_review
+        .admit_preparation()
+        .ok_or("Original media read capacity is busy; retry after current readers finish.")?;
+    let (source, identity, preparation) =
+        desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+            let (source, identity) = av_delivery::prepare_saved_delivery(
+                &project,
+                &selection,
+                service,
+                &connection_path,
+                &custody,
+            )?;
+            Ok::<_, String>((source, identity, preparation))
+        })
+        .await
+        .map_err(|_| "Saved MP4 qualification task failed.".to_owned())??;
+    owner.begin_phase()?;
+    let latest = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if latest.generation != request.generation
+        || latest.revision != request.revision
+        || selected_connection_path(&state, request.project_id)?.as_ref() != Some(&expected_path)
+        || ProductionConnection::load(&expected_path)
+            .and_then(|c| c.identity())
+            .ok()
+            .as_deref()
+            != Some(identity.as_str())
+    {
+        return Err("Saved MP4 source or owner connection changed before delivery.".into());
+    }
+    let scope = checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    state.effect_grants.consume(
+        request.effect_grant,
+        EffectKind::DeliverLocal,
+        scope,
+        request.destination.trim(),
+    )?;
+    let destination = request.destination;
+    let receipt = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        let _preparation = preparation;
+        source.copy_with_integrity(
+            &destination,
+            request.include_integrity_manifest,
+            SEMWRIGHT_REVISION,
+        )
+    })
+    .await
+    .map_err(|_| {
+        "Saved MP4 delivery task failed; inspect the destination before retrying.".to_owned()
+    })??;
+    if owner.begin_phase().is_err() {
+        return Ok(MasterExportReceipt {
+            source_current: false,
+            ..receipt
+        });
+    }
+    let latest = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    Ok(MasterExportReceipt {
+        source_current: latest.generation == request.generation
+            && latest.revision == request.revision,
+        ..receipt
+    })
+}
+
 /// Verify a user-selected local MP4 and its unsigned portable JSON receipt.
 /// Pure read-only content comparison: this grants no delivery or publisher authority.
 #[tauri::command]
@@ -4503,6 +4600,7 @@ fn main() {
             assemble_av_master,
             assemble_multisegment_av_master,
             export_native_av_master,
+            export_saved_native_av_master,
             verify_local_media_integrity,
             review_native_av_master,
             read_native_av_audio_qc,

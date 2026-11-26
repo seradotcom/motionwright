@@ -53,6 +53,7 @@ fn main() {
             "assemble_av_master",
             "assemble_multisegment_av_master",
             "export_native_av_master",
+            "export_saved_native_av_master",
             "verify_local_media_integrity",
             "review_native_av_master",
             "read_native_av_audio_qc",

@@ -15,11 +15,49 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::configured(false, false)
+    }
+
+    fn configured(captioned: bool, targeted: bool) -> Self {
         let root = tempfile::tempdir().unwrap();
         let service = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
-        let project = service
+        let mut project = service
             .create_project("Synthetic original media; no Native effect")
             .unwrap();
+        if captioned {
+            let mut profile = project.deliverables[0].clone();
+            profile.burn_in_captions = true;
+            project = service
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    "caption-profile",
+                    &motionwright_domain::Change::UpsertDeliverable { profile },
+                )
+                .unwrap()
+                .project;
+        }
+        if targeted {
+            let recipe = motionwright_domain::DeliveryRecipe {
+                audio_targets: Some(motionwright_domain::DeliveryAudioTargets {
+                    target_lufs: Some(-23.0),
+                    target_true_peak_dbtp: Some(-1.0),
+                }),
+                ..Default::default()
+            };
+            project = service
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    "target-profile",
+                    &motionwright_domain::Change::SetDeliveryRecipe {
+                        deliverable_profile_id: project.deliverables[0].id,
+                        recipe: Some(recipe),
+                    },
+                )
+                .unwrap()
+                .project;
+        }
         let executable = root.path().join("never-executed-client");
         let session_file = root.path().join("synthetic-session");
         let socket = root.path().join("synthetic-socket");
@@ -50,9 +88,19 @@ impl Fixture {
             &bytes,
         )
         .unwrap();
+        let video = b"SYNTHETIC-VIDEO-NOT-DECODABLE";
+        let audio = synthetic_stereo(96_000, true);
+        let decoded = synthetic_stereo(96_128, true);
+        let video_sha = hex::encode(Sha256::digest(video));
+        let audio_sha = hex::encode(Sha256::digest(&audio));
+        let decoded_sha = hex::encode(Sha256::digest(&decoded));
+        let output = &coordinator.client.connection().output_root;
+        fs::write(output.join("original.mkv"), video).unwrap();
+        fs::write(output.join("original.wav"), audio).unwrap();
+        fs::write(output.join("decoded.wav"), &decoded).unwrap();
         let args = json!({
-            "video_root":"output","video_path":"original.mkv","video_sha256":"9".repeat(64),
-            "audio_root":"output","audio_path":"original.wav","audio_sha256":"8".repeat(64),
+            "video_root":"output","video_path":"original.mkv","video_sha256":video_sha,
+            "audio_root":"output","audio_path":"original.wav","audio_sha256":audio_sha,
             "width":profile.width,"height":profile.height,"fps_num":30,"fps_den":1,"frame_count":60,
             "sample_rate":48000,"channels":2,"profile":"h264-aac-mp4","output_path":"original.mp4",
             "max_bytes":MLT_MASTER_MAX_BYTES,
@@ -66,8 +114,8 @@ impl Fixture {
                 "frames":60,"duration_num":2000,"duration_den":1000,"codecs":["h264","aac"]},
             "decoded_audio_media":{"video":false,"audio":true,"codecs":["pcm_s16le"]},
             "artifact":{"root":"output","path":"original.mp4","sha256":hex::encode(Sha256::digest(&bytes)),"bytes":bytes.len()},
-            "decoded_audio":{"root":"output","path":"decoded.wav","sha256":"7".repeat(64),"bytes":384556},
-            "video_sha256":"9".repeat(64),"audio_sha256":"8".repeat(64),
+            "decoded_audio":{"root":"output","path":"decoded.wav","sha256":decoded_sha,"bytes":decoded.len()},
+            "video_sha256":video_sha,"audio_sha256":audio_sha,
         });
         Self {
             root,
@@ -271,7 +319,7 @@ fn saved_master_unknown_is_not_settled_by_a_later_claimed_completion() {
 
 #[test]
 fn saved_master_refuses_legacy_missing_contradictory_and_unverified_context() {
-    for variant in 0..7 {
+    for variant in 0..8 {
         let f = Fixture::new();
         let selected = f.seed(|intent, result| match variant {
             0 => {
@@ -292,6 +340,9 @@ fn saved_master_refuses_legacy_missing_contradictory_and_unverified_context() {
             }
             5 => {
                 result["result"]["data"]["artifact"]["path"] = json!("../outside.mp4");
+            }
+            6 => {
+                result["result"]["execution"]["provenance"]["untrusted_metadata"] = json!(true);
             }
             _ => {
                 intent["connection"] = json!("0".repeat(64));
@@ -327,4 +378,143 @@ fn saved_master_discovery_is_empty_before_production_and_stops_at_latest_unknown
         json!({"error":"synthetic original unknown"}),
     );
     assert!(discover().items.is_empty());
+}
+
+fn synthetic_stereo(frames: u32, right: bool) -> Vec<u8> {
+    let data_bytes = frames * 4;
+    let mut bytes = Vec::with_capacity(data_bytes as usize + 44);
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(data_bytes + 36).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16_u32.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&2_u16.to_le_bytes());
+    bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+    bytes.extend_from_slice(&192_000_u32.to_le_bytes());
+    bytes.extend_from_slice(&4_u16.to_le_bytes());
+    bytes.extend_from_slice(&16_u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&data_bytes.to_le_bytes());
+    for frame in 0..frames {
+        let sample = if frame % 32 < 16 { 4_000_i16 } else { -4_000 };
+        bytes.extend_from_slice(&sample.to_le_bytes());
+        bytes.extend_from_slice(&(if right { sample } else { 0 }).to_le_bytes());
+    }
+    bytes
+}
+
+impl Fixture {
+    fn qualify(&self, receipt: Uuid) -> NativeResult<VerifiedSavedMasterDelivery> {
+        self.coordinator.qualify_saved_master_delivery(
+            self.project.id,
+            &self.project.stamp(),
+            receipt,
+            self.project.deliverables[0].id,
+            self.data["artifact"]["sha256"].as_str().unwrap(),
+        )
+    }
+}
+
+#[test]
+fn saved_delivery_qualifies_after_every_original_store_is_closed_without_effects() {
+    let f = Fixture::new();
+    let selected = f.seed(|_, _| {});
+    let before = f.service.production_receipts(f.project.id, 256).unwrap();
+    let connection = f.coordinator.client.connection().clone();
+    let Fixture {
+        root,
+        service,
+        coordinator,
+        project,
+        bytes,
+        ..
+    } = f;
+    drop(coordinator);
+    drop(service);
+    let service = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
+    let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+    let proof = coordinator
+        .qualify_saved_master_delivery(
+            project.id,
+            &project.stamp(),
+            selected.id,
+            project.deliverables[0].id,
+            &hex::encode(Sha256::digest(&bytes)),
+        )
+        .unwrap();
+    assert_eq!(proof.original().clock(), (30, 1, 60));
+    assert_eq!(
+        proof.original().artifact().2,
+        hex::encode(Sha256::digest(&bytes))
+    );
+    assert_eq!(
+        service.production_receipts(project.id, 256).unwrap(),
+        before
+    );
+    assert_eq!(service.project(project.id).unwrap(), project);
+    assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn saved_delivery_requires_original_video_source_audio_and_decoded_pcm() {
+    for name in ["original.mkv", "original.wav", "decoded.wav"] {
+        let f = Fixture::new();
+        let selected = f.seed(|_, _| {});
+        let before = f.service.production_receipts(f.project.id, 256).unwrap();
+        let path = f.coordinator.client.connection().output_root.join(name);
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[0] ^= 1;
+        fs::write(path, bytes).unwrap();
+        // Read-only viewing of the preserved master remains available.
+        assert!(f.recover(selected.id).is_ok());
+        assert!(f.qualify(selected.id).is_err(), "{name}");
+        assert_eq!(
+            f.service.production_receipts(f.project.id, 256).unwrap(),
+            before
+        );
+        assert_eq!(f.coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn saved_delivery_refuses_captioned_and_unmeasured_targeted_originals() {
+    for (captions, targets) in [(true, false), (false, true)] {
+        let f = Fixture::configured(captions, targets);
+        let selected = f.seed(|_, _| {});
+        let before = f.service.production_receipts(f.project.id, 256).unwrap();
+        assert!(f.recover(selected.id).is_ok());
+        assert!(f.qualify(selected.id).is_err());
+        assert_eq!(
+            f.service.production_receipts(f.project.id, 256).unwrap(),
+            before
+        );
+        assert_eq!(f.coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn saved_delivery_refuses_recorded_lost_right_channel_and_keeps_unknown_unresolved() {
+    let mut f = Fixture::new();
+    let decoded = synthetic_stereo(96_128, false);
+    fs::write(
+        f.coordinator
+            .client
+            .connection()
+            .output_root
+            .join("decoded.wav"),
+        &decoded,
+    )
+    .unwrap();
+    f.data["decoded_audio"]["sha256"] = json!(hex::encode(Sha256::digest(&decoded)));
+    let selected = f.seed(|_, _| {});
+    assert!(f.recover(selected.id).is_ok());
+    assert!(f.qualify(selected.id).is_err());
+    f.append("outcome_unknown", json!({"error":"original unresolved"}));
+    let before = f.service.production_receipts(f.project.id, 256).unwrap();
+    assert!(!f.qualify(selected.id).err().unwrap().outcome_known);
+    assert_eq!(
+        f.service.production_receipts(f.project.id, 256).unwrap(),
+        before
+    );
+    assert_eq!(f.coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
 }

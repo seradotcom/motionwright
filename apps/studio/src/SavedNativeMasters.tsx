@@ -1,13 +1,17 @@
 import {useEffect,useRef,useState} from "react";
 import {readSavedNativeMasterInventory} from "./api";
 import NativeAvReview from "./NativeAvReview";
+import SavedMasterDelivery from "./SavedMasterDelivery";
+import type {DeliveryProjectState} from "./deliveryProfileDraft";
 import {createNativeAvReadGuard} from "./nativeAvAudioQc";
 import type {SavedMasterHint,SavedMasterInventory} from "./savedNativeMedia";
 import type {Project} from "./types";
 
 type Discovery={kind:"idle"}|{kind:"loading"}|{kind:"error"}|{kind:"ready";inventory:SavedMasterInventory};
 
-export default function SavedNativeMasters({project,deliverableId}:{project:Project;deliverableId:string}){
+export default function SavedNativeMasters({project,deliverableId,blocked=false,currentProjectState}:{
+  project:Project;deliverableId:string;blocked?:boolean;currentProjectState?:()=>DeliveryProjectState;
+}){
   const guard=useRef(createNativeAvReadGuard());
   const readKey=guard.current.viewKey(JSON.stringify([project.id,project.generation,project.active_branch,project.revision,deliverableId]));
   const visible=useRef(readKey);visible.current=readKey;
@@ -47,8 +51,11 @@ export default function SavedNativeMasters({project,deliverableId}:{project:Proj
       {inventory.truncated&&<p role="status">Showing the 32 most recent original masters for this profile.</p>}
     </>}
     <p className="delivery-truth-note">Reopening verifies the recorded original and reads its MP4.
-      Audio measurements are optional. Recovered media is read only; export permissions and audio QC are not restored.</p>
+      Audio measurements are optional for review. Export uses a separate fresh destination permission and rechecks the saved profile.</p>
     {hint&&<NativeAvReview project={project} muxReceiptHint={hint} deliverableId={deliverableId}
       masterSha256={hint.master_sha256} embedded/>}
+    {hint&&currentProjectState&&<SavedMasterDelivery key={JSON.stringify([readKey,hint.mux_receipt_id,hint.master_sha256])}
+      project={project} deliverableId={deliverableId} hint={hint} blocked={blocked}
+      currentProjectState={currentProjectState}/>}
   </section>;
 }

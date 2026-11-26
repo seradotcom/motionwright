@@ -1783,7 +1783,9 @@ export default function DeliveryProfiles({
                   masterSha256={reviewMasterSha256}
                 />
               )}
-              <SavedNativeMasters project={project} deliverableId={selected.id} />
+              <SavedNativeMasters project={project} deliverableId={selected.id}
+                blocked={profileDraftBlocked || recipeDraftBlocked || busy !== null}
+                currentProjectState={currentProjectState} />
               <NativeAudioQcHistory project={project} deliverableId={selected.id} />
               {!activeReviewToken && retainedReview && <p className="delivery-truth-note">
                 A read-only master selector was retained in this session. Opening review revalidates
@@ -1849,7 +1851,7 @@ export default function DeliveryProfiles({
               </div>
               {!activeExportToken && (
                 <div className="delivery-truth-note">
-                  <CircleDashed size={14} /> Complete a real owner-authorized MLT AV master in this desktop session first. No arbitrary master paths are accepted.
+                  <CircleDashed size={14} /> Complete an owner-authorized MLT AV master, or find a saved original above and use its delivery controls.
                 </div>
               )}
               {currentAv && currentAv.revision !== project.revision && (

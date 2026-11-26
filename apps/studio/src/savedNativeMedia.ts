@@ -55,3 +55,17 @@ export function parseSavedMasterInventory(value:unknown,project:Project,delivera
   });
   return {...data,items} as unknown as SavedMasterInventory;
 }
+
+
+/** Admit only the returned copy of the selected original; never mint authority. */
+export function parseSavedMasterExportReceipt(
+  value:unknown,project:Project,deliverableId:string,hint:SavedMasterHint,destination:string,integrity:boolean,
+):import("./types").MasterExportReceipt{
+  const data=closed(value,["destination","size_bytes","sha256","revision","deliverable_id","source_current","integrity_manifest_path"]);
+  if(data.destination!==destination||data.sha256!==hint.master_sha256
+    ||data.revision!==project.revision||data.deliverable_id!==deliverableId
+    ||typeof data.source_current!=="boolean"||!positive(data.size_bytes,1024*1024*1024)
+    ||data.integrity_manifest_path!==(integrity?destination+".motionwright-integrity.json":null))
+    throw new Error("Saved MP4 delivery returned an unexpected result. Inspect the destination before making another copy.");
+  return data as unknown as import("./types").MasterExportReceipt;
+}

@@ -71,6 +71,7 @@ pub use motion_canvas_window::{
 };
 pub use saved_media::{
     SavedMasterReceiptHint, SavedMasterReceiptInventory, VerifiedOriginalMasterReview,
+    VerifiedSavedMasterDelivery,
 };
 pub use saved_motion::{
     RecoveredMotionCapture, SavedMotionCaptureHint, SavedMotionCaptureInventory,

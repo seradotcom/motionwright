@@ -42,6 +42,14 @@ This path reuses an existing original. It does not render, measure, append recei
 
 Changing the project revision, profile or selected original closes playback. Leaving and reopening the history view requires fresh discovery and readback; a late reply from a previous source cannot replace the current selection.
 
+## Deliver an original after restarting
+
+After selecting **Review saved original**, enter a new absolute MP4 destination in **Deliver this saved original** and choose **Export saved original MP4**. This requests a fresh destination-specific DeliverLocal permission. The optional portable integrity receipt uses the same create-new copy path as current-session delivery.
+
+The backend separately qualifies the original mux from its closed SQLite history and current saved profile. It verifies the original MP4, source video, source WAV and decoded WAV, exact clock/sample counts and the existing stereo-tail content guard. A targeted audio profile must recover the original complete final measurement for that exact mux UUID and be within its saved targets; no meter is dispatched. Burned-in-caption profiles remain review-only until actual decoded caption pixels qualify independently. Missing source/decoded files, untrusted provider metadata, changed history or UNKNOWNs prevent the copy while preserving the original master.
+
+This qualification produces no reusable UI export token. The owner, current project, selected connection and destination grant are checked again before the existing bounded copy, and its SHA-256 is verified before success is reported. The two-worker admission stays held through qualification and copying, including cancellation. There is no render, new production budget, receipt append or restoration of previous permission. Studio guards both sides of the permission await against source, active-operation and input changes, including changing a destination away and back.
+
 ## Decoder support and product limits
 
 The video element plays the encoded sound and supports ordinary playback and seeking. The [Program monitor](program-av-monitor.md) can follow a current-session original against the editorial playhead. Sample-exact or frame-exact seeking, caption glyph quality and independent human acceptance remain separate checks.

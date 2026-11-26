@@ -52,6 +52,7 @@ let selection: AudioQcFixtureSelection = {
   masterSha256: "1".repeat(64),
 };
 let mounted = true;
+let projectSerial = 0;
 const calls: AudioQcFixtureCall[] = [];
 const replies = new Map<number, {
   resolve(value: unknown): void;
@@ -78,7 +79,9 @@ if (new URLSearchParams(window.location.search).get("desktop") !== "0") {
         settled: false,
       };
       calls.push(call);
-      if (command === "read_native_av_audio_qc" || command === "native_av_audio_qc_receipt_inventory" || command === "native_av_saved_master_inventory"
+      if ((new URLSearchParams(window.location.search).get("export") === "1"
+        && (command === "issue_effect_grant" || command === "export_saved_native_av_master"))
+        || command === "read_native_av_audio_qc" || command === "native_av_audio_qc_receipt_inventory" || command === "native_av_saved_master_inventory"
         || command === "recover_native_av_audio_qc"
         || (command === "review_native_av_master"
           && new URLSearchParams(window.location.search).get("playback") === "1")) {
@@ -108,7 +111,10 @@ function render() {
   // own read guard. Unmount/mount below explicitly creates a fresh instance.
   flushSync(() => root.render(mounted ? <StrictMode>
     {new URLSearchParams(window.location.search).get("saved") === "1"
-      ? <SavedNativeMasters project={project} deliverableId={selection.deliverableId} />
+      ? <SavedNativeMasters project={project} deliverableId={selection.deliverableId}
+          currentProjectState={new URLSearchParams(window.location.search).get("export")==="1"
+            ? ()=>({project:{id:selection.projectId,generation:selection.generation,active_branch:selection.branch,revision:selection.revision},
+                busy:false,serial:projectSerial}) : undefined} />
       : new URLSearchParams(window.location.search).get("recovery") === "1"
       ? <NativeAudioQcHistory project={project} deliverableId={selection.deliverableId} />
       : <NativeAvReview project={project} exportToken={selection.exportToken}
@@ -132,6 +138,7 @@ window.__NATIVE_AV_AUDIO_QC__ = {
   selection: () => structuredClone(selection),
   calls: () => structuredClone(calls),
   async setSelection(value) {
+    projectSerial += 1;
     selection = structuredClone(value);
     render();
     await paint();

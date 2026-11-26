@@ -58,6 +58,7 @@
     "allow-assemble-av-master",
     "allow-assemble-multisegment-av-master",
     "allow-export-native-av-master",
+    "allow-export-saved-native-av-master",
     "allow-verify-local-media-integrity",
     "allow-review-native-av-master",
     "allow-read-native-av-audio-qc",

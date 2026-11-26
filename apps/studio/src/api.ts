@@ -1,5 +1,5 @@
 import {parseSavedMotionCaptureInventory,parseSavedMotionCaptureHint,parseRecoveredMotionCapture,type SavedMotionCaptureHint,type SavedMotionCaptureInventory} from "./savedMotionCapture";
-import {parseSavedMasterInventory,type SavedMasterHint,type SavedMasterInventory} from "./savedNativeMedia";
+import {parseSavedMasterInventory, parseSavedMasterExportReceipt,type SavedMasterHint,type SavedMasterInventory} from "./savedNativeMedia";
 import { parseNativeAvPlayback, verifiedNativeReviewBytes, type NativeAvPlayback } from "./nativeAvMedia";
 import { applyDeliverySettingPropagation } from "./deliveryFamily";
 import { deliveryTextSourceConflict } from "./deliveryTextSources";
@@ -2802,4 +2802,24 @@ export async function prepareSavedNativeMuxReview(project:Project,deliverableId:
       deliverable_id:deliverableId,mux_receipt_id:hint.mux_receipt_id,expected_master_sha256:hint.master_sha256},
   });
   return parseNativeAvPlayback(data,{project,exportToken:null,deliverableId,masterSha256:hint.master_sha256});
+}
+
+
+/** A NEW local delivery permission; recovery hints never restore an export token. */
+export async function exportSavedNativeMaster(
+  project:Project,deliverableId:string,hint:SavedMasterHint,destination:string,
+  includeIntegrityManifest=false,beforeDispatch?:NativeDeliveryDispatchCheck,
+):Promise<MasterExportReceipt>{
+  if(!isTauri())throw new Error("Saved MP4 delivery requires the desktop runtime.");
+  const path=destination.trim();
+  if(!path.toLowerCase().endsWith(".mp4"))throw new Error("Choose a new absolute .mp4 destination.");
+  beforeDispatch?.();
+  const grant=await issueEffectGrant("deliver_local",project,path);
+  beforeDispatch?.();
+  const value=await invoke<unknown>("export_saved_native_av_master",{
+    request:{project_id:project.id,generation:project.generation,revision:project.revision,
+      deliverable_id:deliverableId,mux_receipt_id:hint.mux_receipt_id,expected_master_sha256:hint.master_sha256,
+      effect_grant:grant.token,destination:path,include_integrity_manifest:includeIntegrityManifest},
+  });
+  return parseSavedMasterExportReceipt(value,project,deliverableId,hint,path,includeIntegrityManifest);
 }

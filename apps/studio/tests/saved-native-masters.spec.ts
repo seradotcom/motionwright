@@ -84,3 +84,69 @@ test("a saved original with a mismatched returned hash stays closed without fall
   await expect(page.getByRole("button",{name:"Retry readback"})).toBeEnabled();
   expect((await calls(page)).map(call=>call.command)).toEqual(["native_av_saved_master_inventory","review_native_av_master"]);
 });
+
+
+async function selectForExport(page:Page){
+  await page.goto("/tests/fixtures/native-av-audio-qc.html?saved=1&export=1");
+  const current=await selection(page);
+  await find(page).click();await expect.poll(async()=>(await calls(page)).length).toBe(1);
+  await resolve(page,1,inventory(current));await choose(page).click();
+  await expect(page.getByRole("region",{name:"Deliver saved original MP4",exact:true})).toBeVisible();
+  await page.getByRole("textbox",{name:"Saved MP4 export path",exact:true}).fill("E:\\Exports\\original.mp4");
+  return current;
+}
+test("saved delivery requests fresh destination permission and copies only the selected original",async({page})=>{
+  const current=await selectForExport(page);
+  await page.getByRole("checkbox",{name:"Write saved MP4 integrity receipt"}).check();
+  await page.getByRole("button",{name:"Export saved original MP4",exact:true}).click();
+  await expect.poll(async()=>(await calls(page)).filter(c=>c.command==="issue_effect_grant").length).toBe(1);
+  const grant=(await calls(page)).find(c=>c.command==="issue_effect_grant")!;
+  expect(grant.args!.request).toEqual({effect:"deliver_local",project_id:current.projectId,
+    generation:current.generation,revision:current.revision,subject:"E:\\Exports\\original.mp4"});
+  await resolve(page,grant.id,{token});
+  await expect.poll(async()=>(await calls(page)).filter(c=>c.command==="export_saved_native_av_master").length).toBe(1);
+  const copy=(await calls(page)).find(c=>c.command==="export_saved_native_av_master")!;
+  expect(copy.args!.request).toEqual({project_id:current.projectId,generation:current.generation,revision:current.revision,
+    deliverable_id:current.deliverableId,mux_receipt_id:receipt,expected_master_sha256:"1".repeat(64),
+    effect_grant:token,destination:"E:\\Exports\\original.mp4",include_integrity_manifest:true});
+  await resolve(page,copy.id,{destination:"E:\\Exports\\original.mp4",size_bytes:104557,sha256:"1".repeat(64),
+    revision:current.revision,deliverable_id:current.deliverableId,source_current:true,
+    integrity_manifest_path:"E:\\Exports\\original.mp4.motionwright-integrity.json"});
+  await expect(page.getByRole("status",{name:"Saved MP4 delivery receipt"})).toContainText("Exported and verified");
+  expect((await calls(page)).some(c=>/assemble|render|measure/.test(c.command))).toBe(false);
+});
+test("saved delivery stops before copying when project identity changes during permission",async({page})=>{
+  const current=await selectForExport(page);
+  await page.getByRole("button",{name:"Export saved original MP4",exact:true}).click();
+  await expect.poll(async()=>(await calls(page)).filter(c=>c.command==="issue_effect_grant").length).toBe(1);
+  const grant=(await calls(page)).find(c=>c.command==="issue_effect_grant")!;
+  await page.evaluate(value=>window.__NATIVE_AV_AUDIO_QC__.setSelection(value),{...current,revision:current.revision+1});
+  await resolve(page,grant.id,{token});
+  expect((await calls(page)).filter(c=>c.command==="export_saved_native_av_master")).toHaveLength(0);
+  await expect(page.getByRole("region",{name:"Deliver saved original MP4",exact:true})).toHaveCount(0);
+});
+test("saved delivery rejects destination ABA while a fresh permission is pending",async({page})=>{
+  await selectForExport(page);
+  await page.getByRole("button",{name:"Export saved original MP4",exact:true}).click();
+  await expect.poll(async()=>(await calls(page)).filter(c=>c.command==="issue_effect_grant").length).toBe(1);
+  const grant=(await calls(page)).find(c=>c.command==="issue_effect_grant")!;
+  const input=page.getByRole("textbox",{name:"Saved MP4 export path",exact:true});
+  await input.fill("E:\\Exports\\other.mp4");await input.fill("E:\\Exports\\original.mp4");
+  await resolve(page,grant.id,{token});
+  expect((await calls(page)).filter(c=>c.command==="export_saved_native_av_master")).toHaveLength(0);
+  await expect(page.getByRole("button",{name:"Export saved original MP4",exact:true})).toBeEnabled();
+});
+test("an unresolved saved delivery is shown once and is never retried automatically",async({page})=>{
+  await selectForExport(page);
+  await page.getByRole("button",{name:"Export saved original MP4",exact:true}).click();
+  await expect.poll(async()=>(await calls(page)).filter(c=>c.command==="issue_effect_grant").length).toBe(1);
+  const grant=(await calls(page)).find(c=>c.command==="issue_effect_grant")!;
+  await resolve(page,grant.id,{token});
+  await expect.poll(async()=>(await calls(page)).filter(c=>c.command==="export_saved_native_av_master").length).toBe(1);
+  const copy=(await calls(page)).find(c=>c.command==="export_saved_native_av_master")!;
+  await page.evaluate(id=>window.__NATIVE_AV_AUDIO_QC__.reject(id,"Original delivery unavailable; inspect the destination."),copy.id);
+  await expect(page.getByRole("region",{name:"Deliver saved original MP4"}).getByRole("alert")).toContainText("inspect the destination");
+  await expect(page.getByRole("status",{name:"Saved MP4 delivery receipt"})).toHaveCount(0);
+  await page.evaluate(()=>window.__NATIVE_AV_AUDIO_QC__.settle());
+  expect((await calls(page)).filter(c=>c.command==="export_saved_native_av_master")).toHaveLength(1);
+});

@@ -37,3 +37,24 @@ describe("saved original media discovery",()=>{
     expect(()=>parseSavedMasterInventory(value,project,profile)).toThrow();
   });
 });
+
+
+import {parseSavedMasterExportReceipt} from "./savedNativeMedia";
+describe("saved original copy receipt",()=>{
+  const hint=inventory().items[0],destination="E:\\Exports\\original.mp4";
+  function result(){return {destination,size_bytes:104557,sha256:hint.master_sha256,
+    revision:project.revision,deliverable_id:profile,source_current:true,integrity_manifest_path:null};}
+  it("admits an exact known original and preserves historical status",()=>{
+    expect(parseSavedMasterExportReceipt(result(),project,profile,hint,destination,false)).toEqual(result());
+    expect(parseSavedMasterExportReceipt({...result(),source_current:false},project,profile,hint,destination,false).source_current).toBe(false);
+    const manifest=destination+".motionwright-integrity.json";
+    expect(parseSavedMasterExportReceipt({...result(),integrity_manifest_path:manifest},project,profile,hint,destination,true).integrity_manifest_path).toBe(manifest);
+  });
+  it.each([
+    {sha256:"b".repeat(64)},{destination:"E:\\Elsewhere\\different.mp4"},{revision:project.revision+1},
+    {deliverable_id:"other"},{size_bytes:1024*1024*1024+1},{source_current:"true"},
+    {integrity_manifest_path:"E:\\Exports\\another.json"},{export_token:"forged"},
+  ])("rejects a substituted or malformed copy result %j",fields=>{
+    expect(()=>parseSavedMasterExportReceipt({...result(),...fields},project,profile,hint,destination,false)).toThrow();
+  });
+});

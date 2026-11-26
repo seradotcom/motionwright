@@ -164,3 +164,56 @@ fn original_master_review_keeps_unknown_parent_unresolved_without_replaying_it()
     );
     assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn saved_delivery_audio_requires_the_original_passing_final_measurement_and_exact_mux() {
+    for target in [-23.0, -14.0] {
+        let (_root, service, mut project, coordinator) = fixture();
+        let profile = project.deliverables[0].id;
+        let mut recipe = project.production_design.delivery_recipes[&profile].clone();
+        recipe.audio_targets = Some(DeliveryAudioTargets {
+            target_lufs: Some(target),
+            target_true_peak_dbtp: Some(-1.0),
+        });
+        apply(
+            &service,
+            &mut project,
+            "saved-delivery-target",
+            Change::SetDeliveryRecipe {
+                deliverable_profile_id: profile,
+                recipe: Some(recipe),
+            },
+        );
+        let (binding, _, sha) = original_selection(&service, &project, &coordinator);
+        let key = format!(
+            "{}{}",
+            binding.namespace().unwrap(),
+            binding.lane.mux_suffix()
+        );
+        let parent = service
+            .latest_production_receipt(project.id, &key)
+            .unwrap()
+            .unwrap();
+        let before = service.production_receipts(project.id, 256).unwrap();
+        let result =
+            coordinator.verify_saved_master_delivery_audio(&project, &parent, profile, &sha);
+        assert_eq!(result.is_ok(), target == -23.0);
+        let mut foreign = parent.clone();
+        foreign.id = Uuid::new_v4();
+        assert!(
+            coordinator
+                .verify_saved_master_delivery_audio(&project, &foreign, profile, &sha)
+                .is_err()
+        );
+        assert!(
+            coordinator
+                .verify_saved_master_delivery_audio(&project, &parent, profile, &"0".repeat(64))
+                .is_err()
+        );
+        assert_eq!(
+            service.production_receipts(project.id, 256).unwrap(),
+            before
+        );
+        assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+    }
+}
