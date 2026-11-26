@@ -24,6 +24,7 @@ const BLOCK_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_RANGE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_STREAMS: usize = 32;
 const MAX_ACTIVE_READS: usize = 4;
+const MAX_ACTIVE_PREPARATIONS: usize = 2;
 const UNAVAILABLE: &str = "The original native master is unavailable for bounded playback.";
 
 #[derive(Debug, Deserialize)]
@@ -96,6 +97,7 @@ pub(crate) struct ReviewStreams {
     streams: Arc<Mutex<VecDeque<Arc<ReviewStream>>>>,
     preparing: Arc<Mutex<()>>,
     active_reads: Arc<AtomicUsize>,
+    active_preparations: Arc<AtomicUsize>,
 }
 
 // Acquired before a request can enter the blocking pool, so queued reads and
@@ -234,6 +236,18 @@ impl ReviewStream {
 }
 
 impl ReviewStreams {
+    /// Admit before the blocking pool, including receipt reconstruction and
+    /// legacy binary reads. The permit must move into the actual worker so a
+    /// dropped IPC future cannot release capacity while its IO continues.
+    pub(crate) fn admit_preparation(&self) -> Option<ReadPermit> {
+        self.active_preparations
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < MAX_ACTIVE_PREPARATIONS).then_some(count + 1)
+            })
+            .ok()
+            .map(|_| ReadPermit(self.active_preparations.clone()))
+    }
+
     pub(crate) fn admit_read(&self) -> Option<ReadPermit> {
         self.active_reads
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {

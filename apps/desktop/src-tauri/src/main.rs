@@ -2962,6 +2962,10 @@ async fn review_native_av_master(
     if project.generation != generation || project.revision != revision {
         return Err("Native AV preview belongs to a previous project revision.".into());
     }
+    let preparation = state
+        .av_review
+        .admit_preparation()
+        .ok_or("Original media read capacity is busy; retry after current readers finish.")?;
     let mut expected_connection = None;
     let response = match request {
         av_delivery::streaming::PlaybackSelection::Session(request) => {
@@ -2970,6 +2974,7 @@ async fn review_native_av_master(
                 let streams = state.av_review.clone();
                 let token = request.export_token;
                 let descriptor = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+                    let _preparation = preparation;
                     streams.prepare(&source, token)
                 })
                 .await
@@ -2980,6 +2985,7 @@ async fn review_native_av_master(
                 )
             } else {
                 let data = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+                    let _preparation = preparation;
                     source.review_bytes()
                 })
                 .await
@@ -2995,6 +3001,7 @@ async fn review_native_av_master(
             let deliveries = state.av_delivery.clone();
             let streams = state.av_review.clone();
             let descriptor = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+                let _preparation = preparation;
                 av_delivery::recover_master_review(
                     &project,
                     &request,
