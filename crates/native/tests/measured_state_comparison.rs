@@ -7,7 +7,9 @@ use motionwright_native::film::{
 };
 use motionwright_service::StudioService;
 use semwright_media_time::Rate;
-use semwright_motion_authoring::{Archetype, NarrativeRole, realize};
+use semwright_motion_authoring::{
+    Archetype, NarrativeRole, SpatialIntent, SubjectContent, realize,
+};
 use uuid::Uuid;
 
 #[test]
@@ -202,6 +204,46 @@ fn measured_state_comparison_retains_bindings_and_axis_through_reopen() {
                     .count(),
                 4
             );
+            // Root identity, exact common zero origin, widths and text in the
+            // actual typed Film, not just a count of four projected subjects.
+            let scale = (f64::from(profile.width) / 1920.0).min(f64::from(profile.height) / 1080.0);
+            let left = 240.0 * f64::from(profile.width) / 1920.0 - f64::from(profile.width) / 2.0;
+            for (index, expected_width) in [(1, 200.0), (3, 480.0)] {
+                let id = format!("node-{}", ids[index].simple());
+                let bar = shot
+                    .subjects
+                    .iter()
+                    .find(|subject| subject.id == id)
+                    .unwrap();
+                assert!(matches!(bar.content, SubjectContent::Rectangle { .. }));
+                match &bar.layout {
+                    SpatialIntent::Fixed { position, size } => {
+                        assert!((size.width - expected_width * scale).abs() < 1e-6);
+                        assert!((size.height - 48.0 * scale).abs() < 1e-6);
+                        assert!((position.x - size.width / 2.0 - left).abs() < 1e-6);
+                    }
+                    _ => panic!("Measured bar must retain a fixed original layout"),
+                }
+            }
+            for (index, expected) in [(0, "Before \u{b7} 25.0%"), (2, "After \u{b7} 60.0%")] {
+                let root = format!("node-{}", ids[index].simple());
+                let lines = shot
+                    .subjects
+                    .iter()
+                    .filter_map(|subject| {
+                        if subject.parent.as_deref() != Some(root.as_str()) {
+                            return None;
+                        }
+                        match &subject.content {
+                            SubjectContent::Text { runs, .. } => {
+                                Some(runs.iter().map(|run| run.text.as_str()).collect::<String>())
+                            }
+                            _ => None,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(lines, vec![expected.to_owned()]);
+            }
             film
         })
         .collect::<Vec<_>>();
