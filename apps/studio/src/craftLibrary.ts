@@ -62,7 +62,7 @@ export const CRAFT_LIBRARY:readonly CraftDefinition[]=[
   entry("camera","group-reframe","Group reframe","bounded_partial","Original planar camera reframe with exact scene clock.","Only supported planar pan; no invented perspective or zoom projection.","camera"),
   entry("data","causal-diagram","Causal diagram","spec_only","Explicit nodes and causal relations with units.",none),
   entry("data","series-reveal","Series reveal","spec_only","A source-bound temporal series with truthful axes.",none),
-  entry("data","state-comparison","Measured state comparison","spec_only","Comparable source measurements for before and after.",none),
+  entry("data","state-comparison","Measured state comparison","bounded_partial","Lay out two original source-bound label/bar pairs on the same zero-based axis.","Requires one saved table, distinct labels, identical units and precision, common axis and supported replan profiles. Re-review after source or layout changes; not a managed chart instance.","patch"),
   entry("data","system-flow","System flow","spec_only","Events tied to an execution or labeled synthetic source.",none),
   entry("procedural","repeater","Repeater","editable_candidate","Stable square/circle identities on a controlled grid.",fieldLimits,"procedural",field({distribution:"grid",count:20,columns:5,shape:"circle",size:42})),
   entry("procedural","influence-field","Influence field","editable_candidate","Bounded static influence modifies original objects.",fieldLimits,"procedural",field({distribution:"grid",count:20,columns:5,influence:{...defaultProceduralInfluence(),scale_percent:170,fill:"#D9A46E"}})),

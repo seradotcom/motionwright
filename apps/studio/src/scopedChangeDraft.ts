@@ -11,6 +11,7 @@ import { defaultMotionRangeInput, retimeMotionRows, validMotionRangeInput } from
 import type { MotionRangeInput } from "./timelineMotionRange";
 import type { DeliverableProfile } from "./types";
 import { focusTransferEdits, type FocusTransferInput } from "./focusTransfer";
+import { measuredComparisonEdits, type MeasuredComparisonInput } from "./measuredComparison";
 
 export type DraftEdit = Extract<ScopedCanvasEdit, { kind: "text" | "transform" | "style" | "motion" }>;
 type SourceNode = Pick<CanvasNode, "id" | "kind" | "parent_id" | "text"> & CanvasTransform &
@@ -314,6 +315,30 @@ export function stageDraftFocusTransfer(draft:ScopedChangeDraft,project:Project,
     parkedEditors.push(updateEditor({nodeId:node.id,kind:"motion",text:node.text??"",transform:nodeTransform(node),source:sourceNode(node)}));
   }
   if(parkedEditors.length>128)throw new Error("The focus transfer would exceed the recoverable object input budget.");
+  return {...working,edits:result.edits,origins,editor,parkedEditors,rationale:working.rationale.trim()||result.rationale};
+}
+
+/** Stage source-bound comparison as ordinary original object transforms. */
+export function stageDraftMeasuredComparison(draft:ScopedChangeDraft,project:Project,scene:Scene|null,
+  input:MeasuredComparisonInput):ScopedChangeDraft {
+  if(!scene||draft.scope!==scopedDraftScope(project,scene)||draft.baseRevision!==project.revision)
+    throw new Error("Choose the current scene revision before staging a measured comparison.");
+  if(draft.nativeSource||draft.edits.length||unqueuedInputCount(draft)>0||draft.arrangement?.nodeIds.length)
+    throw new Error("Finish or discard the current scoped proposal before staging a measured comparison.");
+  const working=hydrateScopedDraft(draft,project,scene),result=measuredComparisonEdits(project,scene,input);
+  const origins=result.edits.map(edit=>sourceNode(scene.nodes.find(node=>node.id===edit.node_id)!));
+  const updateEditor=(editor:DraftEditor):DraftEditor=>{
+    const edit=result.edits.find(item=>item.node_id===editor.nodeId);
+    if(!edit)return editor;
+    const next={...editor,transform:{...edit.transform}};delete next.transformRaw;return next;
+  };
+  const editor=updateEditor(working.editor),parkedEditors=working.parkedEditors.map(updateEditor);
+  for(const edit of result.edits){
+    if(editor.nodeId===edit.node_id||parkedEditors.some(item=>item.nodeId===edit.node_id))continue;
+    const node=scene.nodes.find(item=>item.id===edit.node_id)!;
+    parkedEditors.push(updateEditor({nodeId:node.id,kind:"transform",text:node.text??"",transform:nodeTransform(node),source:sourceNode(node)}));
+  }
+  if(parkedEditors.length>128)throw new Error("The comparison exceeds the recoverable object input budget.");
   return {...working,edits:result.edits,origins,editor,parkedEditors,rationale:working.rationale.trim()||result.rationale};
 }
 
