@@ -6,14 +6,32 @@ export const PRODUCT_COATINGS = ["ocean", "clay", "chalk", "graphite"] as const;
 export const PRODUCT_CAMERA_CURVES = ["linear", "bezier_auto_clamped"] as const;
 export type ProductCoating = typeof PRODUCT_COATINGS[number];
 export type ProductCameraCurve = typeof PRODUCT_CAMERA_CURVES[number];
+export interface ProductCameraMotion {
+  arc_degrees:number;dolly_percent:number;
+}
+export type ProductCameraPreset="arc_reveal"|"dolly_focus";
+export function isProductCameraMotion(value:unknown,curve:unknown):value is ProductCameraMotion{
+  if(curve!=="linear"||!value||typeof value!=="object"||Array.isArray(value))return false;
+  const row=value as Record<string,unknown>,a=row.arc_degrees,d=row.dolly_percent;
+  return Object.keys(row).length===2&&typeof a==="number"&&typeof d==="number"&&Number.isInteger(a)&&Number.isInteger(d)&&
+    (a===0||(a>=10&&a<=35))&&(d===0||(d>=5&&d<=18))&&(a!==0||d!==0);
+}
 export interface BlenderProductRecipe {
   version: 1; namespace: string; coating: ProductCoating; roughness: number;
   metallic: number; samples: number; annotation: string; camera_curve: ProductCameraCurve;
+  camera_motion?:ProductCameraMotion;
 }
 /** Retain raw text, including incomplete numeric input, in the existing native source draft. */
 export interface BlenderProductRecipeInput {
   namespace: string; coating: string; roughness: string; metallic: string;
   samples: string; annotation: string; camera_curve: string;
+  arc_degrees?:string;dolly_percent?:string;
+}
+export function withProductCameraPreset(input:BlenderProductRecipeInput,preset:ProductCameraPreset):BlenderProductRecipeInput{
+  return {...input,camera_curve:"linear",arc_degrees:preset==="arc_reveal"?"25":"0",dolly_percent:preset==="dolly_focus"?"12":"0"};
+}
+export function withoutProductCameraMotion(input:BlenderProductRecipeInput):BlenderProductRecipeInput{
+  const next={...input};delete next.arc_degrees;delete next.dolly_percent;return next;
 }
 const inputFields = ["namespace", "coating", "roughness", "metallic", "samples", "annotation", "camera_curve"] as const;
 export function newBlenderProductInput(sceneId: string): BlenderProductRecipeInput {
@@ -25,7 +43,9 @@ export function parseBlenderProductInput(raw: string): BlenderProductRecipeInput
   const value: unknown = JSON.parse(raw);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Product recipe input is unreadable.");
   const fields = value as Record<string, unknown>;
-  if (Object.keys(fields).length !== inputFields.length || !inputFields.every(key => Object.hasOwn(fields, key) && typeof fields[key] === "string"))
+  const motion=Object.hasOwn(fields,"arc_degrees")||Object.hasOwn(fields,"dolly_percent");
+  const keys=motion?[...inputFields,"arc_degrees","dolly_percent"]:inputFields;
+  if (Object.keys(fields).length !== keys.length || !keys.every(key => Object.hasOwn(fields, key) && typeof fields[key] === "string"))
     throw new Error("Product recipe input has an unsupported shape.");
   return fields as unknown as BlenderProductRecipeInput;
 }
@@ -49,9 +69,19 @@ export function buildBlenderProductRecipe(input: BlenderProductRecipeInput): Ble
   const lines = input.annotation.split("\n");
   if (lines.length < 1 || lines.length > 2 || lines.some(line => !/^[\x20-\x7e]{1,32}$/.test(line)))
     throw new Error("Annotation: one or two nonempty printable ASCII lines, at most 32 characters each.");
-  return { version: 1, namespace: input.namespace, coating: input.coating as ProductCoating,
+  const recipe:BlenderProductRecipe={ version: 1, namespace: input.namespace, coating: input.coating as ProductCoating,
     roughness: scalar(input.roughness, "Roughness"), metallic: scalar(input.metallic, "Metallic"),
     samples: Number(input.samples), annotation: input.annotation, camera_curve: input.camera_curve as ProductCameraCurve };
+  if(Object.hasOwn(input,"arc_degrees")||Object.hasOwn(input,"dolly_percent")){
+    const a=input.arc_degrees,d=input.dolly_percent;
+    if(typeof a!=="string"||typeof d!=="string"||!/^\d{1,2}$/.test(a)||!/^\d{1,2}$/.test(d))
+      throw new Error("Enter both complete integer camera parameters.");
+    const motion={arc_degrees:Number(a),dolly_percent:Number(d)};
+    if(!isProductCameraMotion(motion,input.camera_curve))
+      throw new Error("Choose linear interpolation and at least one bounded motion: arc 10?35 degrees, dolly 5?18 percent; zero retains that shot's legacy positions.");
+    recipe.camera_motion=motion;
+  }
+  return recipe;
 }
 export function blenderRecipeFile(raw: string, capsuleId: string) {
   const recipe = buildBlenderProductRecipe(parseBlenderProductInput(raw));

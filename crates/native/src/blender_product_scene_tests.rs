@@ -578,3 +578,124 @@ fn camera_actions_are_seeded_by_public_animation_before_semantic_finalization() 
         assert_eq!(step.required_bindings(), vec![&Binding::FontObject]);
     }
 }
+
+#[test]
+fn spatial_camera_extension_preserves_legacy_wire_and_projects_real_positions() {
+    let mut source = ProductScene::vessel("spatial", CameraCurve::Linear);
+    let legacy = serde_json::to_value(&source).unwrap();
+    assert!(legacy.get("camera_motion").is_none());
+    assert_eq!(product_camera_poses(&source), CAMERA_POSES);
+    let mut null = legacy.clone();
+    null["camera_motion"] = Value::Null;
+    assert!(serde_json::from_value::<ProductScene>(null).is_err());
+    let mut array = legacy.clone();
+    array["camera_motion"] = json!([25, 12]);
+    assert!(serde_json::from_value::<ProductScene>(array).is_err());
+
+    for (arc, dolly) in [(25, 0), (0, 12), (35, 18), (10, 5)] {
+        source.camera_motion = Some(ProductCameraMotion {
+            arc_degrees: arc,
+            dolly_percent: dolly,
+        });
+        let poses = product_camera_poses(&source);
+        assert_eq!(
+            poses.map(|(entity, frame, _)| (entity, frame)),
+            CAMERA_POSES.map(|(entity, frame, _)| (entity, frame))
+        );
+        assert_eq!(poses[0], CAMERA_POSES[0]);
+        assert_eq!(poses[3], CAMERA_POSES[3]);
+        if arc == 0 {
+            assert_eq!(poses[..3], CAMERA_POSES[..3]);
+        } else {
+            let start = poses[0].2;
+            let radius = start[0].hypot(start[1]);
+            for (_, _, position) in &poses[..3] {
+                assert!((position[0].hypot(position[1]) - radius).abs() < 1e-12);
+                assert_eq!(position[2], start[2]);
+            }
+            let finish = poses[2].2;
+            let sweep = finish[1].atan2(finish[0]) - start[1].atan2(start[0]);
+            assert!((sweep.to_degrees() - f64::from(arc)).abs() < 1e-10);
+        }
+        if dolly == 0 {
+            assert_eq!(poses[4], CAMERA_POSES[4]);
+        } else {
+            let focus = [0.0, -0.012, 0.075];
+            let ratio = 1.0 - f64::from(dolly) / 100.0;
+            for (axis, coordinate) in focus.into_iter().enumerate() {
+                assert!(
+                    (poses[4].2[axis] - coordinate - ratio * (poses[3].2[axis] - coordinate)).abs()
+                        < 1e-12
+                );
+            }
+        }
+        let projection = project_product_scene(&source).unwrap();
+        for (index, entity) in ["camera_form", "camera_surface"].into_iter().enumerate() {
+            let expected = poses
+                .iter()
+                .filter(|(name, _, _)| *name == entity)
+                .map(|(_, frame, position)| json!({"frame":frame,"value":position}))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                projection.composition_spec["animation"]["channels"][index]["keys"],
+                json!(expected)
+            );
+        }
+        for (entity, frame, position) in poses {
+            for axis in 0..3 {
+                let key = Binding::CameraKey {
+                    entity,
+                    axis,
+                    frame,
+                };
+                assert!(projection.readback.iter().any(|item| item.target == key
+                    && item.property == "co"
+                    && item.expected == json!([f64::from(frame), position[axis as usize]])));
+            }
+        }
+        for (entity, lens) in [("camera_form", 50.0), ("camera_surface", 70.0)] {
+            assert!(
+                projection
+                    .readback
+                    .iter()
+                    .any(|item| item.target == Binding::CameraData(entity)
+                        && item.property == "lens"
+                        && item.expected == json!(lens))
+            );
+        }
+        let midpoint = product_frame150_origin(&source);
+        for axis in 0..3 {
+            assert!(
+                (midpoint[axis]
+                    - (poses[0].2[axis] + (poses[1].2[axis] - poses[0].2[axis]) * 149.0 / 299.0))
+                    .abs()
+                    < 1e-12
+            );
+        }
+        assert_eq!(
+            serde_json::from_value::<ProductScene>(serde_json::to_value(&source).unwrap()).unwrap(),
+            source
+        );
+        let edited = source
+            .edited(&ProductEdit::Annotation("Retained camera".into()))
+            .unwrap();
+        assert_eq!(edited.camera_motion, source.camera_motion);
+        assert_eq!(product_camera_poses(&edited), product_camera_poses(&source));
+    }
+    for (arc, dolly) in [(0, 0), (9, 0), (36, 0), (0, 4), (0, 19)] {
+        source.camera_motion = Some(ProductCameraMotion {
+            arc_degrees: arc,
+            dolly_percent: dolly,
+        });
+        assert!(project_product_scene(&source).is_err());
+    }
+    source.camera_motion = Some(ProductCameraMotion {
+        arc_degrees: 25,
+        dolly_percent: 12,
+    });
+    source.camera_curve = CameraCurve::BezierAutoClamped;
+    assert!(project_product_scene(&source).is_err());
+    let mut extra = legacy;
+    extra["camera_motion"] = json!({"arc_degrees":25,"dolly_percent":12,"native_grant":true});
+    assert!(serde_json::from_value::<ProductScene>(extra).is_err());
+}

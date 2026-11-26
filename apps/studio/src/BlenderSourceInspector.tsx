@@ -27,6 +27,7 @@ function Recipe({ value }: { value: BlenderRecipe }) {
     <strong>Saved product scene · {value.namespace}</strong>
     <span>Coating: {value.coating} · roughness: {value.roughness} · metallic: {value.metallic}</span>
     <span>Samples: {value.samples} · camera curve: {value.camera_curve === "linear" ? "Linear" : "Bezier auto clamped"}</span>
+    {value.camera_motion&&<span>Authored spatial camera: arc {value.camera_motion.arc_degrees||"legacy"}{value.camera_motion.arc_degrees?" degrees":""}, dolly {value.camera_motion.dolly_percent||"legacy"}{value.camera_motion.dolly_percent?" percent":""}. Linear native path.</span>}
     <span style={{ whiteSpace: "pre-wrap" }}>Annotation: {value.annotation}</span>
   </div>;
 }

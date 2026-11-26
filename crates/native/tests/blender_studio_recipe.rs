@@ -1,6 +1,8 @@
 //! Actual saved source reader; no Blender execution or effect admission.
 use motionwright_domain::{Change, NativeCapsuleSourceSpec, RendererKind};
-use motionwright_native::blender_product_scene::{CameraCurve, Coating, ProductScene};
+use motionwright_native::blender_product_scene::{
+    CameraCurve, Coating, ProductCameraMotion, ProductScene, project_product_scene,
+};
 use motionwright_native::production::{
     BLENDER_PRODUCT_RECIPE_MEDIA_TYPE, BlenderProductSourceScope, decode_blender_product_recipe,
     read_blender_product_source,
@@ -21,7 +23,23 @@ fn studio_recipe_fixture_is_an_exact_saved_and_reopened_native_product_source() 
         samples: 96,
         annotation: "AUTHOR SOURCE\nGRAPHITE".into(),
         camera_curve: CameraCurve::Linear,
+        camera_motion: None,
     };
+    assert_saved_recipe(bytes, expected);
+}
+
+#[test]
+fn authored_spatial_camera_recipe_retains_both_paths_after_real_cas_reopen() {
+    let mut expected = ProductScene::vessel("StudioVessel", CameraCurve::Linear);
+    expected.camera_motion = Some(ProductCameraMotion {
+        arc_degrees: 25,
+        dolly_percent: 12,
+    });
+    let bytes = serde_json::to_vec_pretty(&expected).unwrap();
+    assert_saved_recipe(&bytes, expected);
+}
+
+fn assert_saved_recipe(bytes: &[u8], expected: ProductScene) {
     assert_eq!(decode_blender_product_recipe(bytes).unwrap(), expected);
     let root = tempfile::tempdir().unwrap();
     let database = root.path().join("recipe.sqlite3");
@@ -98,6 +116,10 @@ fn studio_recipe_fixture_is_an_exact_saved_and_reopened_native_product_source() 
     assert_eq!(snapshot.current_source.sha256, digest);
     assert_eq!(snapshot.current_source, snapshot.original_recipe);
     assert_eq!(snapshot.effective_recipe, expected);
+    assert_eq!(
+        project_product_scene(&snapshot.effective_recipe).unwrap(),
+        project_product_scene(&expected).unwrap()
+    );
     assert_eq!(snapshot.source_kind, "authored_recipe");
     assert!(snapshot.source_cas_verified);
     assert!(!snapshot.native_dispatch_performed && !snapshot.execution_grant_inherited);

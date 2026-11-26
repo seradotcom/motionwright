@@ -2,6 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { sameValue } from "./creativeProduction";
 import type { Project } from "./types";
+import {isProductCameraMotion,type ProductCameraMotion} from "./blenderProductRecipe";
 
 export const BLENDER_RECIPE_MEDIA_TYPE = "application/vnd.motionwright.blender-product+json";
 export type BlenderAttemptState = "completed" | "failed_known" | "outcome_unknown";
@@ -9,6 +10,7 @@ export interface BlenderRecipe {
   version: 1; namespace: string; coating: "ocean" | "clay" | "chalk" | "graphite";
   roughness: number; metallic: number; samples: number; annotation: string;
   camera_curve: "linear" | "bezier_auto_clamped";
+  camera_motion?:ProductCameraMotion;
 }
 interface Stamp { resource: string; generation: string; revision: number; }
 interface AssetBinding { asset_id: string; sha256: string; }
@@ -89,7 +91,9 @@ function binding(project: Project, value: unknown, native: boolean, requireCurre
 }
 function recipe(value: unknown): BlenderRecipe {
   const row = object(value);
-  keys(row, ["version", "namespace", "coating", "roughness", "metallic", "samples", "annotation", "camera_curve"]);
+  const hasMotion=Object.hasOwn(row,"camera_motion");
+  keys(row, ["version", "namespace", "coating", "roughness", "metallic", "samples", "annotation", "camera_curve",...(hasMotion?["camera_motion"]:[])]);
+  if(hasMotion&&!isProductCameraMotion(row.camera_motion,row.camera_curve))invalid();
   if (row.version !== 1 || typeof row.namespace !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(row.namespace)
       || !["ocean", "clay", "chalk", "graphite"].includes(String(row.coating))
       || !["linear", "bezier_auto_clamped"].includes(String(row.camera_curve))) invalid();

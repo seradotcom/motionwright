@@ -5,7 +5,7 @@ import { defaultProceduralConfig, defaultProceduralInfluence, defaultProceduralP
 
 export const CRAFT_FAMILIES=["typography","product","layout","transition","camera","data","procedural","sound"] as const;
 export type CraftFamily=typeof CRAFT_FAMILIES[number];
-export type CraftRoute="component"|"stage"|"procedural"|"patch"|"boundary"|"camera"|"data"|"canvas"|"graph"|"source_board";
+export type CraftRoute="component"|"stage"|"procedural"|"patch"|"boundary"|"camera"|"data"|"canvas"|"graph"|"source_board"|"sources";
 export type CraftExample=
   | {kind:"hero";config:HeroConfig}
   | {kind:"stage";config:ProductStageConfig}
@@ -33,7 +33,6 @@ function entry(family:CraftFamily,slug:string,title:string,coverage:CraftCoverag
 const heroLimits="Six original objects, three aspect studies, explicit copy budgets and compatible overrides. Native glyph fit and human craft review remain separate.";
 const stageLimits="Generic editable graphics only. Source rights and capture identity must be reviewed in the authoring editor. No external UI is fabricated.";
 const fieldLimits="1-64 stable editable nodes, bounded geometry and deterministic seed. Native admission checks the selected motion and style profile.";
-const none="No executable definition or representative output has been admitted for this candidate.";
 /** Closed, first-party index. A spec row is never a shipped component; a
  * generated example is not a creative or native acceptance decision. */
 export const CRAFT_LIBRARY:readonly CraftDefinition[]=[
@@ -56,8 +55,8 @@ export const CRAFT_LIBRARY:readonly CraftDefinition[]=[
   entry("transition","mask-window","Mask window","bounded_partial","Reveal or conceal an original editable shape through its unchanged native rectangular Clip.","A static root Clip, unanimated filled child, neutral camera and exact Replan output clocks. Both hidden and visible poses must fit the safe area. No moving mask geometry, arbitrary path masks or physical acceptance.","patch"),
   entry("transition","camera-match","Camera match","bounded_partial","Compare explicit source camera and boundary geometry.","Exact supported cut appearance only; arbitrary camera matching remains open.","boundary"),
   entry("transition","hard-cut-hold","Hard cut and hold","bounded_partial","Authored timing/hold and explicit scene-boundary review.","No automatic orchestration of a held narrative transition.","boundary"),
-  entry("camera","arc-reveal","Arc reveal","spec_only","Bounded camera arc toward an informative face.",none),
-  entry("camera","dolly-focus","Dolly focus","spec_only","Native camera approach to a meaningful target.",none),
+  entry("camera","arc-reveal","Arc reveal","bounded_partial","Author three original spatial camera waypoints around the fixed product form target.","Blender product-vessel source only; 10?35 degree angular sweep, constant waypoint radius and elevation, two linear chords, original lens and look-at. Dedicated 40-second scene, 30fps. No perfect circular orbit or physical acceptance.","sources"),
+  entry("camera","dolly-focus","Dolly focus","bounded_partial","Move the original surface camera in world space toward its retained native depth-of-field target without changing lens.","Blender product-vessel source only; 5?18 percent reduction in source target distance, exact linear ray, original two-shot clock. Not a planar zoom or new arbitrary camera rig. Physical verification required.","sources"),
   entry("camera","detail-return","Detail and return","bounded_partial","Approach an original planar detail with a shared position/scale track, hold, then return to the same context.","Motion Canvas v3, static independent original shapes and text, 1.05-1.25x zoom, at most 80 source pixels per axis, exact 30fps Replan safe-area endpoints. No optical dolly, 3D rig or physical acceptance.","camera"),
   entry("camera","group-reframe","Group reframe","bounded_partial","Original planar camera reframe with exact scene clock.","Only supported planar pan; no invented perspective or zoom projection.","camera"),
   entry("data","causal-diagram","Causal diagram","bounded_partial","Author original typed vertices with declared units, meanings and causal bases in the existing semantic Graph editor.","Requires a blank Manim Community source scene, one saved output profile and a current Native authoring context. Hypotheses and claim references are declarations, not established causal effects. No alternate executable package.","graph"),
@@ -95,6 +94,12 @@ export function craftAuthoringExample(definition:CraftDefinition):CraftExample|n
 }
 
 
+export function craftProductCameraPreset(definition:CraftDefinition|null|undefined):"arc_reveal"|"dolly_focus"|undefined{
+  if(definition?.route!=="sources")return undefined;
+  if(definition.id==="motionwright.camera.arc-reveal")return "arc_reveal";
+  if(definition.id==="motionwright.camera.dolly-focus")return "dolly_focus";
+  return undefined;
+}
 export function craftSourceBoardMode(definition:CraftDefinition|null|undefined):"reference_board"|"product_flow_bridge"|undefined{
   if(definition?.route!=="source_board")return undefined;
   if(definition.id==="motionwright.layout.reference-board")return "reference_board";

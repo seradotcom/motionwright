@@ -10,7 +10,7 @@ import {
 } from "./fileImport";
 import { prepareNativeSourceSpec, useNativeSourceDraft, type NativeSourceField } from "./nativeSourceDraft";
 import BlenderProductRecipeEditor from "./BlenderProductRecipeEditor";
-import { blenderProductSceneIssues } from "./blenderProductRecipe";
+import { blenderProductSceneIssues,type ProductCameraPreset } from "./blenderProductRecipe";
 
 export interface NativeSourceSaveRequest {
   path: string;
@@ -32,7 +32,7 @@ export interface NativeSourceServices {
   refreshProject: () => Promise<Project>;
   exportSource: (request: NativeSourceExportRequest) => Promise<NativeSourceExportReceipt>;
 }
-interface Props extends NativeSourceServices { project: Project; scene: Scene | null; busy: boolean; }
+interface Props extends NativeSourceServices { project: Project; scene: Scene | null; busy: boolean; preferredCameraMotion?:ProductCameraPreset; }
 const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
 
 function download(content: string, filename: string) {
@@ -43,7 +43,7 @@ function download(content: string, filename: string) {
 }
 
 /** Authored local input only. The existing App coordinator publishes every save. */
-function SourceEditor({ project, scene, target, busy, saveSource, refreshProject, exportSource }: Omit<Props, "scene"> & { scene: Scene; target: string }) {
+function SourceEditor({ project, scene, target, busy, saveSource, refreshProject, exportSource,preferredCameraMotion }: Omit<Props, "scene"> & { scene: Scene; target: string }) {
   const editor = useNativeSourceDraft(project, scene.id, target);
   const heading = useId();
   const [imports, setImports] = useState(() => readFileImports(project.id));
@@ -227,7 +227,7 @@ function SourceEditor({ project, scene, target, busy, saveSource, refreshProject
     </section>}
     {unavailable && <p role="alert" className="production-error">This capsule is no longer available in the selected scene. Its authored input has been kept.</p>}
     {(scene.renderer === "blender" || !!editor.fields.blenderRecipe) && <BlenderProductRecipeEditor key={editor.capsuleId}
-      project={project} scene={scene} capsuleId={editor.capsuleId} fields={editor.fields}
+      project={project} scene={scene} capsuleId={editor.capsuleId} fields={editor.fields} preferredCameraMotion={preferredCameraMotion}
       blocked={pending || pendingImport || unavailable || editor.conflict || !!editor.recoveryProblem || !!editor.backupError}
       change={patch => { setNotice(null); setError(null); return editor.setFields(patch); }}/>}
     <label className="production-field"><span>Source file path</span>

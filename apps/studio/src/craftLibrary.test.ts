@@ -35,8 +35,13 @@ describe("first-party craft definitions",()=>{
       if(example?.kind==="procedural")expect(proceduralConfig(rawProcedural(example.config))).toEqual(example.config);
     }
   });
-  it("refuses a spec-only preview rather than using another component",async()=>{
-    await expect(realizeCraftExample(craftDefinition("motionwright.camera.arc-reveal")!,1920,1080)).rejects.toThrow(/real source/);
+  it("refuses a source-dependent preview rather than using another component",async()=>{
+    for(const id of ["motionwright.camera.arc-reveal","motionwright.camera.dolly-focus"]){
+      const entry=craftDefinition(id)!;
+      expect(entry.status).toBe("DRAFT");expect(entry.coverage).toBe("bounded_partial");expect(entry.route).toBe("sources");
+      await expect(realizeCraftExample(entry,1920,1080)).rejects.toThrow(/real source/);
+    }
+    expect(CRAFT_LIBRARY.filter(item=>item.coverage==="spec_only")).toEqual([]);
   });
   it("routes both typed Graph definitions to their real source editor without claiming admission",()=>{
     for(const [id,kind] of [["motionwright.data.causal-diagram","causal_diagram"],["motionwright.data.system-flow","system_flow"]] as const){

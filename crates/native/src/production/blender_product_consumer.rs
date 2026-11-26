@@ -9,7 +9,7 @@ mod cycle;
 mod lineage;
 use crate::blender_product_scene::{
     Binding, NativeCall, ObservedReference, ProductProjection, ProductScene, PropertyExpectation,
-    SHELL_SEGMENTS, SemanticStep,
+    SHELL_SEGMENTS, SemanticStep, product_frame150_origin,
 };
 pub use cycle::{
     BLENDER_PRODUCT_RECIPE_MEDIA_TYPE, BlenderProductCycleHook, BlenderProductCycleJournal,
@@ -2213,6 +2213,7 @@ impl<R: OriginalPhaseScope, P, J: ProductEvidenceJournal> OriginalSession<'_, R,
         anchors: &ProductAnchors,
         composition: &ProductCompositionObservation,
         cuts: &[ProductCutObservation],
+        source: &ProductScene,
     ) -> NativeResult<Value> {
         if cuts.len() != 2
             || cuts[0].frame != 600
@@ -2292,15 +2293,32 @@ impl<R: OriginalPhaseScope, P, J: ProductEvidenceJournal> OriginalSession<'_, R,
             .and_then(Value::as_array)
             .filter(|values| values.len() == 3)
             .ok_or_else(|| backend("Blender evaluated camera origin is unavailable").uncertain())?;
-        for (value, low, high) in [
-            (origin[0].as_f64(), 0.22, 0.28),
-            (origin[1].as_f64(), -0.30, -0.24),
-            (origin[2].as_f64(), 0.18, 0.19),
-        ] {
-            if value.is_none_or(|value| !value.is_finite() || value <= low || value >= high) {
-                return Err(backend(
-                    "Blender frame150 camera did not move inside its source key interval",
-                ));
+        if source.camera_motion.is_some() {
+            // The explicit spatial path uses only linear interpolation.
+            // Verify the actual evaluated world-space origin against the
+            // retained source, including constant axes. Do not replace the
+            // observed values with a generated position or retry the effect.
+            for (value, expected) in origin.iter().zip(product_frame150_origin(source)) {
+                if value
+                    .as_f64()
+                    .is_none_or(|value| !value.is_finite() || (value - expected).abs() > 1e-6)
+                {
+                    return Err(backend(
+                        "Blender frame150 camera differs from the exact authored linear spatial path",
+                    ));
+                }
+            }
+        } else {
+            for (value, low, high) in [
+                (origin[0].as_f64(), 0.22, 0.28),
+                (origin[1].as_f64(), -0.30, -0.24),
+                (origin[2].as_f64(), 0.18, 0.19),
+            ] {
+                if value.is_none_or(|value| !value.is_finite() || value <= low || value >= high) {
+                    return Err(backend(
+                        "Blender frame150 camera did not move inside its source key interval",
+                    ));
+                }
             }
         }
         let mut epoch = ProductReadEpoch::default();
@@ -2659,7 +2677,7 @@ impl ProductionCoordinator {
                 .await?,
         );
         let measurement = session
-            .product_measure_non_keyframe(&anchors, &composition, &cuts)
+            .product_measure_non_keyframe(&anchors, &composition, &cuts, &source.source)
             .await?;
         let final_readback = session
             .product_readback(&anchors, &source.source, &projection)

@@ -4,14 +4,15 @@ import type { Project, Scene } from "./types";
 import type { NativeSourceFields } from "./nativeSourceDraft";
 import { BLENDER_PRODUCT_RECIPE_MIME, PRODUCT_COATINGS, PRODUCT_CAMERA_CURVES,
   blenderProductMetadata, blenderProductSceneIssues, blenderRecipeFile, newBlenderProductInput,
-  parseBlenderProductInput, type BlenderProductRecipeInput } from "./blenderProductRecipe";
+  parseBlenderProductInput,withProductCameraPreset,withoutProductCameraMotion,type ProductCameraPreset,type BlenderProductRecipeInput } from "./blenderProductRecipe";
 
 interface Props {
   project: Project; scene: Scene; capsuleId: string; fields: NativeSourceFields;
   blocked: boolean; change: (fields: Partial<NativeSourceFields>) => boolean;
+  preferredCameraMotion?:ProductCameraPreset;
 }
 const msg = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
-export default function BlenderProductRecipeEditor({project,scene,capsuleId,fields,blocked,change}: Props) {
+export default function BlenderProductRecipeEditor({project,scene,capsuleId,fields,blocked,change,preferredCameraMotion}: Props) {
   const heading = useId();
   const [notice,setNotice] = useState<string|null>(null);
   const [error,setError] = useState<string|null>(null);
@@ -28,6 +29,13 @@ export default function BlenderProductRecipeEditor({project,scene,capsuleId,fiel
     setNotice(null);setError(null);
     change({blenderRecipe: JSON.stringify({...input,[field]:value})});
   };
+  const changeCameraMotion=(preset:ProductCameraPreset|"legacy")=>{
+    if(!input||blocked||issues.length)return;
+    setNotice(null);setError(null);
+    const next=preset==="legacy"?withoutProductCameraMotion(input):withProductCameraPreset(input,preset);
+    change({blenderRecipe:JSON.stringify(next)});
+  };
+  const motionEnabled=input?.arc_degrees!==undefined||input?.dolly_percent!==undefined;
   const exportFile = () => {
     setNotice(null);setError(null);
     try {
@@ -63,10 +71,31 @@ export default function BlenderProductRecipeEditor({project,scene,capsuleId,fiel
         <label className="production-field"><span>Surface roughness</span><input type="text" inputMode="decimal" value={input.roughness} maxLength={64} onChange={e=>patch("roughness",e.target.value)}/></label>
         <label className="production-field"><span>Surface metallic</span><input type="text" inputMode="decimal" value={input.metallic} maxLength={64} onChange={e=>patch("metallic",e.target.value)}/></label>
         <label className="production-field"><span>Render samples</span><input type="text" inputMode="numeric" value={input.samples} maxLength={8} onChange={e=>patch("samples",e.target.value)}/></label>
-        <label className="production-field"><span>Native camera curve</span><select aria-label="Native camera curve" value={input.camera_curve} onChange={e=>patch("camera_curve",e.target.value)}>
+        <label className="production-field"><span>Native camera curve</span><select aria-label="Native camera curve" value={input.camera_curve} disabled={motionEnabled} onChange={e=>patch("camera_curve",e.target.value)}>
           {PRODUCT_CAMERA_CURVES.map(value=><option key={value} value={value}>{value==="linear"?"Linear":"Bézier auto-clamped"}</option>)}
         </select></label>
       </div>
+      <section aria-label="Original spatial camera motion">
+        <h4>Spatial camera motion</h4>
+        <p className="production-help">Optional native 3D camera path for the same two-shot vessel and exact 40-second clock.
+          Arc uses three equal-radius waypoints joined by linear chords; Dolly moves along the ray toward the original surface focus without changing lens.
+          These are authored source parameters, not a verified render.</p>
+        {preferredCameraMotion&&<p role="status">Library choice: {preferredCameraMotion==="arc_reveal"?"Arc reveal":"Dolly focus"}. Choose its preset explicitly to change the retained draft.</p>}
+        <div className="production-segmented">
+          <button type="button" className="secondary-button" onClick={()=>changeCameraMotion("arc_reveal")}>Use Arc reveal</button>
+          <button type="button" className="secondary-button" onClick={()=>changeCameraMotion("dolly_focus")}>Use Dolly focus</button>
+          <button type="button" className="secondary-button" disabled={!motionEnabled} onClick={()=>changeCameraMotion("legacy")}>Restore legacy camera motion</button>
+        </div>
+        {motionEnabled&&<div className="production-plan-grid">
+          <label className="production-field"><span>Arc degrees (0 or 10?35)</span>
+            <input aria-label="Product arc degrees" inputMode="numeric" value={input.arc_degrees??""} maxLength={8} onChange={e=>patch("arc_degrees",e.target.value)}/>
+          </label>
+          <label className="production-field"><span>Dolly approach percent (0 or 5?18)</span>
+            <input aria-label="Product dolly percent" inputMode="numeric" value={input.dolly_percent??""} maxLength={8} onChange={e=>patch("dolly_percent",e.target.value)}/>
+          </label>
+          <p className="production-help">Both nonzero values combine the two movements. A zero value retains that shot's original key positions. Both shots use explicit linear interpolation.</p>
+        </div>}
+      </section>
       <label className="production-field"><span>Product annotation</span><textarea aria-label="Product annotation" rows={3} maxLength={128} value={input.annotation} onChange={e=>patch("annotation",e.target.value)}/></label>
       {file && <div className="production-help">
         <strong>{file.name}</strong><p>Exact source: {file.byteLength} bytes. SHA-256: <span className="mono" style={{overflowWrap:"anywhere"}}>{file.sha256}</span></p>

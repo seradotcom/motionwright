@@ -62,6 +62,47 @@ pub enum CameraCurve {
     BezierAutoClamped,
 }
 
+/// Opt-in spatial camera authoring on the original two-shot vessel recipe.
+/// Zero keeps that shot's historical motion; absence keeps the old wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductCameraMotion {
+    pub arc_degrees: u16,
+    pub dolly_percent: u8,
+}
+
+impl ProductCameraMotion {
+    fn validate(self, curve: CameraCurve) -> Result<(), ProjectionError> {
+        if curve != CameraCurve::Linear
+            || (self.arc_degrees != 0 && !(10..=35).contains(&self.arc_degrees))
+            || (self.dolly_percent != 0 && !(5..=18).contains(&self.dolly_percent))
+            || (self.arc_degrees == 0 && self.dolly_percent == 0)
+        {
+            return Err(unsupported(
+                "camera_motion",
+                "Choose at least one bounded camera motion (arc 10..35 degrees, dolly 5..18 percent) with exact linear interpolation",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn deserialize_camera_motion<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ProductCameraMotion>, D::Error> {
+    struct MotionObject;
+    impl<'de> serde::de::Visitor<'de> for MotionObject {
+        type Value = ProductCameraMotion;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a closed camera motion object")
+        }
+        fn visit_map<M: serde::de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+            ProductCameraMotion::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+    deserializer.deserialize_map(MotionObject).map(Some)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProductScene {
@@ -73,6 +114,12 @@ pub struct ProductScene {
     pub samples: u32,
     pub annotation: String,
     pub camera_curve: CameraCurve,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_camera_motion"
+    )]
+    pub camera_motion: Option<ProductCameraMotion>,
 }
 
 impl ProductScene {
@@ -86,6 +133,7 @@ impl ProductScene {
             samples: 64,
             annotation: "EDITABLE\nSURFACE".into(),
             camera_curve,
+            camera_motion: None,
         }
     }
 
@@ -134,6 +182,9 @@ impl ProductScene {
                 "camera_curve",
                 "Unspecified native interpolation cannot be replaced by LINEAR or an assumed BEZIER default",
             ));
+        }
+        if let Some(motion) = self.camera_motion {
+            motion.validate(self.camera_curve)?;
         }
         Ok(())
     }
@@ -681,7 +732,7 @@ pub fn project_product_scene(scene: &ProductScene) -> Result<ProductProjection, 
     let spec = json!({"version":1,"collection":scene.namespace,"meters_per_unit":1.0,"textures":[],
         "materials":[material("coating",scene.coating.srgb(),scene.roughness,scene.metallic),
             material("dark",[0.035,0.045,0.055],0.55,0.15)],
-        "entities":entities,"relations":relations,"animation":camera_animation_spec()});
+        "entities":entities,"relations":relations,"animation":camera_animation_spec(scene)});
     let mut after_create = surface_steps();
     after_create.extend(camera_steps(scene.camera_curve));
     after_create.extend(annotation_steps(scene));
@@ -784,11 +835,47 @@ fn interpolation(curve: CameraCurve) -> &'static str {
         CameraCurve::NativeDefault => unreachable!("validated before projection"),
     }
 }
-fn camera_animation_spec() -> Value {
+/// All five native key identities and the exact cut remain unchanged.
+/// Arc keys rotate around the original form target in the horizontal plane,
+/// at a fixed radius and elevation. Linear chords between three keys are
+/// intentionally not described as a mathematically circular orbit.
+/// Dolly keys move toward the existing surface target on a single ray;
+/// physical distance changes while lens and depth-of-field target do not.
+pub(crate) fn product_camera_poses(scene: &ProductScene) -> [(&'static str, u32, [f64; 3]); 5] {
+    let mut poses = CAMERA_POSES;
+    if let Some(motion) = scene.camera_motion {
+        if motion.arc_degrees != 0 {
+            let [x, y, z] = CAMERA_POSES[0].2;
+            for (index, fraction) in [(1, 0.5), (2, 1.0)] {
+                let angle = f64::from(motion.arc_degrees).to_radians() * fraction;
+                let (sin, cos) = angle.sin_cos();
+                poses[index].2 = [x * cos - y * sin, x * sin + y * cos, z];
+            }
+        }
+        if motion.dolly_percent != 0 {
+            let start = CAMERA_POSES[3].2;
+            let target = [0.0, -0.012, 0.075];
+            let ratio = f64::from(motion.dolly_percent) / 100.0;
+            poses[4].2 =
+                std::array::from_fn(|axis| start[axis] + (target[axis] - start[axis]) * ratio);
+        }
+    }
+    poses
+}
+
+/// A source-derived oracle, not a native observation. The consumer checks
+/// the actual evaluated frame150 against this exact authored linear segment.
+pub(crate) fn product_frame150_origin(scene: &ProductScene) -> [f64; 3] {
+    let poses = product_camera_poses(scene);
+    let fraction = (150.0 - 1.0) / (300.0 - 1.0);
+    std::array::from_fn(|axis| poses[0].2[axis] + (poses[1].2[axis] - poses[0].2[axis]) * fraction)
+}
+
+fn camera_animation_spec(scene: &ProductScene) -> Value {
     let channels: Vec<Value> = ["camera_form", "camera_surface"]
         .into_iter()
         .map(|entity| {
-            let keys: Vec<Value> = CAMERA_POSES
+            let keys: Vec<Value> = product_camera_poses(scene)
                 .iter()
                 .copied()
                 .filter(|(camera, _, _)| *camera == entity)
@@ -1043,7 +1130,7 @@ fn property_expectations(scene: &ProductScene) -> Vec<PropertyExpectation> {
             json!(fstop),
         ));
     }
-    for (entity, frame, position) in CAMERA_POSES {
+    for (entity, frame, position) in product_camera_poses(scene) {
         for axis in 0..3 {
             let point = Binding::CameraKey {
                 entity,

@@ -4,7 +4,7 @@ import { fixtureProject } from "./fixture";
 import { emptyProductionDesign } from "./creativeProduction";
 import { createNativeSourceDraft, prepareNativeSourceSpec, decodeNativeSourceCopy, encodeNativeSourceCopy } from "./nativeSourceDraft";
 import { BLENDER_PRODUCT_RECIPE_MIME, blenderProductMetadata, blenderProductSceneIssues, blenderRecipeFile,
-  buildBlenderProductRecipe, newBlenderProductInput, parseBlenderProductInput } from "./blenderProductRecipe";
+  buildBlenderProductRecipe, newBlenderProductInput, parseBlenderProductInput,withProductCameraPreset,withoutProductCameraMotion } from "./blenderProductRecipe";
 import nativeFixture from "../../../crates/native/tests/fixtures/blender-product-studio-recipe.json?raw";
 import type { Project } from "./types";
 
@@ -73,5 +73,37 @@ describe("Blender ProductScene v1 authored source",()=>{
     expect(Object.keys(spec)).toHaveLength(7);
     expect(()=>prepareNativeSourceSpec({...draft.fields,blenderRecipe:JSON.stringify({...authored,roughness:"0.5"})},capsuleId,scene.id)).toThrow("prepared recipe file");
     expect(()=>prepareNativeSourceSpec({...draft.fields,mediaType:"application/json"},capsuleId,scene.id)).toThrow("prepared recipe file");
+  });
+});
+
+
+describe("bounded native spatial camera authoring",()=>{
+  it("preserves the legacy digest and retains independent or combined movements",()=>{
+    const arc=withProductCameraPreset(authored,"arc_reveal");
+    const dolly=withProductCameraPreset(authored,"dolly_focus");
+    expect(buildBlenderProductRecipe(arc).camera_motion).toEqual({arc_degrees:25,dolly_percent:0});
+    expect(buildBlenderProductRecipe(dolly).camera_motion).toEqual({arc_degrees:0,dolly_percent:12});
+    const combined={...arc,dolly_percent:"18"};
+    const file=blenderRecipeFile(JSON.stringify(combined),capsuleId);
+    expect(file.recipe.camera_motion).toEqual({arc_degrees:25,dolly_percent:18});
+    expect(blenderRecipeFile(JSON.stringify(withoutProductCameraMotion(arc)),capsuleId).text).toBe(nativeFixture);
+    expect(file.sha256).not.toBe(blenderRecipeFile(JSON.stringify(authored),capsuleId).sha256);
+    const p=project(),scene=p.scenes[0],draft=createNativeSourceDraft(p,scene.id,"new",capsuleId);
+    draft.fields={...blenderProductMetadata(JSON.stringify(combined),capsuleId),path:"E:/sources/spatial.json"};
+    const restored=decodeNativeSourceCopy(encodeNativeSourceCopy(draft,writerId),draft.scope,writerId);
+    expect(restored).toEqual(draft);
+    expect(prepareNativeSourceSpec(restored.fields,capsuleId,scene.id).media_type).toBe(BLENDER_PRODUCT_RECIPE_MIME);
+    expect(()=>prepareNativeSourceSpec({...draft.fields,blenderRecipe:JSON.stringify({...combined,arc_degrees:"35"})},capsuleId,scene.id)).toThrow(/prepared recipe file/);
+  });
+  it("keeps incomplete camera input but rejects unsafe or implicit paths",()=>{
+    const arc=withProductCameraPreset(authored,"arc_reveal");
+    for(const [a,d] of [["0","0"],["9","0"],["36","0"],["0","4"],["0","19"],["1e","12"],["20","1.5"]]){
+      const raw={...arc,arc_degrees:a,dolly_percent:d};
+      expect(parseBlenderProductInput(JSON.stringify(raw))).toEqual(raw);
+      expect(()=>buildBlenderProductRecipe(raw)).toThrow();
+    }
+    expect(()=>buildBlenderProductRecipe({...arc,camera_curve:"bezier_auto_clamped"})).toThrow();
+    const incomplete={...arc};delete incomplete.dolly_percent;
+    expect(()=>parseBlenderProductInput(JSON.stringify(incomplete))).toThrow();
   });
 });

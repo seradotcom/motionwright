@@ -12,8 +12,9 @@ test("library previews the real generator and explicitly loads a recoverable aut
   await expect(library.getByRole("navigation",{name:"Craft definitions"}).getByRole("button")).toHaveCount(36);
   await library.getByLabel("Craft family").selectOption("camera");
   await library.getByRole("button",{name:/Arc reveal/}).click();
-  await expect(library.getByRole("button",{name:"Open authoring editor"})).toHaveCount(0);
-  await expect(library.getByText("No preview or install action is available for this unimplemented definition.")).toBeVisible();
+  await expect(library.getByRole("button",{name:"Open authoring editor"})).toBeEnabled();
+  await expect(library.getByRole("img")).toHaveCount(0);
+  await expect(library.getByText("Open the source editor and select real project inputs to inspect this pattern.")).toBeVisible();
   await library.getByLabel("Craft family").selectOption("typography");
   await library.getByRole("button",{name:/Headline focus/}).click();
   await library.getByRole("button",{name:"9:16",exact:true}).click();

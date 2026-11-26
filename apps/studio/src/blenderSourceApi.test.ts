@@ -173,3 +173,24 @@ describe("saved Blender source and original attempt reads", () => {
     expect(invokeMock).toHaveBeenCalledTimes(1);
   });
 });
+
+
+it("retains exact optional camera motion in original and lineage reads without inheriting acceptance",()=>{
+  const p=project(),reply=source(p);
+  reply.effective_recipe.camera_curve="linear";
+  reply.effective_recipe.camera_motion={arc_degrees:25,dolly_percent:12};
+  expect(validateBlenderSource(p,p.scenes[0].id,capsuleId,reply)).toEqual(reply);
+  for(const motion of [null,{}, {arc_degrees:25,dolly_percent:12,approved:true},{arc_degrees:0,dolly_percent:0},
+    {arc_degrees:35,dolly_percent:19},{arc_degrees:25.5,dolly_percent:12}]){
+    const bad=structuredClone(reply);
+    Object.assign(bad.effective_recipe,{camera_motion:motion});
+    expect(()=>validateBlenderSource(p,p.scenes[0].id,capsuleId,bad)).toThrow(/read-only contract/);
+  }
+  const wrongCurve=structuredClone(reply);wrongCurve.effective_recipe.camera_curve="bezier_auto_clamped";
+  expect(()=>validateBlenderSource(p,p.scenes[0].id,capsuleId,wrongCurve)).toThrow(/read-only contract/);
+  const done=completed(project());
+  done.saved.effective_recipe.camera_curve="linear";
+  done.saved.effective_recipe.camera_motion={arc_degrees:25,dolly_percent:12};
+  expect(validateBlenderSource(done.saved.project,done.saved.scene_id,capsuleId,done.saved)).toEqual(done.saved);
+  expect(validateBlenderAttempt(done.saved.project,done.saved.scene_id,capsuleId,request,terminal,done.attempt)).toEqual(done.attempt);
+});
