@@ -1085,7 +1085,7 @@ jobs:
       - name: Install Linux desktop bundling and system Python AT-SPI prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libfuse2 xvfb x11-utils dbus-x11 python3 ffmpeg python3-gi gir1.2-atspi-2.0 at-spi2-core python3-venv bubblewrap libpipewire-0.3-dev pkg-config clang
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libfuse2 xvfb x11-utils dbus-x11 python3 ffmpeg python3-gi gir1.2-atspi-2.0 at-spi2-core python3-venv bubblewrap libpipewire-0.3-dev pkg-config clang gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
       - name: Complete installed source controls on the pristine checkout
         id: installed_native_controls
         timeout-minutes: 6
@@ -1569,7 +1569,7 @@ jobs:
             fi
           done
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libfuse2 xvfb x11-utils dbus-x11 python3 ffmpeg
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libfuse2 xvfb x11-utils dbus-x11 python3 ffmpeg gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
       - name: Install locked Studio and Tauri CLI dependencies
         run: npm --prefix apps/studio ci --no-audit --no-fund
       - name: Build unsigned Linux candidate bundles

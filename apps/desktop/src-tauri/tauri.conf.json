@@ -46,6 +46,9 @@
           "gstreamer1.0-plugins-bad",
           "gstreamer1.0-libav"
         ]
+      },
+      "appimage": {
+        "bundleMediaFramework": true
       }
     },
     "windows": {

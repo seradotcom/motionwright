@@ -1,23 +1,35 @@
-# Bounded native audiovisual review in Deliver
+# Bounded original audiovisual review in Deliver
 
-Motionwright can preview a **real, already-mastered H.264/AAC MP4** inside its local Tauri desktop editor, directly from the finished Semwright-owned output artifact. This is an explicitly initiated, **read-only media review**; it does not launch a render, create a file on the user's desktop, open a new network service or change a project revision.
+Motionwright plays an already completed H.264/AAC MP4 inside its local Tauri editor. Review is explicitly requested, reads the original Semwright-owned artifact and leaves the creative revision unchanged.
 
-## Canonical source and bounded delivery
+## Current-session playback
 
-After a single-segment native MLT master successfully completes, Motionwright's backend stores only a session-scoped export/readback token that is bound to the exact project ID, generation, revision and saved deliverable profile. The `review_native_av_master` command accepts only this token plus the exact project stamp. It rejects foreign, stale or expired sessions and checks the creative revision both **before and after** reading bytes.
+After native mastering completes, the backend retains a session token bound to the exact project, generation, revision and saved output profile. **Review native MP4** prepares a private `motionwright-media` URL through the existing `review_native_av_master` command. The WebView receives an opaque URL and media metadata; it never receives an owner filesystem path or chooses the source file.
 
-The backend reads its own known master artifact through the existing Semwright-owner-root helper. It revalidates path normalization, rejects symlink traversal, enforces an exact SHA-256 digest over the returned bytes and rejects files larger than **16 MiB** *before* copying them into IPC. The MP4 header must also contain an `ftyp` box at the expected offset. The WebView never chooses a source file, receives an owner absolute path, changes a SHA digest, mints a grant or invokes generic filesystem APIs.
+Preparation validates the owner path and original SHA-256, retains the opened file and records hashes for its 1 MiB blocks. The local protocol accepts one bounded byte range at a time, returns at most **4 MiB** per response and verifies the covered original blocks again before returning bytes. The original MP4 may be up to **1 GiB**, matching the existing verified delivery limit. Length changes, altered blocks, stale project stamps and expired tokens are rejected. At most four readers are admitted concurrently; overlapping reads of one file are serialized within that bound.
 
-For a small eligible MP4, Studio wraps those exact verified bytes in a local `video/mp4` Blob, plays them via the WebView's native HTML media decoder and revokes the Blob URL on unmount, revision/profile change or retry. A user must explicitly click **Review native MP4** before the file is read. The controls allow video playback **with its encoded audio** when the local decoder supports H.264 and AAC.
+Every protocol request checks the actual registered Tauri owner window, its private resource identity, trusted entry URL and live project scope before and after reading. Only the media CSP admits this local scheme. No filesystem scope, network listener or general fetch authority is exposed.
 
-## Limits and quality claims
+A legacy caller may still request the original binary IPC response for files up to 16 MiB. Studio uses bounded ranges for new playback and does not copy an entire long master into a Blob. Browser decoders may prefetch or revisit ranges; bounded responses do not imply a fixed total transfer count.
 
-This initial review is deliberately **not an unbounded AV streaming protocol**: it buffers at most 16 MiB of a verified media file (plus the temporary in-WebView copy). Large videos must use **Export verified MP4** for external playback; the export path continues to stream up to the separate validated maximum without buffering a giant movie into the UI.
+## Reopen an original master after restarting
 
-The standalone **Deliver** review is independent of Motionwright's timeline; the [source-scoped Program monitor](program-av-monitor.md) can additionally follow the editorial playhead and map decoded master playback time back onto included scenes. It does **not** promise sample/frame-exact scrubbing across WebViews, waveform correlation, subtitle burn-in, codec support across all WebViews, or proof of audio/visual creative quality. If the current WebView decoder cannot play the verified MP4, the UI reports the unsupported playback state and directs the user to the exact verified export, rather than rebranding a semantic representation as a real video.
+In the saved audio-QC history, **Review original MP4** selects the original decoded-measurement receipt for the current saved profile. The receipt UUID and expected digest are lookup hints. Native reconstructs the exact original source, measurement and completed master chain from SQLite and verifies current owner connection, receipt custody and original media before creating a new reader.
 
-No Graph admission, Effect Conformance PASS, external publication, signing or independent human acceptance is inferred from rendering a playable Blob.
+This path reuses an existing original. It does not render, measure, append receipts, retry an UNKNOWN operation or restore an export permission. Recovered handles are always review-only. Missing historical selector metadata, changed source/media, another connection or an unresolved original remains unavailable. This recovery currently follows the supported Linux native audio-measurement chain; ordinary current-session playback remains available on supported desktop decoders.
 
-## Exact-SHA tests
+Changing the project revision, profile or selected original closes playback. Leaving and reopening the history view requires fresh discovery and readback; a late reply from a previous source cannot replace the current selection.
 
-Rust desktop tests ensure a source-bound token returns actual bytes when the file is small and unmodified, and refuses a changed SHA-256, invalid MP4 header, foreign/stale project and source files above the 16 MiB cap. Browser tests use a clearly **synthetic** Tauri bridge to exercise the read-only request shape, no source paths/hashes/effect grants, explicit UI opt-in and object-URL cleanup. Synthetic media is not decoder-quality evidence; the separate native AV master E2E suite produces genuine Semwright H.264/AAC output in GitHub Actions, and installed-device playback/human approval remain open product acceptance work.
+## Decoder support and product limits
+
+The video element plays the encoded sound and supports ordinary playback and seeking. The [Program monitor](program-av-monitor.md) can follow a current-session original against the editorial playhead. Sample-exact or frame-exact seeking, caption glyph quality and independent human acceptance remain separate checks.
+
+Linux Debian candidates declare the GStreamer Good, Bad and libav plugin packages for MP4/H.264/AAC playback. AppImage configuration includes Tauri's media framework, and both Linux packaging paths install those plugins before bundling. The system-plugin check decodes a small synthetic H.264/AAC clip. The installed AppImage/WebView still requires its own candidate check; configuration or a synthetic decoder result alone does not establish installed playback.
+
+If the WebView cannot decode the original, the UI reports the playback error. A separately authorized, current-session verified export remains available where its source qualifies for delivery. Review itself does not grant export or publication authority.
+
+## Focused verification
+
+Desktop source tests cover closed request selectors, owner lifetime, exact source scope, single-range parsing, bounded concurrent reads, altered originals and the compatibility binary limit. Native recovery tests close and reopen SQLite and reject foreign, changed or unresolved original selectors without dispatching Native work.
+
+Chromium tests exercise an actual synthetic H.264/AAC clip, a valid MP4 larger than 16 MiB, playback and seeking, source changes, history remount and late-result rejection. These fixtures establish the local playback/recovery contract. They do not replace original Native rendering, installed-device decoder verification or human product review.
