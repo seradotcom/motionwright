@@ -1,8 +1,9 @@
-//! Linux directory-handle confinement for the explicit offline profile copier.
+//! Retained Unix directory-handle confinement for the explicit offline profile copier.
 //! Never executes a selected file, traverses a link, overwrites or deletes data.
 use super::runtime_profile_bundle::{
     self as bundle, BundleFile, FileRole, Profile, ValidatedBundle,
 };
+use super::runtime_profile_platform as platform;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -42,7 +43,9 @@ pub struct FileIdentity {
     mode: u32,
 }
 impl FileIdentity {
-    fn of(m: &Metadata) -> Result<Self, String> {
+    fn of(file: &File) -> Result<Self, String> {
+        platform::verify_security(file)?;
+        let m = &file.metadata().map_err(|_| INVALID)?;
         if !m.is_file() || m.nlink() != 1 || m.mode() & 0o022 != 0 || m.uid() != owner_uid() {
             return Err(INVALID.into());
         }
@@ -110,6 +113,7 @@ impl Directory {
         if count == 0 {
             return Err(INVALID.into());
         }
+        platform::verify_security(&file)?;
         let m = file.metadata().map_err(|_| INVALID)?;
         if !m.is_dir() || m.uid() != owner_uid() || m.mode() & 0o022 != 0 {
             return Err(INVALID.into());
@@ -137,6 +141,7 @@ impl Directory {
         let part_c = name(part)?;
         let file =
             open_at(&self.file, &part_c, FLAGS | libc::O_DIRECTORY, 0).map_err(|_| INVALID)?;
+        platform::verify_security(&file)?;
         let m = file.metadata().map_err(|_| INVALID)?;
         if !m.is_dir() || m.uid() != owner_uid() || m.mode() & 0o022 != 0 {
             return Err(INVALID.into());
@@ -151,6 +156,7 @@ impl Directory {
         let part_c = name(part)?;
         match open_at(&self.file, &part_c, FLAGS | libc::O_DIRECTORY, 0) {
             Ok(file) => {
+                platform::verify_security(&file)?;
                 let m = file.metadata().map_err(|_| INVALID)?;
                 if !m.is_dir() || m.uid() != owner_uid() || m.mode() & 0o077 != 0 {
                     return Err(INVALID.into());
@@ -231,13 +237,13 @@ impl Directory {
             FLAGS
         };
         let file = open_at(&directory.file, &name(leaf)?, flags, 0o600).map_err(|_| INVALID)?;
-        FileIdentity::of(&file.metadata().map_err(|_| INVALID)?)?;
+        FileIdentity::of(&file)?;
         Ok(file)
     }
     pub fn read_small(&self, relative: &str, max: u64) -> Result<Vec<u8>, String> {
         self.validate()?;
         let file = self.open_file(relative, None, false)?;
-        let before = FileIdentity::of(&file.metadata().map_err(|_| INVALID)?)?;
+        let before = FileIdentity::of(&file)?;
         if before.bytes > max {
             return Err(INVALID.into());
         }
@@ -246,9 +252,7 @@ impl Directory {
             .take(max + 1)
             .read_to_end(&mut bytes)
             .map_err(|_| INVALID)?;
-        if bytes.len() as u64 != before.bytes
-            || FileIdentity::of(&file.metadata().map_err(|_| INVALID)?)? != before
-        {
+        if bytes.len() as u64 != before.bytes || FileIdentity::of(&file)? != before {
             return Err(INVALID.into());
         }
         self.validate()?;
@@ -260,6 +264,7 @@ impl Directory {
         file.write_all(bytes)
             .and_then(|()| file.sync_all())
             .map_err(|_| INVALID)?;
+        FileIdentity::of(&file)?;
         self.validate()
     }
     fn names(&self) -> Result<BTreeSet<String>, String> {
@@ -285,12 +290,12 @@ impl Directory {
         let mut names = BTreeSet::new();
         loop {
             // SAFETY: errno is thread-local; stream is open and used synchronously.
-            unsafe { *libc::__errno_location() = 0 };
+            unsafe { *platform::errno() = 0 };
             // SAFETY: readdir is valid until the next call on this retained stream.
             let entry = unsafe { libc::readdir(stream.0) };
             if entry.is_null() {
                 // SAFETY: read the thread-local errno set by the preceding call.
-                if unsafe { *libc::__errno_location() } != 0 {
+                if unsafe { *platform::errno() } != 0 {
                     return Err(INVALID.into());
                 }
                 break;
@@ -318,10 +323,7 @@ impl Directory {
         }
         // SAFETY: zero return initialized the full structure.
         let value = unsafe { value.assume_init() };
-        value
-            .f_bavail
-            .checked_mul(value.f_frsize)
-            .ok_or_else(|| INVALID.into())
+        platform::available_bytes(&value).ok_or_else(|| INVALID.into())
     }
     pub fn exclusive(&self) -> Result<Exclusive, String> {
         self.validate()?;
@@ -340,18 +342,7 @@ impl Directory {
         let target = format!("disabled-{child}");
         let from = name(child)?;
         let to = name(&target)?;
-        // SAFETY: both names are single components under this retained private parent.
-        // RENAME_NOREPLACE cannot replace a foreign destination. No file is deleted.
-        let code = unsafe {
-            libc::renameat2(
-                self.file.as_raw_fd(),
-                from.as_ptr(),
-                self.file.as_raw_fd(),
-                to.as_ptr(),
-                libc::RENAME_NOREPLACE,
-            )
-        };
-        if code != 0 {
+        if platform::rename_exclusive(&self.file, &from, &to).is_err() {
             return Err(
                 "Runtime rollback did not replace or remove an existing destination.".into(),
             );
@@ -421,14 +412,14 @@ fn transfer(
     mut destination: Option<File>,
 ) -> Result<FileIdentity, String> {
     let mut source = root.open_file(&entry.path, Some(dirs), false)?;
-    let before = FileIdentity::of(&source.metadata().map_err(|_| INVALID)?)?;
+    let before = FileIdentity::of(&source)?;
     if before.bytes != entry.bytes || prior.is_some_and(|value| *value != before) {
         return Err(INVALID.into());
     }
     let mut hasher = Sha256::new();
     let mut count = 0_u64;
     let mut buffer = [0_u8; 64 * 1024];
-    let mut header = Vec::with_capacity(20);
+    let mut header = Vec::with_capacity(platform::HEADER_BYTES);
     loop {
         let n = source.read(&mut buffer).map_err(|_| INVALID)?;
         if n == 0 {
@@ -438,8 +429,8 @@ fn transfer(
         if count > entry.bytes {
             return Err(INVALID.into());
         }
-        if header.len() < 20 {
-            header.extend_from_slice(&buffer[..n.min(20 - header.len())]);
+        if header.len() < platform::HEADER_BYTES {
+            header.extend_from_slice(&buffer[..n.min(platform::HEADER_BYTES - header.len())]);
         }
         hasher.update(&buffer[..n]);
         if let Some(out) = destination.as_mut() {
@@ -448,12 +439,12 @@ fn transfer(
     }
     if count != entry.bytes
         || format!("{:x}", hasher.finalize()) != entry.sha256
-        || FileIdentity::of(&source.metadata().map_err(|_| INVALID)?)? != before
+        || FileIdentity::of(&source)? != before
     {
         return Err(INVALID.into());
     }
     if matches!(entry.role, FileRole::Node | FileRole::Browser)
-        && (header.len() < 20 || &header[..6] != b"\x7fELF\x02\x01" || header[18..20] != [0x3e, 0])
+        && !platform::native_executable(&header)
     {
         return Err(INVALID.into());
     }
@@ -465,6 +456,7 @@ fn transfer(
             }
         }
         out.sync_all().map_err(|_| INVALID)?;
+        FileIdentity::of(&out)?;
     }
     Ok(before)
 }

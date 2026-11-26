@@ -3,16 +3,17 @@ import { sameValue } from "./creativeProduction";
 import type { Project } from "./types";
 export interface RuntimeScope { project_id:string; generation:string; revision:number }
 type Profile = "motion_canvas" | "hyperframes";
+type RuntimePlatform = "linux-x86_64" | "macos-aarch64";
 export interface RuntimePlan {
   schema:"motionwright.runtime-profile-plan/1"; scope:RuntimeScope; plan_id:string;
-  profile:Profile; label:string; version:string; platform:"linux-x86_64";
+  profile:Profile; label:string; version:string; platform:RuntimePlatform;
   manifest_sha256:string; total_bytes:number; required_free_bytes:number; available_bytes:number; file_count:number;
   destination:string; node_path:string; entry_path:string; lock_path:string; lock_sha256:string;
   declared_node_version:"22.22.0"; effect_subject:string; expires_in_seconds:900; execution_performed:false;
 }
 export interface RuntimeInstallation {
   schema:"motionwright.runtime-profile-installation/1"; scope:RuntimeScope; install_id:string;
-  profile:Profile; label:string; version:string; platform:"linux-x86_64"; manifest_sha256:string;
+  profile:Profile; label:string; version:string; platform:RuntimePlatform; manifest_sha256:string;
   total_bytes:number; file_count:number; destination:string; disabled_destination:string;
   node_path:string; entry_path:string; lock_path:string; lock_sha256:string;
   state:"installed"|"copy_completed"|"outcome_unknown"|"partial_copy"|"files_unverified"|"missing_files"|"rolled_back";
@@ -20,7 +21,7 @@ export interface RuntimeInstallation {
 }
 export interface RuntimeInventory {
   schema:"motionwright.runtime-profile-inventory/1"; scope:RuntimeScope; supported:boolean;
-  platform:"linux-x86_64"|"unsupported"; profiles:RuntimeInstallation[]; alternatives:string;
+  platform:RuntimePlatform|"unsupported"; profiles:RuntimeInstallation[]; alternatives:string;
 }
 export interface RuntimeRetention {
   install_id:string; scope:RuntimeScope; manifest_sha256:string; profile:Profile;
@@ -49,10 +50,12 @@ function parseScope(value:unknown):RuntimeScope{
 }
 function desktop(){if(typeof window==="undefined"||!("__TAURI_INTERNALS__" in window))throw new Error("Offline runtime installation requires Motionwright Desktop.");}
 function path(value:unknown):value is string{return typeof value==="string" && value.startsWith("/") && value.length<=4096 && !/[\u0000-\u001f\u007f]/.test(value) && !value.split("/").some(part=>part===".."||part===".");}
+const platform=(value:unknown):value is RuntimePlatform=>value==="linux-x86_64"||value==="macos-aarch64";
 function common(value:Record<string,unknown>,project:Project){
   if (!sameValue(parseScope(value.scope),scopeOf(project)) || !["motion_canvas","hyperframes"].includes(String(value.profile))
     || value.label!==(value.profile==="motion_canvas"?"Motion Canvas":"HyperFrames")
-    || value.version!==(value.profile==="motion_canvas"?"3.17.2":"0.8.181") || value.platform!=="linux-x86_64"
+    || value.version!==(value.profile==="motion_canvas"?"3.17.2":"0.8.181") || !platform(value.platform)
+    || (value.platform==="macos-aarch64"&&value.profile!=="motion_canvas")
     || !sha(value.manifest_sha256)||!sha(value.lock_sha256)||!integer(value.total_bytes,1,2*1024**3+8*1024**2)
     || !integer(value.file_count,1,30001)||![value.destination,value.node_path,value.entry_path,value.lock_path].every(path)
     || value.execution_performed!==false) throw new Error("The runtime package reply does not match this project or compatible profile.");
@@ -130,11 +133,12 @@ export async function runtimeProfileInventory(project:Project):Promise<RuntimeIn
   desktop();const original=structuredClone(project);
   const reply=record(await invoke<unknown>("runtime_profile_inventory",{request:scopeOf(original)}),["schema","scope","supported","platform","profiles","alternatives"]);
   if(reply.schema!=="motionwright.runtime-profile-inventory/1"||!sameValue(parseScope(reply.scope),scopeOf(original))
-    || typeof reply.supported!=="boolean"||reply.platform!==(reply.supported?"linux-x86_64":"unsupported")
+    || typeof reply.supported!=="boolean"||(reply.supported?!platform(reply.platform):reply.platform!=="unsupported")
     || !Array.isArray(reply.profiles)||reply.profiles.length>64||(!reply.supported&&reply.profiles.length>0)
     || typeof reply.alternatives!=="string"||reply.alternatives.length>2048)throw new Error("Runtime inventory is stale or malformed.");
   const profiles=reply.profiles.map(row=>parseRuntimeInstallation(row,original));
   if(new Set(profiles.map(row=>row.install_id)).size!==profiles.length)throw new Error("Runtime inventory contains duplicate originals.");
+  if(profiles.some(row=>row.platform!==reply.platform))throw new Error("Runtime inventory contains an original from a different platform.");
   return {...reply,profiles} as unknown as RuntimeInventory;
 }
 export async function chooseRuntimeProfile(project:Project):Promise<RuntimePlan|null>{
@@ -173,7 +177,7 @@ export async function installRuntimeProfile(project:Project,plan:RuntimePlan,bef
     const token=await effect(original,operation,selected.effect_subject,beforeDispatch,()=>{prepared=true;});
     beforeDispatch();transition(original,operation,"dispatched");sent=true;
     const result=parseRuntimeInstallation(await invoke<unknown>("install_runtime_profile",{request:{scope:operation.scope,plan_id:selected.plan_id,manifest_sha256:selected.manifest_sha256,effect_grant:token}}),original,operation);
-    if(result.state!=="installed")throw new Error("The local runtime copy has not been confirmed. Read its original result.");
+    if(result.state!=="installed"||result.platform!==selected.platform||result.profile!==selected.profile)throw new Error("The local runtime copy has not been confirmed. Read its original result.");
     transition(original,operation,"acknowledged");return result;
   }catch(error){
     const failure=sent?operationFailure(error,operation):null;
@@ -205,7 +209,7 @@ export async function rollbackRuntimeProfile(project:Project,installation:Runtim
     const token=await effect(original,operation,selected.rollback_subject,beforeDispatch,()=>{prepared=true;});
     beforeDispatch();transition(original,operation,"dispatched");sent=true;
     const result=parseRuntimeInstallation(await invoke<unknown>("rollback_runtime_profile",{request:{scope:operation.scope,install_id:selected.install_id,manifest_sha256:selected.manifest_sha256,effect_grant:token}}),original,operation);
-    if(result.state!=="rolled_back")throw new Error("Rollback was not confirmed. Read its original result before another operation.");
+    if(result.state!=="rolled_back"||result.platform!==selected.platform||result.profile!==selected.profile)throw new Error("Rollback was not confirmed. Read its original result before another operation.");
     transition(original,operation,"acknowledged");return result;
   }catch(error){
     const failure=sent?operationFailure(error,operation):null;

@@ -17,7 +17,10 @@ pub struct InstallRequest {
     pub plan_id: Uuid,
     pub manifest_sha256: String,
     #[cfg_attr(
-        not(all(target_os = "linux", target_arch = "x86_64")),
+        not(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        )),
         expect(
             dead_code,
             reason = "Unsupported targets keep the closed wire shape and reject before effects"
@@ -28,7 +31,10 @@ pub struct InstallRequest {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(
-    not(all(target_os = "linux", target_arch = "x86_64")),
+    not(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    )),
     expect(
         dead_code,
         reason = "Unsupported targets retain the closed query shape and perform no reads"
@@ -45,7 +51,10 @@ pub struct RollbackRequest {
     pub install_id: Uuid,
     pub manifest_sha256: String,
     #[cfg_attr(
-        not(all(target_os = "linux", target_arch = "x86_64")),
+        not(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        )),
         expect(
             dead_code,
             reason = "Unsupported targets keep the closed wire shape and reject before effects"
@@ -146,11 +155,23 @@ impl RuntimeFailure {
     }
 }
 pub const ALTERNATIVES: &str = "Continue local editing, saving and portable source export without a renderer, or select an existing owner-provisioned Semwright connection. Installed profile bytes do not configure or authorize a Native provider.";
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-mod linux;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub use linux::RuntimeProfiles;
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+mod local_unix;
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+pub use local_unix::RuntimeProfiles;
+#[cfg(not(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+)))]
 mod unsupported;
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(not(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+)))]
 pub use unsupported::RuntimeProfiles;

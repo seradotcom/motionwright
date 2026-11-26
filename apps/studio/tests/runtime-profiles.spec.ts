@@ -2,11 +2,14 @@
 import { expect,test } from "@playwright/test";
 type Fixture={calls():{command:string;request:Record<string,unknown>}[];loseNext():void;holdGrant():void;releaseGrant():void;revision(value:number):void};
 declare global{interface Window{__runtimeProfileFixture:Fixture;}}
-test("reviewed package, lost acknowledgement, reopen, original read and explicit rollback",async({page})=>{
-  await page.goto("/tests/fixtures/runtime-profiles.html");
+for(const platform of ["linux-x86_64","macos-aarch64"]){
+test(platform+" reviewed package, lost acknowledgement, reopen, original read and explicit rollback",async({page})=>{
+  await page.goto("/tests/fixtures/runtime-profiles.html?platform="+platform);
   const panel=page.getByRole("region",{name:"Offline runtime profiles"});
   await panel.getByRole("button",{name:"Choose offline runtime package"}).click();
   const reviewed=panel.getByRole("article",{name:"Reviewed runtime installation"});
+  if(platform==="macos-aarch64")await expect(panel.getByText("Use a Motion Canvas package prepared for Apple Silicon.",{exact:false})).toBeVisible();
+  await expect(reviewed).toContainText(platform);
   await expect(reviewed.getByText("Motion Canvas 3.17.2",{exact:false})).toBeVisible();
   await expect(reviewed.getByText("7 files · 2.00 KiB · 2,048 bytes",{exact:true})).toBeVisible();
   await expect(reviewed.getByText("/fixture/runtime-profiles-v1/aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",{exact:true})).toBeVisible();
@@ -28,6 +31,7 @@ test("reviewed package, lost acknowledgement, reopen, original read and explicit
   expect(calls.filter(row=>row.command==="issue_effect_grant")).toHaveLength(2);
   expect(calls.filter(row=>row.command==="read_original_runtime_profile")).toHaveLength(1);
 });
+}
 test("an old runtime permission cannot dispatch after revision ABA",async({page})=>{
   await page.goto("/tests/fixtures/runtime-profiles.html");
   const panel=page.getByRole("region",{name:"Offline runtime profiles"});

@@ -74,6 +74,7 @@ export default function RuntimeProfilesPanel({project,desktop}:{project:Project;
         <RefreshCw size={14} aria-hidden="true"/>Read installed profile inventory</button>
     </div>
     {!desktop&&<p className="runtime-profile-note">Use Motionwright Desktop to inspect local packages. Editing, saving and portable project work remain available here.</p>}
+    {inventory?.platform==="macos-aarch64"&&<p className="runtime-profile-note">Use a Motion Canvas package prepared for Apple Silicon. Packages with extended permissions or attributes cannot be copied here; their original security metadata is preserved. HyperFrames offline installation is not available on this Mac.</p>}
     {inventory&&!inventory.supported&&<p className="runtime-profile-note">No offline profile is currently admitted for this operating system and architecture. {inventory.alternatives}</p>}
     {busy&&<p role="status">{busy}</p>}
     {error&&<p role="alert" className="runtime-profile-error">{error}</p>}

@@ -7,6 +7,8 @@ installs dependencies, starts a provider or edits source/runtime files.
 """
 from __future__ import annotations
 import argparse
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -74,8 +76,71 @@ def safe_file(value):
             and not value.st_mode & 0o022 and value.st_size <= MAX_FILE, "unsafe file identity or permissions")
 
 
+
+_DARWIN = None
+
+
+def host_platform():
+    if sys.platform == "linux" and os.uname().machine == "x86_64":
+        return "linux-x86_64"
+    if sys.platform == "darwin" and os.uname().machine == "arm64":
+        return "macos-aarch64"
+    raise ValueError("this host has no admitted offline runtime profile")
+
+
+def firefox_suffix(platform):
+    return "/firefox/Nightly.app/Contents/MacOS/firefox" if platform == "macos-aarch64" else "/firefox/firefox"
+
+
+def native_executable(header, platform):
+    if platform == "linux-x86_64":
+        return len(header) >= 20 and header[:6] == b"\x7fELF\x02\x01" and header[18:20] == b"\x3e\0"
+    if platform == "macos-aarch64":
+        return (len(header) >= 32 and header[:4] == b"\xcf\xfa\xed\xfe"
+                and header[4:8] == b"\x0c\0\0\x01" and header[8:12] == b"\0" * 4
+                and header[12:16] == b"\x02\0\0\0")
+    return False
+
+
+def security_metadata(fd):
+    """Read retained Darwin security metadata; never remove an ACL or xattr."""
+    if sys.platform != "darwin":
+        return
+    global _DARWIN
+    if _DARWIN is None:
+        library = ctypes.CDLL(None, use_errno=True)
+        library.flistxattr.argtypes = (ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int)
+        library.flistxattr.restype = ctypes.c_ssize_t
+        library.acl_get_fd_np.argtypes = (ctypes.c_int, ctypes.c_int)
+        library.acl_get_fd_np.restype = ctypes.c_void_p
+        library.acl_valid.argtypes = (ctypes.c_void_p,)
+        library.acl_valid.restype = ctypes.c_int
+        library.acl_get_entry.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p))
+        library.acl_get_entry.restype = ctypes.c_int
+        library.acl_free.argtypes = (ctypes.c_void_p,)
+        library.acl_free.restype = ctypes.c_int
+        _DARWIN = library
+    refused = "macOS extended permissions or attributes cannot be preserved by this copier; original security metadata was not removed"
+    require(_DARWIN.flistxattr(fd, None, 0, 0) == 0, refused)
+    ctypes.set_errno(0)
+    acl = _DARWIN.acl_get_fd_np(fd, 0x100)  # Apple ACL_TYPE_EXTENDED, sys/acl.h.
+    if not acl:
+        # filesec_get_property reports ENOENT when the retained file has no ACL.
+        require(ctypes.get_errno() == errno.ENOENT, refused)
+        return
+    try:
+        require(_DARWIN.acl_valid(acl) == 0, refused)
+        entry = ctypes.c_void_p()
+        found = _DARWIN.acl_get_entry(acl, 0, ctypes.byref(entry))
+        require(found == -1 and ctypes.get_errno() == errno.EINVAL, refused)
+    finally:
+        require(_DARWIN.acl_free(acl) == 0, refused)
+
+
 def create_description(folder: Path, profile: str):
-    require(sys.platform == "linux" and os.uname().machine == "x86_64", "only the admitted Linux x86_64 profile is supported")
+    platform = host_platform()
+    require(profile in ("motion_canvas", "hyperframes"), "unsupported runtime profile")
+    require(platform != "macos-aarch64" or profile == "motion_canvas", "only Motion Canvas is admitted on macOS Apple Silicon")
     require(folder.is_absolute() and str(folder) == str(folder.resolve(strict=True)), "select an absolute canonical package folder")
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
     root = os.open("/", flags | os.O_DIRECTORY)
@@ -85,6 +150,7 @@ def create_description(folder: Path, profile: str):
             child = os.open(part, flags | os.O_DIRECTORY, dir_fd=root)
             os.close(root)
             root = child
+        security_metadata(root)
         initial = os.fstat(root)
         require(initial.st_uid == os.geteuid() and not initial.st_mode & 0o022, "package folder is not owner controlled")
         rows, small, headers, directories = [], {}, {}, set()
@@ -92,6 +158,7 @@ def create_description(folder: Path, profile: str):
 
         def walk(directory, prefix):
             nonlocal total
+            security_metadata(directory)
             names = sorted(os.listdir(directory))
             require(0 < len(names) <= MAX_FILES + MAX_DIRS, "empty or oversized runtime directory")
             for name in names:
@@ -107,6 +174,7 @@ def create_description(folder: Path, profile: str):
                     try:
                         require((observed.st_dev, observed.st_ino) == (os.fstat(child).st_dev, os.fstat(child).st_ino), "directory changed")
                         walk(child, path + "/")
+                        security_metadata(child)
                     finally:
                         os.close(child)
                     continue
@@ -114,6 +182,7 @@ def create_description(folder: Path, profile: str):
                 require(len(rows) < MAX_FILES and total + observed.st_size <= MAX_TOTAL, "package byte/file budget exceeded")
                 fd = os.open(name, flags, dir_fd=directory)
                 try:
+                    security_metadata(fd)
                     before = os.fstat(fd)
                     safe_file(before)
                     require(identity(observed) == identity(before), "file changed before reading")
@@ -128,10 +197,11 @@ def create_description(folder: Path, profile: str):
                         count += len(chunk)
                         require(count <= before.st_size, "file grew while reading")
                         digest.update(chunk)
-                        if len(head) < 20:
-                            head.extend(chunk[:20-len(head)])
+                        if len(head) < 32:
+                            head.extend(chunk[:32-len(head)])
                         if capture:
                             captured.extend(chunk)
+                    security_metadata(fd)
                     require(count == before.st_size and identity(os.fstat(fd)) == identity(before)
                             and identity(os.stat(name, dir_fd=directory, follow_symlinks=False)) == identity(before), "file changed while reading")
                     rows.append({"path": path, "sha256": digest.hexdigest(), "bytes": count,
@@ -152,7 +222,8 @@ def create_description(folder: Path, profile: str):
             for name, digest in MC_PINS.items():
                 require(by_path.get(name, {}).get("sha256") == digest, "Motion Canvas source or lock differs from the supported pin")
             entry, lock_path, version = "runtime/render.mjs", "runtime/package-lock.json", "3.17.2"
-            browsers = [name for name in by_path if re.fullmatch(r"runtime/node_modules/playwright-core/\.local-browsers/firefox-[0-9]+/firefox/firefox", name)]
+            browser_pattern = r"runtime/node_modules/playwright-core/\.local-browsers/firefox-[0-9]+" + re.escape(firefox_suffix(platform))
+            browsers = [name for name in by_path if re.fullmatch(browser_pattern, name)]
             require(len(browsers) == 1, "one contained Playwright Firefox executable is required")
             browser = browsers[0]
         else:
@@ -195,19 +266,22 @@ def create_description(folder: Path, profile: str):
             row["executable"] = role in {"node", "browser"}
             if row["executable"]:
                 header = headers[path]
-                require(len(header) >= 20 and header[:6] == b"\x7fELF\x02\x01" and header[18:20] == b"\x3e\0", "required executable is not an x86_64 ELF file")
-        result = {"schema": SCHEMA, "profile": profile, "version": version, "platform": "linux-x86_64", "semwright_source_pin": PIN,
+                require(native_executable(header, platform), "required executable does not match the admitted host architecture")
+        result = {"schema": SCHEMA, "profile": profile, "version": version, "platform": platform, "semwright_source_pin": PIN,
                   "node_version": "22.22.0", "files": sorted(rows, key=lambda row: row["path"])}
         raw = (json.dumps(result, indent=2, sort_keys=True) + "\n").encode()
         require(len(raw) <= MAX_JSON, "runtime manifest exceeds its limit")
+        security_metadata(root)
         observed = os.stat(folder, follow_symlinks=False)
         require((observed.st_dev, observed.st_ino) == (initial.st_dev, initial.st_ino), "package root changed")
         output = os.open(MANIFEST, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=root)
         try:
+            security_metadata(output)
             with os.fdopen(output, "wb", closefd=False) as stream:
                 stream.write(raw)
                 stream.flush()
                 os.fsync(output)
+            security_metadata(output)
         finally:
             os.close(output)
         os.fsync(root)

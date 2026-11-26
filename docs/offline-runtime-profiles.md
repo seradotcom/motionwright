@@ -7,6 +7,7 @@ Motionwright Desktop can inspect and install an owner-prepared local runtime pac
 | Profile | Runtime version | Platform | Declared Node version |
 | --- | --- | --- | --- |
 | Motion Canvas | 3.17.2 | Linux x86_64 | 22.22.0 |
+| Motion Canvas | 3.17.2 | macOS Apple Silicon (arm64) | 22.22.0 |
 | HyperFrames | 0.8.181 | Linux x86_64 | 22.22.0 |
 
 The supported entry and lock identities follow the current Semwright source pin `c2c40c74e5714a3e680415d0dddcf27743f0f0fa`. Motion Canvas uses the exact pinned `render.mjs`, `package.json` and `package-lock.json`. HyperFrames uses the existing reviewed runner and its closed runtime lock, including the original distribution metadata, Node digest and dependency roster.
@@ -14,6 +15,8 @@ The supported entry and lock identities follow the current Semwright source pin 
 The application inspects bytes and layout. It does not execute a version probe during installation, establish executable provenance from a declared version, start a provider or grant a Native render. A separately authorized Semwright Host still validates its runtime, mounts, resource, executable identities and effects. The corresponding installed operating system and provider checks remain necessary. Browser system libraries and fontconfig remain separate operating system dependencies; an npm lock and this file copy do not supply that system closure.
 
 On other operating systems or architectures, this offline installer reports that no profile is admitted and offers local authoring or an existing supported owner connection. This does not imply that the Desktop application itself is restricted to Linux, or that a Linux native runtime is usable on another platform.
+
+On macOS Apple Silicon, the Motion Canvas package must contain native thin ARM64 Mach-O Node and Firefox executables. Firefox uses the contained `firefox/Nightly.app/Contents/MacOS/firefox` layout. Intel, ARM64e, universal binaries and HyperFrames packages are not admitted by this initial Mac copy profile. The copier reads extended ACLs and attributes through retained file descriptors and refuses metadata it cannot preserve. It never removes quarantine, provenance, resource forks or other extended attributes, and never changes an ACL to make a package pass. A security metadata read failure also stops the copy. The original package remains available for its owner to manage through the normal operating system controls.
 
 ## Prepare a package from an existing runtime
 
@@ -24,7 +27,7 @@ Use a separate, owner-controlled package folder containing:
 
 Use only files you are authorized to install. This workflow does not obtain redistribution rights or accept third-party license terms on your behalf. The package folder must contain regular files and owner-controlled directories, without symbolic links, hardlinked files, private credential files, unlisted files or empty directories. Preserve the original source separately when preparing the package.
 
-From the Motionwright source checkout on Linux, create its description explicitly:
+From the Motionwright source checkout on the matching supported host, create its description explicitly:
 
 ```bash
 python3 -B tooling/runtime_profile_bundle.py \
@@ -32,7 +35,7 @@ python3 -B tooling/runtime_profile_bundle.py \
   --folder /absolute/owner/runtime-package
 ```
 
-Use `--profile hyperframes` for the other supported profile. The utility reads the existing files and creates `runtime-profile.json` exclusively. It refuses an existing description. It does not download packages, run npm, execute the runtime, change a dependency lock, configure a Host or open a session.
+Use `--profile hyperframes` on Linux for that supported profile. The utility reads the existing files and creates `runtime-profile.json` exclusively. It refuses an existing description. It does not download packages, run npm, execute the runtime, change a dependency lock, configure a Host or open a session.
 
 The description includes each file's relative path, byte length, SHA-256 and intended executable mode. The Desktop independently checks the description and original files again; the description alone is not installation or execution authority. Current limits are 30,000 payload files, 8,192 directories, 512 MiB per payload file and 2 GiB of total payload, with an 8 MiB description limit. Required destination space also accounts for filesystem overhead and a reserve.
 
@@ -60,4 +63,4 @@ Rollback does not terminate a provider that was already running or rewrite indep
 
 ## Verification scope
 
-The source checks exercise the actual Desktop copier, original SQLite records, close/reopen, independent package description utility, scope and one-time grants, symlink/hardlink/FIFO rejection, directory replacement, changed bytes, lost replies and preserved rollback files. Native executable inputs in those filesystem tests are explicitly inert byte fixtures. Browser interaction tests use synthetic IPC. Those checks do not claim an installed OS smoke test, actual runtime execution, provider admission, human acceptance or release authorization.
+The source checks exercise the actual Desktop copier, original SQLite records, close/reopen, independent package description utility, scope and one-time grants, symlink/hardlink/FIFO rejection, directory replacement, changed bytes, lost replies and preserved rollback files. Mac checks additionally exercise native architecture refusal, extended ACLs, quarantine/other attributes and exclusive rollback collisions. Native executable inputs in those filesystem tests are explicitly inert byte fixtures. Browser interaction tests use synthetic IPC. Those checks do not claim an installed OS smoke test, actual runtime execution, provider admission, human acceptance or release authorization.

@@ -25,6 +25,38 @@ beforeEach(()=>{invokeMock.mockReset();vi.stubGlobal("window",{__TAURI_INTERNALS
 });
 afterEach(()=>{vi.restoreAllMocks();vi.unstubAllGlobals();});
 describe("original local runtime operations",()=>{
+  it("admits a Mac Motion Canvas copy through the same exact grant and retained result",async()=>{
+    const p=project(),selected:RuntimePlan={...plan(p),platform:"macos-aarch64"};
+    const result:RuntimeInstallation={...installed(p),platform:"macos-aarch64"};
+    invokeMock.mockResolvedValueOnce({token}).mockResolvedValueOnce(result);
+    await expect(installRuntimeProfile(p,selected,()=>{})).resolves.toEqual(result);
+    expect(readRuntimeRetention(p)[0].state).toBe("acknowledged");
+    expect(invokeMock.mock.calls.map(call=>call[0])).toEqual(["issue_effect_grant","install_runtime_profile"]);
+  });
+  it("rejects a cross-platform original inside an otherwise valid Mac inventory",async()=>{
+    const p=project(),base={schema:"motionwright.runtime-profile-inventory/1",scope:plan(p).scope,supported:true,platform:"macos-aarch64",alternatives:"Local editing remains available."};
+    invokeMock.mockResolvedValueOnce({...base,profiles:[{...installed(p),platform:"macos-aarch64"}]});
+    expect((await runtimeProfileInventory(p)).profiles).toHaveLength(1);
+    invokeMock.mockResolvedValueOnce({...base,profiles:[installed(p)]});
+    await expect(runtimeProfileInventory(p)).rejects.toThrow("different platform");
+    expect(invokeMock.mock.calls.every(call=>call[0]==="runtime_profile_inventory")).toBe(true);
+  });
+  it("never acknowledges a different admitted platform after a dispatched install",async()=>{
+    const p=project();invokeMock.mockResolvedValueOnce({token}).mockResolvedValueOnce({...installed(p),platform:"macos-aarch64"});
+    await expect(installRuntimeProfile(p,plan(p),()=>{})).rejects.toThrow("not been confirmed");
+    expect(readRuntimeRetention(p)[0].state).toBe("dispatched");
+  });
+  it("refuses HyperFrames on Mac before any permission or retained dispatch",async()=>{
+    const p=project(),selected:RuntimePlan={...plan(p),platform:"macos-aarch64",profile:"hyperframes",label:"HyperFrames",version:"0.8.181"};
+    await expect(installRuntimeProfile(p,selected,()=>{})).rejects.toThrow("compatible profile");
+    expect(invokeMock).not.toHaveBeenCalled();expect(readRuntimeRetention(p)).toEqual([]);
+  });
+  it.each(["macos-x86_64","windows-x86_64","unknown"])("refuses an unadmitted %s platform before permission",async platform=>{
+    const p=project(),value={...plan(p),platform};
+    expect(()=>parseRuntimePlan(value,p)).toThrow();
+    await expect(installRuntimeProfile(p,value as RuntimePlan,()=>{})).rejects.toThrow();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
   it("retains before one exact installation grant and dispatch",async()=>{
     const p=project(),selected=plan(p),guard=vi.fn();
     invokeMock.mockImplementation(async(command:string)=>{

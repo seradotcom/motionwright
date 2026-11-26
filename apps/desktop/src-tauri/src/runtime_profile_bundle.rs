@@ -1,5 +1,6 @@
 //! Closed offline runtime package description. Compatibility here describes
 //! reviewed entry/lock bytes and layout, never a version probe or execution grant.
+use super::runtime_profile_platform as platform;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -151,7 +152,8 @@ pub fn parse(bytes: &[u8], source_pin: &str) -> Result<ValidatedBundle, String> 
         || !source_pin
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        || manifest.platform != "linux-x86_64"
+        || manifest.platform != platform::PLATFORM
+        || (manifest.profile == Profile::Hyperframes && !platform::SUPPORTS_HYPERFRAMES)
         || manifest.node_version != "22.22.0"
         || manifest.files.is_empty()
         || manifest.files.len() > MAX_FILES
@@ -233,7 +235,7 @@ pub fn parse(bytes: &[u8], source_pin: &str) -> Result<ValidatedBundle, String> 
                 if manifest.profile == Profile::MotionCanvas
                     && (!file.path.starts_with(
                         "runtime/node_modules/playwright-core/.local-browsers/firefox-",
-                    ) || !file.path.ends_with("/firefox/firefox"))
+                    ) || !file.path.ends_with(platform::FIREFOX_SUFFIX))
                 {
                     return Err(INVALID.into());
                 }

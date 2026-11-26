@@ -147,8 +147,10 @@ impl RuntimeProfiles {
             || receipt.request_id != request_id(intent.install_id)
             || receipt.request_sha256 != digest(intent)?
             || intent.source_pin != pin
-            || intent.platform != "linux-x86_64"
+            || intent.platform != crate::runtime_profile_platform::PLATFORM
             || intent.version != intent.profile.version()
+            || (intent.profile == Profile::Hyperframes
+                && !crate::runtime_profile_platform::SUPPORTS_HYPERFRAMES)
             || !bundle::is_sha256(&intent.manifest_sha256)
             || !bundle::is_sha256(&intent.lock_sha256)
             || intent.total_bytes == 0
@@ -379,7 +381,7 @@ impl RuntimeProfiles {
             schema: "motionwright.runtime-profile-inventory/1",
             scope,
             supported: true,
-            platform: "linux-x86_64",
+            platform: crate::runtime_profile_platform::PLATFORM,
             profiles,
             alternatives: ALTERNATIVES,
         })

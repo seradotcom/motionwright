@@ -95,17 +95,17 @@ on:
           - native-film-hold
           - native-geometry-readback
       desktop_compile_platform:
-        description: Operating system for Desktop compile, Blender or MP4 playback checks; no installer or Native effects
+        description: Operating system for targeted Desktop checks; macOS applies to desktop-compile; no Native execution
         type: choice
         required: false
         default: linux
-        options: [linux, windows]
+        options: [linux, windows, macos]
       first_use_case:
         description: Impact selection for coherent source projections and actual Service product flows
         type: choice
         required: false
         default: all
-        options: [all, static-group, static-alignment, static-layout, follow, follow-ui, static-rotation, creative-batch, audio-cut, native-preview-blend, delivery-hero, measured-comparison, series-silence, camera-craft, source-boards, source-boards-ui, asset-media, camera-spatial, project-compatibility]
+        options: [all, static-group, static-alignment, static-layout, follow, follow-ui, static-rotation, creative-batch, audio-cut, native-preview-blend, delivery-hero, measured-comparison, series-silence, camera-craft, source-boards, source-boards-ui, asset-media, camera-spatial, project-compatibility, runtime-profiles]
       interchange_case:
         description: One original Studio flow for native-otio-real-media; no other suites
         type: choice
@@ -231,7 +231,7 @@ jobs:
   desktop-boundary:
     needs: source-boundary
     if: ${{ !cancelled() && (needs.source-boundary.result == 'success' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["desktop-source","desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope))) }}
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && contains(fromJSON('["desktop-compile","desktop-blender","desktop-playback","desktop-saved-delivery"]'), inputs.verification_scope) && inputs.desktop_compile_platform == 'windows' && 'windows-latest' || 'ubuntu-24.04' }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'desktop-compile' && inputs.desktop_compile_platform == 'macos' && 'macos-14' || github.event_name == 'workflow_dispatch' && contains(fromJSON('["desktop-compile","desktop-blender","desktop-playback","desktop-saved-delivery"]'), inputs.verification_scope) && inputs.desktop_compile_platform == 'windows' && 'windows-latest' || 'ubuntu-24.04' }}
     timeout-minutes: 30
     env:
       CARGO_BUILD_JOBS: '2'
@@ -250,6 +250,28 @@ jobs:
           components: clippy
       - name: Check selected Desktop source policy
         run: python -B tooling/source_policy.py
+      - name: Verify selected offline runtime host before compilation
+        if: inputs.verification_scope == 'desktop-compile' && inputs.first_use_case == 'runtime-profiles'
+        shell: bash
+        run: |
+          python -B - <<'PY_RUNTIME_HOST'
+          import os, runpy, tempfile
+          from pathlib import Path
+          producer = runpy.run_path("tooling/runtime_profile_bundle.py")
+          platform = producer["host_platform"]()
+          with tempfile.TemporaryDirectory(dir=Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)) as temporary:
+              root = os.open(temporary, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+              try:
+                  producer["security_metadata"](root)
+                  file = os.open("inert-host-probe", os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=root)
+                  try:
+                      producer["security_metadata"](file)
+                  finally:
+                      os.close(file)
+              finally:
+                  os.close(root)
+          print("OFFLINE_RUNTIME_HOST=" + platform + "; retained_security_metadata=READ; packaged_tools=NOT_EXECUTED")
+          PY_RUNTIME_HOST
       - name: Tauri Linux prerequisites
         if: runner.os == 'Linux'
         run: |
@@ -305,10 +327,11 @@ jobs:
           cargo test --locked --jobs 2 -p motionwright-desktop desktop_owner -- --test-threads=1
           cargo clippy --locked --jobs 2 -p motionwright-native --lib -- -D warnings
       - name: Effect-grant boundary regressions
-        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope)
+        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope) || (inputs.verification_scope == 'desktop-compile' && inputs.first_use_case == 'runtime-profiles')
         run: cargo test --locked --jobs 2 -p motionwright-desktop effect_grants
       - name: Original offline runtime files, SQLite reopen and rollback
-        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope)
+        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope) || (inputs.verification_scope == 'desktop-compile' && inputs.first_use_case == 'runtime-profiles')
+        shell: bash
         run: |
           set -euo pipefail
           python3 -B - <<'PY_RUNTIME_PROFILES'
@@ -326,14 +349,16 @@ jobs:
           spec = importlib.util.spec_from_file_location("runtime_profile_fixtures", "tooling/tests/runtime_profile_fixtures.py")
           fixtures = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(fixtures)
-          destination = Path(os.environ["RUNNER_TEMP"]) / ("runtime-profile-fixtures-" + os.environ["GITHUB_RUN_ID"] + "-" + os.environ["GITHUB_RUN_ATTEMPT"])
+          destination = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True) / ("runtime-profile-fixtures-" + os.environ["GITHUB_RUN_ID"] + "-" + os.environ["GITHUB_RUN_ATTEMPT"])
           mc, hf = fixtures.create(runtime, destination)
           env = dict(os.environ, MOTIONWRIGHT_RUNTIME_TEST_PACKAGE_MC=str(mc),
-                     MOTIONWRIGHT_RUNTIME_TEST_PACKAGE_HF=str(hf), PYTHONDONTWRITEBYTECODE="1")
+                     PYTHONDONTWRITEBYTECODE="1")
+          if hf is not None:
+              env["MOTIONWRIGHT_RUNTIME_TEST_PACKAGE_HF"] = str(hf)
           log = destination / "desktop-original.log"
           with log.open("xb") as stream:
               result = subprocess.run(["cargo", "test", "--locked", "--jobs", "2", "-p", "motionwright-desktop",
-                  "runtime_profiles::linux::tests::", "--", "--test-threads=1"], env=env, stdout=stream, stderr=subprocess.STDOUT)
+                  "runtime_profiles::local_unix::tests::", "--", "--test-threads=1"], env=env, stdout=stream, stderr=subprocess.STDOUT)
           raw = log.read_text(encoding="utf-8")
           if result.returncode:
               print("\n".join(raw.splitlines()[-90:]))
@@ -350,11 +375,22 @@ jobs:
               "closed_manifest_rejects_authority_fields_paths_collisions_and_budgets",
               "hyperframes_original_runner_and_lock_install_without_executing_the_fixture_tools",
               "unavailable_runtime_storage_keeps_original_projects_open_and_unchanged",
+              "foreign_architecture_or_truncated_executable_is_refused_before_effects",
+              "rollback_never_replaces_a_foreign_disabled_destination",
           }
-          observed = re.findall(r"^test runtime_profiles::linux::tests::([a-z0-9_]+) \.\.\. ok$", raw, re.M)
+          platform = fixtures.bundle.host_platform()
+          if platform == "macos-aarch64":
+              expected.remove("hyperframes_original_runner_and_lock_install_without_executing_the_fixture_tools")
+              expected.update({
+                  "macos_extended_attributes_refuse_inspection_and_survive_unchanged",
+                  "macos_extended_acl_refuses_source_and_destination_before_effects",
+                  "macos_attribute_change_after_plan_retains_one_partial_original_without_replay",
+                  "macos_hyperframes_manifest_is_refused_without_mutating_the_original",
+              })
+          observed = re.findall(r"^test runtime_profiles::local_unix::tests::([a-z0-9_]+) \.\.\. ok$", raw, re.M)
           assert len(observed) == len(expected) and set(observed) == expected
-          assert "11 passed; 0 failed; 0 ignored" in raw
-          print("RUNTIME_PROFILE_LOCAL_COPY=PASS; cases=11; SQLite=REAL; package_description=ACTUAL_PRODUCER; tools=INERT_BYTE_FIXTURES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+          assert f"{len(expected)} passed; 0 failed; 0 ignored" in raw
+          print(f"RUNTIME_PROFILE_LOCAL_COPY=PASS; cases={len(expected)}; platform={platform}; SQLite=REAL; package_description=ACTUAL_PRODUCER; tools=INERT_BYTE_FIXTURES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           PY_RUNTIME_PROFILES
       - name: HyperFrames original Desktop render and PNG recovery contracts
         if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-compile","desktop-blender","desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope)
