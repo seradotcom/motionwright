@@ -2,12 +2,14 @@ import { CircleCheck, CircleDashed, FileOutput, Play, Plus, Save, Trash2 } from 
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import NativeAvReview, { NativeAudioQcHistory } from "./NativeAvReview";
 import SavedNativeMasters from "./SavedNativeMasters";
+import HybridNativeDelivery,{type HybridDeliveryAttempt} from "./HybridNativeDelivery";
+import {HybridNativeOperationError,type HybridSourcePreflight} from "./hybridNative";
 import SavedMotionCapturePanel from "./SavedMotionCapturePanel";
 import type {SavedMotionCaptureHint} from "./savedMotionCapture";
 import DeliveryAudioTargets from "./DeliveryAudioTargets";
 import { nativeAvSelectionFromEvidence, retainedNativeAvReviewSelections } from "./nativeAvAudioQc";
 import {
-  evaluateFirstNativeRenderGate, firstRenderRuntimeScope,
+  evaluateFirstNativeRenderGate, firstRenderRuntimeScope, nativeRuntimeObservationIssue,
   type ScopedRuntimeObservation,
 } from "./firstNativeProduction";
 import VariantContinuityReview from "./VariantContinuityReview";
@@ -34,6 +36,8 @@ import {
   savedNativeFilmFontFamily,
   preflightMultiSegmentReadiness,
   renderMotionCanvas,
+  preflightNativeHybrid,
+  renderNativeHybridMaster,
   recoverSavedMotionCapture,
   productionRuntimeCompatibility,
 } from "./api";
@@ -456,7 +460,7 @@ export default function DeliveryProfiles({
   const targetsDraft = useDeliveryRecipeDraft(project, selected?.id ?? "", "targets", commitRecipe);
   const visibleEvidence = renderEvidence?.generation === project.generation
     && renderEvidence.deliverable_id === selected?.id ? renderEvidence : null;
-  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "multi-source" | "master" | "multi-master" | "export-master" | "verify-media" | "recover-capture" | "new" | null>(null);
+  const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "multi-source" | "master" | "multi-master" | "export-master" | "verify-media" | "recover-capture" | "hybrid-preflight" | "hybrid-render" | "new" | null>(null);
   const [preflight, setPreflight] = useState<{
     key: string;
     report: MotionCanvasProjectionPreflight;
@@ -470,6 +474,8 @@ export default function DeliveryProfiles({
   const [runtimeObservation, setRuntimeObservation] = useState<ScopedRuntimeObservation | null>(null);
   const [runtimeProbeBusy, setRuntimeProbeBusy] = useState(false);
   const [runtimeProbeSerial, setRuntimeProbeSerial] = useState(0);
+  const [hybridSource,setHybridSource]=useState<{key:string;report:HybridSourcePreflight}|null>(null);
+  const [hybridAttempt,setHybridAttempt]=useState<{key:string;attempt:HybridDeliveryAttempt}|null>(null);
 
   // Read-only CLI version/digest observation scoped to the exact creative
   // revision. It neither contacts a rendering provider nor grants execution.
@@ -501,6 +507,13 @@ export default function DeliveryProfiles({
     return project.scenes.filter(
       (scene) => scene.renderer === "motion-canvas" && (!included || included.has(scene.id)),
     );
+  }, [project.scenes, selected]);
+
+  const mixedRendererCut = useMemo(() => {
+    const included = selected?.included_scene_ids ?? [];
+    const scenes = project.scenes.filter(scene => included.length === 0 || included.includes(scene.id));
+    return scenes.some(scene => scene.renderer === "motion-canvas")
+      && scenes.some(scene => scene.renderer !== "motion-canvas");
   }, [project.scenes, selected]);
 
   const textNodes = useMemo(() => {
@@ -697,6 +710,10 @@ export default function DeliveryProfiles({
     monoFontFamily,
   ]);
   const currentPreflight = !fontError && !recipeDraftBlocked && preflight?.key === preflightKey ? preflight.report : null;
+  const currentHybridSource = !profileDraftBlocked && !recipeDraftBlocked
+    && hybridSource?.key === preflightKey ? hybridSource.report : null;
+  const currentHybridAttempt = hybridAttempt?.key === preflightKey ? hybridAttempt.attempt : null;
+  const hybridRuntimeIssue = nativeRuntimeObservationIssue(project,runtimeObservation);
   const liveFilm = useRef({ key: preflightKey, ready: renderReady, mounted: true });
   liveFilm.current.key = preflightKey;
   liveFilm.current.ready = renderReady;
@@ -704,15 +721,18 @@ export default function DeliveryProfiles({
     liveFilm.current.mounted = true;
     return () => { liveFilm.current.mounted = false; };
   }, []);
-  type NativeAction = "render" | "master" | "multi-master" | "export";
+  type NativeAction = "render" | "hybrid" | "master" | "multi-master" | "export";
   const nativeActionKeys: Record<NativeAction, string> = {
     render: preflightKey,
+    hybrid: JSON.stringify([preflightKey,currentHybridSource?.project_sha256,currentHybridSource?.source_audio_sha256]),
     master: JSON.stringify([selectedVoice?.id, masterPreviewToken]),
     "multi-master": JSON.stringify([selectedVoice?.id, multiSourceToken, multiSourceKey, currentMultiSource?.total_frames]),
     export: JSON.stringify([activeExportToken, masterDeliveryPath, includeMediaIntegrity]),
   };
   const nativeReadiness: Record<NativeAction, boolean> = {
-    render: renderReady, master: masterReady, "multi-master": multiMasterReady, export: exportReady,
+    render: renderReady,
+    hybrid: renderReady && mixedRendererCut && Boolean(currentHybridSource) && !hybridRuntimeIssue,
+    master: masterReady, "multi-master": multiMasterReady, export: exportReady,
   };
   const liveNative = useRef({
     project, profileId: selected?.id ?? null, inputSerial: nativeInputSerial,
@@ -984,8 +1004,57 @@ export default function DeliveryProfiles({
     });
   };
 
+  const inspectHybridSources = () => {
+    if(!selected || !renderReady || !mixedRendererCut)return;
+    const key=preflightKey;
+    void run("hybrid-preflight",async()=>{
+      const gesture=prepareNativeDispatch("render");
+      gesture.beforeDispatch();
+      const report=await preflightNativeHybrid(project,selected.id,filmOptions());
+      gesture.beforeDispatch();
+      const runtime=await productionRuntimeCompatibility(project);
+      if(!gesture.stillCurrent()){notePreviousNativeResult();return;}
+      setRuntimeObservation({scope:firstRenderRuntimeScope(project),value:runtime});
+      setHybridSource({key,report});
+      setMessage("Original hybrid sources checked. The master requires a separate render permission.");
+    });
+  };
+
+  const createHybridMaster = () => {
+    if(!selected || !nativeReadiness.hybrid || currentHybridAttempt)return;
+    const key=preflightKey;
+    void run("hybrid-render",async()=>{
+      const gesture=prepareNativeDispatch("hybrid");
+      const latest=await productionRuntimeCompatibility(project);
+      gesture.beforeDispatch();
+      const runtime={scope:firstRenderRuntimeScope(project),value:latest};
+      setRuntimeObservation(runtime);
+      const issue=nativeRuntimeObservationIssue(project,runtime);
+      if(issue)throw new Error(issue.explanation);
+      let dispatched=false;
+      try{
+        const result=await renderNativeHybridMaster(project,selected.id,filmOptions(),gesture.beforeDispatch,()=>{
+          dispatched=true;
+          if(liveFilm.current.mounted)setHybridAttempt({key,attempt:{status:"dispatching"}});
+        });
+        // Preserve completion for its original context before current-view adoption.
+        if(liveFilm.current.mounted)setHybridAttempt({key,attempt:{status:"completed",result}});
+        if(!gesture.stillCurrent()){notePreviousNativeResult();return;}
+        setMessage("Original hybrid master completed. Review it before requesting delivery to a new destination.");
+      }catch(cause){
+        if(dispatched && liveFilm.current.mounted){
+          const failure=(cause instanceof HybridNativeOperationError
+            ? cause : new HybridNativeOperationError(cause,true)).failure;
+          setHybridAttempt(failure.may_have_native_effects
+            ? {key,attempt:{status:"stopped",failure}} : null);
+        }
+        throw cause;
+      }
+    });
+  };
+
   const startNativeRender = () => {
-    if (!selected || !renderReady || !firstRenderGate.may_request_native_render) return;
+    if (!selected || !renderReady || mixedRendererCut || !firstRenderGate.may_request_native_render) return;
     void run("render", async () => {
       const gesture = prepareNativeDispatch("render");
       const options = filmOptions();
@@ -1559,13 +1628,16 @@ export default function DeliveryProfiles({
                 <button
                   type="button"
                   className="button button-primary"
-                  disabled={!renderReady || !firstRenderGate.may_request_native_render || busy !== null || runtimeProbeBusy}
+                  disabled={mixedRendererCut || !renderReady || !firstRenderGate.may_request_native_render || busy !== null || runtimeProbeBusy}
                   onClick={startNativeRender}
                   title={firstRenderGate.explanation}
                 >
                   <Play size={14} /> {busy === "render" ? "Rendering…" : "Render native segments"}
                 </button>
               </div>
+              {mixedRendererCut && <p className="delivery-truth-note">
+                This output includes multiple renderers. Use Native hybrid master below to include every scene.
+              </p>}
               <div className={"delivery-truth-note " +
                 (firstRenderGate.may_request_native_render ? "" : "warning")}
                 role="status" aria-label="First native production readiness">
@@ -1667,16 +1739,27 @@ export default function DeliveryProfiles({
               )}
             </section>
 
+            {mixedRendererCut && selected && <HybridNativeDelivery
+              project={project} deliverableId={selected.id}
+              canCheck={renderReady && busy===null}
+              canRender={nativeReadiness.hybrid && !currentHybridAttempt && busy===null}
+              checking={busy==="hybrid-preflight"} attempt={currentHybridAttempt}
+              source={currentHybridSource} runtimeIssue={hybridRuntimeIssue?.explanation??null}
+              blocked={profileDraftBlocked || recipeDraftBlocked || busy!==null}
+              currentProjectState={currentProjectState}
+              onCheck={inspectHybridSources} onRender={createHybridMaster} onOpenAudio={onOpenAudio}
+            />}
+
             <section className="caption-export-panel" aria-label="Canonical audiovisual mastering">
               <header>
                 <div>
-                  <strong>Native audiovisual master</strong>
-                  <span>Verified Motion Canvas cut + measured source WAV → Semwright MLT → H.264/AAC MP4.</span>
+                  <strong>{mixedRendererCut ? "Original master review and delivery" : "Native audiovisual master"}</strong>
+                  <span>{mixedRendererCut ? "Reopen original masters for the saved output profile." : "Verified Motion Canvas cut + measured source WAV → Semwright MLT → H.264/AAC MP4."}</span>
                 </div>
                 <span className="status-pill status-unknown">OWNER-GRANTED</span>
               </header>
               <div className="delivery-editor-actions">
-                {(!currentMotion || currentMotion.segments.length <= 1) && (
+                {!mixedRendererCut && (!currentMotion || currentMotion.segments.length <= 1) && (
                   <button className="button button-primary" type="button"
                     disabled={!masterReady || busy !== null}
                     onClick={assembleMaster}>
@@ -1684,7 +1767,7 @@ export default function DeliveryProfiles({
                     {busy === "master" ? "Mastering…" : "Assemble native AV master"}
                   </button>
                 )}
-                {currentMotion && currentMotion.segments.length > 1 && (
+                {!mixedRendererCut && currentMotion && currentMotion.segments.length > 1 && (
                   <button className="button button-primary" type="button"
                     disabled={!multiMasterReady || busy !== null}
                     onClick={assembleMultiMaster}>
@@ -1695,7 +1778,7 @@ export default function DeliveryProfiles({
                   </button>
                 )}
               </div>
-              {!masterPreviewToken && !multiSourceToken && (
+              {!mixedRendererCut && !masterPreviewToken && !multiSourceToken && (
                 <div className="delivery-truth-note">
                   <CircleDashed size={14} /> Complete a real native render of one contiguous Motion Canvas segment in this desktop session first.
                 </div>
@@ -1705,7 +1788,7 @@ export default function DeliveryProfiles({
                   <CircleDashed size={14} /> Bind one saved, imported measured 48 kHz stereo WAV voice take to the output profile.
                 </div>
               )}
-              {multiSourceToken && !currentMultiSource && (
+              {!mixedRendererCut && multiSourceToken && !currentMultiSource && (
                 <div className="delivery-truth-note">
                   <CircleDashed size={14} /> Run the multi-segment source preflight before
                   requesting native MLT+AV mastering. The desktop will resolve the

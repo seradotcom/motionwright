@@ -1016,7 +1016,7 @@ impl ProductionCoordinator {
                 == sources.project,
             "Hybrid editable source changed during native mastering",
         )?;
-        let master_sha256 = text_at(&master, "/artifact/sha256")?;
+        let master_sha256 = text_at(master, "/artifact/sha256")?;
         Ok(HybridNativeMaster {
             master_sha256,
             evidence: json!({"schema":"motionwright.native.hybrid-master/1",

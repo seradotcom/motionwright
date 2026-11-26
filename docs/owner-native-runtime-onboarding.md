@@ -109,3 +109,13 @@ This entry point retains the implemented Linux MC/static-Manim/MC route:
 three contiguous 60-frame contributions, 1080p30 Rec.709 H264/AAC, original
 stereo 48 kHz PCM, the original bundled text fonts, and a 32 MiB master. It does not extend the hybrid creative
 vocabulary or establish global Phase 1, G2/G3 or human acceptance.
+
+
+The Output profiles panel now exposes this route for saved mixed-renderer cuts:
+Check hybrid sources, Create hybrid master, Review completed hybrid original,
+then Export saved original MP4. Source checks remain read-only; rendering and
+delivery each require their own existing permission. A revision or draft change
+during permission stops dispatch. An uncertain original cannot be retried from
+this panel, and a completion arriving after a revision change remains with its
+original inputs. Saved masters still provide the cold-reopen route. Ordinary
+Motion Canvas mastering applies to cuts selecting only Motion Canvas scenes.

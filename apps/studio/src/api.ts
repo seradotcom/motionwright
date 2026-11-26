@@ -1096,7 +1096,7 @@ export async function preflightNativeHybrid(
  */
 export async function renderNativeHybridMaster(
   project:Project,deliverableId:string,options:MotionCanvasFilmOptions,
-  beforeDispatch:NativeDeliveryDispatchCheck,
+  beforeDispatch:NativeDeliveryDispatchCheck,onDispatch?:()=>void,
 ):Promise<HybridMasterResult>{
   if(!isTauri())throw new Error("Hybrid production requires the Motionwright desktop runtime.");
   const source=structuredClone(project);
@@ -1107,6 +1107,7 @@ export async function renderNativeHybridMaster(
   const requestId=crypto.randomUUID();
   const grant=await issueEffectGrant("render_local",source,requestId);
   beforeDispatch();
+  onDispatch?.();
   try{
     const value=await invoke<unknown>("render_native_hybrid_master",{request:{
       project_id:source.id,generation:source.generation,revision:source.revision,

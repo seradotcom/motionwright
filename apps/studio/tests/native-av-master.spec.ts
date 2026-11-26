@@ -42,6 +42,8 @@ test("desktop AV master is linked only to session-native visual evidence and a m
   const first = boot.project.scenes[0];
   const second = boot.project.scenes[1];
   const master = boot.project.deliverables[0];
+  // The synthetic source covers only these Motion Canvas scenes.
+  master.included_scene_ids = [first.id, second.id];
   const assetId = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
   const takeId = "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb";
   const audioHash = "a".repeat(64);
@@ -311,6 +313,7 @@ test("UI refuses to offer native mastering for incompatible measured voice durat
   const first = boot.project.scenes[0];
   const second = boot.project.scenes[1];
   const profile = boot.project.deliverables[0];
+  profile.included_scene_ids = [first.id, second.id];
   const takeId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
   const assetId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
   const hash = "f".repeat(64);
@@ -392,7 +395,8 @@ test("UI refuses to offer native mastering for incompatible measured voice durat
 test("browser demo never claims native AV master authority", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Deliver", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Assemble native AV master" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Create hybrid master", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Assemble native AV master" })).toHaveCount(0);
   await expect(page.getByLabel("Native AV master evidence")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Review native MP4" })).toBeDisabled();
   await expect(page.getByRole("checkbox", { name: "Write portable MP4 integrity receipt" })).toBeDisabled();

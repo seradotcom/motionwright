@@ -43,6 +43,8 @@ test("desktop multisegment " + (captioned ? "captioned MP4 remains review-only" 
   const profile = boot.project.deliverables[0];
   const scenes = boot.project.scenes.filter((scene) => scene.renderer === "motion-canvas");
   expect(scenes.length).toBeGreaterThanOrEqual(2);
+  // The ordinary master fixture explicitly selects its two MC contributions.
+  profile.included_scene_ids = scenes.map(scene => scene.id);
   const wavAsset = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
   const wavTrack = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
   const wavDigest = "a".repeat(64);

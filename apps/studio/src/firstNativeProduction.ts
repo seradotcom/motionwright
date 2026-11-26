@@ -46,6 +46,26 @@ function blocked(code: Exclude<FirstRenderGateCode, "ELIGIBLE_FOR_AUTHORIZED_DIS
 const DIGEST = /^[0-9a-f]{64}$/;
 const PIN = /^[0-9a-f]{40}$/;
 
+/** Read-only compatibility of the selected CLI; never provider health or permission. */
+export function nativeRuntimeObservationIssue(project:Project,runtime:ScopedRuntimeObservation|null):FirstRenderGate|null {
+  if (!runtime) return blocked("RUNTIME_NOT_CHECKED",
+    "Check the owner-selected Semwright CLI for this source revision before rendering.");
+  if (runtime.scope !== firstRenderRuntimeScope(project)) {
+    return blocked("RUNTIME_OBSERVATION_STALE",
+      "The Semwright compatibility observation belongs to a different project revision.");
+  }
+  if (runtime.value.status !== "ready"
+      || runtime.value.version_compatible !== true
+      || runtime.value.observed_version !== runtime.value.expected_version
+      || !DIGEST.test(runtime.value.executable_sha256 ?? "")
+      || !DIGEST.test(runtime.value.connection_identity ?? "")
+      || !PIN.test(runtime.value.pinned_revision)) {
+    return blocked("RUNTIME_NOT_COMPATIBLE",
+      "The selected runtime is missing, stale, invalid or not locally version-compatible.");
+  }
+  return null;
+}
+
 /** Untrusted Studio data cannot elevate this to actual execution authority.
  * Tauri and pinned Semwright policy still enforce scope, effect grants and
  * provider provenance on every execution.
@@ -90,21 +110,8 @@ export function evaluateFirstNativeRenderGate(input: {
     return blocked("FILM_PREFLIGHT_REJECTED",
       "The Film projection has not verified a nonempty, internally consistent source-frame plan.");
   }
-  if (!runtime) return blocked("RUNTIME_NOT_CHECKED",
-    "Check the owner-selected Semwright CLI for this source revision before rendering.");
-  if (runtime.scope !== firstRenderRuntimeScope(project)) {
-    return blocked("RUNTIME_OBSERVATION_STALE",
-      "The Semwright compatibility observation belongs to a different project revision.");
-  }
-  if (runtime.value.status !== "ready"
-      || runtime.value.version_compatible !== true
-      || runtime.value.observed_version !== runtime.value.expected_version
-      || !DIGEST.test(runtime.value.executable_sha256 ?? "")
-      || !DIGEST.test(runtime.value.connection_identity ?? "")
-      || !PIN.test(runtime.value.pinned_revision)) {
-    return blocked("RUNTIME_NOT_COMPATIBLE",
-      "The selected runtime is missing, stale, invalid or not locally version-compatible.");
-  }
+  const runtimeIssue = nativeRuntimeObservationIssue(project, runtime);
+  if (runtimeIssue) return runtimeIssue;
   return {
     code: "ELIGIBLE_FOR_AUTHORIZED_DISPATCH",
     may_request_native_render: true,
