@@ -313,7 +313,10 @@ fn original_image_bounds_refuse_animation_dimensions_headers_and_oversize_withou
         (header_bomb, "image/jpeg"),
         (png.to_vec(), "image/jpeg"),
         (jpeg.to_vec(), "image/png"),
-        (png.to_vec(), "image/svg+xml"),
+        (
+            br##"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="16" viewBox="0 0 32 16"><rect width="32" height="16" fill="#ed4b30"/></svg>"##.to_vec(),
+            "image/svg+xml",
+        ),
     ] {
         let root = tempfile::tempdir().unwrap();
         let service = StudioService::open(root.path().join("invalid-image.sqlite3")).unwrap();
