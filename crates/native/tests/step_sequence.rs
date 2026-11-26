@@ -163,7 +163,8 @@ fn unsupported_animation_drift_fails_before_external_provider_effect() {
     assert!(
         error.message.contains("motion keyframes")
             || error.message.contains("geometry keys")
-            || error.message.contains("opacity keys"),
+            || error.message.contains("opacity keys")
+            || error.message.contains("requires 3 to 6 complete frame-aligned geometry poses with exact curves and unchanged Clip or Group ancestors"),
         "unexpected refusal: {}",
         error.message
     );

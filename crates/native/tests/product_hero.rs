@@ -97,7 +97,8 @@ fn easing_drift_and_extra_keys_are_rejected_not_approximated() {
     assert!(
         error.message.contains("motion keyframes")
             || error.message.contains("geometry keys")
-            || error.message.contains("opacity keys"),
+            || error.message.contains("opacity keys")
+            || error.message.contains("requires 3 to 6 complete frame-aligned geometry poses with exact curves and unchanged Clip or Group ancestors"),
         "unexpected refusal: {}",
         error.message
     );
