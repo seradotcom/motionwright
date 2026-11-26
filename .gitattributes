@@ -3,6 +3,7 @@ vendor/glib-0.18.5/** -text whitespace=-blank-at-eof
 crates/storage/tests/fixtures/pre_delivery_recipe_backup.json -text
 # Preserve the authenticated v5 DDL bytes included by cross-platform Rust tests.
 crates/storage/tests/fixtures/schema_v5.sql -text
+crates/service/tests/fixtures/legacy-authored.archive.json -text
 
 # Keep captured source metadata, licenses, and their digest record byte-exact.
 third_party/semwright-source-evidence/** -text

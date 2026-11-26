@@ -1062,8 +1062,9 @@ export interface PortableBundlePlan {
   blob_count: number;
   total_blob_bytes: string;
   rotates_generation: boolean;
-  /** Exact inspected manifest input, not a grant or permission to retry. */
+  /** Exact inspected manifest or archive, never a grant or permission to retry. */
   fingerprint: string;
+  migration_notes?: string[];
 }
 
 export interface PortableBundleExport {

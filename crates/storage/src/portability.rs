@@ -1,5 +1,8 @@
 //! Snapshot-bound exports and inspected portable bundle admission.
 use super::*;
+use std::collections::BTreeMap;
+
+const MAX_PROJECT_ARCHIVE_BYTES: u64 = 32 * 1024 * 1024;
 
 const BUNDLE_FINGERPRINT_DOMAIN: &[u8] = b"motionwright.bundle-inspection.v1\0";
 
@@ -51,6 +54,8 @@ impl From<BundleFingerprint> for String {
 pub struct InspectedProjectBundle {
     pub plan: BundleImportPlan,
     pub fingerprint: BundleFingerprint,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub migration_notes: Vec<String>,
 }
 
 /// A read-only lookup of the exact inspected manifest in this Store.
@@ -344,7 +349,156 @@ impl Store {
         let fingerprint = BundleFingerprint::of_manifest_bytes(&bytes);
         let manifest: ProjectBundleManifest = serde_json::from_slice(&bytes)?;
         let plan = self.validate_bundle_with_admission(source, &manifest, admission)?;
-        Ok(InspectedProjectBundle { plan, fingerprint })
+        Ok(InspectedProjectBundle {
+            plan,
+            fingerprint,
+            migration_notes: vec![],
+        })
+    }
+
+    /// Read one bounded, credential-checked original through the same
+    /// retained-file admission used for portable members. No Store is mutated.
+    pub fn read_project_archive_source(source: &Path) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        let input =
+            checked_portable_source(source, "legacy project archive", MAX_PROJECT_ARCHIVE_BYTES)?;
+        transfer_portable_bytes_with_credential_check(
+            input,
+            &mut bytes,
+            MAX_PROJECT_ARCHIVE_BYTES,
+            Some("legacy project archive"),
+        )?;
+        Ok(bytes)
+    }
+
+    /// Inspect a locally converted snapshot and its exact original byte set.
+    pub fn inspect_migrated_project_archive(
+        &self,
+        project: Project,
+        originals: &BTreeMap<String, Vec<u8>>,
+        fingerprint: BundleFingerprint,
+        migration_notes: Vec<String>,
+        admission: &impl BundleAssetAdmission,
+    ) -> Result<InspectedProjectBundle> {
+        let (_, plan) =
+            self.validate_migrated_archive(project, originals, &fingerprint, admission)?;
+        Ok(InspectedProjectBundle {
+            plan,
+            fingerprint,
+            migration_notes,
+        })
+    }
+
+    /// Publish captures through the existing managed import operation and its
+    /// recoverable SQLite marker. The fingerprint must name the original archive.
+    pub fn import_migrated_project_archive(
+        &mut self,
+        project: Project,
+        originals: &BTreeMap<String, Vec<u8>>,
+        fingerprint: &BundleFingerprint,
+        admission: &impl BundleAssetAdmission,
+    ) -> Result<Project> {
+        let (backup, _) =
+            self.validate_migrated_archive(project, originals, fingerprint, admission)?;
+        let mut staged = Vec::with_capacity(originals.len());
+        for (digest, bytes) in originals {
+            let capture = self.stage_bundle_import_bytes(bytes, bytes.len() as u64)?;
+            if capture.descriptor().sha256 != *digest
+                || capture.descriptor().size_bytes != bytes.len() as u64
+            {
+                return Err(StorageError::InvalidBlobDigest);
+            }
+            staged.push(capture);
+        }
+        self.publish_bundle_captures(&backup, &staged, fingerprint.as_str(), || {})
+    }
+
+    fn validate_migrated_archive(
+        &self,
+        project: Project,
+        originals: &BTreeMap<String, Vec<u8>>,
+        fingerprint: &BundleFingerprint,
+        admission: &impl BundleAssetAdmission,
+    ) -> Result<(ProjectBackup, BundleImportPlan)> {
+        if originals.is_empty()
+            || originals.len() > MAX_BUNDLE_BLOBS
+            || !originals.contains_key(fingerprint.as_str())
+            || admission.prefix_limit() as u64 > MAX_BUNDLE_MANIFEST_BYTES
+            || project.revision != 0
+        {
+            return Err(StorageError::InvalidBackup(
+                "invalid migrated archive inputs".into(),
+            ));
+        }
+        let total_blob_bytes = originals
+            .values()
+            .try_fold(0_u64, |total, bytes| total.checked_add(bytes.len() as u64))
+            .ok_or_else(|| {
+                StorageError::InvalidBackup("legacy archive byte total overflowed".into())
+            })?;
+        if total_blob_bytes > MAX_PROJECT_ARCHIVE_BYTES * 2 {
+            return Err(StorageError::BlobTooLarge {
+                size: total_blob_bytes,
+                limit: MAX_PROJECT_ARCHIVE_BYTES * 2,
+            });
+        }
+        let expected = project
+            .assets
+            .iter()
+            .map(|asset| {
+                asset
+                    .content_sha256
+                    .as_deref()
+                    .ok_or(StorageError::InvalidBlobDigest)
+            })
+            .collect::<Result<BTreeSet<_>>>()?;
+        if !expected
+            .into_iter()
+            .eq(originals.keys().map(String::as_str))
+        {
+            return Err(StorageError::InvalidBackup(
+                "legacy archive asset set is incomplete".into(),
+            ));
+        }
+        let payload_sha256 = backup_digest(
+            PROJECT_BACKUP_FORMAT_VERSION,
+            STORAGE_SCHEMA_VERSION,
+            &project,
+            &[],
+        )?;
+        let exported_at = project.updated_at.to_rfc3339();
+        let backup = ProjectBackup {
+            format_version: PROJECT_BACKUP_FORMAT_VERSION,
+            source_storage_schema: STORAGE_SCHEMA_VERSION,
+            exported_at,
+            project,
+            events: vec![],
+            payload_sha256,
+        };
+        ensure_backup_secret_free(&backup, Some(MAX_BUNDLE_MANIFEST_BYTES))?;
+        let project = self.inspect_import(&backup)?;
+        for (digest, bytes) in originals {
+            // Revalidate metadata, the complete owned byte set and each admitted
+            // prefix before a capture or import intent can exist.
+            validate_digest(digest)?;
+            ensure_secret_free_bytes(bytes, "legacy archived source asset")?;
+            let sha256 = hex::encode(Sha256::digest(bytes));
+            if sha256 != *digest {
+                return Err(StorageError::InvalidBlobDigest);
+            }
+            let size_bytes = bytes.len() as u64;
+            let descriptor = BlobDescriptor { sha256, size_bytes };
+            let prefix = &bytes[..bytes.len().min(admission.prefix_limit())];
+            admit_bundle_blob(admission, prefix, &descriptor, &backup.project)?;
+        }
+        Ok((
+            backup,
+            BundleImportPlan {
+                project,
+                blob_count: originals.len(),
+                total_blob_bytes,
+            },
+        ))
     }
 
     /// Revalidate all private captures before publishing any member.
@@ -451,33 +605,42 @@ impl Store {
         // Validate every private capture before any publication. Recovery is
         // product maintenance, never a side effect of read-only inspection.
         let staged = self.capture_bundle_blobs(source, manifest, admission)?;
-        self.preflight_bundle_blob_destinations(&staged)?;
+        self.publish_bundle_captures(&manifest.backup, &staged, source_fingerprint, after_check)
+    }
+
+    fn publish_bundle_captures(
+        &mut self,
+        backup: &ProjectBackup,
+        staged: &[StagedFileImport],
+        source_fingerprint: &str,
+        after_check: impl FnOnce(),
+    ) -> Result<Project> {
+        self.preflight_bundle_blob_destinations(staged)?;
         let _ = self.recover_cas(CasRetentionPolicy::default());
-        let intent = self.begin_bundle_import(&manifest.backup, &staged, source_fingerprint)?;
-        let result =
-            self.import_project_with_publication(&manifest.backup, intent.as_ref(), |blob_root| {
-                after_check();
-                for captured in &staged {
-                    if let Some(intent) = &intent {
-                        intent.publish(captured)?;
-                    } else {
-                        file_import::publish_file_import_under_root(blob_root, captured)?;
-                    }
-                    #[cfg(test)]
-                    crate::apply_crash_tests::bundle_checkpoint(
-                        manifest.backup.project.id,
-                        "after_member_publication",
-                    );
+        let intent = self.begin_bundle_import(backup, staged, source_fingerprint)?;
+        let result = self.import_project_with_publication(backup, intent.as_ref(), |blob_root| {
+            after_check();
+            for captured in staged {
+                if let Some(intent) = &intent {
+                    intent.publish(captured)?;
+                } else {
+                    file_import::publish_file_import_under_root(blob_root, captured)?;
                 }
                 #[cfg(test)]
-                if intent.is_some() {
-                    crate::cas_retention_process_tests::checkpoint(
-                        blob_root,
-                        "import_after_publication",
-                    );
-                }
-                Ok(())
-            });
+                crate::apply_crash_tests::bundle_checkpoint(
+                    backup.project.id,
+                    "after_member_publication",
+                );
+            }
+            #[cfg(test)]
+            if intent.is_some() {
+                crate::cas_retention_process_tests::checkpoint(
+                    blob_root,
+                    "import_after_publication",
+                );
+            }
+            Ok(())
+        });
         if result.is_ok()
             && let Some(intent) = intent
         {
@@ -533,7 +696,7 @@ impl Store {
                     "captured blob changed during content admission".into(),
                 ));
             }
-            admit_bundle_blob(admission, &prefix, &descriptor, manifest)?;
+            admit_bundle_blob(admission, &prefix, &descriptor, &manifest.backup.project)?;
             staged.push(captured);
         }
         Ok(staged)
@@ -999,11 +1162,9 @@ pub(super) fn admit_bundle_blob(
     admission: &impl BundleAssetAdmission,
     prefix: &[u8],
     descriptor: &BlobDescriptor,
-    manifest: &ProjectBundleManifest,
+    project: &Project,
 ) -> Result<()> {
-    let aliases: Vec<_> = manifest
-        .backup
-        .project
+    let aliases: Vec<_> = project
         .assets
         .iter()
         .filter(|asset| asset.content_sha256.as_deref() == Some(descriptor.sha256.as_str()))

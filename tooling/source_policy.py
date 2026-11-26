@@ -12,7 +12,7 @@ TOOLING = ROOT / "tooling"
 sys.path.insert(0, str(TOOLING))
 
 from public_surface_policy import (
-    PublicSurfaceError, iter_source_files, verify_public_surface,
+    PublicSurfaceError, has_unrelated_legacy_product_identity, iter_source_files, verify_public_surface,
 )
 
 from source_lock_admission import (
@@ -167,8 +167,7 @@ for path in iter_source_files(ROOT):
     private_key_marker = "-----BEGIN " + "PRIVATE KEY-----"
     if private_key_marker in text:
         errors.append(f"private key material found: {rel}")
-    legacy_product_alias = ("sequence" + "wright").lower()
-    if legacy_product_alias in text.lower():
+    if has_unrelated_legacy_product_identity(rel, text):
         errors.append(f"unrelated legacy product identity leaked into Motionwright: {rel}")
     private_pack_markers = [
         "Semwright_Creative_" + "Native_App",

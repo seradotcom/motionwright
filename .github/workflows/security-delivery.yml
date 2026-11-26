@@ -1654,6 +1654,9 @@ jobs:
             crates/service/tests/production_receipt_commit_order.rs \
             crates/service/tests/project_projection.rs \
             crates/service/tests/support/legacy_v5_fixture.rs \
+            crates/service/src/legacy_project_archive.rs \
+            crates/service/tests/legacy_project_archive.rs \
+            crates/service/tests/fixtures/legacy-authored.archive.json \
             > "$work/source-digests.original.txt"
           python3 -B tooling/source_policy.py
       - name: Execute bounded original Wasm experiments against real SQLite fixtures
@@ -1678,6 +1681,10 @@ jobs:
             grep -F "$name ... ok" "$log"
           done
           cargo test --locked --jobs 2 -p motionwright-storage --test creative_migration -- --test-threads=1 2>&1 | tee -a "$log"
+          cargo test --locked --jobs 2 -p motionwright-service --test legacy_project_archive -- --test-threads=1 2>&1 | tee -a "$log"
+          for name in original_archive_inspects_imports_and_reopens_without_foreign_authority changed_or_corrupt_archive_never_publishes_assets_or_replaces_existing_project; do
+            grep -F "$name ... ok" "$log"
+          done
           cargo test --locked --jobs 2 -p motionwright-domain --lib -- --test-threads=1 2>&1 | tee -a "$log"
           cargo clippy --locked --jobs 2 -p motionwright-storage --lib --test creative_migration -- -D warnings
           cargo clippy --locked --jobs 2 -p motionwright-domain --lib -- -D warnings

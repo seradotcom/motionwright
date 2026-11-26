@@ -1,0 +1,99 @@
+{
+  "schema": "sequencewright/archive/1",
+  "version": {
+    "resource": "project-95417639-f4a@main",
+    "generation": "2c69c6a6-608d-46bf-807c-8f8dca15ab7b",
+    "revision": "a16d081e-77d2-4bb4-b5d8-8d4e72ce15ca"
+  },
+  "document": {
+    "schema": "sequencewright/document/1",
+    "id": "project-95417639-f4a",
+    "title": "Archive migration original",
+    "description": "",
+    "profile": {
+      "width": 1280,
+      "height": 720,
+      "fps": {
+        "num": 30,
+        "den": 1
+      }
+    },
+    "brief": {
+      "audience": "",
+      "objective": "",
+      "promise": "",
+      "tone": "",
+      "constraints": "",
+      "references": ""
+    },
+    "scenes": [
+      {
+        "id": "scene-f4db6892-167",
+        "name": "Untitled scene",
+        "role": "mechanism",
+        "duration": 120,
+        "renderer": "motion_canvas",
+        "background": "#123456",
+        "narration": "An authored sentence.",
+        "claimStatus": "unreviewed",
+        "objects": [
+          {
+            "id": "obj-e7caccbf-de2",
+            "kind": "text",
+            "name": "New title",
+            "x": 120,
+            "y": 160,
+            "width": 780,
+            "height": 100,
+            "rotation": 0,
+            "opacity": 1000,
+            "fill": "#e4e5e6",
+            "text": "An editable original",
+            "fontSize": 64,
+            "weight": 600,
+            "keyframes": [
+              {
+                "frame": 45,
+                "property": "x",
+                "value": 360,
+                "easing": "linear"
+              }
+            ],
+            "archived": false
+          }
+        ],
+        "archived": false
+      }
+    ],
+    "assets": [
+      {
+        "id": "original-image",
+        "name": "Original pixel.png",
+        "sha256": "b79317fdf69dbbc71521d75be14c92de16494e59c992d6666aa7a6b9779bcd62",
+        "mime": "image/png",
+        "bytes": 70,
+        "license": "CC0-1.0",
+        "provenance": "Synthetic single-pixel test master."
+      }
+    ],
+    "captions": [
+      {
+        "id": "original-caption",
+        "start": 0,
+        "end": 30,
+        "text": "An authored sentence.",
+        "language": "en"
+      }
+    ],
+    "locks": [],
+    "proposals": [],
+    "reviews": [],
+    "deliveries": []
+  },
+  "blobs": [
+    {
+      "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNIWPDgPwAGJALgx/BMsgAAAABJRU5ErkJggg==",
+      "mime": "image/png"
+    }
+  ]
+}

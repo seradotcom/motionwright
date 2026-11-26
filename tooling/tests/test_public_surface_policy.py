@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from public_surface_policy import (
-    PublicSurfaceError, is_local_development_path, iter_source_files,
+    PublicSurfaceError, has_unrelated_legacy_product_identity, is_local_development_path, iter_source_files,
     scan_paths, scan_text, verify_public_surface,
 )
 
@@ -25,6 +25,24 @@ PRIVATE_ROOTS = (
     ".agents", ".codex", "knowledge", "worktrees", ".worktrees", "verification",
 )
 IGNORE_TEXT = "\n".join("/" + name + "/" for name in PRIVATE_ROOTS) + "\n"
+
+
+
+class LegacyArchiveIdentityTests(unittest.TestCase):
+    def test_approved_interchange_tags_do_not_allow_other_legacy_branding(self):
+        name = "sequence" + "wright"
+        tag = f'"{name}/archive/1"'
+        source = "crates/service/src/legacy_project_archive.rs"
+        fixture = "crates/service/tests/fixtures/legacy-authored.archive.json"
+        label = f"Read a {name.title()} archive (.json)."
+        self.assertFalse(has_unrelated_legacy_product_identity(source, tag))
+        self.assertFalse(has_unrelated_legacy_product_identity(fixture, tag))
+        self.assertFalse(has_unrelated_legacy_product_identity("apps/studio/src/App.tsx", label))
+        self.assertTrue(has_unrelated_legacy_product_identity("README.md", label))
+        self.assertTrue(has_unrelated_legacy_product_identity("crates/service/src/lib.rs", tag))
+        self.assertTrue(has_unrelated_legacy_product_identity(source, tag + " also launches " + name))
+        self.assertTrue(has_unrelated_legacy_product_identity(source, tag.replace("/1", "/2")))
+        self.assertTrue(has_unrelated_legacy_product_identity(fixture, tag + tag))
 
 
 

@@ -390,16 +390,20 @@ export function ProjectLibraryDialog({
         )}
         {onInspectBundle && onImportBundle && <section className="project-library-create" aria-label="Import portable project">
           <h3>Import a portable project</h3>
-          <p>Restore an exported Motionwright folder directly into this library. Its saved scenes and original media are checked before import.</p>
-          <label htmlFor={createId + "-bundle"}>Portable project folder</label>
+          <p>Restore a Motionwright project folder or migrate a Sequencewright archive (.json). Motionwright checks the original source and assets before import.</p>
+          <label htmlFor={createId + "-bundle"}>Project folder or archive path</label>
           <input id={createId + "-bundle"} value={bundlePath} autoComplete="off"
             disabled={busy} onChange={event => { setBundlePath(event.target.value); setInspectedBundle(null); }} />
           <button type="button" className="project-library-button" disabled={busy || !bundlePath.trim() || unresolvedBundle}
             onClick={() => void bundleOperation("inspect")}>Inspect portable project</button>
           {bundlePlan && <div role="status" aria-label="Portable project inspection">
             <strong>{bundlePlan.title}</strong>
-            <p>Saved revision {bundlePlan.revision} · {bundlePlan.event_count} changes · {bundlePlan.blob_count} original media files · {bundlePlan.total_blob_bytes} bytes</p>
-            <p>Import preserves the project identity and creates a fresh execution generation. An existing project is never overwritten.</p>
+            <p>{bundlePlan.migration_notes ? "New editable snapshot" : "Saved revision " + bundlePlan.revision}
+              {" · "}{bundlePlan.event_count} changes · {bundlePlan.blob_count} original assets · {bundlePlan.total_blob_bytes} bytes</p>
+            {bundlePlan.migration_notes ? <>
+              <p>Migration creates a new local project and never overwrites an existing project. Review what stays in the archive before importing.</p>
+              <ul>{bundlePlan.migration_notes.map((note) => <li key={note}>{note}</li>)}</ul>
+            </> : <p>Import preserves the project identity and creates a fresh execution generation. An existing project is never overwritten.</p>}
             <button type="button" className="project-library-button project-library-primary" disabled={busy || unresolvedBundle}
               onClick={() => void bundleOperation("import")}>Import inspected project</button>
           </div>}

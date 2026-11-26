@@ -441,7 +441,7 @@ async function originalPortableFixture(testInfo: TestInfo) {
 }
 async function inspectPortableFromLibrary(page: Page, path: string) {
   await page.goto("/"); await openLibrary(page);
-  await dialog(page).getByLabel("Portable project folder", { exact: true }).fill(path);
+  await dialog(page).getByLabel("Project folder or archive path", { exact: true }).fill(path);
   await dialog(page).getByRole("button", { name: "Inspect portable project", exact: true }).click();
   await expect(dialog(page).getByLabel("Portable project inspection", { exact: true })).toBeVisible();
 }

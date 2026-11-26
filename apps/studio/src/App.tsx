@@ -1108,7 +1108,7 @@ function DeliverView({
         <div className="portable-operation import-operation">
           <div className="portable-operation-copy">
             <strong>Inspect and import</strong>
-            <span>Preflight verifies project history, manifest and every referenced blob before any project state is admitted.</span>
+            <span>Inspect a Motionwright folder or a Sequencewright archive (.json) before importing it.</span>
           </div>
           <label>
             <span className="field-label">Source · absolute path</span>
@@ -1157,7 +1157,10 @@ function DeliverView({
             <div><span>Revision</span><strong className="mono">r{bundlePlan.revision}</strong></div>
             <div><span>Journal</span><strong>{bundlePlan.event_count} events</strong></div>
             <div><span>Assets</span><strong>{bundlePlan.blob_count} blobs · {formatByteCount(bundlePlan.total_blob_bytes)}</strong></div>
-            <div><span>Authority</span><strong>{bundlePlan.rotates_generation ? "New generation on import" : "Unchanged"}</strong></div>
+            <div><span>Authority</span><strong>{bundlePlan.migration_notes ? "New local project" : bundlePlan.rotates_generation ? "New generation on import" : "Unchanged"}</strong></div>
+            {bundlePlan.migration_notes && <ul aria-label="Legacy archive migration notes">
+              {bundlePlan.migration_notes.map(note => <li key={note}>{note}</li>)}
+            </ul>}
           </div>
         )}
 

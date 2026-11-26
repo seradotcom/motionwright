@@ -1143,7 +1143,12 @@ impl Store {
                     "bundle blob failed digest or size verification".into(),
                 ));
             }
-            portability::admit_bundle_blob(admission, &prefix, &descriptor, manifest)?;
+            portability::admit_bundle_blob(
+                admission,
+                &prefix,
+                &descriptor,
+                &manifest.backup.project,
+            )?;
         }
         if observed != expected {
             return Err(StorageError::InvalidBackup(

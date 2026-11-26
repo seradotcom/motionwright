@@ -199,6 +199,23 @@ def verify_public_surface(root: Path) -> list[str]:
     return issues
 
 
+def has_unrelated_legacy_product_identity(path: str, text: str) -> bool:
+    """Admit only exact public interoperability labels and v1 wire tags."""
+    name = "sequence" + "wright"
+    wire_tags = (f'"{name}/archive/1"', f'"{name}/document/1"')
+    label = (f"{name} archive (.json)",)
+    approved = {
+        "crates/service/src/legacy_project_archive.rs": wire_tags,
+        "crates/service/tests/fixtures/legacy-authored.archive.json": wire_tags,
+        "apps/studio/src/ProjectLibraryDialog.tsx": label,
+        "apps/studio/src/App.tsx": label,
+    }
+    remaining = text.lower()
+    for token in approved.get(path, ()):
+        remaining = remaining.replace(token, "", 1)
+    return name in remaining
+
+
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
     problems = verify_public_surface(root)

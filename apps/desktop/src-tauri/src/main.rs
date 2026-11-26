@@ -476,6 +476,8 @@ struct BundlePlanResponse {
     total_blob_bytes: String,
     rotates_generation: bool,
     fingerprint: BundleFingerprint,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    migration_notes: Vec<String>,
 }
 
 #[tauri::command]
@@ -4064,6 +4066,7 @@ fn inspect_project_bundle(
         total_blob_bytes: plan.total_blob_bytes.to_string(),
         rotates_generation: plan.project.rotates_generation,
         fingerprint: inspected.fingerprint,
+        migration_notes: inspected.migration_notes,
     })
 }
 

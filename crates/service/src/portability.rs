@@ -82,6 +82,19 @@ impl StudioService {
         &self,
         source: impl AsRef<Path>,
     ) -> StorageResult<InspectedProjectBundle> {
+        let source = source.as_ref();
+        if std::fs::symlink_metadata(source)?.is_file() {
+            let migration = crate::legacy_project_archive::from_bytes(
+                Store::read_project_archive_source(source)?,
+            )?;
+            return self.store.lock().inspect_migrated_project_archive(
+                migration.project,
+                &migration.originals,
+                migration.fingerprint,
+                migration.notices,
+                &SvgBundleAdmission,
+            );
+        }
         self.store
             .lock()
             .inspect_project_bundle_with_fingerprint_and_admission(source, &SvgBundleAdmission)
@@ -99,6 +112,23 @@ impl StudioService {
         source: impl AsRef<Path>,
         expected: &BundleFingerprint,
     ) -> StorageResult<Project> {
+        let source = source.as_ref();
+        if std::fs::symlink_metadata(source)?.is_file() {
+            let migration = crate::legacy_project_archive::from_bytes(
+                Store::read_project_archive_source(source)?,
+            )?;
+            if &migration.fingerprint != expected {
+                return Err(motionwright_storage::StorageError::InvalidBackup(
+                    "legacy archive changed after inspection".into(),
+                ));
+            }
+            return self.store.lock().import_migrated_project_archive(
+                migration.project,
+                &migration.originals,
+                expected,
+                &SvgBundleAdmission,
+            );
+        }
         self.store
             .lock()
             .import_project_bundle_inspected_with_admission(source, expected, &SvgBundleAdmission)

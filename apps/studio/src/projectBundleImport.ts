@@ -36,8 +36,15 @@ function storageView(): StorageView {
   catch { throw new Error("The portable import cannot be retained locally. Restore local storage before importing."); }
 }
 export function checkedBundlePlan(value: unknown): PortableBundlePlan {
-  if (!record(value) || !exact(value, ["project_id", "title", "source_generation", "revision", "event_count",
-    "blob_count", "total_blob_bytes", "rotates_generation", "fingerprint"])
+  const keys = ["project_id", "title", "source_generation", "revision", "event_count",
+    "blob_count", "total_blob_bytes", "rotates_generation", "fingerprint"];
+  const hasNotes = record(value) && Object.hasOwn(value, "migration_notes");
+  if (hasNotes) keys.push("migration_notes");
+  if (!record(value) || !exact(value, keys)
+    || (hasNotes && (!Array.isArray(value.migration_notes)
+      || value.migration_notes.length === 0 || value.migration_notes.length > 24
+      || !value.migration_notes.every(note => typeof note === "string" && note.trim()
+        && bytes(note) <= 512 && !/[\u0000-\u001f]/.test(note))))
     || !projectionUuid(value.project_id) || !projectionUuid(value.source_generation)
     || typeof value.title !== "string" || !value.title.trim() || bytes(value.title) > 200
     || !canonicalRevision(value.revision) || !canonicalRevision(value.total_blob_bytes)
@@ -49,7 +56,7 @@ export function checkedBundlePlan(value: unknown): PortableBundlePlan {
 }
 function retainedPath(path: unknown): string {
   if (typeof path !== "string" || !path.trim() || bytes(path) > 4096 || /[\u0000-\u001f]/.test(path)) {
-    throw new Error("Enter the original portable bundle folder path.");
+    throw new Error("Enter the original project folder or archive path.");
   }
   return path.trim();
 }

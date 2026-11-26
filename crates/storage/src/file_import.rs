@@ -443,6 +443,19 @@ impl Store {
         )
     }
 
+    pub(super) fn stage_bundle_import_bytes(
+        &self,
+        bytes: &[u8],
+        limit: u64,
+    ) -> Result<StagedFileImport> {
+        self.stage_import_reader_with_purpose(
+            bytes,
+            limit,
+            super::cas_retention::CapturePurpose::BundleImport,
+            None,
+        )
+    }
+
     /// Capture bytes already held by the caller through the canonical bounded
     /// import stage. This accepts data, not a path or a provider grant. The
     /// caller remains responsible for authenticating its original capture.

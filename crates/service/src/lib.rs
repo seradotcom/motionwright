@@ -7,6 +7,7 @@ mod file_import;
 mod font_portability;
 mod import_limits;
 mod jobs;
+mod legacy_project_archive;
 mod mlt_cleanup;
 mod models;
 mod native_capsule_source;

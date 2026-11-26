@@ -89,6 +89,20 @@ describe("portable import continuity and readonly reconciliation", () => {
     expect(storage.getItem(copy.key)).toBe("later bytes");
   });
 
+
+  it("retains a closed, bounded migration report together with the original inspection", async () => {
+    const storage = memory();
+    const migration = { ...plan, migration_notes: ["Original captions were retained as source only."] };
+    const dispatch = vi.fn(async () => project);
+    const result = await importBundleWithRetainedPlan("/original.archive.json", migration, dispatch, storage);
+    expect(result.copy.value?.plan.migration_notes).toEqual(migration.migration_notes);
+    expect(readBundleImports(storage).copies[0].value?.plan).toEqual(migration);
+    for (const invalid of [[], [""], ["x".repeat(513)], [42], Array(25).fill("x")]) {
+      expect(() => checkedBundlePlan({ ...plan, migration_notes: invalid })).toThrow("inspection");
+    }
+    expect(() => checkedBundlePlan({ ...migration, legacy_authority: true })).toThrow("inspection");
+  });
+
   it("invalid inspections and unreadable retained copies cannot enter a fresh import", async () => {
     const storage = memory(), dispatch = vi.fn(async () => project);
     expect(() => checkedBundlePlan({ ...plan, revision: 7 })).toThrow("inspection");
