@@ -4,6 +4,7 @@ mod blender_lit;
 mod blender_product;
 mod blender_product_run;
 mod caption_export;
+mod capture_source_preview;
 mod desktop_owner;
 mod effect_authority;
 mod effect_grants;
@@ -1316,6 +1317,35 @@ async fn workflow_overview(
         proposals,
         promotions,
     })
+}
+
+/// Bounded immutable PNG source read on a worker, with no Native render call.
+#[tauri::command]
+async fn registered_capture_png(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: capture_source_preview::CapturePngRequest,
+) -> Result<tauri::ipc::Response, String> {
+    let project_id = request.project_id;
+    let generation = request.generation;
+    let revision = request.revision;
+    let service = state.service.clone();
+    let preparation = state
+        .av_review
+        .admit_preparation()
+        .ok_or("Original source read capacity is busy; try after current readers finish.")?;
+    let bytes = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        let _preparation = preparation;
+        capture_source_preview::read(&service, &request)
+    })
+    .await
+    .map_err(|_| "Original capture read task failed.".to_owned())??;
+    owner.begin_phase()?;
+    let current = state.service.project(project_id).map_err(sanitized)?;
+    if current.generation != generation || current.revision != revision {
+        return Err("Project changed during the original capture read.".into());
+    }
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 /// Read a completed original workflow response; never invokes or retries Core.
@@ -4628,6 +4658,7 @@ fn main() {
             workflow_overview,
             workflow_action,
             workflow_stored_completion,
+            registered_capture_png,
             production_jobs,
             mlt_cleanup_inventory,
             read_original_native_job_status,

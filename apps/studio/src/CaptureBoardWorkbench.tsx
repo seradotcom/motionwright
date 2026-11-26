@@ -5,6 +5,7 @@ import {applyCaptureBoardChange,captureBoardFromRaw,defaultCaptureBoardRaw,reali
 import {workbenchScope,workbenchHasWork} from "./creativeWorkbenchDraft";
 import {useCreativeWorkbenchDraft,WorkbenchDraftFeedback} from "./useCreativeWorkbenchDraft";
 import CompositionStudy from "./CompositionStudy";
+import {useCaptureSourceImages} from "./useCaptureSourceImages";
 import {seconds} from "./types";
 
 type Props={project:Project;scene:Scene|null;displayProfile:DeliverableProfile|null;commit:(change:Change)=>Promise<Project>;
@@ -22,6 +23,7 @@ function BoardEditor({project,scene,displayProfile,commit,busy,playhead,onSeek,o
   const size=aspect==="landscape"?{width:1920,height:1080}:aspect==="square"?{width:1080,height:1080}:
     aspect==="portrait"?{width:1080,height:1920}:displayProfile??{width:1920,height:1080};
   const captures=project.production_design?.captures??[];
+  const sourceImages=useCaptureSourceImages(project,stored?.id??studyId,raw.entries.map(entry=>entry.capture_id));
   useEffect(()=>{
     let active=true;
     setPreparing(true);setPreview([]);setProblem(null);
@@ -98,9 +100,14 @@ function BoardEditor({project,scene,displayProfile,commit,busy,playhead,onSeek,o
       <label className="production-field"><span>Aspect study</span><select aria-label="Source board aspect" value={aspect} onChange={event=>setAspect(event.target.value as typeof aspect)}>
         <option value="selected">Selected output</option><option value="landscape">16:9</option><option value="square">1:1</option><option value="portrait">9:16</option>
       </select></label>
-      <p className="production-help">The tinted slots below are geometry placeholders. They do not display or certify the binary captures. Review the original digest-bound PNGs in Native preview after saving.</p>
+      <p className="production-help">Original PNGs are read from this project's saved sources. This layout study previews framing and timing; use Native Render to review the saved film.</p>
+      {sourceImages.status==="loading"&&<p role="status">Checking original source images...</p>}
+      {sourceImages.status==="ready"&&<p role="status">Original source images loaded from verified project assets.</p>}
+      {sourceImages.error&&<div><p className="production-error" role="status">Original capture preview unavailable: {sourceImages.error}</p>
+        <button type="button" className="secondary-button" onClick={sourceImages.retry}>Retry original images</button></div>}
       <div className="production-preview-mat">{preview.length?<CompositionStudy nodes={preview} width={size.width} height={size.height} time={localTime}
-        background="#101820" label="Source board layout only, capture bytes not decoded"/>:<p role="status">{preparing?"Preparing source-bound layout...":"Choose two valid source records and review the constraints."}</p>}</div>
+        imageSources={sourceImages.images} background="#101820"
+        label={sourceImages.status==="ready"?"Source board with original capture images":"Source board layout, original images unavailable"}/>:<p role="status">{preparing?"Preparing source-bound layout...":"Choose two valid source records and review the constraints."}</p>}</div>
       <label className="production-field"><span>Scene-local time ({localTime.toFixed(2)} s)</span><input aria-label="Source board playhead" type="range" min={0} max={scene?seconds(scene.duration):6}
         step={1/30} value={localTime} disabled={!scene} onChange={event=>onSeek(seconds(scene!.start)+Number(event.target.value))}/></label>
       <button type="button" className="secondary-button" disabled={!stored||editor.blocked||workbenchHasWork(editor.draft)} onClick={onOpenRender}>Review saved board in Native Render</button>

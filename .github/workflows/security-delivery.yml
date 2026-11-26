@@ -605,6 +605,13 @@ jobs:
           cargo test --locked --jobs 2 -p motionwright-native --test stage_capture -- --test-threads=1 | tee "$log"
           grep -F '2 passed; 0 failed; 0 ignored' "$log"
           cargo test --locked --jobs 2 -p motionwright-service --test capture_source -- --test-threads=1
+      - name: Registered original capture read, corruption rejection and independent portable reopen
+        if: inputs.first_use_case == 'source-boards-ui'
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --jobs 2 -p motionwright-service --test capture_source --example studio_review_session -- -D warnings
+          cargo test --locked --jobs 2 -p motionwright-service --test capture_source -- --test-threads=1
+          cargo test --locked --jobs 2 -p motionwright-service --example studio_review_session capture_source_preview::tests:: -- --test-threads=1
       - name: Build the exact-source StudioService test transport
         run: cargo build --locked --jobs 2 -p motionwright-service --example studio_review_session
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -626,6 +633,9 @@ jobs:
           npx tsc -b
           if test "$MOTIONWRIGHT_FIRST_USE_CASE" = source-boards; then
             npx vitest run src/captureBoard.test.ts src/creativeWorkbenchDraft.test.ts src/profileComposition.test.ts src/craftLibrary.test.ts src/captureSource.test.ts
+          fi
+          if test "$MOTIONWRIGHT_FIRST_USE_CASE" = source-boards-ui; then
+            npx vitest run src/captureSourcePreview.test.ts
           fi
           npx playwright install --with-deps chromium
           case "$MOTIONWRIGHT_FIRST_USE_CASE" in

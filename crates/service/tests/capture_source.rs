@@ -469,8 +469,10 @@ fn registered_capture_portable_bundle_keeps_source_assets_and_historical_generat
     let bundle = folder.path().join("capture-portable.motionwright");
     let exported = service.export_project_bundle(recorded.id, &bundle).unwrap();
     assert_eq!(exported.blobs.len(), recorded.assets.len());
-    let imported_service =
-        StudioService::open(folder.path().join("capture-import.sqlite3")).unwrap();
+    let imported_root = folder.path().join("independent-import");
+    fs::create_dir(&imported_root).unwrap();
+    let imported_db = imported_root.join("capture-import.sqlite3");
+    let imported_service = StudioService::open(&imported_db).unwrap();
     let plan = imported_service.inspect_project_bundle(&bundle).unwrap();
     assert!(plan.project.rotates_generation);
     let imported = imported_service.import_project_bundle(&bundle).unwrap();
@@ -483,6 +485,38 @@ fn registered_capture_portable_bundle_keeps_source_assets_and_historical_generat
     imported.validate().unwrap();
     let old_capture = imported.production_design.captures[0].clone();
     assert_ne!(old_capture.source_generation, imported.generation);
+    let original = service
+        .registered_capture_png(
+            recorded.id,
+            &recorded.stamp(),
+            old_capture.id,
+            &old_capture.screenshot_sha256,
+        )
+        .unwrap();
+    assert_eq!(
+        imported_service
+            .registered_capture_png(
+                imported.id,
+                &imported.stamp(),
+                old_capture.id,
+                &old_capture.screenshot_sha256
+            )
+            .unwrap(),
+        original
+    );
+    drop(imported_service);
+    let imported_service = StudioService::open(&imported_db).unwrap();
+    assert_eq!(
+        imported_service
+            .registered_capture_png(
+                imported.id,
+                &imported.stamp(),
+                old_capture.id,
+                &old_capture.screenshot_sha256
+            )
+            .unwrap(),
+        original
+    );
     assert!(
         imported_service
             .apply(
@@ -496,4 +530,124 @@ fn registered_capture_portable_bundle_keeps_source_assets_and_historical_generat
             .is_err()
     );
     assert_eq!(imported_service.project(imported.id).unwrap(), imported);
+}
+
+#[test]
+fn registered_capture_preview_reads_originals_without_writes_and_rechecks_each_cas_source() {
+    let folder = tempfile::tempdir().unwrap();
+    let db = folder.path().join("capture-preview.sqlite3");
+    let service = StudioService::open(&db).unwrap();
+    let (project, capture) = prepare(&service, folder.path());
+    assert!(
+        service
+            .registered_capture_png(
+                project.id,
+                &project.stamp(),
+                capture.id,
+                &capture.screenshot_sha256
+            )
+            .is_err()
+    );
+    let registered = apply(
+        &service,
+        &project,
+        "register-preview-source",
+        Change::RegisterCaptureSource {
+            record: capture.clone(),
+        },
+    );
+    let store = motionwright_storage::Store::open(&db).unwrap();
+    let paths = [
+        &capture.screenshot_sha256,
+        &capture.manifest_sha256,
+        &capture.fixture_state_sha256,
+    ]
+    .map(|digest| store.verified_blob_path(digest).unwrap());
+    drop(store);
+    let original = fs::read(&paths[0]).unwrap();
+    let history = service.history(registered.id, 0, 100).unwrap();
+    let read = |service: &StudioService| {
+        service.registered_capture_png(
+            registered.id,
+            &registered.stamp(),
+            capture.id,
+            &capture.screenshot_sha256,
+        )
+    };
+    assert_eq!(read(&service).unwrap(), original);
+    for path in paths {
+        let saved = fs::read(&path).unwrap();
+        let mut corrupt = saved.clone();
+        corrupt[0] ^= 1;
+        fs::write(&path, corrupt).unwrap();
+        assert!(
+            read(&service).is_err(),
+            "changed source must not return cached image bytes"
+        );
+        fs::write(&path, saved).unwrap();
+        assert_eq!(read(&service).unwrap(), original);
+    }
+    let mut wrong = registered.stamp();
+    wrong.revision -= 1;
+    assert!(
+        service
+            .registered_capture_png(
+                registered.id,
+                &wrong,
+                capture.id,
+                &capture.screenshot_sha256
+            )
+            .is_err()
+    );
+    wrong = registered.stamp();
+    wrong.generation = Uuid::new_v4();
+    assert!(
+        service
+            .registered_capture_png(
+                registered.id,
+                &wrong,
+                capture.id,
+                &capture.screenshot_sha256
+            )
+            .is_err()
+    );
+    wrong = registered.stamp();
+    wrong.resource = format!("project:{}", Uuid::new_v4());
+    assert!(
+        service
+            .registered_capture_png(
+                registered.id,
+                &wrong,
+                capture.id,
+                &capture.screenshot_sha256
+            )
+            .is_err()
+    );
+    assert!(
+        service
+            .registered_capture_png(
+                registered.id,
+                &registered.stamp(),
+                Uuid::new_v4(),
+                &capture.screenshot_sha256
+            )
+            .is_err()
+    );
+    assert!(
+        service
+            .registered_capture_png(
+                registered.id,
+                &registered.stamp(),
+                capture.id,
+                &"00".repeat(32)
+            )
+            .is_err()
+    );
+    assert_eq!(service.project(registered.id).unwrap(), registered);
+    assert_eq!(service.history(registered.id, 0, 100).unwrap(), history);
+    drop(service);
+    let reopened = StudioService::open(&db).unwrap();
+    assert_eq!(read(&reopened).unwrap(), original);
+    assert_eq!(reopened.project(registered.id).unwrap(), registered);
+    assert_eq!(reopened.history(registered.id, 0, 100).unwrap(), history);
 }

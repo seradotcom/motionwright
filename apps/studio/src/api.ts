@@ -43,6 +43,7 @@ import {
   type FileImportTransport, type RetainedFileImport, type NativeCapsuleSourceSpec7,
 } from "./fileImport";
 import { fixtureBootstrap } from "./fixture";
+import {verifiedCapturePngBytes,type CapturePngRequest} from "./captureSourcePreview";
 import type {
   AssetIntegrityPage,
   StudioBootstrap,
@@ -2839,4 +2840,10 @@ export async function exportSavedNativeMaster(
       effect_grant:grant.token,destination:path,include_integrity_manifest:includeIntegrityManifest},
   });
   return parseSavedMasterExportReceipt(value,project,deliverableId,hint,path,includeIntegrityManifest);
+}
+
+/** Read only the original registered PNG; browser demonstrations cannot synthesize this result. */
+export async function registeredCapturePng(request:CapturePngRequest):Promise<Uint8Array<ArrayBuffer>> {
+  if(!isTauri())throw new Error("Original capture preview requires the project's connected Desktop service.");
+  return verifiedCapturePngBytes(await invoke<unknown>("registered_capture_png",{request}),request.screenshot_sha256);
 }

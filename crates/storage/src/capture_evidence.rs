@@ -5,9 +5,9 @@
 //! metadata. Full screenshot redaction pixels are checked separately by the
 //! independent Chromium/PNG evidence suite; this gate does not claim that
 //! a customer application was captured or that visual privacy was approved.
-use super::{Result, StorageError, read_verified_blob_from_root};
+use super::{Result, StorageError, Store, read_verified_blob_from_root};
 use motionwright_domain::{
-    CaptureMask, CaptureSourceRecord, DomainError, Project, SourceReference,
+    CaptureMask, CaptureSourceRecord, DomainError, Project, RevisionStamp, SourceReference,
 };
 use serde::Deserialize;
 use std::path::Path;
@@ -135,15 +135,22 @@ pub(super) fn verify_capture_source(
     project: &Project,
     record: &CaptureSourceRecord,
 ) -> Result<()> {
-    // No source can be read before the canonical owner Asset identity and
-    // declared metadata are accepted. The caller already checked revision
-    // and generation against the SQLite project.
-    record.validate(project)?;
+    // Registration still requires the current generation. Historical original
+    // PNG reads after portable import do not re-register or rewrite this record.
     if record.source_generation != project.generation {
         return Err(denied(
             "new capture requires the current project generation",
         ));
     }
+    read_capture_source(blob_root, project, record).map(|_| ())
+}
+
+fn read_capture_source(
+    blob_root: &Path,
+    project: &Project,
+    record: &CaptureSourceRecord,
+) -> Result<Vec<u8>> {
+    record.validate(project)?;
     let manifest_bytes = read_verified_blob_from_root(
         blob_root,
         &record.manifest_sha256,
@@ -228,7 +235,46 @@ pub(super) fn verify_capture_source(
     let png =
         read_verified_blob_from_root(blob_root, &record.screenshot_sha256, MAX_CAPTURE_PNG_BYTES)?;
     verify_png_header(&png, record.viewport_width, record.viewport_height)?;
-    Ok(())
+    Ok(png)
+}
+
+impl Store {
+    /// Exact current owner, existing registered capture and all three original
+    /// CAS blobs. No file paths, replacement image or manifest enter this read.
+    pub fn registered_capture_png(
+        &self,
+        project_id: uuid::Uuid,
+        expected: &RevisionStamp,
+        capture_id: uuid::Uuid,
+        screenshot_sha256: &str,
+    ) -> Result<Vec<u8>> {
+        let project = self.load_project(project_id)?;
+        if expected.resource != project.resource_key() || expected.generation != project.generation
+        {
+            return Err(StorageError::GenerationConflict);
+        }
+        if expected.revision != project.revision {
+            return Err(StorageError::Conflict {
+                expected: expected.revision,
+                actual: project.revision,
+            });
+        }
+        let record = project
+            .production_design
+            .captures
+            .iter()
+            .find(|capture| capture.id == capture_id)
+            .ok_or_else(|| denied("capture is not registered in this project"))?;
+        if record.screenshot_sha256 != screenshot_sha256 {
+            return Err(denied("original capture digest changed"));
+        }
+        let bytes = read_capture_source(self.blob_root(), &project, record)?;
+        let latest = self.load_project(project_id)?;
+        if latest.generation != project.generation || latest.revision != project.revision {
+            return Err(denied("project changed during original capture read"));
+        }
+        Ok(bytes)
+    }
 }
 
 #[cfg(test)]

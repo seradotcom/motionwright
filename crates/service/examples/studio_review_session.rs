@@ -51,6 +51,10 @@ mod project_export;
 // Source-exact Desktop owner media inspector; test grant/Store, not an installer.
 mod otio_bridge;
 
+#[path = "../../../apps/desktop/src-tauri/src/capture_source_preview.rs"]
+#[allow(dead_code)]
+mod capture_source_preview;
+
 use effect_grants::{EffectGrantRegistry, EffectKind, EffectScope};
 use motionwright_domain::{
     AlignmentEvidence, CanvasNode, Change, CreativePatch, CueEvidence, GraphAuthoringContext,
@@ -639,6 +643,10 @@ impl Session {
 
     fn dispatch(&mut self, command: &str, args: Value) -> Result<Value, String> {
         match command {
+            "registered_capture_png" => {
+                let bound: capture_source_preview::CapturePngRequest = request(args)?;
+                encoded(capture_source_preview::read(&self.service, &bound)?)
+            }
             "scene_boundary_authoring_context" => encoded(
                 self.service
                     .scene_boundary_authoring_context(&request(args)?)

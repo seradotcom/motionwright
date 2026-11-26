@@ -745,6 +745,21 @@ impl StudioService {
         store.read_blob(digest, MAX_SFX_WAV_BYTES)
     }
 
+    pub fn registered_capture_png(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        capture_id: Uuid,
+        screenshot_sha256: &str,
+    ) -> StorageResult<Vec<u8>> {
+        self.store.lock().registered_capture_png(
+            project_id,
+            expected,
+            capture_id,
+            screenshot_sha256,
+        )
+    }
+
     /// Owner-side, bounded image read. The current exact revision must own
     /// this PNG asset; SHA-256 CAS verification remains in Store::read_blob.
     /// This exposes no arbitrary path and conveys no Native render authority.

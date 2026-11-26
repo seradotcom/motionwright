@@ -89,6 +89,25 @@ async function captureFixture(service:ScopedChangeService,project:Project,fixtur
   };
   return {project:await service.apply(manifest.project,{type:"register_capture_source",record}),record};
 }
+async function expectOriginalImages(page:Page,records:CaptureSourceRecord[]){
+  const stage=page.getByRole("img",{name:"Source board with original capture images",exact:true});
+  await expect(stage).toBeVisible();
+  const images=stage.locator("image[data-source-sha256]");
+  await expect(images).toHaveCount(2);
+  const originals=await images.evaluateAll(async nodes=>Promise.all(nodes.map(async node=>{
+    const url=node.getAttribute("href")!;
+    if(!url.startsWith("blob:"))throw new Error("Original source must use a local binary object URL.");
+    const bytes=await (await fetch(url)).arrayBuffer();
+    const sha=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",bytes)),
+      byte=>byte.toString(16).padStart(2,"0")).join("");
+    const image=await createImageBitmap(new Blob([bytes],{type:"image/png"}));
+    const result={saved:node.getAttribute("data-source-sha256"),sha,width:image.width,height:image.height,
+      fit:node.getAttribute("preserveAspectRatio")};
+    image.close();return result;
+  })));
+  expect(originals).toEqual(records.map(record=>({saved:record.screenshot_sha256,sha:record.screenshot_sha256,
+    width:1440,height:940,fit:"xMidYMid meet"})));
+}
 async function openBoard(page:Page,sceneId:string){
   await button(page,"Production").click();
   await page.getByLabel("Production working scene",{exact:true}).selectOption(sceneId);
@@ -129,6 +148,7 @@ test("Two original CAS capture fixtures survive source board authoring, ordered 
     await editor.getByLabel("Board capture 2",{exact:true}).selectOption(b.record.id);
     await permission.fill("Test author permits this original synthetic reference.");
     await expect(editor.getByRole("button",{name:"Add source board",exact:true})).toBeEnabled();
+    await expectOriginalImages(page,[a.record,b.record]);
     expect(await service.project(base.id)).toEqual(base);
     await editor.getByRole("button",{name:"Add source board",exact:true}).click();
     await expect(page.locator(".command-bar .revision-chip")).toHaveText("r"+(base.revision+1));
@@ -151,6 +171,7 @@ test("Two original CAS capture fixtures survive source board authoring, ordered 
     editor=await openBoard(page,sceneId);
     await expect(editor.getByLabel("Board capture 1",{exact:true})).toHaveValue(a.record.id);
     await expect(editor.getByLabel("Source board mode",{exact:true})).toHaveValue("product_flow_bridge");
+    await expectOriginalImages(page,[a.record,b.record]);
     expect(await service.project(base.id)).toEqual(flow);
     await expect(editor.getByRole("button",{name:"Remove board and generated slots",exact:true})).toBeEnabled();
     await editor.getByRole("button",{name:"Remove board and generated slots",exact:true}).click();

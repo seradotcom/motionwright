@@ -37,6 +37,7 @@
     "allow-workflow-overview",
     "allow-workflow-action",
     "allow-workflow-stored-completion",
+    "allow-registered-capture-png",
     "allow-production-jobs",
     "allow-mlt-cleanup-inventory",
     "allow-read-original-native-job-status",
