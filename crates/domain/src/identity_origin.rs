@@ -4,8 +4,8 @@
 //! Registering an identity never grants a generation provider permission to
 //! synthesize a real person's voice, face, or presenter. Owner review and
 //! independent source/consent verification remain separate prerequisites.
+use crate::UtcTimestamp;
 use crate::*;
-use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
@@ -94,11 +94,13 @@ fn is_digest(value: &str) -> bool {
             .bytes()
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
-fn canonical_utc(value: &str) -> Option<DateTime<Utc>> {
-    let dt = DateTime::parse_from_rfc3339(value)
-        .ok()?
-        .with_timezone(&Utc);
-    (value == dt.to_rfc3339_opts(SecondsFormat::Secs, true)).then_some(dt)
+fn canonical_utc(value: &str) -> Option<UtcTimestamp> {
+    // Identity declarations use whole seconds and a four-digit UTC year.
+    if value.len() != 20 {
+        return None;
+    }
+    let timestamp = UtcTimestamp::parse(value)?;
+    (value == timestamp.canonical_utc()).then_some(timestamp)
 }
 impl IdentityOriginRecord {
     pub fn validate(&self, project: &Project) -> Result<()> {
@@ -115,7 +117,7 @@ impl IdentityOriginRecord {
             || !text_is_bounded(&self.origin_description, 300)
             || !text_is_bounded(&self.created_by_declaration, 160)
             || expires <= issued
-            || (expires - issued) > chrono::Duration::days(366)
+            || expires.seconds_since(issued) > 366 * 86_400
         {
             return Err(DomainError::Invalid(
                 "identity provenance must identify a bounded source, owner declaration and one-year maximum window".into(),

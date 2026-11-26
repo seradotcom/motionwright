@@ -2,7 +2,7 @@ use super::{
     BlobDescriptor, Result, StorageError, Store, create_checked_blob_directory,
     ensure_regular_directory, ensure_regular_file, validate_digest,
 };
-use chrono::Utc;
+use motionwright_domain::UtcTimestamp;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -271,7 +271,7 @@ impl Store {
             blob_sha256: blob.sha256,
             size_bytes: blob.size_bytes,
             work_units,
-            created_at: Utc::now().to_rfc3339(),
+            created_at: UtcTimestamp::now().to_rfc3339(),
         });
         if managed {
             let record = super::cas_retention::derived::publish(

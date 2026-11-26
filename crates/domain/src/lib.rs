@@ -42,6 +42,7 @@ mod scene_timing_guard;
 mod semantic_graph;
 mod semantic_sfx;
 mod stage_capture;
+mod utc_timestamp;
 mod voice_alignment;
 mod voice_cut;
 pub use branch_combination::*;
@@ -90,10 +91,10 @@ pub use stage_capture::*;
 pub use voice_alignment::*;
 pub use voice_cut::*;
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use thiserror::Error;
+pub use utc_timestamp::UtcTimestamp;
 use uuid::Uuid;
 
 pub const PROJECT_SCHEMA_VERSION: u32 = 2;
@@ -483,7 +484,7 @@ pub struct Branch {
     pub head_revision: u64,
     #[serde(default)]
     pub protected: bool,
-    pub created_at: DateTime<Utc>,
+    pub created_at: UtcTimestamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -580,7 +581,7 @@ pub struct Project {
     /// Project-wide append-only declarations. Never restored from creative branches.
     #[serde(default, skip_serializing_if = "PaidGenerationLedger::is_empty")]
     pub paid_generation: PaidGenerationLedger,
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: UtcTimestamp,
 }
 
 impl Project {
@@ -592,7 +593,7 @@ impl Project {
             ));
         }
         let branch_id = Uuid::now_v7();
-        let now = Utc::now();
+        let now = UtcTimestamp::now();
         let project = Self {
             schema_version: PROJECT_SCHEMA_VERSION,
             id: Uuid::now_v7(),
@@ -2941,7 +2942,7 @@ impl Project {
                 }
             }
         }
-        self.updated_at = Utc::now();
+        self.updated_at = UtcTimestamp::now();
         self.validate()?;
         self.validate_metric_source_notices()
     }

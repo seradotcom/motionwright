@@ -273,8 +273,8 @@ pub struct CreativeReview {
     pub body: String,
     pub status: ReviewStatus,
     pub resolution: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub resolved_at: Option<DateTime<Utc>>,
+    pub created_at: UtcTimestamp,
+    pub resolved_at: Option<UtcTimestamp>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,7 +285,7 @@ pub struct MergeRecord {
     pub target_branch: Uuid,
     pub base_revision: u64,
     pub committed_revision: Option<u64>,
-    pub merged_at: DateTime<Utc>,
+    pub merged_at: UtcTimestamp,
 }
 
 impl CreativeReview {
@@ -481,7 +481,7 @@ impl Project {
                     base_revision: self.revision,
                     head_revision: self.revision,
                     protected: false,
-                    created_at: Utc::now(),
+                    created_at: UtcTimestamp::now(),
                 });
                 self.branch_workspaces.push(BranchWorkspace {
                     branch_id,
@@ -549,7 +549,7 @@ impl Project {
                     target_branch: self.active_branch,
                     base_revision: source_workspace.base_revision,
                     committed_revision: None,
-                    merged_at: Utc::now(),
+                    merged_at: UtcTimestamp::now(),
                 });
             }
             Change::AddReview {
@@ -602,7 +602,7 @@ impl Project {
                     body: body.clone(),
                     status: ReviewStatus::Open,
                     resolution: None,
-                    created_at: Utc::now(),
+                    created_at: UtcTimestamp::now(),
                     resolved_at: None,
                 };
                 review.validate(self)?;
@@ -629,7 +629,7 @@ impl Project {
                 }
                 review.status = ReviewStatus::Resolved;
                 review.resolution = Some(resolution.clone());
-                review.resolved_at = Some(Utc::now());
+                review.resolved_at = Some(UtcTimestamp::now());
             }
             Change::ReopenReview { review_id } => {
                 let review = self

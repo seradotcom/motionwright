@@ -1,4 +1,4 @@
-use motionwright_domain::{Change, DomainError, Project, RevisionStamp};
+use motionwright_domain::{Change, DomainError, Project, RevisionStamp, UtcTimestamp};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1363,7 +1363,7 @@ impl Store {
         self.inspect_import(backup)?;
         let mut project = backup.project.clone();
         project.generation = Uuid::now_v7();
-        project.updated_at = chrono::Utc::now();
+        project.updated_at = UtcTimestamp::now();
         project.validate()?;
         let project_json = serde_json::to_string(&project)?;
         if intent.is_none() {
@@ -1642,7 +1642,7 @@ impl Store {
                 request_id,
                 request_sha,
                 result_json,
-                chrono::Utc::now().to_rfc3339(),
+                UtcTimestamp::now().to_rfc3339(),
                 binding_json,
             ],
         )?;

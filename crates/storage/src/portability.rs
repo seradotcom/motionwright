@@ -786,7 +786,7 @@ impl Store {
         let backup = ProjectBackup {
             format_version: PROJECT_BACKUP_FORMAT_VERSION,
             source_storage_schema: STORAGE_SCHEMA_VERSION,
-            exported_at: chrono::Utc::now().to_rfc3339(),
+            exported_at: UtcTimestamp::now().to_rfc3339(),
             project,
             events,
             payload_sha256,
@@ -937,7 +937,7 @@ impl Store {
 
         let manifest = ProjectBundleManifest {
             format_version: PROJECT_BUNDLE_FORMAT_VERSION,
-            created_at: chrono::Utc::now().to_rfc3339(),
+            created_at: UtcTimestamp::now().to_rfc3339(),
             backup,
             blobs,
         };

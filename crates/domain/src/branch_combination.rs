@@ -332,7 +332,7 @@ impl Project {
             base_revision: self.revision,
             head_revision: self.revision,
             protected: false,
-            created_at: Utc::now(),
+            created_at: UtcTimestamp::now(),
         });
         result.branch_workspaces.push(BranchWorkspace {
             branch_id: input.candidate_branch_id,

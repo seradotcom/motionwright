@@ -1,5 +1,5 @@
 use crate::{Result, StorageError, Store};
-use motionwright_domain::{DomainError, Project};
+use motionwright_domain::{DomainError, Project, UtcTimestamp};
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -363,7 +363,7 @@ pub(super) fn append_record(
         command: input.command,
         stage: input.stage,
         payload: input.payload,
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: UtcTimestamp::now().to_rfc3339(),
     };
     let revision = i64::try_from(receipt.revision).map_err(|_| StorageError::RequestReuse)?;
     conn.execute(
@@ -1896,9 +1896,10 @@ mod tests {
                 .checked_add(86_400_000_u128 << 80)
                 .unwrap(),
         );
-        earlier_failure.created_at =
-            (chrono::DateTime::parse_from_rfc3339(&earlier_failure.created_at).unwrap()
-                + chrono::Duration::days(1))
+        earlier_failure.created_at = UtcTimestamp::parse(&earlier_failure.created_at)
+            .unwrap()
+            .checked_add_days(1)
+            .unwrap()
             .to_rfc3339();
         assert_eq!(
             store
@@ -2363,7 +2364,7 @@ mod tests {
                     &input.request_sha256,
                     &input.command,
                     r#"{"attempt":1,"retryable":true}"#,
-                    chrono::Utc::now().to_rfc3339()
+                    UtcTimestamp::now().to_rfc3339()
                 ],
             )
             .unwrap();
