@@ -10,7 +10,7 @@ export interface FocusTransferInput {
 }
 type MotionEdit = Extract<ScopedCanvasEdit,{kind:"motion"}>;
 
-function frameTime(frame:number,fps:RationalTime):RationalTime {
+export function recipeFrameTime(frame:number,fps:RationalTime):RationalTime {
   if (!/^[1-9][0-9]{0,18}$/.test(fps.num) || !/^[1-9][0-9]{0,18}$/.test(fps.den))
     throw new Error("Choose a saved positive rational frame rate.");
   const n=BigInt(frame)*BigInt(fps.den),d=BigInt(fps.num);
@@ -51,7 +51,7 @@ export function focusTransferEdits(project:Project,scene:Scene,profile:Deliverab
     throw new Error("Use two independent, unanimated, unlocked original shapes with normal blend. Managed components, groups and related objects are not replaced.");
   const [from,to]=sources as [CanvasNode,CanvasNode];
   const clock=profile.frame_rate;
-  const start=frameTime(input.startFrame,clock),end=frameTime(input.endFrame,clock);
+  const start=recipeFrameTime(input.startFrame,clock),end=recipeFrameTime(input.endFrame,clock);
   const edits:MotionEdit[]=[from,to].map((node,index)=>{
     const value=index===0?1:0;
     const keyframes:CanvasKeyframe[]=[{at:{num:"0",den:"1"},property:"opacity",value,interpolation:"linear"}];

@@ -4,10 +4,12 @@ import {validateMeasuredData,type MeasuredBinding,type MeasuredDatum,type Measur
 import {deliveryTextSourceConflict} from "./deliveryTextSources";
 
 export const MEASURED_COMPARISON_ID="motionwright.data.state-comparison";
-export interface MeasuredComparisonInput {beforeId:string;afterId:string;left:number;top:number;rowSpacing:number;labelGap:number;barHeight:number}
+export interface MeasuredLayoutInput {left:number;top:number;rowSpacing:number;labelGap:number;barHeight:number}
+export interface MeasuredComparisonInput extends MeasuredLayoutInput {beforeId:string;afterId:string}
 type TransformEdit=Extract<ScopedCanvasEdit,{kind:"transform"}>;
 export interface ComparisonRow {label:MeasuredBinding;bar:MeasuredBinding;datum:MeasuredDatum;table:MeasuredTable}
-export interface MeasuredComparisonResult {edits:TransformEdit[];rationale:string;unit:MeasuredDatum["unit"];axisMaxMilli:number;sourceSha:string;tableVersion:number;rows:[ComparisonRow,ComparisonRow]}
+export interface MeasuredLayoutResult {edits:TransformEdit[];rationale:string;unit:MeasuredDatum["unit"];axisMaxMilli:number;sourceSha:string;tableVersion:number;rows:ComparisonRow[]}
+export interface MeasuredComparisonResult extends MeasuredLayoutResult {rows:[ComparisonRow,ComparisonRow]}
 
 /** Discover only unambiguous saved label/bar pairs, not unrelated shapes. */
 export function measuredComparisonRows(project:Project,scene:Scene):ComparisonRow[]{
@@ -26,31 +28,34 @@ const transform=(node:CanvasNode,x=node.x,y=node.y,width=node.width,height=node.
 });
 /** Two already bound measurements. Saved geometry is an ordinary reversible
  * patch; data bindings continue to own numeric source changes. */
-export function measuredComparisonEdits(project:Project,scene:Scene,input:MeasuredComparisonInput):MeasuredComparisonResult{
+export function measuredRowLayout(project:Project,scene:Scene,labelIds:readonly string[],input:MeasuredLayoutInput):MeasuredLayoutResult{
   if(!project.scenes.some(item=>sameValue(item,scene))||scene.renderer!=="motion-canvas")
     throw new Error("Choose a current Motion Canvas scene.");
   validateMeasuredData(project);
-  if(input.beforeId===input.afterId)throw new Error("Choose two distinct measured states.");
+  if(labelIds.length<2||labelIds.length>4||new Set(labelIds).size!==labelIds.length)
+    throw new Error("Choose two to four distinct measured states.");
   for(const [value,min,max] of [[input.left,0,1920],[input.top,0,1080],[input.rowSpacing,64,1080],[input.labelGap,0,160],[input.barHeight,8,160]])
     if(!Number.isSafeInteger(value)||value<min||value>max)throw new Error("Comparison layout requires bounded whole source pixels.");
-  const rows=measuredComparisonRows(project,scene);
-  const before=rows.find(item=>item.label.id===input.beforeId),after=rows.find(item=>item.label.id===input.afterId);
-  if(!before||!after)throw new Error("Each state requires one saved label and one saved bar for the same datum.");
-  if(before.table.id!==after.table.id||before.datum.key===after.datum.key||before.datum.unit!==after.datum.unit||
-     before.datum.label===after.datum.label)throw new Error("Choose distinct named rows from the same saved table with identical units.");
-  const a=before.bar.view,b=after.bar.view,l=before.label.view,r=after.label.view;
-  if(a.kind!=="bar"||b.kind!=="bar"||l.kind!=="label"||r.kind!=="label"||
-    a.axis_min_milli!==0||b.axis_min_milli!==0||!sameValue(a,b)||l.decimals!==r.decimals)
-    throw new Error("Both bars must share the same explicit zero-based axis and maximum width; labels must share precision.");
-  for(const row of [before,after]){
+  const available=measuredComparisonRows(project,scene);
+  const selected=labelIds.map(id=>available.find(item=>item.label.id===id));
+  if(selected.some(row=>!row))throw new Error("Each state requires one saved label and one saved bar for the same datum.");
+  const rows=selected as ComparisonRow[],before=rows[0];
+  if(rows.some(row=>row.table.id!==before.table.id||row.datum.unit!==before.datum.unit)||
+    new Set(rows.map(row=>row.datum.key)).size!==rows.length||new Set(rows.map(row=>row.datum.label)).size!==rows.length)
+    throw new Error("Choose distinct named rows from the same saved table with identical units.");
+  const a=before.bar.view,l=before.label.view;
+  if(a.kind!=="bar"||l.kind!=="label"||a.axis_min_milli!==0||rows.some(row=>
+    row.bar.view.kind!=="bar"||!sameValue(a,row.bar.view)||row.label.view.kind!=="label"||l.decimals!==row.label.view.decimals))
+    throw new Error("All bars must share the same explicit zero-based axis and maximum width; labels must share precision.");
+  for(const row of rows){
     if(row.datum.milli<=0||row.datum.milli>a.axis_max_milli||
       row.datum.milli % 10**(3-l.decimals)!==0 ||
       row.datum.milli*a.max_width_px*2<a.axis_max_milli)
       throw new Error("Comparison needs positive values exactly represented by label precision and at least one rounded pixel. No inferred scale or clamped zero bar.");
   }
-  const targets=[before.label,before.bar,after.label,after.bar].map(binding=>binding.node_id);
+  const targets=rows.flatMap(row=>[row.label.node_id,row.bar.node_id]);
   const ids=new Set(targets);
-  if(ids.size!==4)throw new Error("Comparison requires four distinct original objects.");
+  if(ids.size!==targets.length)throw new Error("Comparison requires distinct original objects.");
   const managed=new Set([
     ...(project.production_design?.heroes??[]).flatMap(item=>item.baseline.map(node=>node.id)),
     ...(project.production_design?.stages??[]).flatMap(item=>item.baseline.map(node=>node.id)),
@@ -64,15 +69,16 @@ export function measuredComparisonEdits(project:Project,scene:Scene,input:Measur
     node.property_locks.some(lock=>lock==="position"||lock==="size")||node.width<=0||node.height<=0)||
     scene.nodes.some(node=>(node.parent_id!==null&&ids.has(node.parent_id))||node.relations.some(rel=>ids.has(rel.target_id))))
     throw new Error("Use independent, static, unlocked measured objects, without managed components, parent transforms or relation writers.");
-  const [labelA,barA,labelB,barB]=nodes as [CanvasNode,CanvasNode,CanvasNode,CanvasNode];
-  if([barA,barB].some(node=>node.kind!=="rectangle"||node.style.stroke_width!==0||!node.style.fill)||
-    [labelA,labelB].some(node=>node.kind!=="text"||node.text===null||!node.style.font_size||node.text.includes("\n")))
+  const admitted=nodes as CanvasNode[],labels=admitted.filter((_,i)=>i%2===0),bars=admitted.filter((_,i)=>i%2===1);
+  const first=labels[0];
+  if(bars.some(node=>node.kind!=="rectangle"||node.style.stroke_width!==0||!node.style.fill)||
+    labels.some(node=>node.kind!=="text"||node.text===null||!node.style.font_size||node.text.includes("\n")))
     throw new Error("Comparison needs filled, unstroked bars and explicit single-line source labels.");
-  if(labelA.style.font_size!==labelB.style.font_size||labelA.style.font_family!==labelB.style.font_family||
-    labelA.style.font_weight!==labelB.style.font_weight)
-    throw new Error("Use the same type scale and weight for both measured states.");
-  const labelWidth=Math.max(a.max_width_px,labelA.width,labelB.width),labelHeight=Math.max(labelA.height,labelB.height);
-  for(const label of [labelA,labelB]){
+  if(labels.some(node=>node.style.font_size!==first.style.font_size||node.style.font_family!==first.style.font_family||
+    node.style.font_weight!==first.style.font_weight))
+    throw new Error("Use the same type scale and weight for all measured states.");
+  const labelWidth=Math.max(a.max_width_px,...labels.map(node=>node.width)),labelHeight=Math.max(...labels.map(node=>node.height));
+  for(const label of labels){
     const size=label.style.font_size!;
     if(Array.from(label.text!).length*size*.56>labelWidth*.96||size*1.4>labelHeight)
       throw new Error("A source label exceeds its nominal text box. Adjust the authored typography before comparison.");
@@ -84,10 +90,10 @@ export function measuredComparisonEdits(project:Project,scene:Scene,input:Measur
     throw new Error("Comparison requires the neutral source camera; review other framing separately.");
   const profiles=project.deliverables.filter(profile=>!profile.included_scene_ids.length||profile.included_scene_ids.includes(scene.id));
   if(!profiles.length)throw new Error("The measured scene must belong to a saved delivery profile.");
-  const poses=[transform(labelA,input.left,input.top,labelWidth,labelHeight),
-    transform(barA,input.left,input.top+labelHeight+input.labelGap,barA.width,input.barHeight),
-    transform(labelB,input.left,input.top+input.rowSpacing,labelWidth,labelHeight),
-    transform(barB,input.left,input.top+input.rowSpacing+labelHeight+input.labelGap,barB.width,input.barHeight)];
+  const poses=labels.flatMap((label,i)=>[
+    transform(label,input.left,input.top+i*input.rowSpacing,labelWidth,labelHeight),
+    transform(bars[i],input.left,input.top+i*input.rowSpacing+labelHeight+input.labelGap,bars[i].width,input.barHeight),
+  ]);
   // Reserve full axis, not today's bar widths. The standard three aspect
   // families retain a common horizontal origin when x scale = object scale.
   const envelopes=poses.map((pose,i)=>({...pose,width:i%2===1?a.max_width_px:pose.width}));
@@ -108,9 +114,13 @@ export function measuredComparisonEdits(project:Project,scene:Scene,input:Measur
       throw new Error("Output "+profile.name+" cannot retain this common zero origin and full axis inside its safe area.");
   }
   const edits=targets.map((node_id,i):TransformEdit=>({kind:"transform",node_id,transform:poses[i]}));
-  if(edits.every((edit,i)=>sameValue(edit.transform,transform((nodes as CanvasNode[])[i]))))
+  return {edits,rows,unit:before.datum.unit,axisMaxMilli:a.axis_max_milli,sourceSha:before.table.source_sha256,tableVersion:before.table.version,
+    rationale:before.table.label+" v"+before.table.version+" ("+before.table.source_sha256+
+      "), "+rows.map(row=>row.datum.key).join(" to ")+", common zero-based "+before.datum.unit+" axis 0.."+a.axis_max_milli+" milli; retain measured bindings."};
+}
+export function measuredComparisonEdits(project:Project,scene:Scene,input:MeasuredComparisonInput):MeasuredComparisonResult{
+  const result=measuredRowLayout(project,scene,[input.beforeId,input.afterId],input);
+  if(result.edits.every(edit=>sameValue(edit.transform,transform(scene.nodes.find(node=>node.id===edit.node_id)!))))
     throw new Error("The original states already use this comparison layout.");
-  return {edits,rows:[before,after],unit:before.datum.unit,axisMaxMilli:a.axis_max_milli,sourceSha:before.table.source_sha256,tableVersion:before.table.version,
-    rationale:MEASURED_COMPARISON_ID+"/v1: "+before.table.label+" v"+before.table.version+" ("+before.table.source_sha256+
-      "), "+before.datum.key+" to "+after.datum.key+", common zero-based "+before.datum.unit+" axis 0.."+a.axis_max_milli+" milli; retain measured bindings."};
+  return {...result,rows:result.rows as [ComparisonRow,ComparisonRow],rationale:MEASURED_COMPARISON_ID+"/v1: "+result.rationale};
 }

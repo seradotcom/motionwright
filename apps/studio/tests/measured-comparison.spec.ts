@@ -9,7 +9,7 @@ import type {CanvasNode} from "../src/types";
 import {comparisonRows,readComparisonDraft,refuseStaleComparison,reviewComparison,stageComparison} from "./support/measuredComparisonJourney";
 
 const uuid=(n:number)=>"00000000-0000-4000-8000-"+String(n).padStart(12,"0");
-function comparisonFixture(){
+function comparisonFixture(dated=false){
   const project=structuredClone(fixtureProject);project.schema_version=2;project.locks=[];project.reviews=[];project.branch_workspaces=[];project.production_design=emptyProductionDesign();
   const scene=project.scenes[0];scene.renderer="motion-canvas";scene.status="draft";scene.beats=[];scene.camera={center_x:960,center_y:540,zoom:1,rotation_deg:0,safe_margin:.05};
   const template=scene.nodes[0];
@@ -20,7 +20,7 @@ function comparisonFixture(){
       font_family:i%2===0?"Instrument Sans Variable":null,font_size:i%2===0?48:null,font_weight:i%2===0?400:null,line_height:i%2===0?1.12:null,blend_mode:"normal"},
     property_locks:[],relations:[],keyframes:[]}));
   project.deliverables=project.deliverables.map(profile=>({...profile,included_scene_ids:[],protected_scene_ids:[],text_overrides:{}}));
-  const rows=[{key:"before",label:"Before",milli:25000,unit:"percent" as const},{key:"after",label:"After",milli:60000,unit:"percent" as const}];
+  const rows=[{key:"before",label:dated?"2026-11-19":"Before",milli:25000,unit:"percent" as const},{key:"after",label:dated?"2026-10-01":"After",milli:60000,unit:"percent" as const}];
   const digest=createHash("sha256").update(JSON.stringify(rows)).digest("hex"),assetId=uuid(810),tableId=uuid(820);
   project.assets.push({id:assetId,name:"Synthetic source rows.json",media_type:"application/json",content_sha256:digest,source_revision:null});
   applyMeasuredTable(project,{schema:"motionwright.measured-table/1",id:tableId,label:"Synthetic measured UI fixture",version:1,source_asset_id:assetId,source_sha256:digest,rows});
@@ -104,4 +104,48 @@ test("a retained measured comparison refuses a changed source unit after browser
   expect((await readComparisonDraft(page,changed,scene.id)).draft).toEqual(retained.draft);
   await discard();
   expect(await readStudioProject(page)).toEqual(changed);
+});
+
+test("Series reveal uses every original dated measurement and one exact reversible visibility schedule",async({page})=>{
+  const {project,scene,tableId}=comparisonFixture(true);
+  await page.route("**/src/fixture.ts",async route=>{
+    const response=await route.fetch();await route.fulfill({response,body:(await response.text())+"\nfixtureBootstrap.project = "+JSON.stringify(project)+";\n"});
+  });
+  await page.goto("/");
+  await button(page,"Production").click();
+  await page.getByLabel("Production working scene",{exact:true}).selectOption(scene.id);
+  const base=await readStudioProject(page);
+  await button(page,"Craft library").click();await page.getByLabel("Craft family",{exact:true}).selectOption("data");
+  await page.getByRole("button",{name:/^Series reveal/}).click();await button(page,"Open authoring editor").click();
+  const editor=page.getByRole("region",{name:"Creative production workstation",exact:true});
+  const summary=editor.locator("summary:visible").filter({hasText:/^Measured series reveal$/});
+  await expect(summary).toHaveCount(1);
+  await summary.click();
+  await editor.getByLabel("Series source table",{exact:true}).selectOption(tableId);
+  await expect(editor.getByText(/2026-10-01 \(frames 0 to 15\) \/ 2026-11-19 \(frames 30 to 45\)/)).toBeVisible();
+  const stage=editor.getByRole("button",{name:"Stage series reveal",exact:true});
+  await expect(stage).toBeEnabled();await stage.click();
+  await expect(editor.getByRole("region",{name:"Proposed edits",exact:true}).getByLabel(/Remove proposed edit/)).toHaveCount(8);
+  expect(await readStudioProject(page)).toEqual(base);
+  await editor.getByRole("button",{name:"Preview scoped changes",exact:true}).click();
+  await expect(editor.getByText("Editorial diff prepared",{exact:true})).toBeVisible();
+  const after=editor.getByRole("img",{name:"After scoped changes",exact:true});
+  await editor.getByLabel("Comparison playhead",{exact:true}).fill("0.5");
+  for(const [i,alpha] of [[0,"0"],[1,"0"],[2,"1"],[3,"1"]] as const)
+    await expect(after.locator('[data-canvas-node-id="'+scene.nodes[i].id+'"]')).toHaveAttribute("opacity",alpha);
+  await editor.getByLabel("Comparison playhead",{exact:true}).fill("1.5");
+  for(const node of scene.nodes)
+    await expect(after.locator('[data-canvas-node-id="'+node.id+'"]')).toHaveAttribute("opacity","1");
+  await expect(after.locator('[data-canvas-node-id="'+scene.nodes[1].id+'"] rect')).toHaveAttribute("width","200");
+  await expect(after.locator('[data-canvas-node-id="'+scene.nodes[3].id+'"] rect')).toHaveAttribute("width","480");
+  await editor.getByRole("button",{name:"Apply as one revision",exact:true}).click();
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r"+(base.revision+1));
+  const saved=await readStudioProject(page),nodes=saved.scenes.find(item=>item.id===scene.id)!.nodes;
+  expect(nodes.map(node=>node.id)).toEqual(scene.nodes.map(node=>node.id));
+  expect(nodes.map(node=>node.y)).toEqual([330,446,120,236]);
+  expect(nodes.every(node=>node.keyframes[0].value===0&&node.keyframes.at(-1)?.value===1)).toBe(true);
+  expect(saved.production_design?.measured_bindings).toEqual(base.production_design?.measured_bindings);
+  expect(saved.production_design?.measured_tables).toEqual(base.production_design?.measured_tables);
+  await undoArrangement(page,saved.revision+1);
+  expect((await readStudioProject(page)).scenes.find(item=>item.id===scene.id)!.nodes).toEqual(scene.nodes);
 });

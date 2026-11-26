@@ -6,6 +6,7 @@ import ScopedPaintMotionEditor from "./ScopedPaintMotionEditor";
 import CanvasArrangementControls from "./CanvasArrangementControls";
 import FocusTransferControls from "./FocusTransferControls";
 import MeasuredComparisonControls from "./MeasuredComparisonControls";
+import MeasuredSeriesRevealControls from "./MeasuredSeriesRevealControls";
 import { scopedMotionIssue, scopedStyleIssues } from "./scopedPaintMotion";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { previewCreativePatchUndo } from "./creativeUndo";
@@ -295,6 +296,8 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
     <FocusTransferControls key={"focus:"+scope} project={project} scene={scene} profile={displayProfile} draft={draft}
       disabled={lockedUi||draftStale||backupBlocked||nativeSource!==null} onChange={update}/>
     <MeasuredComparisonControls key={"measured:"+scope} project={project} scene={scene} draft={draft}
+      disabled={lockedUi||draftStale||backupBlocked||nativeSource!==null} onChange={update}/>
+    <MeasuredSeriesRevealControls key={"series:"+scope} project={project} scene={scene} profile={displayProfile} draft={draft}
       disabled={lockedUi||draftStale||backupBlocked||nativeSource!==null} onChange={update}/>
     <div className="production-plan-grid">
       <section className="production-patch-editor" aria-label="Scoped proposal editor">
