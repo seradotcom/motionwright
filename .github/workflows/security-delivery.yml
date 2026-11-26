@@ -103,7 +103,7 @@ on:
         type: choice
         required: false
         default: all
-        options: [all, static-group, static-alignment, static-layout, follow, follow-ui, static-rotation, creative-batch, audio-cut, native-preview-blend, delivery-hero, measured-comparison, series-silence]
+        options: [all, static-group, static-alignment, static-layout, follow, follow-ui, static-rotation, creative-batch, audio-cut, native-preview-blend, delivery-hero, measured-comparison, series-silence, camera-craft]
       interchange_case:
         description: One original Studio flow for native-otio-real-media; no other suites
         type: choice
@@ -564,6 +564,16 @@ jobs:
           cargo check --locked --jobs 2 -p motionwright-native --example native_mix_fixture --example native-render-e2e
           cargo test --locked --jobs 2 -p motionwright-native --test original_mix --test saved_mix_native_consumers --no-run
           cargo test --locked --jobs 2 -p motionwright-domain --test music_clock --no-run
+      - name: Original camera, Clip mask, Manim compatibility and retained captures
+        if: inputs.first_use_case == 'camera-craft'
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --jobs 2 -p motionwright-native --lib -- -D warnings
+          cargo test --locked --jobs 2 -p motionwright-domain --test camera_reframe -- --test-threads=1
+          cargo test --no-fail-fast --locked --jobs 2 -p motionwright-native --test camera_reframe --test manim_camera_source --test focus_transfer -- --test-threads=1
+          cargo test --locked --jobs 2 -p motionwright-native --lib film::tests::saved_static_rotation_preserves_camera_translation_and_rejects_unsafe_geometry -- --exact --test-threads=1
+          cargo check --locked --jobs 2 -p motionwright-native --example native-manim-camera-seed --example native-render-e2e
+          cargo test --locked --jobs 2 -p motionwright-native --lib root_budget_productive_tests::saved_capture_ -- --test-threads=1
       - name: Build the exact-source StudioService test transport
         run: cargo build --locked --jobs 2 -p motionwright-service --example studio_review_session
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -600,6 +610,9 @@ jobs:
             static-rotation)
               specs=(tests/native-static-rotation-service.spec.ts tests/native-follow-service.spec.ts)
               selected_cases='saved shape rotation persists|saved Follow inherits translation' ;;
+            camera-craft)
+              specs=(tests/camera-reframe-service.spec.ts tests/mask-window-service.spec.ts tests/craft-library.spec.ts)
+              selected_cases='.' ;;
             series-silence)
               specs=(tests/measured-comparison.spec.ts tests/measured-comparison-service.spec.ts tests/silence-release-service.spec.ts)
               selected_cases='.' ;;
@@ -607,8 +620,8 @@ jobs:
               specs=(tests/measured-comparison.spec.ts tests/measured-comparison-service.spec.ts)
               selected_cases='.' ;;
             delivery-hero)
-              specs=(tests/craft-components.spec.ts tests/step-sequence.spec.ts tests/craft-library.spec.ts tests/measured-comparison.spec.ts)
-              selected_cases='delivery Hero text reflows into visible original lines without rewriting the saved source or local wording|delivery StepSequence preserves its original index and disclosure while reflowing local copy|library previews the real generator and explicitly loads a recoverable authoring draft|library focus transfer stages and reviews two exact opacity tracks in one reversible source revision|measured comparison stages and saves the exact source-bound bar ratios as one reversible layout|a recovered craft recipe cannot adopt a changed output clock through object-only rebase' ;;
+              specs=(tests/craft-components.spec.ts tests/step-sequence.spec.ts tests/craft-library.spec.ts tests/measured-comparison.spec.ts tests/mask-window-service.spec.ts)
+              selected_cases='delivery Hero text reflows into visible original lines without rewriting the saved source or local wording|delivery StepSequence preserves its original index and disclosure while reflowing local copy|library previews the real generator and explicitly loads a recoverable authoring draft|library focus transfer stages and reviews two exact opacity tracks in one reversible source revision|measured comparison stages and saves the exact source-bound bar ratios as one reversible layout|a recovered craft recipe cannot adopt a changed output clock through object-only rebase|Mask window preserves its real Clip' ;;
             native-preview-blend)
               specs=(tests/composition-blend.spec.ts tests/native-preview.spec.ts)
               selected_cases='Studio commits the chosen blend and reuses it when returning to Canvas|reduced native window selection uses provider raster identity' ;;
@@ -632,15 +645,17 @@ jobs:
           result = json.loads(Path(os.environ["PLAYWRIGHT_JSON_OUTPUT_FILE"]).read_text(encoding="utf-8"))
           stats = result["stats"]
           selection = os.environ["MOTIONWRIGHT_FIRST_USE_CASE"]
-          expected = {"all": 9, "static-group": 1, "static-alignment": 1, "static-layout": 2, "follow": 1, "follow-ui": 1, "static-rotation": 2, "creative-batch": 25, "audio-cut": 5, "native-preview-blend": 2, "delivery-hero": 6, "measured-comparison": 4, "series-silence": 5}[selection]
+          expected = {"all": 9, "static-group": 1, "static-alignment": 1, "static-layout": 2, "follow": 1, "follow-ui": 1, "static-rotation": 2, "creative-batch": 25, "audio-cut": 5, "native-preview-blend": 2, "delivery-hero": 7, "measured-comparison": 4, "series-silence": 5, "camera-craft": 8}[selection]
           assert stats["expected"] == expected, stats
           assert all(stats.get(key, 0) == 0 for key in ("unexpected","flaky","skipped")), stats
-          if selection == "series-silence":
+          if selection == "camera-craft":
+              print(f"CAMERA_MASK_GRAPH_STUDIO=PASS; cases={expected}; real_Service_SQLite_cases=4; browser_fixture_cases=4; original_source=SYNTHETIC; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+          elif selection == "series-silence":
               print(f"SERIES_SILENCE_STUDIO=PASS; cases={expected}; real_Service_SQLite_cases=2; browser_fixture_cases=3; original_source=SYNTHETIC; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           elif selection == "measured-comparison":
               print(f"MEASURED_COMPARISON_STUDIO=PASS; cases={expected}; real_Service_SQLite_cases=1; browser_fixture_cases=3; original_source=SYNTHETIC; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           elif selection == "delivery-hero":
-              print(f"DELIVERY_HERO_STUDIO=PASS; cases={expected}; browser_source=SYNTHETIC_FIXTURE; native_source_tests=SEPARATE; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+              print(f"DELIVERY_HERO_STUDIO=PASS; cases={expected}; real_Service_SQLite_cases=1; browser_fixture_cases=6; original_source=SYNTHETIC; native_source_tests=SEPARATE; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           elif selection == "native-preview-blend":
               print(f"NATIVE_PREVIEW_BLEND_STUDIO=PASS; cases={expected}; browser_source=SYNTHETIC_FIXTURE; native_source_tests=SEPARATE; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           elif selection == "audio-cut":
