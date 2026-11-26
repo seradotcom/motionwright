@@ -103,7 +103,7 @@ on:
         type: choice
         required: false
         default: all
-        options: [all, static-group, static-alignment, static-layout, follow, follow-ui, static-rotation, creative-batch, audio-cut, native-preview-blend, delivery-hero, measured-comparison]
+        options: [all, static-group, static-alignment, static-layout, follow, follow-ui, static-rotation, creative-batch, audio-cut, native-preview-blend, delivery-hero, measured-comparison, series-silence]
       interchange_case:
         description: One original Studio flow for native-otio-real-media; no other suites
         type: choice
@@ -541,8 +541,21 @@ jobs:
           cargo test --no-fail-fast --locked --jobs 2 -p motionwright-service --test measured_data --test metric_source_notice -- --test-threads=1
           cargo test --locked --jobs 2 -p motionwright-native --lib film::tests::localized_text_override_enters_canonical_film -- --exact --test-threads=1
       - name: Exact measured comparison Film source and retained bindings
-        if: inputs.first_use_case == 'measured-comparison'
+        if: inputs.first_use_case == 'measured-comparison' || inputs.first_use_case == 'series-silence'
         run: cargo test --locked --jobs 2 -p motionwright-native --test measured_state_comparison -- --test-threads=1
+      - name: Original silence release on exact source samples and saved delivery recipes
+        if: inputs.first_use_case == 'series-silence'
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --jobs 2 -p motionwright-native --lib -- -D warnings
+          cargo test --locked --jobs 2 -p motionwright-domain --lib delivery_recipe:: -- --test-threads=1
+          log="$RUNNER_TEMP/silence-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.log"
+          cargo test --locked --jobs 2 -p motionwright-native --test saved_original_mix saved_silence_release_keeps_original_pcm_clock_and_protects_reviewed_voice_after_reopen -- --exact --test-threads=1 | tee "$log"
+          grep -F '1 passed; 0 failed; 0 ignored' "$log"
+          cargo test --no-fail-fast --locked --jobs 2 -p motionwright-service --test delivery_recipe_persistence --test music_cut_persistence -- --test-threads=1
+          cargo check --locked --jobs 2 -p motionwright-native --example native_mix_fixture
+          cargo test --locked --jobs 2 -p motionwright-native --test original_mix --test saved_mix_native_consumers --no-run
+          cargo test --locked --jobs 2 -p motionwright-domain --test music_clock --no-run
       - name: Build the exact-source StudioService test transport
         run: cargo build --locked --jobs 2 -p motionwright-service --example studio_review_session
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -579,6 +592,9 @@ jobs:
             static-rotation)
               specs=(tests/native-static-rotation-service.spec.ts tests/native-follow-service.spec.ts)
               selected_cases='saved shape rotation persists|saved Follow inherits translation' ;;
+            series-silence)
+              specs=(tests/measured-comparison.spec.ts tests/measured-comparison-service.spec.ts tests/silence-release-service.spec.ts)
+              selected_cases='.' ;;
             measured-comparison)
               specs=(tests/measured-comparison.spec.ts tests/measured-comparison-service.spec.ts)
               selected_cases='.' ;;
@@ -608,11 +624,13 @@ jobs:
           result = json.loads(Path(os.environ["PLAYWRIGHT_JSON_OUTPUT_FILE"]).read_text(encoding="utf-8"))
           stats = result["stats"]
           selection = os.environ["MOTIONWRIGHT_FIRST_USE_CASE"]
-          expected = {"all": 9, "static-group": 1, "static-alignment": 1, "static-layout": 2, "follow": 1, "follow-ui": 1, "static-rotation": 2, "creative-batch": 25, "audio-cut": 5, "native-preview-blend": 2, "delivery-hero": 6, "measured-comparison": 3}[selection]
+          expected = {"all": 9, "static-group": 1, "static-alignment": 1, "static-layout": 2, "follow": 1, "follow-ui": 1, "static-rotation": 2, "creative-batch": 25, "audio-cut": 5, "native-preview-blend": 2, "delivery-hero": 6, "measured-comparison": 4, "series-silence": 5}[selection]
           assert stats["expected"] == expected, stats
           assert all(stats.get(key, 0) == 0 for key in ("unexpected","flaky","skipped")), stats
-          if selection == "measured-comparison":
-              print(f"MEASURED_COMPARISON_STUDIO=PASS; cases={expected}; real_Service_SQLite_cases=1; browser_fixture_cases=2; original_source=SYNTHETIC; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+          if selection == "series-silence":
+              print(f"SERIES_SILENCE_STUDIO=PASS; cases={expected}; real_Service_SQLite_cases=2; browser_fixture_cases=3; original_source=SYNTHETIC; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+          elif selection == "measured-comparison":
+              print(f"MEASURED_COMPARISON_STUDIO=PASS; cases={expected}; real_Service_SQLite_cases=1; browser_fixture_cases=3; original_source=SYNTHETIC; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           elif selection == "delivery-hero":
               print(f"DELIVERY_HERO_STUDIO=PASS; cases={expected}; browser_source=SYNTHETIC_FIXTURE; native_source_tests=SEPARATE; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           elif selection == "native-preview-blend":
