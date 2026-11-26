@@ -28,7 +28,7 @@ const NATIVE_INPUT_XML_MAX_BYTES: u64 = 8 * 1024 * 1024;
 // Selected SDK model::MAX_PROJECT_BYTES used by Store, plus a closed receipt.
 const MC_SOURCE_MAX_BYTES: u64 = 524_288;
 const MC_SOURCE_RECEIPT_MAX_BYTES: u64 = 16_384;
-const HYBRID_GRANT_MAX_BYTES: u64 = 65_536;
+pub(super) const HYBRID_GRANT_MAX_BYTES: u64 = 65_536;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,13 +49,11 @@ struct HybridGrantFile {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct HybridGrantDaemon {
-    argv: Vec<String>,
+pub(super) struct HybridGrantDaemon {
+    pub(super) argv: Vec<String>,
     // Keep the required wire fields; live process identity is checked on Linux.
-    #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
-    pid: u32,
-    #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
-    start_ticks: u64,
+    pub(super) pid: u32,
+    pub(super) start_ticks: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -76,13 +74,78 @@ struct HybridGrantReceipt {
 
 /// Sealed observation of the existing owner's grant, not a new Host grant.
 #[derive(Debug, Clone)]
-pub(super) struct HybridProjectGrant {
+pub(super) struct HybridCiProjectGrant {
     receipt: HybridGrantReceipt,
     original: HybridGrantFile,
     connection_identity: String,
     project_identity: [u64; 5],
     output_identity: [u64; 5],
     socket_identity: [u64; 5],
+}
+
+/// The CI original and an observed local owner remain different authority
+/// origins. Neither variant can be reconstructed from WebView JSON.
+#[derive(Debug, Clone)]
+pub(super) enum HybridProjectGrant {
+    Ci(Box<HybridCiProjectGrant>),
+    #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
+    Local(Box<super::hybrid_owner::LocalHybridOwner>),
+}
+
+impl HybridProjectGrant {
+    fn recheck(&self, coordinator: &ProductionCoordinator) -> NativeResult<()> {
+        match self {
+            Self::Ci(grant) => grant.recheck(coordinator),
+            Self::Local(owner) => owner.recheck(coordinator),
+        }
+    }
+
+    fn project_root(&self) -> &Path {
+        match self {
+            Self::Ci(grant) => &grant.receipt.project_root,
+            Self::Local(owner) => owner.project_root(),
+        }
+    }
+
+    fn output_root(&self) -> &Path {
+        match self {
+            Self::Ci(grant) => &grant.receipt.output_root,
+            Self::Local(owner) => owner.output_root(),
+        }
+    }
+
+    fn output_identity(&self) -> &[u64; 5] {
+        match self {
+            Self::Ci(grant) => &grant.output_identity,
+            Self::Local(owner) => owner.output_identity(),
+        }
+    }
+
+    fn project_sha256(&self) -> &str {
+        match self {
+            Self::Ci(grant) => &grant.receipt.source_project_sha256,
+            Self::Local(owner) => owner.project_sha256(),
+        }
+    }
+
+    fn require_unused_snapshots(&self, namespace: &str) -> NativeResult<()> {
+        match self {
+            Self::Ci(grant) => grant.require_unused_snapshots(namespace),
+            Self::Local(owner) => owner.require_unused_snapshots(namespace),
+        }
+    }
+
+    fn bind_source_custody_origin(&self, document: &mut Value) {
+        match self {
+            Self::Ci(grant) => {
+                document["grant_receipt_sha256"] = json!(grant.original.sha256);
+            }
+            Self::Local(owner) => {
+                document["schema"] = json!("motionwright.native.hybrid-mc-source-custody/2");
+                document["local_owner_observation"] = owner.public_observation();
+            }
+        }
+    }
 }
 
 fn grant_file_bytes(file: &HybridGrantFile, maximum: u64) -> NativeResult<Vec<u8>> {
@@ -108,7 +171,7 @@ fn grant_file_bytes(file: &HybridGrantFile, maximum: u64) -> NativeResult<Vec<u8
 }
 
 #[cfg(target_os = "linux")]
-fn grant_path_identity(path: &Path, directory: bool) -> NativeResult<[u64; 5]> {
+pub(super) fn grant_path_identity(path: &Path, directory: bool) -> NativeResult<[u64; 5]> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     let metadata = safe_metadata(path)?;
     require(
@@ -133,7 +196,7 @@ fn grant_path_identity(path: &Path, directory: bool) -> NativeResult<[u64; 5]> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn grant_path_identity(_path: &Path, _directory: bool) -> NativeResult<[u64; 5]> {
+pub(super) fn grant_path_identity(_path: &Path, _directory: bool) -> NativeResult<[u64; 5]> {
     Err(Error::new(
         ErrorCode::Unsupported,
         "Hybrid project-grant custody requires its original Linux CI owner",
@@ -142,7 +205,11 @@ fn grant_path_identity(_path: &Path, _directory: bool) -> NativeResult<[u64; 5]>
 
 // This recognizes only the exact source-owned Python writer's closed TOML
 // profile. It is deliberately not an approximate general TOML parser.
-fn verify_owner_grant_profile(bytes: &[u8], project: &Path, output: &Path) -> NativeResult<()> {
+pub(super) fn verify_owner_grant_profile(
+    bytes: &[u8],
+    project: &Path,
+    output: &Path,
+) -> NativeResult<()> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| invalid("Hybrid owner configuration is not UTF-8"))?;
     require(
@@ -227,7 +294,7 @@ fn verify_owner_grant_profile(bytes: &[u8], project: &Path, output: &Path) -> Na
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn daemon_start_from_stat(bytes: &[u8], pid: u32) -> NativeResult<u64> {
+pub(super) fn daemon_start_from_stat(bytes: &[u8], pid: u32) -> NativeResult<u64> {
     let text =
         std::str::from_utf8(bytes).map_err(|_| invalid("Hybrid daemon stat is malformed"))?;
     let (prefix, fields) = text
@@ -248,7 +315,7 @@ fn daemon_start_from_stat(bytes: &[u8], pid: u32) -> NativeResult<u64> {
 }
 
 #[cfg(target_os = "linux")]
-fn verify_grant_daemon(daemon: &HybridGrantDaemon) -> NativeResult<()> {
+pub(super) fn verify_grant_daemon(daemon: &HybridGrantDaemon) -> NativeResult<()> {
     use std::io::Read;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     require(
@@ -294,14 +361,14 @@ fn verify_grant_daemon(daemon: &HybridGrantDaemon) -> NativeResult<()> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn verify_grant_daemon(_daemon: &HybridGrantDaemon) -> NativeResult<()> {
+pub(super) fn verify_grant_daemon(_daemon: &HybridGrantDaemon) -> NativeResult<()> {
     Err(Error::new(
         ErrorCode::Unsupported,
         "Hybrid daemon custody requires its original Linux CI owner",
     ))
 }
 
-impl HybridProjectGrant {
+impl HybridCiProjectGrant {
     fn recheck(&self, coordinator: &ProductionCoordinator) -> NativeResult<()> {
         let receipt = &self.receipt;
         require(
@@ -572,7 +639,7 @@ fn one_attempt() -> RootBudgetUnits {
         output_bytes: 0,
     }
 }
-fn project_digest(project: &Project) -> NativeResult<String> {
+pub(super) fn project_digest(project: &Project) -> NativeResult<String> {
     // The original/reopened project files and consumer use these exact bytes.
     let mut bytes = serde_json::to_vec_pretty(project)
         .map_err(|_| invalid("Hybrid original Project cannot be serialized"))?;
@@ -1396,7 +1463,7 @@ impl HybridRootBudgetScope {
             "Hybrid MC source capture lacks the charged original completed apply",
         )?;
         let bytes = read_verified_production_artifact(
-            &grant.receipt.project_root,
+            grant.project_root(),
             "semwright-motion.json",
             fingerprint,
             MC_SOURCE_MAX_BYTES,
@@ -1409,13 +1476,14 @@ impl HybridRootBudgetScope {
             "{}-mc-{}.semwright-motion-custody.original.json",
             self.plan.namespace, planned.output_ordinal
         );
-        let document = json!({"schema":"motionwright.native.hybrid-mc-source-custody/1",
+        let mut document = json!({"schema":"motionwright.native.hybrid-mc-source-custody/1",
             "ordinal":planned.output_ordinal,"segment_id":planned.segment_id,
             "project_sha256":self.plan.project_sha256,"source_fingerprint":fingerprint,
-            "source_bytes":bytes.len(),"snapshot_path":name,"grant_receipt_sha256":grant.original.sha256,
+            "source_bytes":bytes.len(),"snapshot_path":name,
             "apply_request_id":request,"apply_receipt_id":original.id,"root_operation_id":self.root.root_id,
             "apply_terminal_observed":true,"source_bytes_copied_without_reserialization":true,
             "automatic_retry":false,"native_render_started_by_capture":false,"editable_cycle_acceptance":false});
+        grant.bind_source_custody_origin(&mut document);
         let mut receipt_bytes = serde_json::to_vec_pretty(&document)
             .map_err(|_| backend("Hybrid MC source custody receipt cannot be encoded"))?;
         receipt_bytes.push(b'\n');
@@ -1426,15 +1494,15 @@ impl HybridRootBudgetScope {
         // Both writes are already charged by the original composition.apply
         // dispatch. A failure preserves its files and never remints the debit.
         write_hybrid_source_original(
-            &grant.receipt.output_root,
-            &grant.output_identity,
+            grant.output_root(),
+            grant.output_identity(),
             &name,
             &bytes,
             MC_SOURCE_MAX_BYTES,
         )?;
         require(
             read_verified_production_artifact(
-                &grant.receipt.project_root,
+                grant.project_root(),
                 "semwright-motion.json",
                 fingerprint,
                 MC_SOURCE_MAX_BYTES,
@@ -1443,8 +1511,8 @@ impl HybridRootBudgetScope {
         )?;
         grant.recheck(coordinator)?;
         write_hybrid_source_original(
-            &grant.receipt.output_root,
-            &grant.output_identity,
+            grant.output_root(),
+            grant.output_identity(),
             &receipt_name,
             &receipt_bytes,
             MC_SOURCE_RECEIPT_MAX_BYTES,
@@ -1505,7 +1573,7 @@ impl HybridRootBudgetScope {
                     self.plan.namespace, planned.output_ordinal
                 );
                 let _ = read_verified_production_artifact(
-                    &grant.receipt.output_root,
+                    grant.output_root(),
                     &name,
                     &actual.fingerprint,
                     MC_SOURCE_MAX_BYTES,
@@ -2007,7 +2075,7 @@ impl ProductionCoordinator {
                 && Path::new(&receipt.daemon.argv[4]) == receipt.socket,
             "Hybrid grant daemon did not select this owner configuration/socket",
         )?;
-        let grant = HybridProjectGrant {
+        let grant = HybridCiProjectGrant {
             project_identity: grant_path_identity(&receipt.project_root, true)?,
             output_identity: grant_path_identity(&receipt.output_root, true)?,
             socket_identity: grant_path_identity(&receipt.socket, false)?,
@@ -2021,7 +2089,7 @@ impl ProductionCoordinator {
         };
         grant.recheck(&self)?;
         grant.require_unused_snapshots(&format!("mw-hybrid-{}", &source_project_sha256[..20]))?;
-        self.hybrid_project_grant = Some(Arc::new(grant));
+        self.hybrid_project_grant = Some(Arc::new(HybridProjectGrant::Ci(Box::new(grant))));
         Ok(self)
     }
 
@@ -2077,20 +2145,15 @@ impl ProductionCoordinator {
         options: &FilmBuildOptions,
     ) -> NativeResult<HybridNativeSources> {
         let grant = self.hybrid_project_grant.as_ref().ok_or_else(|| {
-            invalid(
-                "Hybrid native sources require the original verified owner project-grant receipt",
-            )
+            invalid("Hybrid native sources require a retained observation of the authorized owner")
         })?;
         grant.recheck(self)?;
         let current = self.service.project(project_id).map_err(storage_error)?;
         require(
-            project_digest(&current)? == grant.receipt.source_project_sha256,
+            project_digest(&current)? == grant.project_sha256(),
             "Hybrid owner project grant belongs to another saved source",
         )?;
-        grant.require_unused_snapshots(&format!(
-            "mw-hybrid-{}",
-            &grant.receipt.source_project_sha256[..20]
-        ))?;
+        grant.require_unused_snapshots(&format!("mw-hybrid-{}", &grant.project_sha256()[..20]))?;
         let scoped =
             self.with_native_hybrid_scope(project_id, expected, deliverable_id, options)?;
         let scope = scoped

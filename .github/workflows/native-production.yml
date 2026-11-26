@@ -83,11 +83,11 @@ on:
       native_scenario:
         description: Existing contracts, focused Native mux source checks, or one original HyperFrames scenario
         type: choice
-        options: [contracts, hyperframes, mux-source]
+        options: [contracts, hyperframes, mux-source, hybrid-owner]
         default: contracts
         required: true
       expected_source_sha:
-        description: Exact canonical source SHA required only by mux-source
+        description: Exact canonical source SHA required by mux-source and hybrid-owner
         type: string
         required: false
       evidence_recipient_spki:
@@ -104,7 +104,7 @@ permissions:
 
 jobs:
   production-contracts:
-    if: github.event_name != 'workflow_dispatch' || inputs.native_scenario != 'mux-source'
+    if: github.event_name != 'workflow_dispatch' || (inputs.native_scenario != 'mux-source' && inputs.native_scenario != 'hybrid-owner')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -1025,5 +1025,82 @@ jobs:
         with:
           name: native-mux-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/native-mux-source-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: warn
+          retention-days: 14
+
+  local-hybrid-owner:
+    if: github.event_name == 'workflow_dispatch' && inputs.native_scenario == 'hybrid-owner'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    concurrency:
+      group: local-hybrid-owner-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_TERM_COLOR: never
+      MW_EXPECTED_SOURCE: ${{ inputs.expected_source_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check source and compile inputs before Native unit verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = seradotcom/motionwright
+          test "$GITHUB_REF" = refs/heads/integrate/phase1-final-composition-20261027
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_SHA" = "$MW_EXPECTED_SOURCE"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          python -B tooling/source_policy.py
+          python -B tooling/public_surface_policy.py
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: motionwright-native-mux-source-1.98.1
+          cache-on-failure: true
+      - name: Check retained local owner, preserved CI grant, and hybrid accounting
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p motionwright-native --lib hybrid_ -- --list \
+            2>&1 | tee "$RUNNER_TEMP/hybrid-owner-list.original.log"
+          cargo test --locked -p motionwright-native --lib hybrid_ -- --test-threads=1 \
+            2>&1 | tee "$RUNNER_TEMP/hybrid-owner-tests.original.log"
+          python -B - "$RUNNER_TEMP" <<'PY'
+          from pathlib import Path
+          import re,sys
+          root=Path(sys.argv[1])
+          listed=re.findall(r"(?m)^([\w:]+): test$", (root/"hybrid-owner-list.original.log").read_text())
+          text=(root/"hybrid-owner-tests.original.log").read_text()
+          rows=re.findall(r"(?m)^test ([\w:]+) \.\.\. (ok|FAILED|ignored)$", text)
+          local={name for name in listed if name.startswith("production::hybrid_owner::tests::")}
+          original={name for name in listed if name.startswith("production::hybrid_budget::hybrid_project_grant_tests::")}
+          budgets={name for name in listed if name.startswith("production::hybrid_budget::tests::")}
+          assert len(local)==7 and len(original)==6 and budgets, (local,original,budgets)
+          assert len(listed)==len(set(listed))==len(rows)
+          assert {name for name,state in rows}==set(listed)
+          assert all(state=="ok" for _,state in rows)
+          summaries=re.findall(r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; \d+ filtered out;",text)
+          assert summaries==[("ok",str(len(listed)),"0","0","0")],summaries
+          print(f"local-hybrid-owner source controls PASS: {len(listed)}; Native render NOT_RUN")
+          PY
+          cargo clippy --locked -p motionwright-native --all-targets -- -D warnings
+      - name: Retain original focused test output
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: local-hybrid-owner-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/hybrid-owner-*.original.log
           if-no-files-found: warn
           retention-days: 14

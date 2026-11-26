@@ -47,6 +47,7 @@ pub use graph_authoring::{
 };
 mod hybrid_budget;
 mod hybrid_mlt;
+mod hybrid_owner;
 mod hyperframes;
 pub use hybrid_budget::HybridNativeSources;
 pub use hybrid_mlt::{HybridNativeMaster, HybridNativeTimeline};

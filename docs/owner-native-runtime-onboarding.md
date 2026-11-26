@@ -40,3 +40,33 @@ bounded CLI --version probe requires an explicit owner flag. Results never
 promote independent product acceptance or claim that a real provider is ready.
 On Windows, owner connection replacement now preserves the previous
 reference if promoting a verified candidate fails.
+
+## Local hybrid owner observation for application integration
+
+The Native Foundation interface `ProductionCoordinator::with_local_hybrid_project_owner`
+accepts the current project ID, full revision stamp and the connection path already
+selected by the trusted application. On a Linux provider host it observes the
+existing closed hybrid owner layout (`project`, `output`, `runtime/broker.sock`
+and `config`). It requires the existing three-driver, network-off owner policy
+and both filesystem grants; it does not create or broaden that configuration.
+
+The observation retains file and directory handles, original configuration bytes,
+the selected connection and project digest. A bounded local socket connection
+sends no protocol request and identifies the actual peer with kernel credentials.
+The observed process must be the same live `semwrightd` generation running that
+configuration and socket. Rechecks refuse changed paths, files, permissions,
+process identity, project revision or source bytes. Existing source snapshots
+remain a refusal to replay, not permission to overwrite them.
+
+This interface performs no render, creates no accounting root and issues no
+application effect grant. Its caller must still obtain the normal one-time
+RenderLocal grant before the existing hybrid producer, which keeps its SDK
+permission checks, cumulative budget and unresolved-outcome fences. Unsupported
+hosts return an explicit error before local observation. No fallback turns a
+saved JSON report into live authority.
+
+The original CI grant entry point remains separate and keeps its run, source,
+SDK and original-receipt binding. A local source custody record identifies a
+local observation explicitly; it does not claim an original CI grant receipt.
+This Foundation API does not by itself complete the Studio hybrid creative
+journey or expand the current three-contribution renderer vocabulary.
