@@ -104,7 +104,7 @@ on:
         type: choice
         required: false
         default: all
-        options: [all, static-group, static-alignment, static-layout, follow, follow-ui, static-rotation, creative-batch, audio-cut, native-preview-blend, delivery-hero, measured-comparison, series-silence, camera-craft]
+        options: [all, static-group, static-alignment, static-layout, follow, follow-ui, static-rotation, creative-batch, audio-cut, native-preview-blend, delivery-hero, measured-comparison, series-silence, camera-craft, source-boards]
       interchange_case:
         description: One original Studio flow for native-otio-real-media; no other suites
         type: choice
@@ -586,6 +586,15 @@ jobs:
           cargo test --locked --jobs 2 -p motionwright-native --lib film::tests::saved_static_rotation_preserves_camera_translation_and_rejects_unsafe_geometry -- --exact --test-threads=1
           cargo check --locked --jobs 2 -p motionwright-native --example native-manim-camera-seed --example native-render-e2e
           cargo test --locked --jobs 2 -p motionwright-native --lib root_budget_productive_tests::saved_capture_ -- --test-threads=1
+      - name: Original registered capture boards and chronological source-state Film
+        if: inputs.first_use_case == 'source-boards'
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --jobs 2 -p motionwright-native --test stage_capture -- -D warnings
+          log="$RUNNER_TEMP/source-board-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.log"
+          cargo test --locked --jobs 2 -p motionwright-native --test stage_capture -- --test-threads=1 | tee "$log"
+          grep -F '2 passed; 0 failed; 0 ignored' "$log"
+          cargo test --locked --jobs 2 -p motionwright-service --test capture_source -- --test-threads=1
       - name: Build the exact-source StudioService test transport
         run: cargo build --locked --jobs 2 -p motionwright-service --example studio_review_session
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -605,6 +614,9 @@ jobs:
           mkdir -p "$MOTIONWRIGHT_SERVICE_TEST_TMPDIR"
           npm ci --no-audit --no-fund
           npx tsc -b
+          if test "$MOTIONWRIGHT_FIRST_USE_CASE" = source-boards; then
+            npx vitest run src/captureBoard.test.ts src/creativeWorkbenchDraft.test.ts src/profileComposition.test.ts src/craftLibrary.test.ts src/captureSource.test.ts
+          fi
           npx playwright install --with-deps chromium
           case "$MOTIONWRIGHT_FIRST_USE_CASE" in
             static-group)
@@ -622,6 +634,9 @@ jobs:
             static-rotation)
               specs=(tests/native-static-rotation-service.spec.ts tests/native-follow-service.spec.ts)
               selected_cases='saved shape rotation persists|saved Follow inherits translation' ;;
+            source-boards)
+              specs=(tests/source-board-service.spec.ts tests/craft-library.spec.ts)
+              selected_cases='.' ;;
             camera-craft)
               specs=(tests/camera-reframe-service.spec.ts tests/mask-window-service.spec.ts tests/craft-library.spec.ts)
               selected_cases='.' ;;
@@ -657,10 +672,12 @@ jobs:
           result = json.loads(Path(os.environ["PLAYWRIGHT_JSON_OUTPUT_FILE"]).read_text(encoding="utf-8"))
           stats = result["stats"]
           selection = os.environ["MOTIONWRIGHT_FIRST_USE_CASE"]
-          expected = {"all": 9, "static-group": 1, "static-alignment": 1, "static-layout": 2, "follow": 1, "follow-ui": 1, "static-rotation": 2, "creative-batch": 25, "audio-cut": 5, "native-preview-blend": 2, "delivery-hero": 7, "measured-comparison": 4, "series-silence": 5, "camera-craft": 13}[selection]
+          expected = {"all": 9, "static-group": 1, "static-alignment": 1, "static-layout": 2, "follow": 1, "follow-ui": 1, "static-rotation": 2, "creative-batch": 25, "audio-cut": 5, "native-preview-blend": 2, "delivery-hero": 7, "measured-comparison": 4, "series-silence": 5, "camera-craft": 13, "source-boards": 5}[selection]
           assert stats["expected"] == expected, stats
           assert all(stats.get(key, 0) == 0 for key in ("unexpected","flaky","skipped")), stats
-          if selection == "camera-craft":
+          if selection == "source-boards":
+              print(f"SOURCE_BOARD_STUDIO=PASS; cases={expected}; real_Service_SQLite_cases=1; browser_fixture_cases=4; original_capture_sources=SYNTHETIC_FIRST_PARTY; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+          elif selection == "camera-craft":
               print(f"CAMERA_MASK_GRAPH_STUDIO=PASS; cases={expected}; real_Service_SQLite_cases=9; browser_fixture_cases=4; original_source=SYNTHETIC; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           elif selection == "series-silence":
               print(f"SERIES_SILENCE_STUDIO=PASS; cases={expected}; real_Service_SQLite_cases=2; browser_fixture_cases=3; original_source=SYNTHETIC; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
