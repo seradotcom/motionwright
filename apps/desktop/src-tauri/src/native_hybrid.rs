@@ -389,7 +389,7 @@ mod tests {
                 .apply(
                     project.id,
                     &project.stamp(),
-                    "fixture-scene",
+                    &format!("fixture-scene-{index}"),
                     &Change::AddScene {
                         name: format!("Scene {index}"),
                         objective: "Original intent".into(),
