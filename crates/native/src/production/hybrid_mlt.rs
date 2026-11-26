@@ -12,10 +12,10 @@ use semwright_video_domain::native_observation::{
     ObservationProfile, PNG_LIMIT, REPORT_LIMIT, parse_complete_observation,
 };
 
-const FRAME_COUNT: u64 = 180;
+pub(super) const FRAME_COUNT: u64 = 180;
 const CLIP_FRAMES: u64 = 60;
-const MEDIA_MAX_BYTES: u64 = 256_000_000;
-const MASTER_MAX_BYTES: u64 = 32 * 1024 * 1024;
+pub(super) const MEDIA_MAX_BYTES: u64 = 256_000_000;
+pub(super) const MASTER_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const REPORT_MAX_BYTES: u64 = REPORT_LIMIT as u64;
 const PNG_MAX_BYTES: u64 = PNG_LIMIT as u64;
 const NATIVE_INPUT_MAX_BYTES: u64 = 8 * 1024 * 1024;
@@ -874,7 +874,6 @@ impl ProductionCoordinator {
         audio: &MltAudioArtifact,
     ) -> NativeResult<HybridNativeMaster> {
         let scoped = self.hybrid_mlt_scope(sources)?;
-        let request = &sources.request_prefix;
         let output = &scoped.client.connection().output_root;
         require(
             timeline.project_sha256 == sources.project_sha256
@@ -938,17 +937,13 @@ impl ProductionCoordinator {
         )?;
         let master_path = format!("{}-master.mp4", sources.namespace);
         let original = scoped
-            .execute(
-                sources.project.id,
-                &sources.expected,
-                &format!("{request}:mlt:mux"),
-                "driver.mlt-video.av.mux",
+            .execute_hybrid_master_mux(
+                sources,
                 json!({"video_root":"output","video_path":visual.path,"video_sha256":visual.sha256,
                 "audio_root":"output","audio_path":audio.relative_path,"audio_sha256":audio.sha256,
                 "width":1920,"height":1080,"fps_num":30,"fps_den":1,"frame_count":FRAME_COUNT,
                 "sample_rate":48_000,"channels":2,"profile":"h264-aac-mp4",
                 "output_path":master_path,"max_bytes":MASTER_MAX_BYTES}),
-                true,
             )
             .await?;
         let master = response_data(&original)?;

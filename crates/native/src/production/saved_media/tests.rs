@@ -19,6 +19,14 @@ impl Fixture {
     }
 
     fn configured(captioned: bool, targeted: bool) -> Self {
+        Self::configured_kind(captioned, targeted, false)
+    }
+
+    fn hybrid() -> Self {
+        Self::configured_kind(false, false, true)
+    }
+
+    fn configured_kind(captioned: bool, targeted: bool, hybrid: bool) -> Self {
         let root = tempfile::tempdir().unwrap();
         let service = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
         let mut project = service
@@ -89,8 +97,10 @@ impl Fixture {
         )
         .unwrap();
         let video = b"SYNTHETIC-VIDEO-NOT-DECODABLE";
-        let audio = synthetic_stereo(96_000, true);
-        let decoded = synthetic_stereo(96_128, true);
+        let frame_count = if hybrid { 180_u32 } else { 60 };
+        let samples = frame_count * 1_600;
+        let audio = synthetic_stereo(samples, true);
+        let decoded = synthetic_stereo(samples + 128, true);
         let video_sha = hex::encode(Sha256::digest(video));
         let audio_sha = hex::encode(Sha256::digest(&audio));
         let decoded_sha = hex::encode(Sha256::digest(&decoded));
@@ -101,17 +111,27 @@ impl Fixture {
         let args = json!({
             "video_root":"output","video_path":"original.mkv","video_sha256":video_sha,
             "audio_root":"output","audio_path":"original.wav","audio_sha256":audio_sha,
-            "width":profile.width,"height":profile.height,"fps_num":30,"fps_den":1,"frame_count":60,
+            "width":profile.width,"height":profile.height,"fps_num":30,"fps_den":1,"frame_count":frame_count,
             "sample_rate":48000,"channels":2,"profile":"h264-aac-mp4","output_path":"original.mp4",
-            "max_bytes":MLT_MASTER_MAX_BYTES,
+            "max_bytes":if hybrid { super::super::hybrid_mlt::MASTER_MAX_BYTES } else { MLT_MASTER_MAX_BYTES },
         });
-        let context =
-            SavedMasterReceiptContext::new(&coordinator, &project, profile.id, &args).unwrap();
+        let context = if hybrid {
+            SavedMasterReceiptContext::for_source(
+                &coordinator,
+                &project,
+                profile.id,
+                &args,
+                HYBRID_CONTEXT_SCHEMA,
+            )
+            .unwrap()
+        } else {
+            SavedMasterReceiptContext::new(&coordinator, &project, profile.id, &args).unwrap()
+        };
         let data = json!({
-            "profile":"h264-aac-mp4","frame_count":60,"fps_num":30,"fps_den":1,"sample_rate":48000,"channels":2,
-            "audio_sample_frames":96128,"decoded_audio_sample_frames":96128,
+            "profile":"h264-aac-mp4","frame_count":frame_count,"fps_num":30,"fps_den":1,"sample_rate":48000,"channels":2,
+            "audio_sample_frames":samples+128,"decoded_audio_sample_frames":samples+128,
             "media":{"video":true,"audio":true,"width":profile.width,"height":profile.height,
-                "frames":60,"duration_num":2000,"duration_den":1000,"codecs":["h264","aac"]},
+                "frames":frame_count,"duration_num":frame_count/30*1000,"duration_den":1000,"codecs":["h264","aac"]},
             "decoded_audio_media":{"video":false,"audio":true,"codecs":["pcm_s16le"]},
             "artifact":{"root":"output","path":"original.mp4","sha256":hex::encode(Sha256::digest(&bytes)),"bytes":bytes.len()},
             "decoded_audio":{"root":"output","path":"decoded.wav","sha256":decoded_sha,"bytes":decoded.len()},
@@ -512,6 +532,191 @@ fn saved_delivery_refuses_recorded_lost_right_channel_and_keeps_unknown_unresolv
     f.append("outcome_unknown", json!({"error":"original unresolved"}));
     let before = f.service.production_receipts(f.project.id, 256).unwrap();
     assert!(!f.qualify(selected.id).err().unwrap().outcome_known);
+    assert_eq!(
+        f.service.production_receipts(f.project.id, 256).unwrap(),
+        before
+    );
+    assert_eq!(f.coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn saved_hybrid_master_reopens_and_qualifies_without_restoring_native_authority() {
+    let f = Fixture::hybrid();
+    assert_eq!(f.context.maximum_bytes().unwrap(), 32 * 1024 * 1024);
+    let selected = f.seed(|_, _| {});
+    let before = f.service.production_receipts(f.project.id, 256).unwrap();
+    let connection = f.coordinator.client.connection().clone();
+    let Fixture {
+        root,
+        service,
+        coordinator,
+        project,
+        bytes,
+        ..
+    } = f;
+    drop(coordinator);
+    drop(service);
+    let service = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
+    let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+    let inventory = coordinator
+        .saved_master_receipt_inventory(project.id, &project.stamp(), project.deliverables[0].id)
+        .unwrap();
+    assert_eq!(inventory.items.len(), 1);
+    assert_eq!(inventory.items[0].mux_receipt_id, selected.id);
+    assert_eq!(inventory.items[0].frame_count, 180);
+    let public = serde_json::to_string(&inventory).unwrap();
+    for private in [
+        "original.mp4",
+        "owner-output",
+        "connection",
+        "grant",
+        "budget",
+    ] {
+        assert!(!public.contains(private), "{private}");
+    }
+    let master_sha = hex::encode(Sha256::digest(&bytes));
+    let review = coordinator
+        .recover_saved_master_review(
+            project.id,
+            &project.stamp(),
+            selected.id,
+            project.deliverables[0].id,
+            &master_sha,
+        )
+        .unwrap();
+    let delivery = coordinator
+        .qualify_saved_master_delivery(
+            project.id,
+            &project.stamp(),
+            selected.id,
+            project.deliverables[0].id,
+            &master_sha,
+        )
+        .unwrap();
+    assert_eq!(review.clock(), (30, 1, 180));
+    assert_eq!(delivery.original().clock(), review.clock());
+    assert_eq!(delivery.original().artifact(), review.artifact());
+    assert_eq!(
+        service.production_receipts(project.id, 256).unwrap(),
+        before
+    );
+    assert_eq!(service.project(project.id).unwrap(), project);
+    let roots: i64 = rusqlite::Connection::open(root.path().join("studio.sqlite3"))
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM production_operation_roots",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(roots, 0);
+    assert!(coordinator.active_hybrid_budget.is_none());
+    assert!(coordinator.hybrid_project_grant.is_none());
+    assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn saved_hybrid_master_keeps_closed_budget_clock_source_and_original_history() {
+    let f = Fixture::hybrid();
+    for (key, value) in [
+        ("max_bytes", json!(MLT_MASTER_MAX_BYTES)),
+        ("frame_count", json!(181)),
+        ("fps_num", json!(60)),
+        ("fps_den", json!(2)),
+        ("width", json!(1280)),
+        ("height", json!(720)),
+        ("video_root", json!("project")),
+    ] {
+        let mut context = f.context.clone();
+        context.args[key] = value;
+        assert!(
+            context.check_current(&f.coordinator, &f.project).is_err(),
+            "{key}"
+        );
+    }
+    let mut missing = f.context.clone();
+    let args = missing.args.as_object_mut().unwrap();
+    args.remove("frame_count");
+    args.insert("foreign_key".into(), json!(180));
+    assert!(missing.check_current(&f.coordinator, &f.project).is_err());
+    let mut ordinary = f.context.clone();
+    ordinary.schema = CONTEXT_SCHEMA.into();
+    assert!(ordinary.check_current(&f.coordinator, &f.project).is_err());
+    for variant in 0..7 {
+        let f = Fixture::hybrid();
+        let selected = f.seed(|intent, result| match variant {
+            0 => {
+                intent.as_object_mut().unwrap().remove(CONTEXT_KEY);
+                result.as_object_mut().unwrap().remove(CONTEXT_KEY);
+            }
+            1 => {
+                intent[CONTEXT_KEY]["schema"] = json!(CONTEXT_SCHEMA);
+                result[CONTEXT_KEY]["schema"] = json!(CONTEXT_SCHEMA);
+            }
+            2 => {
+                result["result"]["data"]["artifact"]["bytes"] = json!(32 * 1024 * 1024 + 1_u64);
+            }
+            3 => {
+                result["result"]["data"]["decoded_audio"]["bytes"] =
+                    json!(32 * 1024 * 1024 + 1_u64);
+            }
+            4 => {
+                result[CONTEXT_KEY]["project_sha256"] = json!("f".repeat(64));
+            }
+            5 => {
+                result["result"]["provenance_checked"] = json!(false);
+            }
+            _ => {}
+        });
+        if variant == 6 {
+            f.append(
+                "outcome_unknown",
+                json!({"error":"original hybrid outcome unresolved"}),
+            );
+        }
+        let before = f.service.production_receipts(f.project.id, 256).unwrap();
+        let error = f.recover(selected.id).err().unwrap();
+        if variant == 6 {
+            assert!(!error.outcome_known);
+        }
+        assert!(f.qualify(selected.id).is_err(), "variant {variant}");
+        assert_eq!(
+            f.service.production_receipts(f.project.id, 256).unwrap(),
+            before
+        );
+        assert_eq!(f.service.project(f.project.id).unwrap(), f.project);
+        assert_eq!(f.coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn saved_hybrid_master_checks_actual_file_sizes_and_preserves_read_only_review() {
+    let f = Fixture::hybrid();
+    let selected = f.seed(|_, _| {});
+    let before = f.service.production_receipts(f.project.id, 256).unwrap();
+    let root = &f.coordinator.client.connection().output_root;
+    let audio = root.join("original.wav");
+    let bytes = fs::metadata(&audio).unwrap().len();
+    let sha = f.context.args["audio_sha256"].as_str().unwrap();
+    let bounded =
+        super::super::mlt_multisegment_av::open_verified_mux_wav_with_limit(&audio, sha, bytes - 1);
+    assert!(bounded.err().unwrap().to_string().contains("file budget"));
+    assert!(
+        super::super::mlt_multisegment_av::open_verified_mux_wav_with_limit(&audio, sha, bytes,)
+            .is_ok()
+    );
+    let mut changed = fs::read(&audio).unwrap();
+    changed[44] ^= 1;
+    fs::write(&audio, changed).unwrap();
+    assert!(f.recover(selected.id).is_ok());
+    assert!(f.qualify(selected.id).is_err());
+    fs::OpenOptions::new()
+        .write(true)
+        .open(root.join("original.mp4"))
+        .unwrap()
+        .set_len(32 * 1024 * 1024 + 1)
+        .unwrap();
+    assert!(f.recover(selected.id).is_err());
     assert_eq!(
         f.service.production_receipts(f.project.id, 256).unwrap(),
         before

@@ -230,6 +230,17 @@ pub(super) fn verify_mux_artifact_file(
     output_root: &std::path::Path,
     artifact: &Value,
 ) -> NativeResult<()> {
+    verify_mux_artifact_file_with_limit(output_root, artifact, MLT_MASTER_MAX_BYTES)
+}
+
+pub(super) fn verify_mux_artifact_file_with_limit(
+    output_root: &std::path::Path,
+    artifact: &Value,
+    maximum: u64,
+) -> NativeResult<()> {
+    if !(1..=MLT_MASTER_MAX_BYTES).contains(&maximum) {
+        return Err(backend("Native mux artifact has an invalid file budget"));
+    }
     if artifact.get("root").and_then(Value::as_str) != Some("output") {
         return Err(backend(
             "Native mux artifact is outside the owner output root",
@@ -240,9 +251,9 @@ pub(super) fn verify_mux_artifact_file(
     let bytes = artifact
         .get("bytes")
         .and_then(Value::as_u64)
-        .filter(|n| (1..=MLT_MASTER_MAX_BYTES).contains(n))
+        .filter(|n| (1..=maximum).contains(n))
         .ok_or_else(|| backend("Native mux artifact byte count is missing"))?;
-    let path = verify_output_artifact(output_root, &relative, &sha256, MLT_MASTER_MAX_BYTES)?;
+    let path = verify_output_artifact(output_root, &relative, &sha256, maximum)?;
     if fs::metadata(path)
         .map_err(|_| backend("Native mux artifact became inaccessible"))?
         .len()
@@ -263,8 +274,19 @@ pub(super) fn open_verified_mux_wav(
     path: &std::path::Path,
     expected_sha256: &str,
 ) -> NativeResult<semwright_audio_domain::wav::WaveReader<std::fs::File>> {
+    open_verified_mux_wav_with_limit(path, expected_sha256, MLT_MASTER_MAX_BYTES)
+}
+
+pub(super) fn open_verified_mux_wav_with_limit(
+    path: &std::path::Path,
+    expected_sha256: &str,
+    maximum: u64,
+) -> NativeResult<semwright_audio_domain::wav::WaveReader<std::fs::File>> {
     use std::io::{Read as _, Seek as _};
 
+    if !(44..=MLT_MASTER_MAX_BYTES).contains(&maximum) {
+        return Err(backend("Native AV WAV has an invalid file budget"));
+    }
     if !sha256_literal(expected_sha256) {
         return Err(backend(
             "Native AV source/decoded WAV SHA-256 is not bounded",
@@ -276,7 +298,7 @@ pub(super) fn open_verified_mux_wav(
         .metadata()
         .map_err(|_| backend("Native AV WAV descriptor has no original size"))?
         .len();
-    if !(44..=MLT_MASTER_MAX_BYTES).contains(&size) {
+    if !(44..=maximum).contains(&size) {
         return Err(backend(
             "Native AV source/decoded WAV exceeds the exact file budget",
         ));
@@ -304,7 +326,7 @@ pub(super) fn open_verified_mux_wav(
     }
     file.seek(std::io::SeekFrom::Start(0))
         .map_err(|_| backend("Native AV WAV original descriptor could not rewind"))?;
-    semwright_audio_domain::wav::WaveReader::open(file, MLT_MASTER_MAX_BYTES)
+    semwright_audio_domain::wav::WaveReader::open(file, maximum)
         .map_err(|_| backend("Native AV WAV is not a complete bounded PCM source"))
 }
 

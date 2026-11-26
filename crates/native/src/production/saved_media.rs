@@ -12,6 +12,7 @@ pub use delivery::VerifiedSavedMasterDelivery;
 const COMMAND: &str = "driver.mlt-video.av.mux";
 const CONTEXT_KEY: &str = "original_media_reopen";
 const CONTEXT_SCHEMA: &str = "motionwright.original-media-reopen/1";
+const HYBRID_CONTEXT_SCHEMA: &str = "motionwright.original-hybrid-media-reopen/1";
 const MAX_HINTS: usize = 32;
 
 pub struct VerifiedOriginalMasterReview {
@@ -81,8 +82,18 @@ impl SavedMasterReceiptContext {
         deliverable_id: Uuid,
         args: &Value,
     ) -> NativeResult<Self> {
+        Self::for_source(coordinator, project, deliverable_id, args, CONTEXT_SCHEMA)
+    }
+
+    fn for_source(
+        coordinator: &ProductionCoordinator,
+        project: &Project,
+        deliverable_id: Uuid,
+        args: &Value,
+        schema: &str,
+    ) -> NativeResult<Self> {
         let context = Self {
-            schema: CONTEXT_SCHEMA.into(),
+            schema: schema.into(),
             project_sha256: source_digest(project)?,
             deliverable_id,
             connection_identity: coordinator.client.connection().identity()?,
@@ -90,6 +101,23 @@ impl SavedMasterReceiptContext {
         };
         context.check_current(coordinator, project)?;
         Ok(context)
+    }
+
+    fn maximum_bytes(&self) -> NativeResult<u64> {
+        match self.schema.as_str() {
+            CONTEXT_SCHEMA => Ok(MLT_MASTER_MAX_BYTES),
+            HYBRID_CONTEXT_SCHEMA => Ok(super::hybrid_mlt::MASTER_MAX_BYTES),
+            _ => Err(invalid("Original media context schema is unsupported")),
+        }
+    }
+
+    fn source_video_maximum_bytes(&self) -> NativeResult<u64> {
+        self.maximum_bytes()?;
+        Ok(if self.schema == HYBRID_CONTEXT_SCHEMA {
+            super::hybrid_mlt::MEDIA_MAX_BYTES
+        } else {
+            MLT_MEZZANINE_MAX_BYTES
+        })
     }
 
     fn from_receipt(receipt: &ProductionReceipt) -> NativeResult<Option<Self>> {
@@ -118,7 +146,7 @@ impl SavedMasterReceiptContext {
         }
         let context: Self = serde_json::from_value(value.clone())
             .map_err(|_| invalid("Original media context fields are invalid"))?;
-        if context.schema != CONTEXT_SCHEMA
+        if context.maximum_bytes().is_err()
             || !is_sha256(&context.project_sha256)
             || !is_sha256(&context.connection_identity)
             || context.deliverable_id.is_nil()
@@ -199,7 +227,14 @@ impl SavedMasterReceiptContext {
             }
             _ => false,
         };
-        if self.schema != CONTEXT_SCHEMA
+        let maximum = self.maximum_bytes()?;
+        if (self.schema == HYBRID_CONTEXT_SCHEMA
+            && (args.get("frame_count").and_then(Value::as_u64)
+                != Some(super::hybrid_mlt::FRAME_COUNT)
+                || args.get("width").and_then(Value::as_u64) != Some(1920)
+                || args.get("height").and_then(Value::as_u64) != Some(1080)
+                || args.get("fps_num").and_then(Value::as_u64) != Some(30)
+                || args.get("fps_den").and_then(Value::as_u64) != Some(1)))
             || self.project_sha256 != project_digest
             || self.connection_identity != connection_identity
             || args.len() != KEYS.len()
@@ -209,7 +244,7 @@ impl SavedMasterReceiptContext {
             || args["profile"] != "h264-aac-mp4"
             || args["sample_rate"] != 48_000
             || args["channels"] != 2
-            || args["max_bytes"].as_u64() != Some(MLT_MASTER_MAX_BYTES)
+            || args["max_bytes"].as_u64() != Some(maximum)
             || args["width"].as_u64() != Some(u64::from(profile.width))
             || args["height"].as_u64() != Some(u64::from(profile.height))
             || !same_rate
@@ -275,6 +310,18 @@ impl SavedMasterReceiptContext {
         let data = result
             .get("data")
             .ok_or_else(|| backend("Original media data is absent"))?;
+        let maximum = self.maximum_bytes()?;
+        for pointer in ["/artifact/bytes", "/decoded_audio/bytes"] {
+            if data
+                .pointer(pointer)
+                .and_then(Value::as_u64)
+                .is_none_or(|bytes| !(1..=maximum).contains(&bytes))
+            {
+                return Err(invalid(
+                    "Original mux result exceeds its selected byte budget",
+                ));
+            }
+        }
         let a = &self.args;
         super::mlt_multisegment_av::verify_exact_native_mux(
             data,
@@ -401,6 +448,32 @@ impl ProductionCoordinator {
             project.id,
             expected,
             request_id,
+            (COMMAND, true),
+            args,
+            Some(ReceiptDispatchContext::SavedMaster(context)),
+        )
+        .await
+        .map(ReceiptExecutionOutcome::into_legacy_value)
+    }
+
+    /// Only the sealed original hybrid continuation can attach this context.
+    /// Existing dispatch, grants, root accounting and anti-replay stay shared.
+    pub(super) async fn execute_hybrid_master_mux(
+        &self,
+        sources: &super::hybrid_budget::HybridNativeSources,
+        args: Value,
+    ) -> NativeResult<Value> {
+        let context = SavedMasterReceiptContext::for_source(
+            self,
+            &sources.project,
+            sources.deliverable_id,
+            &args,
+            HYBRID_CONTEXT_SCHEMA,
+        )?;
+        self.execute_with_receipt_origin_context(
+            sources.project.id,
+            &sources.expected,
+            &format!("{}:mlt:mux", sources.request_prefix),
             (COMMAND, true),
             args,
             Some(ReceiptDispatchContext::SavedMaster(context)),
@@ -584,20 +657,17 @@ impl ProductionCoordinator {
             .get("sha256")
             .and_then(Value::as_str)
             .ok_or_else(|| invalid("Saved original hash is absent"))?;
+        let maximum = context.maximum_bytes()?;
         let bytes = artifact
             .get("bytes")
             .and_then(Value::as_u64)
-            .filter(|n| (12..=MLT_MASTER_MAX_BYTES).contains(n))
+            .filter(|n| (12..=maximum).contains(n))
             .ok_or_else(|| invalid("Saved original length is invalid"))?;
         if sha != expected_master_sha256 {
             return Err(invalid("Saved original hash differs from selection"));
         }
-        let verified = verify_output_artifact(
-            &self.client.connection().output_root,
-            path,
-            sha,
-            MLT_MASTER_MAX_BYTES,
-        )?;
+        let verified =
+            verify_output_artifact(&self.client.connection().output_root, path, sha, maximum)?;
         if fs::metadata(verified)
             .map_err(|_| backend("Saved original file is unavailable"))?
             .len()

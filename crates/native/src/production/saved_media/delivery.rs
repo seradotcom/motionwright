@@ -62,6 +62,7 @@ impl ProductionCoordinator {
         )?;
         let data = context.original(&receipt)?;
         let root = &self.client.connection().output_root;
+        let maximum = context.maximum_bytes()?;
         verify_output_artifact(
             root,
             context.args["video_path"]
@@ -70,7 +71,7 @@ impl ProductionCoordinator {
             context.args["video_sha256"]
                 .as_str()
                 .ok_or_else(|| invalid("Original video identity is absent"))?,
-            MLT_MEZZANINE_MAX_BYTES,
+            context.source_video_maximum_bytes()?,
         )?;
         let source_sha = context.args["audio_sha256"]
             .as_str()
@@ -81,12 +82,14 @@ impl ProductionCoordinator {
                 .as_str()
                 .ok_or_else(|| invalid("Original audio is absent"))?,
             source_sha,
-            MLT_MASTER_MAX_BYTES,
+            maximum,
         )?;
         let decoded = data
             .get("decoded_audio")
             .ok_or_else(|| invalid("Original decoded audio is absent"))?;
-        super::super::mlt_multisegment_av::verify_mux_artifact_file(root, decoded)?;
+        super::super::mlt_multisegment_av::verify_mux_artifact_file_with_limit(
+            root, decoded, maximum,
+        )?;
         let decoded_sha = required_string(
             decoded,
             "/sha256",
@@ -96,12 +99,18 @@ impl ProductionCoordinator {
             root,
             &required_string(decoded, "/path", "Original decoded audio path is absent")?,
             &decoded_sha,
-            MLT_MASTER_MAX_BYTES,
+            maximum,
         )?;
-        let source =
-            super::super::mlt_multisegment_av::open_verified_mux_wav(&source_path, source_sha)?;
-        let decoded =
-            super::super::mlt_multisegment_av::open_verified_mux_wav(&decoded_path, &decoded_sha)?;
+        let source = super::super::mlt_multisegment_av::open_verified_mux_wav_with_limit(
+            &source_path,
+            source_sha,
+            maximum,
+        )?;
+        let decoded = super::super::mlt_multisegment_av::open_verified_mux_wav_with_limit(
+            &decoded_path,
+            &decoded_sha,
+            maximum,
+        )?;
         let samples = source.info().frames;
         let (num, den, frames) = original.clock();
         // Match the producer's <= one 48 kHz sample alignment policy exactly.

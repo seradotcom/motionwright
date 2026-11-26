@@ -402,7 +402,7 @@ jobs:
           cargo test --locked --jobs 2 -p motionwright-native --lib original_master_review -- --test-threads=1 | tee "$log"
           grep -F '3 passed; 0 failed; 0 ignored' "$log"
           cargo test --locked --jobs 2 -p motionwright-native --lib production::saved_media::tests:: -- --test-threads=1 | tee "$log"
-          grep -F '9 passed; 0 failed; 0 ignored' "$log"
+          grep -F '12 passed; 0 failed; 0 ignored' "$log"
           cargo clippy --locked --jobs 2 -p motionwright-native --lib -- -D warnings
           cargo test --locked --jobs 2 -p motionwright-native --lib root_budget_productive_tests:: -- --test-threads=1 | tee "$log"
           grep -F 'productive_shared_custody_retains_only_original_store_and_connection ... ok' "$log"
@@ -417,9 +417,12 @@ jobs:
           set -euo pipefail
           log="$RUNNER_TEMP/saved-delivery-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.log"
           cargo test --locked --jobs 2 -p motionwright-native --lib production::saved_media::tests:: -- --test-threads=1 | tee "$log"
-          grep -F '9 passed; 0 failed; 0 ignored' "$log"
+          grep -F '12 passed; 0 failed; 0 ignored' "$log"
           cargo test --locked --jobs 2 -p motionwright-native --lib saved_delivery_audio_ -- --test-threads=1 | tee "$log"
           grep -F '1 passed; 0 failed; 0 ignored' "$log"
+          # Compile-compatible consumer coverage omitted by the prior incorrect module filter.
+          cargo test --locked --jobs 2 -p motionwright-native --lib production::blender_original::product::tests:: -- --test-threads=1 | tee "$log"
+          grep -E 'test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "$log"
           cargo clippy --locked --jobs 2 -p motionwright-native --lib -- -D warnings
           cargo test --locked --jobs 2 -p motionwright-desktop effect_grants -- --test-threads=1
       - name: Original workflow completion read and durable no-replay regressions
@@ -606,7 +609,8 @@ jobs:
           cargo clippy --locked --jobs 2 -p motionwright-native --all-targets -- -D warnings
           cargo test --locked --jobs 2 -p motionwright-native --lib hybrid_ -- --test-threads=1
           cargo test --locked --jobs 2 -p motionwright-native --lib blender_product_scene -- --test-threads=1
-          cargo test --locked --jobs 2 -p motionwright-native --lib production::blender_product_consumer:: -- --test-threads=1
+          cargo test --locked --jobs 2 -p motionwright-native --lib production::blender_original::product::tests:: -- --test-threads=1 | tee "$RUNNER_TEMP/spatial-consumer-tests.original.log"
+          grep -E 'test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "$RUNNER_TEMP/spatial-consumer-tests.original.log"
           cargo test --locked --jobs 2 -p motionwright-native --test blender_studio_recipe -- --test-threads=1
       - name: Original registered capture boards and chronological source-state Film
         if: inputs.first_use_case == 'source-boards'

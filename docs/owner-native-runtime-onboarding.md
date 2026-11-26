@@ -70,3 +70,14 @@ SDK and original-receipt binding. A local source custody record identifies a
 local observation explicitly; it does not claim an original CI grant receipt.
 This Foundation API does not by itself complete the Studio hybrid creative
 journey or expand the current three-contribution renderer vocabulary.
+
+
+Newly produced hybrid masters retain their own bounded reopen context in the
+original mux intent and terminal result. The existing saved-master inventory,
+read-only player and fresh-delivery qualification can recover that original
+after all Store/coordinator instances are closed. Hybrid context keeps the
+180-frame source and 32 MiB master budget; ordinary masters retain their existing
+limits. Delivery still verifies the original video, source WAV, decoded PCM and
+current project/owner before a new destination grant. Historical muxes without
+that context remain unavailable to this reader; no receipt is backfilled and no
+old production permission, accounting root or unresolved outcome is restored.
