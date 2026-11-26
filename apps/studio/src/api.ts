@@ -29,6 +29,7 @@ import { applyDistillationChange, validateDistillations } from "./componentDisti
 import { applyProductStageChange, validateProductStages } from "./productStage";
 import { applyCameraReframeChange, validateCameraReframes } from "./cameraReframe";
 import { applyStageCaptureChange, validateStageCaptureCards } from "./stageCapture";
+import { applyCaptureBoardChange,validateCaptureBoards } from "./captureBoard";
 import { registerCaptureRecord, validateCaptureRecords } from "./captureSource";
 import { registerIdentityOrigin, revokeIdentityOrigin, validateIdentityRegistry } from "./identityOrigin";
 import { applyMeasuredTable, applyMeasuredBinding, detachMeasuredBinding, validateMeasuredData } from "./measuredData";
@@ -1554,6 +1555,10 @@ async function simulateChange(project: Project, change: Change, requestId: strin
     case "detach_camera_reframe":
       applyCameraReframeChange(next,change);
       break;
+    case "upsert_capture_board":
+    case "remove_capture_board":
+      await applyCaptureBoardChange(next,change);
+      break;
     case "bind_stage_capture":
     case "detach_stage_capture":
       await applyStageCaptureChange(next,change);
@@ -2582,6 +2587,7 @@ async function finishSimulatedChange(next: Project, change: Change, record: bool
   validateCaptureRecords(next);
   validateIdentityRegistry(next);
   await validateStageCaptureCards(next);
+  await validateCaptureBoards(next);
   validateMeasuredData(next);
   validateMetricSourceNoticesOnEdit(next);
   await validateEvaluatorState(next);

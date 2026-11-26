@@ -36,7 +36,7 @@ describe("first-party craft definitions",()=>{
     }
   });
   it("refuses a spec-only preview rather than using another component",async()=>{
-    await expect(realizeCraftExample(craftDefinition("motionwright.layout.reference-board")!,1920,1080)).rejects.toThrow(/real source/);
+    await expect(realizeCraftExample(craftDefinition("motionwright.camera.arc-reveal")!,1920,1080)).rejects.toThrow(/real source/);
   });
   it("routes both typed Graph definitions to their real source editor without claiming admission",()=>{
     for(const [id,kind] of [["motionwright.data.causal-diagram","causal_diagram"],["motionwright.data.system-flow","system_flow"]] as const){

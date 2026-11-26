@@ -316,6 +316,41 @@ pub(crate) fn responsive_scene(
         output.nodes =
             merge_component_nodes(&field.baseline, &output.nodes, &incoming).map_err(domain)?;
     }
+    if let Some(board) = project
+        .production_design
+        .capture_boards
+        .iter()
+        .find(|board| board.scene_id == scene.id)
+    {
+        board.validate_scene(project, scene).map_err(domain)?;
+        if resized {
+            let mut incoming = board
+                .realize(project, profile.width, profile.height)
+                .map_err(domain)?;
+            let sx = f64::from(profile.width) / 1920.0;
+            let sy = f64::from(profile.height) / 1080.0;
+            let scale = sx.min(sy);
+            for node in &mut incoming {
+                let cx = node.x + node.width / 2.0;
+                let cy = node.y + node.height / 2.0;
+                node.width /= scale;
+                node.height /= scale;
+                node.x = cx / sx - node.width / 2.0;
+                node.y = cy / sy - node.height / 2.0;
+                if let Some(font) = &mut node.style.font_size {
+                    *font /= scale;
+                }
+                node.property_locks = scene
+                    .nodes
+                    .iter()
+                    .find(|source| source.id == node.id)
+                    .expect("validated original board identity")
+                    .property_locks
+                    .clone();
+            }
+            output.nodes = incoming;
+        }
+    }
     // Resolve effective copy once. Do not reapply the unwrapped delivery map.
     for node in &mut output.nodes {
         if let Some((copy, layout, headline)) = wrapped_overrides.get(&node.id) {

@@ -2,6 +2,7 @@ import type { CanvasNode, DeliverableProfile, Project, Scene } from "./types";
 import { heroNodeId, mergeComponentNodes, realizeProductHero } from "./creativeProduction";
 import { realizeProceduralFieldForOutput } from "./proceduralField";
 import { sampledSceneCamera,CAMERA_DETAIL_RETURN_VERSION,validateCameraDetailReturnBounds } from "./cameraReframe";
+import { realizeCaptureBoard,validateCaptureBoardScene } from "./captureBoard";
 import { previewTransform } from "./canvasMotion";
 import { resolveCanvasRelations } from "./canvasFollow";
 import { alignmentScale } from "./canvasAlignment";
@@ -97,6 +98,21 @@ export async function reflowSceneForProfile(project: Project, scene: Scene, prof
   if (field) {
     const incoming = await realizeProceduralFieldForOutput(field.id, field.config, profile.width, profile.height);
     output.nodes = mergeComponentNodes(field.baseline, output.nodes, incoming);
+  }
+  const board=project.production_design?.capture_boards?.find(item=>item.scene_id===scene.id);
+  if(board){
+    await validateCaptureBoardScene(project,board,scene);
+    if(resized){
+      const nodes=await realizeCaptureBoard(project,board,profile.width,profile.height);
+      const sx=profile.width/1920,sy=profile.height/1080,scale=Math.min(sx,sy);
+      for(const node of nodes){
+        const cx=node.x+node.width/2,cy=node.y+node.height/2;
+        node.width/=scale;node.height/=scale;node.x=cx/sx-node.width/2;node.y=cy/sy-node.height/2;
+        if(node.style.font_size!==null)node.style.font_size/=scale;
+        node.property_locks=scene.nodes.find(source=>source.id===node.id)!.property_locks.slice();
+      }
+      output.nodes=nodes;
+    }
   }
   for (const node of output.nodes) {
     const wrapped = wrappedOverrides.get(node.id);

@@ -53,6 +53,9 @@ pub struct ProductionDesign {
     /// ProductStage cards. No asset URI/code is stored or executed here.
     #[serde(default)]
     pub stage_capture_cards: Vec<StageCaptureCard>,
+    /// Optional original two-source layouts; legacy wire remains unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capture_boards: Vec<CaptureBoard>,
     /// Versioned, source-bound measured JSON/CSV tables (not live external feeds).
     #[serde(default)]
     pub measured_tables: Vec<MeasuredTable>,

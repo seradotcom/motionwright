@@ -50,6 +50,8 @@ export default function ProgramDesignStudy({
     </div>}
     <p className="program-design-disclosure">
       DESIGN_PREVIEW · EDITORIAL SOURCE CANVAS · {profile ? profile.name : "No selected output profile"}
+      {project.production_design?.capture_boards?.some(board=>board.scene_id===scene.id)&&
+        <strong role="status">{" "}Source board geometry only. Review the bound original PNGs in Native output.</strong>}
       {cutScope === "excluded" &&
         <strong role="status"> · SCENE EXCLUDED FROM SELECTED OUTPUT CUT ·
           This editable source scene will not be exported in this profile.</strong>}

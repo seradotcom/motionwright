@@ -10,8 +10,8 @@ test("library previews the real generator and explicitly loads a recoverable aut
   await button(page,"Craft library").click();
   const library=page.getByRole("region",{name:"Craft component library",exact:true});
   await expect(library.getByRole("navigation",{name:"Craft definitions"}).getByRole("button")).toHaveCount(36);
-  await library.getByLabel("Craft family").selectOption("layout");
-  await library.getByRole("button",{name:/Reference board/}).click();
+  await library.getByLabel("Craft family").selectOption("camera");
+  await library.getByRole("button",{name:/Arc reveal/}).click();
   await expect(library.getByRole("button",{name:"Open authoring editor"})).toHaveCount(0);
   await expect(library.getByText("No preview or install action is available for this unimplemented definition.")).toBeVisible();
   await library.getByLabel("Craft family").selectOption("typography");

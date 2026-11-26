@@ -10,6 +10,7 @@ import type { ProductStageConfig } from "./productStage";
 import type { CameraReframe } from "./cameraReframe";
 import type { StageCaptureCard } from "./stageCapture";
 import type { CaptureSourceRecord } from "./captureSource";
+import type { CaptureBoard } from "./captureBoard";
 import type { CreativeEvaluatorBundle } from "./creativeEvaluator";
 import type { IdentityOriginRecord, IdentityRevocation } from "./identityOrigin";
 export type ProjectState = "current" | "stale" | "unknown";
@@ -876,6 +877,8 @@ export type Change =
   | { type: "remove_scene_boundary"; boundary_id: string }
   | { type: "bind_stage_capture"; stage_id: string; capture_id: string }
   | { type: "detach_stage_capture"; stage_id: string }
+  | { type: "upsert_capture_board"; board: CaptureBoard }
+  | { type: "remove_capture_board"; scene_id: string; board_id: string }
   | { type: "register_capture_source"; record: CaptureSourceRecord }
   | { type: "register_identity_origin"; record: IdentityOriginRecord }
   | { type: "revoke_identity_origin"; revocation: IdentityRevocation }

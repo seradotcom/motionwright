@@ -5,6 +5,7 @@ import type { ComponentDistillationProposal } from "./componentDistillation";
 import type { ProductStageInstance } from "./productStage";
 import type { CameraReframe } from "./cameraReframe";
 import type { StageCaptureCard } from "./stageCapture";
+import type { CaptureBoard } from "./captureBoard";
 import type { CaptureSourceRecord } from "./captureSource";
 import type { CreativeEvaluatorBundle, CreativeEvaluationReport } from "./creativeEvaluator";
 import type { IdentityOriginRecord, IdentityRevocation } from "./identityOrigin";
@@ -67,7 +68,7 @@ export interface FontPortableCopyDeclaration {
   version: number; asset_id: string; content_sha256: string;
   permission: "allowed" | "prohibited"; origin: string; license: string; note?: string | null;
 }
-export interface ProductionDesign { scene_boundaries?: SceneBoundary[]; semantic_graphs?: SemanticGraph[]; delivery_recipes?: Record<string, DeliveryRecipe>; narration_take_lock?: NarrationTakeLock|null; plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; brand_profile?: BrandProfile | null; font_portable_copies?: FontPortableCopyDeclaration[]; taste_profile?: TasteProfile | null; brand_exceptions?: BrandException[]; project_decisions?: CreativeDecision[]; stages?: ProductStageInstance[]; captures?: CaptureSourceRecord[]; procedural_fields?: ProceduralFieldInstance[]; measured_tables?: MeasuredTable[]; measured_bindings?: MeasuredBinding[]; last_measured_impact?: MeasuredDataImpact | null; camera_reframes?: CameraReframe[]; evaluator_bundles?: CreativeEvaluatorBundle[]; evaluation_reports?: CreativeEvaluationReport[]; identity_origins?: IdentityOriginRecord[]; identity_revocations?: IdentityRevocation[]; stage_capture_cards?: StageCaptureCard[]; distillations?: ComponentDistillationProposal[]; }
+export interface ProductionDesign { scene_boundaries?: SceneBoundary[]; semantic_graphs?: SemanticGraph[]; delivery_recipes?: Record<string, DeliveryRecipe>; narration_take_lock?: NarrationTakeLock|null; plan: ProductionPlan | null; heroes: ProductHeroInstance[]; capsules: NativeCapsule[]; patches?: CreativePatchRecord[]; brand_profile?: BrandProfile | null; font_portable_copies?: FontPortableCopyDeclaration[]; taste_profile?: TasteProfile | null; brand_exceptions?: BrandException[]; project_decisions?: CreativeDecision[]; stages?: ProductStageInstance[]; captures?: CaptureSourceRecord[]; procedural_fields?: ProceduralFieldInstance[]; measured_tables?: MeasuredTable[]; measured_bindings?: MeasuredBinding[]; last_measured_impact?: MeasuredDataImpact | null; camera_reframes?: CameraReframe[]; evaluator_bundles?: CreativeEvaluatorBundle[]; evaluation_reports?: CreativeEvaluationReport[]; identity_origins?: IdentityOriginRecord[]; identity_revocations?: IdentityRevocation[]; stage_capture_cards?: StageCaptureCard[]; capture_boards?: CaptureBoard[]; distillations?: ComponentDistillationProposal[]; }
 export type ScopedCanvasEdit =
   | { kind: "text"; node_id: string; text: string }
   | { kind: "style"; node_id: string; style: NodeStyle }

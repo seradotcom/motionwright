@@ -1713,6 +1713,27 @@ fn projected_shot(
         }
         let (mut mapped, mut node_constraints) =
             subject(node, &layer_names, &subject_context, identity.beat_scope)?;
+        if let Some(board) = context
+            .project
+            .production_design
+            .capture_boards
+            .iter()
+            .find(|board| board.scene_id == scene.id)
+        {
+            for (index, role) in ["image-1", "image-2"].into_iter().enumerate() {
+                if node.id == motionwright_domain::capture_board_node_id(board.id, role) {
+                    let source = board
+                        .sources(context.project)
+                        .map_err(|error| invalid(error.to_string()))?[index];
+                    mapped.role = "first-party-synthetic-board-image".into();
+                    mapped.content = SubjectContent::Image {
+                        asset_id: uid("asset", source.screenshot_asset_id),
+                        fit: MediaFit::Contain,
+                        ratio: f64::from(source.viewport_width) / f64::from(source.viewport_height),
+                    };
+                }
+            }
+        }
         if let Some(parent) = motionwright_domain::static_native_group_parent(node, scene) {
             // Native fixed children use local coordinates. The authored
             // Group/Clip is unpainted and its children remain world-space
@@ -2446,6 +2467,17 @@ fn build_segment(
                 )
             })
             .map(|binding| binding.node_id),
+    );
+    component_texts.extend(
+        project
+            .production_design
+            .capture_boards
+            .iter()
+            .flat_map(|board| {
+                ["title", "label-1", "label-2", "disclosure"]
+                    .into_iter()
+                    .map(move |role| motionwright_domain::capture_board_node_id(board.id, role))
+            }),
     );
     let shot_context = ShotProjectionContext {
         project,

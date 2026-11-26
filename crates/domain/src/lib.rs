@@ -6,6 +6,7 @@ mod canvas;
 mod canvas_alignment;
 mod canvas_follow;
 mod canvas_opacity;
+mod capture_board;
 mod capture_source;
 mod claim_source_edit;
 mod component_distillation;
@@ -51,6 +52,7 @@ pub use canvas::*;
 pub use canvas_alignment::*;
 pub use canvas_follow::*;
 pub use canvas_opacity::*;
+pub use capture_board::*;
 pub use capture_source::*;
 pub use claim_source_edit::ClaimEditableFields;
 pub use component_distillation::*;
@@ -783,6 +785,7 @@ impl Project {
         self.production_design.validate_identity_origins(self)?;
         self.production_design.validate_distillations(self)?;
         self.validate_stage_capture_cards()?;
+        self.validate_capture_boards()?;
         self.paid_generation.validate(self)?;
         let mut scene_ids = HashSet::new();
         let mut resource_beat_ids = HashSet::new();
@@ -1454,6 +1457,10 @@ impl Project {
                 capture_id,
             } => self.bind_stage_capture(*stage_id, *capture_id)?,
             Change::DetachStageCapture { stage_id } => self.detach_stage_capture(*stage_id)?,
+            Change::UpsertCaptureBoard { board } => self.upsert_capture_board(board)?,
+            Change::RemoveCaptureBoard { scene_id, board_id } => {
+                self.remove_capture_board(*scene_id, *board_id)?
+            }
             Change::UpsertProceduralField {
                 instance_id,
                 scene_id,
@@ -3066,6 +3073,13 @@ pub enum Change {
     },
     DetachStageCapture {
         stage_id: Uuid,
+    },
+    UpsertCaptureBoard {
+        board: CaptureBoard,
+    },
+    RemoveCaptureBoard {
+        scene_id: Uuid,
+        board_id: Uuid,
     },
     SetProductionPlan {
         plan: Option<ProductionPlan>,

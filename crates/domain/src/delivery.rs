@@ -220,6 +220,22 @@ pub fn protected_delivery_text<'a>(
     scene: &'a crate::Scene,
     node_id: Uuid,
 ) -> Option<(&'a str, &'static str)> {
+    if project
+        .production_design
+        .capture_boards
+        .iter()
+        .any(|board| board.scene_id == scene.id)
+        && let Some(text) = scene
+            .nodes
+            .iter()
+            .find(|node| node.id == node_id && node.kind == "text")
+            .and_then(|node| node.text.as_deref())
+    {
+        return Some((
+            text,
+            "Capture board source labels and synthetic disclosure must retain exact wording",
+        ));
+    }
     let hero = project
         .production_design
         .heroes
@@ -840,6 +856,18 @@ pub fn variant_dependency_fingerprint(
     if !cameras.is_empty() {
         frame_inputs["camera_reframes"] = serde_json::to_value(cameras)
             .map_err(|_| DomainError::Invalid("camera source serialization failed".into()))?;
+    }
+    let mut boards = project
+        .production_design
+        .capture_boards
+        .iter()
+        .filter(|board| scenes.iter().any(|scene| scene.id == board.scene_id))
+        .collect::<Vec<_>>();
+    boards.sort_by_key(|board| board.scene_id);
+    if !boards.is_empty() {
+        frame_inputs["capture_boards"] = serde_json::to_value(boards).map_err(|_| {
+            DomainError::Invalid("capture board dependency serialization failed".into())
+        })?;
     }
     let frame_inputs_sha256 = digest_json(frame_inputs)?;
     let caption_inputs_sha256 = digest_json(serde_json::json!({

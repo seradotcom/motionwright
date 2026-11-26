@@ -21,6 +21,7 @@ function create(project:Project,kind:WorkbenchKind){return createWorkbenchDraft(
 function edit(draft:WorkbenchDraft,text:string):WorkbenchDraft {
   const input=draft.input;
   if(input.kind==="beat_timeline")return editWorkbenchDraft(draft,{...input,config:{...input.config,rationale:text}});
+  if(input.kind==="capture_board")return editWorkbenchDraft(draft,{...input,config:{...input.config,entries:[{...input.config.entries[0],label:text},input.config.entries[1]]}});
   return editWorkbenchDraft(draft,input.kind==="stage"?{...input,config:{...input.config,screen_heading:text,author_attestation:"Original author-owned fixture UI."}}
     :input.kind==="procedural"?{...input,config:{...input.config,fill:text}}
     :{...input,tables:{...input.tables,[input.selectedTable]:{...measuredRaw(input),label:text}}});

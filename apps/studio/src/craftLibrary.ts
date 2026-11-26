@@ -5,7 +5,7 @@ import { defaultProceduralConfig, defaultProceduralInfluence, defaultProceduralP
 
 export const CRAFT_FAMILIES=["typography","product","layout","transition","camera","data","procedural","sound"] as const;
 export type CraftFamily=typeof CRAFT_FAMILIES[number];
-export type CraftRoute="component"|"stage"|"procedural"|"patch"|"boundary"|"camera"|"data"|"canvas"|"graph";
+export type CraftRoute="component"|"stage"|"procedural"|"patch"|"boundary"|"camera"|"data"|"canvas"|"graph"|"source_board";
 export type CraftExample=
   | {kind:"hero";config:HeroConfig}
   | {kind:"stage";config:ProductStageConfig}
@@ -44,13 +44,13 @@ export const CRAFT_LIBRARY:readonly CraftDefinition[]=[
   entry("typography","context-label","Context label","editable_candidate","Create an editable label tied to an original translating object.","Canvas Follow supports bounded exact translation, not arbitrary parent transforms.","canvas"),
   entry("product","hero-reveal","Product hero reveal","editable_candidate","Editable opening composition for authored product benefits.",heroLimits,"component",hero("product_hero_reveal","Make the work.\nKeep the craft.","A composition you can direct and revise.")),
   entry("product","screen-focus","Screen focus","bounded_partial","An original semantic screen and animated focus marker.",stageLimits,"stage",stage("browser",true)),
-  entry("product","flow-bridge","Product flow bridge","spec_only","Connect two genuine product states.",none),
+  entry("product","flow-bridge","Product flow bridge","bounded_partial","Present two separately registered original synthetic first-party product states in exact editorial sequence.","Same original app/build and generation, increasing source revisions, distinct state and screenshot hashes, explicit source-use declarations, dedicated Motion Canvas scene, 30fps Replan. Not a recorded interaction or customer capture.","source_board"),
   entry("product","device-stage","Device stage","editable_candidate","Generic handset presentation from original semantic objects.",stageLimits,"stage",stage("generic_handset")),
   entry("product","browser-stage","Browser stage","editable_candidate","Original application-window graphic without third-party chrome.",stageLimits,"stage",stage("browser")),
   entry("layout","responsive-story","Responsive story","editable_candidate","Split narrative composition replans across aspect ratios.",heroLimits,"component",hero("split_explanation","One clear idea","Keep the context.","CONTEXT")),
   entry("layout","evidence-pair","Evidence pair","bounded_partial","MetricEvidence lays out authored claim and supporting context.","Unverified editorial study; does not establish measured evidence or authenticated claims.","component",hero("metric_evidence","42% growth","Illustrative value, source not verified.","DATA")),
   entry("layout","comparison","Conceptual comparison","bounded_partial","Equal-authority authored concepts with explicit evidence disclosure.","Not a measured before/after or proof of improvement.","component",hero("contrast_comparison","Original idea","Alternative idea")),
-  entry("layout","reference-board","Reference board","spec_only","Arrange permission-bound references by narrative role.",none),
+  entry("layout","reference-board","Reference board","bounded_partial","Compose two separately registered first-party synthetic references by explicit narrative role, with responsive layout and retained source hashes.","Dedicated original Motion Canvas scene, two distinct captures, explicit source-use declarations, Replan. Native renders the bound PNGs; layout study is not pixel evidence. No arbitrary third-party import or mandatory brand substitution.","source_board"),
   entry("transition","shared-object","Shared object","bounded_partial","Review matched original objects at a source-bound scene cut.","Only the admitted boundary appearance/clock profile; not general cross-shot morphing.","boundary"),
   entry("transition","focus-transfer","Focus transfer","editable_candidate","Complementary exact opacity fades on two independent saved objects.","No overwrite of existing motion, locks or managed components; exact shared frame interval.","patch"),
   entry("transition","mask-window","Mask window","bounded_partial","Reveal or conceal an original editable shape through its unchanged native rectangular Clip.","A static root Clip, unanimated filled child, neutral camera and exact Replan output clocks. Both hidden and visible poses must fit the safe area. No moving mask geometry, arbitrary path masks or physical acceptance.","patch"),
@@ -94,6 +94,13 @@ export function craftAuthoringExample(definition:CraftDefinition):CraftExample|n
   return example;
 }
 
+
+export function craftSourceBoardMode(definition:CraftDefinition|null|undefined):"reference_board"|"product_flow_bridge"|undefined{
+  if(definition?.route!=="source_board")return undefined;
+  if(definition.id==="motionwright.layout.reference-board")return "reference_board";
+  if(definition.id==="motionwright.product.flow-bridge")return "product_flow_bridge";
+  return undefined;
+}
 
 /** Library navigation chooses the typed editor, never a new admission path. */
 export function craftGraphKind(definition:CraftDefinition|null|undefined):"causal_diagram"|"system_flow"|undefined{

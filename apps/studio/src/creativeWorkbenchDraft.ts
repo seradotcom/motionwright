@@ -8,12 +8,14 @@ import type { ProductStageConfig } from "./productStage";
 import { applyProceduralChange, defaultProceduralConfig, defaultProceduralInfluence, defaultProceduralPath, normalizedProceduralConfig, validateProceduralConfig } from "./proceduralField";
 import type { ProceduralConfig, ProceduralInfluence, ProceduralPath } from "./proceduralField";
 import { applyStageCaptureChange } from "./stageCapture";
+import { applyCaptureBoardChange,captureBoardFromRaw,captureBoardRawShape,captureBoardShape,defaultCaptureBoardRaw,rawCaptureBoard } from "./captureBoard";
+import type { CaptureBoardRaw } from "./captureBoard";
 import { applyMeasuredBinding, applyMeasuredTable, detachMeasuredBinding, measuredOutput, validateMeasuredTable, validateMeasuredView } from "./measuredData";
 import type { MeasuredBinding, MeasuredTable, MeasuredView } from "./measuredData";
 import { beatTimelineInputShape, savedBeatTimelineInput, sceneBeatTimelineChangeShape, sceneBeatTimelineProposal } from "./sceneBeatTimeline";
 import type { BeatTimelineInput } from "./sceneBeatTimeline";
 
-export type WorkbenchKind = "stage" | "procedural" | "measured" | "beat_timeline";
+export type WorkbenchKind = "stage" | "procedural" | "measured" | "beat_timeline" | "capture_board";
 export type WorkbenchTarget = { kind: WorkbenchKind; sceneId: string | null };
 export type StageRaw = Omit<ProductStageConfig, "focus_x_permille" | "focus_y_permille"> & { focus_x_permille: string; focus_y_permille: string };
 export const PROCEDURAL_NUMBERS = ["seed", "count", "columns", "origin_x", "origin_y", "area_width", "area_height", "size", "opacity_percent", "reveal_step_frames", "reveal_duration_frames"] as const;
@@ -41,11 +43,12 @@ export interface MeasuredBindingRaw extends MeasuredPresentationRaw {
   sceneId: string; tableId: string;
 }
 export type WorkbenchInput = BeatTimelineInput | { kind: "stage"; config: StageRaw; captureId: string }
+  | { kind: "capture_board"; config: CaptureBoardRaw }
   | { kind: "procedural"; config: ProceduralRaw }
   | { kind: "measured"; selectedTable: string; tables: Record<string, MeasuredRaw>;
       selectedBinding?: string; bindings?: Record<string, MeasuredBindingRaw> };
 export type WorkbenchChange = Extract<Change, { type: "upsert_product_stage" | "detach_product_stage" | "bind_stage_capture" | "detach_stage_capture"
-  | "upsert_procedural_field" | "detach_procedural_field" | "upsert_measured_table" | "upsert_measured_binding" | "detach_measured_binding" | "edit_scene_beat_timeline" }>;
+  | "upsert_procedural_field" | "detach_procedural_field" | "upsert_measured_table" | "upsert_measured_binding" | "detach_measured_binding" | "edit_scene_beat_timeline" | "upsert_capture_board" | "remove_capture_board" }>;
 export type WorkbenchOperation = "save" | "detach" | "bind-source" | "detach-source" | "table" | "binding" | { detachBinding: string };
 export interface WorkbenchPending {
   /** Comparison data only. No stored Change is ever dispatched or replayed. */
@@ -70,7 +73,7 @@ const bytes = (value: string) => new TextEncoder().encode(value).length;
 export const workbenchScope = (project: Project, target: WorkbenchTarget) => JSON.stringify([project.id, project.generation, project.active_branch, target.kind, target.sceneId]);
 export const workbenchCopyKey = (scope: string, writer: string) => WORKBENCH_RECOVERY_PREFIX + encodeURIComponent(scope) + ":" + writer;
 export const workbenchPointerKey = (scope: string) => WORKBENCH_POINTER_PREFIX + encodeURIComponent(scope);
-export const workbenchLabel = (target: WorkbenchTarget) => ({ stage: "ProductStage", procedural: "Procedural", measured: "Measured data", beat_timeline: "Scene beat timeline" })[target.kind];
+export const workbenchLabel = (target: WorkbenchTarget) => ({ stage: "ProductStage", procedural: "Procedural", measured: "Measured data", beat_timeline: "Scene beat timeline", capture_board:"Source board" })[target.kind];
 export const workbenchHasWork = (draft: WorkbenchDraft) => draft.intent || draft.pending !== null;
 export const workbenchUnconfirmed = (draft: WorkbenchDraft) => draft.pending?.outcome === "UNKNOWN";
 function checkScope(draft: WorkbenchDraft, project: Project) {
@@ -213,6 +216,10 @@ export function workbenchSavedInput(project: Project, target: WorkbenchTarget, p
     if (!scene) throw new Error("The working scene is unavailable.");
     return savedBeatTimelineInput(scene, previous?.kind==="beat_timeline"?previous:undefined);
   }
+  if(target.kind==="capture_board"){
+    const board=project.production_design?.capture_boards?.find(item=>item.scene_id===target.sceneId);
+    return {kind:"capture_board",config:board?rawCaptureBoard(board):defaultCaptureBoardRaw()};
+  }
   if (target.kind === "stage") {
     const stage = project.production_design?.stages?.find(value => value.scene_id === target.sceneId);
     return { kind: "stage", config: rawStage(stage?.config ?? defaultProductStageConfig()), captureId: project.production_design?.stage_capture_cards?.find(value => value.stage_id === stage?.id)?.capture_id ?? "" };
@@ -282,7 +289,17 @@ export async function prepareWorkbenchSubmission(draft: WorkbenchDraft, project:
   const scene = project.scenes.find(value => value.id === draft.target.sceneId), input = clone(draft.input);
   let change: WorkbenchChange, nodesBefore: CanvasNode[] | null = null;
   if (input.kind !== "measured" && input.kind !== "beat_timeline" && (!scene || scene.renderer !== "motion-canvas" || Number(scene.duration.num) / Number(scene.duration.den) < 2)) throw new Error("Choose a Motion Canvas scene at least two seconds long.");
-  if (input.kind === "stage") {
+  if(input.kind==="capture_board"){
+    const stored=project.production_design?.capture_boards?.find(item=>item.scene_id===scene!.id);
+    if(operation==="save"){
+      change={type:"upsert_capture_board",board:captureBoardFromRaw(project,scene!.id,stored?.id??crypto.randomUUID(),input.config)};
+      await applyCaptureBoardChange(clone(project),change);
+    }else if(operation==="detach"){
+      if(!stored)throw new Error("Save the original board before removing its generated slots.");
+      change={type:"remove_capture_board",scene_id:scene!.id,board_id:stored.id};
+      await applyCaptureBoardChange(clone(project),change);
+    }else throw new Error("Unsupported source-board action.");
+  }else if (input.kind === "stage") {
     const stored = project.production_design?.stages?.find(value => value.scene_id === scene!.id);
     if (operation === "save") {
       const config = stageConfig(input.config), instanceId = stored?.id ?? crypto.randomUUID();
@@ -343,6 +360,9 @@ export function submittedWorkbenchMatches(project: Project, change: WorkbenchCha
       const scene=project.scenes.find(scene=>scene.id===change.scene_id);
       return !!scene && sameValue(scene.duration,change.expected_duration) && sameValue(scene.beats,change.beats);
     }
+    case "upsert_capture_board": return sameValue(design?.capture_boards?.find(item=>item.scene_id===change.board.scene_id),change.board);
+    case "remove_capture_board": return !design?.capture_boards?.some(item=>item.id===change.board_id||item.scene_id===change.scene_id)
+      && project.scenes.some(scene=>scene.id===change.scene_id&&scene.nodes.length===0);
     case "upsert_product_stage": { const value = design?.stages?.find(item => item.id === change.instance_id); return !!value && value.scene_id === change.scene_id && value.component_version === 1 && sameValue(value.config, change.config); }
     case "detach_product_stage": return !design?.stages?.some(item => item.id === change.instance_id);
     case "bind_stage_capture": return sameValue(design?.stage_capture_cards?.find(item => item.stage_id === change.stage_id), { stage_id: change.stage_id, capture_id: change.capture_id, version: 1 });
@@ -365,6 +385,11 @@ export function submittedWorkbenchMatches(project: Project, change: WorkbenchCha
 function remainingInput(input: WorkbenchInput, target: WorkbenchTarget, project: Project): boolean {
   try {
     if (input.kind === "beat_timeline") return false;
+    if(input.kind==="capture_board"){
+      const board=project.production_design?.capture_boards?.find(item=>item.scene_id===target.sceneId);
+      return board?!sameValue(captureBoardFromRaw(project,board.scene_id,board.id,input.config),board):
+        !sameValue(input.config,defaultCaptureBoardRaw());
+    }
     if (input.kind === "stage") {
       const saved = project.production_design?.stages?.find(value => value.scene_id === target.sceneId);
       const capture = project.production_design?.stage_capture_cards?.find(value => value.stage_id === saved?.id)?.capture_id ?? "";
@@ -403,7 +428,7 @@ export function acknowledgeWorkbenchDraft(draft: WorkbenchDraft, id: string, rec
   // Keep raw text and every table buffer, including later selections. A clean
   // checkpoint remains immutable before any future author input is written.
   let input = draft.input;
-  if (input.kind === "beat_timeline" && draft.sequence === pending.sequence) {
+  if ((input.kind === "beat_timeline"||input.kind==="capture_board") && draft.sequence === pending.sequence) {
     input=workbenchSavedInput(receipt,draft.target,input);
   }
   if (input.kind === "measured" && pending.submitted.type === "upsert_measured_table") {
@@ -484,6 +509,7 @@ function proceduralPathRawShape(value: unknown): value is ProceduralPathRaw {
 function inputShape(value: unknown): value is WorkbenchInput {
   if (!record(value)) return false;
   if (value.kind === "beat_timeline") return beatTimelineInputShape(value);
+  if(value.kind==="capture_board")return exact(value,["kind","config"])&&captureBoardRawShape(value.config);
   if (value.kind === "stage") return exact(value, ["kind", "config", "captureId"]) && typeof value.captureId === "string" && record(value.config)
     && exact(value.config, ["frame", "animate_focus", ...stageTextKeys]) && allStrings(value.config, stageTextKeys)
     && ["browser", "flat_panel", "generic_handset"].includes(String(value.config.frame)) && typeof value.config.animate_focus === "boolean";
@@ -515,6 +541,10 @@ function tableShape(value: unknown): boolean {
 function changeShape(value: unknown, kind: WorkbenchKind): value is WorkbenchChange {
   if (!record(value) || typeof value.type !== "string") return false;
   if (kind === "beat_timeline") return sceneBeatTimelineChangeShape(value);
+  if(kind==="capture_board"){
+    if(value.type==="upsert_capture_board")return exact(value,["type","board"])&&captureBoardShape(value.board);
+    return value.type==="remove_capture_board"&&exact(value,["type","scene_id","board_id"])&&uuid(value.scene_id)&&uuid(value.board_id);
+  }
   if (kind === "stage") {
     if (value.type === "detach_product_stage") return exact(value, ["type", "instance_id"]) && uuid(value.instance_id);
     if (value.type === "bind_stage_capture") return exact(value, ["type", "stage_id", "capture_id"]) && uuid(value.stage_id) && uuid(value.capture_id);
@@ -555,7 +585,7 @@ function cleanDraft(value: unknown, scope: string): WorkbenchDraft {
     || !integer(value.baseRevision) || !integer(value.sequence) || typeof value.intent !== "boolean" || !inputShape(value.input) || !inputShape(value.base))
     throw new Error("Unsupported workbench recovery shape. Earlier bytes were retained.");
   const target = value.target, identity: unknown = JSON.parse(scope);
-  if (!exact(target, ["kind", "sceneId"]) || !["stage", "procedural", "measured", "beat_timeline"].includes(String(target.kind)) || value.input.kind !== target.kind || value.base.kind !== target.kind
+  if (!exact(target, ["kind", "sceneId"]) || !["stage", "procedural", "measured", "beat_timeline","capture_board"].includes(String(target.kind)) || value.input.kind !== target.kind || value.base.kind !== target.kind
     || (target.sceneId !== null && (typeof target.sceneId !== "string" || !target.sceneId)) || !Array.isArray(identity) || identity.length !== 5
     || identity.slice(0, 3).some(item => typeof item !== "string" || !item) || identity[3] !== target.kind || identity[4] !== target.sceneId)
     throw new Error("This workbench copy belongs to another editor scope.");
@@ -567,7 +597,9 @@ function cleanDraft(value: unknown, scope: string): WorkbenchDraft {
       || !inputShape(sent.input) || sent.input.kind !== target.kind || !changeShape(sent.submitted, target.kind as WorkbenchKind)
       || (sent.nodesBefore !== null && !nodesShape(sent.nodesBefore)) || !["UNKNOWN", "NOT_SENT"].includes(String(sent.outcome))
       || (sent.diagnostic !== undefined && typeof sent.diagnostic !== "string")) throw new Error("Unreadable workbench comparison snapshot.");
-    if ("scene_id" in sent.submitted && sent.submitted.scene_id !== target.sceneId) throw new Error("The comparison snapshot belongs to another scene.");
+    if (("scene_id" in sent.submitted && sent.submitted.scene_id !== target.sceneId)||
+      (sent.submitted.type==="upsert_capture_board"&&sent.submitted.board.scene_id!==target.sceneId))
+      throw new Error("The comparison snapshot belongs to another scene.");
     const preservesNodes = ["detach_product_stage", "bind_stage_capture", "detach_stage_capture", "detach_procedural_field", "detach_measured_binding", "edit_scene_beat_timeline"].includes(sent.submitted.type);
     if (preservesNodes !== (sent.nodesBefore !== null)) throw new Error("Incomplete Canvas preservation comparison.");
     // Recovered NOT_SENT is conservative UNKNOWN, never permission to replay.

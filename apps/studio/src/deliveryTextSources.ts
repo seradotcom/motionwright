@@ -5,6 +5,10 @@ export interface ProtectedDeliveryText { value: string; reason: string }
 
 /** Read-only exact source rules. Mirror Rust, without certifying the content. */
 export function protectedDeliveryText(project: Project, scene: Scene, nodeId: string): ProtectedDeliveryText | null {
+  if(project.production_design?.capture_boards?.some(board=>board.scene_id===scene.id)){
+    const node=scene.nodes.find(node=>node.id===nodeId&&node.kind==="text");
+    if(typeof node?.text==="string")return {value:node.text,reason:"Capture board source labels and synthetic disclosure must retain exact wording"};
+  }
   const hero=project.production_design?.heroes.find(item=>item.scene_id===scene.id);
   const family = ({metric_evidence:"MetricEvidence",step_sequence:"StepSequence",contrast_comparison:"ContrastComparison",
     editorial_quote:"EditorialQuote"} as Record<string,string>)[hero?.config.layout ?? ""];
