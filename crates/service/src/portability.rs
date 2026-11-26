@@ -83,11 +83,14 @@ impl StudioService {
         source: impl AsRef<Path>,
     ) -> StorageResult<InspectedProjectBundle> {
         let source = source.as_ref();
+        // Serialize the bounded archive capture and conversion with other Store work.
+        let store = self.store.lock();
         if std::fs::symlink_metadata(source)?.is_file() {
             let migration = crate::legacy_project_archive::from_bytes(
                 Store::read_project_archive_source(source)?,
+                None,
             )?;
-            return self.store.lock().inspect_migrated_project_archive(
+            return store.inspect_migrated_project_archive(
                 migration.project,
                 &migration.originals,
                 migration.fingerprint,
@@ -95,9 +98,7 @@ impl StudioService {
                 &SvgBundleAdmission,
             );
         }
-        self.store
-            .lock()
-            .inspect_project_bundle_with_fingerprint_and_admission(source, &SvgBundleAdmission)
+        store.inspect_project_bundle_with_fingerprint_and_admission(source, &SvgBundleAdmission)
     }
 
     pub fn recover_project_bundle_import(
@@ -113,25 +114,20 @@ impl StudioService {
         expected: &BundleFingerprint,
     ) -> StorageResult<Project> {
         let source = source.as_ref();
+        let mut store = self.store.lock();
         if std::fs::symlink_metadata(source)?.is_file() {
             let migration = crate::legacy_project_archive::from_bytes(
                 Store::read_project_archive_source(source)?,
+                Some(expected),
             )?;
-            if &migration.fingerprint != expected {
-                return Err(motionwright_storage::StorageError::InvalidBackup(
-                    "legacy archive changed after inspection".into(),
-                ));
-            }
-            return self.store.lock().import_migrated_project_archive(
+            return store.import_migrated_project_archive(
                 migration.project,
                 &migration.originals,
                 expected,
                 &SvgBundleAdmission,
             );
         }
-        self.store
-            .lock()
-            .import_project_bundle_inspected_with_admission(source, expected, &SvgBundleAdmission)
+        store.import_project_bundle_inspected_with_admission(source, expected, &SvgBundleAdmission)
     }
 }
 

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile, rename } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { expect, test as base, type Page, type TestInfo } from "@playwright/test";
 import type { Project } from "../src/types";
 import { ScopedChangeService } from "./support/scopedChangeService";
@@ -466,6 +467,30 @@ test("portable library imports original media into an empty Store, edits and reo
   expect(await bundleCopies(page)).toEqual([]);
   const index = await service.invoke<{ items: { id: string }[] }>("list_projects", { request: { cursor: null, limit: 100 } });
   expect(index.items.map(item => item.id)).toEqual([original.project.id]);
+});
+
+test("legacy archive inspection discloses losses and the imported project reopens from SQLite", async ({ page, lifecycle }) => {
+  const { service } = lifecycle;
+  const archive = fileURLToPath(new URL("../../../crates/service/tests/fixtures/legacy-authored.archive.json", import.meta.url));
+  await inspectPortableFromLibrary(page, archive);
+  const inspection = dialog(page).getByLabel("Portable project inspection", { exact: true });
+  await expect(inspection).toContainText("New editable snapshot");
+  await expect(inspection).toContainText("Original caption ranges and text remain in the archive");
+  await expect(inspection).toContainText("Migration creates a new local project");
+  await dialog(page).getByRole("button", { name: "Import inspected project", exact: true }).click();
+  await revision(page, 0);
+  await expect(page.locator(".project-title")).toHaveText("Archive migration original");
+  const index = await service.invoke<{ items: { id: string }[] }>("list_projects", { request: { cursor: null, limit: 100 } });
+  expect(index.items).toHaveLength(1);
+  const imported = await service.project(index.items[0].id);
+  expect(imported.scenes[0].nodes.some(node => node.text === "An editable original")).toBe(true);
+  expect(imported.assets.map(asset => asset.name)).toEqual(["Original pixel.png", "Original legacy archive.json"]);
+  expect(calls(service, "issue_effect_grant")).toHaveLength(1);
+  expect(calls(service, "import_project_bundle")).toHaveLength(1);
+  await service.close(); await service.start(); await page.reload();
+  await revision(page, 0);
+  expect(await service.project(imported.id)).toEqual(imported);
+  expect(await bundleCopies(page)).toEqual([]);
 });
 
 test("portable library recovers a lost import reply from its original commit and preserves a later author", async ({ page, lifecycle }, testInfo) => {

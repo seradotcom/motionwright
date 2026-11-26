@@ -907,7 +907,7 @@ impl Session {
                     .inspect_project_bundle_with_fingerprint(&source)
                     .map_err(|error| error.to_string())?;
                 let plan = inspected.plan;
-                Ok(json!({
+                let mut response = json!({
                     "project_id": plan.project.project_id,
                     "title": plan.project.title,
                     "source_generation": plan.project.source_generation,
@@ -917,7 +917,11 @@ impl Session {
                     "total_blob_bytes": plan.total_blob_bytes.to_string(),
                     "rotates_generation": plan.project.rotates_generation,
                     "fingerprint": inspected.fingerprint,
-                }))
+                });
+                if !inspected.migration_notes.is_empty() {
+                    response["migration_notes"] = json!(inspected.migration_notes);
+                }
+                Ok(response)
             }
             "recover_project_bundle_import" => encoded(
                 self.service

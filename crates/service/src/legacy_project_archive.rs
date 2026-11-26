@@ -316,7 +316,17 @@ fn background(original: &SourceScene, profile: &Profile, id: Uuid) -> CanvasNode
     }
 }
 
-pub(super) fn from_bytes(bytes: Vec<u8>) -> StorageResult<Migration> {
+pub(super) fn from_bytes(
+    bytes: Vec<u8>,
+    expected: Option<&BundleFingerprint>,
+) -> StorageResult<Migration> {
+    let original_sha = hex::encode(Sha256::digest(&bytes));
+    let fingerprint = BundleFingerprint::from_sha256(original_sha.clone())?;
+    if expected.is_some_and(|expected| expected != &fingerprint) {
+        return Err(motionwright_storage::StorageError::InvalidBackup(
+            "legacy archive changed after inspection".into(),
+        ));
+    }
     let Archive {
         schema,
         version,
@@ -344,8 +354,6 @@ pub(super) fn from_bytes(bytes: Vec<u8>) -> StorageResult<Migration> {
         return Err(invalid());
     }
 
-    let original_sha = hex::encode(Sha256::digest(&bytes));
-    let fingerprint = BundleFingerprint::from_sha256(original_sha.clone())?;
     let original_revision = version.revision.to_string();
     let mut project = Project::new(document.title).map_err(|_| invalid())?;
     project.id = stable_id("project", &[&original_sha]);
