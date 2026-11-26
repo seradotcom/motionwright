@@ -105,7 +105,7 @@ on:
         type: choice
         required: false
         default: all
-        options: [all, static-group, static-alignment, static-layout, follow, follow-ui, static-rotation, creative-batch, audio-cut, native-preview-blend, delivery-hero, measured-comparison, series-silence, camera-craft, source-boards, source-boards-ui, asset-media, camera-spatial, project-compatibility, runtime-profiles]
+        options: [all, static-group, static-alignment, static-layout, follow, follow-ui, static-rotation, creative-batch, audio-cut, native-preview-blend, delivery-hero, measured-comparison, series-silence, camera-craft, source-boards, source-boards-ui, asset-media, camera-spatial, project-compatibility, runtime-profiles, code-experiment]
       interchange_case:
         description: One original Studio flow for native-otio-real-media; no other suites
         type: choice
@@ -1656,6 +1656,17 @@ jobs:
             crates/service/tests/support/legacy_v5_fixture.rs \
             > "$work/source-digests.original.txt"
           python3 -B tooling/source_policy.py
+      - name: Execute bounded original Wasm experiments against real SQLite fixtures
+        if: inputs.verification_scope == 'storage-service-current' && inputs.first_use_case == 'code-experiment'
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$MW_STORAGE_SERVICE_EVIDENCE/code-experiment.original.log"
+          cargo test --locked --jobs 2 -p motionwright-service --lib code_experiment::tests:: -- --test-threads=1 2>&1 | tee "$log"
+          grep -F 'test result: ok. 10 passed; 0 failed; 0 ignored;' "$log"
+          cargo clippy --locked --jobs 2 -p motionwright-service --lib -- -D warnings
+          git diff --exit-code
+          echo 'CODE_EXPERIMENT_KERNEL=PASS; actual_Wasm=YES; SQLite=REAL; NativeHost=NOT_RUN; installation=NOT_IMPLEMENTED; gate_admission=NOT_GRANTED'
       - name: Reject lossy project reads and preserve known legacy and portable documents
         if: inputs.verification_scope == 'storage-service-current' && inputs.first_use_case == 'project-compatibility'
         shell: bash
@@ -1672,7 +1683,7 @@ jobs:
           cargo clippy --locked --jobs 2 -p motionwright-domain --lib -- -D warnings
           git diff --exit-code
       - name: Run current Store and Service contracts
-        if: inputs.verification_scope == 'storage-service-current' && inputs.first_use_case != 'project-compatibility'
+        if: inputs.verification_scope == 'storage-service-current' && inputs.first_use_case != 'project-compatibility' && inputs.first_use_case != 'code-experiment'
         shell: bash
         run: |
           set -euo pipefail
@@ -1752,7 +1763,7 @@ jobs:
           PY
           git diff --exit-code
       - name: Check current Store and Service warnings
-        if: inputs.first_use_case != 'project-compatibility'
+        if: inputs.first_use_case != 'project-compatibility' && inputs.first_use_case != 'code-experiment'
         shell: bash
         run: |
           set -euo pipefail

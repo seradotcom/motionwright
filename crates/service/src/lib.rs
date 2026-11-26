@@ -2,6 +2,7 @@ mod audio;
 mod branch_combination;
 mod brand_fonts;
 mod change_preview;
+mod code_experiment;
 mod file_import;
 mod font_portability;
 mod import_limits;
@@ -26,6 +27,11 @@ pub use brand_fonts::{
     BrandFontSource, MAX_BRAND_FONT_BYTES, VerifiedBrandFont, brand_font_source,
 };
 pub use change_preview::ChangePreview;
+pub use code_experiment::{
+    CODE_FIXTURES, CODE_FUEL, CODE_MEMORY_BYTES, CODE_SOURCE_BYTES, CodeExperimentDescriptor,
+    CodeExperimentFailure, CodeExperimentFixture, CodeExperimentObservation, CodeExperimentReport,
+    CodeExperimentRequest, CodeExperimentSource, PreparedCodeExperiment,
+};
 pub use import_limits::ImportLimits;
 pub use jobs::{
     ProductionJobApplicability, ProductionJobProgress, ProductionJobProjection, ProductionJobState,

@@ -7,6 +7,7 @@ license.workspace = true
 license-file.workspace = true
 
 [dependencies]
+wasmi = { version = "=2.0.3", default-features = false, features = ["stable", "std", "wat", "validate", "portable-dispatch"] }
 cssparser = "=0.37.0"
 quick-xml = "=0.42.0"
 motionwright-domain = { path = "../domain" }
