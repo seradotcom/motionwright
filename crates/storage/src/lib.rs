@@ -285,6 +285,7 @@ pub struct ProjectPage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectBackup {
     pub format_version: u32,
     pub source_storage_schema: u32,
@@ -305,12 +306,14 @@ pub struct ImportPlan {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct BlobDescriptor {
     pub sha256: String,
     pub size_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct PortableBlob {
     pub sha256: String,
     pub size_bytes: u64,
@@ -318,6 +321,7 @@ pub struct PortableBlob {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectBundleManifest {
     pub format_version: u32,
     pub created_at: String,
@@ -341,6 +345,7 @@ pub struct ApplyOutcome {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectEvent {
     pub revision: u64,
     pub change: Change,

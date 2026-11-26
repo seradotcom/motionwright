@@ -160,6 +160,7 @@ pub enum LockKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectLock {
     pub id: Uuid,
     #[serde(deserialize_with = "crate::semantic_graph::deserialize_semantic_graph_resource")]
@@ -169,6 +170,7 @@ pub struct ProjectLock {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Beat {
     pub id: Uuid,
     pub label: String,
@@ -418,6 +420,7 @@ impl Scene {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Marker {
     pub id: Uuid,
     pub at: RationalTime,
@@ -469,6 +472,7 @@ impl Asset {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Branch {
     pub id: Uuid,
     pub name: String,
@@ -483,6 +487,7 @@ pub struct Branch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeliverableProfile {
     pub id: Uuid,
     pub name: String,
@@ -533,6 +538,7 @@ pub struct DeliverableProfile {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Project {
     pub schema_version: u32,
     pub id: Uuid,
@@ -3467,6 +3473,7 @@ pub enum Change {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RevisionStamp {
     pub resource: String,
     pub generation: Uuid,

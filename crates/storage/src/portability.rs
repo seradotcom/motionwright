@@ -1291,6 +1291,157 @@ mod tests {
         (bundle, manifest)
     }
 
+    #[test]
+    fn unknown_document_fields_refuse_every_bundle_entry_before_sql_or_cas_changes() {
+        for pointer in [
+            "",
+            "/backup",
+            "/backup/project",
+            "/backup/project/branches/0",
+            "/backup/project/deliverables/0",
+            "/backup/events/0",
+            "/blobs/0",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let (bundle, manifest) = bundle_fixture(directory.path());
+            let mut document = serde_json::to_value(&manifest).unwrap();
+            document
+                .pointer_mut(pointer)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert(
+                    "future_editable_source".into(),
+                    serde_json::json!({"keep_original": "unrecognized editing data"}),
+                );
+            let original = serde_json::to_vec(&document).unwrap();
+            fs::write(bundle.join("manifest.json"), &original).unwrap();
+            let fingerprint = BundleFingerprint::of_manifest_bytes(&original);
+            let mut target = Store::open(directory.path().join("target/state.sqlite3")).unwrap();
+            let active = target
+                .create_named_project("Keep this active project")
+                .unwrap();
+            let sql_before = snapshot(&target);
+            let cas_before = cas_control_bytes(&target);
+            let changes_before = target.conn.total_changes();
+            let errors = [
+                target.inspect_project_bundle(&bundle).unwrap_err(),
+                target
+                    .inspect_project_bundle_with_fingerprint(&bundle)
+                    .unwrap_err(),
+                target.import_project_bundle(&bundle).unwrap_err(),
+                target
+                    .import_project_bundle_inspected(&bundle, &fingerprint)
+                    .unwrap_err(),
+            ];
+            for error in errors {
+                assert!(
+                    error.to_string().contains("unknown field"),
+                    "{pointer}: {error}"
+                );
+            }
+            assert_eq!(target.conn.total_changes(), changes_before, "{pointer}");
+            assert_eq!(snapshot(&target), sql_before, "{pointer}");
+            assert_eq!(cas_control_bytes(&target), cas_before, "{pointer}");
+            assert_eq!(target.load_project(active.id).unwrap(), active);
+            assert_eq!(fs::read(bundle.join("manifest.json")).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn unknown_stored_project_fields_block_read_edit_and_export_without_losing_original() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("state.sqlite3");
+        let mut store = Store::open(&database).unwrap();
+        let project = store
+            .create_named_project("Keep unsupported editing data")
+            .unwrap();
+        let mut document = serde_json::to_value(&project).unwrap();
+        document.as_object_mut().unwrap().insert(
+            "future_editable_source".into(),
+            serde_json::json!({"original": [1, 2, 3]}),
+        );
+        let original = serde_json::to_string(&document).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE projects SET document_json=?1 WHERE id=?2",
+                rusqlite::params![&original, project.id.to_string()],
+            )
+            .unwrap();
+        let sql_before = snapshot(&store);
+        let cas_before = cas_control_bytes(&store);
+        let changes_before = store.conn.total_changes();
+        assert!(store.load_project(project.id).is_err());
+        assert!(store.list_projects(10).is_err());
+        assert!(
+            store
+                .export_project_at(project.id, &project.stamp())
+                .is_err()
+        );
+        assert!(
+            store
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    "must-not-discard-unknown",
+                    &Change::AddScene {
+                        name: "Refused edit".into(),
+                        objective: "Preserve original".into(),
+                        duration_seconds: 2,
+                    }
+                )
+                .is_err()
+        );
+        assert_eq!(store.conn.total_changes(), changes_before);
+        assert_eq!(snapshot(&store), sql_before);
+        assert_eq!(cas_control_bytes(&store), cas_before);
+        drop(store);
+        let reopened = Store::open(&database).unwrap();
+        assert!(reopened.load_project(project.id).is_err());
+        let retained: String = reopened
+            .conn
+            .query_row(
+                "SELECT document_json FROM projects WHERE id=?1",
+                [project.id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, original);
+        assert_eq!(snapshot(&reopened), sql_before);
+    }
+
+    #[test]
+    fn closed_document_contracts_keep_valid_portable_media_and_rotate_only_import_authority() {
+        let directory = tempfile::tempdir().unwrap();
+        let (bundle, manifest) = bundle_fixture(directory.path());
+        let original = fs::read(bundle.join("manifest.json")).unwrap();
+        let database = directory.path().join("target/state.sqlite3");
+        let mut target = Store::open(&database).unwrap();
+        let inspected = target
+            .inspect_project_bundle_with_fingerprint(&bundle)
+            .unwrap();
+        let imported = target
+            .import_project_bundle_inspected(&bundle, &inspected.fingerprint)
+            .unwrap();
+        assert_eq!(imported.id, manifest.backup.project.id);
+        assert_ne!(imported.generation, manifest.backup.project.generation);
+        assert_eq!(imported.revision, manifest.backup.project.revision);
+        assert_eq!(imported.branches, manifest.backup.project.branches);
+        assert_eq!(imported.deliverables, manifest.backup.project.deliverables);
+        assert_eq!(imported.assets, manifest.backup.project.assets);
+        for blob in &manifest.blobs {
+            assert_eq!(
+                target.read_blob(&blob.sha256, 4096).unwrap(),
+                fs::read(bundle.join(&blob.relative_path)).unwrap()
+            );
+        }
+        drop(target);
+        let reopened = Store::open(&database).unwrap();
+        assert_eq!(reopened.load_project(imported.id).unwrap(), imported);
+        assert_eq!(fs::read(bundle.join("manifest.json")).unwrap(), original);
+    }
+
     fn bundle_export_source(root: &Path) -> (Store, ProjectBackup, Vec<(String, Vec<u8>)>) {
         let (bundle, manifest) = bundle_fixture(root);
         let bytes = manifest
