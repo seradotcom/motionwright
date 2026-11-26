@@ -1776,7 +1776,7 @@ export default function DeliveryProfiles({
                   <CircleDashed size={14} /> This captioned H.264/AAC master is review-only.
                   Its native source pixels were checked, but its installed master has
                   not passed independent decoded glyph verification. Local export
-                  remains blocked, even with a DeliverLocal grant. Small media
+                  remains blocked, even with a DeliverLocal grant. Original media
                   can be reviewed under the owner SHA-256 token; this does not
                   certify real speech or accessible reading.
                 </div>
