@@ -553,7 +553,7 @@ jobs:
           cargo test --locked --jobs 2 -p motionwright-native --test saved_original_mix saved_silence_release_keeps_original_pcm_clock_and_protects_reviewed_voice_after_reopen -- --exact --test-threads=1 | tee "$log"
           grep -F '1 passed; 0 failed; 0 ignored' "$log"
           cargo test --no-fail-fast --locked --jobs 2 -p motionwright-service --test delivery_recipe_persistence --test music_cut_persistence -- --test-threads=1
-          cargo check --locked --jobs 2 -p motionwright-native --example native_mix_fixture
+          cargo check --locked --jobs 2 -p motionwright-native --example native_mix_fixture --example native-render-e2e
           cargo test --locked --jobs 2 -p motionwright-native --test original_mix --test saved_mix_native_consumers --no-run
           cargo test --locked --jobs 2 -p motionwright-domain --test music_clock --no-run
       - name: Build the exact-source StudioService test transport

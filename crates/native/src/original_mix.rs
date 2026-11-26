@@ -522,7 +522,7 @@ pub fn render_original_source_mix_with_budget(
     digest_pcm(music, &plan.original_music, limit_samples)?;
     plan.original_sfx
         .verify_pcm(sfx, (limit_samples * 4) as usize)?;
-    let release = plan
+    let silence_release = plan
         .silence_release
         .map(|release| {
             release
@@ -595,7 +595,7 @@ pub fn render_original_source_mix_with_budget(
             .map(|envelope| bus_envelope_gain(&envelope, index as u64, plan.sample_frames));
         // Apply the authored master release after the three verified buses.
         // Retain the existing unclipped-mix guard, including the silent tail.
-        let release_gain = release.map_or(1.0, |(start, release)| {
+        let release_gain = silence_release.map_or(1.0, |(start, release)| {
             let silence_start = plan.sample_frames - u64::from(release.silence_samples);
             if at >= silence_start {
                 0.0
