@@ -36,6 +36,6 @@ describe("first-party craft definitions",()=>{
     }
   });
   it("refuses a spec-only preview rather than using another component",async()=>{
-    await expect(realizeCraftExample(craftDefinition("motionwright.data.series-reveal")!,1920,1080)).rejects.toThrow(/real source/);
+    await expect(realizeCraftExample(craftDefinition("motionwright.data.causal-diagram")!,1920,1080)).rejects.toThrow(/real source/);
   });
 });

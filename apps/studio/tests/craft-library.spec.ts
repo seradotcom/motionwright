@@ -11,7 +11,7 @@ test("library previews the real generator and explicitly loads a recoverable aut
   const library=page.getByRole("region",{name:"Craft component library",exact:true});
   await expect(library.getByRole("navigation",{name:"Craft definitions"}).getByRole("button")).toHaveCount(36);
   await library.getByLabel("Craft family").selectOption("data");
-  await library.getByRole("button",{name:/Series reveal/}).click();
+  await library.getByRole("button",{name:/Causal diagram/}).click();
   await expect(library.getByRole("button",{name:"Open authoring editor"})).toHaveCount(0);
   await expect(library.getByText("No preview or install action is available for this unimplemented definition.")).toBeVisible();
   await library.getByLabel("Craft family").selectOption("typography");

@@ -13,6 +13,7 @@ import type { DeliverableProfile } from "./types";
 import { focusTransferEdits, type FocusTransferInput } from "./focusTransfer";
 import { measuredComparisonEdits, type MeasuredComparisonInput } from "./measuredComparison";
 import { measuredSeriesRevealEdits, type MeasuredSeriesRevealInput } from "./measuredSeriesReveal";
+import { maskWindowEdits, type MaskWindowInput } from "./maskWindow";
 
 export type DraftEdit = Extract<ScopedCanvasEdit, { kind: "text" | "transform" | "style" | "motion" }>;
 type SourceNode = Pick<CanvasNode, "id" | "kind" | "parent_id" | "text"> & CanvasTransform &
@@ -41,7 +42,7 @@ export interface ScopedChangeDraft {
   arrangement?: ArrangementSelection;
   /** Generated recipe admission depends on the whole saved source revision,
    * not just the geometry fields that the resulting patch edits. */
-  recipeSource?: { kind: "focus_transfer" | "measured_comparison" | "measured_series_reveal"; revision: number };
+  recipeSource?: { kind: "focus_transfer" | "measured_comparison" | "measured_series_reveal" | "mask_window"; revision: number };
 }
 export interface DraftConflict {
   nodeId: string;
@@ -385,6 +386,33 @@ export function stageDraftMeasuredSeriesReveal(draft:ScopedChangeDraft,project:P
     recipeSource:{kind:"measured_series_reveal",revision:project.revision}};
 }
 
+/** Keep the complete source revision bound to this Clip-derived track,
+ * including the untouched parent plane and delivery geometry. */
+export function stageDraftMaskWindow(draft:ScopedChangeDraft,project:Project,scene:Scene|null,
+  profile:DeliverableProfile|null,input:MaskWindowInput):ScopedChangeDraft{
+  if(!scene||!profile||draft.scope!==scopedDraftScope(project,scene)||draft.baseRevision!==project.revision)
+    throw new Error("Choose the current scene and saved output profile before staging a mask window.");
+  if(draft.nativeSource||draft.edits.length||unqueuedInputCount(draft)>0||draft.arrangement?.nodeIds.length)
+    throw new Error("Finish or discard the current scoped proposal before staging a mask window.");
+  const working=hydrateScopedDraft(draft,project,scene),result=maskWindowEdits(project,scene,profile,input);
+  const edit=result.edits[0],node=scene.nodes.find(item=>item.id===edit.node_id)!;
+  const origin=sourceNode(node);
+  const updateEditor=(editor:DraftEditor):DraftEditor=>{
+    if(editor.nodeId!==node.id)return editor;
+    if(!editor.source||!sameValue(sourceNode(editor.source),origin))
+      throw new Error("The mask window object's retained original values changed. Start a new proposal.");
+    return {...editor,motionRaw:scopedMotionRows(edit.keyframes)};
+  };
+  const editor=updateEditor(working.editor),parkedEditors=working.parkedEditors.map(updateEditor);
+  if(editor.nodeId!==node.id&&!parkedEditors.some(item=>item.nodeId===node.id))
+    parkedEditors.push(updateEditor({nodeId:node.id,kind:"motion",text:node.text??"",transform:nodeTransform(node),source:origin}));
+  if(parkedEditors.length>128)throw new Error("The mask window exceeds the recoverable object input budget.");
+  const rationale=result.rationale+(working.rationale.trim()?" Author note: "+working.rationale.trim():"");
+  if(new TextEncoder().encode(rationale).length>4000)throw new Error("Shorten the author note before staging this mask window.");
+  return {...working,edits:result.edits,origins:[origin],editor,parkedEditors,rationale,
+    recipeSource:{kind:"mask_window",revision:project.revision}};
+}
+
 export function removeDraftEdit(draft: ScopedChangeDraft, nodeId: string, kind: DraftEdit["kind"]): ScopedChangeDraft {
   const edits = draft.edits.filter(edit => edit.node_id !== nodeId || edit.kind !== kind);
   return { ...draft, edits, origins: draft.origins.filter(origin => edits.some(edit => edit.node_id === origin.id)) };
@@ -581,7 +609,7 @@ export function decodeScopedDraft(raw: string, scope: string): ScopedChangeDraft
       !validNativeSource(value.nativeSource) || (value.arrangement !== undefined && !validArrangementSelection(value.arrangement))
       || (value.recipeSource !== undefined && (!record(value.recipeSource) ||
         Object.keys(value.recipeSource).length !== 2 ||
-        typeof value.recipeSource.kind !== "string" || !["focus_transfer","measured_comparison","measured_series_reveal"].includes(value.recipeSource.kind) ||
+        typeof value.recipeSource.kind !== "string" || !["focus_transfer","measured_comparison","measured_series_reveal","mask_window"].includes(value.recipeSource.kind) ||
         value.recipeSource.revision !== value.baseRevision || value.nativeSource !== null))) {
     throw new Error("Saved proposal has an unsupported shape or belongs to another editing scope.");
   }

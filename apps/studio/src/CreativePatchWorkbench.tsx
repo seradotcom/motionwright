@@ -5,6 +5,7 @@ import SceneCompositionStudy from "./SceneCompositionStudy";
 import ScopedPaintMotionEditor from "./ScopedPaintMotionEditor";
 import CanvasArrangementControls from "./CanvasArrangementControls";
 import FocusTransferControls from "./FocusTransferControls";
+import MaskWindowControls from "./MaskWindowControls";
 import MeasuredComparisonControls from "./MeasuredComparisonControls";
 import MeasuredSeriesRevealControls from "./MeasuredSeriesRevealControls";
 import { scopedMotionIssue, scopedStyleIssues } from "./scopedPaintMotion";
@@ -294,6 +295,8 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
     <CanvasArrangementControls draft={draft} project={project} scene={scene} disabled={lockedUi || !scene || nativeSource !== null}
       stale={draftStale} initiallyOpen={arrangementOpen} onChange={update}/>
     <FocusTransferControls key={"focus:"+scope} project={project} scene={scene} profile={displayProfile} draft={draft}
+      disabled={lockedUi||draftStale||backupBlocked||nativeSource!==null} onChange={update}/>
+    <MaskWindowControls key={"mask:"+scope} project={project} scene={scene} profile={displayProfile} draft={draft}
       disabled={lockedUi||draftStale||backupBlocked||nativeSource!==null} onChange={update}/>
     <MeasuredComparisonControls key={"measured:"+scope} project={project} scene={scene} draft={draft}
       disabled={lockedUi||draftStale||backupBlocked||nativeSource!==null} onChange={update}/>
