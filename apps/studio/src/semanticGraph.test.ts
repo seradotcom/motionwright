@@ -3,7 +3,7 @@ import { fixtureBootstrap } from "./fixture";
 import { emptyProductionDesign } from "./creativeProduction";
 import { stepEditorialFrame } from "./timecode";
 import { graphAddTime, graphAdmissionIssue, graphAuthoredNumber, graphEdgeLabelBox, graphEdgePoints, graphExactFrame, graphFraction, graphFrameTime,
-  graphFromRaw, graphPreviewClock, graphReviewAnchor, graphSourceSnapshot, graphSuggestedFlowEventAt, graphSuggestedFlowEventSlot, graphToRaw, isGraphReviewResource, newSemanticGraph, semanticGraphs, validateSemanticGraphForWrite, validateSemanticGraphShape } from "./semanticGraph";
+  graphFromRaw, graphPreviewClock, graphReviewAnchor, graphSourceSnapshot, graphSuggestedFlowEventAt, graphSuggestedFlowEventSlot, graphToRaw, isGraphReviewResource, newSemanticGraph, graphInitialSelection,newCraftSemanticGraph,semanticGraphs, validateSemanticGraphForWrite, validateSemanticGraphShape } from "./semanticGraph";
 import type { GraphAuthoringContext, GraphProject, SemanticGraph } from "./semanticGraph";
 
 function source(kind: "causal_diagram" | "system_flow" = "causal_diagram") {
@@ -424,5 +424,55 @@ describe("semantic Graph timing on the shared project clock", () => {
     expect(clock.inInterval).toBe(true);
     expect(clock.contains(at, duration)).toBe(false);
     expect(clock.opacity({ at, duration })).toBe(1);
+  });
+});
+
+
+describe("source-owned craft Graph entries",()=>{
+  it("creates a typed hypothesis or explicitly synthetic flow starter without granting admission or inventing author approval",async()=>{
+    for(const kind of ["causal_diagram","system_flow"] as const){
+      const {project,scene,profile,context}=source(kind),before=structuredClone(project);
+      const graph=newCraftSemanticGraph(project,scene,profile,kind,crypto.randomUUID());
+      expect(graph.content.kind).toBe(kind);
+      expect(graph.authorship.author_label).toBe("");
+      expect(graph.authorship.rationale).toBe("");
+      expect(graph.authorship.source_snapshot).toEqual(graphSourceSnapshot(project));
+      expect(graphAdmissionIssue(project,scene.id,profile.id,null)).toContain("awaits the current StudioService");
+      if(graph.content.kind==="system_flow"){
+        expect(graph.content.source.kind).toBe("synthetic");
+        expect(graph.content.source.disclosure).toContain("not a recorded execution");
+        expect(graph.content.events).toHaveLength(1);
+        const event=graph.content.events[0];
+        expect(event.edge_id).toBe(graph.content.edges[0].id);
+        expect(event.at).toEqual(graphFrameTime(2,profile.frame_rate));
+        expect(event.duration).toEqual(graphFrameTime(15,profile.frame_rate));
+      }else{
+        expect(graph.content.edges[0].basis.kind).toBe("author_hypothesis");
+        expect(graph.content.vertices.every(vertex=>vertex.unit.kind==="qualitative")).toBe(true);
+      }
+      graph.authorship.author_label="Explicit synthetic author";
+      graph.authorship.rationale="Reviewed typed demonstration, not causal or execution evidence.";
+      validateSemanticGraphShape(graph,profile.frame_rate);
+      await validateSemanticGraphForWrite(project,graph,context);
+      expect(graphFromRaw(graphToRaw(graph))).toEqual(graph);
+      expect(project).toEqual(before);
+    }
+  });
+  it("reuses only a matching saved source in the selected profile and never silently changes semantic kind",()=>{
+    const {project,scene,profile,graph}=source();
+    const other={...profile,id:crypto.randomUUID()};
+    const flow=newSemanticGraph(project,scene,other,"system_flow");
+    expect(graphInitialSelection([graph,flow],profile.id)).toBe(graph.id);
+    expect(graphInitialSelection([graph,flow],profile.id,"causal_diagram")).toBe(graph.id);
+    expect(graphInitialSelection([graph,flow],profile.id,"system_flow")).toBe("new:system_flow");
+    expect(graphInitialSelection([graph,flow],other.id,"system_flow")).toBe(flow.id);
+    expect(graphInitialSelection([],profile.id,"system_flow")).toBe("new:system_flow");
+  });
+  it("does not invent a default event when the saved graph clock has no room",()=>{
+    const {project,scene,profile}=source("system_flow");
+    scene.duration=graphFrameTime(2,profile.frame_rate);
+    const graph=newCraftSemanticGraph(project,scene,profile,"system_flow",crypto.randomUUID());
+    if(graph.content.kind!=="system_flow")throw new Error("Wrong starter kind");
+    expect(graph.content.events).toEqual([]);
   });
 });

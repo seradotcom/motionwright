@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { DeliverableProfile, Project, RationalTime, ReviewAnchor, Scene } from "./types";
 import { graphPreviewFontFamily, graphPreviewFontLicense, graphPreviewMissingCodepoints, graphPreviewText, loadGraphPreviewFont } from "./semanticGraphFonts";
 import { GRAPH_LIMITS, graphAdmissionIssue, graphEdgeLabelBox, graphEdgePoints, graphFrameTime, graphFromRaw, graphLockIssue, graphPreviewClock, graphReviewAnchor,
-  graphSame, graphSourceSnapshot, graphSuggestedFlowEventSlot, graphToRaw, graphUuid, newSemanticGraph, semanticGraphs, validateSemanticGraphShape } from "./semanticGraph";
+  graphSame, graphSourceSnapshot, graphSuggestedFlowEventSlot, graphToRaw, graphUuid, newSemanticGraph,
+  graphInitialSelection,newCraftSemanticGraph,semanticGraphs, validateSemanticGraphShape } from "./semanticGraph";
 import type { GraphAuthoringContext, GraphContent, GraphRaw, GraphTargetBinding, SemanticGraph, SemanticGraphChange } from "./semanticGraph";
 import { acknowledgeGraphDraft, assertGraphCustody, assertGraphRecoverySource, createGraphDraft, decodeGraphCopy, discardGraphCopy, editGraphDraft, failGraphSubmission,
   forkGraphCopy, graphDraftScope, graphDownload, graphHasWork, graphOutcomeMatches, graphUnconfirmed, rejectGraphSubmission,
@@ -23,6 +24,8 @@ export interface SemanticGraphWorkbenchProps {
   refreshProject: () => Promise<Project>;
   openReview: (anchor: ReviewAnchor) => void;
   playhead?: number;
+  /** Explicit library navigation only; does not admit or replace any source. */
+  preferredKind?:GraphContent["kind"];
 }
 interface GraphSession {
   draft: GraphDraft; custody: GraphCustody; error: string | null; backupError: string | null; recoveryProblem: string | null;
@@ -341,18 +344,18 @@ export default function SemanticGraphWorkbench(props: SemanticGraphWorkbenchProp
       observedSavedSources.current = { scope: sourceScope, graphs: new Map() };
     for (const graph of available) observedSavedSources.current.graphs.set(graph.id, clone(graph));
   }, [available, sourceScope]);
-  const [selection, setSelection] = useState(available.find(graph => graph.variant_profile_ref === props.displayProfile?.id)?.id ?? "new:causal_diagram");
+  const [selection, setSelection] = useState(()=>graphInitialSelection(available,props.displayProfile?.id,props.preferredKind));
   const [, redrawIdentity] = useState(0);
   const previousScope = useRef(sourceScope);
   useEffect(() => {
     if (previousScope.current !== sourceScope) {
       previousScope.current = sourceScope;
-      setSelection(available.find(graph => graph.variant_profile_ref === props.displayProfile?.id)?.id ?? "new:causal_diagram");
+      setSelection(graphInitialSelection(available,props.displayProfile?.id,props.preferredKind));
       // State selection may already be "New". Always re-render after
       // reconciling scope, even when setSelection receives the same value.
       redrawIdentity(value => value + 1);
     }
-  }, [sourceScope, available, props.displayProfile?.id]);
+  }, [sourceScope, available, props.displayProfile?.id,props.preferredKind]);
 
   if (!props.scene || !props.displayProfile) return <section aria-label="Semantic Graph"><h2>Semantic Graph</h2><p>Select a scene and a Deliverable to author its typed Graph.</p></section>;
   // A switch between physical Project owners can precede the selection effect.
@@ -374,13 +377,21 @@ export default function SemanticGraphWorkbench(props: SemanticGraphWorkbenchProp
     : missingSaved ? { id: selection, problem: missingProblem }
     : createIdentity(props.project, props.scene.id, props.displayProfile.id, kind);
   const existingNew = available.find(graph => graph.id === identity.id);
-  const initial = stored ?? lastSaved ?? existingNew ?? newSemanticGraph(props.project, props.scene, props.displayProfile, kind, identity.id);
+  const initial = stored ?? lastSaved ?? existingNew ?? (!missingSaved&&props.preferredKind===kind
+    ?newCraftSemanticGraph(props.project,props.scene,props.displayProfile,kind,identity.id)
+    :newSemanticGraph(props.project,props.scene,props.displayProfile,kind,identity.id));
   return <section aria-label="Semantic Graph workbench" style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: 1 }}>
     <label className="production-field" style={{ padding: "12px 24px", flexShrink: 0 }}><span>Graph source</span><select aria-label="Graph source" value={selection} onChange={e => setSelection(e.target.value)}>
       {missingSaved && <option value={selection}>Unavailable saved Graph · {selection.slice(0, 8)}</option>}
       {available.map(graph => <option key={graph.id} value={graph.id}>{graph.content.kind === "causal_diagram" ? "Causal diagram" : "System flow"} · {graph.id.slice(0, 8)}</option>)}
       <option value="new:causal_diagram">New causal diagram</option><option value="new:system_flow">New synthetic system flow</option>
     </select></label>
+    {props.preferredKind&&<div className="production-help" aria-label="Craft Graph source entry" style={{padding:"0 24px 12px"}}>
+      <p>{props.preferredKind==="system_flow"?"System flow library entry: illustrative synthetic events, never a recorded execution.":"Causal diagram library entry: explicitly declared units, meanings and causal bases."}
+        {" "}Existing saved or recovered sources keep their original identity and inputs. Opening this editor does not save a Graph or inspect Native support.</p>
+      {props.scene.renderer!=="manim-community"||props.scene.nodes.length>0||props.scene.beats.length>0
+        ?<p>Native Graph authoring requires a blank Manim Community scene. Choose or prepare that scene explicitly; this library never replaces authored Canvas, Beats or camera content.</p>:null}
+    </div>}
     {missingProblem && <section aria-label="Graph source needs attention"><p role="alert">{missingProblem}</p></section>}
     {!missingSaved && identity.problem && <section aria-label="Graph identity needs attention"><p role="alert">{identity.problem}</p>
       {identity.pendingOriginal

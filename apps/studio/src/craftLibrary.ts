@@ -5,7 +5,7 @@ import { defaultProceduralConfig, defaultProceduralInfluence, defaultProceduralP
 
 export const CRAFT_FAMILIES=["typography","product","layout","transition","camera","data","procedural","sound"] as const;
 export type CraftFamily=typeof CRAFT_FAMILIES[number];
-export type CraftRoute="component"|"stage"|"procedural"|"patch"|"boundary"|"camera"|"data"|"canvas";
+export type CraftRoute="component"|"stage"|"procedural"|"patch"|"boundary"|"camera"|"data"|"canvas"|"graph";
 export type CraftExample=
   | {kind:"hero";config:HeroConfig}
   | {kind:"stage";config:ProductStageConfig}
@@ -60,10 +60,10 @@ export const CRAFT_LIBRARY:readonly CraftDefinition[]=[
   entry("camera","dolly-focus","Dolly focus","spec_only","Native camera approach to a meaningful target.",none),
   entry("camera","detail-return","Detail and return","bounded_partial","Approach an original planar detail with a shared position/scale track, hold, then return to the same context.","Motion Canvas v3, static independent original shapes and text, 1.05-1.25x zoom, at most 80 source pixels per axis, exact 30fps Replan safe-area endpoints. No optical dolly, 3D rig or physical acceptance.","camera"),
   entry("camera","group-reframe","Group reframe","bounded_partial","Original planar camera reframe with exact scene clock.","Only supported planar pan; no invented perspective or zoom projection.","camera"),
-  entry("data","causal-diagram","Causal diagram","spec_only","Explicit nodes and causal relations with units.",none),
+  entry("data","causal-diagram","Causal diagram","bounded_partial","Author original typed vertices with declared units, meanings and causal bases in the existing semantic Graph editor.","Requires a blank Manim Community source scene, one saved output profile and a current Native authoring context. Hypotheses and claim references are declarations, not established causal effects. No alternate executable package.","graph"),
   entry("data","series-reveal","Series reveal","bounded_partial","Reveal every original dated measurement in calendar order with exact visibility tracks and a shared zero-based bar axis.","Two to four rows in one saved table with distinct ISO dates, matching units and precision, common axis, exact frame clocks and independent label/bar pairs. Reveal timing is editorial, not elapsed time. Re-review after source changes; no managed chart instance or physical acceptance.","patch"),
   entry("data","state-comparison","Measured state comparison","bounded_partial","Lay out two original source-bound label/bar pairs on the same zero-based axis.","Requires one saved table, distinct labels, identical units and precision, common axis and supported replan profiles. Re-review after source or layout changes; not a managed chart instance.","patch"),
-  entry("data","system-flow","System flow","spec_only","Events tied to an execution or labeled synthetic source.",none),
+  entry("data","system-flow","System flow","bounded_partial","Author a directed data/control/event flow with explicitly synthetic source disclosure and exact editable event intervals.","Requires the existing Manim Community Graph source and one saved profile. An optional starter event fits the exact graph clock; never a recorded execution, measured latency or fabricated source receipt.","graph"),
   entry("procedural","repeater","Repeater","editable_candidate","Stable square/circle identities on a controlled grid.",fieldLimits,"procedural",field({distribution:"grid",count:20,columns:5,shape:"circle",size:42})),
   entry("procedural","influence-field","Influence field","editable_candidate","Bounded static influence modifies original objects.",fieldLimits,"procedural",field({distribution:"grid",count:20,columns:5,influence:{...defaultProceduralInfluence(),scale_percent:170,fill:"#D9A46E"}})),
   entry("procedural","path-distribution","Path distribution","editable_candidate","Equal-distance placement on an authored polyline.",fieldLimits,"procedural",field({distribution:"path",count:17,shape:"circle",path:defaultProceduralPath()})),
@@ -92,4 +92,12 @@ export function craftAuthoringExample(definition:CraftDefinition):CraftExample|n
   const example=structuredClone(definition.example);
   if(example.kind==="stage")example.config.author_attestation="";
   return example;
+}
+
+
+/** Library navigation chooses the typed editor, never a new admission path. */
+export function craftGraphKind(definition:CraftDefinition|null|undefined):"causal_diagram"|"system_flow"|undefined{
+  if(definition?.id==="motionwright.data.causal-diagram"&&definition.route==="graph")return "causal_diagram";
+  if(definition?.id==="motionwright.data.system-flow"&&definition.route==="graph")return "system_flow";
+  return undefined;
 }

@@ -1,5 +1,5 @@
 import {describe,it,expect} from "vitest";
-import {CRAFT_FAMILIES,CRAFT_LIBRARY,craftAuthoringExample,craftDefinition,realizeCraftExample} from "./craftLibrary";
+import {CRAFT_FAMILIES,CRAFT_LIBRARY,craftAuthoringExample,craftDefinition,craftGraphKind,realizeCraftExample} from "./craftLibrary";
 import {rawStage,rawProcedural,proceduralConfig} from "./creativeWorkbenchDraft";
 
 describe("first-party craft definitions",()=>{
@@ -36,6 +36,17 @@ describe("first-party craft definitions",()=>{
     }
   });
   it("refuses a spec-only preview rather than using another component",async()=>{
-    await expect(realizeCraftExample(craftDefinition("motionwright.data.causal-diagram")!,1920,1080)).rejects.toThrow(/real source/);
+    await expect(realizeCraftExample(craftDefinition("motionwright.layout.reference-board")!,1920,1080)).rejects.toThrow(/real source/);
+  });
+  it("routes both typed Graph definitions to their real source editor without claiming admission",()=>{
+    for(const [id,kind] of [["motionwright.data.causal-diagram","causal_diagram"],["motionwright.data.system-flow","system_flow"]] as const){
+      const definition=craftDefinition(id)!;
+      expect(definition.status).toBe("DRAFT");
+      expect(definition.coverage).toBe("bounded_partial");
+      expect(definition.route).toBe("graph");
+      expect(definition.example).toBeUndefined();
+      expect(craftGraphKind(definition)).toBe(kind);
+    }
+    expect(craftGraphKind(craftDefinition("motionwright.data.series-reveal"))).toBeUndefined();
   });
 });

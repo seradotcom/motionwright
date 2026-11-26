@@ -10,8 +10,8 @@ test("library previews the real generator and explicitly loads a recoverable aut
   await button(page,"Craft library").click();
   const library=page.getByRole("region",{name:"Craft component library",exact:true});
   await expect(library.getByRole("navigation",{name:"Craft definitions"}).getByRole("button")).toHaveCount(36);
-  await library.getByLabel("Craft family").selectOption("data");
-  await library.getByRole("button",{name:/Causal diagram/}).click();
+  await library.getByLabel("Craft family").selectOption("layout");
+  await library.getByRole("button",{name:/Reference board/}).click();
   await expect(library.getByRole("button",{name:"Open authoring editor"})).toHaveCount(0);
   await expect(library.getByText("No preview or install action is available for this unimplemented definition.")).toBeVisible();
   await library.getByLabel("Craft family").selectOption("typography");
@@ -132,4 +132,43 @@ test("a recovered craft recipe cannot adopt a changed output clock through objec
   await expect(editor.getByText("Generated recipe source changed.",{exact:true})).toHaveCount(0);
   await expect(queue.getByLabel(/Remove proposed edit/)).toHaveCount(0);
   expect(await readStudioProject(page)).toEqual(changed);
+});
+
+
+test("Graph library entries choose typed source editors and preserve separate retained author drafts",async({page})=>{
+  await page.goto("/");
+  await button(page,"Add scene").click();
+  await page.getByLabel("New scene name",{exact:true}).fill("Original Graph library source");
+  await button(page,"Add").click();
+  await button(page,"Production").click();
+  await page.getByLabel("Production working scene",{exact:true}).selectOption({label:"Original Graph library source"});
+  const base=await readStudioProject(page);
+  const enter=async(title:string)=>{
+    await button(page,"Craft library").click();
+    const library=page.getByRole("region",{name:"Craft component library",exact:true});
+    await library.getByLabel("Craft family").selectOption("data");
+    await library.getByRole("button",{name:new RegExp("^"+title)}).click();
+    await library.getByRole("button",{name:"Open authoring editor",exact:true}).click();
+    return page.getByRole("region",{name:"Semantic Graph workbench",exact:true});
+  };
+  let graph=await enter("System flow");
+  await expect(graph.getByLabel("Graph source",{exact:true})).toHaveValue("new:system_flow");
+  await expect(graph.getByText("System flow \u00b7 declared synthetic events",{exact:true})).toBeVisible();
+  await expect(graph.locator("[data-graph-event]")).toHaveCount(1);
+  await expect(graph.getByLabel("Synthetic flow disclosure",{exact:true})).toHaveValue(/not a recorded execution/);
+  await graph.getByLabel("Graph author label",{exact:true}).fill("Retained synthetic source draft");
+  await expect(graph.getByRole("button",{name:"Save semantic Graph",exact:true})).toBeDisabled();
+  graph=await enter("Causal diagram");
+  await expect(graph.getByLabel("Graph source",{exact:true})).toHaveValue("new:causal_diagram");
+  await expect(graph.getByText("Causal diagram \u00b7 declared influence and basis",{exact:true})).toBeVisible();
+  await expect(graph.getByLabel("Graph author label",{exact:true})).toHaveValue("");
+  await graph.getByLabel("Graph rationale",{exact:true}).fill("Retained author hypothesis draft");
+  await expect(graph.locator("[data-graph-event]")).toHaveCount(0);
+  graph=await enter("System flow");
+  await expect(graph.getByLabel("Graph author label",{exact:true})).toHaveValue("Retained synthetic source draft");
+  await expect(graph.locator("[data-graph-event]")).toHaveCount(1);
+  await expect(graph.getByRole("button",{name:"Save semantic Graph",exact:true})).toBeDisabled();
+  graph=await enter("Causal diagram");
+  await expect(graph.getByLabel("Graph rationale",{exact:true})).toHaveValue("Retained author hypothesis draft");
+  expect(await readStudioProject(page)).toEqual(base);
 });

@@ -688,3 +688,39 @@ export function newSemanticGraph(project: Project, scene: Scene, profile: Delive
       : { kind, source: { kind: "synthetic", disclosure: "Synthetic system flow\nauthored for explanation;\nthis is not a recorded execution." }, vertices, edges: [{ ...geometry, id: crypto.randomUUID(), label: "Transfer\n", channel: "data" }], events: [] },
     authorship: { author_label: "", rationale: "", source_snapshot: graphSourceSnapshot(project) } };
 }
+
+
+/** Opening a craft definition selects its existing source in this exact
+ * profile, or the existing recovery namespace for a new graph of that kind.
+ * It never substitutes a graph from a different profile or semantic kind. */
+export function graphInitialSelection(available:readonly SemanticGraph[],profileId:string|undefined,
+  preferredKind?:GraphContent["kind"]):string{
+  return available.find(graph=>graph.variant_profile_ref===profileId&&
+    (preferredKind===undefined||graph.content.kind===preferredKind))?.id??
+    ("new:"+(preferredKind??"causal_diagram"));
+}
+
+/** New-only library starter, using the same typed Graph factory and clock.
+ * The editor's existing saved/retained source always wins over these defaults.
+ * Leave author label/rationale empty: neither is inferred from a template. */
+export function newCraftSemanticGraph(project:Project,scene:Scene,profile:DeliverableProfile,
+  kind:GraphContent["kind"],id:string):SemanticGraph{
+  const graph=newSemanticGraph(project,scene,profile,kind,id);
+  if(graph.content.kind==="system_flow"){
+    // A one-frame slot only establishes available authored time, not execution.
+    // Use up to fifteen exact frames so the illustrative transfer is legible.
+    try{
+      const slot=graphSuggestedFlowEventSlot(graph.content,graph.time_range.duration,profile.frame_rate);
+      if(slot){
+        const remaining=graphExactFrame(graph.time_range.duration,profile.frame_rate)-graphExactFrame(slot.at,profile.frame_rate);
+        const count=Number(remaining<15n?remaining:15n);
+        if(count>0)graph.content.events.push({id:crypto.randomUUID(),edge_id:slot.edge_id,
+          label:"Synthetic transfer",at:slot.at,duration:graphFrameTime(count,profile.frame_rate)});
+      }
+    }catch{
+      // No admitted exact event interval: retain the ordinary editable
+      // empty event roster. The original validator still owns source admission.
+    }
+  }
+  return graph;
+}
