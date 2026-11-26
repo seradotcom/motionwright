@@ -929,3 +929,6 @@ fn macos_hyperframes_manifest_is_refused_without_mutating_the_original() {
             .is_empty()
     );
 }
+
+#[path = "reselection_tests.rs"]
+mod reselection;

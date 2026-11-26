@@ -1,6 +1,6 @@
 /** Browser interactions use synthetic IPC. Actual SQLite/filesystem coverage is in Rust. */
 import { expect,test } from "@playwright/test";
-type Fixture={calls():{command:string;request:Record<string,unknown>}[];loseNext():void;holdGrant():void;releaseGrant():void;revision(value:number):void};
+type Fixture={calls():{command:string;request:Record<string,unknown>}[];loseNext():void;cancelPick():void;holdGrant():void;releaseGrant():void;revision(value:number):void};
 declare global{interface Window{__runtimeProfileFixture:Fixture;}}
 for(const platform of ["linux-x86_64","macos-aarch64"]){
 test(platform+" reviewed package, lost acknowledgement, reopen, original read and explicit rollback",async({page})=>{
@@ -45,4 +45,19 @@ test("an old runtime permission cannot dispatch after revision ABA",async({page}
   await panel.getByRole("button",{name:"Read installed profile inventory"}).click();
   await expect(panel.getByRole("button",{name:"Choose offline runtime package"})).toBeEnabled();
   expect(await page.evaluate(()=>window.__runtimeProfileFixture.calls().filter(row=>row.command==="install_runtime_profile").length)).toBe(0);
+});
+
+test("a cancelled new selection clears the old review without requesting a permission",async({page})=>{
+  await page.goto("/tests/fixtures/runtime-profiles.html?platform=macos-aarch64");
+  const panel=page.getByRole("region",{name:"Offline runtime profiles"});
+  await panel.getByRole("button",{name:"Choose offline runtime package"}).click();
+  await expect(panel.getByRole("article",{name:"Reviewed runtime installation"})).toBeVisible();
+  await page.evaluate(()=>window.__runtimeProfileFixture.cancelPick());
+  await panel.getByRole("button",{name:"Choose offline runtime package"}).click();
+  await expect(panel.getByRole("article",{name:"Reviewed runtime installation"})).toHaveCount(0);
+  await expect(panel.getByText("Package selection was cancelled.",{exact:false})).toBeVisible();
+  const calls=await page.evaluate(()=>window.__runtimeProfileFixture.calls());
+  expect(calls.filter(row=>row.command==="issue_effect_grant"||row.command==="install_runtime_profile")).toHaveLength(0);
+  await panel.getByRole("button",{name:"Choose offline runtime package"}).click();
+  await expect(panel.getByRole("button",{name:"Install reviewed local copy"})).toBeEnabled();
 });

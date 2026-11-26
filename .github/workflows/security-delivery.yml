@@ -270,7 +270,8 @@ jobs:
                       os.close(file)
               finally:
                   os.close(root)
-          print("OFFLINE_RUNTIME_HOST=" + platform + "; retained_security_metadata=READ; packaged_tools=NOT_EXECUTED")
+          metadata = "READ" if platform == "macos-aarch64" else "NOT_APPLICABLE"
+          print("OFFLINE_RUNTIME_HOST=" + platform + "; host_fd_probe=PASS; macos_extended_metadata=" + metadata + "; packaged_tools=NOT_EXECUTED")
           PY_RUNTIME_HOST
       - name: Tauri Linux prerequisites
         if: runner.os == 'Linux'
@@ -377,6 +378,8 @@ jobs:
               "unavailable_runtime_storage_keeps_original_projects_open_and_unchanged",
               "foreign_architecture_or_truncated_executable_is_refused_before_effects",
               "rollback_never_replaces_a_foreign_disabled_destination",
+              "reselection::replacement_reviews_release_unsent_plans_and_reject_their_old_permission",
+              "reselection::invalid_reselection_retires_only_this_projects_unsent_review",
           }
           platform = fixtures.bundle.host_platform()
           if platform == "macos-aarch64":
@@ -387,7 +390,7 @@ jobs:
                   "macos_attribute_change_after_plan_retains_one_partial_original_without_replay",
                   "macos_hyperframes_manifest_is_refused_without_mutating_the_original",
               })
-          observed = re.findall(r"^test runtime_profiles::local_unix::tests::([a-z0-9_]+) \.\.\. ok$", raw, re.M)
+          observed = re.findall(r"^test runtime_profiles::local_unix::tests::([a-z0-9_:]+) \.\.\. ok$", raw, re.M)
           assert len(observed) == len(expected) and set(observed) == expected
           assert f"{len(expected)} passed; 0 failed; 0 ignored" in raw
           print(f"RUNTIME_PROFILE_LOCAL_COPY=PASS; cases={len(expected)}; platform={platform}; SQLite=REAL; package_description=ACTUAL_PRODUCER; tools=INERT_BYTE_FIXTURES; NativeHost=NOT_RUN; G2=NOT_GRANTED")

@@ -12,7 +12,7 @@ const root=createRoot(document.getElementById("runtime-root")!);
 const render=()=>flushSync(()=>root.render(<StrictMode><main style={{maxWidth:1000,margin:"24px auto",padding:20}}><RuntimeProfilesPanel project={project} desktop={true}/></main></StrictMode>));
 type Request=Record<string,unknown>;
 const calls:{command:string;request:Request}[]=JSON.parse(sessionStorage.getItem("runtime-fixture-calls")??"[]");
-let loseNext=false,hold=false,release:((value:unknown)=>void)|null=null;
+let loseNext=false,hold=false,cancelPick=false,release:((value:unknown)=>void)|null=null;
 const scope=()=>({project_id:project.id,generation:project.generation,revision:project.revision});
 const destination="/fixture/runtime-profiles-v1/"+id;
 const platform=new URLSearchParams(location.search).get("platform")==="macos-aarch64"?"macos-aarch64":"linux-x86_64";
@@ -31,7 +31,7 @@ function original(verify:boolean){
 (window as unknown as Record<string,unknown>).__TAURI_INTERNALS__={async invoke(command:string,args:{request:Request}){
   calls.push({command,request:structuredClone(args.request)});sessionStorage.setItem("runtime-fixture-calls",JSON.stringify(calls));
   if(command==="runtime_profile_inventory")return {schema:"motionwright.runtime-profile-inventory/1",scope:scope(),supported:true,platform,profiles:sessionStorage.getItem("runtime-fixture-original")?[original(false)]:[],alternatives:"Local editing and existing separately authorized connections remain available."};
-  if(command==="choose_runtime_profile_bundle")return plan();
+  if(command==="choose_runtime_profile_bundle"){if(cancelPick){cancelPick=false;return null;}return plan();}
   if(command==="issue_effect_grant"){if(hold)return new Promise(resolve=>{release=resolve;});return grant;}
   if(command==="install_runtime_profile"){
     sessionStorage.setItem("runtime-fixture-original","installed");
@@ -46,7 +46,7 @@ function original(verify:boolean){
   throw new Error("Unexpected synthetic runtime command: "+command);
 }};
 (window as unknown as Record<string,unknown>).__runtimeProfileFixture={
-  calls:()=>structuredClone(calls),loseNext:()=>{loseNext=true;},holdGrant:()=>{hold=true;},
+  calls:()=>structuredClone(calls),loseNext:()=>{loseNext=true;},cancelPick:()=>{cancelPick=true;},holdGrant:()=>{hold=true;},
   releaseGrant:()=>{hold=false;const pending=release;release=null;if(!pending)throw new Error("No pending fixture grant.");pending(grant);},
   revision:(value:number)=>{project={...structuredClone(project),revision:value};render();},
 };

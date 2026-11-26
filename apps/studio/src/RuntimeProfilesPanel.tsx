@@ -44,6 +44,7 @@ export default function RuntimeProfilesPanel({project,desktop}:{project:Project;
   };
   const refresh=()=>run("Reading local runtime inventory…",async owns=>{const result=await runtimeProfileInventory(project);owns();setInventory(result);});
   const choose=()=>run("Inspecting the selected package and its original bytes…",async owns=>{
+    setPlan(null);
     const result=await chooseRuntimeProfile(project);owns();setPlan(result);
     if(!result)setNote("Package selection was cancelled. No runtime copy was installed.");
   });

@@ -396,7 +396,15 @@ impl RuntimeProfiles {
         check_scope(service, scope)?;
         let mut state = self.state.lock().map_err(|_| UNCONFIRMED)?;
         let _exclusive = self.root()?.exclusive()?;
-        state.plans.retain(|_, plan| plan.expires > Instant::now());
+        // A fresh owner-selected folder retires this project's unsent review,
+        // including an older revision. It never touches a durable operation.
+        // Release its retained handles before inspecting the next package so
+        // repeated reviews cannot consume the four-project preparation budget.
+        state.plans.retain(|_, plan| {
+            plan.expires > Instant::now()
+                && (plan.intent.scope.project_id != scope.project_id
+                    || plan.intent.scope.generation != scope.generation)
+        });
         if state.plans.len() >= 4 {
             return Err("Four runtime packages are already awaiting a decision; let unused inspections expire.".into());
         }

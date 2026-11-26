@@ -43,7 +43,7 @@ The description includes each file's relative path, byte length, SHA-256 and int
 
 1. Open a saved project and choose **Integrations → Offline runtime profiles**.
 2. Choose **Choose offline runtime package**. The operating system folder picker selects the local source. The webview does not supply a source or destination path.
-3. Review the profile, file count, size and destination. Inspections last 15 minutes. Changing the saved project invalidates an earlier installation decision.
+3. Review the profile, file count, size and destination. Inspections last 15 minutes. Changing the saved project invalidates an earlier installation decision. Choosing another package clears the previous visible review; inspecting the new selection retires this project's older unsent preparation, including after an invalid selection. Other projects' preparations and durable installations are preserved.
 4. Choose **Install reviewed local copy**. This requests one exact local permission, records the original operation in SQLite, creates a new private destination and copies the declared files without replacement. Each file is checked, and the completed copy is read back before it is reported as verified.
 5. Expand **Paths for the separately authorized provider** to copy the verified Node, entry and lock paths or the lock digest. Configure those paths through the existing owner-controlled provider setup. Existing [connection selection](owner-native-runtime-onboarding.md) remains a separate step.
 
