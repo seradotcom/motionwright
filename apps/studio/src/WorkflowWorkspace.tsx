@@ -13,9 +13,9 @@ import {
   Workflow,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { workflowAction, workflowOverview } from "./api";
+import { storedWorkflowCompletion, workflowAction, workflowOverview } from "./api";
 import WorkflowActionRecovery from "./WorkflowActionRecovery";
-import { acknowledgeWorkflowSubmission, editWorkflowField, forkWorkflowWriter, guardWorkflowDispatch, openWorkflowSession,
+import { acknowledgeStoredWorkflowCompletion, prepareWorkflowCompletionRead, acknowledgeWorkflowSubmission, editWorkflowField, forkWorkflowWriter, guardWorkflowDispatch, openWorkflowSession,
   persistWorkflowSession, prepareWorkflowSubmission, retainWorkflowFailure, workflowCandidateField, workflowDiagnostic,
   workflowRaw, workflowScope, workflowStamp, WorkflowNotDispatchedError } from "./workflowActionDraft";
 import type { WorkflowSession, WorkflowStore, WorkflowPointers, WorkflowSubmission } from "./workflowActionDraft";
@@ -178,6 +178,10 @@ function WorkflowOwner({ project, currentProject }: { project: Project; currentP
   const [loading, setLoading] = useState(true);
   const [refresh, setRefresh] = useState(0);
   const [writesEnabled, setWritesEnabled] = useState(false);
+  const readEpoch = useRef({ source: workflowStamp(project), serial: 0 });
+  if (readEpoch.current.source !== workflowStamp(project)) {
+    readEpoch.current = { source: workflowStamp(project), serial: readEpoch.current.serial + 1 };
+  }
   useEffect(() => {
     mounted.current = true; const notify = () => repaint(value => value + 1); session.notify = notify;
     return () => { mounted.current = false; if (session.notify === notify) session.notify = undefined; };
@@ -310,6 +314,25 @@ function WorkflowOwner({ project, currentProject }: { project: Project; currentP
       session.error = session.draft.pending?.diagnostic ?? workflowDiagnostic(reason);
     } finally { session.inFlight = false; session.notify?.(); }
   }
+  async function readStoredCompletion() {
+    if (session.inFlight || session.backupError || session.failedSource || session.custody.attempt) return;
+    const serial = readEpoch.current.serial;
+    session.inFlight = true; session.error = null; session.notify?.();
+    try {
+      if (!backupWorkflow(session)) return;
+      const ticket = prepareWorkflowCompletionRead(session, currentProject.current, workflowStorage, workflowPointers);
+      const response = await storedWorkflowCompletion(ticket.request);
+      if (!mounted.current || serial !== readEpoch.current.serial)
+        throw new Error("The workflow source changed while its original result was read. Keep the retained action and read it from the selected source.");
+      if (response === null) {
+        session.error = "No complete original workflow result was found. The action remains UNKNOWN; nothing was sent or retried.";
+        return;
+      }
+      session.receipt = acknowledgeStoredWorkflowCompletion(session, ticket, response, currentProject.current, workflowStorage, workflowPointers);
+      backupWorkflow(session);
+    } catch (reason) { session.error = workflowDiagnostic(reason); }
+    finally { session.inFlight = false; session.notify?.(); }
+  }
   function recoveryOperation(operation: () => void) {
     if (session.inFlight) {
       session.error = "The original workflow action is still awaiting its reply. The imported or selected input was not applied; keep the file and try restoring after that invocation finishes.";
@@ -428,7 +451,7 @@ function WorkflowOwner({ project, currentProject }: { project: Project; currentP
       ) : null}
 
       <WorkflowActionRecovery session={session} storage={workflowStorage} pointers={workflowPointers} inFlight={session.inFlight}
-        backupError={session.backupError} onOperation={recoveryOperation} />
+        backupError={session.backupError} onReadStoredCompletion={() => void readStoredCompletion()} onOperation={recoveryOperation} />
 
       <section className="workflow-summary-grid" aria-label="Workflow evidence summary">
         {[

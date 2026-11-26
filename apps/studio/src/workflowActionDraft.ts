@@ -369,7 +369,13 @@ export function guardWorkflowDispatch(session: WorkflowSession, submission: Work
 export function acknowledgeWorkflowSubmission(session: WorkflowSession, submission: WorkflowSubmission, value: unknown): WorkflowActionResponse {
   const proof = liveSubmission(session, submission);
   if (!proof.dispatched) throw new Error("A workflow response cannot acknowledge an invocation that was never dispatched.");
-  const response = assertWorkflowResponse(value, submission.request), fields = { ...session.draft.fields };
+  const response = assertWorkflowResponse(value, submission.request);
+  settleWorkflowCompletion(session, submission, response);
+  proof.settled = true;
+  return response;
+}
+function settleWorkflowCompletion(session: WorkflowSession, submission: WorkflowSubmission, response: WorkflowActionResponse): void {
+  const fields = { ...session.draft.fields };
   if (submission.request.action === "compile") {
     for (const [key, sent] of Object.entries(submission.sentFields))
       if (fields[key]?.sequence === sent.sequence && fields[key]?.raw === sent.raw) delete fields[key];
@@ -380,6 +386,46 @@ export function acknowledgeWorkflowSubmission(session: WorkflowSession, submissi
     fields["record.hint"] = { raw: submission.request.action === "record_start" ? "active" : "inactive", sequence };
   }
   session.draft = { ...session.draft, sequence, fields, pending: null, lastOutcome: { kind: "acknowledged", requestJson: submission.requestJson, response } };
+}
+
+export type WorkflowCompletionRead = {
+  scope: string; source: string; request: WorkflowActionPayload; requestJson: string;
+};
+const completionReads = new WeakMap<WorkflowCompletionRead, { session: WorkflowSession; sealed: string; pending: string; writer: string; settled: boolean }>();
+function requireStoredWorkflowInput(session: WorkflowSession, storage: WorkflowStore, pointers: WorkflowPointers): void {
+  requireWorkflowCustody(session, storage, pointers);
+  const raw = session.custody.expectedRaw;
+  if (raw === null || JSON.stringify(decodeCopy(raw, session.draft.scope, session.custody.writer).pending) !== JSON.stringify(session.draft.pending))
+    throw new Error("The exact original workflow action is not confirmed in its recovery copy.");
+}
+/** A read ticket can only select an already retained UNKNOWN. It never creates
+ * an action identity, effect grant, or a live submission proof. */
+export function prepareWorkflowCompletionRead(session: WorkflowSession, current: Project,
+  storage: WorkflowStore, pointers: WorkflowPointers): WorkflowCompletionRead {
+  requireStoredWorkflowInput(session, storage, pointers);
+  const pending = session.draft.pending;
+  if (!pending || pending.outcome !== "UNKNOWN" || workflowScope(current) !== session.draft.scope)
+    throw new Error("Select the exact retained original workflow action before reading its stored result.");
+  const request = readWorkflowPayload(JSON.parse(pending.requestJson));
+  if (request.project_id !== current.id || request.generation !== current.generation || request.revision > current.revision)
+    throw new Error("The original workflow source is not in this project generation.");
+  const ticket = { scope: session.draft.scope, source: workflowStamp(current), request, requestJson: pending.requestJson };
+  completionReads.set(ticket, { session, sealed: JSON.stringify(ticket), pending: JSON.stringify(pending), writer: session.custody.writer, settled: false });
+  return ticket;
+}
+export function acknowledgeStoredWorkflowCompletion(session: WorkflowSession, ticket: WorkflowCompletionRead, value: unknown,
+  current: Project, storage: WorkflowStore, pointers: WorkflowPointers): WorkflowActionResponse {
+  const proof = completionReads.get(ticket);
+  if (!proof || proof.session !== session || proof.settled || proof.sealed !== JSON.stringify(ticket)
+    || workflowScope(current) !== ticket.scope || workflowStamp(current) !== ticket.source
+    || session.custody.writer !== proof.writer || JSON.stringify(session.draft.pending) !== proof.pending)
+    throw new Error("The original workflow read no longer matches this selected input and source.");
+  requireStoredWorkflowInput(session, storage, pointers);
+  const response = assertWorkflowResponse(value, ticket.request);
+  if (!response.replayed) throw new Error("Stored workflow readback must identify an existing completed result.");
+  const pending = session.draft.pending!;
+  settleWorkflowCompletion(session, { scope: ticket.scope, request: ticket.request, requestJson: ticket.requestJson,
+    sentFields: pending.sentFields }, response);
   proof.settled = true;
   return response;
 }

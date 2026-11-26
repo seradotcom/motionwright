@@ -844,6 +844,17 @@ export async function workflowOverview(project: Project): Promise<WorkflowOvervi
   };
 }
 
+/** Read only an existing original result. A null observation never permits a retry. */
+export async function storedWorkflowCompletion(original: unknown): Promise<WorkflowActionResult | null> {
+  if (!isTauri()) throw new Error("Stored workflow results require the Motionwright desktop runtime.");
+  const request = readWorkflowPayload(original);
+  const value = await invoke<unknown>("workflow_stored_completion", { request });
+  if (value === null) return null;
+  const response = assertWorkflowResponse(value, request);
+  if (!response.replayed) throw new Error("The workflow read did not identify an original stored completion.");
+  return response;
+}
+
 export async function workflowAction(
   project: Project,
   action: WorkflowAction,

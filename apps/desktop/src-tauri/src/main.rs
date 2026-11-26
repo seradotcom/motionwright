@@ -1318,6 +1318,55 @@ async fn workflow_overview(
     })
 }
 
+/// Read a completed original workflow response; never invokes or retries Core.
+#[tauri::command]
+async fn workflow_stored_completion(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: workflow_native::StoredWorkflowRequest,
+) -> Result<Option<WorkflowActionResponse>, String> {
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    let selected = selected_connection_path(&state, project.id)?
+        .ok_or("Choose the original owner connection before reading this workflow result.")?;
+    let expected_path = selected.clone();
+    let service = state.service.clone();
+    let custody = state.production_receipt_custody.clone();
+    let native_owner = owner.worker_owner();
+    let preparation = state
+        .av_review
+        .admit_preparation()
+        .ok_or("Original result read capacity is busy; try after current readers finish.")?;
+    let (response, identity) = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        let _preparation = preparation;
+        workflow_native::read_stored_workflow_completion(
+            &|| native_owner.phase(),
+            &service,
+            &custody,
+            selected,
+            request,
+        )
+    })
+    .await
+    .map_err(|_| "Original workflow read task failed.".to_owned())??;
+    owner.begin_phase()?;
+    let latest = state.service.project(project.id).map_err(sanitized)?;
+    if latest.generation != project.generation
+        || latest.revision != project.revision
+        || selected_connection_path(&state, project.id)?.as_ref() != Some(&expected_path)
+        || ProductionConnection::load(&expected_path)
+            .and_then(|c| c.identity())
+            .ok()
+            .as_deref()
+            != Some(identity.as_str())
+    {
+        return Err("Selected project or connection changed during workflow readback.".into());
+    }
+    Ok(response)
+}
+
 #[tauri::command]
 async fn workflow_action(
     mut owner: desktop_owner::OwnerInvocation,
@@ -4578,6 +4627,7 @@ fn main() {
             clear_saved_semwright_connection,
             workflow_overview,
             workflow_action,
+            workflow_stored_completion,
             production_jobs,
             mlt_cleanup_inventory,
             read_original_native_job_status,

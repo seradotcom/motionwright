@@ -6,12 +6,13 @@ import type { WorkflowSession, WorkflowStore, WorkflowPointers } from "./workflo
 type Props = {
   session: WorkflowSession; storage: WorkflowStore; pointers: WorkflowPointers; inFlight: boolean; backupError: string | null;
   onOperation(operation: () => void): void;
+  onReadStoredCompletion(): void;
 };
 function download(raw: string, filename: string) {
   const url = URL.createObjectURL(new Blob([raw], { type: "application/json" }));
   const link = document.createElement("a"); link.href = url; link.download = filename; link.click(); URL.revokeObjectURL(url);
 }
-export default function WorkflowActionRecovery({ session, storage, pointers, inFlight, backupError, onOperation }: Props) {
+export default function WorkflowActionRecovery({ session, storage, pointers, inFlight, backupError, onOperation, onReadStoredCompletion }: Props) {
   const [copies, setCopies] = useState(() => workflowCopies(session.draft.scope, storage));
   const [selectedCopy, setSelectedCopy] = useState("");
   const [fileError, setFileError] = useState<string | null>(null);
@@ -50,7 +51,12 @@ export default function WorkflowActionRecovery({ session, storage, pointers, inF
       <details><summary>Original action and arguments</summary><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{pending.requestJson}</pre></details>
       {pending.failure && <details><summary>Reported failure and receipt observation</summary>
         <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{JSON.stringify(pending.failure, null, 2)}</pre></details>}
-      {pending.outcome === "UNKNOWN" ? <p>Refresh reads the current workflow evidence. It does not determine this request's outcome, and an absent or unavailable receipt does not authorize another send.</p>
+      {pending.outcome === "UNKNOWN" ? <div>
+        <p>Refresh reads current workflow evidence. Read the original stored result to recover a complete response already saved by Native. Missing, incomplete or uncertain records keep this action blocked.</p>
+        <button className="button compact" type="button" disabled={inFlight || !!backupError || !!session.failedSource}
+          onClick={onReadStoredCompletion}>Read original stored result</button>
+        <p>This reads the original local receipt without executing Core, requesting permission or sending the action again. It does not observe whether recording is active now.</p>
+      </div>
         : <button className="button compact" type="button" disabled={inFlight || !!backupError} onClick={() => onOperation(() => {
           closeKnownWorkflowAttempt(session, storage, pointers); persistWorkflowSession(session, storage, pointers);
         })}>Acknowledge known outcome and keep drafting</button>}

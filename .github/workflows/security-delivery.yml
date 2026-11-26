@@ -86,6 +86,7 @@ on:
           - desktop-blender
           - desktop-playback
           - desktop-saved-delivery
+          - desktop-workflow
           - first-use-example
           - native-otio-snapshot
           - native-otio-real-media
@@ -121,7 +122,7 @@ env:
 
 jobs:
   source-boundary:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures' && inputs.verification_scope != 'native-source-export' && inputs.verification_scope != 'desktop-source' && inputs.verification_scope != 'desktop-compile' && inputs.verification_scope != 'desktop-hyperframes' && inputs.verification_scope != 'desktop-blender' && inputs.verification_scope != 'desktop-playback' && inputs.verification_scope != 'desktop-saved-delivery' && inputs.verification_scope != 'first-use-example' && inputs.verification_scope != 'native-otio-snapshot' && inputs.verification_scope != 'native-otio-real-media' && inputs.verification_scope != 'native-source-browser' && inputs.verification_scope != 'native-film-geometry' && inputs.verification_scope != 'native-film-hold' && inputs.verification_scope != 'native-geometry-readback')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'source-admission-contracts' && inputs.verification_scope != 'foundation-causal' && inputs.verification_scope != 'foundation-import-budget' && inputs.verification_scope != 'foundation-current' && inputs.verification_scope != 'foundation-projection-diagnostic' && inputs.verification_scope != 'foundation-composed-current' && inputs.verification_scope != 'foundation-coherent-current' && inputs.verification_scope != 'storage-api-regressions' && inputs.verification_scope != 'storage-service-current' && inputs.verification_scope != 'service-legacy-fixtures' && inputs.verification_scope != 'native-source-export' && inputs.verification_scope != 'desktop-source' && inputs.verification_scope != 'desktop-compile' && inputs.verification_scope != 'desktop-hyperframes' && inputs.verification_scope != 'desktop-blender' && inputs.verification_scope != 'desktop-playback' && inputs.verification_scope != 'desktop-saved-delivery' && inputs.verification_scope != 'desktop-workflow' && inputs.verification_scope != 'first-use-example' && inputs.verification_scope != 'native-otio-snapshot' && inputs.verification_scope != 'native-otio-real-media' && inputs.verification_scope != 'native-source-browser' && inputs.verification_scope != 'native-film-geometry' && inputs.verification_scope != 'native-film-hold' && inputs.verification_scope != 'native-geometry-readback')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -229,7 +230,7 @@ jobs:
 
   desktop-boundary:
     needs: source-boundary
-    if: ${{ !cancelled() && (needs.source-boundary.result == 'success' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["desktop-source","desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery"]'), inputs.verification_scope))) }}
+    if: ${{ !cancelled() && (needs.source-boundary.result == 'success' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["desktop-source","desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope))) }}
     runs-on: ${{ github.event_name == 'workflow_dispatch' && contains(fromJSON('["desktop-compile","desktop-blender","desktop-playback","desktop-saved-delivery"]'), inputs.verification_scope) && inputs.desktop_compile_platform == 'windows' && 'windows-latest' || 'ubuntu-24.04' }}
     timeout-minutes: 30
     env:
@@ -284,10 +285,10 @@ jobs:
       - name: Check bounded desktop command surface
         run: cargo check --locked --jobs 2 -p motionwright-desktop
       - name: Effect-grant boundary regressions
-        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery"]'), inputs.verification_scope)
+        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope)
         run: cargo test --locked --jobs 2 -p motionwright-desktop effect_grants
       - name: Original offline runtime files, SQLite reopen and rollback
-        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery"]'), inputs.verification_scope)
+        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope)
         run: |
           set -euo pipefail
           python3 -B - <<'PY_RUNTIME_PROFILES'
@@ -336,7 +337,7 @@ jobs:
           print("RUNTIME_PROFILE_LOCAL_COPY=PASS; cases=11; SQLite=REAL; package_description=ACTUAL_PRODUCER; tools=INERT_BYTE_FIXTURES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           PY_RUNTIME_PROFILES
       - name: HyperFrames original Desktop render and PNG recovery contracts
-        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-compile","desktop-blender","desktop-playback","desktop-saved-delivery"]'), inputs.verification_scope)
+        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-compile","desktop-blender","desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope)
         run: |
           set -euo pipefail
           cargo clippy --locked --jobs 2 -p motionwright-native --test desktop_hyperframes_render -- -D warnings
@@ -373,16 +374,16 @@ jobs:
           PY_HF_RENDER
           cargo test --locked --jobs 2 -p motionwright-service --lib jobs::tests:: -- --test-threads=1
       - name: Native PNG preview security regressions
-        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-source","desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery"]'), inputs.verification_scope)
+        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-source","desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope)
         run: cargo test --locked -p motionwright-desktop native_preview
       - name: Measured WAV / native AV master source regressions
-        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-source","desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery"]'), inputs.verification_scope)
+        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-source","desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope)
         run: cargo test --locked -p motionwright-desktop av_master
       - name: Verified MP4 local delivery security regressions
-        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-source","desktop-compile","desktop-hyperframes","desktop-blender"]'), inputs.verification_scope)
+        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-source","desktop-compile","desktop-hyperframes","desktop-blender","desktop-workflow"]'), inputs.verification_scope)
         run: cargo test --locked -p motionwright-desktop av_delivery
       - name: Owner Manim source exchange and original SQLite reopen
-        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-compile","desktop-blender","desktop-playback","desktop-saved-delivery"]'), inputs.verification_scope)
+        if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-compile","desktop-blender","desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope)
         run: |
           set -euo pipefail
           cargo test --locked --jobs 2 -p motionwright-desktop preparation_reuses_complete_mime_map_and_trims_only_supplied_metadata -- --test-threads=1
@@ -418,8 +419,17 @@ jobs:
           grep -F '1 passed; 0 failed; 0 ignored' "$log"
           cargo clippy --locked --jobs 2 -p motionwright-native --lib -- -D warnings
           cargo test --locked --jobs 2 -p motionwright-desktop effect_grants -- --test-threads=1
+      - name: Original workflow completion read and durable no-replay regressions
+        if: inputs.verification_scope == 'desktop-workflow'
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --jobs 2 -p motionwright-native --test desktop_workflow_route -- -D warnings
+          log="$RUNNER_TEMP/workflow-original-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.log"
+          cargo test --locked --jobs 2 -p motionwright-native --test desktop_workflow_route -- --test-threads=1 | tee "$log"
+          grep -F '14 passed; 0 failed; 0 ignored' "$log"
+          cargo test --locked --jobs 2 -p motionwright-desktop effect_grants -- --test-threads=1
       - name: Native owner lifetime and resource identity regressions
-        if: contains(fromJSON('["desktop-playback","desktop-saved-delivery"]'), inputs.verification_scope)
+        if: contains(fromJSON('["desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope)
         run: cargo test --locked --jobs 2 -p motionwright-desktop desktop_owner -- --test-threads=1
       - name: Clippy desktop boundary
         run: cargo clippy --locked --jobs 2 -p motionwright-desktop --keep-going --all-targets -- -D warnings

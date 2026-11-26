@@ -19,6 +19,8 @@ export interface WorkflowFixtureHarness {
   setSource(field: "id" | "generation" | "active_branch" | "revision", value: string | number): Promise<void>;
   holdGrants(value: boolean): void; releaseGrant(index: number, rejection?: unknown): Promise<void>;
   syntheticResponse(index: number): WorkflowActionResponse;
+  completionReads(): WorkflowActionPayload[];
+  resolveCompletion(index: number, value: unknown): Promise<void>;
   resolve(index: number, value?: unknown): Promise<void>; reject(index: number, value: unknown): Promise<void>;
   unmount(): Promise<void>; mount(): Promise<void>;
 }
@@ -28,9 +30,10 @@ declare global { interface Window {
 } }
 const id = (n: number) => "018f0000-0000-7000-8000-" + String(n).padStart(12, "0");
 const stateKey = "TEST-ONLY.workflow-caller-synthetic-source.v1", rawState = sessionStorage.getItem(stateKey);
-type FixtureState = { project: Project; requests: WorkflowFixtureInvocation[]; grants: WorkflowFixtureGrant[]; overviewReads: number };
-const state: FixtureState = rawState ? JSON.parse(rawState) : { project: { ...structuredClone(fixtureProject), revision: 12 }, requests: [], grants: [], overviewReads: 0 };
+type FixtureState = { project: Project; requests: WorkflowFixtureInvocation[]; grants: WorkflowFixtureGrant[]; overviewReads: number; completionReads: WorkflowActionPayload[] };
+const state: FixtureState = rawState ? JSON.parse(rawState) : { project: { ...structuredClone(fixtureProject), revision: 12 }, requests: [], grants: [], overviewReads: 0, completionReads: [] };
 let holdGrants = false, mounted = true;
+const pendingCompletions = new Map<number, (value: unknown) => void>();
 const pending = new Map<number, { resolve(value: unknown): void; reject(reason: unknown): void }>();
 const pendingGrants = new Map<number, { resolve(value: unknown): void; reject(reason: unknown): void }>();
 const persist = () => sessionStorage.setItem(stateKey, JSON.stringify(state));
@@ -59,6 +62,10 @@ Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value
       state.grants.push(grant); persist();
       if (!holdGrants) return grantValue(grant);
       return new Promise((resolve, reject) => pendingGrants.set(grant.index, { resolve, reject }));
+    }
+    if (command === "workflow_stored_completion") {
+      state.completionReads.push(structuredClone(args.request) as WorkflowActionPayload); persist();
+      return new Promise(resolve => pendingCompletions.set(state.completionReads.length, resolve));
     }
     if (command === "workflow_action") {
       const invocation: WorkflowFixtureInvocation = { index: state.requests.length + 1, request: structuredClone(args.request) as TestRequest, settled: false };
@@ -96,6 +103,11 @@ window.__WORKFLOW_RECOVERY_FIXTURE__ = {
     if (rejection !== undefined) reply.reject(rejection); else reply.resolve(grantValue(original)); await paint();
   },
   syntheticResponse,
+  completionReads: () => structuredClone(state.completionReads),
+  async resolveCompletion(index, value) {
+    const resolve = pendingCompletions.get(index); if (!resolve) throw new Error("No pending original read.");
+    pendingCompletions.delete(index); resolve(value); await paint();
+  },
   async resolve(index, value) {
     const original = invocation(index), reply = pending.get(index); if (!reply) throw new Error("Original invocation is not live in this test process.");
     original.settled = true; pending.delete(index); persist(); reply.resolve(value ?? syntheticResponse(index)); await paint();

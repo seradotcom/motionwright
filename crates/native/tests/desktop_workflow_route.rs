@@ -11,7 +11,7 @@ mod workflow_native;
 #[test]
 fn workflow_wire_requires_original_request_identity_and_rejects_unknown_fields() {
     use serde_json::json;
-    use workflow_native::WorkflowActionRequest;
+    use workflow_native::{StoredWorkflowRequest, WorkflowActionRequest};
     let mut value = json!({
         "project_id": uuid::Uuid::now_v7(),
         "generation": uuid::Uuid::now_v7(),
@@ -22,6 +22,18 @@ fn workflow_wire_requires_original_request_identity_and_rejects_unknown_fields()
     assert!(serde_json::from_value::<WorkflowActionRequest>(value.clone()).is_err());
     value["request_id"] = json!("original-workflow-request");
     assert!(serde_json::from_value::<WorkflowActionRequest>(value.clone()).is_ok());
+    assert!(serde_json::from_value::<StoredWorkflowRequest>(value.clone()).is_ok());
+    for field in [
+        "effect_grant",
+        "actor",
+        "connection",
+        "receipt",
+        "outcome_known",
+    ] {
+        let mut altered = value.clone();
+        altered[field] = json!("not-read-authority");
+        assert!(serde_json::from_value::<StoredWorkflowRequest>(altered).is_err());
+    }
     value["actor"] = json!("caller-cannot-assert-authority");
     assert!(serde_json::from_value::<WorkflowActionRequest>(value).is_err());
 }
@@ -977,5 +989,194 @@ mod routed {
                 .any(|r| r.stage == "dispatching"
                     && r.payload.get("mutation") == Some(&Value::Bool(false)))
         );
+    }
+    fn stored_request(f: &Fixture, key: &str) -> super::workflow_native::StoredWorkflowRequest {
+        super::workflow_native::StoredWorkflowRequest {
+            project_id: f.project.id,
+            generation: f.project.generation,
+            revision: f.project.revision,
+            request_id: key.into(),
+            action: WorkflowAction::RecordStart,
+            args: json!({"capture_values": false}),
+        }
+    }
+
+    #[tokio::test]
+    async fn stored_completion_reopens_closed_sqlite_without_calls_grants_or_receipt_writes() {
+        let f = fixture(WorkflowAction::RecordStart, Reply::Success, false);
+        let key = "stored-original-completed";
+        let original = execute_workflow_action(
+            &admit_fixture_phase,
+            &f.service,
+            &f.grants,
+            &f.custody,
+            Ok(Some(f.connection.clone())),
+            request(
+                &f.project,
+                &f.grants,
+                key,
+                WorkflowAction::RecordStart,
+                true,
+            ),
+        )
+        .await
+        .unwrap();
+        let later_project = f
+            .service
+            .apply(
+                f.project.id,
+                &motionwright_domain::RevisionStamp::from(&f.project),
+                "later-workflow-project-edit",
+                &motionwright_domain::Change::RenameProject {
+                    title: "Later project input".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        let before = f.service.production_receipts(f.project.id, 20).unwrap();
+        let selected = stored_request(&f, key);
+        drop(f.service);
+        let reopened = StudioService::open(&f.database).unwrap();
+        let (observed, _) = super::workflow_native::read_stored_workflow_completion(
+            &admit_fixture_phase,
+            &reopened,
+            &ProductionReceiptCustody::default(),
+            f.connection.clone(),
+            selected,
+        )
+        .unwrap();
+        let observed = observed.unwrap();
+        assert!(observed.replayed);
+        assert_eq!(observed.request_id, original.request_id);
+        assert_eq!(observed.broker_request_id, original.broker_request_id);
+        assert_eq!(observed.result, original.result);
+        assert_eq!(observed.authority, original.authority);
+        assert_eq!(
+            reopened.production_receipts(f.project.id, 20).unwrap(),
+            before
+        );
+        assert_eq!(reopened.project(f.project.id).unwrap(), later_project);
+        assert_eq!(count(&f.calls), 1);
+        assert_eq!(count(&f.effects), 1);
+    }
+
+    #[tokio::test]
+    async fn stored_completion_keeps_absent_unknown_and_known_failure_unresolved() {
+        for reply in [Reply::MalformedAfterEffect, Reply::KnownRejection] {
+            let f = fixture(WorkflowAction::RecordStart, reply, false);
+            let key = "stored-original-not-completed";
+            execute_workflow_action(
+                &admit_fixture_phase,
+                &f.service,
+                &f.grants,
+                &f.custody,
+                Ok(Some(f.connection.clone())),
+                request(
+                    &f.project,
+                    &f.grants,
+                    key,
+                    WorkflowAction::RecordStart,
+                    true,
+                ),
+            )
+            .await
+            .unwrap_err();
+            let before = f.service.production_receipts(f.project.id, 20).unwrap();
+            let effects = count(&f.effects);
+            for selected in [key, "absent-original"] {
+                let (result, _) = super::workflow_native::read_stored_workflow_completion(
+                    &admit_fixture_phase,
+                    &f.service,
+                    &f.custody,
+                    f.connection.clone(),
+                    stored_request(&f, selected),
+                )
+                .unwrap();
+                assert!(result.is_none());
+            }
+            let closed = || Err::<(), String>("Closed owner".into());
+            assert!(
+                super::workflow_native::read_stored_workflow_completion(
+                    &closed,
+                    &f.service,
+                    &f.custody,
+                    f.connection.clone(),
+                    stored_request(&f, key)
+                )
+                .is_err()
+            );
+            assert_eq!(
+                f.service.production_receipts(f.project.id, 20).unwrap(),
+                before
+            );
+            assert_eq!(count(&f.calls), 1);
+            assert_eq!(count(&f.effects), effects);
+        }
+    }
+
+    #[tokio::test]
+    async fn stored_completion_rejects_changed_args_scope_connection_and_untrusted_provenance() {
+        for untrusted in [false, true] {
+            let f = fixture(WorkflowAction::RecordStart, Reply::Success, false);
+            if untrusted {
+                let mut envelope: Value =
+                    serde_json::from_slice(&fs::read(&f.response_file).unwrap()).unwrap();
+                envelope["execution"]["provenance"]["untrusted_metadata"] = json!(true);
+                fs::write(&f.response_file, serde_json::to_vec(&envelope).unwrap()).unwrap();
+            }
+            let key = "stored-completion-binding";
+            execute_workflow_action(
+                &admit_fixture_phase,
+                &f.service,
+                &f.grants,
+                &f.custody,
+                Ok(Some(f.connection.clone())),
+                request(
+                    &f.project,
+                    &f.grants,
+                    key,
+                    WorkflowAction::RecordStart,
+                    true,
+                ),
+            )
+            .await
+            .unwrap();
+            let before = f.service.production_receipts(f.project.id, 20).unwrap();
+            let read = |selector| {
+                super::workflow_native::read_stored_workflow_completion(
+                    &admit_fixture_phase,
+                    &f.service,
+                    &f.custody,
+                    f.connection.clone(),
+                    selector,
+                )
+            };
+            if untrusted {
+                assert!(read(stored_request(&f, key)).is_err());
+            }
+            let mut wrong = stored_request(&f, key);
+            wrong.args = json!({"capture_values":true});
+            assert!(read(wrong).is_err());
+            let mut wrong = stored_request(&f, key);
+            wrong.generation = uuid::Uuid::now_v7();
+            assert!(read(wrong).is_err());
+            let mut wrong = stored_request(&f, key);
+            wrong.revision += 1;
+            assert!(read(wrong).is_err());
+            let mut changed: ProductionConnection =
+                serde_json::from_slice(&fs::read(&f.connection).unwrap()).unwrap();
+            let other = f._temp.path().join("other-output");
+            fs::create_dir(&other).unwrap();
+            mode(&other, 0o700);
+            changed.output_root = other;
+            fs::write(&f.connection, serde_json::to_vec(&changed).unwrap()).unwrap();
+            assert!(read(stored_request(&f, key)).is_err());
+            assert_eq!(
+                f.service.production_receipts(f.project.id, 20).unwrap(),
+                before
+            );
+            assert_eq!(count(&f.calls), 1);
+            assert_eq!(count(&f.effects), 1);
+        }
     }
 }

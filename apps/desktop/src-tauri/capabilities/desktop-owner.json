@@ -36,6 +36,7 @@
     "allow-clear-saved-semwright-connection",
     "allow-workflow-overview",
     "allow-workflow-action",
+    "allow-workflow-stored-completion",
     "allow-production-jobs",
     "allow-mlt-cleanup-inventory",
     "allow-read-original-native-job-status",

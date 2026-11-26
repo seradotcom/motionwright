@@ -31,6 +31,7 @@ fn main() {
             "clear_saved_semwright_connection",
             "workflow_overview",
             "workflow_action",
+            "workflow_stored_completion",
             "production_jobs",
             "mlt_cleanup_inventory",
             "read_original_native_job_status",

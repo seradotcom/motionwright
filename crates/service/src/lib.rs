@@ -1194,6 +1194,16 @@ impl StudioService {
         self.store.lock().append_production_receipt(input)
     }
 
+    pub fn original_production_receipt_pair(
+        &self,
+        project_id: Uuid,
+        request_id: &str,
+    ) -> StorageResult<Vec<ProductionReceipt>> {
+        self.store
+            .lock()
+            .original_production_receipt_pair(project_id, request_id)
+    }
+
     pub fn latest_production_receipt(
         &self,
         project_id: Uuid,

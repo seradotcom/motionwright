@@ -62,6 +62,7 @@ mod mlt_timeline;
 mod motion_canvas_window;
 mod saved_media;
 mod saved_motion;
+mod saved_workflow;
 pub use motion_canvas_window::{
     MotionCanvasCachedWindowFrame, MotionCanvasCaptureTimings, MotionCanvasStartOrigin,
     MotionCanvasWindowCapture, MotionCanvasWindowCost, MotionCanvasWindowEvidence,

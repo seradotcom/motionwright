@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fixtureProject } from "./fixture";
-import { acknowledgeWorkflowSubmission, adoptWorkflowDraft, assertWorkflowResponse, closeKnownWorkflowAttempt, decodeWorkflowDraft,
+import { prepareWorkflowCompletionRead, acknowledgeStoredWorkflowCompletion, acknowledgeWorkflowSubmission, adoptWorkflowDraft, assertWorkflowResponse, closeKnownWorkflowAttempt, decodeWorkflowDraft,
   editWorkflowField, exportWorkflowDraft, forkWorkflowWriter, guardWorkflowDispatch, importWorkflowDraft, openWorkflowSession,
   persistWorkflowSession, prepareWorkflowSubmission, readWorkflowArguments, readWorkflowFailure, readWorkflowPayload, readWorkflowRequestId,
   requireWorkflowCustody, restoreWorkflowCopy, retainWorkflowFailure, retryWorkflowCustody, WORKFLOW_ERROR_CODES, WorkflowNotDispatchedError,
@@ -475,5 +475,47 @@ describe("A known invocation rejection cannot settle an uncertain original workf
     expect(decoded.pending?.outcome).toBe("UNKNOWN");
     expect(decoded.pending?.requestJson).toBe(submission.requestJson);
     expect(() => closeKnownWorkflowAttempt(w.session, w.storage, w.pointers)).toThrow();
+  });
+});
+
+describe("Stored completion read custody", () => {
+  it("recovers the exact retained request after reopen and preserves later author input", () => {
+    const w = world(), submission = sent(w);
+    retainWorkflowFailure(w.session, submission, new Error("Lost IPC reply"));
+    persistWorkflowSession(w.session, w.storage, w.pointers);
+    const reopened = openWorkflowSession(w.project, w.storage, w.pointers);
+    editWorkflowField(reopened, "compile.name", "Later draft"); persistWorkflowSession(reopened, w.storage, w.pointers);
+    const later = { ...w.project, revision: w.project.revision + 1 };
+    const ticket = prepareWorkflowCompletionRead(reopened, later, w.storage, w.pointers);
+    const original = { ...response(submission), replayed: true };
+    acknowledgeStoredWorkflowCompletion(reopened, ticket, original, later, w.storage, w.pointers);
+    expect(reopened.draft.pending).toBeNull();
+    expect(workflowRaw(reopened.draft, "compile.name")).toBe("Later draft");
+    expect(reopened.draft.lastOutcome?.requestJson).toBe(submission.requestJson);
+    expect(() => acknowledgeStoredWorkflowCompletion(reopened, ticket, original, later, w.storage, w.pointers)).toThrow();
+  });
+  it("cannot settle UNKNOWN from null, live-only, foreign, copied-ticket or changed-custody values", () => {
+    const w = world(), submission = sent(w);
+    retainWorkflowFailure(w.session, submission, new Error("Lost reply")); persistWorkflowSession(w.session, w.storage, w.pointers);
+    const ticket = prepareWorkflowCompletionRead(w.session, w.project, w.storage, w.pointers);
+    const original = { ...response(submission), replayed: true };
+    for (const value of [null, response(submission), { ...original, request_id: "foreign" }])
+      expect(() => acknowledgeStoredWorkflowCompletion(w.session, ticket, value, w.project, w.storage, w.pointers)).toThrow();
+    expect(() => acknowledgeStoredWorkflowCompletion(w.session, structuredClone(ticket), original, w.project, w.storage, w.pointers)).toThrow();
+    expect(() => acknowledgeStoredWorkflowCompletion(w.session, ticket, original, { ...w.project, revision: 13 }, w.storage, w.pointers)).toThrow();
+    w.pointers.setItem(workflowPointerKey(ticket.scope), id(4));
+    expect(() => acknowledgeStoredWorkflowCompletion(w.session, ticket, original, w.project, w.storage, w.pointers)).toThrow();
+    expect(w.session.draft.pending?.outcome).toBe("UNKNOWN");
+  });
+  it("requires an unresolved original rather than creating a new workflow identity", () => {
+    const dirty = world(); persistWorkflowSession(dirty.session, dirty.storage, dirty.pointers);
+    prepareWorkflowSubmission(dirty.session, dirty.project, "verify", { candidate_id: "A" }, [], "not-backed-up");
+    expect(() => prepareWorkflowCompletionRead(dirty.session, dirty.project, dirty.storage, dirty.pointers)).toThrow();
+    const w = world();
+    expect(() => prepareWorkflowCompletionRead(w.session, w.project, w.storage, w.pointers)).toThrow();
+    const submission = prepare(w);
+    retainWorkflowFailure(w.session, submission, new WorkflowNotDispatchedError(submission.request.request_id, "Not sent"));
+    persistWorkflowSession(w.session, w.storage, w.pointers);
+    expect(() => prepareWorkflowCompletionRead(w.session, w.project, w.storage, w.pointers)).toThrow();
   });
 });

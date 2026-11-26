@@ -593,6 +593,34 @@ impl Store {
         Ok(receipt)
     }
 
+    /// Read only the original dispatch/terminal pair in one SQLite snapshot.
+    /// An extra row is rejected, never hidden by a suffix or replaced with a new receipt.
+    pub fn original_production_receipt_pair(
+        &self,
+        project_id: Uuid,
+        request_id: &str,
+    ) -> Result<Vec<ProductionReceipt>> {
+        bounded_token(request_id, 256, "production request id")?;
+        let tx = self.conn.unchecked_transaction()?;
+        super::validate_production_receipt_order_integrity(&tx, Some(project_id))?;
+        let rows = query_receipts(
+            &tx,
+            "SELECT r.receipt_id,r.project_id,r.generation,r.revision,r.request_id,
+                    r.request_sha256,r.command,r.stage,r.payload_json,r.created_at
+             FROM production_receipts AS r
+             JOIN production_receipt_order AS o ON o.receipt_id=r.receipt_id
+             WHERE r.project_id=?1 AND r.request_id=?2 ORDER BY o.sequence LIMIT 3",
+            params![project_id.to_string(), request_id],
+        )?;
+        if rows.len() > 2 {
+            return Err(StorageError::Domain(DomainError::Invalid(
+                "Original production receipt pair has additional history".into(),
+            )));
+        }
+        tx.commit()?;
+        Ok(rows)
+    }
+
     pub fn latest_production_receipt(
         &self,
         project_id: Uuid,

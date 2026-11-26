@@ -55,8 +55,27 @@ A Recipe that invokes AI or another stochastic system does not become determinis
 
 Operational workflow controls appear only with a live canonical connection. The user must enable workflow changes for the current workspace session before record/compile/accept/verify/replay/promote controls are enabled. This UI gate is not a security authority; Semwright still decides every operation.
 
-Recording state stored in browser session storage is only a UI hint so the user can leave the workspace while demonstrating operations. Semwright remains the source of truth; a stale hint cannot authorize or complete an operation.
+Recording details and the acknowledged-start hint are retained in the project/generation/branch author copy; the browser session keeps its writer pointer. The hint only lets the user leave the workspace while demonstrating operations. Semwright remains the source of truth; a stale hint cannot authorize an operation or establish that recording is active now.
 
 ## Failure behavior
 
 If the connection is missing, bound to another project, fails digest/path validation, or a canonical policy/gate rejects an action, Motionwright fails closed. The user can refresh evidence and inspect current policy, consent, replay or descriptor state. The app does not switch provider, fake acceptance or fall back to local workflow execution.
+
+## Recover a stored completion after a lost reply
+
+In **Workflow author recovery**, choose **Read original stored result** for the
+retained UNKNOWN action. Desktop reads the original dispatch/completion pair
+from the existing SQLite store using the exact request identity, arguments,
+project generation and original revision. It qualifies the original connection,
+Core provenance, descriptor digest, complete response and separate Broker request
+identity. Later project revisions remain intact; a project/connection/input
+change during the read rejects the observation.
+
+A complete stored result restores the original acknowledged response and clears
+only author fields that still match that original submission. Recording hints
+remain historical. This path makes no Core call, consumes no effect grant or
+budget, writes no receipts and never retries an action. Missing records, an
+unfinished dispatch, outcome_unknown, a known failure, changed custody or
+incomplete/foreign provenance leave UNKNOWN blocked. It does not infer a
+canonical actor, live recording state, fresh verification or replay success
+from a connection identity or an imported JSON file.

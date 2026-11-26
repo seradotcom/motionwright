@@ -419,3 +419,62 @@ for (const mode of ["silent", "throw", "write-then-throw"] as const) {
     await second.close();
   });
 }
+
+async function readStored(page: Page, index: number) {
+  await button(page, "Read original stored result").click();
+  await expect.poll(() => page.evaluate(() => window.__WORKFLOW_RECOVERY_FIXTURE__.completionReads().length)).toBe(index);
+}
+async function completeStored(page: Page, index: number, original = 1) {
+  await page.evaluate(({ index, original }) => {
+    const response = window.__WORKFLOW_RECOVERY_FIXTURE__.syntheticResponse(original);
+    return window.__WORKFLOW_RECOVERY_FIXTURE__.resolveCompletion(index, { ...response, replayed: true });
+  }, { index, original });
+}
+test("stored completion restores a lost compile reply after reload without another grant or action", async ({ page }) => {
+  await compiler(page); const sent = await sendCompile(page);
+  await page.reload(); await ready(page);
+  await field(page, "Candidate name").fill("Later authored candidate");
+  const overviewReads = await page.evaluate(() => window.__WORKFLOW_RECOVERY_FIXTURE__.overviewReads());
+  await readStored(page, 1); await completeStored(page, 1);
+  expect(await page.evaluate(() => window.__WORKFLOW_RECOVERY_FIXTURE__.overviewReads())).toBe(overviewReads);
+  await expect(retained(page)).toHaveCount(0);
+  await expect(field(page, "Candidate name")).toHaveValue("Later authored candidate");
+  expect(await requests(page)).toHaveLength(1); expect(await grants(page)).toHaveLength(1);
+  const read = await page.evaluate(() => window.__WORKFLOW_RECOVERY_FIXTURE__.completionReads()[0]);
+  expect(read.request_id).toBe(sent.request.request_id); expect(read).not.toHaveProperty("effect_grant");
+  await page.reload(); await ready(page); await expect(retained(page)).toHaveCount(0);
+  expect(await requests(page)).toHaveLength(1);
+});
+test("missing and mismatched stored results preserve UNKNOWN and never retry", async ({ page }) => {
+  await compiler(page); await sendCompile(page); await page.reload(); await ready(page);
+  await readStored(page, 1);
+  await page.evaluate(() => window.__WORKFLOW_RECOVERY_FIXTURE__.resolveCompletion(1, null));
+  await expect(retained(page)).toContainText("UNKNOWN"); await expect(button(page, "Compile candidate")).toBeDisabled();
+  await readStored(page, 2);
+  await page.evaluate(() => window.__WORKFLOW_RECOVERY_FIXTURE__.resolveCompletion(2, {
+    ...window.__WORKFLOW_RECOVERY_FIXTURE__.syntheticResponse(1), request_id: "foreign", replayed: true,
+  }));
+  await expect(retained(page)).toContainText("UNKNOWN");
+  expect(await requests(page)).toHaveLength(1); expect(await grants(page)).toHaveLength(1);
+});
+test("late stored read cannot settle after revision ABA or editor unmount", async ({ page }) => {
+  await compiler(page); await sendCompile(page); await page.reload(); await ready(page);
+  await readStored(page, 1);
+  await page.evaluate(() => window.__WORKFLOW_RECOVERY_FIXTURE__.setSource("revision", 13));
+  await page.evaluate(() => window.__WORKFLOW_RECOVERY_FIXTURE__.setSource("revision", 12));
+  await completeStored(page, 1); await expect(retained(page)).toContainText("UNKNOWN");
+  await readStored(page, 2); await page.evaluate(() => window.__WORKFLOW_RECOVERY_FIXTURE__.unmount());
+  await completeStored(page, 2); await page.evaluate(() => window.__WORKFLOW_RECOVERY_FIXTURE__.mount());
+  await ready(page); await expect(retained(page)).toContainText("UNKNOWN");
+  expect(await requests(page)).toHaveLength(1); expect(await grants(page)).toHaveLength(1);
+});
+test("stored recorder acknowledgement restores only the historical hint with fresh UI consent still required", async ({ page }) => {
+  await writeConsent(page).check(); await button(page, "Start explicit recording").click();
+  await expect.poll(async () => (await requests(page)).length).toBe(1);
+  await page.reload(); await ready(page); await readStored(page, 1); await completeStored(page, 1);
+  await expect(retained(page)).toHaveCount(0);
+  await expect(page.getByText("Recording start acknowledged previously", { exact: true })).toBeVisible();
+  await expect(button(page, "Stop & keep")).toBeDisabled();
+  await writeConsent(page).check(); await expect(button(page, "Stop & keep")).toBeEnabled();
+  expect(await requests(page)).toHaveLength(1); expect(await grants(page)).toHaveLength(1);
+});

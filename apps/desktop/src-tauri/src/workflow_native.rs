@@ -332,13 +332,24 @@ pub async fn execute_workflow_action<Phase: Send>(
             observe_receipt(admit_phase, service, &request),
         )
     })?;
+    project_workflow_response(&request, reply, || {
+        observe_receipt(admit_phase, service, &request)
+    })
+}
+
+fn project_workflow_response(
+    request: &WorkflowActionRequest,
+    reply: Value,
+    observe: impl Fn() -> WorkflowReceiptObservation,
+) -> Result<WorkflowActionResponse, WorkflowActionFailure> {
+    let command = request.action.command();
     let malformed_reply = || {
         failure(
-            &request,
+            request,
             ErrorCode::BackendFailed,
-            !mutation,
+            !request.action.mutation(),
             "The workflow reply could not be projected. Preserve and inspect the original request.",
-            observe_receipt(admit_phase, service, &request),
+            observe(),
         )
     };
     let identity: WorkflowReceiptIdentity = reply
@@ -372,7 +383,7 @@ pub async fn execute_workflow_action<Phase: Send>(
     Ok(WorkflowActionResponse {
         schema: "motionwright.workflow-action-response/1",
         command,
-        request_id: request.request_id,
+        request_id: request.request_id.clone(),
         broker_request_id,
         replayed,
         authority: reply.pointer("/result/execution/provenance").cloned(),
@@ -381,4 +392,83 @@ pub async fn execute_workflow_action<Phase: Send>(
             identity: Box::new(identity),
         },
     })
+}
+
+// No effect-grant, actor, path or authority fields are accepted by this read.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoredWorkflowRequest {
+    pub project_id: Uuid,
+    pub generation: Uuid,
+    pub revision: u64,
+    pub request_id: String,
+    pub action: WorkflowAction,
+    pub args: Value,
+}
+
+pub fn read_stored_workflow_completion<Phase: Send>(
+    admit_phase: &(impl Fn() -> Result<Phase, String> + Sync),
+    service: &StudioService,
+    custody: &ProductionReceiptCustody,
+    connection_path: PathBuf,
+    request: StoredWorkflowRequest,
+) -> Result<(Option<WorkflowActionResponse>, String), String> {
+    let _phase = admit_phase()?;
+    let project = service
+        .project(request.project_id)
+        .map_err(|_| "Workflow project is unavailable.")?;
+    if project.generation != request.generation || request.revision > project.revision {
+        return Err(
+            "Original workflow belongs to another project generation or future revision.".into(),
+        );
+    }
+    let connection = ProductionConnection::load(&connection_path)
+        .map_err(|_| "Original workflow connection is unavailable.")?;
+    let identity = connection
+        .identity()
+        .map_err(|_| "Original workflow connection is invalid.")?;
+    let coordinator =
+        ProductionCoordinator::with_receipt_custody(service.clone(), connection, custody)
+            .map_err(|_| "Original workflow connection was rejected.")?;
+    let original = RevisionStamp {
+        resource: project.resource_key(),
+        generation: request.generation,
+        revision: request.revision,
+    };
+    let result = coordinator
+        .read_recorded_workflow_completion(
+            request.project_id,
+            &original,
+            &request.request_id,
+            request.action.command(),
+            &request.args,
+        )
+        .map_err(
+            |_| "The stored workflow result could not be qualified; keep the original action.",
+        )?;
+    let _post_phase = admit_phase()?;
+    if ProductionConnection::load(&connection_path)
+        .and_then(|c| c.identity())
+        .ok()
+        .as_deref()
+        != Some(identity.as_str())
+    {
+        return Err("Original workflow connection changed during readback.".into());
+    }
+    let response = result
+        .map(|reply| {
+            let original = WorkflowActionRequest {
+                project_id: request.project_id,
+                generation: request.generation,
+                revision: request.revision,
+                request_id: request.request_id,
+                action: request.action,
+                effect_grant: None,
+                args: request.args,
+            };
+            project_workflow_response(&original, reply, || WorkflowReceiptObservation::NotChecked)
+                .map_err(|_| "The original stored workflow response is incomplete.".to_owned())
+        })
+        .transpose()?;
+    Ok((response, identity))
 }
