@@ -617,7 +617,7 @@ fn bounded_mul(left: u64, right: u64) -> NativeResult<u64> {
     left.checked_mul(right)
         .ok_or_else(|| invalid("Hybrid native resource reservation overflow"))
 }
-fn require(condition: bool, message: &'static str) -> NativeResult<()> {
+pub(super) fn require(condition: bool, message: &'static str) -> NativeResult<()> {
     if condition {
         Ok(())
     } else {

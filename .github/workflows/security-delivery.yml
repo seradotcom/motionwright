@@ -105,7 +105,7 @@ on:
         type: choice
         required: false
         default: all
-        options: [all, static-group, static-alignment, static-layout, follow, follow-ui, static-rotation, creative-batch, audio-cut, native-preview-blend, delivery-hero, measured-comparison, series-silence, camera-craft, source-boards, source-boards-ui, asset-media]
+        options: [all, static-group, static-alignment, static-layout, follow, follow-ui, static-rotation, creative-batch, audio-cut, native-preview-blend, delivery-hero, measured-comparison, series-silence, camera-craft, source-boards, source-boards-ui, asset-media, camera-spatial]
       interchange_case:
         description: One original Studio flow for native-otio-real-media; no other suites
         type: choice
@@ -599,6 +599,15 @@ jobs:
           cargo test --locked --jobs 2 -p motionwright-native --lib film::tests::saved_static_rotation_preserves_camera_translation_and_rejects_unsafe_geometry -- --exact --test-threads=1
           cargo check --locked --jobs 2 -p motionwright-native --example native-manim-camera-seed --example native-render-e2e
           cargo test --locked --jobs 2 -p motionwright-native --lib root_budget_productive_tests::saved_capture_ -- --test-threads=1
+      - name: Spatial Blender source and retained local hybrid owner boundaries
+        if: inputs.first_use_case == 'camera-spatial'
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --jobs 2 -p motionwright-native --all-targets -- -D warnings
+          cargo test --locked --jobs 2 -p motionwright-native --lib hybrid_ -- --test-threads=1
+          cargo test --locked --jobs 2 -p motionwright-native --lib blender_product_scene -- --test-threads=1
+          cargo test --locked --jobs 2 -p motionwright-native --lib production::blender_product_consumer:: -- --test-threads=1
+          cargo test --locked --jobs 2 -p motionwright-native --test blender_studio_recipe -- --test-threads=1
       - name: Original registered capture boards and chronological source-state Film
         if: inputs.first_use_case == 'source-boards'
         run: |
@@ -649,6 +658,9 @@ jobs:
           if test "$MOTIONWRIGHT_FIRST_USE_CASE" = source-boards-ui; then
             npx vitest run src/captureSourcePreview.test.ts
           fi
+          if test "$MOTIONWRIGHT_FIRST_USE_CASE" = camera-spatial; then
+            npx vitest run src/blenderProductRecipe.test.ts src/blenderSourceApi.test.ts src/nativeSourceDraft.test.ts src/craftLibrary.test.ts
+          fi
           if test "$MOTIONWRIGHT_FIRST_USE_CASE" = asset-media; then
             npx vitest run src/assetPreview.test.ts
             export MOTIONWRIGHT_ASSET_PREVIEW_MP4="$MOTIONWRIGHT_SERVICE_TEST_TMPDIR/synthetic-original.mp4"
@@ -683,6 +695,9 @@ jobs:
               selected_cases='.' ;;
             source-boards)
               specs=(tests/source-board-service.spec.ts tests/craft-library.spec.ts)
+              selected_cases='.' ;;
+            camera-spatial)
+              specs=(tests/blender-product-recipe-service.spec.ts tests/craft-library.spec.ts)
               selected_cases='.' ;;
             camera-craft)
               specs=(tests/camera-reframe-service.spec.ts tests/mask-window-service.spec.ts tests/craft-library.spec.ts)
@@ -719,7 +734,7 @@ jobs:
           result = json.loads(Path(os.environ["PLAYWRIGHT_JSON_OUTPUT_FILE"]).read_text(encoding="utf-8"))
           stats = result["stats"]
           selection = os.environ["MOTIONWRIGHT_FIRST_USE_CASE"]
-          expected = {"all": 9, "static-group": 1, "static-alignment": 1, "static-layout": 2, "follow": 1, "follow-ui": 1, "static-rotation": 2, "creative-batch": 25, "audio-cut": 5, "native-preview-blend": 2, "delivery-hero": 7, "measured-comparison": 4, "series-silence": 5, "camera-craft": 13, "source-boards": 5, "source-boards-ui": 1, "asset-media": 2}[selection]
+          expected = {"all": 9, "static-group": 1, "static-alignment": 1, "static-layout": 2, "follow": 1, "follow-ui": 1, "static-rotation": 2, "creative-batch": 25, "audio-cut": 5, "native-preview-blend": 2, "delivery-hero": 7, "measured-comparison": 4, "series-silence": 5, "camera-craft": 13, "source-boards": 5, "source-boards-ui": 1, "asset-media": 2, "camera-spatial": 6}[selection]
           assert stats["expected"] == expected, stats
           assert all(stats.get(key, 0) == 0 for key in ("unexpected","flaky","skipped")), stats
           if selection == "asset-media":
@@ -728,6 +743,8 @@ jobs:
               print(f"SOURCE_BOARD_ORIGINAL_SERVICE_STUDIO=PASS; cases={expected}; real_Service_SQLite_cases=1; original_capture_sources=SYNTHETIC_FIRST_PARTY_ACTUAL_STUDIO; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           elif selection == "source-boards":
               print(f"SOURCE_BOARD_STUDIO=PASS; cases={expected}; real_Service_SQLite_cases=1; browser_fixture_cases=4; original_capture_sources=SYNTHETIC_FIRST_PARTY; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+          elif selection == "camera-spatial":
+            print(f"SPATIAL_CAMERA_SOURCE_STUDIO=PASS; cases={expected}; real_Service_SQLite_cases=2; browser_fixture_cases=4; original_source=SYNTHETIC_AUTHORED; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           elif selection == "camera-craft":
               print(f"CAMERA_MASK_GRAPH_STUDIO=PASS; cases={expected}; real_Service_SQLite_cases=9; browser_fixture_cases=4; original_source=SYNTHETIC; OriginalStoreReopen=YES; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           elif selection == "series-silence":

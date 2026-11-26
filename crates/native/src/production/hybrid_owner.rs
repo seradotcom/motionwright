@@ -6,7 +6,7 @@
 #[cfg(target_os = "linux")]
 use super::hybrid_budget::{HYBRID_GRANT_MAX_BYTES, HybridProjectGrant};
 use super::hybrid_budget::{
-    HybridGrantDaemon, grant_path_identity, project_digest, verify_grant_daemon,
+    HybridGrantDaemon, grant_path_identity, project_digest, require, verify_grant_daemon,
 };
 use super::*;
 use std::sync::Arc;
@@ -201,7 +201,7 @@ impl LocalHybridOwner {
             "authority_origin":"existing_local_owner_configuration",
             "original_ci_receipt":false,
             "effect_grant_issued":false,
-            "native_effect_started":false,
+            "native_effect_started_by_observation":false,
             "automatic_retry":false
         })
     }
@@ -649,7 +649,7 @@ mod tests {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
         .unwrap();
-        let roots: u64 = database
+        let roots: i64 = database
             .query_row(
                 "SELECT COUNT(*) FROM production_operation_roots",
                 [],
