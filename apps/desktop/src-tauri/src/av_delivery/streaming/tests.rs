@@ -478,8 +478,8 @@ fn overlapping_decoder_ranges_wait_within_admission_and_keep_exact_original_byte
     assert_eq!(streams.active_reads.load(Ordering::Acquire), 0);
 }
 
-#[tokio::test]
-async fn abandoned_preparation_waiter_does_not_release_a_running_original_reader() {
+#[test]
+fn abandoned_preparation_waiter_does_not_release_a_running_original_reader() {
     use std::{sync::mpsc, time::Duration};
     let streams = ReviewStreams::default();
     let clone = streams.clone();
@@ -493,7 +493,7 @@ async fn abandoned_preparation_waiter_does_not_release_a_running_original_reader
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let (done_tx, done_rx) = mpsc::channel();
-    let worker = tokio::task::spawn_blocking(move || {
+    let worker = tauri::async_runtime::spawn_blocking(move || {
         let permit = preparing;
         entered_tx.send(()).unwrap();
         let _ = release_rx.recv();
