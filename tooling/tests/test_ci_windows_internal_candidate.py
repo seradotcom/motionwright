@@ -129,7 +129,7 @@ class InternalWindowsCandidateTests(unittest.TestCase):
         self.assertFalse((self.root / "ci-evidence/internal-windows-capture").exists())
         self.assertEqual(self.environment_file.read_bytes(), b"")
 
-    def test_internal_route_does_not_export_payload_admission_or_target_cache(self):
+    def test_internal_route_retains_closed_outputs_without_admission_or_target_cache(self):
         text = WORKFLOW.read_text(encoding="utf-8")
         windows = text.split("\n  windows:\n", 1)[1].split("\n  windows-update:\n", 1)[0]
         self.assertEqual(text.count('- "scripts/test_candidate_frontend_authentication.py"'), 2)
@@ -199,12 +199,28 @@ class InternalWindowsCandidateTests(unittest.TestCase):
                                        "uninstaller/listing.stdout")})
         uploads = [part for part in re.split(r"(?m)^      - ", windows)
                    if "uses: actions/upload-artifact@" in part]
-        self.assertEqual(len(uploads), 4)
+        self.assertEqual(len(uploads), 5)
         for step in uploads:
             paths = re.findall(r"(?m)^            (\S+)\s*$", step)
             self.assertNotIn("internal-windows-capture", step)
-            if "target/release/bundle/nsis/*-setup.exe" in paths:
-                self.assertIn("if: " + external, step)
+            if "name: motionwright-windows-candidate\n" in step:
+                self.assertEqual(set(paths), {
+                    "target/release/bundle/nsis/*-setup.exe",
+                    "ci-evidence/windows-candidate.json",
+                    "ci-evidence/windows-nsis-smoke.json",
+                    "ci-evidence/windows-nsis-cold-relaunch.json",
+                })
+                self.assertIn("if: success()", step)
+                self.assertIn("if-no-files-found: error", step)
+            elif "name: motionwright-windows-package-inventory-" in step:
+                self.assertEqual(set(paths), {
+                    "ci-evidence/windows-package-inventory/inventory.json",
+                    "ci-evidence/windows-package-inventory.producer.json",
+                    "ci-evidence/windows-package-inventory.consumer.json",
+                })
+                self.assertIn("always() && github.event_name == 'workflow_dispatch'", step)
+                self.assertIn("inputs.verification_scope == 'windows_installed'", step)
+                self.assertIn("steps.windows_package_inventory.outcome != 'skipped'", step)
             elif "name: motionwright-windows-cargo-originals-" in step:
                 self.assertEqual(set(paths), originals)
                 self.assertIn("always() && github.event_name == 'workflow_dispatch'", step)
