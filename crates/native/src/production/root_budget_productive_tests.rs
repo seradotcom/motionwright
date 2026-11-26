@@ -815,7 +815,10 @@ with open(destination, 'a', encoding='utf-8') as output:
         "{anchor}  driver.mlt-video.frames.encode)\n    printf '{{not-json'; exit 0\n    ;;\n"
     ))).unwrap();
     connection.executable_sha256 = sha256_file(&connection.executable).unwrap();
-    let coordinator = ProductionCoordinator::new(service.clone(), connection).unwrap();
+    let custody = ProductionReceiptCustody::default();
+    let coordinator =
+        ProductionCoordinator::with_receipt_custody(service.clone(), connection.clone(), &custody)
+            .unwrap();
     let rendered = coordinator
         .render_motion_canvas_segments(
             project.id,
@@ -826,6 +829,12 @@ with open(destination, 'a', encoding='utf-8') as output:
         )
         .await
         .unwrap();
+    let capture_calls = coordinator.client.execute_calls.load(Ordering::SeqCst);
+    assert!(capture_calls > 0);
+    drop(coordinator);
+    // The actual Desktop capture and delivery IPCs use separate Coordinators.
+    let coordinator =
+        ProductionCoordinator::with_receipt_custody(service.clone(), connection, &custody).unwrap();
     let original = coordinator
         .retained_motion_continuation(&project, deliverable_id, Some(&options), &rendered)
         .unwrap();
@@ -924,7 +933,7 @@ with open(destination, 'a', encoding='utf-8') as output:
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(observations.len(), before_calls + 1);
+    assert_eq!(observations.len(), capture_calls + before_calls + 1);
     let last = observations.last().unwrap();
     assert_eq!(last["command"], "driver.mlt-video.frames.encode");
     for row in last["rows"].as_array().unwrap() {
@@ -1208,4 +1217,147 @@ async fn mc_capture_keeps_its_root_when_optional_mlt_is_unsupported_but_explicit
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn productive_shared_custody_retains_only_original_store_and_connection() {
+    let (service, initial, temp) = fixture_service();
+    let project = motion_canvas_fixture(&service, initial);
+    let options = original_options(&project);
+    let deliverable = project.deliverables[0].id;
+    let scenes = [project.scenes[0].id];
+    let connection = fake_render_connection(&temp, project.resource_key());
+    let custody = ProductionReceiptCustody::default();
+    let renderer =
+        ProductionCoordinator::with_receipt_custody(service.clone(), connection.clone(), &custody)
+            .unwrap();
+    // Synthetic CLI transport, real dispatch receipts and SQLite debits.
+    // This is not a physical renderer or pixel-acceptance test.
+    let rendered = renderer
+        .render_motion_canvas_segments(
+            project.id,
+            &project.stamp(),
+            "owner-capture",
+            deliverable,
+            &options,
+        )
+        .await
+        .unwrap();
+    let root_id = renderer
+        .retained_motion_continuation(&project, deliverable, Some(&options), &rendered)
+        .unwrap()
+        .root_id;
+    let original_root = service.root_operation_budget(project.id, root_id).unwrap();
+    let original_receipts = service.production_receipt_watermark(project.id).unwrap();
+    drop(renderer);
+
+    let next =
+        ProductionCoordinator::with_receipt_custody(service.clone(), connection.clone(), &custody)
+            .unwrap();
+    assert_eq!(
+        next.retained_motion_continuation(&project, deliverable, None, &rendered)
+            .unwrap()
+            .root_id,
+        root_id,
+    );
+    let scoped = next
+        .with_motion_scene_boundary_scope(&project, deliverable, &options, &scenes)
+        .unwrap();
+    assert_eq!(
+        scoped.active_motion_budget.as_ref().unwrap().root_id,
+        root_id
+    );
+    let measured = next
+        .with_retained_motion_audio_scope(project.id, deliverable, Some(&options), &rendered)
+        .unwrap();
+    assert!(
+        measured
+            .active_motion_budget
+            .as_ref()
+            .unwrap()
+            .audio_analysis
+    );
+    assert_eq!(
+        measured.active_motion_budget.as_ref().unwrap().root_id,
+        root_id
+    );
+    assert_eq!(next.client.execute_calls.load(Ordering::SeqCst), 0);
+
+    let mut changed_options = options.clone();
+    changed_options.scene_intents[0].role = NarrativeRole::Evidence;
+    assert!(
+        next.with_motion_scene_boundary_scope(&project, deliverable, &changed_options, &scenes)
+            .is_err()
+    );
+    assert!(
+        next.retained_motion_continuation(&project, deliverable, Some(&changed_options), &rendered)
+            .is_err()
+    );
+    let mut forged = rendered.clone();
+    forged.segments[0].job_ref = "caller-replacement".into();
+    assert!(
+        next.retained_motion_continuation(&project, deliverable, Some(&options), &forged)
+            .is_err()
+    );
+
+    // Owning the same receipt UUIDs or reopening the same SQLite file does not
+    // constitute original live backend custody.
+    let fresh = ProductionCoordinator::new(service.clone(), connection.clone()).unwrap();
+    assert!(
+        fresh
+            .retained_motion_continuation(&project, deliverable, None, &rendered)
+            .is_err()
+    );
+    assert!(
+        fresh
+            .with_motion_scene_boundary_scope(&project, deliverable, &options, &scenes)
+            .is_err()
+    );
+    let reopened = StudioService::open(temp.path().join("motionwright.sqlite3")).unwrap();
+    let other_store =
+        ProductionCoordinator::with_receipt_custody(reopened, connection.clone(), &custody)
+            .unwrap();
+    assert_eq!(
+        other_store
+            .retained_motion_continuation(&project, deliverable, None, &rendered)
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied,
+    );
+    assert!(
+        other_store
+            .with_motion_scene_boundary_scope(&project, deliverable, &options, &scenes)
+            .is_err()
+    );
+
+    let mut foreign = connection;
+    foreign.output_root = temp.path().join("another-native-owner");
+    fs::create_dir(&foreign.output_root).unwrap();
+    let other_connection =
+        ProductionCoordinator::with_receipt_custody(service.clone(), foreign, &custody).unwrap();
+    assert_eq!(
+        other_connection
+            .retained_motion_continuation(&project, deliverable, None, &rendered)
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied,
+    );
+    assert!(
+        other_connection
+            .with_motion_scene_boundary_scope(&project, deliverable, &options, &scenes)
+            .is_err()
+    );
+    for denied in [&fresh, &other_store, &other_connection] {
+        assert_eq!(denied.client.execute_calls.load(Ordering::SeqCst), 0);
+    }
+    assert_eq!(
+        service.root_operation_budget(project.id, root_id).unwrap(),
+        original_root
+    );
+    assert_eq!(
+        service.production_receipt_watermark(project.id).unwrap(),
+        original_receipts
+    );
+    assert_eq!(service.project(project.id).unwrap(), project);
+    assert_eq!(custody.motion_budget_roots.lock().unwrap().len(), 1);
 }

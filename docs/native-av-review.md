@@ -2,6 +2,12 @@
 
 Motionwright plays an already completed H.264/AAC MP4 inside its local Tauri editor. Review is explicitly requested, reads the original Semwright-owned artifact and leaves the creative revision unchanged.
 
+## Capture-to-delivery continuity
+
+Desktop creates a fresh Coordinator for each IPC invocation. Its backend-owned custody now retains the original Motion Canvas accounting root across the capture, direct MLT, multisegment MLT and optional audio-measurement calls. The retained root must match the exact live Store session, complete owner connection identity, source revision, Film options and original rendered-evidence digest. SQLite remains authoritative for the unchanged limits and cumulative debits; no new root or frame render is created to continue delivery.
+
+The private handle is never serialized. Reopening SQLite as a new Store, using another owner connection, losing the original handle or changing the original render cannot attach that budget. Closed Store identities and completed captures for superseded source revisions can leave the bounded memory registry; their durable receipts and spending remain intact. After an application restart, saved completed MP4s use the separate read-only recovery route below.
+
 ## Current-session playback
 
 After native mastering completes, the backend retains a session token bound to the exact project, generation, revision and saved output profile. **Review native MP4** prepares a private `motionwright-media` URL through the existing `review_native_av_master` command. The WebView receives an opaque URL and media metadata; it never receives an owner filesystem path or chooses the source file.

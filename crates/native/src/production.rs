@@ -2473,6 +2473,9 @@ fn verified_manim_camera_getter_digest(
 #[derive(Clone, Default)]
 pub struct ProductionReceiptCustody {
     inner: receipt_custody::ReceiptCustody,
+    // Retain the actual private accounting provenance between Desktop IPC
+    // invocations. This is not serialized or reconstructed from UI evidence.
+    motion_budget_roots: RetainedMotionRoots,
 }
 
 impl ProductionReceiptCustody {
@@ -2930,13 +2933,47 @@ impl MotionRootBudgetScope {
 
 // Private provenance for one already-created accounting root. This record
 // cannot authorize provider calls or change SQLite's durable limits/debits.
+type RetainedMotionRoots =
+    std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, RetainedMotionRoot>>>;
+
+// A weak identity does not keep SQLite open. It cannot alias a later Store
+// allocation while retained, even after the original Service is dropped.
+type StoreSessionIdentity = std::sync::Weak<dyn std::any::Any + Send + Sync>;
+
+fn store_session_identity(service: &StudioService) -> StoreSessionIdentity {
+    let owner: std::sync::Arc<dyn std::any::Any + Send + Sync> = service.store();
+    std::sync::Arc::downgrade(&owner)
+}
+
+const MAX_RETAINED_MOTION_ROOTS: usize = 128;
+
 struct RetainedMotionRoot {
     root: RootOperationBudget,
+    store_session: StoreSessionIdentity,
+    connection_identity: String,
     source_digest: String,
     scope: MotionRootBudgetScope,
     render_digest: Option<String>,
     // Derived from the original committed Film; never accepted from a caller.
     direct_mlt_scene_scope: Option<std::sync::Arc<crate::native_scene_boundary::ExecutionScope>>,
+}
+
+impl RetainedMotionRoot {
+    fn require_original_owner(
+        &self,
+        service: &StudioService,
+        connection: &ProductionConnection,
+    ) -> NativeResult<()> {
+        if !self.store_session.ptr_eq(&store_session_identity(service))
+            || self.connection_identity != connection.identity()?
+        {
+            return Err(Error::new(
+                ErrorCode::PermissionDenied,
+                "Original native accounting custody belongs to another Store session or connection",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -2951,8 +2988,7 @@ pub struct ProductionCoordinator {
     // is authoritative for cumulative debits and spent UNKNOWN capacity.
     // Pair the retained operation with its original Film-options digest.
     // A fresh process cannot silently reuse or remint the persisted root.
-    motion_budget_roots:
-        std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, RetainedMotionRoot>>>,
+    motion_budget_roots: RetainedMotionRoots,
     active_motion_budget: Option<MotionRootBudgetScope>,
     // The mixed-renderer route owns one preflighted root across MC, static
     // Manim and its closed MLT continuation. No scoped client is public.
@@ -2983,9 +3019,7 @@ impl ProductionCoordinator {
             brand_font_media_root: None,
             retained_brand_font_root: None,
             scene_boundary_scope: None,
-            motion_budget_roots: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::BTreeMap::new(),
-            )),
+            motion_budget_roots: custody.motion_budget_roots.clone(),
             active_motion_budget: None,
             active_hybrid_budget: None,
             hybrid_project_grant: None,
@@ -3038,7 +3072,7 @@ impl ProductionCoordinator {
                 "Native root provider binding differs from the original project",
             ));
         }
-        let _bound_connection = self.client.connection().identity()?;
+        let bound_connection = self.client.connection().identity()?;
 
         if let Some(hybrid) = &self.active_hybrid_budget {
             hybrid.require_motion_selection(self, project, deliverable_id, options, scene_ids)?;
@@ -3261,6 +3295,7 @@ impl ProductionCoordinator {
             .lock()
             .map_err(|_| backend("Native budget root ownership is unavailable"))?;
         let retained = if let Some(previous) = cache.get(&operation_key) {
+            previous.require_original_owner(&self.service, self.client.connection())?;
             if previous.source_digest != source_digest {
                 return Err(Error::new(
                     ErrorCode::Conflict,
@@ -3271,6 +3306,26 @@ impl ProductionCoordinator {
                 .root_operation_budget(project.id, previous.root.root_id)
                 .map_err(storage_error)?
         } else {
+            // Completed captures from older revisions cannot authorize current
+            // delivery. Retire only their memory; durable debits and receipts
+            // remain untouched. Keep unresolved/live original captures.
+            let project_prefix = format!("motion-canvas/{}/", project.id);
+            cache.retain(|key, prior| {
+                prior.store_session.strong_count() > 0
+                    && !(key.starts_with(&project_prefix)
+                        && prior
+                            .store_session
+                            .ptr_eq(&store_session_identity(&self.service))
+                        && prior.render_digest.is_some()
+                        && (prior.root.generation != project.generation
+                            || prior.root.revision != project.revision))
+            });
+            if cache.len() >= MAX_RETAINED_MOTION_ROOTS {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "Original native accounting custody has reached its retained operation limit",
+                ));
+            }
             let created = self
                 .service
                 .create_root_operation_budget(RootOperationBudgetInput {
@@ -3293,6 +3348,8 @@ impl ProductionCoordinator {
                 operation_key.clone(),
                 RetainedMotionRoot {
                     root: created.clone(),
+                    store_session: store_session_identity(&self.service),
+                    connection_identity: bound_connection,
                     source_digest,
                     scope: original_scope,
                     render_digest: None,
@@ -3378,6 +3435,7 @@ impl ProductionCoordinator {
         let original = cache
             .get_mut(&key)
             .ok_or_else(|| backend("Original native accounting root is unavailable"))?;
+        original.require_original_owner(&self.service, self.client.connection())?;
         if original
             .render_digest
             .as_ref()
@@ -3425,6 +3483,7 @@ impl ProductionCoordinator {
                 "Original native budget is not attached; reconcile without a new root",
             )
         })?;
+        original.require_original_owner(&self.service, self.client.connection())?;
         if original.render_digest.as_deref() != Some(digest.as_str())
             || original.scope.mlt_route.is_none()
         {

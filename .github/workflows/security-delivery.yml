@@ -398,6 +398,10 @@ jobs:
           grep -F '3 passed; 0 failed; 0 ignored' "$log"
           cargo test --locked --jobs 2 -p motionwright-native --lib production::saved_media::tests:: -- --test-threads=1 | tee "$log"
           grep -F '5 passed; 0 failed; 0 ignored' "$log"
+          cargo clippy --locked --jobs 2 -p motionwright-native --lib -- -D warnings
+          cargo test --locked --jobs 2 -p motionwright-native --lib root_budget_productive_tests:: -- --test-threads=1 | tee "$log"
+          grep -F 'productive_shared_custody_retains_only_original_store_and_connection ... ok' "$log"
+          grep -F 'productive_mlt_continuation_keeps_root_and_fences_unknown_changed_output ... ok' "$log"
       - name: Native owner lifetime and resource identity regressions
         if: inputs.verification_scope == 'desktop-playback'
         run: cargo test --locked --jobs 2 -p motionwright-desktop desktop_owner -- --test-threads=1
