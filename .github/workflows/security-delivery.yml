@@ -105,7 +105,7 @@ on:
         type: choice
         required: false
         default: all
-        options: [all, static-group, static-alignment, static-layout, follow, follow-ui, static-rotation, creative-batch, audio-cut, native-preview-blend, delivery-hero, measured-comparison, series-silence, camera-craft, source-boards, source-boards-ui, asset-media, camera-spatial]
+        options: [all, static-group, static-alignment, static-layout, follow, follow-ui, static-rotation, creative-batch, audio-cut, native-preview-blend, delivery-hero, measured-comparison, series-silence, camera-craft, source-boards, source-boards-ui, asset-media, camera-spatial, project-compatibility]
       interchange_case:
         description: One original Studio flow for native-otio-real-media; no other suites
         type: choice
@@ -1617,8 +1617,23 @@ jobs:
             crates/service/tests/support/legacy_v5_fixture.rs \
             > "$work/source-digests.original.txt"
           python3 -B tooling/source_policy.py
+      - name: Reject lossy project reads and preserve known legacy and portable documents
+        if: inputs.verification_scope == 'storage-service-current' && inputs.first_use_case == 'project-compatibility'
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$MW_STORAGE_SERVICE_EVIDENCE/document-compatibility.original.log"
+          cargo test --locked --jobs 2 -p motionwright-storage --lib portability::tests:: -- --test-threads=1 2>&1 | tee "$log"
+          for name in unknown_document_fields_refuse_every_bundle_entry_before_sql_or_cas_changes unknown_stored_project_fields_block_read_edit_and_export_without_losing_original closed_document_contracts_keep_valid_portable_media_and_rotate_only_import_authority; do
+            grep -F "$name ... ok" "$log"
+          done
+          cargo test --locked --jobs 2 -p motionwright-storage --test creative_migration -- --test-threads=1 2>&1 | tee -a "$log"
+          cargo test --locked --jobs 2 -p motionwright-domain --lib -- --test-threads=1 2>&1 | tee -a "$log"
+          cargo clippy --locked --jobs 2 -p motionwright-storage --lib --test creative_migration -- -D warnings
+          cargo clippy --locked --jobs 2 -p motionwright-domain --lib -- -D warnings
+          git diff --exit-code
       - name: Run current Store and Service contracts
-        if: inputs.verification_scope == 'storage-service-current'
+        if: inputs.verification_scope == 'storage-service-current' && inputs.first_use_case != 'project-compatibility'
         shell: bash
         run: |
           set -euo pipefail
@@ -1698,6 +1713,7 @@ jobs:
           PY
           git diff --exit-code
       - name: Check current Store and Service warnings
+        if: inputs.first_use_case != 'project-compatibility'
         shell: bash
         run: |
           set -euo pipefail
