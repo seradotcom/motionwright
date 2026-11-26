@@ -231,7 +231,7 @@ jobs:
   desktop-boundary:
     needs: source-boundary
     if: ${{ !cancelled() && (needs.source-boundary.result == 'success' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["desktop-source","desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope))) }}
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'desktop-compile' && inputs.desktop_compile_platform == 'macos' && 'macos-14' || github.event_name == 'workflow_dispatch' && contains(fromJSON('["desktop-compile","desktop-blender","desktop-playback","desktop-saved-delivery"]'), inputs.verification_scope) && inputs.desktop_compile_platform == 'windows' && 'windows-latest' || 'ubuntu-24.04' }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'desktop-compile' && inputs.desktop_compile_platform == 'macos' && 'macos-latest' || github.event_name == 'workflow_dispatch' && contains(fromJSON('["desktop-compile","desktop-blender","desktop-playback","desktop-saved-delivery"]'), inputs.verification_scope) && inputs.desktop_compile_platform == 'windows' && 'windows-latest' || 'ubuntu-24.04' }}
     timeout-minutes: 30
     env:
       CARGO_BUILD_JOBS: '2'
