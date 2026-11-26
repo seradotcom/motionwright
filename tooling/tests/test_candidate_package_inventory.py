@@ -7,6 +7,7 @@ These tests are not physical package observations or G2/G3 acceptance.
 from __future__ import annotations
 
 import copy
+import json
 import os
 from pathlib import Path
 import shutil
@@ -169,8 +170,13 @@ class InventoryFilesystemTests(unittest.TestCase):
             os.link(path, self.payload / "alias")
         except OSError as error:
             self.skipTest("filesystem cannot create hardlink: " + type(error).__name__)
-        with self.assertRaisesRegex(inventory.InventoryError, "hardlink"):
+        with self.assertRaisesRegex(inventory.InventoryError, "hardlink") as caught:
             inventory.observe_tree(self.payload, "payload")
+        details = json.loads(str(caught.exception).split(":", 1)[1])
+        self.assertEqual(details["links"], 2)
+        self.assertEqual(details["bytes"], len(b"original"))
+        self.assertEqual(details["max_bytes"], inventory.MAX_FILE)
+        self.assertEqual(details["path"], "alias")
 
     def test_symlinks_are_literals_and_external_target_is_never_read(self):
         self.write("file", b"original")

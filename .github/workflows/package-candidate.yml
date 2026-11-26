@@ -1956,6 +1956,17 @@ jobs:
             ci-evidence/linux-loader-host-origins
           if-no-files-found: warn
           retention-days: 30
+      - name: Preserve failed Linux package originals for bounded diagnosis
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle' && steps.linux_package_inventory.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-linux-failed-package-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.MW_LINUX_BUNDLE_ROOT }}/bundle/appimage/*.AppImage
+            ci-evidence/linux-candidate.json
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
       - name: Retain isolated GUI launch diagnostics if smoke fails
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

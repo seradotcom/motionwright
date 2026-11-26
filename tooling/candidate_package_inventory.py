@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import posixpath
@@ -107,14 +108,24 @@ def plain_directory(path):
     return path, info
 
 
+def require_file_budget(path, info, limit=MAX_FILE):
+    maximum = min(limit, MAX_FILE)
+    if info.st_nlink != 1 or not 0 <= info.st_size <= maximum:
+        # Keep the refusal, but identify the original member so a packaging
+        # defect does not require another full build just to locate it.
+        detail = json.dumps({"path": str(path), "bytes": info.st_size,
+                             "links": info.st_nlink, "max_bytes": maximum},
+                            ensure_ascii=True, sort_keys=True)
+        raise InventoryError("inventory_file_budget_or_hardlink:" + detail)
+
+
 def stable_file(path, limit=MAX_FILE):
     """Hash one retained, non-reparse descriptor; never execute its bytes."""
     path = owned._validated_path(path)
     owned._require_plain_parents(path)
     before = path.lstat()
     owned._require_regular(before, "inventory member")
-    require(before.st_nlink == 1 and 0 <= before.st_size <= min(limit, MAX_FILE),
-            "inventory_file_budget_or_hardlink")
+    require_file_budget(path, before, limit)
     fd = owned._open_publication_reader(path, "inventory member")
     try:
         opened = os.fstat(fd)
@@ -189,8 +200,7 @@ def _namespace(root):
                 walk(item, path + "/")
             else:
                 owned._require_regular(observed, "inventory member")
-                require(observed.st_nlink == 1 and 0 <= observed.st_size <= MAX_FILE,
-                        "inventory_file_budget_or_hardlink")
+                require_file_budget(path, observed)
                 rows.append({**base, "kind": "file"})
     walk(root, "")
     require(stat_record(root.lstat()) == anchor, "inventory_root_changed")
