@@ -370,6 +370,13 @@ jobs:
       - name: Blender exact preparation, grants, staging and original source reads
         if: inputs.verification_scope == 'desktop-blender'
         run: cargo test --locked --jobs 2 -p motionwright-desktop blender_ -- --test-threads=1
+      - name: Original master read-only recovery after SQLite reopen
+        if: inputs.verification_scope == 'desktop-playback' && runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/master-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.log"
+          cargo test --locked --jobs 2 -p motionwright-native --lib original_master_review -- --test-threads=1 | tee "$log"
+          grep -F '3 passed; 0 failed; 0 ignored' "$log"
       - name: Native owner lifetime and resource identity regressions
         if: inputs.verification_scope == 'desktop-playback'
         run: cargo test --locked --jobs 2 -p motionwright-desktop desktop_owner -- --test-threads=1

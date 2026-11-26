@@ -1627,6 +1627,7 @@ mod persisted {
         );
         assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
     }
+    mod master_review;
     mod report_reopen;
 }
 

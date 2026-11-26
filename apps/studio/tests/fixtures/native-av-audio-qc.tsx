@@ -78,7 +78,9 @@ if (new URLSearchParams(window.location.search).get("desktop") !== "0") {
       };
       calls.push(call);
       if (command === "read_native_av_audio_qc" || command === "native_av_audio_qc_receipt_inventory"
-        || command === "recover_native_av_audio_qc") {
+        || command === "recover_native_av_audio_qc"
+        || (command === "review_native_av_master"
+          && new URLSearchParams(window.location.search).get("playback") === "1")) {
         return new Promise<unknown>((resolve, reject) => {
           replies.set(call.id, { resolve, reject });
         });

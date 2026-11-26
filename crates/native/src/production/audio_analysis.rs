@@ -33,6 +33,8 @@ const MEASURE_COMMAND: &str = "driver.audio-analysis.artifact.measure";
 const MUX_COMMAND: &str = "driver.mlt-video.av.mux";
 pub(super) const MAX_ANALYSIS_BYTES: u64 = 512 * 1024 * 1024;
 
+mod master_review;
+pub use master_review::VerifiedOriginalMasterReview;
 mod qc_report;
 mod receipt_history;
 pub use qc_report::VerifiedDeliveryAudioQcReport;

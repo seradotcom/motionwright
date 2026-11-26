@@ -37,6 +37,24 @@ pub(crate) struct PlaybackRequest {
     pub stream: bool,
 }
 
+/// The closed alternatives share an owner command, not authority. A durable
+/// receipt selector always takes the original read-only recovery path.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum PlaybackSelection {
+    Session(PlaybackRequest),
+    Receipt(super::AudioQcRecoveryRequest),
+}
+
+impl PlaybackSelection {
+    pub(crate) fn source(&self) -> (Uuid, Uuid, u64) {
+        match self {
+            Self::Session(request) => (request.project_id, request.generation, request.revision),
+            Self::Receipt(request) => (request.project_id, request.generation, request.revision),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Selection {
     project_id: Uuid,

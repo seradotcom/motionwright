@@ -1310,6 +1310,20 @@ export async function prepareVerifiedNativeAvReview(
   return parseNativeAvPlayback(data,{project,exportToken,deliverableId,masterSha256});
 }
 
+/** Reconstruct one original master reader from a durable receipt selector.
+ * The backend revalidates the complete chain and returns no export permission. */
+export async function prepareSavedNativeAvReview(
+  project:Project, deliverableId:string, hint:NativeAudioQcReceiptHint,
+):Promise<NativeAvPlayback> {
+  if(!isTauri())throw new Error("Saved master review requires the desktop runtime.");
+  const data=await invoke<unknown>("review_native_av_master",{
+    request:{project_id:project.id,generation:project.generation,revision:project.revision,
+      deliverable_id:deliverableId,decoded_measurement_receipt_id:hint.decoded_measurement_receipt_id,
+      expected_master_sha256:hint.master_sha256},
+  });
+  return parseNativeAvPlayback(data,{project,exportToken:null,deliverableId,masterSha256:hint.master_sha256});
+}
+
 /** Reopen numeric audio QC for the same opaque master token. This command has
  * no render/effect grant, caller-selected analysis path, proof or retry. */
 export async function readNativeAvAudioQc(

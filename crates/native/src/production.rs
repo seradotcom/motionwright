@@ -81,7 +81,8 @@ mod voice_alignment;
 pub use audio_analysis::{
     AudioAnalysisLane, AudioQcReceiptHint, AudioQcReceiptInventory, DeliveryAudioQcStatus,
     MeasuredMltAvMasterEvidence, MeasuredMltMultisegmentAvMasterEvidence, VerifiedAudioMeasurement,
-    VerifiedDeliveryAudioQc, VerifiedDeliveryAudioQcReport, VerifiedOriginalMixAudioMeasurements,
+    VerifiedDeliveryAudioQc, VerifiedDeliveryAudioQcReport, VerifiedOriginalMasterReview,
+    VerifiedOriginalMixAudioMeasurements,
 };
 pub use audio_derivative::{
     AdoptedAudioDerivative, AudioDerivativeFailure, AudioDerivativeIntent,

@@ -2955,42 +2955,72 @@ async fn verify_local_media_integrity(
 async fn review_native_av_master(
     mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
-    request: av_delivery::streaming::PlaybackRequest,
+    request: av_delivery::streaming::PlaybackSelection,
 ) -> Result<tauri::ipc::Response, String> {
-    let project = state
-        .service
-        .project(request.project_id)
-        .map_err(sanitized)?;
-    if project.generation != request.generation || project.revision != request.revision {
+    let (project_id, generation, revision) = request.source();
+    let project = state.service.project(project_id).map_err(sanitized)?;
+    if project.generation != generation || project.revision != revision {
         return Err("Native AV preview belongs to a previous project revision.".into());
     }
-    let source = state.av_delivery.resolve(&project, request.export_token)?;
-    let response = if request.stream {
-        let streams = state.av_review.clone();
-        let token = request.export_token;
-        let descriptor = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
-            streams.prepare(&source, token)
-        })
-        .await
-        .map_err(|_| "Native AV playback preparation task failed.".to_string())??;
-        tauri::ipc::Response::new(
-            serde_json::to_string(&descriptor)
-                .map_err(|_| "Native AV playback response is unavailable.".to_string())?,
-        )
-    } else {
-        let data =
-            desktop_owner::spawn_blocking(owner.worker_owner(), move || source.review_bytes())
+    let mut expected_connection = None;
+    let response = match request {
+        av_delivery::streaming::PlaybackSelection::Session(request) => {
+            let source = state.av_delivery.resolve(&project, request.export_token)?;
+            if request.stream {
+                let streams = state.av_review.clone();
+                let token = request.export_token;
+                let descriptor = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+                    streams.prepare(&source, token)
+                })
+                .await
+                .map_err(|_| "Native AV playback preparation task failed.".to_string())??;
+                tauri::ipc::Response::new(
+                    serde_json::to_string(&descriptor)
+                        .map_err(|_| "Native AV playback response is unavailable.".to_string())?,
+                )
+            } else {
+                let data = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+                    source.review_bytes()
+                })
                 .await
                 .map_err(|_| "Native AV preview read task failed.".to_string())??;
-        tauri::ipc::Response::new(data)
+                tauri::ipc::Response::new(data)
+            }
+        }
+        av_delivery::streaming::PlaybackSelection::Receipt(request) => {
+            let path = selected_connection_path(&state, project.id)?;
+            expected_connection = Some(path.clone());
+            let service = state.service.clone();
+            let custody = state.production_receipt_custody.clone();
+            let deliveries = state.av_delivery.clone();
+            let streams = state.av_review.clone();
+            let descriptor = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+                av_delivery::recover_master_review(
+                    &project,
+                    &request,
+                    service,
+                    path.as_deref(),
+                    &custody,
+                    (&deliveries, &streams),
+                )
+            })
+            .await
+            .map_err(|_| "Original master recovery task failed.".to_string())??;
+            tauri::ipc::Response::new(
+                serde_json::to_string(&descriptor)
+                    .map_err(|_| "Original master recovery response is unavailable.".to_string())?,
+            )
+        }
     };
     owner.begin_phase()?;
-    let latest = state
-        .service
-        .project(request.project_id)
-        .map_err(sanitized)?;
-    if latest.generation != request.generation || latest.revision != request.revision {
+    let latest = state.service.project(project_id).map_err(sanitized)?;
+    if latest.generation != generation || latest.revision != revision {
         return Err("Project changed during native AV preview readback.".into());
+    }
+    if let Some(original) = expected_connection {
+        if selected_connection_path(&state, project_id)? != original {
+            return Err("Original master recovery connection changed.".into());
+        }
     }
     Ok(response)
 }

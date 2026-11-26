@@ -2,12 +2,16 @@ import { CircleDashed, RefreshCw, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useLocalMediaElement } from "./audioReviewPlayback";
 import type {NativeAvPlayback} from "./nativeAvMedia";
-import { readNativeAvAudioQc, prepareVerifiedNativeAvReview, readNativeAudioQcReceiptInventory, readNativeAudioQcReceipt } from "./api";
+import { readNativeAvAudioQc, prepareVerifiedNativeAvReview, prepareSavedNativeAvReview, readNativeAudioQcReceiptInventory, readNativeAudioQcReceipt } from "./api";
 import {
   audioQcStatusLabel, audioQcUnavailableText, createNativeAvReadGuard,
   formatAudioMilli, nativeAvReadScope,
 } from "./nativeAvAudioQc";
 import type { DeliveryAudioQcReport, NativeAvAudioQcResponse, NativeAudioQcReceiptHint, NativeAudioQcReceiptInventoryResponse, Project } from "./types";
+
+type NativeAvSource =
+  | {exportToken:string;receiptHint?:never}
+  | {exportToken?:never;receiptHint:NativeAudioQcReceiptHint};
 
 type PlaybackState =
   | { kind: "loading" }
@@ -22,6 +26,7 @@ type PlaybackState =
 export default function NativeAvReview({
   project,
   exportToken,
+  receiptHint,
   reviewOnly = false,
   seekTimeSeconds,
   onMediaTime,
@@ -32,7 +37,6 @@ export default function NativeAvReview({
   masterSha256 = null,
 }: {
   project: Project;
-  exportToken: string;
   /** Owner source SHA passed, but no installed decoded caption glyph proof. */
   reviewOnly?: boolean;
   /** Optional exact Film output-relative time when embedded in Program. */
@@ -44,10 +48,13 @@ export default function NativeAvReview({
   /** Public identity narrows the view; the opaque token owns native readback. */
   deliverableId?: string | null;
   masterSha256?: string | null;
-}) {
+} & NativeAvSource) {
   const [retry, setRetry] = useState(0);
   const guard = useRef(createNativeAvReadGuard());
-  const identity = nativeAvReadScope(project, exportToken, deliverableId, masterSha256);
+  const selector = receiptHint
+    ? "saved-receipt:"+receiptHint.decoded_measurement_receipt_id+":"+receiptHint.master_sha256
+    : exportToken;
+  const identity = nativeAvReadScope(project, selector, deliverableId, masterSha256);
   const readKey = guard.current.viewKey(JSON.stringify([identity, retry]));
   const visibleKey = useRef(readKey);
   visibleKey.current = readKey;
@@ -74,7 +81,10 @@ export default function NativeAvReview({
     editorSeekRef.current = null;
     const existing = pendingRef.current;
     const promise = existing?.key === readKey ? existing.promise
-      : prepareVerifiedNativeAvReview(project, exportToken, deliverableId, masterSha256);
+      : receiptHint
+        ? deliverableId === null ? Promise.reject(new Error("Saved output profile unavailable."))
+          : prepareSavedNativeAvReview(project, deliverableId, receiptHint)
+        : prepareVerifiedNativeAvReview(project, exportToken, deliverableId, masterSha256);
     if (!existing || existing.key !== readKey) {
       pendingRef.current = { key: readKey, promise };
       const release = () => {
@@ -144,7 +154,7 @@ export default function NativeAvReview({
       role="region" aria-label="Native master playback review">
       <div className="native-av-review-header">
         <strong>Native H.264/AAC review</strong>
-        <span>Original master from source r{project.revision}.{reviewOnly ? " Review only; export unavailable." : ""}</span>
+        <span>Original master from source r{project.revision}.{receiptHint ? " Recovered for local review." : reviewOnly ? " Review only; export unavailable." : ""}</span>
       </div>
       {playback.kind === "ready" ? (
         <video
@@ -203,7 +213,8 @@ export default function NativeAvReview({
             setPlayback({
               kind: "unavailable",
               message:
-                reviewOnly
+                receiptHint ? "This WebView could not decode the recovered original MP4."
+                : reviewOnly
                   ? "The review-only captioned MP4 cannot be decoded by this WebView. Export remains blocked until original master glyph pixels are verified on this device."
                   : "This WebView could not decode the verified MP4. Use Export verified MP4 to review the file in a compatible local player.",
             });
@@ -227,11 +238,13 @@ export default function NativeAvReview({
       <div className="native-av-review-footnote">
         {metadata ?? "Source-bound MP4; playback availability depends on this WebView decoder."}
         {reviewOnly && <span> · Installed decoded caption glyph pixels NOT VERIFIED · publication blocked</span>}
-        <span>{embedded
+        <span>{receiptHint
+          ? "Read-only recovery; export permissions from an earlier session are not restored."
+          : embedded
           ? "Native media clock follows source-scoped editorial seeks"
           : "Independent media review · not timeline-synchronized"}</span>
       </div>
-      {!embedded && <NativeAudioQcReview project={project} selection={{ kind: "session", exportToken }}
+      {!embedded && <NativeAudioQcReview project={project} selection={receiptHint ? {kind:"receipt",hint:receiptHint} : { kind: "session", exportToken }}
         deliverableId={deliverableId} masterSha256={masterSha256} />}
     </div>
   );
@@ -326,12 +339,16 @@ export function NativeAudioQcHistory({ project, deliverableId }: {
   const active = useRef<{ scope: string } | null>(null);
   const [stored, setStored] = useState<{ key: string; state: AudioQcInventoryState } | null>(null);
   const [selected, setSelected] = useState<{ key: string; hint: NativeAudioQcReceiptHint } | null>(null);
+  const [playbackSelection, selectPlayback] = useState<{key:string;hint:NativeAudioQcReceiptHint}|null>(null);
   const state = stored?.key === readKey ? stored.state : { kind: "idle" as const };
   const response = state.kind === "ready" ? state.response : null;
   const inventory = response?.kind === "inventory" ? response.inventory : null;
   const selectedHint = selected?.key === readKey && inventory?.items.some(item =>
     item.decoded_measurement_receipt_id === selected.hint.decoded_measurement_receipt_id
     && item.master_sha256 === selected.hint.master_sha256) ? selected.hint : null;
+  const playbackHint = playbackSelection?.key === readKey && inventory?.items.some(item =>
+    item.decoded_measurement_receipt_id === playbackSelection.hint.decoded_measurement_receipt_id
+    && item.master_sha256 === playbackSelection.hint.master_sha256) ? playbackSelection.hint : null;
   useEffect(() => () => {
     if (active.current) guard.current.cancel(active.current);
   }, [readKey]);
@@ -339,6 +356,7 @@ export function NativeAudioQcHistory({ project, deliverableId }: {
     const ticket = guard.current.begin(readKey);
     active.current = ticket;
     setSelected(null);
+    selectPlayback(null);
     setStored({ key: readKey, state: { kind: "loading" } });
     try {
       const response = await readNativeAudioQcReceiptInventory(project, deliverableId);
@@ -379,11 +397,19 @@ export function NativeAudioQcHistory({ project, deliverableId }: {
           onClick={() => setSelected({ key: readKey, hint })}>
           Read audio QC receipt {hint.decoded_measurement_receipt_id}
         </button>
+        <button className="button compact" type="button"
+          onClick={() => selectPlayback({key:readKey,hint})}
+          aria-label={"Review saved MP4 receipt "+hint.decoded_measurement_receipt_id}>
+          Review original MP4
+        </button>
       </li>)}</ul>
     </>}
     <p className="delivery-truth-note">References are not measurement proof or export permission.
       Choose an original receipt to revalidate its source, master and complete history.
-      This read does not render, measure, retry uncertain work or create a media token.</p>
+      Reviewing the original MP4 creates a fresh local reader after verification;
+      it does not restore export permissions or repeat production.</p>
+    {playbackHint && <NativeAvReview project={project} receiptHint={playbackHint}
+      deliverableId={deliverableId} masterSha256={playbackHint.master_sha256} embedded />}
     {selectedHint && <NativeAudioQcReview project={project}
       selection={{ kind: "receipt", hint: selectedHint }}
       deliverableId={deliverableId} masterSha256={selectedHint.master_sha256} />}

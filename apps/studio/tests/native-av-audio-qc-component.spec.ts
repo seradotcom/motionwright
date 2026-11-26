@@ -1,4 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import type { DeliveryAudioQcReport } from "../src/types";
 import type {
   AudioQcFixtureCall, AudioQcFixtureSelection,
@@ -138,7 +140,7 @@ test.afterEach(async ({ page }, testInfo) => {
   expect(pageErrors.get(page)).toEqual([]);
   for (const call of observed) {
     if (new URL(page.url()).searchParams.get("recovery") === "1") {
-      expect(["native_av_audio_qc_receipt_inventory", "recover_native_av_audio_qc"]).toContain(call.command);
+      expect(["native_av_audio_qc_receipt_inventory", "recover_native_av_audio_qc", "review_native_av_master"]).toContain(call.command);
       expect(Object.keys(call.args ?? {})).toEqual(["request"]);
       const expected = call.command === "native_av_audio_qc_receipt_inventory"
         ? ["deliverable_id", "generation", "project_id", "revision"]
@@ -149,7 +151,11 @@ test.afterEach(async ({ page }, testInfo) => {
     expect(["read_native_av_audio_qc", "review_native_av_master"]).toContain(call.command);
     expect(Object.keys(call.args ?? {})).toEqual(["request"]);
     expect(Object.keys(call.args!.request as Record<string, unknown>).sort())
-      .toEqual(["export_token", "generation", "project_id", "revision"]);
+      .toEqual(call.command === "review_native_av_master"
+        ? ["export_token", "generation", "project_id", "revision", "stream"]
+        : ["export_token", "generation", "project_id", "revision"]);
+    if(call.command === "review_native_av_master")
+      expect((call.args!.request as Record<string,unknown>).stream).toBe(true);
   }
 });
 
@@ -549,4 +555,65 @@ test("Persisted QC source changes suppress a late recovered report", async ({ pa
   await expect(panel(page)).toHaveCount(0);
   await expect(historyPanel(page).getByRole("button", { name: "Find saved audio measurements", exact: true })).toBeEnabled();
   expect(await recoveryCalls(page)).toHaveLength(1);
+});
+
+
+test("Saved MP4 recovery opens the original source and requires a fresh reader after remount",async({page})=>{
+  const source=process.env.MOTIONWRIGHT_REVIEW_MEDIA_FIXTURE;
+  test.skip(!source,"Requires an explicitly synthetic four-second MP4; no Native render fallback.");
+  const bytes=await readFile(source!);
+  const sha=createHash("sha256").update(bytes).digest("hex");
+  const stream="54048fa7-302d-45d5-8ad1-8f605ce608dd";
+  const url="http://motionwright-media.localhost/"+stream;
+  await page.route(url,async route=>{
+    const range=route.request().headers()["range"]?.match(/^bytes=(\d+)-(\d*)$/);
+    const start=range?Number(range[1]):0;
+    const end=Math.min(range?.[2]?Number(range[2]):bytes.length-1,bytes.length-1);
+    await route.fulfill({status:range?206:200,headers:{
+      "Content-Type":"video/mp4","Accept-Ranges":"bytes","Cache-Control":"no-store",
+      "Content-Length":String(end-start+1),
+      ...(range?{"Content-Range":"bytes "+start+"-"+end+"/"+bytes.length}:{}),
+    },body:bytes.subarray(start,end+1)});
+  });
+  await page.goto("/tests/fixtures/native-av-audio-qc.html?recovery=1&playback=1");
+  const selected={...await selection(page),masterSha256:sha};
+  await setSelection(page,selected);
+  await discoverHistory(page);
+  const review=()=>historyPanel(page).getByRole("button",{name:"Review saved MP4 receipt "+receiptA,exact:true});
+  await review().click();
+  const mediaReads=async()=>(await calls(page)).filter(call=>call.command==="review_native_av_master");
+  await expect.poll(async()=>(await mediaReads()).length).toBe(1);
+  const original=(await mediaReads())[0];
+  expect(original.args).toEqual({request:{
+    project_id:selected.projectId,generation:selected.generation,revision:selected.revision,
+    deliverable_id:selected.deliverableId,decoded_measurement_receipt_id:receiptA,expected_master_sha256:sha,
+  }});
+  const descriptor={schema:"motionwright.native-av-review/1",project_id:selected.projectId,
+    generation:selected.generation,revision:selected.revision,deliverable_id:selected.deliverableId,
+    export_token:"2ed7c049-603c-4b6e-90c6-d0ee4b294809",stream_token:stream,url,sha256:sha,
+    size_bytes:bytes.length,max_range_bytes:4*1024*1024,media_type:"video/mp4"};
+  await resolve(page,original,descriptor);
+  const video=page.getByLabel("Verified native MP4 review player",{exact:true});
+  await expect(video).toHaveAttribute("src",url);
+  await expect.poll(()=>video.evaluate(node=>(node as HTMLVideoElement).duration)).toBeCloseTo(4,1);
+  await video.evaluate(async node=>{const v=node as HTMLVideoElement;v.muted=true;await v.play();});
+  await expect.poll(()=>video.evaluate(node=>(node as HTMLVideoElement).currentTime)).toBeGreaterThan(0);
+  await expect(historyPanel(page)).toContainText("export permissions from an earlier session are not restored");
+  expect(await recoveryCalls(page)).toEqual([]);
+  expect(await reads(page)).toEqual([]);
+  const element=await video.elementHandle();
+  await page.evaluate(()=>window.__NATIVE_AV_AUDIO_QC__.unmount());
+  expect(await element!.evaluate(node=>(node as HTMLVideoElement).paused)).toBe(true);
+  await page.evaluate(()=>window.__NATIVE_AV_AUDIO_QC__.mount());
+  await expect(video).toHaveCount(0);
+  expect(await mediaReads()).toHaveLength(1);
+  await discoverHistory(page);
+  await review().click();
+  await expect.poll(async()=>(await mediaReads()).length).toBe(2);
+  const fresh=(await mediaReads())[1];
+  expect(fresh.args).toEqual(original.args);
+  await setSelection(page,{...selected,revision:selected.revision+1});
+  await resolve(page,fresh,descriptor);
+  await expect(video).toHaveCount(0);
+  expect(await mediaReads()).toHaveLength(2);
 });

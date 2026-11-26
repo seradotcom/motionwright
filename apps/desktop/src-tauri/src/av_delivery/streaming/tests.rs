@@ -321,7 +321,11 @@ fn media_protocol_accepts_only_opaque_canonical_local_tokens() {
         "motionwright-media://localhost/%2e%2e/private".into(),
         "file:///private/master.mp4".into(),
     ] {
-        assert!(request_token(&uri.parse().unwrap()).is_err(), "{uri}");
+        // Some non-HTTP values (notably file:///...) are rejected by http
+        // before a protocol request can exist. Either boundary must reject.
+        if let Ok(parsed) = uri.parse::<Uri>() {
+            assert!(request_token(&parsed).is_err(), "{uri}");
+        }
     }
 }
 
@@ -400,4 +404,44 @@ fn queued_media_readers_are_bounded_before_workers_and_released_after_response()
     drop(replacement);
     drop(permits);
     assert_eq!(streams.active_reads.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn playback_selectors_cannot_mix_receipt_hints_with_session_or_private_file_authority() {
+    let session = serde_json::json!({
+        "project_id":Uuid::new_v4(),"generation":Uuid::new_v4(),"revision":7,
+        "export_token":Uuid::new_v4(),"stream":true,
+    });
+    assert!(matches!(
+        serde_json::from_value::<PlaybackSelection>(session.clone()).unwrap(),
+        PlaybackSelection::Session(_)
+    ));
+    let receipt = serde_json::json!({
+        "project_id":Uuid::new_v4(),"generation":Uuid::new_v4(),"revision":7,
+        "deliverable_id":Uuid::new_v4(),"decoded_measurement_receipt_id":Uuid::new_v4(),
+        "expected_master_sha256":"1".repeat(64),
+    });
+    assert!(matches!(
+        serde_json::from_value::<PlaybackSelection>(receipt.clone()).unwrap(),
+        PlaybackSelection::Receipt(_)
+    ));
+    for key in [
+        "export_token",
+        "stream",
+        "path",
+        "owner_root",
+        "review_only",
+        "permission",
+        "native_receipt",
+    ] {
+        let mut forged = receipt.clone();
+        forged[key] = serde_json::json!("untrusted");
+        assert!(
+            serde_json::from_value::<PlaybackSelection>(forged).is_err(),
+            "{key}"
+        );
+    }
+    let mut mixed = session;
+    mixed["decoded_measurement_receipt_id"] = serde_json::json!(Uuid::new_v4());
+    assert!(serde_json::from_value::<PlaybackSelection>(mixed).is_err());
 }

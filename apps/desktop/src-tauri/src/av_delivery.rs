@@ -256,6 +256,45 @@ pub fn recover_audio_qc(
     .unwrap_or_else(NativeAvAudioQcResponse::unavailable)
 }
 
+/// Recover an original file reader through the already authenticated Native
+/// chain. No serialized evidence or project digest is accepted as permission.
+pub(crate) fn recover_master_review(
+    project: &Project,
+    request: &AudioQcRecoveryRequest,
+    service: StudioService,
+    connection_path: Option<&Path>,
+    custody: &ProductionReceiptCustody,
+    playback: (&NativeMasterDeliveryRegistry, &streaming::ReviewStreams),
+) -> Result<streaming::ReviewDescriptor, String> {
+    const UNAVAILABLE: &str = "The saved original master is unavailable for read-only recovery.";
+    if project.id != request.project_id
+        || project.generation != request.generation
+        || project.revision != request.revision
+        || !valid_sha256(&request.expected_master_sha256)
+        || !cfg!(target_os = "linux")
+    {
+        return Err(UNAVAILABLE.into());
+    }
+    with_audio_connection(project, service, connection_path, custody, |coordinator| {
+        let original = coordinator
+            .recover_original_master_review_from_receipt(
+                project.id,
+                &project.stamp(),
+                request.decoded_measurement_receipt_id,
+                request.deliverable_id,
+                &request.expected_master_sha256,
+            )
+            .map_err(|_| UNAVAILABLE.to_owned())?;
+        let token = playback
+            .0
+            .register_recovered_review(&original)
+            .ok_or_else(|| UNAVAILABLE.to_owned())?;
+        let source = playback.0.resolve(project, token)?;
+        playback.1.prepare(&source, token)
+    })
+    .map_err(|_| UNAVAILABLE.to_owned())?
+}
+
 /// Trusted original caller identity, not the native measurement namespace.
 /// Deliberately not serializable/deserializable and never accepted over IPC.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -503,6 +542,47 @@ impl NativeMasterDeliveryRegistry {
             sha256: sha256.to_owned(),
             review_only,
             audio_analysis,
+        };
+        let mut entries = self.entries.lock().ok()?;
+        if entries.len() >= MAX_DELIVERY_HANDLES {
+            entries.pop_front();
+        }
+        entries.push_back(entry);
+        Some(token)
+    }
+
+    /// Only the non-deserializable original Native proof can reach this path.
+    /// Recovery always registers a reader with export blocked, including masters
+    /// whose previous process once held a broader delivery capability.
+    fn register_recovered_review(
+        &self,
+        original: &motionwright_native::production::VerifiedOriginalMasterReview,
+    ) -> Option<Uuid> {
+        let (owner_root, relative_path, sha256, bytes) = original.artifact();
+        let (num, den, frames) = original.clock();
+        if !(12..=MAX_MASTER_BYTES).contains(&bytes)
+            || !(1..=36_000).contains(&frames)
+            || num == 0
+            || den == 0
+            || !valid_sha256(sha256)
+        {
+            return None;
+        }
+        let token = Uuid::new_v4();
+        let entry = DeliveryHandle {
+            token,
+            project_id: original.project_id(),
+            generation: original.stamp().generation,
+            revision: original.stamp().revision,
+            deliverable_id: original.deliverable_id(),
+            frame_rate_num: num,
+            frame_rate_den: den,
+            frame_count: frames,
+            owner_root: owner_root.to_path_buf(),
+            relative_path: relative_path.to_owned(),
+            sha256: sha256.to_owned(),
+            review_only: true,
+            audio_analysis: None,
         };
         let mut entries = self.entries.lock().ok()?;
         if entries.len() >= MAX_DELIVERY_HANDLES {

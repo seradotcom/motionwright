@@ -6,7 +6,7 @@ export type NativeAvPlayback =
 
 export interface NativeAvPlaybackScope {
   project:Pick<Project,"id"|"generation"|"revision">;
-  exportToken:string;
+  exportToken:string|null;
   deliverableId?:string|null;
   masterSha256?:string|null;
 }
@@ -28,8 +28,10 @@ export function verifiedNativeReviewBytes(data:unknown):Uint8Array {
  * supplied by a project, receipt hint or imported asset cannot create a reader.
  * A legacy small-file binary reply retains its existing bounded IPC contract. */
 export function parseNativeAvPlayback(data:unknown,scope:NativeAvPlaybackScope):NativeAvPlayback {
-  if(data instanceof Uint8Array||data instanceof ArrayBuffer||Array.isArray(data))
+  if(data instanceof Uint8Array||data instanceof ArrayBuffer||Array.isArray(data)){
+    if(scope.exportToken===null)throw new Error("Saved master recovery requires an exact original stream descriptor.");
     return {kind:"bytes",bytes:verifiedNativeReviewBytes(data)};
+  }
   if(!data||typeof data!=="object")throw new Error("Native media playback is unavailable.");
   const value=data as Record<string,unknown>;
   const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -38,7 +40,9 @@ export function parseNativeAvPlayback(data:unknown,scope:NativeAvPlaybackScope):
   if(Object.keys(value).some(key=>!allowed.has(key))||Object.keys(value).length!==allowed.size||
     value.schema!=="motionwright.native-av-review/1"||value.project_id!==scope.project.id||
     value.generation!==scope.project.generation||value.revision!==scope.project.revision||
-    value.export_token!==scope.exportToken||typeof value.deliverable_id!=="string"||
+    (scope.exportToken!==null&&value.export_token!==scope.exportToken)||
+    (scope.exportToken===null&&(typeof value.export_token!=="string"||!uuid.test(value.export_token)))||
+    typeof value.deliverable_id!=="string"||
     (scope.deliverableId!=null&&value.deliverable_id!==scope.deliverableId)||
     typeof value.stream_token!=="string"||!uuid.test(value.stream_token)||
     typeof value.sha256!=="string"||!/^[0-9a-f]{64}$/.test(value.sha256)||

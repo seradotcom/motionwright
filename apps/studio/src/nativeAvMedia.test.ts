@@ -45,4 +45,15 @@ describe("original Native media playback",()=>{
     for(const value of [[...bytes,NaN],[...bytes,256],[...bytes,-1],[...bytes,"1"],new Uint8Array(16*1024*1024+1),{},null])
       expect(()=>verifiedNativeReviewBytes(value)).toThrow();
   });
+  it("requires a source-bound streamed reader for saved receipts and retains no prior export token",()=>{
+    const recovered={...scope,exportToken:null};
+    const source={...descriptor(),export_token:"00000000-0000-4000-8000-000000000002"};
+    expect(parseNativeAvPlayback(source,recovered).kind).toBe("stream");
+    for(const patch of [{export_token:scope.exportToken},{sha256:"b".repeat(64)},
+      {deliverable_id:"foreign"},{revision:8},{export_allowed:true}])
+      expect(()=>parseNativeAvPlayback({...source,...patch},recovered)).toThrow();
+    const bytes=Uint8Array.from([0,0,0,24,102,116,121,112,105,115,111,109]);
+    expect(()=>parseNativeAvPlayback(bytes,recovered)).toThrow();
+  });
+
 });
