@@ -24,7 +24,7 @@ fn visit_stable_history(
     visit_history(service, project_id, false, visit)
 }
 
-fn visit_history(
+pub(in crate::production) fn visit_history(
     service: &StudioService,
     project_id: Uuid,
     allow_empty: bool,
@@ -180,7 +180,7 @@ fn verify_original_atomic_history(
     verify_selected_atomic_history(service, selected)
 }
 
-fn verify_selected_atomic_history(
+pub(in crate::production) fn verify_selected_atomic_history(
     service: &StudioService,
     selected: &ProductionReceipt,
 ) -> NativeResult<()> {

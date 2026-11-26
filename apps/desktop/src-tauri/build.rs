@@ -55,6 +55,7 @@ fn main() {
             "review_native_av_master",
             "read_native_av_audio_qc",
             "native_av_audio_qc_receipt_inventory",
+            "native_av_saved_master_inventory",
             "recover_native_av_audio_qc",
             "preview_native_frame",
             "prepare_file_import",

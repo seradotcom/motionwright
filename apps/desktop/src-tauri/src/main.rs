@@ -3018,6 +3018,31 @@ async fn review_native_av_master(
                     .map_err(|_| "Original master recovery response is unavailable.".to_string())?,
             )
         }
+        av_delivery::streaming::PlaybackSelection::SavedMux(request) => {
+            let path = selected_connection_path(&state, project.id)?;
+            expected_connection = Some(path.clone());
+            let service = state.service.clone();
+            let custody = state.production_receipt_custody.clone();
+            let deliveries = state.av_delivery.clone();
+            let streams = state.av_review.clone();
+            let descriptor = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+                let _preparation = preparation;
+                av_delivery::recover_saved_mux_review(
+                    &project,
+                    &request,
+                    service,
+                    path.as_deref(),
+                    &custody,
+                    (&deliveries, &streams),
+                )
+            })
+            .await
+            .map_err(|_| "Original master recovery task failed.".to_string())??;
+            tauri::ipc::Response::new(
+                serde_json::to_string(&descriptor)
+                    .map_err(|_| "Original master recovery response is unavailable.".to_string())?,
+            )
+        }
     };
     owner.begin_phase()?;
     let latest = state.service.project(project_id).map_err(sanitized)?;
@@ -3095,6 +3120,52 @@ async fn read_native_av_audio_qc(
         Ok(path) if path == initial_connection_path => result,
         _ => NativeAvAudioQcResponse::unavailable(AudioQcUnavailableReason::ConnectionUnavailable),
     })
+}
+
+/// Read-only discovery for completed muxes, independent of optional audio QC.
+#[tauri::command]
+async fn native_av_saved_master_inventory(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: av_delivery::AudioQcInventoryRequest,
+) -> Result<motionwright_native::production::SavedMasterReceiptInventory, String> {
+    let project = state
+        .service
+        .project(request.project_id)
+        .map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err("Saved original media belongs to a previous project revision.".into());
+    }
+    let preparation = state
+        .av_review
+        .admit_preparation()
+        .ok_or("Original media read capacity is busy; retry after current readers finish.")?;
+    let path = selected_connection_path(&state, project.id)?;
+    let initial_path = path.clone();
+    let service = state.service.clone();
+    let custody = state.production_receipt_custody.clone();
+    let result = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        let _preparation = preparation;
+        av_delivery::read_saved_master_inventory(
+            &project,
+            request.deliverable_id,
+            service,
+            path.as_deref(),
+            &custody,
+        )
+    })
+    .await
+    .map_err(|_| "Saved original media discovery task failed.".to_string())??;
+    owner.begin_phase()?;
+    audio_read_still_current(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+        initial_path,
+    )
+    .map_err(|_| "Saved original media source changed during discovery.".to_string())?;
+    Ok(result)
 }
 
 /// Current receipt references only; never a media or execution capability.
@@ -4264,6 +4335,7 @@ fn main() {
             review_native_av_master,
             read_native_av_audio_qc,
             native_av_audio_qc_receipt_inventory,
+            native_av_saved_master_inventory,
             recover_native_av_audio_qc,
             preview_native_frame,
             prepare_file_import,

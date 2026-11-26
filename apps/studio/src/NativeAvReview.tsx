@@ -2,7 +2,8 @@ import { CircleDashed, RefreshCw, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useLocalMediaElement } from "./audioReviewPlayback";
 import type {NativeAvPlayback} from "./nativeAvMedia";
-import { readNativeAvAudioQc, prepareVerifiedNativeAvReview, prepareSavedNativeAvReview, readNativeAudioQcReceiptInventory, readNativeAudioQcReceipt } from "./api";
+import type {SavedMasterHint} from "./savedNativeMedia";
+import { readNativeAvAudioQc, prepareVerifiedNativeAvReview, prepareSavedNativeAvReview, prepareSavedNativeMuxReview, readNativeAudioQcReceiptInventory, readNativeAudioQcReceipt } from "./api";
 import {
   audioQcStatusLabel, audioQcUnavailableText, createNativeAvReadGuard,
   formatAudioMilli, nativeAvReadScope,
@@ -10,8 +11,9 @@ import {
 import type { DeliveryAudioQcReport, NativeAvAudioQcResponse, NativeAudioQcReceiptHint, NativeAudioQcReceiptInventoryResponse, Project } from "./types";
 
 type NativeAvSource =
-  | {exportToken:string;receiptHint?:never}
-  | {exportToken?:never;receiptHint:NativeAudioQcReceiptHint};
+  | {exportToken:string;receiptHint?:never;muxReceiptHint?:never}
+  | {exportToken?:never;receiptHint:NativeAudioQcReceiptHint;muxReceiptHint?:never}
+  | {exportToken?:never;receiptHint?:never;muxReceiptHint:SavedMasterHint};
 
 type PlaybackState =
   | { kind: "loading" }
@@ -27,6 +29,7 @@ export default function NativeAvReview({
   project,
   exportToken,
   receiptHint,
+  muxReceiptHint,
   reviewOnly = false,
   seekTimeSeconds,
   onMediaTime,
@@ -53,7 +56,7 @@ export default function NativeAvReview({
   const guard = useRef(createNativeAvReadGuard());
   const selector = receiptHint
     ? "saved-receipt:"+receiptHint.decoded_measurement_receipt_id+":"+receiptHint.master_sha256
-    : exportToken;
+    : muxReceiptHint ? "saved-mux:"+muxReceiptHint.mux_receipt_id+":"+muxReceiptHint.master_sha256 : exportToken;
   const identity = nativeAvReadScope(project, selector, deliverableId, masterSha256);
   const readKey = guard.current.viewKey(JSON.stringify([identity, retry]));
   const visibleKey = useRef(readKey);
@@ -84,7 +87,10 @@ export default function NativeAvReview({
       : receiptHint
         ? deliverableId === null ? Promise.reject(new Error("Saved output profile unavailable."))
           : prepareSavedNativeAvReview(project, deliverableId, receiptHint)
-        : prepareVerifiedNativeAvReview(project, exportToken, deliverableId, masterSha256);
+        : muxReceiptHint
+          ? deliverableId === null ? Promise.reject(new Error("Saved output profile unavailable."))
+            : prepareSavedNativeMuxReview(project, deliverableId, muxReceiptHint)
+          : prepareVerifiedNativeAvReview(project, exportToken, deliverableId, masterSha256);
     if (!existing || existing.key !== readKey) {
       pendingRef.current = { key: readKey, promise };
       const release = () => {
@@ -154,7 +160,7 @@ export default function NativeAvReview({
       role="region" aria-label="Native master playback review">
       <div className="native-av-review-header">
         <strong>Native H.264/AAC review</strong>
-        <span>Original master from source r{project.revision}.{receiptHint ? " Recovered for local review." : reviewOnly ? " Review only; export unavailable." : ""}</span>
+        <span>Original master from source r{project.revision}.{receiptHint || muxReceiptHint ? " Recovered for local review." : reviewOnly ? " Review only; export unavailable." : ""}</span>
       </div>
       {playback.kind === "ready" ? (
         <video
@@ -213,7 +219,7 @@ export default function NativeAvReview({
             setPlayback({
               kind: "unavailable",
               message:
-                receiptHint ? "This WebView could not decode the recovered original MP4."
+                receiptHint || muxReceiptHint ? "This WebView could not decode the recovered original MP4."
                 : reviewOnly
                   ? "The review-only captioned MP4 cannot be decoded by this WebView. Export remains blocked until original master glyph pixels are verified on this device."
                   : "This WebView could not decode the verified MP4. Use Export verified MP4 to review the file in a compatible local player.",
@@ -238,13 +244,13 @@ export default function NativeAvReview({
       <div className="native-av-review-footnote">
         {metadata ?? "Source-bound MP4; playback availability depends on this WebView decoder."}
         {reviewOnly && <span> · Installed decoded caption glyph pixels NOT VERIFIED · publication blocked</span>}
-        <span>{receiptHint
+        <span>{receiptHint || muxReceiptHint
           ? "Read-only recovery; export permissions from an earlier session are not restored."
           : embedded
           ? "Native media clock follows source-scoped editorial seeks"
           : "Independent media review · not timeline-synchronized"}</span>
       </div>
-      {!embedded && <NativeAudioQcReview project={project} selection={receiptHint ? {kind:"receipt",hint:receiptHint} : { kind: "session", exportToken }}
+      {!embedded && !muxReceiptHint && <NativeAudioQcReview project={project} selection={receiptHint ? {kind:"receipt",hint:receiptHint} : { kind: "session", exportToken }}
         deliverableId={deliverableId} masterSha256={masterSha256} />}
     </div>
   );

@@ -396,6 +396,8 @@ jobs:
           log="$RUNNER_TEMP/master-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.log"
           cargo test --locked --jobs 2 -p motionwright-native --lib original_master_review -- --test-threads=1 | tee "$log"
           grep -F '3 passed; 0 failed; 0 ignored' "$log"
+          cargo test --locked --jobs 2 -p motionwright-native --lib production::saved_media::tests:: -- --test-threads=1 | tee "$log"
+          grep -F '5 passed; 0 failed; 0 ignored' "$log"
       - name: Native owner lifetime and resource identity regressions
         if: inputs.verification_scope == 'desktop-playback'
         run: cargo test --locked --jobs 2 -p motionwright-desktop desktop_owner -- --test-threads=1

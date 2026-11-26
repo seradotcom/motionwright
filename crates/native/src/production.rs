@@ -60,12 +60,16 @@ mod mlt_mezzanine;
 mod mlt_multisegment_av;
 mod mlt_timeline;
 mod motion_canvas_window;
+mod saved_media;
 pub use motion_canvas_window::{
     MotionCanvasCachedWindowFrame, MotionCanvasCaptureTimings, MotionCanvasStartOrigin,
     MotionCanvasWindowCapture, MotionCanvasWindowCost, MotionCanvasWindowEvidence,
     MotionCanvasWindowRaster, MotionCanvasWindowRequest, MotionCanvasWindowScale,
     MotionCanvasWindowSummary, MotionCanvasWindowUse, MotionCanvasWindowValidation,
     read_cached_motion_canvas_window_frame, reuse_motion_canvas_window,
+};
+pub use saved_media::{
+    SavedMasterReceiptHint, SavedMasterReceiptInventory, VerifiedOriginalMasterReview,
 };
 mod native_runtime_versions;
 #[cfg(test)]
@@ -81,8 +85,7 @@ mod voice_alignment;
 pub use audio_analysis::{
     AudioAnalysisLane, AudioQcReceiptHint, AudioQcReceiptInventory, DeliveryAudioQcStatus,
     MeasuredMltAvMasterEvidence, MeasuredMltMultisegmentAvMasterEvidence, VerifiedAudioMeasurement,
-    VerifiedDeliveryAudioQc, VerifiedDeliveryAudioQcReport, VerifiedOriginalMasterReview,
-    VerifiedOriginalMixAudioMeasurements,
+    VerifiedDeliveryAudioQc, VerifiedDeliveryAudioQcReport, VerifiedOriginalMixAudioMeasurements,
 };
 pub use audio_derivative::{
     AdoptedAudioDerivative, AudioDerivativeFailure, AudioDerivativeIntent,
@@ -4441,11 +4444,11 @@ impl ProductionCoordinator {
         )?;
 
         let muxed = scoped
-            .execute(
-                project_id,
+            .execute_master_mux(
+                &project,
                 expected,
                 &format!("{request_id}:mlt:av-mux"),
-                "driver.mlt-video.av.mux",
+                deliverable_id,
                 json!({
                     "video_root": "output",
                     "video_path": mezzanine_artifact_path,
@@ -4464,7 +4467,6 @@ impl ProductionCoordinator {
                     "output_path": master_path,
                     "max_bytes": MLT_MASTER_MAX_BYTES
                 }),
-                true,
             )
             .await?;
         let master = response_data(&muxed)?.clone();
@@ -5571,14 +5573,16 @@ impl ProductionCoordinator {
         dispatch_context: Option<ReceiptDispatchContext<'_>>,
     ) -> NativeResult<ReceiptExecutionOutcome> {
         let (command, mutation) = operation;
-        let (receipt_context, media_binding, audio_staging) = match dispatch_context {
+        let (receipt_context, media_binding, audio_staging, saved_context) = match dispatch_context
+        {
             #[cfg(test)]
-            Some(ReceiptDispatchContext::Audio(context)) => (Some(context), None, None),
+            Some(ReceiptDispatchContext::Audio(context)) => (Some(context), None, None, None),
             Some(ReceiptDispatchContext::PreparedAudio(context, staging)) => {
-                (Some(context), None, Some(staging))
+                (Some(context), None, Some(staging), None)
             }
-            Some(ReceiptDispatchContext::Bound(binding)) => (None, Some(binding), None),
-            None => (None, None, None),
+            Some(ReceiptDispatchContext::Bound(binding)) => (None, Some(binding), None, None),
+            Some(ReceiptDispatchContext::SavedMaster(context)) => (None, None, None, Some(context)),
+            None => (None, None, None, None),
         };
         let media_mutation = if let Some(binding) = media_binding {
             binding.check_connection(&self.client)?;
@@ -5599,6 +5603,11 @@ impl ProductionCoordinator {
                 "Private audio receipt context requires the read-only meter",
             ));
         }
+        if saved_context.is_some() && (command != "driver.mlt-video.av.mux" || !mutation) {
+            return Err(invalid(
+                "Original media context requires the existing closed mux",
+            ));
+        }
         let receipt_context = receipt_context.map(|context| context.payload());
         let media_context =
             media_binding.map(|binding| (binding.receipt_key(), binding.receipt_context()));
@@ -5608,6 +5617,9 @@ impl ProductionCoordinator {
             }
             if let Some(context) = &receipt_context {
                 payload["audio_reopen"] = context.clone();
+            }
+            if let Some(context) = &saved_context {
+                payload["original_media_reopen"] = context.payload();
             }
             payload
         };
@@ -5626,6 +5638,9 @@ impl ProductionCoordinator {
                 ErrorCode::PermissionDenied,
                 "Production connection is bound to another Motionwright resource",
             ));
+        }
+        if let Some(context) = &saved_context {
+            context.check_current(self, &project)?;
         }
         let job_ref = args
             .get("job_ref")
@@ -5681,6 +5696,16 @@ impl ProductionCoordinator {
                 return Err(Error::new(
                     ErrorCode::Conflict,
                     "Production request has different original audio selector metadata",
+                ));
+            }
+            if prior.stage == "completed"
+                && let Some(recorded) = prior.payload.get("original_media_reopen")
+                && saved_context
+                    .as_ref()
+                    .is_some_and(|context| context.payload() != *recorded)
+            {
+                return Err(invalid(
+                    "Original mux source differs from its retained reopen context",
                 ));
             }
             if prior.stage == "completed"
@@ -6059,6 +6084,7 @@ enum ReceiptDispatchContext<'a> {
         audio_analysis::AudioStaging<'a>,
     ),
     Bound(&'a provider_binding::BoundMediaContext),
+    SavedMaster(saved_media::SavedMasterReceiptContext),
 }
 
 // Private dispatch provenance. Stored JSON cannot construct an observed result.

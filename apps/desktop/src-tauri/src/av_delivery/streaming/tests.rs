@@ -516,3 +516,33 @@ fn abandoned_preparation_waiter_does_not_release_a_running_original_reader() {
     assert_eq!(clone.active_reads.load(Ordering::Acquire), 0);
     assert!(clone.admit_preparation().is_some());
 }
+
+#[test]
+fn saved_mux_selector_is_closed_and_cannot_mix_authority_sources() {
+    let selected = serde_json::json!({
+        "project_id":Uuid::new_v4(),"generation":Uuid::new_v4(),"revision":7,
+        "deliverable_id":Uuid::new_v4(),"mux_receipt_id":Uuid::new_v4(),
+        "expected_master_sha256":"1".repeat(64),
+    });
+    assert!(matches!(
+        serde_json::from_value::<PlaybackSelection>(selected.clone()).unwrap(),
+        PlaybackSelection::SavedMux(_)
+    ));
+    for key in [
+        "export_token",
+        "decoded_measurement_receipt_id",
+        "path",
+        "owner_root",
+        "stream",
+        "permission",
+        "review_only",
+        "native_receipt",
+    ] {
+        let mut mixed = selected.clone();
+        mixed[key] = serde_json::json!("untrusted");
+        assert!(
+            serde_json::from_value::<PlaybackSelection>(mixed).is_err(),
+            "{key}"
+        );
+    }
+}

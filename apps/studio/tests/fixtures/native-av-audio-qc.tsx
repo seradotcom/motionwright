@@ -1,3 +1,4 @@
+import SavedNativeMasters from "../../src/SavedNativeMasters";
 import { StrictMode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -77,7 +78,7 @@ if (new URLSearchParams(window.location.search).get("desktop") !== "0") {
         settled: false,
       };
       calls.push(call);
-      if (command === "read_native_av_audio_qc" || command === "native_av_audio_qc_receipt_inventory"
+      if (command === "read_native_av_audio_qc" || command === "native_av_audio_qc_receipt_inventory" || command === "native_av_saved_master_inventory"
         || command === "recover_native_av_audio_qc"
         || (command === "review_native_av_master"
           && new URLSearchParams(window.location.search).get("playback") === "1")) {
@@ -106,7 +107,9 @@ function render() {
   // Keep the same component instance across identity changes to exercise its
   // own read guard. Unmount/mount below explicitly creates a fresh instance.
   flushSync(() => root.render(mounted ? <StrictMode>
-    {new URLSearchParams(window.location.search).get("recovery") === "1"
+    {new URLSearchParams(window.location.search).get("saved") === "1"
+      ? <SavedNativeMasters project={project} deliverableId={selection.deliverableId} />
+      : new URLSearchParams(window.location.search).get("recovery") === "1"
       ? <NativeAudioQcHistory project={project} deliverableId={selection.deliverableId} />
       : <NativeAvReview project={project} exportToken={selection.exportToken}
       deliverableId={selection.deliverableId} masterSha256={selection.masterSha256}

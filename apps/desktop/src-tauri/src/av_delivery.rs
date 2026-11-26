@@ -163,6 +163,17 @@ pub struct AudioQcRecoveryRequest {
     pub expected_master_sha256: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SavedMasterRecoveryRequest {
+    pub project_id: Uuid,
+    pub generation: Uuid,
+    pub revision: u64,
+    pub deliverable_id: Uuid,
+    pub mux_receipt_id: Uuid,
+    pub expected_master_sha256: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NativeAvAudioQcInventoryResponse {
@@ -281,6 +292,58 @@ pub(crate) fn recover_master_review(
                 project.id,
                 &project.stamp(),
                 request.decoded_measurement_receipt_id,
+                request.deliverable_id,
+                &request.expected_master_sha256,
+            )
+            .map_err(|_| UNAVAILABLE.to_owned())?;
+        let token = playback
+            .0
+            .register_recovered_review(&original)
+            .ok_or_else(|| UNAVAILABLE.to_owned())?;
+        let source = playback.0.resolve(project, token)?;
+        playback.1.prepare(&source, token)
+    })
+    .map_err(|_| UNAVAILABLE.to_owned())?
+}
+
+pub(crate) fn read_saved_master_inventory(
+    project: &Project,
+    deliverable_id: Uuid,
+    service: StudioService,
+    connection_path: Option<&Path>,
+    custody: &ProductionReceiptCustody,
+) -> Result<motionwright_native::production::SavedMasterReceiptInventory, String> {
+    const UNAVAILABLE: &str = "Saved original media references are unavailable.";
+    with_audio_connection(project, service, connection_path, custody, |coordinator| {
+        coordinator
+            .saved_master_receipt_inventory(project.id, &project.stamp(), deliverable_id)
+            .map_err(|_| UNAVAILABLE.to_owned())
+    })
+    .map_err(|_| UNAVAILABLE.to_owned())?
+}
+
+pub(crate) fn recover_saved_mux_review(
+    project: &Project,
+    request: &SavedMasterRecoveryRequest,
+    service: StudioService,
+    connection_path: Option<&Path>,
+    custody: &ProductionReceiptCustody,
+    playback: (&NativeMasterDeliveryRegistry, &streaming::ReviewStreams),
+) -> Result<streaming::ReviewDescriptor, String> {
+    const UNAVAILABLE: &str = "The saved original master is unavailable for read-only recovery.";
+    if project.id != request.project_id
+        || project.generation != request.generation
+        || project.revision != request.revision
+        || !valid_sha256(&request.expected_master_sha256)
+    {
+        return Err(UNAVAILABLE.into());
+    }
+    with_audio_connection(project, service, connection_path, custody, |coordinator| {
+        let original = coordinator
+            .recover_saved_master_review(
+                project.id,
+                &project.stamp(),
+                request.mux_receipt_id,
                 request.deliverable_id,
                 &request.expected_master_sha256,
             )

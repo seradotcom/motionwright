@@ -34,9 +34,9 @@ const MUX_COMMAND: &str = "driver.mlt-video.av.mux";
 pub(super) const MAX_ANALYSIS_BYTES: u64 = 512 * 1024 * 1024;
 
 mod original_media;
-pub use original_media::VerifiedOriginalMasterReview;
+use super::saved_media::VerifiedOriginalMasterReview;
 mod qc_report;
-mod receipt_history;
+pub(super) mod receipt_history;
 pub use qc_report::VerifiedDeliveryAudioQcReport;
 
 /// Bounded discovery references only. These fields cannot recreate a proof,

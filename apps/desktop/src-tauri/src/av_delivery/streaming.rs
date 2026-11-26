@@ -45,6 +45,7 @@ pub(crate) struct PlaybackRequest {
 pub(crate) enum PlaybackSelection {
     Session(PlaybackRequest),
     Receipt(super::AudioQcRecoveryRequest),
+    SavedMux(super::SavedMasterRecoveryRequest),
 }
 
 impl PlaybackSelection {
@@ -52,6 +53,7 @@ impl PlaybackSelection {
         match self {
             Self::Session(request) => (request.project_id, request.generation, request.revision),
             Self::Receipt(request) => (request.project_id, request.generation, request.revision),
+            Self::SavedMux(request) => (request.project_id, request.generation, request.revision),
         }
     }
 }

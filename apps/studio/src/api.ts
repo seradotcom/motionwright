@@ -1,3 +1,4 @@
+import {parseSavedMasterInventory,type SavedMasterHint,type SavedMasterInventory} from "./savedNativeMedia";
 import { parseNativeAvPlayback, verifiedNativeReviewBytes, type NativeAvPlayback } from "./nativeAvMedia";
 import { applyDeliverySettingPropagation } from "./deliveryFamily";
 import { deliveryTextSourceConflict } from "./deliveryTextSources";
@@ -2764,4 +2765,20 @@ export async function readNativeAudioQcReceipt(
   } catch {
     throw new Error("The original audio QC could not be read. No render or measurement was requested.");
   }
+}
+
+/** Read current completed mux selectors without Native execution or audio measurement. */
+export async function readSavedNativeMasterInventory(project:Project,deliverableId:string):Promise<SavedMasterInventory>{
+  if(!isTauri())throw new Error("Saved original media requires the desktop runtime.");
+  return parseSavedMasterInventory(await invoke<unknown>("native_av_saved_master_inventory",{
+    request:{project_id:project.id,generation:project.generation,revision:project.revision,deliverable_id:deliverableId},
+  }),project,deliverableId);
+}
+export async function prepareSavedNativeMuxReview(project:Project,deliverableId:string,hint:SavedMasterHint):Promise<NativeAvPlayback>{
+  if(!isTauri())throw new Error("Saved original media requires the desktop runtime.");
+  const data=await invoke<unknown>("review_native_av_master",{
+    request:{project_id:project.id,generation:project.generation,revision:project.revision,
+      deliverable_id:deliverableId,mux_receipt_id:hint.mux_receipt_id,expected_master_sha256:hint.master_sha256},
+  });
+  return parseNativeAvPlayback(data,{project,exportToken:null,deliverableId,masterSha256:hint.master_sha256});
 }

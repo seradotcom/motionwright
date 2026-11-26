@@ -60,6 +60,7 @@
     "allow-review-native-av-master",
     "allow-read-native-av-audio-qc",
     "allow-native-av-audio-qc-receipt-inventory",
+    "allow-native-av-saved-master-inventory",
     "allow-recover-native-av-audio-qc",
     "allow-preview-native-frame",
     "allow-prepare-file-import",

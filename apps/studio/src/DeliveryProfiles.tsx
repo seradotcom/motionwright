@@ -1,6 +1,7 @@
 import { CircleCheck, CircleDashed, FileOutput, Play, Plus, Save, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import NativeAvReview, { NativeAudioQcHistory } from "./NativeAvReview";
+import SavedNativeMasters from "./SavedNativeMasters";
 import DeliveryAudioTargets from "./DeliveryAudioTargets";
 import { nativeAvSelectionFromEvidence, retainedNativeAvReviewSelections } from "./nativeAvAudioQc";
 import {
@@ -1765,6 +1766,7 @@ export default function DeliveryProfiles({
                   masterSha256={reviewMasterSha256}
                 />
               )}
+              <SavedNativeMasters project={project} deliverableId={selected.id} />
               <NativeAudioQcHistory project={project} deliverableId={selected.id} />
               {!activeReviewToken && retainedReview && <p className="delivery-truth-note">
                 A read-only master selector was retained in this session. Opening review revalidates

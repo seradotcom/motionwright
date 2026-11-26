@@ -638,11 +638,11 @@ impl ProductionCoordinator {
         // never arbitrary client filenames. Broker handles result uncertainty.
         scoped.bind_mlt_mux_output(&output_path)?;
         let encoded = scoped
-            .execute(
-                project_id,
+            .execute_master_mux(
+                &project,
                 expected,
                 &format!("{request_id}:mlt:multisegment-av-mux"),
-                "driver.mlt-video.av.mux",
+                deliverable_id,
                 json!({
                     "video_root":"output",
                     "video_path":visual.artifact_path,
@@ -661,7 +661,6 @@ impl ProductionCoordinator {
                     "output_path":output_path,
                     "max_bytes":MLT_MASTER_MAX_BYTES,
                 }),
-                true,
             )
             .await?;
         let master = response_data(&encoded)?.clone();

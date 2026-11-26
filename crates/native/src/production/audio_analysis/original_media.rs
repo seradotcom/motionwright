@@ -1,42 +1,6 @@
 //! Original master recovery for local reading. A durable receipt is only a
 //! selector: the existing coordinator reconstructs its complete current proof.
 use super::*;
-use std::path::PathBuf;
-
-/// Not serializable or constructible by callers. This permits the application
-/// to prepare an original-file reader, never publication or a new Native effect.
-pub struct VerifiedOriginalMasterReview {
-    project_id: Uuid,
-    stamp: RevisionStamp,
-    deliverable_id: Uuid,
-    owner_root: PathBuf,
-    master: ArtifactIdentity,
-    clock: (u32, u32, u64),
-}
-
-impl VerifiedOriginalMasterReview {
-    pub fn project_id(&self) -> Uuid {
-        self.project_id
-    }
-    pub fn stamp(&self) -> &RevisionStamp {
-        &self.stamp
-    }
-    pub fn deliverable_id(&self) -> Uuid {
-        self.deliverable_id
-    }
-    pub fn artifact(&self) -> (&Path, &str, &str, u64) {
-        (
-            &self.owner_root,
-            &self.master.relative_path,
-            &self.master.sha256,
-            self.master.bytes,
-        )
-    }
-    pub fn clock(&self) -> (u32, u32, u64) {
-        self.clock
-    }
-}
-
 impl ProductionCoordinator {
     /// Reuses current receipt/source/media reconstruction, without dispatch,
     /// staging, measurement, history changes or restoring an export permission.
@@ -67,7 +31,9 @@ impl ProductionCoordinator {
             stamp: binding.stamp(),
             deliverable_id: binding.deliverable_id,
             owner_root: self.client.connection().output_root.clone(),
-            master: parent.master.clone(),
+            relative_path: parent.master.relative_path.clone(),
+            sha256: parent.master.sha256.clone(),
+            bytes: parent.master.bytes,
             clock: (parent.fps_num, parent.fps_den, parent.video_frames),
         })
     }

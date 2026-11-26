@@ -14,9 +14,15 @@ A legacy caller may still request the original binary IPC response for files up 
 
 ## Reopen an original master after restarting
 
-In the saved audio-QC history, **Review original MP4** selects the original decoded-measurement receipt for the current saved profile. The receipt UUID and expected digest are lookup hints. Native reconstructs the exact original source, measurement and completed master chain from SQLite and verifies current owner connection, receipt custody and original media before creating a new reader.
+**Saved original MP4s → Find saved MP4s** lists completed muxes for the current source and output profile. **Review saved original** verifies the chosen original and opens it through the same bounded local reader. An audio measurement is optional for this route.
 
-This path reuses an existing original. It does not render, measure, append receipts, retry an UNKNOWN operation or restore an export permission. Recovered handles are always review-only. Missing historical selector metadata, changed source/media, another connection or an unresolved original remains unavailable. This recovery currently follows the supported Linux native audio-measurement chain; ordinary current-session playback remains available on supported desktop decoders.
+The two original mux receipt writes now retain a closed private context: the original mux arguments, project digest, output profile and owner connection identity. Reopening compares that context with the current saved project and original dispatch/result, checks actual Native provider provenance, verifies the original file SHA-256 and size, and rejects any UNKNOWN in the same atomic request history. Discovery exposes only bounded receipt/hash/clock hints. It does not expose the original paths or arguments.
+
+There is no new receipt store, render, measurement, budget restoration or export capability. Old mux receipts without this metadata are not rewritten or inferred; they remain eligible only for an independently available older recovery path. The current-project guard and independent reader limit also apply to discovery and reopening.
+
+The older saved audio-QC path remains available. In that history, **Review original MP4** selects the original decoded-measurement receipt for the current saved profile. The receipt UUID and expected digest are lookup hints. Native reconstructs the exact original source, measurement and completed master chain from SQLite and verifies current owner connection, receipt custody and original media before creating a new reader.
+
+This path reuses an existing original. It does not render, measure, append receipts, retry an UNKNOWN operation or restore an export permission. Recovered handles are always review-only. Missing historical selector metadata, changed source/media, another connection or an unresolved original remains unavailable. The audio-QC recovery route follows the supported Linux native measurement chain. General saved-mux recovery has no meter dependency; playback still requires a compatible desktop decoder.
 
 Changing the project revision, profile or selected original closes playback. Leaving and reopening the history view requires fresh discovery and readback; a late reply from a previous source cannot replace the current selection.
 
