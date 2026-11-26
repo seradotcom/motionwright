@@ -182,7 +182,7 @@ impl ReviewStream {
             .file
             .try_lock()
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-        if start > end || end >= self.size || end - start + 1 > MAX_RANGE_BYTES {
+        if start > end || end >= self.size || end - start >= MAX_RANGE_BYTES {
             return Err(StatusCode::RANGE_NOT_SATISFIABLE);
         }
         if file.metadata().map_err(|_| StatusCode::GONE)?.len() != self.size {

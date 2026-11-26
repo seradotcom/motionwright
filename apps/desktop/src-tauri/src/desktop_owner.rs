@@ -198,10 +198,10 @@ impl DesktopOwner {
         if native_webview_label != OWNER_LABEL {
             return Err(OWNER_UNAVAILABLE.to_owned());
         }
-        let webview = app
-            .get_webview(native_webview_label)
+        let window = app
+            .get_webview_window(native_webview_label)
             .ok_or_else(|| OWNER_UNAVAILABLE.to_owned())?;
-        self.authorize_invoke(&webview)
+        self.authorize_invoke(window.as_ref())
     }
 
     fn allows_navigation(&self, target: &Url) -> bool {
