@@ -29,6 +29,7 @@ async-trait.workspace = true
 tokio = { workspace = true, features = ["process", "time", "io-util"] }
 sha2.workspace = true
 hex.workspace = true
+roxmltree = "0.21.1"
 semwright-audio-domain.workspace = true
 semwright-video-domain.workspace = true
 semwright-project-graph.workspace = true

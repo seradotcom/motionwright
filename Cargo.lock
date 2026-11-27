@@ -2264,6 +2264,7 @@ dependencies = [
  "motionwright-manim-profile",
  "motionwright-service",
  "motionwright-storage",
+ "roxmltree",
  "rusqlite",
  "semwright-audio-domain",
  "semwright-driver-blender",

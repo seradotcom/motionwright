@@ -11,6 +11,7 @@ use super::*;
 use semwright_video_domain::native_observation::{
     ObservationProfile, PNG_LIMIT, REPORT_LIMIT, parse_complete_observation,
 };
+use std::ops::Range;
 
 pub(super) const MEDIA_MAX_BYTES: u64 = 256_000_000;
 pub(super) const MASTER_MAX_BYTES: u64 = 32 * 1024 * 1024;
@@ -180,6 +181,15 @@ fn artifact(
     expected_path: &str,
     maximum: u64,
 ) -> NativeResult<Artifact> {
+    artifact_and_bytes(root, value, expected_path, maximum).map(|(artifact, _)| artifact)
+}
+
+fn artifact_and_bytes(
+    root: &Path,
+    value: &Value,
+    expected_path: &str,
+    maximum: u64,
+) -> NativeResult<(Artifact, Vec<u8>)> {
     let digest = text_at(value, "/sha256")?;
     let count = value
         .get("bytes")
@@ -197,11 +207,14 @@ fn artifact(
         raw.len() as u64 == count,
         "Hybrid native artifact bytes differ from its original receipt",
     )?;
-    Ok(Artifact {
-        path: expected_path.into(),
-        sha256: digest,
-        bytes: count,
-    })
+    Ok((
+        Artifact {
+            path: expected_path.into(),
+            sha256: digest,
+            bytes: count,
+        },
+        raw,
+    ))
 }
 fn verify_ffv1(
     root: &Path,
@@ -314,6 +327,164 @@ fn exact_source_roster(value: &Value, expected: &[Artifact]) -> NativeResult<()>
 
 /// Read the ORIGINAL native Host report, XML and PNGs. This does not run a
 /// decoder, synthesize a report, rename a different observation, or infer PTS.
+fn mlt_property<'a>(node: roxmltree::Node<'a, '_>, name: &str) -> Option<&'a str> {
+    let mut properties = node
+        .children()
+        .filter(|child| child.has_tag_name("property") && child.attribute("name") == Some(name));
+    let property = properties.next()?;
+    if properties.next().is_some() || property.children().any(|child| child.is_element()) {
+        return None;
+    }
+    property.text()
+}
+
+fn only_mlt_track<'a>(
+    tractor: roxmltree::Node<'a, '_>,
+    expected_hide: Option<&str>,
+) -> Option<&'a str> {
+    let mut children = tractor
+        .children()
+        .filter(|node| node.is_element() && !node.has_tag_name("property"));
+    let track = children.next()?;
+    if children.next().is_some()
+        || !track.has_tag_name("track")
+        || track.attribute("hide") != expected_hide
+        || track.attributes().len() != 1 + usize::from(expected_hide.is_some())
+        || track.children().any(|child| child.is_element())
+    {
+        return None;
+    }
+    track.attribute("producer")
+}
+
+/// Bind the pinned host's staged normal form to the authored order and lengths.
+/// Its closed source roster can be identical for two different cuts.
+fn verify_authored_cut_input(
+    raw: &[u8],
+    sources: &[Artifact],
+    ranges: &[Range<u64>],
+    native_sources: &Value,
+) -> NativeResult<()> {
+    const MISMATCH: &str = "Original hybrid MLT input differs from the authored cuts";
+    let bad_input = || backend(MISMATCH);
+    let xml = std::str::from_utf8(raw).map_err(|_| bad_input())?;
+    let options = roxmltree::ParsingOptions {
+        nodes_limit: 1024,
+        ..Default::default()
+    };
+    let document =
+        roxmltree::Document::parse_with_options(xml, options).map_err(|_| bad_input())?;
+    let root = document.root_element();
+    require(
+        sources.len() == ranges.len()
+            && root.has_tag_name("mlt")
+            && root.attribute("semwright_normal_form") == Some("1")
+            && root.attribute("LC_NUMERIC") == Some("C")
+            && root.attributes().len() == 2,
+        MISMATCH,
+    )?;
+    let mut children = root.children().filter(|node| node.is_element());
+    let profile = children.next().ok_or_else(bad_input)?;
+    require(
+        profile.has_tag_name("profile")
+            && profile.attribute("width") == Some("1920")
+            && profile.attribute("height") == Some("1080")
+            && profile.attribute("frame_rate_num") == Some("30")
+            && profile.attribute("frame_rate_den") == Some("1"),
+        MISMATCH,
+    )?;
+    let mut nodes = std::collections::BTreeMap::new();
+    let mut sequence = None;
+    for node in children {
+        let id = node.attribute("id").ok_or_else(bad_input)?;
+        require(!id.is_empty() && nodes.insert(id, node).is_none(), MISMATCH)?;
+        if node.has_tag_name("tractor") && mlt_property(node, "semwright:sequence") == Some("1") {
+            require(sequence.replace(node).is_none(), MISMATCH)?;
+        }
+    }
+    let sequence = sequence.ok_or_else(bad_input)?;
+    let frame_end = ranges.last().and_then(|range| range.end.checked_sub(1));
+    require(
+        frame_end.is_some()
+            && nodes.len() == sources.len() * 2 + 3
+            && sequence.attributes().len() == 2
+            && sequence
+                .attribute("out")
+                .and_then(|value| value.parse::<u64>().ok())
+                == frame_end,
+        MISMATCH,
+    )?;
+    let linked = |id| nodes.get(id).copied().ok_or_else(bad_input);
+    let track = linked(only_mlt_track(sequence, None).ok_or_else(bad_input)?)?;
+    require(
+        track.has_tag_name("tractor") && track.attributes().len() == 1,
+        MISMATCH,
+    )?;
+    let playlist = linked(only_mlt_track(track, Some("audio")).ok_or_else(bad_input)?)?;
+    require(
+        playlist.has_tag_name("playlist") && playlist.attributes().len() == 1,
+        MISMATCH,
+    )?;
+
+    let mut entries = playlist.children().filter(|node| node.is_element());
+    let mut cursor = 0;
+    let mut staged = std::collections::BTreeMap::new();
+    for (source, range) in sources.iter().zip(ranges) {
+        let entry = entries.next().ok_or_else(bad_input)?;
+        let inclusive_end = range
+            .end
+            .checked_sub(range.start)
+            .and_then(|duration| duration.checked_sub(1))
+            .ok_or_else(bad_input)?;
+        require(
+            range.start == cursor
+                && entry.has_tag_name("entry")
+                && entry.attributes().len() == 3
+                && entry.attribute("in") == Some("0")
+                && entry
+                    .attribute("out")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    == Some(inclusive_end)
+                && !entry.children().any(|node| node.is_element()),
+            MISMATCH,
+        )?;
+        cursor = range.end;
+        let clip_id = entry.attribute("producer").ok_or_else(bad_input)?;
+        let clip = linked(clip_id)?;
+        let asset_id = mlt_property(clip, "semwright:clip_asset").ok_or_else(bad_input)?;
+        let asset = linked(asset_id)?;
+        require(
+            clip_id.starts_with("source_")
+                && clip != asset
+                && staged.insert(asset_id, source.descriptor()).is_none(),
+            MISMATCH,
+        )?;
+        let staged_sha = hex::encode(Sha256::digest(asset_id.as_bytes()));
+        let staged_name = format!("asset-{}.bin", &staged_sha[..24]);
+        for producer in [clip, asset] {
+            require(
+                (producer.has_tag_name("chain") || producer.has_tag_name("producer"))
+                    && producer
+                        .children()
+                        .filter(|child| child.is_element())
+                        .all(|child| child.has_tag_name("property"))
+                    && mlt_property(producer, "resource") == Some(staged_name.as_str())
+                    && mlt_property(producer, "semwright:resource_root") == Some("output")
+                    && mlt_property(producer, "semwright:resource_path")
+                        == Some(source.path.as_str()),
+                MISMATCH,
+            )?;
+        }
+    }
+    // The host stages assets in ascending ID order. This binds each staged
+    // filename to the original byte descriptor, even when metadata is swapped.
+    let staged: Vec<_> = staged.into_values().collect();
+    require(
+        entries.next().is_none() && native_sources.as_array() == Some(&staged),
+        MISMATCH,
+    )
+}
+
 fn complete_video_observation(
     root: &Path,
     media: &Artifact,
@@ -321,6 +492,7 @@ fn complete_video_observation(
     expected_profile: ObservationProfile,
     sources: &[Artifact],
     frame_count: u64,
+    authored_cuts: Option<&[Range<u64>]>,
 ) -> NativeResult<Value> {
     let original_receipt = original_result.get("color_observation").ok_or_else(|| {
         backend("Original hybrid native return omitted its color observation descriptor")
@@ -372,7 +544,7 @@ fn complete_video_observation(
     let native_input = original_result
         .get("native_input")
         .ok_or_else(|| backend("Original hybrid native return omitted its editable MLT input"))?;
-    let xml = artifact(
+    let (xml, xml_bytes) = artifact_and_bytes(
         root,
         native_input,
         &format!("{}.native-input.mlt", media.path),
@@ -394,6 +566,9 @@ fn complete_video_observation(
     // SDK ordering follows asset IDs, not cut order. Compare an exact closed
     // multiset without sorting or replacing either retained original document.
     exact_source_roster(native_sources, sources)?;
+    if let Some(ranges) = authored_cuts {
+        verify_authored_cut_input(&xml_bytes, sources, ranges, native_sources)?;
+    }
     for source in sources {
         artifact(root, &source.descriptor(), &source.path, MEDIA_MAX_BYTES)?;
     }
@@ -862,6 +1037,7 @@ impl ProductionCoordinator {
             ObservationProfile::MltVisualFfv1,
             &clips,
             frame_count,
+            Some(ranges),
         )?;
         require(
             scoped.service.project(id).map_err(storage_error)? == sources.project,
@@ -878,7 +1054,8 @@ impl ProductionCoordinator {
             "generation":expected.generation,"revision":expected.revision,
             "frame_count":frame_count,"source_segment_frames":source_segment_frames,"cut_frames":cut_frames,
             "native_render_profile":"lossless-video-only","transport_pcm_audio":false,
-            "native_frame_count_observed":frame_count,"artifact_path":visual.path,
+            "native_frame_count_observed":frame_count,"native_cut_binding_verified":true,
+            "artifact_path":visual.path,
             "artifact_sha256":visual.sha256,"artifact_bytes":visual.bytes,
             "native_job_ref":job,"provider_revision":session.revision,
             "native_operation_returns":originals,"native_edit_returns":edit_receipts,
@@ -1023,6 +1200,7 @@ impl ProductionCoordinator {
             ObservationProfile::MltH264AacMaster,
             &original_inputs,
             frame_count,
+            None,
         )?;
         artifact(output, &visual.descriptor(), &visual.path, MEDIA_MAX_BYTES)?;
         require(
@@ -1064,6 +1242,63 @@ fn unconfirmed_render(error: Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hybrid_native_input_binds_authored_order_and_inclusive_endpoints() {
+        let sources = ["original-mc.mkv", "original-manim.mp4"].map(|path| Artifact {
+            path: path.into(),
+            sha256: "a".repeat(64),
+            bytes: 100,
+        });
+        let chains: String = sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                let id = format!("asset{}", 1 - index);
+                let staged = hex::encode(Sha256::digest(id.as_bytes()));
+                let properties = format!(
+                    r#"<property name="resource">asset-{}.bin</property><property name="semwright:resource_root">output</property><property name="semwright:resource_path">{}</property>"#,
+                    &staged[..24], source.path
+                );
+                format!(
+                    r#"<chain id="{id}">{properties}</chain><chain id="source_{index}">{properties}<property name="semwright:clip_asset">{id}</property></chain>"#
+                )
+            })
+            .collect();
+        let xml = format!(
+            r#"<mlt LC_NUMERIC="C" semwright_normal_form="1"><profile width="1920" height="1080" frame_rate_num="30" frame_rate_den="1"/>{chains}
+<playlist id="lane"><entry producer="source_0" in="0" out="17"/><entry producer="source_1" in="0" out="11"/></playlist>
+<tractor id="track"><track producer="lane" hide="audio"/></tractor>
+<tractor id="sequence" out="29"><property name="semwright:sequence">1</property><track producer="track"/></tractor></mlt>"#
+        );
+        let cuts = [0..18, 18..30];
+        let native_order = json!([sources[1].descriptor(), sources[0].descriptor()]);
+        assert!(verify_authored_cut_input(xml.as_bytes(), &sources, &cuts, &native_order).is_ok());
+        let wrong_order = json!([sources[0].descriptor(), sources[1].descriptor()]);
+        assert!(verify_authored_cut_input(xml.as_bytes(), &sources, &cuts, &wrong_order).is_err());
+        for altered in [
+            xml.replace(r#"entry producer="source_0""#, r#"entry producer="swap""#)
+                .replace(
+                    r#"entry producer="source_1""#,
+                    r#"entry producer="source_0""#,
+                )
+                .replace(r#"entry producer="swap""#, r#"entry producer="source_1""#),
+            xml.replace("out=\"17", "out=\"16")
+                .replace("out=\"11", "out=\"12"),
+            xml.replace("in=\"0\" out=\"17", "in=\"1\" out=\"18"),
+            xml.replace(
+                r#"<entry producer="source_1""#,
+                r#"<blank length="1"/><entry producer="source_1""#,
+            ),
+            xml.replace("hide=\"audio\"", "hide=\"both\""),
+            xml.replacen("asset-", "other-", 1),
+        ] {
+            assert!(
+                verify_authored_cut_input(altered.as_bytes(), &sources, &cuts, &native_order)
+                    .is_err()
+            );
+        }
+    }
+
     #[test]
     fn hybrid_native_staging_roster_rejects_changed_bytes_duplicates_and_substituted_sources() {
         let sources = [
