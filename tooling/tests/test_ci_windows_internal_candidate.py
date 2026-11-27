@@ -210,8 +210,15 @@ class InternalWindowsCandidateTests(unittest.TestCase):
                     "ci-evidence/windows-nsis-smoke.json",
                     "ci-evidence/windows-nsis-cold-relaunch.json",
                 })
-                self.assertIn("if: success()", step)
+                candidate_scope = "if: success() && (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_installed')"
+                self.assertIn(candidate_scope, step)
                 self.assertIn("if-no-files-found: error", step)
+                check = windows.split("      - name: Verify the retained Windows candidate payload\n", 1)[1]
+                check = check.split("      - name: Retain original Windows candidate package\n", 1)[0]
+                self.assertIn(candidate_scope, check)
+                self.assertIn("target/release/bundle/nsis/*-setup.exe", check)
+                self.assertIn("ci-evidence/windows-candidate.json", check)
+                self.assertIn("Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256", check)
             elif "name: motionwright-windows-package-inventory-" in step:
                 self.assertEqual(set(paths), {
                     "ci-evidence/windows-package-inventory/inventory.json",

@@ -2715,10 +2715,26 @@ jobs:
             ci-evidence/windows-nsis-smoke.json
             ci-evidence/windows-nsis-cold-relaunch.json
           if-no-files-found: error
-      # Installed verification retains its original setup for independent inventory.
+      - name: Verify the retained Windows candidate payload
+        if: success() && (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_installed')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $receipt = Get-Content -LiteralPath 'ci-evidence/windows-candidate.json' -Raw | ConvertFrom-Json
+          $originals = @($receipt.artifacts)
+          $installers = @(Get-ChildItem -Path 'target/release/bundle/nsis/*-setup.exe' -File)
+          if ($receipt.candidate.source_revision -cne $env:GITHUB_SHA -or $originals.Count -ne 1 -or $installers.Count -ne 1) {
+            throw 'The Windows candidate requires one installer bound to the current receipt'
+          }
+          $installer = $installers[0]
+          $original = $originals[0]
+          $sha256 = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash
+          if ($installer.Name -cne $original.filename -or $installer.Length -ne $original.bytes -or $sha256 -ine $original.sha256) {
+            throw 'The Windows installer payload differs from the recorded candidate'
+          }
       - name: Retain original Windows candidate package
+        if: success() && (github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'windows_installed')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: success()
         with:
           name: motionwright-windows-candidate
           path: |
