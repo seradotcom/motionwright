@@ -401,10 +401,8 @@ fn platform_runtime() -> Result<BridgeRuntime, String> {
     Err("This installation has no admitted Python 3 and ffprobe runtime for OTIO media verification.".into())
 }
 
-fn check_runtime_before_dispatch() -> Result<(), String> {
-    fixed_runtime()
-        .map(|_| ())
-        .map_err(|error| format!("OTIO bridge preflight unavailable: {error}"))
+fn admit_runtime_before_dispatch() -> Result<BridgeRuntime, String> {
+    fixed_runtime().map_err(|error| format!("OTIO bridge preflight unavailable: {error}"))
 }
 
 fn stage_bridge_sources(temp: &Path) -> Result<(PathBuf, PathBuf), String> {
@@ -421,8 +419,23 @@ fn stage_bridge_sources(temp: &Path) -> Result<(PathBuf, PathBuf), String> {
 
 const UNCERTAIN_BRIDGE_EXIT: &str = "The OTIO process-tree cleanup could not be proven. Do not repeat the operation while its outcome is uncertain.";
 
-fn run_bridge(scripts: &Path, bridge: &Path, arguments: &[OsString]) -> Result<(), String> {
-    let runtime = fixed_runtime()?;
+fn run_bridge(
+    runtime: &BridgeRuntime,
+    scripts: &Path,
+    bridge: &Path,
+    arguments: &[OsString],
+) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        // Unix launches by path. Recheck filesystem protection immediately before launch.
+        let current = fixed_runtime()?;
+        if current.python != runtime.python
+            || current.ffprobe != runtime.ffprobe
+            || current.managed_root != runtime.managed_root
+        {
+            return Err("The installed OTIO runtime changed during preparation.".into());
+        }
+    }
     let stderr = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -444,7 +457,7 @@ fn run_bridge(scripts: &Path, bridge: &Path, arguments: &[OsString]) -> Result<(
 
     #[cfg(unix)]
     {
-        run_bridge_unix(&runtime, &argv, workspace, stderr)
+        run_bridge_unix(runtime, &argv, workspace, stderr)
     }
     #[cfg(windows)]
     {
@@ -697,7 +710,7 @@ pub fn preview(
         &request.edited_file,
         request.received_file.as_deref(),
     )?;
-    check_runtime_before_dispatch()?;
+    let runtime = admit_runtime_before_dispatch()?;
     let bundle = canonical_owner_directory(&request.bundle_path)?;
     let project = service.project(request.project_id).map_err(|_| refused())?;
     if project.generation != request.generation || project.revision != request.revision {
@@ -781,7 +794,7 @@ pub fn preview(
         OsString::from("--output"),
         output.as_os_str().to_owned(),
     ]);
-    run_bridge(&source_dir, &bridge, &arguments)?;
+    run_bridge(&runtime, &source_dir, &bridge, &arguments)?;
     if read_regular_bounded(&bundle.join("source-project.json"), MAX_PROJECT)? != original
         || read_regular_bounded(&bundle.join("bridge-manifest.json"), MAX_PROJECT)? != manifest
         || read_regular_bounded(&bundle.join(&request.edited_file), MAX_PROJECT)? != edited
@@ -1692,7 +1705,7 @@ pub fn export_portable(
     {
         return Err("Portable OTIO media export requires explicit original ownership, media redistribution permission and one bounded scene binding.".into());
     }
-    check_runtime_before_dispatch()?;
+    let runtime = admit_runtime_before_dispatch()?;
     let destination = new_owner_bundle_destination(&request.destination)?;
     let project = service.project(request.project_id).map_err(|_| refused())?;
     if project.generation != request.generation
@@ -1855,7 +1868,7 @@ pub fn export_portable(
         OsString::from("--output"),
         pending.as_os_str().to_owned(),
     ];
-    run_bridge(&source_dir, &bridge, &arguments)?;
+    run_bridge(&runtime, &source_dir, &bridge, &arguments)?;
 
     // Check the actual final bundle and original inputs, not just the
     // process exit code. The bridge alone owns real ffprobe frame checks.
