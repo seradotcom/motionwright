@@ -96,6 +96,8 @@ class Accessibility:
         self.array_type = bind(cf, "CFArrayGetTypeID", C.c_ulong)()
         self.boolean_type = bind(cf, "CFBooleanGetTypeID", C.c_ulong)()
         self.string_type = bind(cf, "CFStringGetTypeID", C.c_ulong)()
+        self.number_type = bind(cf, "CFNumberGetTypeID", C.c_ulong)()
+        self.get_number = bind(cf, "CFNumberGetValue", C.c_ubyte, pointer, C.c_long, pointer)
         self.element_type = bind(ax, "AXUIElementGetTypeID", C.c_ulong)()
         self.array_count = bind(cf, "CFArrayGetCount", index, pointer)
         self.array_item = bind(cf, "CFArrayGetValueAtIndex", pointer, pointer, index)
@@ -212,6 +214,19 @@ class Accessibility:
 
     def text(self, element, name):
         return self.string(self.value(element, name))
+
+    def duration_value(self, element):
+        original = self.value(element, "AXValue")
+        text = self.string(original)
+        if TIMECODE.fullmatch(text):
+            return clock_frames(text)
+        if re.fullmatch(r"[0-9]{1,8}", text) and int(text) < 10_800_000:
+            return int(text)
+        if original and self.type_id(original) == self.number_type:
+            frames = C.c_longlong()
+            if self.get_number(original, 4, C.byref(frames)) and 0 <= frames.value < 10_800_000:
+                return frames.value
+        return None
 
     def flag(self, element, name):
         value = self.value(element, name)
@@ -1024,24 +1039,40 @@ class EditorUI:
         ):
             item = self.menu_item(name, evidence, step(phase), section="Monitor", submenu=submenu)
             evidence.press(step(phase), item)
-        select_video_track(self, evidence, step("select-video-track-one"))
+        v1 = self.await_target(self.video_track_toolbar_button, "exact V1 button in the isolated toolbar")
+        require(evidence.press(step("select-video-track-one"), v1) == 0,
+                "native V1 toolbar did not acknowledge selection")
         item = self.menu_item("Select Clip", evidence, step("select-third"),
                               section="Sequence", submenu="Selection")
         evidence.press(step("select-third"), item)
 
-    def commit_timecode(self, field, value, stage, evidence):
-        self.guard()
-        self.ax.focus(field)
-        self.ax.set_text(field, value)
-        evidence.key(stage + "-commit-clock", 36)
+    def duration_panels(self):
+        return [node for node in self.panels() if self.title(node) in {"duration", "duration - kdenlive"}]
+
+    def resize_selected_end(self, stage, forward_frames, evidence):
+        require(forward_frames in (0, 2), "unexpected navigation for the original one-frame change")
+        # Go to Clip End seeks to the last inclusive frame of the selected clip.
+        # Resize Item End uses the current frame as its exclusive end.
+        item = self.menu_item("Go to Clip End", evidence, stage + "-clip-end",
+                              section="Monitor", submenu="Go To")
+        require(evidence.press(stage + "-clip-end", item) == 0,
+                "the selected clip's end was not acknowledged")
+        for index in range(1, forward_frames + 1):
+            phase = f"{stage}-forward-{index}"
+            item = self.menu_item("Forward 1 Frame", evidence, phase, section="Monitor", submenu="Seek")
+            require(evidence.press(phase, item) == 0, "the forward frame navigation was not acknowledged")
+        item = self.menu_item("Resize Item End", evidence, stage + "-resize-end",
+                              section="Sequence", submenu="Current Item")
+        require(evidence.press(stage + "-resize-end", item) == 0,
+                "resize of the selected clip was not acknowledged")
 
     def duration_controls(self):
         ax = self.ax
-        panels = [node for node in self.panels() if self.title(node) == "duration"]
+        panels = self.duration_panels()
         if len(panels) != 1:
             return None
         candidates = {name: [] for name in DURATION_FIELDS}
-        buttons = {"ok": [], "cancel": []}
+        cancel = []
         for node in self.descend(panels, limit=100, depth_limit=12):
             role, title = ax.text(node, "AXRole"), self.title(node)
             require("resizing in ripple mode" not in title
@@ -1049,17 +1080,16 @@ class EditorUI:
                     "macOS editor duration must apply to exactly one clip without ripple")
             if role in CLOCK_ROLES:
                 components = ax.text(node, "AXIdentifier").split(".")
+                value = ax.duration_value(node)
                 for name in DURATION_FIELDS:
-                    if name in components and TIMECODE.fullmatch(ax.text(node, "AXValue")):
-                        candidates[name].append((role, node))
-            elif role == "AXButton" and title in buttons and ax.enabled(node):
-                buttons[title].append(node)
-        fields = [([node for role, node in records if role == "AXTextField"]
-                   or [node for _, node in records]) for records in candidates.values()]
-        if all(len(matches) == 1 for matches in (*fields, *buttons.values())):
-            position, crop, duration = [matches[0] for matches in fields]
-            values = tuple(clock_frames(ax.text(node, "AXValue")) for node in (position, crop, duration))
-            return duration, buttons["ok"][0], buttons["cancel"][0], values
+                    if name in components and value is not None:
+                        candidates[name].append((role, value))
+            elif role == "AXButton" and title == "cancel" and ax.enabled(node):
+                cancel.append(node)
+        fields = [([value for role, value in records if role == "AXTextField"]
+                   or [value for _, value in records]) for records in candidates.values()]
+        if len(cancel) == 1 and all(len(values) == 1 for values in fields):
+            return cancel[0], tuple(values[0] for values in fields)
         return None
 
     def duration_dialog(self, stage, evidence):
@@ -1068,16 +1098,9 @@ class EditorUI:
         evidence.press(stage + "-open", item)
         return self.await_target(self.duration_controls, "single-clip Duration fields")
 
-    def duration_values(self, expected):
-        def lookup():
-            controls = self.duration_controls()
-            return (controls[3], controls[1]) if controls and controls[3] == expected else None
-        return self.await_target(lookup, "exact requested Duration fields")
-
     def duration_closed(self):
-        self.await_target(lambda: self.top_window() and not any(
-            self.title(panel) == "duration" for panel in self.panels()),
-            "closure of the owned Duration dialog")
+        self.await_target(lambda: self.top_window() and not self.duration_panels(),
+                          "closure of the owned Duration dialog")
 
     def edit_diagnostic(self):
         ax = self.ax
@@ -1093,7 +1116,8 @@ class EditorUI:
                 value = ax.text(element, "AXValue")
                 rows.append({"role": role, "identifier": identifier,
                              "title": ax.text(element, "AXTitle"),
-                             "clock": value if TIMECODE.fullmatch(value) else None})
+                             "clock": value if TIMECODE.fullmatch(value) else None,
+                             "frames": ax.duration_value(element), "actions": ax.actions(element)})
             if len(rows) >= 20:
                 break
         return rows
@@ -1320,29 +1344,23 @@ def observe_video_track_toolbar(ui, evidence, *, configure=False):
 
 
 def refresh_third_playlist(ui, evidence):
-    for stage, before, after, text in (
-        ("shorten", 30, 29, "00:00:00:29"),
-        ("restore", 29, 30, "00:00:01:00"),
-    ):
+    tool = ui.menu_item("Selection Tool", evidence, "selection-tool", section="Tool")
+    require(evidence.press("selection-tool", tool) == 0, "the non-ripple selection tool was not acknowledged")
+    for stage, expected in (("shorten", 30), ("restore", 29), ("verify-restoration", 30)):
         ui.seek_and_select_third_clip(evidence, stage)
-        field, _, _, values = ui.duration_dialog(stage, evidence)
+        cancel, values = ui.duration_dialog(stage, evidence)
         evidence.write(stage + "-model", {"position_crop_duration_frames": values})
-        require(values == (60, 60, before), f"macOS {stage} model does not match the original third clip")
-        ui.commit_timecode(field, text, stage, evidence)
-        requested, okay = ui.duration_values((60, 60, after))
-        require(requested == (60, 60, after), f"macOS {stage} requested fields changed before confirmation")
-        evidence.press(stage + "-accept", okay)
+        require(values == (60, 60, expected), f"macOS {stage} model does not match the original third clip")
+        evidence.press(stage + "-close", cancel)
         ui.duration_closed()
-    ui.seek_and_select_third_clip(evidence, "verify-restoration")
-    _, _, cancel, values = ui.duration_dialog("verify-restoration", evidence)
-    evidence.write("restored-model", {"position_crop_duration_frames": values})
-    require(values == (60, 60, 30), "macOS restored third-clip model differs from the imported model")
-    evidence.press("verify-restoration-close", cancel)
-    ui.duration_closed()
+        if stage != "verify-restoration":
+            # The original end is frame 89. The shortened clip ends at 88;
+            # seeking two frames past 88 restores its exclusive end at 90.
+            ui.resize_selected_end(stage, 0 if stage == "shorten" else 2, evidence)
 
 
 def import_and_save(ui, evidence, original, initial, check_source):
-    ui.prepare_input(evidence)
+    ui.await_target(ui.video_track_toolbar_button, "verified native V1 button before importing")
     item = ui.menu_item("OpenTimelineIO Import", evidence, "import")
     evidence.press("open-import", item)
     field, button = ui.file_panel({"opentimelineio import"}, "Open")
@@ -1358,6 +1376,7 @@ def import_and_save(ui, evidence, original, initial, check_source):
     ui.set_text(field, str(initial))
     require(not initial.exists() and not initial.is_symlink(),
             "macOS initial project path was occupied before Save")
+    check_source()
     evidence.press("save-initial", button)
 
 
@@ -1402,7 +1421,7 @@ def run(owner, context, distribution, observe_editor, *, observe_clock=False,
                        if not key.startswith(("DYLD_", "QT_", "QML", "MLT_"))}
         environment.update({"LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8", "QT_ACCESSIBILITY": "1"})
         override = None
-        if observe_toolbar_override:
+        if not observe_editor or observe_toolbar_override:
             environment, override = prepare_profile(output, environment)
         publish(output / "launch-intent.json", {
             "context": context, "argv": command, "original_executable": binary,
@@ -1460,8 +1479,9 @@ def run(owner, context, distribution, observe_editor, *, observe_clock=False,
                         return {"status": "EDITOR_OBSERVED", "pid": process.pid, "editor_actions": 0}
 
                     def check_source():
-                        require(admitted_source(owner, context, distribution) == (editor, binary, source),
-                                "original editor or source changed")
+                        require(admitted_source(owner, context, distribution) == (editor, binary, source)
+                                and regular_file(Path(override["path"]), 64 * 1024) == override["override"],
+                                "original editor, profile or source changed")
 
                     import_and_save(ui, evidence, original, initial, check_source)
                     saved = wait_project(initial, guard)

@@ -81,12 +81,11 @@ class MacEditorRouteTests(unittest.TestCase):
 
     def test_playlist_model_is_checked_before_each_change_and_after_restore(self):
         ui, evidence = Mock(), Mock()
+        evidence.press.return_value = 0
+        ui.menu_item.return_value = "Selection Tool"
         ui.duration_dialog.side_effect = [
-            ("field", "OK", "Cancel", (60, 60, 30)),
-            ("field", "OK", "Cancel", (60, 60, 29)),
-            ("field", "OK", "Cancel", (60, 60, 30)),
+            ("Cancel", (60, 60, 30)), ("Cancel", (60, 60, 29)), ("Cancel", (60, 60, 30)),
         ]
-        ui.duration_values.side_effect = [((60, 60, 29), "OK"), ((60, 60, 30), "OK")]
 
         editor.refresh_third_playlist(ui, evidence)
 
@@ -96,23 +95,58 @@ class MacEditorRouteTests(unittest.TestCase):
         self.assertEqual(ui.seek_and_select_third_clip.call_args_list, [
             call(evidence, "shorten"), call(evidence, "restore"), call(evidence, "verify-restoration"),
         ])
-        self.assertEqual(ui.commit_timecode.call_args_list, [
-            call("field", "00:00:00:29", "shorten", evidence),
-            call("field", "00:00:01:00", "restore", evidence),
+        self.assertEqual(ui.resize_selected_end.call_args_list, [
+            call("shorten", 0, evidence), call("restore", 2, evidence),
         ])
         self.assertEqual(evidence.press.call_args_list, [
-            call("shorten-accept", "OK"), call("restore-accept", "OK"),
-            call("verify-restoration-close", "Cancel"),
+            call("selection-tool", "Selection Tool"), call("shorten-close", "Cancel"),
+            call("restore-close", "Cancel"), call("verify-restoration-close", "Cancel"),
         ])
 
-    def test_unknown_or_unapplied_trim_never_restores_or_saves(self):
+    def test_unapplied_trim_never_restores_the_clip(self):
         ui, evidence = Mock(), Mock()
-        ui.duration_dialog.side_effect = [("field", "OK", "Cancel", (60, 60, 30))] * 2
-        ui.duration_values.return_value = ((60, 60, 29), "OK")
+        evidence.press.return_value = 0
+        ui.menu_item.return_value = "Selection Tool"
+        ui.duration_dialog.return_value = ("Cancel", (60, 60, 30))
+
         with self.assertRaisesRegex(ValueError, "restore model"):
             editor.refresh_third_playlist(ui, evidence)
-        evidence.press.assert_called_once_with("shorten-accept", "OK")
-        self.assertEqual(ui.commit_timecode.call_count, 1)
+
+        ui.resize_selected_end.assert_called_once_with("shorten", 0, evidence)
+        self.assertEqual(evidence.press.call_args_list, [
+            call("selection-tool", "Selection Tool"), call("shorten-close", "Cancel"),
+        ])
+
+    def test_resize_moves_from_inclusive_clip_end_to_the_exclusive_out_point(self):
+        ui = editor.EditorUI(Mock(), lambda: None)
+        ui.menu_item = Mock(side_effect=["clip end", "forward", "forward", "resize end"])
+        evidence = Mock()
+        evidence.press.return_value = 0
+
+        ui.resize_selected_end("restore", 2, evidence)
+
+        self.assertEqual(ui.menu_item.call_args_list, [
+            call("Go to Clip End", evidence, "restore-clip-end", section="Monitor", submenu="Go To"),
+            call("Forward 1 Frame", evidence, "restore-forward-1", section="Monitor", submenu="Seek"),
+            call("Forward 1 Frame", evidence, "restore-forward-2", section="Monitor", submenu="Seek"),
+            call("Resize Item End", evidence, "restore-resize-end", section="Sequence", submenu="Current Item"),
+        ])
+        self.assertEqual(evidence.press.call_args_list, [
+            call("restore-clip-end", "clip end"), call("restore-forward-1", "forward"),
+            call("restore-forward-2", "forward"), call("restore-resize-end", "resize end"),
+        ])
+        evidence.key.assert_not_called()
+
+    def test_resize_fails_closed_when_navigation_is_uncertain(self):
+        ui = editor.EditorUI(Mock(), lambda: None)
+        ui.menu_item = Mock(return_value="clip end")
+        evidence = Mock()
+        evidence.press.return_value = editor.CANNOT_COMPLETE
+
+        with self.assertRaisesRegex(ValueError, "clip's end was not acknowledged"):
+            ui.resize_selected_end("shorten", 0, evidence)
+
+        evidence.press.assert_called_once_with("shorten-clip-end", "clip end")
 
     def test_observer_uses_the_exact_installation_without_a_source_capsule(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -162,15 +196,14 @@ class MacEditorRouteTests(unittest.TestCase):
 
     def test_third_clip_selection_uses_native_project_navigation_without_a_clock(self):
         ui = editor.EditorUI(Mock(), lambda: None)
-        ui.await_target = Mock(return_value="Project Monitor radio")
+        ui.await_target = Mock(side_effect=["Project Monitor radio", "project-monitor", "V1 AXButton"])
         ui.menu_item = Mock(side_effect=["Sequence effects", "Go to Project End", "Rewind 1 Frame", "Select Clip"])
         ui.project_clock = Mock(side_effect=AssertionError("the Project Monitor clock is hidden"))
         evidence = Mock()
 
-        with patch.object(editor, "select_video_track") as select_track:
-            ui.seek_and_select_third_clip(evidence)
+        evidence.press.return_value = 0
 
-        select_track.assert_called_once_with(ui, evidence, "select-video-track-one")
+        ui.seek_and_select_third_clip(evidence)
         self.assertEqual(ui.menu_item.call_args_list, [
             call("Sequence effects", evidence, "focus-project-monitor", section="Sequence", submenu="Tracks"),
             call("Go to Project End", evidence, "project-end", section="Monitor", submenu="Go To"),
@@ -182,15 +215,16 @@ class MacEditorRouteTests(unittest.TestCase):
             call("focus-project-monitor", "Sequence effects"),
             call("project-end", "Go to Project End"),
             call("rewind-one-frame", "Rewind 1 Frame"),
+            call("select-video-track-one", "V1 AXButton"),
             call("select-third", "Select Clip"),
         ])
         evidence.key.assert_not_called()
 
-    def test_unconfirmed_foreground_stops_before_opening_the_import_menu(self):
+    def test_missing_verified_v1_button_stops_before_opening_the_import_menu(self):
         ui, evidence = Mock(), Mock()
-        ui.prepare_input.side_effect = TimeoutError("focused window unverifiable")
+        ui.await_target.side_effect = TimeoutError("native V1 button unverifiable")
 
-        with self.assertRaisesRegex(TimeoutError, "focused window unverifiable"):
+        with self.assertRaisesRegex(TimeoutError, "native V1 button unverifiable"):
             editor.import_and_save(ui, evidence, Path("timeline.otio"), Path("initial.kdenlive"), Mock())
 
         ui.menu_item.assert_not_called()
