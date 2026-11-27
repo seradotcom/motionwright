@@ -49,7 +49,7 @@ mod hybrid_budget;
 mod hybrid_mlt;
 mod hybrid_owner;
 mod hyperframes;
-pub use hybrid_budget::{HybridNativeSources, HybridSourcePreflight};
+pub use hybrid_budget::{HybridNativeSources, HybridSourcePreflight, PreparedHybridNativeSources};
 pub use hybrid_mlt::{HybridNativeMaster, HybridNativeTimeline};
 mod manim_graph;
 mod manim_graph_profile;
@@ -4127,13 +4127,14 @@ impl ProductionCoordinator {
         let blend_admission = if segments.iter().any(|segment| {
             segment.film.version == semwright_motion_authoring::AUTHORING_BLEND_VERSION
         }) {
-            if self.active_hybrid_budget.is_some() {
-                return Err(Error::new(
-                    ErrorCode::Unsupported,
-                    "Experimental hybrid root has no Film v2 blend admission",
-                ));
-            }
-            Some(self.negotiate_motion_blend(project_id, expected).await?)
+            Some(if let Some(hybrid) = &self.active_hybrid_budget {
+                hybrid
+                    .blend_admission()
+                    .cloned()
+                    .ok_or_else(|| invalid("Hybrid Film v2 lost its prepared provider admission"))?
+            } else {
+                self.negotiate_motion_blend(project_id, expected).await?
+            })
         } else {
             None
         };

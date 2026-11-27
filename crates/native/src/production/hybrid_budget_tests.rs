@@ -891,6 +891,101 @@ fn hybrid_refuses_a_second_manim_scene_before_native_dispatch() {
     assert_eq!(owner.client.execute_calls.load(Ordering::SeqCst), 0);
 }
 
+fn opaque_blend_fixture() -> Fixture {
+    let mut f = fixture();
+    let scene = &f.project.scenes[0];
+    let node = &scene.nodes[0];
+    let mut style = node.style.clone();
+    style.blend_mode = BlendMode::Multiply;
+    let edit = Change::UpdateCanvasStyle {
+        scene_id: scene.id,
+        node_id: node.id,
+        style,
+    };
+    change(&f.service, &mut f.project, "fixture-opaque-blend", edit);
+    f
+}
+
+#[tokio::test]
+async fn hybrid_blend_requires_current_film_v2_discovery_before_a_root() {
+    let f = opaque_blend_fixture();
+    let owner = ProductionCoordinator::new(f.service.clone(), f.connection.clone()).unwrap();
+    let expected = f.project.stamp();
+    let source = owner
+        .preflight_native_hybrid_sources(f.project.id, &expected, f.deliverable, &f.options)
+        .unwrap();
+    assert_eq!(source.frame_count, 180);
+    assert_eq!(source.source_count, 3);
+    assert_eq!(owner.client.execute_calls.load(Ordering::SeqCst), 0);
+
+    let plan = HybridBudgetPlan::build(&owner, f.project.id, &expected, f.deliverable, &f.options)
+        .unwrap();
+    assert!(plan.requires_blend);
+    // The transport witness implements no v2 discovery. It must never see a
+    // productive command or leave an accounting root behind.
+    assert!(owner.discover_hybrid_blend(&plan).await.is_err());
+    assert_eq!(owner.client.execute_calls.load(Ordering::SeqCst), 1);
+    assert!(owner.activate_hybrid_sources(plan, None).is_err());
+    assert!(
+        f.service
+            .production_receipts(f.project.id, 8)
+            .unwrap()
+            .is_empty()
+    );
+    let roots: i64 = rusqlite::Connection::open(f.directory.path().join("hybrid.sqlite3"))
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM production_operation_roots",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(roots, 0);
+    assert_eq!(fs::read_dir(&f.connection.output_root).unwrap().count(), 0);
+}
+
+#[test]
+fn hybrid_blend_admission_is_bound_to_the_prepared_owner() {
+    let f = opaque_blend_fixture();
+    let owner = ProductionCoordinator::new(f.service.clone(), f.connection.clone()).unwrap();
+    let plan = || {
+        HybridBudgetPlan::build(
+            &owner,
+            f.project.id,
+            &f.project.stamp(),
+            f.deliverable,
+            &f.options,
+        )
+        .unwrap()
+    };
+    let mut admission = MotionBlendAdmission {
+        descriptor_sha256: "a".repeat(64),
+        provider_generation: 4,
+        catalog_revision: 2,
+        connection_identity: "different owner".into(),
+    };
+    assert!(
+        owner
+            .activate_hybrid_sources(plan(), Some(admission.clone()))
+            .is_err()
+    );
+    admission.connection_identity = plan().connection_identity;
+    let scoped = owner
+        .activate_hybrid_sources(plan(), Some(admission))
+        .unwrap();
+    assert_eq!(
+        scoped
+            .active_hybrid_budget
+            .as_ref()
+            .unwrap()
+            .blend_admission()
+            .unwrap()
+            .provider_generation,
+        4
+    );
+    assert_eq!(owner.client.execute_calls.load(Ordering::SeqCst), 0);
+}
+
 #[test]
 fn hybrid_shorter_cut_uses_the_exact_saved_wav_and_budget_clock() {
     use RendererKind::{ManimCommunity, MotionCanvas};

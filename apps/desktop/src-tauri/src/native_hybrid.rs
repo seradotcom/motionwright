@@ -324,6 +324,17 @@ pub(crate) async fn render(
         prepare(owner.worker_owner(), state, request.source()).await?;
     owner.begin_phase().map_err(blocked)?;
     let expected = ensure_current(state, &source)?;
+    let prepared = coordinator
+        .prepare_native_hybrid_sources(
+            request.project_id,
+            &expected,
+            request.deliverable_id,
+            &options,
+        )
+        .await
+        .map_err(|error| failure("preflight", true, false, error.message))?;
+    owner.begin_phase().map_err(blocked)?;
+    ensure_current(state, &source)?;
     state
         .effect_grants
         .consume(
@@ -333,9 +344,7 @@ pub(crate) async fn render(
             &request.request_id,
         )
         .map_err(|message| failure("permission", true, false, message))?;
-    let sources = coordinator.realize_native_hybrid_sources(
-        request.project_id, &expected, request.deliverable_id, &options,
-    ).await.map_err(|error| failure("sources", error.outcome_known, true,
+    let sources = prepared.realize().await.map_err(|error| failure("sources", error.outcome_known, true,
         format!("Hybrid sources did not complete ({:?}); inspect the original Jobs before another render.", error.code)))?;
     owner
         .begin_phase()
