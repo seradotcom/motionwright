@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRightLeft, FileCheck2, ShieldAlert } from "lucide-react";
 import type { Change, Project } from "./types";
 import {
-  chooseOtioMediaBundleFolder, exportPortableOtioMediaBundle, OtioBridgePreflightError, previewInstalledOtioMediaCut,
+  checkOtioMediaRuntime, chooseOtioMediaBundleFolder, exportPortableOtioMediaBundle,
+  OtioBridgePreflightError, previewInstalledOtioMediaCut,
   type OtioOriginalMediaExportBinding,
 } from "./api";
 import {
@@ -53,8 +54,10 @@ export default function OtioCutReviewWorkbench({
   const inspectionAttempted=inspectedSelections.current.has(inspectionKey);
   const [error,setError]=useState<string|null>(null);
   const [status,setStatus]=useState<string|null>(null);
+  const [checkingRuntime,setCheckingRuntime]=useState(false);
+  const [runtimeCheck,setRuntimeCheck]=useState<{ok:boolean;message:string}|null>(null);
   const absolute=otioHasAbsoluteAnchors(project);
-  const operationBusy=busy||working||fileLoading||bridgeInspecting||exportingBundle||pickingBundle;
+  const operationBusy=busy||working||fileLoading||bridgeInspecting||exportingBundle||pickingBundle||checkingRuntime;
   useEffect(()=>{
     fileAttempt.current++;
     setSelected(null);setLosses(false);setAnchors(false);
@@ -113,6 +116,18 @@ export default function OtioCutReviewWorkbench({
   const changeBundlePath=(path:string)=>{
     setBundlePath(path);setRaw("");setSelected(null);
     setLosses(false);setAnchors(false);setError(null);setStatus(null);
+  };
+  const checkRuntime=async()=>{
+    if(!desktopMode||operationBusy)return;
+    setCheckingRuntime(true);setRuntimeCheck(null);
+    try{
+      await checkOtioMediaRuntime();
+      setRuntimeCheck({ok:true,message:"Protected Python and ffprobe files passed the runtime check."});
+    }catch(reason){
+      setRuntimeCheck({ok:false,message:reason instanceof Error?reason.message:String(reason)});
+    }finally{
+      setCheckingRuntime(false);
+    }
   };
   const chooseBundleFolder=async()=>{
     if(!desktopMode||operationBusy)return;
@@ -223,6 +238,15 @@ export default function OtioCutReviewWorkbench({
       <span className="status-pill">OWNER REVIEW REQUIRED</span>
     </header>
     <div className="portable-operation">
+    {desktopMode&&<>
+      <button type="button" className="button" disabled={operationBusy}
+        onClick={()=>void checkRuntime()}>
+        {checkingRuntime?"Checking OTIO runtime files…":"Check OTIO runtime files"}
+      </button>
+      {runtimeCheck&&(runtimeCheck.ok
+        ? <p role="status">{runtimeCheck.message}</p>
+        : <p role="alert" className="portable-error">{runtimeCheck.message}</p>)}
+    </>}
     <details className="portable-operation">
       <summary>Create the original media-bound OTIO bundle</summary>
       <p className="portable-runtime-note">

@@ -149,6 +149,8 @@ still `NOT_RUN` until demonstrated on the same source revision.
 
 Open **Deliver → OTIO cut review** in Desktop. Media verification needs an
 administrator-managed Python 3 and ffprobe installation on the same host.
+Choose **Check OTIO runtime files** to check the installation and its
+permissions before selecting media or a destination.
 
 - **Linux** uses the system Python 3 and ffprobe under `/usr/bin`.
 - **Windows** uses `Motionwright\OTIO Runtime` in the system Program Files

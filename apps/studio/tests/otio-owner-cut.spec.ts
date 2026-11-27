@@ -110,7 +110,7 @@ test("explicit loss confirmation does not permit a tampered OTIO scene extension
   await expect(page.getByRole("button",{name:/Commit reviewed OTIO cut/})).toHaveCount(0);
 });
 
-test("a native folder choice preserves the scoped OTIO inspection rules", async ({page}) => {
+test("runtime checks and folder choices preserve the scoped OTIO inspection rules", async ({page}) => {
   const boot = {...structuredClone(fixtureBootstrap), project: structuredClone(project)};
   boot.native_sdk.mode = "tauri";
   await page.addInitScript(({boot}) => {
@@ -118,14 +118,23 @@ test("a native folder choice preserves the scoped OTIO inspection rules", async 
       __TAURI_INTERNALS__: {invoke: (name: string, args?: Record<string, unknown>) => Promise<unknown>};
       __OTIO_INSPECTIONS__: number;
       __OTIO_FOLDER_CHOICES__: number;
+      __OTIO_RUNTIME_CHECKS__: number;
       __OTIO_PREVIEW_GRANTS__: number;
     };
     runtime.__OTIO_INSPECTIONS__ = 0;
     runtime.__OTIO_FOLDER_CHOICES__ = 0;
+    runtime.__OTIO_RUNTIME_CHECKS__ = 0;
     runtime.__OTIO_PREVIEW_GRANTS__ = 0;
     runtime.__TAURI_INTERNALS__ = {invoke: async (name, args) => {
       if (name === "bootstrap" || name === "project_projection_head" || name === "open_project") {
         return window.__SYNTHETIC_PROJECT_READ__(name, args, boot);
+      }
+      if (name === "check_otio_media_runtime") {
+        runtime.__OTIO_RUNTIME_CHECKS__++;
+        if (runtime.__OTIO_RUNTIME_CHECKS__ === 1) {
+          throw "OTIO bridge preflight unavailable: Install protected Python and ffprobe.";
+        }
+        return null;
       }
       if (name === "choose_otio_media_bundle_folder") {
         const request = args?.request as {project_id: string; generation: string; revision: number};
@@ -151,6 +160,13 @@ test("a native folder choice preserves the scoped OTIO inspection rules", async 
     }};
   }, {boot});
   await openStation(page);
+  const check = page.getByRole("button", {name: "Check OTIO runtime files"});
+  await check.click();
+  await expect(page.getByRole("alert").filter({hasText: "Install protected Python and ffprobe."})).toBeVisible();
+  await check.click();
+  await expect(page.getByText("Protected Python and ffprobe files passed the runtime check.")).toBeVisible();
+  expect(await page.evaluate(() => Reflect.get(window, "__OTIO_INSPECTIONS__"))).toBe(0);
+  expect(await page.evaluate(() => Reflect.get(window, "__OTIO_PREVIEW_GRANTS__"))).toBe(0);
   const folder = page.getByLabel("Original OTIO media bundle folder");
   await folder.fill("/owner/original-bundle");
   const chooser = page.getByRole("button", {name: "Choose OTIO bundle folder"});

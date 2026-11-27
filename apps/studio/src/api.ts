@@ -621,6 +621,13 @@ export interface InstalledOtioCutPreview {
   project_modified: false;
 }
 
+/** Check the fixed system runtime files without launching a decoder. */
+export async function checkOtioMediaRuntime(): Promise<void> {
+  if (!isTauri()) throw new Error("Checking OTIO runtime files requires Motionwright desktop.");
+  const result = await invoke<unknown>("check_otio_media_runtime").catch(rethrowOtioBridgeError);
+  if (result !== null) throw new Error("The OTIO runtime check returned an invalid result.");
+}
+
 /** Choose a local folder without opening the bundle or requesting an effect grant. */
 export async function chooseOtioMediaBundleFolder(project: Project): Promise<string | null> {
   if (!isTauri()) throw new Error("Choosing an OTIO bundle folder requires Motionwright desktop.");

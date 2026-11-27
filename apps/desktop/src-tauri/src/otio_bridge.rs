@@ -401,6 +401,10 @@ fn platform_runtime() -> Result<BridgeRuntime, String> {
     Err("This installation has no admitted Python 3 and ffprobe runtime for OTIO media verification.".into())
 }
 
+pub(super) fn check_runtime_files() -> Result<(), String> {
+    admit_runtime_before_dispatch().map(drop)
+}
+
 fn admit_runtime_before_dispatch() -> Result<BridgeRuntime, String> {
     fixed_runtime().map_err(|error| format!("OTIO bridge preflight unavailable: {error}"))
 }
@@ -1363,6 +1367,11 @@ mod tests {
         }
         let _restore_runtime = RestoreRuntime;
         RUNTIME_UNAVAILABLE.set(true);
+        assert!(
+            check_runtime_files()
+                .unwrap_err()
+                .starts_with("OTIO bridge preflight unavailable:")
+        );
         let root = tempfile::tempdir().unwrap();
         let service = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
         let initial = service.create_project("OTIO runtime preflight").unwrap();

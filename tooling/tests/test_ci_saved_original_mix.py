@@ -679,10 +679,10 @@ commands.deny = ["bootstrap"]
                                          {"test": "original Git inventory; no Native effects"})
 
     def test_source_roster_and_independent_provider_byte_expectations(self):
-        # Exact reviewed 101-command local owner surface. The separate
+        # Exact 106-command local owner surface. The separate
         # registration/capability test compares every command identity.
-        self.assertEqual(len(self.policy), 101)
-        self.assertEqual(sum(map(len, self.policy.values())), 45486)
+        self.assertEqual(len(self.policy), 106)
+        self.assertEqual(sum(map(len, self.policy.values())), 47838)
         self.assertEqual(self.policy[gate.GENERATED_PERMISSION_ROOT + "bootstrap.toml"], self.BOOTSTRAP)
         self.assertEqual(hashlib.sha256(self.BOOTSTRAP).hexdigest(),
                          "e249330f5e035d21dbf7ed00caa59fd1795c8f9500d4e5c5da7d8f989eb21c3e")
@@ -714,7 +714,9 @@ commands.deny = ["bootstrap"]
         # missing from the installed app's generated/local capability roster.
         for command in ("semantic_graph_operation_recovery", "export_native_capsule_source",
                         "export_otio_source_snapshot", "export_portable_otio_media_bundle",
-                        "preview_otio_media_cut", "native_hybrid_preflight",
+                        "check_otio_media_runtime", "choose_otio_media_bundle_folder",
+                        "preview_otio_media_cut", "choose_portable_project_source",
+                        "hyperframes_render_history", "native_hybrid_preflight",
                         "render_native_hybrid_master"):
             signature = re.search(r"fn\s+" + command + r"\s*\((.*?)\)\s*->", main, re.DOTALL)
             self.assertIsNotNone(signature, command)

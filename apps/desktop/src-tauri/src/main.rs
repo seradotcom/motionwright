@@ -4097,6 +4097,16 @@ async fn export_portable_otio_media_bundle(
 }
 
 #[tauri::command]
+async fn check_otio_media_runtime(mut owner: desktop_owner::OwnerInvocation) -> Result<(), String> {
+    let result =
+        desktop_owner::spawn_blocking(owner.worker_owner(), otio_bridge::check_runtime_files)
+            .await
+            .map_err(|_| "The OTIO runtime check did not finish.".to_string())?;
+    owner.begin_phase()?;
+    result
+}
+
+#[tauri::command]
 async fn choose_otio_media_bundle_folder(
     mut owner: desktop_owner::OwnerInvocation,
     app: tauri::AppHandle,
@@ -4987,6 +4997,7 @@ fn main() {
             export_otio,
             export_otio_source_snapshot,
             export_portable_otio_media_bundle,
+            check_otio_media_runtime,
             choose_otio_media_bundle_folder,
             preview_otio_media_cut,
             choose_portable_project_source,
