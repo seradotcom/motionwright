@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import ctypes as C
 import json
-import math
 import os
 from pathlib import Path
 import platform
@@ -111,8 +110,6 @@ class Accessibility:
         self.copy_value = bind(ax, "AXUIElementCopyAttributeValue", integer, pointer, pointer,
                                out_pointer)
         self.copy_actions = bind(ax, "AXUIElementCopyActionNames", integer, pointer, out_pointer)
-        self.copy_at_position = bind(ax, "AXUIElementCopyElementAtPosition", integer, pointer,
-                                     C.c_float, C.c_float, out_pointer)
         self.set_value = bind(ax, "AXUIElementSetAttributeValue", integer, pointer, pointer, pointer)
         self.settable = bind(ax, "AXUIElementIsAttributeSettable", integer, pointer, pointer,
                              C.POINTER(C.c_ubyte))
@@ -173,10 +170,6 @@ class Accessibility:
         if count > MAX_AX_CHILDREN:
             return ()
         return tuple(self.array_item(value, position) for position in range(count))
-
-    def hit_test(self, point):
-        found = C.c_void_p()
-        return self.capture(self.copy_at_position(self.system, *point, C.byref(found)), found)
 
     def children(self, element, name="AXChildren"):
         return tuple(child for child in self.array(self.value(element, name))
@@ -488,10 +481,14 @@ class EditorUI:
         return {"outline_matches": 1, "identifier": ax.text(outline, "AXIdentifier"),
                 "row_counts": counts, "nodes": nodes, "placeholders": placeholders}
 
-    def command_result(self, title):
-        observed = self.command_outline()
-        for role in ("AXCell", "AXText", "AXStaticText", "AXRow"):
+    def command_result(self, title, observed=None):
+        if observed is None:
+            observed = self.command_outline()
+        if observed["row_counts"].get("AXRows") != 1:
+            return None
+        for role in ("AXCell", "AXGroup", "AXText", "AXStaticText"):
             rows = [node for node in observed["nodes"] if node["role"] == role
+                    and node["parent_role"] == "AXRow"
                     and title in (node["title"], node["value"], node["description"])]
             if rows:
                 return {**rows[0], "title": title} if len(rows) == 1 else None
@@ -501,44 +498,31 @@ class EditorUI:
         ax = self.ax
         require(command["enabled"] and command["title"] == "Select Video Track 1"
                 and command["parent_role"] == "AXRow", "macOS V1 command is not the owned result cell")
-        position, size = command["position"], command["size"]
-        require(position and size and all(math.isfinite(number) for number in (*position, *size))
-                and min(size) > 4, "macOS V1 command has no usable cell geometry")
-        point = tuple(origin + length / 2 for origin, length in zip(position, size))
 
-        def hit_is_command():
-            if not self.focused_window():
+        def focused_single_command():
+            observed = self.command_outline()
+            actual = self.command_result(command["title"], observed)
+            if not actual or not actual["enabled"] or actual["identifier"] != command["identifier"]:
                 return False
-            hit = ax.hit_test(point)
-            if not self.belongs_to_command_bar(hit):
-                return False
-            if ax.text(hit, "AXRole") == "AXRow":
-                candidates = ax.children(hit)
-            else:
-                candidates = (hit,)
-            return any(
-                ax.owns(node) and ax.enabled(node)
-                and command["title"] in (ax.text(node, "AXTitle"), ax.text(node, "AXValue"),
-                                          ax.text(node, "AXDescription"))
-                and ax.pair(node, "AXPosition", 1) == tuple(position)
-                and ax.pair(node, "AXSize", 2) == tuple(size)
-                for node in candidates
-            )
+            field = self.command_filter()
+            return bool(field and ax.text(field, "AXValue") == command["title"] and self.focused_window())
 
         self.note_foreground(evidence, stage + "-before")
-        same_cell = hit_is_command()
-        evidence.write(stage + "-hit-test", {
-            "pid": ax.pid, "point": point, "exact_command_cell": bool(same_cell), "command": command,
+        require(focused_single_command(), "macOS V1 command is no longer the single filtered row")
+        # KCommandBar's textChanged handler sets currentIndex to the first filtered row.
+        # AXSelectedRows is not exposed in this Qt backend; require that exact one-row filter.
+        evidence.write(stage + "-selection", {
+            "pid": ax.pid, "command": command["title"], "rows": 1,
+            "selection_observation": "first_index_after_fresh_KCommandBar_filter",
         })
-        require(same_cell, "macOS V1 command cell failed the system hit-test")
-        evidence.click(stage, point, hit_is_command)
+        evidence.key(stage, 36, session=True, revalidate=focused_single_command)
 
         def closed():
             focused, main = self.focused_window(), self.top_window()
             return (focused and ax.owns(main) and ax.equal(focused, main)
                     and not any(self.command_bar_nodes()))
 
-        self.await_target(closed, "KCommandBar closed after clicking the exact video-track command")
+        self.await_target(closed, "KCommandBar closed after confirming the exact video-track command")
         self.note_foreground(evidence, stage + "-after")
         evidence.write(stage + "-acknowledged", {"pid": ax.pid, "command": command["title"],
                                                 "command_bar_closed": True})
@@ -812,40 +796,30 @@ class Evidence:
         require(status in (0, CANNOT_COMPLETE), f"macOS {stage} AX action failed ({status})")
 
 
-    def click(self, stage, point, revalidate):
-        self.guard()
-        ax = self.ax
-        require(ax.event_access(), "macOS V1 click admission failed")
-        create = bind(ax.graphics, "CGEventCreateMouseEvent", C.c_void_p, C.c_void_p,
-                      C.c_uint32, Pair, C.c_uint32)
-        post = bind(ax.graphics, "CGEventPost", None, C.c_uint32, C.c_void_p)
-        down = create(None, 1, Pair(*point), 0)
-        up = create(None, 2, Pair(*point), 0)
-        try:
-            require(down and up, "could not create a macOS single left click")
-            self.write(stage + "-intent", {"pid": ax.pid, "point": point, "clicks": 1})
-            self.guard()
-            require(ax.event_access() and revalidate(), "macOS V1 cell changed before click")
-            post(0, down)
-            post(0, up)
-            self.write(stage + "-terminal", {"pid": ax.pid, "delivery_requested_once": True})
-        finally:
-            for event in (down, up):
-                if event:
-                    ax.release(event)
-
-    def key(self, stage, code):
+    def key(self, stage, code, *, session=False, revalidate=None):
         self.guard()
         require(self.ax.event_access(), "macOS editor keyboard event admission changed")
+        require(not session or (code == 36 and revalidate is not None),
+                "session input requires a fresh exact KCommandBar Return target")
         graphics = self.ax.graphics
         create = bind(graphics, "CGEventCreateKeyboardEvent", C.c_void_p, C.c_void_p, C.c_uint16, C.c_bool)
-        post = bind(graphics, "CGEventPostToPid", None, C.c_int, C.c_void_p)
+        if session:
+            post = bind(graphics, "CGEventPost", None, C.c_uint32, C.c_void_p)
+            destination = 0  # kCGHIDEventTap for the guarded focused test session
+        else:
+            post = bind(graphics, "CGEventPostToPid", None, C.c_int, C.c_void_p)
+            destination = self.ax.pid
         down, up = create(None, code, True), create(None, code, False)
         try:
             require(down and up, "macOS Kdenlive key event creation failed")
-            self.write(stage + "-intent", {"pid": self.ax.pid, "virtual_key": code})
-            post(self.ax.pid, down)
-            post(self.ax.pid, up)
+            self.write(stage + "-intent", {"pid": self.ax.pid, "virtual_key": code,
+                                           "delivery": "foreground_session" if session else "pid"})
+            if session:
+                self.guard()
+                require(revalidate() and self.ax.event_access(),
+                        "macOS KCommandBar focus, exact row or input admission changed before Return")
+            post(destination, down)
+            post(destination, up)
             self.write(stage + "-terminal", {"pid": self.ax.pid, "delivery_requested_once": True})
         finally:
             for event in (down, up):
@@ -879,6 +853,7 @@ def find_video_track_action(ui, evidence, stage):
     item = ui.menu_item("Find Action", evidence, stage, section="Help")
     evidence.press("open-" + stage, item)
     field = ui.await_target(ui.command_filter, "focused KCommandBar filter")
+    require(ui.ax.text(field, "AXValue") == "", "macOS V1 command needs a fresh empty KCommandBar filter")
     ui.set_text(field, name)
     evidence.write(stage + "-filter", {"value": name, "editor_pid": ui.ax.pid})
     try:

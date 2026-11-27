@@ -198,6 +198,7 @@ class MacEditorRouteTests(unittest.TestCase):
 
     def test_command_probe_filters_the_real_action_without_invoking_it(self):
         ui, evidence = Mock(), Mock()
+        ui.ax.text.return_value = ""
         ui.menu_item.return_value = "Find Action"
         ui.await_target.side_effect = ["command filter", {"role": "AXCell", "title": "Select Video Track 1"}]
 
@@ -211,6 +212,7 @@ class MacEditorRouteTests(unittest.TestCase):
 
     def test_command_probe_preserves_outline_state_when_the_exact_row_is_unavailable(self):
         ui, evidence = Mock(), Mock()
+        ui.ax.text.return_value = ""
         ui.await_target.side_effect = ["command filter", TimeoutError("command did not resolve")]
         ui.command_outline.return_value = {"row_counts": {"AXRows": 0}, "nodes": []}
 
@@ -222,6 +224,7 @@ class MacEditorRouteTests(unittest.TestCase):
 
     def test_empty_editor_probe_confirms_the_exact_command_once_without_import(self):
         ui, evidence = Mock(), Mock()
+        ui.ax.text.return_value = ""
         command = {"role": "AXCell", "title": "Select Video Track 1"}
         ui.await_target.side_effect = ["command filter", command]
         result = editor.observe_video_track_action(ui, evidence, activate=True)
@@ -232,12 +235,24 @@ class MacEditorRouteTests(unittest.TestCase):
 
     def test_track_selection_cannot_continue_after_an_unacknowledged_command(self):
         ui, evidence = Mock(), Mock()
+        ui.ax.text.return_value = ""
         command = {"role": "AXCell", "title": "Select Video Track 1"}
         ui.await_target.side_effect = ["command filter", command]
         ui.invoke_command.side_effect = TimeoutError("command bar remained open")
         with self.assertRaisesRegex(TimeoutError, "remained open"):
             editor.select_video_track(ui, evidence, "track")
         ui.invoke_command.assert_called_once_with(command, evidence, "track")
+
+    def test_track_command_needs_a_fresh_filter_change_before_confirming(self):
+        ui, evidence = Mock(), Mock()
+        ui.await_target.return_value = "filter"
+        ui.ax.text.return_value = "Select Video Track 1"
+
+        with self.assertRaisesRegex(ValueError, "fresh"):
+            editor.select_video_track(ui, evidence, "verify-track")
+
+        ui.set_text.assert_not_called()
+        ui.invoke_command.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()
