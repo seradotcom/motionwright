@@ -701,6 +701,21 @@ impl Store {
         Ok(rows)
     }
 
+    /// Compare two original receipts in the same verified SQLite snapshot.
+    pub fn production_receipt_committed_before(
+        &self,
+        project_id: Uuid,
+        earlier: Uuid,
+        later: Uuid,
+    ) -> Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        super::validate_production_receipt_order_integrity(&tx, Some(project_id))?;
+        let ordered =
+            receipt_anchor(&tx, project_id, earlier)? < receipt_anchor(&tx, project_id, later)?;
+        tx.commit()?;
+        Ok(ordered)
+    }
+
     pub fn latest_production_receipt(
         &self,
         project_id: Uuid,

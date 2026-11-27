@@ -81,9 +81,8 @@ function StateMark({ state }: { state: ProductionJobState }) {
 }
 
 function canCloseMlt(job: ProductionJobProjection): boolean {
-  return job.provider === "driver:mlt-video" && job.applicability === "current"
-    && job.state === "succeeded" && job.result_available
-    && job.root_request_id.endsWith(":mlt:render-start");
+  return job.mlt_closure !== undefined && job.provider === "driver:mlt-video"
+    && job.applicability === "current" && job.state === "succeeded" && job.result_available;
 }
 
 const mltCloseLabels: Record<MltCloseDisposition, string> = {
@@ -144,15 +143,13 @@ function JobRow({
             </button>
           )}
         {desktopMode && onCloseMlt && canCloseMlt(job) && (
-          <>
-            <button type="button" className="button compact"
-              disabled={closeBusy || (closure !== undefined && closure !== "confirmation_unavailable")}
-              onClick={() => onCloseMlt(job)}>
-              {closeBusy ? "Waiting for Broker…" : "Request MLT project closure"}
-            </button>
-            {closure && <span role="status" className="job-secondary-state">{mltCloseLabels[closure]}</span>}
-          </>
+          <button type="button" className="button compact"
+            disabled={closeBusy || (closure !== undefined && closure !== "confirmation_unavailable")}
+            onClick={() => onCloseMlt(job)}>
+            {closeBusy ? "Waiting for Broker…" : "Request MLT project closure"}
+          </button>
         )}
+        {closure && <span role="status" className="job-secondary-state">{mltCloseLabels[closure]}</span>}
         {ownerObservation && (
           <span role="status" aria-label="Original native job status observation"
             className="job-secondary-state">
@@ -442,8 +439,16 @@ export default function ProductionJobsWorkspace({
     }
   }
 
+  function closureFor(job: ProductionJobProjection): MltCloseDisposition | undefined {
+    const local = closures[productionJobKey(project.id, job)];
+    const retained = job.mlt_closure?.disposition ?? undefined;
+    return local && local !== "confirmation_unavailable" ? local : retained ?? local;
+  }
+
   async function requestMltClosure(job: ProductionJobProjection) {
+    const disposition = closureFor(job);
     if (!desktopMode || historyOpen || !canCloseMlt(job) || activeMltClose.current
+        || (disposition !== undefined && disposition !== "confirmation_unavailable")
         || job.generation !== project.generation || job.revision !== project.revision) return;
     const scoped = historyKey;
     const key = productionJobKey(project.id, job);
@@ -681,7 +686,7 @@ export default function ProductionJobsWorkspace({
               ownerObservation={originalStatusFor(job)}
               onCloseMlt={historyOpen ? undefined : (entry) => { void requestMltClosure(entry); }}
               closeBusy={closeBusy}
-              closure={closures[productionJobKey(project.id, job)]}
+              closure={closureFor(job)}
               onReadOriginalStatus={(entry) => { void readOwnerOriginal(entry); }}
             />)}
           </div>

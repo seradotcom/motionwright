@@ -68,6 +68,8 @@ pub struct ProductionJobProjection {
     pub artifact_available: bool,
     pub result_available: bool,
     pub last_observation: ProductionObservationState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mlt_closure: Option<crate::MltClosureProjection>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -407,6 +409,7 @@ pub(crate) fn derive_production_jobs_all(
                         artifact_available: false,
                         result_available: false,
                         last_observation: ProductionObservationState::Observed,
+                        mlt_closure: None,
                     },
                 )
             });
@@ -487,7 +490,9 @@ pub(crate) fn derive_production_jobs_all(
         }
     }
 
+    let mlt_closures = crate::mlt_cleanup::MltClosures::new(receipts_in_commit_order);
     for (_, job) in jobs.values_mut() {
+        job.mlt_closure = mlt_closures.for_job(job);
         job.applicability =
             if job.generation == current_generation && job.revision == current_revision {
                 ProductionJobApplicability::Current
@@ -544,6 +549,159 @@ mod tests {
                 }
             }
         })
+    }
+
+    #[test]
+    fn mlt_closure_restores_only_the_original_attempt_in_commit_order() {
+        use crate::MltCloseDisposition;
+        use sha2::{Digest, Sha256};
+        let generation = Uuid::now_v7();
+        let revision = 7;
+        let time = "2026-10-12T18:00:00Z";
+        let start_request = "take:mlt:render-start";
+        let result_request = "take:mlt:render-result";
+        let start_command = "driver.mlt-video.render.start";
+        let result_command = "driver.mlt-video.render.result";
+        let source = json!({
+            "schema":"motionwright.mlt-timeline-source/1",
+            "connection_identity":"d".repeat(64),"project_ref":format!("video:{}", "a".repeat(32)),
+            "job":"render:take","provider_generation":7,"profile":"lossless-video-only",
+            "semantic_revision":"a".repeat(64), "output":"original.mkv",
+        });
+        let start_intent = receipt(
+            generation,
+            revision,
+            start_request,
+            start_command,
+            "dispatching",
+            json!({"connection":source["connection_identity"],"mutation":true}),
+            time,
+        );
+        let mut response = wrapped_job("render:take", "running", false);
+        response["result"]["data"]["project_revision"] = source["semantic_revision"].clone();
+        response["result"]["data"]["output"] = source["output"].clone();
+        response["result"]["data"]["profile"] = source["profile"].clone();
+        response["result"]["provenance_checked"] = json!(true);
+        response["result"]["execution"] = json!({
+            "dry_run":false,"backend":"driver:mlt-video","provenance":{
+                "provider":"driver:mlt-video","execution_provider":"driver:mlt-video",
+                "source":"driver","untrusted_metadata":true,"provider_generation":7,"descriptor_sha256":"b".repeat(64),
+            },
+        });
+        let start = receipt(
+            generation,
+            revision,
+            start_request,
+            start_command,
+            "completed",
+            response.clone(),
+            time,
+        );
+        let mut result_intent = receipt(
+            generation,
+            revision,
+            result_request,
+            result_command,
+            "dispatching",
+            json!({"connection":source["connection_identity"],"job_ref":"render:take",
+                "mlt_timeline_source":source,"mutation":false}),
+            time,
+        );
+        result_intent.request_sha256 = hex::encode(Sha256::digest(
+            serde_json::to_vec(&(result_command, json!({"job":"render:take"}))).unwrap(),
+        ));
+        let mut result = result_intent.clone();
+        result.id = Uuid::now_v7();
+        result.stage = "completed".into();
+        response["result"]["data"]["state"] = json!("succeeded");
+        response["result"]["data"]["error"] = Value::Null;
+        response["result"]["data"]["artifact"] = json!({
+            "root":"output","path":"original.mkv","sha256":"c".repeat(64),"bytes":14,
+        });
+        result.payload["result"] = response["result"].clone();
+
+        let stamp = motionwright_domain::RevisionStamp {
+            resource: format!("project:{}", Uuid::nil()),
+            generation,
+            revision,
+        };
+        let canonical = crate::retained_mlt_close(
+            Uuid::nil(),
+            &stamp,
+            start_request,
+            &[&start_intent, &start],
+            &[&result_intent, &result],
+        )
+        .unwrap();
+        let mut intent = receipt(
+            generation,
+            revision,
+            &canonical.request_id,
+            "driver.mlt-video.project.close",
+            "dispatching",
+            json!({
+                "mutation":true,"result_receipt":result.id,"start_request":start_request,"native_source":source,
+            }),
+            time,
+        );
+        intent.request_sha256 = canonical.request_sha256;
+        let mut done = intent.clone();
+        done.id = Uuid::nil(); // The terminal follows the intent only in SQLite order.
+        done.stage = "completed".into();
+        done.payload["result"] = json!({
+            "data":{"closed":true},
+            "execution":{"policy_decision":"allow_after_confirmation","provenance":{"provider_generation":7}},
+            "provider_bound":{"original":{"execution":{"policy_decision":"allow_after_confirmation"}}}
+        });
+
+        let incomplete =
+            derive_production_jobs_all(&[start.clone(), result.clone()], generation, revision);
+        assert!(incomplete[0].mlt_closure.is_none());
+        let prefix = [start_intent, start, result_intent, result];
+        let status = |tail: &[ProductionReceipt]| {
+            let log = prefix.iter().chain(tail).cloned().collect::<Vec<_>>();
+            derive_production_jobs_all(&log, generation, revision)[0]
+                .mlt_closure
+                .unwrap()
+                .disposition
+        };
+        assert_eq!(status(&[]), None);
+        assert_eq!(
+            status(std::slice::from_ref(&intent)),
+            Some(MltCloseDisposition::OutcomeUnknown)
+        );
+        assert_eq!(
+            status(std::slice::from_ref(&done)),
+            Some(MltCloseDisposition::OutcomeUnknown)
+        );
+        assert_eq!(
+            status(&[intent.clone(), done.clone()]),
+            Some(MltCloseDisposition::Closed)
+        );
+        let mut refused = done.clone();
+        refused.stage = "failed_known".into();
+        refused.payload["error"] = json!({"code":"PolicyDenied","operator_refused":true});
+        let mut unauthorized_retry = intent.clone();
+        unauthorized_retry.request_id = format!("{}:after:{}", intent.request_id, refused.id);
+        assert_eq!(
+            status(&[intent.clone(), refused, unauthorized_retry]),
+            Some(MltCloseDisposition::Refused)
+        );
+        let mut arbitrary = done.clone();
+        arbitrary.request_id = "foreign-close-request".into();
+        assert_eq!(status(std::slice::from_ref(&arbitrary)), None);
+        let mut foreign = done.clone();
+        foreign.payload["native_source"]["job"] = json!("render:foreign");
+        assert_eq!(
+            status(&[intent.clone(), foreign]),
+            Some(MltCloseDisposition::OutcomeUnknown)
+        );
+        done.payload["result"]["provider_bound"]["original"]["execution"]["policy_decision"] =
+            json!("allow");
+        assert_eq!(
+            status(&[intent, done]),
+            Some(MltCloseDisposition::OutcomeUnknown)
+        );
     }
 
     #[test]

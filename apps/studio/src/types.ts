@@ -441,6 +441,7 @@ export interface ProductionJobProjection {
   artifact_available: boolean;
   result_available: boolean;
   last_observation: ProductionObservationState;
+  mlt_closure?: { disposition: MltCloseDisposition | null };
 }
 
 /** Read-only source-scoped lifecycle receipt inventory, never evidence

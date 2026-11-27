@@ -228,6 +228,7 @@ mod tests {
             artifact_available: false,
             result_available: false,
             last_observation: motionwright_service::ProductionObservationState::OutcomeUnknown,
+            mlt_closure: None,
         };
         (project, job, start)
     }

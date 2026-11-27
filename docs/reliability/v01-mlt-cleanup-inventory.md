@@ -20,7 +20,7 @@ The existing pinned native MLT 33-frame CI now additionally compares this read-o
 
 Select **Request MLT project closure** on the successful job in Jobs. Use the original production connection with its MLT provider and output workspace still active. The owner’s Broker policy must allow the bound transport command `providers.execute_bound` and read access to the existing output mount. Run the Broker with its foreground approval console and answer its original challenge there while the provider binding is still active. The binding expires 60 seconds after it is created.
 
-Motionwright binds the saved job and exact output to the original native project generation and semantic revision. The app records a single-use dispatch in SQLite before requesting closure. A confirmed closure releases the in-memory native project. The rendered media stays available. A declined request or a request with an uncertain outcome remains fenced across reopening. If the Broker definitively reports that confirmation was unavailable, a new explicit request can use the same original project after the console is available.
+Motionwright binds the saved job and exact output to the original native project generation and semantic revision. The app records a single-use dispatch in SQLite before requesting closure. A confirmed closure releases the in-memory native project. The rendered media stays available. Jobs shows the saved disposition after reopening. A declined request or a request with an uncertain outcome remains fenced. If the Broker definitively reports that confirmation was unavailable, a new explicit request can use the same original project after the console is available.
 
 Real foreground closure verification remains open in issue #91.
 

@@ -39,7 +39,10 @@ pub use jobs::{
     ProductionJobApplicability, ProductionJobProgress, ProductionJobProjection, ProductionJobState,
     ProductionObservationState,
 };
-pub use mlt_cleanup::MltCleanupInventory;
+pub use mlt_cleanup::{
+    MltCleanupInventory, MltCloseDisposition, MltClosureProjection, OriginalMltTimeline,
+    mlt_close_receipt_disposition, mlt_result_request, retained_mlt_close,
+};
 pub use models::{
     ModelContextDisclosure, ModelProviderKind, ModelRequestDraft, ModelRequestPreflight,
 };
@@ -1277,6 +1280,17 @@ impl StudioService {
         self.store
             .lock()
             .original_production_receipt_pair(project_id, request_id)
+    }
+
+    pub fn production_receipt_committed_before(
+        &self,
+        project_id: Uuid,
+        earlier: Uuid,
+        later: Uuid,
+    ) -> StorageResult<bool> {
+        self.store
+            .lock()
+            .production_receipt_committed_before(project_id, earlier, later)
     }
 
     pub fn latest_production_receipt(

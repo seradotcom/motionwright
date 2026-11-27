@@ -4,14 +4,444 @@
 //! Broker, issues grants, closes provider projects or fabricates liveness.
 //! In particular, even a completed project.close cannot be promoted to a
 //! VERIFIED cleanup without separate foreground Broker consent evidence.
-use motionwright_domain::Project;
+use motionwright_domain::{Project, RevisionStamp};
 use motionwright_storage::{ProductionReceipt, ProductionReceiptWatermark};
-use serde::Serialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 const SCHEMA: &str = "motionwright.v01-mlt-cleanup-inventory/1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MltCloseDisposition {
+    Closed,
+    ConfirmationUnavailable,
+    Refused,
+    OutcomeUnknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MltClosureProjection {
+    pub disposition: Option<MltCloseDisposition>,
+}
+
+pub fn mlt_close_receipt_disposition(receipt: &ProductionReceipt) -> MltCloseDisposition {
+    let payload = &receipt.payload;
+    let generation = payload
+        .pointer("/native_source/provider_generation")
+        .and_then(Value::as_u64);
+    match receipt.stage.as_str() {
+        "completed"
+            if generation.is_some()
+                && payload
+                    .pointer("/result/execution/provenance/provider_generation")
+                    .and_then(Value::as_u64)
+                    == generation
+                && payload
+                    .pointer("/result/data/closed")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                && payload
+                    .pointer("/result/execution/policy_decision")
+                    .and_then(Value::as_str)
+                    == Some("allow_after_confirmation")
+                && payload
+                    .pointer("/result/provider_bound/original/execution/policy_decision")
+                    .and_then(Value::as_str)
+                    == Some("allow_after_confirmation") =>
+        {
+            MltCloseDisposition::Closed
+        }
+        "failed_known"
+            if payload.pointer("/error/code").and_then(Value::as_str) == Some("PolicyDenied")
+                && payload
+                    .pointer("/error/operator_refused")
+                    .and_then(Value::as_bool)
+                    == Some(true) =>
+        {
+            MltCloseDisposition::Refused
+        }
+        "failed_known"
+            if payload.pointer("/error/code").and_then(Value::as_str)
+                == Some("ConsentRequired") =>
+        {
+            MltCloseDisposition::ConfirmationUnavailable
+        }
+        _ => MltCloseDisposition::OutcomeUnknown,
+    }
+}
+
+const START_COMMAND: &str = "driver.mlt-video.render.start";
+const RESULT_COMMAND: &str = "driver.mlt-video.render.result";
+const CLOSE_COMMAND: &str = "driver.mlt-video.project.close";
+const START_SUFFIX: &str = ":mlt:render-start";
+const RESULT_SUFFIX: &str = ":mlt:render-result";
+const TIMELINE_SOURCE: &str = "mlt_timeline_source";
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OriginalMltTimeline {
+    schema: String,
+    pub connection_identity: String,
+    pub project_ref: String,
+    pub semantic_revision: String,
+    pub provider_generation: u64,
+    job: String,
+    pub output: String,
+    profile: String,
+}
+
+pub struct RetainedMltClose {
+    pub source: OriginalMltTimeline,
+    pub result_id: Uuid,
+    pub artifact_sha256: String,
+    pub artifact_bytes: u64,
+    pub request_id: String,
+    pub request_sha256: String,
+}
+
+fn digest(command: &str, args: &Value) -> Option<String> {
+    let bytes = serde_json::to_vec(&(command, args)).ok()?;
+    Some(hex::encode(Sha256::digest(bytes)))
+}
+
+fn lowercase_hex(value: &str, bytes: usize) -> bool {
+    value.len() == bytes * 2
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+pub fn mlt_result_request(start: &str) -> Option<String> {
+    let root = start
+        .strip_suffix(START_SUFFIX)
+        .filter(|root| !root.is_empty())?;
+    let request = format!("{root}{RESULT_SUFFIX}");
+    (request.len() <= 256).then_some(request)
+}
+
+fn retained_pair<'a>(
+    rows: &[&'a ProductionReceipt],
+    project: Uuid,
+    stamp: &RevisionStamp,
+    request: &str,
+    command: &str,
+    mutation: bool,
+) -> Option<(&'a ProductionReceipt, &'a ProductionReceipt)> {
+    let [intent, terminal] = rows else {
+        return None;
+    };
+    (intent.stage == "dispatching"
+        && terminal.stage == "completed"
+        && intent.payload["mutation"].as_bool() == Some(mutation)
+        && lowercase_hex(&intent.request_sha256, 32)
+        && intent.request_sha256 == terminal.request_sha256
+        && intent.id != terminal.id
+        && [intent, terminal].iter().all(|row| {
+            row.project_id == project
+                && row.generation == stamp.generation
+                && row.revision == stamp.revision
+                && row.request_id == request
+                && row.command == command
+        }))
+    .then_some((*intent, *terminal))
+}
+
+fn provider_result(receipt: &ProductionReceipt, generation: u64) -> Option<&Value> {
+    let original = &receipt.payload["result"];
+    let exec = &original["execution"];
+    let provenance = &exec["provenance"];
+    if original["provenance_checked"] != json!(true)
+        || exec["dry_run"] != json!(false)
+        || exec["backend"] != json!("driver:mlt-video")
+        || !provenance["untrusted_metadata"].is_boolean()
+        || provenance["provider"] != json!("driver:mlt-video")
+        || provenance["execution_provider"] != json!("driver:mlt-video")
+        || provenance["source"] != json!("driver")
+        || provenance["provider_generation"].as_u64() != Some(generation)
+        || !provenance["descriptor_sha256"]
+            .as_str()
+            .is_some_and(|value| lowercase_hex(value, 32))
+    {
+        return None;
+    }
+    original.get("data")
+}
+
+pub fn retained_mlt_close(
+    project: Uuid,
+    stamp: &RevisionStamp,
+    start_request: &str,
+    start_rows: &[&ProductionReceipt],
+    result_rows: &[&ProductionReceipt],
+) -> Option<RetainedMltClose> {
+    let result_request = mlt_result_request(start_request)?;
+    let (start_intent, start) = retained_pair(
+        start_rows,
+        project,
+        stamp,
+        start_request,
+        START_COMMAND,
+        true,
+    )?;
+    let (intent, terminal) = retained_pair(
+        result_rows,
+        project,
+        stamp,
+        &result_request,
+        RESULT_COMMAND,
+        false,
+    )?;
+    let original = &terminal.payload[TIMELINE_SOURCE];
+    let source: OriginalMltTimeline = serde_json::from_value(original.clone()).ok()?;
+    let native_ref = source.project_ref.strip_prefix("video:")?;
+    if original != &intent.payload[TIMELINE_SOURCE]
+        || source.schema != "motionwright.mlt-timeline-source/1"
+        || !lowercase_hex(&source.connection_identity, 32)
+        || start_intent.payload["connection"] != json!(source.connection_identity)
+        || intent.payload["connection"] != json!(source.connection_identity)
+        || source.provider_generation == 0
+        || !lowercase_hex(native_ref, 16)
+        || !lowercase_hex(&source.semantic_revision, 32)
+        || !matches!(source.profile.as_str(), "lossless" | "lossless-video-only")
+        || !source.job.starts_with("render:")
+        || source.job.len() > 80
+        || source.output.is_empty()
+        || digest(RESULT_COMMAND, &json!({"job":source.job}))? != terminal.request_sha256
+    {
+        return None;
+    }
+    let started = provider_result(start, source.provider_generation)?;
+    let result = provider_result(terminal, source.provider_generation)?;
+    if intent.payload["job_ref"] != json!(source.job)
+        || terminal.payload["job_ref"] != json!(source.job)
+        || result["state"] != json!("succeeded")
+        || !result.get("error").is_some_and(Value::is_null)
+        || [started, result].iter().any(|data| {
+            data["job"] != json!(source.job)
+                || data["project_revision"] != json!(source.semantic_revision)
+                || data["profile"] != json!(source.profile)
+                || data["output"] != json!(source.output)
+        })
+        || result.pointer("/artifact/root").and_then(Value::as_str) != Some("output")
+        || result.pointer("/artifact/path").and_then(Value::as_str) != Some(source.output.as_str())
+    {
+        return None;
+    }
+    let artifact_sha256 = result
+        .pointer("/artifact/sha256")?
+        .as_str()
+        .filter(|hash| lowercase_hex(hash, 32))?;
+    let artifact_bytes = result
+        .pointer("/artifact/bytes")?
+        .as_u64()
+        .filter(|size| *size > 0)?;
+    let close_key = digest(
+        CLOSE_COMMAND,
+        &json!({
+            "connection_identity": source.connection_identity,
+            "provider_generation": source.provider_generation,
+            "project_ref": source.project_ref,
+        }),
+    )?;
+    let request_sha256 = digest(
+        CLOSE_COMMAND,
+        &json!({
+            "project": source.project_ref, "expected_revision": source.semantic_revision,
+        }),
+    )?;
+    Some(RetainedMltClose {
+        source,
+        result_id: terminal.id,
+        artifact_sha256: artifact_sha256.into(),
+        artifact_bytes,
+        request_id: format!("mlt-owner-close:{close_key}"),
+        request_sha256,
+    })
+}
+
+type TimelineKey<'a> = (Uuid, u64, &'a str);
+
+struct CloseAttempt<'a> {
+    intent: &'a ProductionReceipt,
+    terminal: Option<&'a ProductionReceipt>,
+}
+
+impl<'a> CloseAttempt<'a> {
+    fn observe(&mut self, original_request: &str, receipt: &'a ProductionReceipt) {
+        if let Some(previous) = self.terminal {
+            if mlt_close_receipt_disposition(previous)
+                == MltCloseDisposition::ConfirmationUnavailable
+                && receipt.stage == "dispatching"
+                && receipt.request_id == format!("{original_request}:after:{}", previous.id)
+            {
+                self.intent = receipt;
+                self.terminal = None;
+            }
+        } else if self.intent.stage == "dispatching"
+            && receipt.stage != "dispatching"
+            && receipt.request_id == self.intent.request_id
+        {
+            self.terminal = Some(receipt);
+        }
+    }
+
+    fn disposition(&self) -> MltCloseDisposition {
+        self.terminal.map_or(
+            MltCloseDisposition::OutcomeUnknown,
+            mlt_close_receipt_disposition,
+        )
+    }
+}
+
+pub(crate) struct MltClosures<'a> {
+    timelines: BTreeMap<TimelineKey<'a>, RetainedMltClose>,
+    dispositions: BTreeMap<Uuid, MltCloseDisposition>,
+}
+
+impl<'a> MltClosures<'a> {
+    pub(crate) fn new(receipts: &'a [ProductionReceipt]) -> Self {
+        type TimelineRows<'a> = (
+            Vec<(usize, &'a ProductionReceipt)>,
+            Vec<(usize, &'a ProductionReceipt)>,
+        );
+        let mut rows: BTreeMap<TimelineKey<'a>, TimelineRows<'a>> = BTreeMap::new();
+        for (position, receipt) in receipts.iter().enumerate() {
+            let (root, start) = match receipt.command.as_str() {
+                START_COMMAND => (receipt.request_id.strip_suffix(START_SUFFIX), true),
+                RESULT_COMMAND => (receipt.request_id.strip_suffix(RESULT_SUFFIX), false),
+                _ => continue,
+            };
+            let Some(root) = root else { continue };
+            let entry = rows
+                .entry((receipt.generation, receipt.revision, root))
+                .or_default();
+            let list = if start { &mut entry.0 } else { &mut entry.1 };
+            if list.len() < 3 {
+                list.push((position, receipt));
+            }
+        }
+
+        let mut timelines = BTreeMap::new();
+        let mut result_keys = BTreeMap::new();
+        for (key, (start, result)) in rows {
+            let (
+                [(_, start_intent), (start_position, start_terminal)],
+                [
+                    (result_position, result_intent),
+                    (terminal_position, result_terminal),
+                ],
+            ) = (start.as_slice(), result.as_slice())
+            else {
+                continue;
+            };
+            if start_position >= result_position {
+                continue;
+            }
+            let stamp = RevisionStamp {
+                resource: format!("project:{}", start_intent.project_id),
+                generation: key.0,
+                revision: key.1,
+            };
+            let Some(source) = retained_mlt_close(
+                start_intent.project_id,
+                &stamp,
+                &start_intent.request_id,
+                &[*start_intent, *start_terminal],
+                &[*result_intent, *result_terminal],
+            ) else {
+                continue;
+            };
+            result_keys.insert(
+                source.result_id,
+                (key, *terminal_position, *result_terminal, *start_intent),
+            );
+            timelines.insert(key, source);
+        }
+
+        let mut attempts = BTreeMap::<Uuid, CloseAttempt<'a>>::new();
+        let mut unordered = BTreeSet::new();
+        for (position, receipt) in receipts.iter().enumerate() {
+            if receipt.command != CLOSE_COMMAND
+                || receipt.payload["mutation"].as_bool() != Some(true)
+            {
+                continue;
+            }
+            let Some(id) = receipt.payload["result_receipt"]
+                .as_str()
+                .and_then(|value| Uuid::parse_str(value).ok())
+            else {
+                continue;
+            };
+            let Some((key, result_position, terminal, start)) = result_keys.get(&id) else {
+                continue;
+            };
+            let source = &timelines[key];
+            if receipt.project_id != terminal.project_id
+                || receipt.generation != terminal.generation
+                || receipt.revision != terminal.revision
+                || receipt.request_sha256 != source.request_sha256
+                || receipt.payload["native_source"] != terminal.payload[TIMELINE_SOURCE]
+                || receipt.payload["start_request"].as_str() != Some(start.request_id.as_str())
+            {
+                continue;
+            }
+            if position <= *result_position {
+                if receipt.request_id == source.request_id {
+                    unordered.insert(id);
+                }
+                continue;
+            }
+            if let Some(attempt) = attempts.get_mut(&id) {
+                attempt.observe(&source.request_id, receipt);
+            } else if receipt.request_id == source.request_id {
+                // An orphan terminal leaves UNKNOWN until the exact intent can be proven.
+                attempts.insert(
+                    id,
+                    CloseAttempt {
+                        intent: receipt,
+                        terminal: None,
+                    },
+                );
+            }
+        }
+        Self {
+            timelines,
+            dispositions: attempts
+                .into_iter()
+                .map(|(id, attempt)| (id, attempt.disposition()))
+                .chain(
+                    unordered
+                        .into_iter()
+                        .map(|id| (id, MltCloseDisposition::OutcomeUnknown)),
+                )
+                .collect(),
+        }
+    }
+
+    pub(crate) fn for_job(
+        &self,
+        job: &crate::ProductionJobProjection,
+    ) -> Option<MltClosureProjection> {
+        if job.provider != "driver:mlt-video" || job.state != crate::ProductionJobState::Succeeded {
+            return None;
+        }
+        let root = job.root_request_id.strip_suffix(START_SUFFIX)?;
+        let original = self.timelines.get(&(job.generation, job.revision, root))?;
+        if original.source.job != job.job_ref
+            || Some(original.source.provider_generation) != job.provider_generation
+        {
+            return None;
+        }
+        Some(MltClosureProjection {
+            disposition: self.dispositions.get(&original.result_id).copied(),
+        })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MltCleanupInventory {

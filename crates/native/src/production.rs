@@ -58,7 +58,8 @@ pub use hyperframes::{
     HyperframesSourceEvidence, read_recorded_hyperframes_job_observation,
 };
 mod mlt_cleanup;
-pub use mlt_cleanup::{MltCloseDisposition, PreparedMltClose};
+pub use mlt_cleanup::PreparedMltClose;
+pub use motionwright_service::MltCloseDisposition;
 mod mlt_mezzanine;
 mod mlt_multisegment_av;
 mod mlt_timeline;
@@ -6743,7 +6744,7 @@ mod tests {
                 request_sha256: request_digest(command, &json!({"job":"render:original"})).unwrap(),
                 command: command.into(),
                 stage: "dispatching".into(),
-                payload: json!({"connection":identity,"job_ref":"render:original","mlt_timeline_source":source}),
+                payload: json!({"connection":identity,"job_ref":"render:original","mlt_timeline_source":source,"mutation":command.ends_with(".start")}),
             };
             service.append_production_receipt(input.clone()).unwrap();
             input.stage = "completed".into();
@@ -6822,6 +6823,11 @@ mod tests {
                 .spent,
             units
         );
+        let closed_job = reopened.production_jobs(project.id, 10).unwrap().remove(0);
+        assert_eq!(
+            closed_job.mlt_closure.unwrap().disposition,
+            Some(MltCloseDisposition::OutcomeUnknown)
+        );
         let coordinator = ProductionCoordinator::new(reopened, connection).unwrap();
         assert_eq!(
             coordinator.close_prepared_mlt(prepared).await.unwrap(),
@@ -6840,6 +6846,15 @@ mod tests {
         assert_eq!(
             coordinator.close_prepared_mlt(prepared).await.unwrap(),
             MltCloseDisposition::Refused
+        );
+        let refused_job = coordinator
+            .service
+            .production_jobs(project.id, 10)
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            refused_job.mlt_closure.unwrap().disposition,
+            Some(MltCloseDisposition::Refused)
         );
         assert_eq!(
             coordinator

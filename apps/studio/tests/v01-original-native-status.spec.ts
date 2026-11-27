@@ -130,6 +130,7 @@ test("MLT closure uses the original saved job and fences an unconfirmed outcome"
   const job = {
     ...jobFixture(boot), provider: "driver:mlt-video", root_request_id: "take:mlt:render-start",
     state: "succeeded", result_available: true, artifact_available: true, provider_generation: 7,
+    mlt_closure: { disposition: null },
   };
   await page.addInitScript(({ initial, original }) => {
     const app = window as unknown as {
@@ -141,10 +142,17 @@ test("MLT closure uses the original saved job and fences an unconfirmed outcome"
       if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
         return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(initial));
       }
-      if (command === "production_jobs") return [structuredClone(original)];
+      if (command === "production_jobs") {
+        return [{ ...original, mlt_closure: {
+          disposition: sessionStorage.getItem("fixture-retained-mlt-closure"),
+        } }];
+      }
       app.__MLT_CLOSE__.push([command, args?.request]);
       if (command === "issue_effect_grant") return { token: "test-owner-grant" };
-      if (command === "close_original_mlt_project") return "outcome_unknown";
+      if (command === "close_original_mlt_project") {
+        sessionStorage.setItem("fixture-retained-mlt-closure", "outcome_unknown");
+        return "outcome_unknown";
+      }
       throw Error("Unexpected native action");
     } };
   }, { initial: boot, original: job });
@@ -161,4 +169,10 @@ test("MLT closure uses the original saved job and fences an unconfirmed outcome"
     ["issue_effect_grant", { ...scope, effect: "close_mlt_project", subject: job.root_request_id }],
     ["close_original_mlt_project", { ...scope, root_request_id: job.root_request_id, effect_grant: "test-owner-grant" }],
   ]);
+
+  await page.reload();
+  await page.getByRole("button", { name: "Jobs", exact: true }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Closure could not be confirmed" })).toBeVisible();
+  await expect(close).toBeDisabled();
+  expect(await page.evaluate(() => Reflect.get(window, "__MLT_CLOSE__"))).toEqual([]);
 });
