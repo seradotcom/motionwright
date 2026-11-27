@@ -636,25 +636,27 @@ function Await-DurationClosed {
     throw 'Original Kdenlive Duration dialog did not close'
 }
 
-function Verify-ThirdClipPlaylist {
-    # The original cut has three contiguous 30-frame intervals. The final
-    # interior frame selects the third clip without needing the monitor clock.
-    # Sequence effects explicitly activates the project monitor inside Kdenlive.
-    Select-EditorMenu 'Sequence' 'Sequence effects' 'activate-project-monitor' 'Tracks'
-    Select-EditorMenu 'Monitor' 'Go to Project End' 'seek-end' 'Go To'
-    Select-EditorMenu 'Monitor' 'Rewind 1 Frame' 'seek-inside-third' 'Seek'
+function Select-ThirdClip([string]$Stage) {
+    # An accepted resize changes the end and can clear the selection. Seek
+    # inside the current third clip before a new observation of its model.
+    Select-EditorMenu 'Sequence' 'Sequence effects' "$Stage-activate-monitor" 'Tracks'
+    Select-EditorMenu 'Monitor' 'Go to Project End' "$Stage-seek-end" 'Go To'
+    Select-EditorMenu 'Monitor' 'Rewind 1 Frame' "$Stage-seek-inside" 'Seek'
     Assert-Editor
-    Record 'select-video-track-one-intent.json' @{ editor_pid = $EditorPid; automatic_retry = $false }
+    Record "$Stage-track-intent.json" @{ editor_pid = $EditorPid; automatic_retry = $false }
     if (![KdenliveWindowsInput]::SelectVideoTrackOne([uint32]$EditorPid)) {
         throw 'Kdenlive video track shortcut was not confirmed in the original foreground window'
     }
-    Record 'select-video-track-one-terminal.json' @{ editor_pid = $EditorPid; delivery_requested_once = $true }
-    Select-EditorMenu 'Sequence' 'Select Clip' 'select-third' 'Selection'
+    Record "$Stage-track-terminal.json" @{ editor_pid = $EditorPid; delivery_requested_once = $true }
+    Select-EditorMenu 'Sequence' 'Select Clip' "$Stage-select-clip" 'Selection'
+}
 
+function Verify-ThirdClipPlaylist {
     foreach ($edit in @(
         @{ stage = 'shorten-third'; before = 30; after = 29 },
         @{ stage = 'restore-third'; before = 29; after = 30 }
     )) {
+        Select-ThirdClip "$($edit.stage)-target"
         $dialog = Open-ClipDuration $edit.stage
         $fields = @(Read-DurationFields $dialog)
         Record "$($edit.stage)-model.json" @{
@@ -704,6 +706,7 @@ function Verify-ThirdClipPlaylist {
         Invoke-Control $button "$($edit.stage)-accept" -ConfirmDialogTransition
         Await-DurationClosed
     }
+    Select-ThirdClip 'verify-restoration-target'
     $dialog = Open-ClipDuration 'verify-restoration'
     Assert-ClipDuration @(Read-DurationFields $dialog) 30
     Record 'third-clip-restored-model.json' @{ editor_pid = $EditorPid; position = 60; crop = 60; duration = 30 }
