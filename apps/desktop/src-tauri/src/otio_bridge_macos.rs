@@ -96,7 +96,7 @@ fn protected_metadata(path: &Path) -> io::Result<fs::Metadata> {
     Ok(metadata)
 }
 
-fn acl_cannot_grant_access(handle: &File) -> bool {
+pub(super) fn acl_cannot_grant_access(handle: &File) -> bool {
     // Darwin's descriptor ACL interface in libSystem (sys/acl.h).
     const ACL_TYPE_EXTENDED: libc::c_int = 0x100;
     const ACL_FIRST_ENTRY: libc::c_int = 0;

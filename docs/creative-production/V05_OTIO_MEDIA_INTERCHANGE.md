@@ -172,6 +172,11 @@ ffprobe with the seekable `fd` protocol. Check the installed decoder with
 `ffprobe -protocols`. The Desktop bridge uses up to 256 MiB of temporary space
 for one read-only copy of such an original.
 
+Use a local folder whose ancestors are protected against replacement and
+permission changes by other accounts. Desktop creates a private workspace
+beside the selected bundle or destination and holds the verified bridge
+scripts while its process runs.
+
 Use runtime packages from a trusted distribution channel. Motionwright checks
 the installed paths and permissions before using the one-time local grant. A
 missing or unsafe installation leaves the operation available for a manual

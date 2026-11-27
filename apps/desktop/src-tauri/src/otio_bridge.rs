@@ -480,6 +480,184 @@ fn workspace_prefix(operation: OtioBridgeOperation) -> &'static str {
     }
 }
 
+struct BridgeTempWorkspace {
+    #[cfg(any(windows, unix))]
+    _working: fs::File,
+    temp: tempfile::TempDir,
+    #[cfg(windows)]
+    private: windows_runtime::WindowsOtioWorkspace,
+    #[cfg(unix)]
+    _ancestors: Vec<fs::File>,
+}
+
+const WORKSPACE_REFUSED: &str = "OTIO needs a private workspace under a protected local folder.";
+
+impl BridgeTempWorkspace {
+    fn create(parent: &Path, operation: OtioBridgeOperation) -> Result<Self, String> {
+        if !parent.is_absolute() || parent.ancestors().take(65).count() > 64 {
+            return Err(WORKSPACE_REFUSED.into());
+        }
+        #[cfg(windows)]
+        {
+            let name = format!("{}{}", workspace_prefix(operation), Uuid::now_v7().simple());
+            let private = windows_runtime::WindowsOtioWorkspace::create(parent, &name)
+                .map_err(str::to_owned)?;
+            let temp = tempfile::Builder::new()
+                .prefix("files-")
+                .tempdir_in(private.path())
+                .map_err(|_| WORKSPACE_REFUSED)?;
+            let working = private.hold(temp.path(), true).map_err(str::to_owned)?;
+            Ok(Self {
+                _working: working,
+                temp,
+                private,
+            })
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut ancestors = Vec::new();
+            for path in parent.ancestors().collect::<Vec<_>>().into_iter().rev() {
+                ancestors.push(open_private_unix_path(path, UnixWorkspaceEntry::Ancestor)?);
+            }
+            let temp = tempfile::Builder::new()
+                .prefix(workspace_prefix(operation))
+                .permissions(fs::Permissions::from_mode(0o700))
+                .tempdir_in(parent)
+                .map_err(|_| WORKSPACE_REFUSED)?;
+            let working =
+                open_private_unix_path(temp.path(), UnixWorkspaceEntry::PrivateDirectory)?;
+            Ok(Self {
+                _working: working,
+                temp,
+                _ancestors: ancestors,
+            })
+        }
+        #[cfg(not(any(windows, unix)))]
+        {
+            let _ = (parent, operation);
+            Err(WORKSPACE_REFUSED.into())
+        }
+    }
+
+    fn path(&self) -> &Path {
+        self.temp.path()
+    }
+
+    fn name(&self) -> Option<&str> {
+        #[cfg(windows)]
+        let directory = self.private.path();
+        #[cfg(not(windows))]
+        let directory = self.path();
+        directory.file_name()?.to_str()
+    }
+
+    fn hold_sources(&self, source_dir: &Path) -> Result<Vec<fs::File>, String> {
+        let tooling = source_dir.parent().ok_or(WORKSPACE_REFUSED)?;
+        let originals = [
+            (source_dir.join("run-original-bridge.py"), RUNNER),
+            (source_dir.join("bridge.py"), BRIDGE),
+            (source_dir.join("kdenlive_firstparty_audio_track.py"), AUDIO),
+            (tooling.join("mlt_official_runtime_intake.py"), INTAKE),
+            (tooling.join("manim_native_readback.py"), READBACK),
+        ];
+        #[cfg(windows)]
+        {
+            let mut handles = vec![
+                self.private.hold(tooling, true).map_err(str::to_owned)?,
+                self.private.hold(source_dir, true).map_err(str::to_owned)?,
+            ];
+            for (path, bytes) in originals {
+                handles.push(
+                    self.private
+                        .hold_original(&path, bytes)
+                        .map_err(str::to_owned)?,
+                );
+            }
+            Ok(handles)
+        }
+        #[cfg(unix)]
+        {
+            let mut handles = vec![
+                open_private_unix_path(tooling, UnixWorkspaceEntry::Ancestor)?,
+                open_private_unix_path(source_dir, UnixWorkspaceEntry::Ancestor)?,
+            ];
+            for (path, expected) in originals {
+                let mut file = open_private_unix_path(&path, UnixWorkspaceEntry::OriginalFile)?;
+                let mut bytes = Vec::new();
+                (&mut file)
+                    .take(expected.len() as u64 + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|_| WORKSPACE_REFUSED)?;
+                if bytes != expected {
+                    return Err(WORKSPACE_REFUSED.into());
+                }
+                handles.push(file);
+            }
+            Ok(handles)
+        }
+        #[cfg(not(any(windows, unix)))]
+        {
+            let _ = originals;
+            Err(WORKSPACE_REFUSED.into())
+        }
+    }
+}
+
+#[cfg(unix)]
+enum UnixWorkspaceEntry {
+    Ancestor,
+    PrivateDirectory,
+    OriginalFile,
+}
+
+#[cfg(unix)]
+fn open_private_unix_path(path: &Path, entry: UnixWorkspaceEntry) -> Result<fs::File, String> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let kind = if matches!(entry, UnixWorkspaceEntry::OriginalFile) {
+        0
+    } else {
+        libc::O_DIRECTORY
+    };
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(kind | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|_| WORKSPACE_REFUSED)?;
+    let before = file.metadata().map_err(|_| WORKSPACE_REFUSED)?;
+    let current = path.symlink_metadata().map_err(|_| WORKSPACE_REFUSED)?;
+    // SAFETY: reading the effective process identity has no side effects.
+    let uid = unsafe { libc::geteuid() };
+    // MetadataExt::mode() is u32 on both Unix targets; Darwin's mode_t is narrower.
+    const STICKY_BIT: u32 = 0o1000;
+    let permissions_ok = match entry {
+        UnixWorkspaceEntry::Ancestor => {
+            before.is_dir() && (before.mode() & 0o022 == 0 || before.mode() & STICKY_BIT != 0)
+        }
+        UnixWorkspaceEntry::PrivateDirectory => {
+            before.is_dir() && before.uid() == uid && before.mode() & 0o077 == 0
+        }
+        UnixWorkspaceEntry::OriginalFile => {
+            before.is_file()
+                && before.nlink() == 1
+                && before.uid() == uid
+                && before.mode() & 0o022 == 0
+        }
+    };
+    if !permissions_ok
+        || (before.uid() != 0 && before.uid() != uid)
+        || before.dev() != current.dev()
+        || before.ino() != current.ino()
+    {
+        return Err(WORKSPACE_REFUSED.into());
+    }
+    #[cfg(target_os = "macos")]
+    if !macos_runtime::acl_cannot_grant_access(&file) {
+        return Err(WORKSPACE_REFUSED.into());
+    }
+    Ok(file)
+}
+
 fn valid_workspace(operation: OtioBridgeOperation, workspace_name: &str) -> bool {
     workspace_name
         .strip_prefix(workspace_prefix(operation))
@@ -571,13 +749,11 @@ fn run_tracked_bridge(
     service: &StudioService,
     project: &Project,
     operation: OtioBridgeOperation,
-    temp: &mut tempfile::TempDir,
+    temp: &mut BridgeTempWorkspace,
     run: impl FnOnce() -> Result<(), BridgeExecutionFailure>,
 ) -> Result<(), OtioBridgeError> {
     let workspace_name = temp
-        .path()
-        .file_name()
-        .and_then(|name| name.to_str())
+        .name()
         .filter(|name| valid_workspace(operation, name))
         .ok_or("The isolated OTIO workspace has an invalid name.")?;
     let metadata = BridgeWorkspace {
@@ -616,7 +792,7 @@ fn run_tracked_bridge(
         }
     };
 
-    temp.disable_cleanup(true);
+    temp.temp.disable_cleanup(true);
     let outcome = run();
     let stopped = !matches!(outcome, Err(BridgeExecutionFailure::Unsettled));
     record.stage = if stopped {
@@ -630,7 +806,7 @@ fn run_tracked_bridge(
             original, operation,
         )?));
     }
-    temp.disable_cleanup(false);
+    temp.temp.disable_cleanup(false);
     match outcome {
         Ok(()) => Ok(()),
         Err(BridgeExecutionFailure::Stopped(message)) => Err(message.into()),
@@ -996,14 +1172,9 @@ pub fn preview(
         received,
     } = read_authorized_preview_documents(grants, &request, &subject, &bundle, &project)?;
     let parent = bundle.parent().ok_or_else(refused)?;
-    let mut temp = tempfile::Builder::new()
-        .prefix(workspace_prefix(operation))
-        .tempdir_in(parent)
-        .map_err(|_| {
-            "The original OTIO bundle parent must permit one isolated temporary review workspace."
-                .to_string()
-        })?;
+    let mut temp = BridgeTempWorkspace::create(parent, operation)?;
     let (source_dir, bridge) = stage_bridge_sources(temp.path())?;
+    let _original_sources = temp.hold_sources(&source_dir)?;
     let snapshot = write_exact(temp.path(), "current-project.json", &original)?;
     let output = temp.path().join("review-proposal.json");
     let mut arguments = if let (Some(initial_name), Some(initial)) =
@@ -1231,8 +1402,25 @@ mod tests {
 
     #[test]
     fn isolated_original_bridge_stages_the_real_decoder_supervisor_source() {
-        let directory = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let canonical_parent = parent.path().canonicalize().unwrap();
+        let directory =
+            BridgeTempWorkspace::create(&canonical_parent, OtioBridgeOperation::Preview).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                directory.path().metadata().unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
         let (source_dir, bridge) = stage_bridge_sources(directory.path()).unwrap();
+        let original_handles = directory.hold_sources(&source_dir).unwrap();
+        #[cfg(windows)]
+        {
+            assert!(OpenOptions::new().write(true).open(&bridge).is_err());
+            assert!(fs::rename(directory.path(), canonical_parent.join("replaced-stage")).is_err());
+        }
         assert_eq!(
             read_regular_bounded(&bridge, BRIDGE.len() as u64).unwrap(),
             BRIDGE
@@ -1263,6 +1451,9 @@ mod tests {
             .unwrap(),
             RUNNER
         );
+        drop(original_handles);
+        fs::write(&bridge, b"foreign staged module").unwrap();
+        assert!(directory.hold_sources(&source_dir).is_err());
     }
 
     #[test]
@@ -1369,12 +1560,8 @@ mod tests {
         let peer = StudioService::open(&path).unwrap();
         let preview = OtioBridgeOperation::Preview;
         let export = OtioBridgeOperation::Export;
-        let workspace = |operation| {
-            tempfile::Builder::new()
-                .prefix(workspace_prefix(operation))
-                .tempdir_in(root.path())
-                .unwrap()
-        };
+        let parent = root.path().canonicalize().unwrap();
+        let workspace = |operation| BridgeTempWorkspace::create(&parent, operation).unwrap();
 
         let mut original = workspace(preview);
         let original_path = original.path().to_owned();
@@ -2184,11 +2371,9 @@ pub fn export_portable(
         &request.destination,
     )?;
     let parent = destination.parent().ok_or_else(refused)?;
-    let mut temp = tempfile::Builder::new()
-        .prefix(workspace_prefix(operation))
-        .tempdir_in(parent)
-        .map_err(|_| "Unable to stage an isolated original OTIO export.".to_string())?;
+    let mut temp = BridgeTempWorkspace::create(parent, operation)?;
     let (source_dir, bridge) = stage_bridge_sources(temp.path())?;
+    let _original_sources = temp.hold_sources(&source_dir)?;
     let raw_root = temp.path().join("owner-originals");
     fs::create_dir(&raw_root).map_err(|_| refused())?;
     write_exact(&raw_root, "project.json", &project_bytes)?;
@@ -2278,7 +2463,7 @@ pub fn export_portable(
     if !destination_unclaimed(&destination)? {
         return Err("Portable OTIO destination was claimed by another writer.".into());
     }
-    // The Python bridge writes only inside the private, 0700 staging tree.
+    // The Python bridge writes only inside the private staging tree.
     // Publish its validated directory to the owner path once, atomically.
     let pending = temp.path().join("verified-original-otio-bundle");
     let arguments = vec![

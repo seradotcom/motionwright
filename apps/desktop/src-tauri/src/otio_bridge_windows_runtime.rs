@@ -1,4 +1,4 @@
-//! Admission for an administrator-provisioned Windows OTIO runtime.
+//! Admission of the protected Windows OTIO runtime and its private workspace.
 //! windows-sys 0.61.2 features: Win32_Foundation, Win32_Security_Authorization,
 //! Win32_Storage_FileSystem, Win32_System_Com, Win32_System_SystemInformation,
 //! Win32_System_SystemServices, Win32_System_WindowsProgramming, Win32_UI_Shell.
@@ -7,10 +7,11 @@ use std::{
     ffi::{OsString, c_void},
     fs::{self, File, OpenOptions},
     io::Read,
+    mem::size_of,
     os::windows::{
         ffi::{OsStrExt, OsStringExt},
         fs::OpenOptionsExt,
-        io::AsRawHandle,
+        io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
     path::{Component, Path, PathBuf, Prefix},
     ptr::null_mut,
@@ -19,23 +20,28 @@ use windows_sys::Win32::{
     Foundation::{GENERIC_ALL, GENERIC_WRITE, LocalFree},
     Security::{
         ACE_HEADER, ACL, ACL_REVISION, ACL_REVISION_DS,
-        Authorization::{ConvertStringSidToSidW, GetSecurityInfo, SE_FILE_OBJECT},
-        DACL_SECURITY_INFORMATION, EqualSid, GetAce, INHERIT_ONLY_ACE, IsValidAcl, IsValidSid,
-        IsWellKnownSid, OWNER_SECURITY_INFORMATION, PSID, WinBuiltinAdministratorsSid,
+        Authorization::{
+            ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+            ConvertStringSidToSidW, GetSecurityInfo, SE_FILE_OBJECT,
+        },
+        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetTokenInformation, INHERIT_ONLY_ACE,
+        IsValidAcl, IsValidSid, IsWellKnownSid, OWNER_SECURITY_INFORMATION, PSID,
+        SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser, WinBuiltinAdministratorsSid,
         WinLocalSystemSid,
     },
     Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY,
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, GetDriveTypeW,
-        GetFileInformationByHandle, GetVolumeInformationByHandleW, READ_CONTROL, WRITE_DAC,
-        WRITE_OWNER,
+        BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, DELETE, FILE_APPEND_DATA,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+        FILE_READ_DATA, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
+        FILE_WRITE_EA, GetDriveTypeW, GetFileInformationByHandle, GetVolumeInformationByHandleW,
+        READ_CONTROL, WRITE_DAC, WRITE_OWNER,
     },
     System::{
         Com::CoTaskMemFree,
         SystemInformation::GetSystemWindowsDirectoryW,
         SystemServices::{ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE, FILE_PERSISTENT_ACLS},
+        Threading::{GetCurrentProcess, OpenProcessToken},
         WindowsProgramming::DRIVE_FIXED,
     },
     UI::Shell::{FOLDERID_ProgramFiles, KF_FLAG_DEFAULT_PATH, SHGetKnownFolderPath},
@@ -123,12 +129,13 @@ fn trusted_installer_sid() -> Admission<LocalAllocation> {
     Ok(sid)
 }
 
-unsafe fn trusted_sid(sid: PSID, installer: &LocalAllocation) -> bool {
+unsafe fn trusted_sid(sid: PSID, installer: &LocalAllocation, owner_sid: Option<PSID>) -> bool {
     // SAFETY: the caller checked the live SID, and installer owns a valid SID.
     unsafe {
         IsWellKnownSid(sid, WinLocalSystemSid) != 0
             || IsWellKnownSid(sid, WinBuiltinAdministratorsSid) != 0
             || EqualSid(sid, installer.0) != 0
+            || owner_sid.is_some_and(|owner| EqualSid(sid, owner) != 0)
     }
 }
 
@@ -138,7 +145,12 @@ enum Scope {
     Runtime,
 }
 
-fn verify_acl(file: &File, installer: &LocalAllocation, scope: Scope) -> Admission<()> {
+fn verify_acl(
+    file: &File,
+    installer: &LocalAllocation,
+    scope: Scope,
+    owner_sid: Option<PSID>,
+) -> Admission<()> {
     let mut owner = null_mut();
     let mut acl: *mut ACL = null_mut();
     let mut descriptor = LocalAllocation(null_mut());
@@ -160,16 +172,23 @@ fn verify_acl(file: &File, installer: &LocalAllocation, scope: Scope) -> Admissi
         || owner.is_null()
         || acl.is_null()
         || unsafe {
-            IsValidSid(owner) == 0 || !trusted_sid(owner, installer) || IsValidAcl(acl) == 0
+            IsValidSid(owner) == 0
+                || !trusted_sid(owner, installer, owner_sid)
+                || IsValidAcl(acl) == 0
         }
     {
         return Err(REFUSED);
     }
-    unsafe { verify_aces(acl, installer, scope) }
+    unsafe { verify_aces(acl, installer, scope, owner_sid) }
 }
 
 // SAFETY: acl is validated and remains live with its containing descriptor.
-unsafe fn verify_aces(acl: *const ACL, installer: &LocalAllocation, scope: Scope) -> Admission<()> {
+unsafe fn verify_aces(
+    acl: *const ACL,
+    installer: &LocalAllocation,
+    scope: Scope,
+    owner_sid: Option<PSID>,
+) -> Admission<()> {
     let acl_header = unsafe { &*acl };
     if !matches!(
         u32::from(acl_header.AclRevision),
@@ -223,7 +242,7 @@ unsafe fn verify_aces(acl: *const ACL, installer: &LocalAllocation, scope: Scope
         if ace_type == ACCESS_ALLOWED_ACE_TYPE
             && u32::from(header.AceFlags) & INHERIT_ONLY_ACE == 0
             && mask & mutation != 0
-            && !unsafe { trusted_sid(sid, installer) }
+            && !unsafe { trusted_sid(sid, installer, owner_sid) }
         {
             return Err(REFUSED);
         }
@@ -236,6 +255,16 @@ fn held_entry(
     directory: bool,
     installer: &LocalAllocation,
     scope: Scope,
+) -> Admission<File> {
+    held_entry_for(path, directory, installer, scope, None)
+}
+
+fn held_entry_for(
+    path: &Path,
+    directory: bool,
+    installer: &LocalAllocation,
+    scope: Scope,
+    owner_sid: Option<PSID>,
 ) -> Admission<File> {
     let file = OpenOptions::new()
         .access_mode(READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_READ_DATA)
@@ -252,7 +281,7 @@ fn held_entry(
     {
         return Err(REFUSED);
     }
-    verify_acl(&file, installer, scope)?;
+    verify_acl(&file, installer, scope, owner_sid)?;
     Ok(file)
 }
 
@@ -277,12 +306,26 @@ fn held_ancestors(
         return Err(REFUSED);
     }
     let root = parents.last().ok_or(REFUSED)?;
+    require_fixed_volume(root)?;
+    let volume = held_entry(root, true, installer, Scope::Ancestor)?;
+    require_acl_volume(&volume)?;
+    entries.push(volume);
+    for parent in parents.into_iter().rev().skip(1) {
+        entries.push(held_entry(parent, true, installer, Scope::Runtime)?);
+    }
+    Ok(())
+}
+
+fn require_fixed_volume(root: &Path) -> Admission<()> {
     let wide: Vec<_> = root.as_os_str().encode_wide().chain([0]).collect();
     // SAFETY: the volume root is a NUL-terminated local drive path.
     if unsafe { GetDriveTypeW(wide.as_ptr()) } != DRIVE_FIXED {
         return Err(REFUSED);
     }
-    let volume = held_entry(root, true, installer, Scope::Ancestor)?;
+    Ok(())
+}
+
+fn require_acl_volume(volume: &File) -> Admission<()> {
     let mut flags = 0;
     // SAFETY: only the volume flags output was requested and is writable.
     if unsafe {
@@ -300,10 +343,6 @@ fn held_ancestors(
         || flags & FILE_PERSISTENT_ACLS == 0
     {
         return Err(REFUSED);
-    }
-    entries.push(volume);
-    for parent in parents.into_iter().rev().skip(1) {
-        entries.push(held_entry(parent, true, installer, Scope::Runtime)?);
     }
     Ok(())
 }
@@ -441,4 +480,230 @@ pub(super) fn trusted_windows_otio_runtime() -> Admission<WindowsOtioRuntime> {
         system_root,
         _entries: entries,
     })
+}
+
+const WORKSPACE_REFUSED: &str =
+    "OTIO needs a private workspace on a local Windows volume with protected ancestor paths.";
+
+struct CurrentUserSid {
+    buffer: Vec<usize>,
+    offset: usize,
+}
+
+impl CurrentUserSid {
+    fn read() -> Admission<Self> {
+        let mut token = null_mut();
+        // SAFETY: the current-process handle is borrowed and the token output is writable.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0
+            || token.is_null()
+        {
+            return Err(WORKSPACE_REFUSED);
+        }
+        // SAFETY: a successful OpenProcessToken returns one new owned handle.
+        let token = unsafe { OwnedHandle::from_raw_handle(token) };
+        let mut needed = 0u32;
+        // SAFETY: a zero-size probe asks for the required TOKEN_USER buffer length.
+        unsafe {
+            GetTokenInformation(token.as_raw_handle(), TokenUser, null_mut(), 0, &mut needed)
+        };
+        let size = needed as usize;
+        if !(size_of::<TOKEN_USER>()..=65536).contains(&size) {
+            return Err(WORKSPACE_REFUSED);
+        }
+        let mut buffer = vec![0usize; size.div_ceil(size_of::<usize>())];
+        let mut written = 0u32;
+        // SAFETY: the aligned buffer is writable and at least needed bytes long.
+        if unsafe {
+            GetTokenInformation(
+                token.as_raw_handle(),
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                needed,
+                &mut written,
+            )
+        } == 0
+            || written > needed
+            || (written as usize) < size_of::<TOKEN_USER>()
+        {
+            return Err(WORKSPACE_REFUSED);
+        }
+        // SAFETY: TOKEN_USER was written at the aligned base by GetTokenInformation.
+        let sid = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+        let offset = (sid as usize)
+            .checked_sub(buffer.as_ptr() as usize)
+            .ok_or(WORKSPACE_REFUSED)?;
+        if offset
+            .checked_add(8)
+            .is_none_or(|end| end > written as usize)
+        {
+            return Err(WORKSPACE_REFUSED);
+        }
+        // SAFETY: the SID header is within the returned buffer. Check the
+        // complete sub-authority array before passing the pointer to another API.
+        let count = unsafe { *sid.cast::<u8>().add(1) } as usize;
+        if offset + 8 + count * 4 > written as usize || unsafe { IsValidSid(sid) } == 0 {
+            return Err(WORKSPACE_REFUSED);
+        }
+        Ok(Self { buffer, offset })
+    }
+
+    fn sid(&self) -> PSID {
+        // The allocation does not move and offset was checked in read.
+        self.buffer
+            .as_ptr()
+            .cast::<u8>()
+            .wrapping_add(self.offset)
+            .cast_mut()
+            .cast()
+    }
+
+    fn private_descriptor(&self) -> Admission<LocalAllocation> {
+        let mut text = null_mut();
+        // SAFETY: the SID buffer is retained and the output pointer is writable.
+        let result = unsafe { ConvertSidToStringSidW(self.sid(), &mut text) };
+        let _text_allocation = LocalAllocation(text.cast());
+        if result == 0 || text.is_null() {
+            return Err(WORKSPACE_REFUSED);
+        }
+        // SAFETY: successful conversion returns a NUL-terminated string.
+        let len = (0..192)
+            .find(|index| unsafe { *text.add(*index) } == 0)
+            .ok_or(WORKSPACE_REFUSED)?;
+        let sid = String::from_utf16(unsafe { std::slice::from_raw_parts(text, len) })
+            .map_err(|_| WORKSPACE_REFUSED)?;
+        if !sid.starts_with("S-") || !sid[2..].bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+            return Err(WORKSPACE_REFUSED);
+        }
+        // The protected DACL is applied at creation and inherited by files and directories.
+        let sddl: Vec<_> = format!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;{sid})")
+            .encode_utf16()
+            .chain([0])
+            .collect();
+        let mut descriptor = LocalAllocation(null_mut());
+        // SAFETY: SDDL is terminated and descriptor receives a LocalFree allocation.
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                1,
+                &mut descriptor.0,
+                null_mut(),
+            )
+        } == 0
+            || descriptor.0.is_null()
+        {
+            return Err(WORKSPACE_REFUSED);
+        }
+        Ok(descriptor)
+    }
+}
+
+pub(super) struct WindowsOtioWorkspace {
+    root: PathBuf,
+    root_handle: Option<File>,
+    _ancestors: Vec<File>,
+    installer: LocalAllocation,
+    user: CurrentUserSid,
+}
+
+impl WindowsOtioWorkspace {
+    pub(super) fn create(parent: &Path, name: &str) -> Admission<Self> {
+        let mut components = parent.components();
+        let Some(Component::Prefix(prefix)) = components.next() else {
+            return Err(WORKSPACE_REFUSED);
+        };
+        if !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+            || !matches!(components.next(), Some(Component::RootDir))
+            || !components.all(|part| matches!(part, Component::Normal(_)))
+            || parent.as_os_str().encode_wide().any(|unit| unit == 0)
+            || name.is_empty()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+            || matches!(name, "." | "..")
+        {
+            return Err(WORKSPACE_REFUSED);
+        }
+        let parents: Vec<_> = parent.ancestors().take(65).collect();
+        if parents.len() > 64 {
+            return Err(WORKSPACE_REFUSED);
+        }
+        let installer = trusted_installer_sid()?;
+        let user = CurrentUserSid::read()?;
+        let mut ancestors = Vec::with_capacity(parents.len());
+        // The prefix by itself (C:) is not a directory below the drive root.
+        for path in parents.into_iter().rev().filter(|path| path.has_root()) {
+            let volume_root = ancestors.is_empty();
+            if volume_root {
+                require_fixed_volume(path).map_err(|_| WORKSPACE_REFUSED)?;
+            }
+            let held = held_entry_for(path, true, &installer, Scope::Ancestor, Some(user.sid()))
+                .map_err(|_| WORKSPACE_REFUSED)?;
+            if volume_root {
+                require_acl_volume(&held).map_err(|_| WORKSPACE_REFUSED)?;
+            }
+            ancestors.push(held);
+        }
+        if ancestors.is_empty() {
+            return Err(WORKSPACE_REFUSED);
+        }
+        let root = parent.join(name);
+        let descriptor = user.private_descriptor()?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: 0,
+        };
+        let path: Vec<_> = root.as_os_str().encode_wide().chain([0]).collect();
+        // SAFETY: the absolute local path is terminated and the security
+        // descriptor lives through exclusive directory creation.
+        if unsafe { CreateDirectoryW(path.as_ptr(), &attributes) } == 0 {
+            return Err(WORKSPACE_REFUSED);
+        }
+        let mut workspace = Self {
+            root,
+            root_handle: None,
+            _ancestors: ancestors,
+            installer,
+            user,
+        };
+        workspace.root_handle = Some(workspace.hold(&workspace.root, true)?);
+        Ok(workspace)
+    }
+
+    pub(super) fn path(&self) -> &Path {
+        &self.root
+    }
+
+    pub(super) fn hold(&self, path: &Path, directory: bool) -> Admission<File> {
+        held_entry_for(
+            path,
+            directory,
+            &self.installer,
+            Scope::Runtime,
+            Some(self.user.sid()),
+        )
+        .map_err(|_| WORKSPACE_REFUSED)
+    }
+
+    pub(super) fn hold_original(&self, path: &Path, expected: &[u8]) -> Admission<File> {
+        let mut file = self.hold(path, false)?;
+        let mut bytes = Vec::new();
+        (&mut file)
+            .take(expected.len() as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| WORKSPACE_REFUSED)?;
+        if bytes != expected {
+            return Err(WORKSPACE_REFUSED);
+        }
+        Ok(file)
+    }
+}
+
+impl Drop for WindowsOtioWorkspace {
+    fn drop(&mut self) {
+        drop(self.root_handle.take());
+        // An unresolved inner workspace is nonempty and keeps the private root.
+        // Ancestor handles remain retained during this single-directory removal.
+        let _ = fs::remove_dir(&self.root);
+    }
 }
