@@ -5,7 +5,8 @@ param(
     [Parameter(Mandatory)][string]$OriginalOtio,
     [Parameter(Mandatory)][string]$OriginalSha256,
     [Parameter(Mandatory)][string]$Evidence,
-    [switch]$VerifySavedProject
+    [switch]$VerifySavedProject,
+    [switch]$EditSyntheticReturn
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -164,7 +165,7 @@ public static class KdenliveWindowsInput
             ClassOf(parent) == "ComboBox" && GetDlgCtrlID(parent) == 0)
         {
             string title = ReadControlText(dialog, 64);
-            if (title == "Save As" || title == "Save Project")
+            if (title == "Save As" || title == "Save Project" || title == "OpenTimelineIO Export")
                 return true;
         }
         for (int depth = 0; parent != IntPtr.Zero && parent != dialog && depth < 5; depth++)
@@ -317,7 +318,7 @@ function Observe-Windows {
         $className = $window.Current.ClassName
         $controls = @()
         $native = @()
-        if ($name -cin @('OpenTimelineIO Import', 'Save As', 'Save Project') -or $name -cin $durationTitles) {
+        if ($name -cin @('OpenTimelineIO Import', 'OpenTimelineIO Export', 'Save As', 'Save Project') -or $name -cin $durationTitles) {
             $native = @([KdenliveWindowsInput]::DialogControls([IntPtr]$window.Current.NativeWindowHandle, [uint32]$EditorPid) |
                 ForEach-Object { @{ id = $_.Id; class_name = $_.ClassName; enabled = $_.Enabled } })
             foreach ($role in @([System.Windows.Automation.ControlType]::Edit,
@@ -652,61 +653,61 @@ function Select-ThirdClip([string]$Stage) {
     Select-EditorMenu 'Sequence' 'Select Clip' "$Stage-select-clip" 'Selection'
 }
 
-function Verify-ThirdClipPlaylist {
-    foreach ($edit in @(
-        @{ stage = 'shorten-third'; before = 30; after = 29 },
-        @{ stage = 'restore-third'; before = 29; after = 30 }
-    )) {
-        Select-ThirdClip "$($edit.stage)-target"
-        $dialog = Open-ClipDuration $edit.stage
-        $fields = @(Read-DurationFields $dialog)
-        Record "$($edit.stage)-model.json" @{
-            editor_pid = $EditorPid; position = $fields[0].frames; crop = $fields[1].frames; duration = $fields[2].frames
-        }
-        Assert-ClipDuration $fields $edit.before
-        if ($fields[2].pattern.Current.IsReadOnly -or !$fields[2].control.Current.IsEnabled) {
-            throw 'Kdenlive third clip duration cannot be edited'
-        }
-        Assert-Editor
-        $fields[2].control.SetFocus()
-        $focus = [System.Windows.Automation.AutomationElement]::FocusedElement
-        if ($null -eq $focus -or $focus.Current.ProcessId -ne $EditorPid -or
-            $focus.Current.AutomationId -cnotmatch '^QApplication\.ClipDurationDialog_UI\.m_dur($|\.)') {
-            throw 'Kdenlive Duration field did not receive focus'
-        }
-        Assert-Editor
-        Record "$($edit.stage)-one-frame-intent.json" @{ editor_pid = $EditorPid; duration = $edit.after; automatic_retry = $false }
-        if (![KdenliveWindowsInput]::StepTimecodeField([uint32]$EditorPid, $edit.after -gt $edit.before)) {
-            throw 'Kdenlive did not receive the one-frame action in the original window'
-        }
-        $requested = Await-Unique 'requested one-frame duration' {
-            $model = @(Read-DurationFields $dialog)
-            if ($model[2].frames -eq $edit.after) {
-                Assert-ClipDuration $model $edit.after
-                @{ duration = $model[2].frames }
-            }
-        }
-        Record "$($edit.stage)-one-frame-observed.json" $requested
-        # TimecodeDisplay keeps a numeric model and updates it on editingFinished.
-        # Move focus once, then require its dependent out-point field to change.
-        Assert-Editor
-        Record "$($edit.stage)-commit-field-intent.json" @{ editor_pid = $EditorPid; automatic_retry = $false }
-        if (![KdenliveWindowsInput]::CommitTimecodeField([uint32]$EditorPid)) {
-            throw 'Kdenlive duration field focus change was not confirmed'
-        }
-        $expectedEnd = $fields[3].frames + $edit.before - $edit.after
-        $commit = Await-Unique 'applied timecode and dependent crop end' {
-            $model = @(Read-DurationFields $dialog)
-            Assert-ClipDuration $model $edit.after
-            if ($model[3].frames -eq $expectedEnd) { @{ crop_end = $expectedEnd } }
-        }
-        Record "$($edit.stage)-field-committed.json" $commit
-        $button = Await-Unique 'Duration OK' {
-            Find-Control @($dialog) ([System.Windows.Automation.ControlType]::Button) 'OK'
-        }
-        Invoke-Control $button "$($edit.stage)-accept" -ConfirmDialogTransition
-        Await-DurationClosed
+function Resize-ThirdClip($Edit) {
+    Select-ThirdClip "$($edit.stage)-target"
+    $dialog = Open-ClipDuration $edit.stage
+    $fields = @(Read-DurationFields $dialog)
+    Record "$($edit.stage)-model.json" @{
+        editor_pid = $EditorPid; position = $fields[0].frames; crop = $fields[1].frames; duration = $fields[2].frames
     }
+    Assert-ClipDuration $fields $edit.before
+    if ($fields[2].pattern.Current.IsReadOnly -or !$fields[2].control.Current.IsEnabled) {
+        throw 'Kdenlive third clip duration cannot be edited'
+    }
+    Assert-Editor
+    $fields[2].control.SetFocus()
+    $focus = [System.Windows.Automation.AutomationElement]::FocusedElement
+    if ($null -eq $focus -or $focus.Current.ProcessId -ne $EditorPid -or
+        $focus.Current.AutomationId -cnotmatch '^QApplication\.ClipDurationDialog_UI\.m_dur($|\.)') {
+        throw 'Kdenlive Duration field did not receive focus'
+    }
+    Assert-Editor
+    Record "$($edit.stage)-one-frame-intent.json" @{ editor_pid = $EditorPid; duration = $edit.after; automatic_retry = $false }
+    if (![KdenliveWindowsInput]::StepTimecodeField([uint32]$EditorPid, $edit.after -gt $edit.before)) {
+        throw 'Kdenlive did not receive the one-frame action in the original window'
+    }
+    $requested = Await-Unique 'requested one-frame duration' {
+        $model = @(Read-DurationFields $dialog)
+        if ($model[2].frames -eq $edit.after) {
+            Assert-ClipDuration $model $edit.after
+            @{ duration = $model[2].frames }
+        }
+    }
+    Record "$($edit.stage)-one-frame-observed.json" $requested
+    # TimecodeDisplay keeps a numeric model and updates it on editingFinished.
+    # Move focus once, then require its dependent out-point field to change.
+    Assert-Editor
+    Record "$($edit.stage)-commit-field-intent.json" @{ editor_pid = $EditorPid; automatic_retry = $false }
+    if (![KdenliveWindowsInput]::CommitTimecodeField([uint32]$EditorPid)) {
+        throw 'Kdenlive duration field focus change was not confirmed'
+    }
+    $expectedEnd = $fields[3].frames + $edit.before - $edit.after
+    $commit = Await-Unique 'applied timecode and dependent crop end' {
+        $model = @(Read-DurationFields $dialog)
+        Assert-ClipDuration $model $edit.after
+        if ($model[3].frames -eq $expectedEnd) { @{ crop_end = $expectedEnd } }
+    }
+    Record "$($edit.stage)-field-committed.json" $commit
+    $button = Await-Unique 'Duration OK' {
+        Find-Control @($dialog) ([System.Windows.Automation.ControlType]::Button) 'OK'
+    }
+    Invoke-Control $button "$($edit.stage)-accept" -ConfirmDialogTransition
+    Await-DurationClosed
+}
+
+function Verify-ThirdClipPlaylist {
+    Resize-ThirdClip @{ stage = 'shorten-third'; before = 30; after = 29 }
+    Resize-ThirdClip @{ stage = 'restore-third'; before = 29; after = 30 }
     Select-ThirdClip 'verify-restoration-target'
     $dialog = Open-ClipDuration 'verify-restoration'
     Assert-ClipDuration @(Read-DurationFields $dialog) 30
@@ -718,6 +719,17 @@ function Verify-ThirdClipPlaylist {
     Await-DurationClosed
 }
 
+function Export-SyntheticCut([string]$Stage, [string]$Filename) {
+    $destination = Join-Path $Evidence $Filename
+    if (Test-Path -LiteralPath $destination) { throw 'Kdenlive OTIO destination is occupied' }
+    Select-EditorMenu 'File' 'OpenTimelineIO Export...' $Stage
+    Choose-File @('OpenTimelineIO Export') $destination 'Save' $Stage
+    if (!(Test-Path -LiteralPath $destination -PathType Leaf)) {
+        throw 'Kdenlive did not write its native OTIO export'
+    }
+}
+
+if ($EditSyntheticReturn -and !$VerifySavedProject) { throw 'The edited return requires the verified first save' }
 if ($OriginalSha256 -cnotmatch '^[a-f0-9]{64}$' -or
     (Get-FileHash -LiteralPath $OriginalOtio -Algorithm SHA256).Hash.ToLowerInvariant() -cne $OriginalSha256 -or
     (Test-Path -LiteralPath $savePath)) { throw 'Kdenlive import input or save destination differs' }
@@ -744,6 +756,15 @@ if ($VerifySavedProject) {
         editor_pid = $EditorPid; hwnd = $window.Current.NativeWindowHandle; name = (Control-Name $window)
         saved_sha256 = $digest; submit_actions = 0
     }
+    if ($EditSyntheticReturn) {
+        $edited = Join-Path $Evidence 'edited.kdenlive'
+        if (Test-Path -LiteralPath $edited) { throw 'Kdenlive edited project destination is occupied' }
+        Resize-ThirdClip @{ stage = 'edit-return-third'; before = 30; after = 29 }
+        Select-EditorMenu 'File' 'Save As...' 'edited-save'
+        Choose-File @('Save As', 'Save Project') $edited 'Save' 'edited-save'
+        if (!(Test-Path -LiteralPath $edited -PathType Leaf)) { throw 'Kdenlive did not save the edited cut' }
+        Export-SyntheticCut 'edited-export' 'edited.otio'
+    }
     return
 }
 try {
@@ -768,6 +789,7 @@ try {
         source_sha256 = $OriginalSha256
         saved_sha256 = (Get-FileHash -LiteralPath $savePath -Algorithm SHA256).Hash.ToLowerInvariant()
     }
+    Export-SyntheticCut 'initial-export' 'received.otio'
 } catch {
     $originalError = $_
     try {

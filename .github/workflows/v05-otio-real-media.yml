@@ -635,7 +635,7 @@ jobs:
           python-version: '3.13'
       - name: Verify the native editor admission and installation controls
         working-directory: tooling/otio-media
-        run: python -B -E -s -m unittest -v test_kdenlive_native_distribution test_kdenlive_native_installation test_kdenlive_native_source test_kdenlive_macos_editor
+        run: python -B -E -s -m unittest -v test_kdenlive_native_distribution test_kdenlive_native_installation test_kdenlive_native_source test_kdenlive_macos_editor test_kdenlive_macos_reopen
       - name: Require the native window probe to be selected on its own
         if: inputs.kdenlive_editor_window_probe && (inputs.kdenlive_editor_platform != 'macos' || inputs.kdenlive_accessibility_probe || inputs.kdenlive_editor_first_save)
         shell: bash
@@ -690,12 +690,15 @@ jobs:
       - name: Produce the first-party OTIO cut and its original media
         if: inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe
         run: python -B -E -s tooling/otio-media/kdenlive_native_source.py
-      - name: Observe the Windows native import and initial save
+      - name: Verify the Windows native save, reopen and edited OTIO return
         if: inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe && runner.os == 'Windows'
         run: python -B -E -s tooling/otio-media/kdenlive_windows_editor.py
       - name: Observe the macOS native import and initial save
         if: inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe && runner.os == 'macOS'
         run: python -B -E -s tooling/otio-media/kdenlive_macos_editor.py
+      - name: Cold reopen the same native macOS project
+        if: inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe && runner.os == 'macOS'
+        run: python -B -E -s tooling/otio-media/kdenlive_macos_reopen.py
       - name: Retain archive and installed executable identities
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -734,10 +737,14 @@ jobs:
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/windows-editor/initial.kdenlive
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/windows-reopen/*.json
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/windows-reopen/*.log
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/windows-reopen/edited.kdenlive
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/macos-initial/*.json
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/macos-initial/editor.stdout
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/macos-initial/editor.stderr
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/macos-initial/initial.kdenlive
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/macos-reopen/*.json
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/macos-reopen/editor.stdout
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/macos-reopen/editor.stderr
           if-no-files-found: warn
           retention-days: 7
 
