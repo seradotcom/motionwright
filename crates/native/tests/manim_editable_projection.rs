@@ -288,6 +288,138 @@ fn editable_projection_refuses_unrepresentable_or_uncleared_data_without_rewriti
     assert_eq!(service.project(p.id).unwrap(), p);
 }
 #[test]
+fn returned_plan_json_reintegrates_exact_controls_and_retains_originals() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("returned-plan.sqlite3");
+    let service = StudioService::open(&database).unwrap();
+    let p = source(&service, temp.path());
+    let scene_id = p.scenes[1].id;
+    let node_id = p.scenes[1].nodes[1].id;
+    let bundle = export_saved_manim_editable_source_bundle(
+        &service,
+        p.id,
+        &p.stamp(),
+        scene_id,
+        p.deliverables[0].id,
+    )
+    .unwrap();
+    let original = profile::inspect_source_bundle(&bundle).unwrap();
+    let (mut p, original_id) = attach(
+        &service,
+        temp.path(),
+        &p,
+        "original.mwedit.zip",
+        &bundle,
+        SOURCE_BUNDLE_MIME_V2,
+    );
+    let mut edited: profile::Plan = serde_json::from_slice(&original.entries["plan.json"]).unwrap();
+    let node = edited
+        .nodes
+        .iter_mut()
+        .find(|node| node.node_id == node_id)
+        .unwrap();
+    node.x_px += 24.0;
+    node.opacity = 0.5;
+    node.fill_hex = "#A3D2FF".into();
+
+    let bytes = serde_json::to_vec_pretty(&edited).unwrap();
+    let (next, returned_id) = attach(
+        &service,
+        temp.path(),
+        &p,
+        "returned-plan.json",
+        &bytes,
+        "application/json",
+    );
+    p = next;
+    let mut other_node = edited.clone();
+    other_node
+        .nodes
+        .iter_mut()
+        .find(|node| node.node_id != node_id)
+        .unwrap()
+        .x_px += 12.0;
+    let mut foreign_binding = edited.clone();
+    foreign_binding.binding.revision += 1;
+    let mut injected = serde_json::to_value(&edited).unwrap();
+    injected["program"] = serde_json::json!("import os");
+    let mut refused = Vec::new();
+    for (name, candidate) in [
+        (
+            "second-node.json",
+            serde_json::to_value(other_node).unwrap(),
+        ),
+        (
+            "foreign.json",
+            serde_json::to_value(foreign_binding).unwrap(),
+        ),
+        ("program.json", injected),
+    ] {
+        let (next, id) = attach(
+            &service,
+            temp.path(),
+            &p,
+            name,
+            &serde_json::to_vec(&candidate).unwrap(),
+            "application/json",
+        );
+        p = next;
+        refused.push(id);
+    }
+
+    let inspect = |id, property| {
+        preview_saved_manim_editable_edit(
+            &service,
+            p.id,
+            &p.stamp(),
+            original_id,
+            id,
+            node_id,
+            property,
+        )
+    };
+    for id in refused {
+        assert!(inspect(id, EditableProperty::Controls).is_err());
+    }
+    assert!(inspect(returned_id, EditableProperty::Transform).is_err());
+    let proposal = inspect(returned_id, EditableProperty::Controls).unwrap();
+    assert!(matches!(
+        &proposal.change,
+        Change::ApplyCreativePatch { .. }
+    ));
+    assert!(!proposal.native_execution_performed);
+    assert!(!proposal.imported_source_authority_used);
+    assert_eq!(service.project(p.id).unwrap(), p);
+    let after = service
+        .apply(p.id, &p.stamp(), "review-returned-plan", &proposal.change)
+        .unwrap()
+        .project;
+    assert_eq!(after.revision, p.revision + 1);
+    assert_eq!(after.assets, p.assets);
+    let expected = after.scenes[1]
+        .nodes
+        .iter()
+        .find(|node| node.id == node_id)
+        .unwrap();
+    assert_eq!(
+        (expected.x, expected.opacity, expected.style.fill.as_deref()),
+        (874.0, 0.5, Some("#A3D2FF"))
+    );
+    assert!(inspect(returned_id, EditableProperty::Controls).is_err());
+    drop(service);
+    let reopened = StudioService::open(&database).unwrap();
+    assert_eq!(reopened.project(p.id).unwrap(), after);
+    assert_eq!(
+        reopened
+            .store()
+            .lock()
+            .read_blob(&proposal.edited_source_sha256, 1024 * 1024)
+            .unwrap(),
+        bytes
+    );
+}
+
+#[test]
 fn editable_text_import_is_one_service_change_and_survives_sqlite_reopen() {
     let temp = tempfile::tempdir().unwrap();
     let database = temp.path().join("source.sqlite3");

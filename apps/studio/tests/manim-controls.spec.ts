@@ -1,20 +1,22 @@
 import { expect, test, type Page } from "@playwright/test";
 import { applyChange } from "../src/api";
 import type { Change, Project } from "../src/types";
-async function open(page:Page) {
+async function open(page:Page, editedSource = "edited.mwedit.zip") {
   await page.exposeFunction("__MANIM_SIMULATE_CHANGE__",async(project:Project,change:Change)=>applyChange(project,change));
   await page.goto("/tests/fixtures/manim-controls.html");
-  await page.getByRole("combobox",{name:"Original package",exact:true}).selectOption({label:"original.mwedit.zip"});
-  await page.getByRole("combobox",{name:"Edited package",exact:true}).selectOption({label:"edited.mwedit.zip"});
+  const original = page.getByRole("combobox",{name:"Original package",exact:true});
+  await expect(original.getByRole("option",{name:"returned-plan.json",exact:true})).toHaveCount(0);
+  await original.selectOption({label:"original.mwedit.zip"});
+  await page.getByRole("combobox",{name:"Edited source",exact:true}).selectOption({label:editedSource});
   await page.getByRole("button",{name:"Read original attached Manim package"}).click();
   await expect(page.getByRole("combobox",{name:"Controls to reintegrate",exact:true})).toHaveValue("controls");
-  await page.getByRole("button",{name:"Compare returned package"}).click();
+  await page.getByRole("button",{name:"Compare returned source"}).click();
 }
 async function snapshot(page:Page) {
   return page.evaluate(()=>(window as unknown as {__MANIM_COMPONENT__:{project:()=>Project;applies:()=>number}}).__MANIM_COMPONENT__.project());
 }
 test("complete returned controls are reviewed together, saved once, retained on reopen and undone together",async({page})=>{
-  await open(page);
+  await open(page,"returned-plan.json");
   const before=await snapshot(page),table=page.getByRole("table",{name:"Manim control changes"});
   for(const field of ["x","y","rotation_deg","opacity","text","style.fill","style.font_size"])
     await expect(table.getByRole("rowheader",{name:field,exact:true})).toBeVisible();

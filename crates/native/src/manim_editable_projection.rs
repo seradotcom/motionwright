@@ -2,13 +2,13 @@
 //! single domain Change contracts. Imported Python has no execution authority.
 use crate::NativeResult;
 use motionwright_domain::{
-    BlendMode, CanvasTransform, Change, CoordinateSpace, CreativePatch, FramingStrategy, NodeStyle,
-    OutputColorSpace, OutputContainer, Project, RendererKind, RevisionStamp, ScopedCanvasEdit,
-    VideoCodec,
+    Asset, BlendMode, CanvasTransform, Change, CoordinateSpace, CreativePatch, FramingStrategy,
+    NodeStyle, OutputColorSpace, OutputContainer, Project, RendererKind, RevisionStamp,
+    ScopedCanvasEdit, VideoCodec,
 };
 use motionwright_manim_profile::{
-    ManimCanvasV2, ManimFrameClockV2, ManimMatteV2, ManimOutputRoleV2, ManimRenderProfile,
-    ManimSceneBindingV2, SOURCE_BUNDLE_MIME_V2, editable_scene as profile,
+    MAX_SOURCE_ENTRY_BYTES_V2, ManimCanvasV2, ManimFrameClockV2, ManimMatteV2, ManimOutputRoleV2,
+    ManimRenderProfile, ManimSceneBindingV2, SOURCE_BUNDLE_MIME_V2, editable_scene as profile,
 };
 use motionwright_service::{StudioService, brand_font_source};
 use semwright_native_sdk::{Error, ErrorCode};
@@ -22,6 +22,8 @@ use std::{
     path::Path,
 };
 use uuid::Uuid;
+
+pub const RETURNED_MANIM_PLAN_MIME: &str = "application/json";
 
 fn reject(message: &'static str) -> Error {
     Error::new(ErrorCode::Unsupported, message)
@@ -441,19 +443,20 @@ pub(crate) fn stage_font_inputs(root: &Path, package: &profile::Package) -> Nati
     }
     Ok(())
 }
-fn read_attached(
-    service: &StudioService,
-    project: &Project,
-    asset_id: Uuid,
-) -> NativeResult<(String, profile::Package)> {
-    let asset = project
+fn attached_asset(project: &Project, asset_id: Uuid) -> NativeResult<&Asset> {
+    project
         .assets
         .iter()
         .find(|row| row.id == asset_id)
-        .ok_or_else(|| invalid("Editable source is not attached to Project"))?;
-    if asset.media_type != SOURCE_BUNDLE_MIME_V2 {
-        return Err(reject("Attached source has unsupported media type"));
-    }
+        .ok_or_else(|| invalid("Editable source is not attached to Project"))
+}
+
+fn read_attached_bytes(
+    service: &StudioService,
+    project: &Project,
+    asset: &Asset,
+    max_bytes: usize,
+) -> NativeResult<(String, Vec<u8>)> {
     let digest = asset
         .content_sha256
         .as_ref()
@@ -469,19 +472,74 @@ fn read_attached(
             return Err(stale());
         }
         store
-            .read_blob(digest, profile::MAX_BUNDLE_BYTES as u64)
+            .read_blob(digest, max_bytes as u64)
             .map_err(crate::storage_error)?
     };
     if hex::encode(Sha256::digest(&bytes)) != *digest {
         return Err(invalid("Editable source differs from attached CAS digest"));
     }
+    Ok((digest.clone(), bytes))
+}
+
+fn read_attached(
+    service: &StudioService,
+    project: &Project,
+    asset_id: Uuid,
+) -> NativeResult<(String, profile::Package)> {
+    let asset = attached_asset(project, asset_id)?;
+    if asset.media_type != SOURCE_BUNDLE_MIME_V2 {
+        return Err(reject(
+            "The original Manim source must be a compiler-produced ZIP",
+        ));
+    }
+    let (digest, bytes) = read_attached_bytes(service, project, asset, profile::MAX_BUNDLE_BYTES)?;
     let package = profile::inspect_source_bundle(&bytes)
         .map_err(|_| reject("Imported editable source differs from closed compiler"))?;
     if package.plan.binding.project_id != project.id {
         return Err(reject("Editable source belongs to another Project"));
     }
-    Ok((digest.clone(), package))
+    Ok((digest, package))
 }
+
+enum ReturnedEdit {
+    Package(profile::Package),
+    Plan(profile::Plan),
+}
+
+impl ReturnedEdit {
+    fn plan(&self) -> &profile::Plan {
+        match self {
+            Self::Package(package) => &package.plan,
+            Self::Plan(plan) => plan,
+        }
+    }
+}
+
+fn read_returned_edit(
+    service: &StudioService,
+    project: &Project,
+    asset_id: Uuid,
+    origin_binding: &ManimSceneBindingV2,
+) -> NativeResult<(String, ReturnedEdit)> {
+    let asset = attached_asset(project, asset_id)?;
+    if asset.media_type != RETURNED_MANIM_PLAN_MIME {
+        let (digest, package) = read_attached(service, project, asset_id)?;
+        return Ok((digest, ReturnedEdit::Package(package)));
+    }
+    let (digest, bytes) = read_attached_bytes(service, project, asset, MAX_SOURCE_ENTRY_BYTES_V2)?;
+    let plan: profile::Plan = serde_json::from_slice(&bytes).map_err(|_| {
+        invalid("Returned Manim plan must be the typed plan.json from the original package")
+    })?;
+    profile::validate_plan(&plan)
+        .map_err(|_| reject("Returned Manim plan is outside the closed editable profile"))?;
+    if plan.binding != *origin_binding {
+        return Err(reject(
+            "Returned Manim plan belongs to a different original source",
+        ));
+    }
+    Ok((digest, ReturnedEdit::Plan(plan)))
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct InspectedEditableSource {
     pub source_asset_id: Uuid,
@@ -850,9 +908,10 @@ pub fn preview_saved_manim_editable_edit(
     let fonts = verified_fonts(service, id, expected, &plan)?;
     let rebound = profile::rebind_source(&origin, &plan, &fonts)
         .map_err(|_| reject("Original editable source no longer describes saved controls"))?;
-    let (edited_digest, edited) = read_attached(service, &project, edited_id)?;
-    let node = edited
-        .plan
+    let (edited_digest, edited) =
+        read_returned_edit(service, &project, edited_id, &origin.plan.binding)?;
+    let edited_plan = edited.plan();
+    let node = edited_plan
         .nodes
         .iter()
         .find(|row| row.node_id == node_id)
@@ -880,10 +939,10 @@ pub fn preview_saved_manim_editable_edit(
         EditableProperty::Style => Change::UpdateCanvasStyle {
             scene_id,
             node_id,
-            style: editable_style(&project, scene_id, node, &edited.plan)?,
+            style: editable_style(&project, scene_id, node, edited_plan)?,
         },
         EditableProperty::Controls => {
-            editable_controls(&project, scene_id, before, node, &edited.plan)?
+            editable_controls(&project, scene_id, before, node, edited_plan)?
         }
     };
     let mut candidate = project.clone();
@@ -897,9 +956,24 @@ pub fn preview_saved_manim_editable_edit(
         plan.binding.deliverable_id,
     )?;
     let proposed_fonts = verified_fonts(service, id, expected, &proposed)?;
-    let verified = profile::rebind_source(&edited, &proposed, &proposed_fonts).map_err(|_| {
-        reject("Editable import changes fields outside the selected one-node Change")
-    })?;
+    let mismatch = || reject("Editable import changes fields outside the selected one-node Change");
+    let verified = match edited {
+        ReturnedEdit::Package(package) => {
+            profile::rebind_source(&package, &proposed, &proposed_fonts).map_err(|_| mismatch())?
+        }
+        ReturnedEdit::Plan(plan) => {
+            // Compare the entire returned plan at its already checked export
+            // stamp; compile only the proposal rebuilt from the current Project.
+            let mut expected_return = proposed.clone();
+            expected_return.binding = origin.plan.binding;
+            if plan != expected_return {
+                return Err(mismatch());
+            }
+            profile::source_package(&proposed, &proposed_fonts).map_err(|_| {
+                reject("Returned Manim plan did not compile from the verified Project")
+            })?
+        }
+    };
     if current(service, id, expected)? != project {
         return Err(stale());
     }
