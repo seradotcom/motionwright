@@ -910,6 +910,8 @@ function DeliverView({
   commitRecipe,
   desktopMode,
   onImportBundle,
+  retainedImportPending,
+  onReviewRetainedImport,
   onOpenAudio,
   currentProjectState,
   renderEvidence,
@@ -926,6 +928,8 @@ function DeliverView({
   commitRecipe: (change: Change) => Promise<Project>;
   desktopMode: boolean;
   onImportBundle: (path: string, plan: PortableBundlePlan) => Promise<Project>;
+  retainedImportPending: boolean;
+  onReviewRetainedImport: () => void;
   onOpenAudio: () => void;
   currentProjectState: () => DeliveryProjectState;
   renderEvidence: MotionCanvasRenderEvidence | null;
@@ -1013,7 +1017,7 @@ function DeliverView({
 
   const importBundle = async () => {
     const inspected = bundleInspection;
-    if (!desktopMode || !inspected || inspected.path !== importPath.trim()) return;
+    if (!desktopMode || retainedImportPending || !inspected || inspected.path !== importPath.trim()) return;
     setPortableBusy("import");
     setPortableStatus(null);
     setPortableError(null);
@@ -1163,7 +1167,7 @@ function DeliverView({
             <button
               type="button"
               className="button button-primary"
-              disabled={!desktopMode || !bundlePlan || portableBusy !== null}
+              disabled={!desktopMode || retainedImportPending || !bundlePlan || portableBusy !== null}
               onClick={() => void importBundle()}
             >
               {portableBusy === "import" ? "Importing…" : "Import verified bundle"}
@@ -1191,6 +1195,13 @@ function DeliverView({
           </div>
         )}
 
+        {desktopMode && retainedImportPending && (
+          <div className="portable-message portable-actions portable-source-actions">
+            <span role="status">Check the retained import before importing another project.</span>
+            <button type="button" className="button" disabled={portableBusy !== null}
+              onClick={onReviewRetainedImport}>Review retained import</button>
+          </div>
+        )}
         {portableError && (
           <div className="portable-message error" role="alert">
             <strong>Portable operation blocked.</strong>
@@ -1508,6 +1519,7 @@ export default function App() {
 
   const [bootReady, setBootReady] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [focusRetainedImports, setFocusRetainedImports] = useState(false);
   const [libraryNotice, setLibraryNotice] = useState<string | null>(null);
   const [creationCopies, setCreationCopies] = useState<ProjectCreationCopy[]>([]);
   const [creationLimited, setCreationLimited] = useState(false);
@@ -2083,7 +2095,9 @@ export default function App() {
 
   const libraryDialog = desktopBridge ? (
     <ProjectLibraryDialog key="project-library" open={libraryOpen}
-      currentProjectId={view ? projectViewId(view) : null} onClose={() => setLibraryOpen(false)}
+      currentProjectId={view ? projectViewId(view) : null}
+      focusRetainedImports={focusRetainedImports}
+      onClose={() => { setLibraryOpen(false); setFocusRetainedImports(false); }}
       onList={listProjectLibrary} onOpen={openLibraryProject}
       onBrowse={id => openLibraryProject(id, "pages")}
       onCreate={createLibraryProject} creationCopies={creationCopies}
@@ -2292,6 +2306,12 @@ export default function App() {
             exportEvidence={nativeExportReceipt}
             onExportEvidence={(result) => setNativeExportReceipt(result)}
             onImportBundle={importPortableBundle}
+            retainedImportPending={bundleLimited || Boolean(bundleError) || bundleCopies.length > 0}
+            onReviewRetainedImport={() => {
+              refreshBundleImports();
+              setFocusRetainedImports(true);
+              setLibraryOpen(true);
+            }}
           />
         );
     }

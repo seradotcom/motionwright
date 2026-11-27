@@ -493,7 +493,7 @@ test("legacy archive inspection discloses losses and the imported project reopen
   expect(await bundleCopies(page)).toEqual([]);
 });
 
-test("portable library recovers a lost import reply from its original commit and preserves a later author", async ({ page, lifecycle }, testInfo) => {
+test("portable library recovers a lost import from Delivery using the original commit and preserves later edits", async ({ page, lifecycle }, testInfo) => {
   const { service, peers } = lifecycle;
   const original = await originalPortableFixture(testInfo);
   const invoke = service.invoke.bind(service); let imported: Project | undefined, interrupted = false;
@@ -506,6 +506,8 @@ test("portable library recovers a lost import reply from its original commit and
     return result;
   };
   try {
+    await page.goto("/");
+    await createFromUi(page, "Current saved project before portable import");
     await inspectPortableFromLibrary(page, original.path);
     await dialog(page).getByRole("button", { name: "Import inspected project", exact: true }).click();
     await expect(dialog(page).getByRole("alert")).toContainText("response loss");
@@ -513,8 +515,12 @@ test("portable library recovers a lost import reply from its original commit and
     const peer = await service.peer(); peers.push(peer);
     const later = await peer.apply(imported!, { type: "rename_project", title: "Later saved imported project" });
     await rename(original.path, testInfo.outputPath("portable-original-retained-elsewhere"));
-    await page.reload(); await openLibrary(page);
-    await dialog(page).getByRole("button", { name: "Check original import", exact: true }).click();
+    await page.reload();
+    await button(page, "Deliver").click();
+    await button(page, "Review retained import").click();
+    const region = dialog(page).getByRole("region", { name: "Retained portable imports" });
+    await expect(region).toBeFocused();
+    await region.getByRole("button", { name: "Check original import", exact: true }).click();
     await revision(page, later.revision); await expect(page.locator(".project-title")).toHaveText(later.title);
     expect(await service.project(later.id)).toEqual(later);
     expect(calls(service, "import_project_bundle")).toHaveLength(1);

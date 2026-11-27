@@ -40,6 +40,7 @@ export interface ProjectLibraryDialogProps {
   onRecoverBundle?: (copy: BundleImportCopy) => Promise<Pick<Project, "id"> | null>;
   onDiscardBundle?: (copy: BundleImportCopy) => void;
   onRefreshBundles?: () => void;
+  focusRetainedImports?: boolean;
 }
 
 type Opening = { kind: "open"; projectId: string; title: string } | { kind: "create" } | { kind: "recover"; title: string } | { kind: "bundle"; title: string };
@@ -66,7 +67,7 @@ export function ProjectLibraryDialog({
   creationCopies = [], creationLimited = false, creationError = null,
   onRecoverCreation, onDiscardCreation, onRefreshCreations,
   onChooseBundleSource, onInspectBundle, onImportBundle, bundleCopies = [], bundleLimited = false, bundleError = null,
-  onRecoverBundle, onDiscardBundle, onRefreshBundles,
+  onRecoverBundle, onDiscardBundle, onRefreshBundles, focusRetainedImports,
 }: ProjectLibraryDialogProps) {
   const titleId = useId();
   const descriptionId = useId();
@@ -74,6 +75,7 @@ export function ProjectLibraryDialog({
   const createHintId = useId();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const retainedImportsRef = useRef<HTMLElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const visibleRef = useRef(open);
   const callbacks = useRef({ onClose, onList, onOpen, onBrowse, onCreate });
@@ -150,6 +152,10 @@ export function ProjectLibraryDialog({
       if (previous?.isConnected && !dialog.contains(previous)) previous.focus();
     };
   }, [open, readPage]);
+
+  useEffect(() => {
+    if (open && focusRetainedImports) retainedImportsRef.current?.focus();
+  }, [open, focusRetainedImports]);
 
   const requestClose = useCallback(() => {
     if (operationRef.current) {
@@ -427,7 +433,7 @@ export function ProjectLibraryDialog({
           </div>}
           {unresolvedBundle && <p role="status">Check the retained import below before importing another project. Existing saved projects remain available.</p>}
         </section>}
-        {(bundleCopies.length > 0 || bundleError || bundleLimited) && <section className="project-library-creations" aria-label="Retained portable imports">
+        {(bundleCopies.length > 0 || bundleError || bundleLimited) && <section ref={retainedImportsRef} tabIndex={-1} className="project-library-creations" aria-label="Retained portable imports">
           <div className="project-library-list-heading"><h3>Retained portable imports</h3>
             {onRefreshBundles && <button type="button" className="project-library-button" disabled={busy} onClick={onRefreshBundles}>Refresh portable imports</button>}
           </div>

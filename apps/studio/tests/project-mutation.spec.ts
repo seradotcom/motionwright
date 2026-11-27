@@ -289,6 +289,70 @@ test("a pending portable restore cannot race source edits or publish into anothe
   }).__RESTORE_FIXTURE__.revisions)).toEqual([0]);
 });
 
+test("Delivery recovers a retained portable import without replaying it", async ({ page }) => {
+  const initial = { ...fixtureBootstrap, native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" as const } };
+  await seedSyntheticProjectSelection(page, initial.project.id);
+  const restored = {
+    ...initial.project, id: "01900000-0000-7000-8000-000000000111",
+    generation: "01900000-0000-7000-8000-000000000112", revision: 2,
+    title: "Saved edits after original import",
+  };
+  const plan = {
+    project_id: restored.id, title: "Original portable project",
+    source_generation: "01900000-0000-7000-8000-000000000113",
+    revision: "0", event_count: 0, blob_count: 0, total_blob_bytes: "0",
+    rotates_generation: true, fingerprint: "a".repeat(64),
+  };
+  const copyId = "01900000-0000-7000-8000-000000000114";
+  const key = "motionwright.bundle-import-continuity/1/" + copyId;
+  const copy = {schema: "motionwright.bundle-import-continuity/1", copyId,
+    createdAt: 1, path: "/fixtures/original.motionwright", plan};
+  await page.addInitScript(({ boot, restored, plan, key, copy }) => {
+    localStorage.setItem(key, JSON.stringify(copy));
+    const calls: string[] = [];
+    Reflect.set(window, "__PORTABLE_RECOVERY_CALLS__", calls);
+    const runtime = window as unknown as {
+      __TAURI_INTERNALS__: {invoke: (command: string, args?: {request?: {
+        project_id?: string; fingerprint?: string;
+      }}) => Promise<unknown>};
+    };
+    runtime.__TAURI_INTERNALS__ = {invoke: async (command, args) => {
+      calls.push(command);
+      if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+        const project = args?.request?.project_id === restored.id ? restored : boot.project;
+        return window.__SYNTHETIC_PROJECT_READ__(command, args, { ...boot, project });
+      }
+      if (command === "list_projects") return { items: [], next_cursor: null, truncated: false };
+      if (command === "inspect_project_bundle") return plan;
+      if (command === "recover_project_bundle_import") {
+        if (args?.request?.project_id !== plan.project_id || args?.request?.fingerprint !== plan.fingerprint) {
+          throw new Error("Recovery did not use the original import identity");
+        }
+        return { operation_id: "01900000-0000-7000-8000-000000000115",
+          project_id: restored.id, generation: restored.generation, fingerprint: plan.fingerprint };
+      }
+      throw new Error("Unexpected recovery command " + command);
+    }};
+  }, { boot: initial, restored, plan, key, copy });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Deliver", exact: true }).click();
+  await page.getByLabel("Portable import path").fill("/fixtures/another.motionwright");
+  await page.getByRole("button", { name: "Inspect bundle", exact: true }).click();
+  await expect(page.getByLabel("Portable bundle preflight")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Import verified bundle" })).toBeDisabled();
+  await page.getByRole("button", { name: "Review retained import", exact: true }).click();
+  const region = page.getByRole("region", { name: "Retained portable imports" });
+  await expect(region).toBeFocused();
+  await region.getByRole("button", { name: "Check original import" }).click();
+  await expect(page.locator(".brand-copy")).toContainText(restored.title);
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r2");
+  expect(await page.evaluate(key => localStorage.getItem(key), key)).toBeNull();
+  const calls: string[] = await page.evaluate(() => Reflect.get(window, "__PORTABLE_RECOVERY_CALLS__"));
+  expect(calls.filter(command => command === "recover_project_bundle_import")).toHaveLength(1);
+  expect(calls).not.toContain("issue_effect_grant");
+  expect(calls).not.toContain("import_project_bundle");
+});
+
 for (const action of ["New profile", "Derive selected"] as const) {
   test(`${action}: failed native CAS does not select an unsaved delivery profile`, async ({ page }) => {
     const initial = { ...fixtureBootstrap, native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" as const } };
