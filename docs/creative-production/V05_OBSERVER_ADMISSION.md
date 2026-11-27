@@ -35,8 +35,9 @@ classes of provenance:
    producer ID/source SHA, frame ID and PNG SHA-256. The verifier and owner
    public keys must differ, and the verifier ID cannot equal the renderer
    producer ID. The gate independently rereads and decodes the original
-   PNG (not just a PDF/JSON receipt) and checks the exact claimed width,
-   height and bytes.
+   PNG and checks the claimed width and height against the same captured
+   bytes used for SHA-256. Admission rechecks the trusted owner policy after
+   decoding so a concurrent revocation prevents a new accepted result.
 
 The current fixed technical method accepts only a 4096×4096-or-smaller
 original RGB/RGBA PNG, with explicit

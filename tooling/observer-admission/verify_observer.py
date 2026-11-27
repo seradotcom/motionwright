@@ -6,7 +6,7 @@ Two separate Ed25519 signing keys are mandatory:
    verifier source bytes, method, scope, limitations and active/revoked policy.
  * A different verifier key signs its own bounded frame observation.
 
-The technical gate verifies signatures AND independently reopens PNG bytes.
+The technical gate verifies signatures AND independently decodes the captured PNG bytes.
 It NEVER executes submitted verifier source code, installs renderers, confers
 Semwright Driver Host permissions, approves creative quality or publishes.
 """
@@ -14,14 +14,20 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import io
 import json
+import os
 from pathlib import Path
 import re
+import stat
 import sys
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from PIL import Image,UnidentifiedImageError
+from PIL import Image
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from mlt_official_runtime_intake import IntakeError, capture_regular
 
 SCHEMA="motionwright.observation-verifier-admission/1"
 POLICY="motionwright.observation-owner-policy/1"
@@ -73,11 +79,23 @@ def canonical(value:dict)->bytes:
     return json.dumps(value,sort_keys=True,separators=(",",":"),
                       ensure_ascii=False,allow_nan=False).encode("utf8")
 
+def link_or_reparse(path:Path)->bool:
+    evidence=path.lstat()
+    return stat.S_ISLNK(evidence.st_mode) or bool(
+        getattr(evidence,"st_file_attributes",0)&stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+def capture_bytes(path:Path,maximum:int,label:str)->bytes:
+    try:
+        require(not link_or_reparse(path),f"{label} cannot be linked")
+        data,_=capture_regular(path,maximum)
+    except (OSError,IntakeError)as error:
+        raise AdmissionRejected(f"{label} is missing, changed, or exceeds its byte budget")from error
+    require(bool(data),f"{label} cannot be empty")
+    return data
+
 def signed_data(path:Path,root:Path,label:str)->dict:
-    require(path.parent==root and path.is_file() and not path.is_symlink() and
-            0<path.stat().st_size<=MAX_JSON,
-            f"{label} must be an explicit in-bundle bounded regular JSON file")
-    return exact(strict_json(path.read_bytes(), label),
+    require(path.parent==root,f"{label} must be an explicit in-bundle file")
+    return exact(strict_json(capture_bytes(path,MAX_JSON,label),label),
                  {"payload","signature_b64"},label)
 
 def raw_public_key(value:object,label:str)->bytes:
@@ -98,29 +116,22 @@ def verified_signature(message:dict,signature:object,pub:bytes,label:str)->None:
     except (InvalidSignature,ValueError,base64.binascii.Error) as exc:
         raise AdmissionRejected(f"{label} signature is not authentic")from exc
 
-def fingerprint(path:Path,maximum:int,label:str)->str:
-    require(path.is_file() and not path.is_symlink() and
-            0<path.stat().st_size<=maximum,
-            f"{label} is absent, a link, or exceeds its byte budget")
-    digest=hashlib.sha256()
-    with path.open("rb")as source:
-        while buffer:=source.read(1024*1024):digest.update(buffer)
-    return digest.hexdigest()
-
-def png_dimensions(path:Path)->tuple[int,int]:
+def capture_png(path:Path)->bytes:
     require(path.suffix.lower()==".png","Verifier only admits original PNG source evidence")
-    fingerprint(path,MAX_PNG,"Observed source PNG")
+    return capture_bytes(path,MAX_PNG,"Observed source PNG")
+
+def png_dimensions(data:bytes)->tuple[int,int]:
     try:
-        with Image.open(path) as frame:
+        with Image.open(io.BytesIO(data), formats=["PNG"]) as frame:
             require(frame.format=="PNG" and frame.mode in ("RGB","RGBA"),
                     "Observed source is not a standard RGB(A) PNG")
             width,height=frame.size
             require(1<=width<=4096 and 1<=height<=4096 and width*height<=4096*4096,
                     "Observed source dimensions exceed verified bounds")
             frame.verify()
-        with Image.open(path) as frame:
+        with Image.open(io.BytesIO(data), formats=["PNG"]) as frame:
             frame.load()
-    except (OSError,UnidentifiedImageError,ValueError)as error:
+    except (OSError,ValueError,Image.DecompressionBombError)as error:
         raise AdmissionRejected("Observed source PNG failed independent decoding")from error
     return width,height
 
@@ -128,12 +139,16 @@ def file_under(root:Path,relative:object,label:str)->Path:
     require(isinstance(relative,str) and 1<=len(relative)<=220,
             f"{label} requires bounded source path")
     p=Path(relative)
-    require(not p.is_absolute() and all(x not in (".","..") for x in p.parts),
+    require(not p.anchor and p.parts and all(x not in (".","..") for x in p.parts)
+            and (os.name!="nt" or ":" not in relative),
             f"{label} path cannot traverse owner root")
     cursor=root
     for part in p.parts:
         cursor=cursor/part
-        require(not cursor.is_symlink(),f"{label} path cannot contain symlinks")
+        try:
+            require(not link_or_reparse(cursor),f"{label} path cannot contain symlinks or reparse points")
+        except OSError as error:
+            raise AdmissionRejected(f"{label} path must exist beneath its evidence root")from error
     return cursor
 
 def outside_untrusted_evidence(path: Path, root: Path) -> bool:
@@ -154,23 +169,22 @@ def inspect(
     verifier_source_file:Path,
     expected_producer_sha256:str,
 )->dict:
-    require(evidence_root.is_dir() and not evidence_root.is_symlink(),
+    require(evidence_root.is_dir() and not link_or_reparse(evidence_root),
             "Observation evidence root must be an owner-authorized directory")
     root=evidence_root.resolve(strict=True)
     require(owner_public_key_file.is_file() and
             not owner_public_key_file.is_symlink() and
             outside_untrusted_evidence(owner_public_key_file,root),
             "Trusted owner public key must be separately provisioned outside untrusted evidence root")
-    require(owner_public_key_file.stat().st_size==32,
-            "Trusted owner Ed25519 raw public key has invalid bytes")
-    owner_pub=owner_public_key_file.read_bytes()
+    owner_pub=capture_bytes(owner_public_key_file,32,"Trusted owner Ed25519 public key")
     require(len(owner_pub)==32,"Trusted owner Ed25519 raw public key is malformed")
     require(trusted_policy_head_file.is_file() and
             not trusted_policy_head_file.is_symlink() and
             outside_untrusted_evidence(trusted_policy_head_file,root) and
             0<trusted_policy_head_file.stat().st_size<=1024,
             "Trusted current policy head must be provisioned outside the untrusted evidence bundle")
-    trusted=exact(strict_json(trusted_policy_head_file.read_bytes(), "Trusted policy head"),
+    trusted_bytes=capture_bytes(trusted_policy_head_file,1024,"Trusted current policy head")
+    trusted=exact(strict_json(trusted_bytes,"Trusted policy head"),
                   {"schema","owner_generation","canonical_policy_envelope_sha256"},
                   "Trusted policy head")
     require(trusted["schema"]==HEAD and
@@ -224,7 +238,7 @@ def inspect(
             "Verifier code was not pinned by SHA")
     require(outside_untrusted_evidence(verifier_source_file,root) and
             verifier_source_file.suffix==".py" and
-            fingerprint(verifier_source_file,2*1024*1024,"Owner-admitted verifier source")
+            hashlib.sha256(capture_bytes(verifier_source_file,2*1024*1024,"Verifier code bytes")).hexdigest()
                ==admission["verifier_source_sha256"],
             "Verifier code bytes differ from independently admitted source")
     require(isinstance(admission["owner_generation"],int) and
@@ -266,13 +280,19 @@ def inspect(
     require(type(report["frame_index"])is int and 0<=report["frame_index"]<=3600,
             "Frame evidence has an invalid source timeline index")
     image=file_under(root,report["source_frame_path"],"Source PNG")
-    observed_sha=fingerprint(image,MAX_PNG,"Source PNG")
+    frame_bytes=capture_png(image)
+    observed_sha=hashlib.sha256(frame_bytes).hexdigest()
     require(observed_sha==report["source_frame_sha256"],
             "Source frame bytes differ from signed verifier observation")
-    width,height=png_dimensions(image)
+    width,height=png_dimensions(frame_bytes)
     require(type(report["width"])is int and type(report["height"])is int and
             (width,height)==(report["width"],report["height"]),
             "Independent PNG decoder disagrees with signed verifier measurement")
+    require(outside_untrusted_evidence(owner_public_key_file,root) and
+            outside_untrusted_evidence(trusted_policy_head_file,root) and
+            capture_bytes(owner_public_key_file,32,"Trusted owner Ed25519 public key")==owner_pub and
+            capture_bytes(trusted_policy_head_file,1024,"Trusted current policy head")==trusted_bytes,
+            "Trusted owner policy changed during independent observation")
     revoked=admission["admission_id"] in policy["revoked_ids"]
     return {
         "schema":REPORT,

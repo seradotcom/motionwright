@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 import sys
 
-from verify_observer import (AdmissionRejected, png_dimensions, strict_json)
+from verify_observer import (AdmissionRejected, capture_bytes, capture_png, png_dimensions, strict_json)
 
 SCHEMA = "motionwright.v05-independent-observer-public/1"
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -33,7 +33,7 @@ def bounded_json(folder: Path, name: str) -> dict:
     require(f.is_file() and not f.is_symlink() and
             0 < f.stat().st_size <= 48_000, "untrusted_or_unbounded_ci_result")
     try:
-        result = strict_json(f.read_bytes(), name)
+        result = strict_json(capture_bytes(f, 48_000, name), name)
     except AdmissionRejected as error:
         raise PublicationRefused("ambiguous_or_invalid_observation_json") from error
     require(type(result) is dict, "observation_not_an_object")
@@ -61,11 +61,12 @@ def publish(private: Path, public: Path, sha: str, status: str) -> dict:
                 0 < frame.stat().st_size <= 32 * 1024 * 1024,
                 "missing_or_unbounded_ci_png")
         try:
-            dims = png_dimensions(frame)
+            frame_bytes = capture_png(frame)
+            dims = png_dimensions(frame_bytes)
         except (AdmissionRejected, OSError) as error:
             raise PublicationRefused("unverified_ci_png") from error
         require(dims == (320, 180), "unexpected_ci_fixture_dimensions")
-        png_sha = hashlib.sha256(frame.read_bytes()).hexdigest()
+        png_sha = hashlib.sha256(frame_bytes).hexdigest()
         measured = {"width": dims[0], "height": dims[1]}
         require(
             observation.get("schema") ==

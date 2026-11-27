@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Adversarial cryptographic admission tests, ephemeral identities only."""
 from __future__ import annotations
-import base64,hashlib,json,os
+import base64,hashlib,io,json,os
+from unittest.mock import patch
 from pathlib import Path
 import tempfile,unittest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding,PublicFormat
 from PIL import Image
-from verify_observer import inspect,AdmissionRejected,SCHEMA,POLICY,EVIDENCE,HEAD,canonical
+from verify_observer import png_dimensions,inspect,AdmissionRejected,SCHEMA,POLICY,EVIDENCE,HEAD,canonical
 
 SHA="ab"*32
 def raw_pub(key:Ed25519PrivateKey)->bytes:
@@ -99,6 +100,27 @@ class SignedVerifierTests(unittest.TestCase):
   Image.new("RGBA",(320,180),(60,40,30,255)).save(self.image)
   with self.assertRaisesRegex(AdmissionRejected,"Source frame bytes"):
    self.check()
+ def test_digest_and_both_png_decoder_passes_use_the_same_captured_bytes(self):
+  digest=hashlib.sha256(self.image.read_bytes()).hexdigest()
+  images=[]
+  original_open=Image.open
+  def observe(value,*args,**kwargs):
+   images.append(hashlib.sha256(value.getbuffer()).hexdigest() if isinstance(value,io.BytesIO) else None)
+   return original_open(value,*args,**kwargs)
+  with patch("verify_observer.Image.open",side_effect=observe):
+   result=self.check()
+  self.assertTrue(result["gate_eligible"])
+  self.assertEqual(images,[digest,digest])
+  self.assertEqual(result["source_frame_sha256"],digest)
+ def test_owner_revocation_during_decode_prevents_admission(self):
+  def decode_with_owner_update(value):
+   self.policy["owner_generation"]=8
+   self.policy["revoked_ids"]=[self.admission["admission_id"]]
+   self.write_all()
+   return png_dimensions(value)
+  with patch("verify_observer.png_dimensions",side_effect=decode_with_owner_update):
+   with self.assertRaisesRegex(AdmissionRejected,"Trusted owner policy changed during"):
+    self.check()
  def test_owner_revocation_blocks_future_gate_but_keeps_valid_historical_bytes(self):
   before=self.check()
   self.assertTrue(before["gate_eligible"])

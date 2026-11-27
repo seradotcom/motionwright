@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - 'tooling/observer-admission/**'
+      - 'tooling/mlt_official_runtime_intake.py'
       - 'docs/creative-production/V05_OBSERVER_ADMISSION.md'
       - 'docs/creative-production/requirements-status.json'
       - 'docs/creative-production/README.md'
@@ -13,6 +14,7 @@ on:
     branches: ['main']
     paths:
       - 'tooling/observer-admission/**'
+      - 'tooling/mlt_official_runtime_intake.py'
       - 'docs/creative-production/V05_OBSERVER_ADMISSION.md'
       - 'docs/creative-production/requirements-status.json'
       - '.github/workflows/v05-verified-observer.yml'
