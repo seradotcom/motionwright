@@ -293,6 +293,14 @@ class ImpactRoutingTests(unittest.TestCase):
 
 
 class ManualWorkflowBoundaryTests(unittest.TestCase):
+    def test_source_intake_can_resolve_the_base_of_a_grouped_push(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(
+            encoding="utf-8")
+        checkout = workflow.split("    steps:", 1)[1].split("      - uses: actions/setup-python", 1)[0]
+        self.assertIn("fetch-depth: 0", checkout)
+        self.assertIn("filter: blob:none", checkout)
+
     def test_semwright_atomic_pin_is_checked_on_every_source_change_before_graph_intake(self):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / ".github/workflows/graph-development-fast.yml").read_text(
