@@ -2,6 +2,7 @@ use motionwright_domain::{Project, RevisionStamp};
 use motionwright_native::film::FilmBuildOptions;
 use motionwright_native::production::{
     MotionCanvasRenderEvidence, MotionCanvasWindowEvidence, MotionCanvasWindowRequest,
+    ProductionConnection, carry_unchanged_motion_canvas_window,
     read_cached_motion_canvas_window_frame, read_verified_production_artifact,
     reuse_motion_canvas_window,
 };
@@ -384,6 +385,51 @@ impl NativePreviewRegistry {
         Ok(grant)
     }
 
+    fn window_entry(&self, token: Uuid) -> Result<GrantEntry, String> {
+        self.inner
+            .grants
+            .lock()
+            .map_err(|_| "Native preview registry is unavailable.")?
+            .iter()
+            .find(|entry| entry.token == token)
+            .cloned()
+            .ok_or_else(|| "Original native window is no longer registered in this session.".into())
+    }
+
+    pub fn carry_window(
+        &self,
+        project: &Project,
+        token: Uuid,
+        request: &MotionCanvasWindowRequest,
+        connection: &ProductionConnection,
+        original_revision: u64,
+    ) -> Result<(MotionCanvasWindowEvidence, NativeFrameGrant), String> {
+        let entry = self.window_entry(token)?;
+        if entry.project_id != project.id
+            || entry.generation != project.generation
+            || entry.revision >= project.revision
+            || entry.deliverable_id != request.deliverable_id
+        {
+            return Err("Original native window cannot be carried to this saved revision.".into());
+        }
+        let GrantOrigin::Window { evidence, service } = &entry.origin else {
+            return Err("This handle does not identify an original native window.".into());
+        };
+        if evidence
+            .summary()
+            .original_revision
+            .unwrap_or(evidence.revision)
+            != original_revision
+        {
+            return Err("Original native window revision differs from the selected source.".into());
+        }
+        let carried = carry_unchanged_motion_canvas_window(
+            service, project.id, &project.stamp(), request, evidence, connection,
+        ).map_err(|_| "Original native window inputs or PNGs could not be verified. No capture was dispatched.".to_owned())?;
+        let grant = self.register_window(service, &project.resource_key(), &carried)?;
+        Ok((carried, grant))
+    }
+
     /// Explicit reuse of this session's original Window handle. No connection
     /// or producer is available here; every failure stays a read failure.
     pub fn reuse_window(
@@ -392,15 +438,7 @@ impl NativePreviewRegistry {
         token: Uuid,
         request: &MotionCanvasWindowRequest,
     ) -> Result<(MotionCanvasWindowEvidence, NativeFrameGrant), String> {
-        let entry = self
-            .inner
-            .grants
-            .lock()
-            .map_err(|_| "Native preview registry is unavailable.")?
-            .iter()
-            .find(|entry| entry.token == token)
-            .cloned()
-            .ok_or("Original native window is no longer registered in this session.")?;
+        let entry = self.window_entry(token)?;
         if entry.project_id != project.id
             || entry.generation != project.generation
             || entry.revision != project.revision
@@ -1044,6 +1082,7 @@ mod tests {
         };
         // This backend-only fixture tests the origin barrier, not native pixels.
         MotionCanvasWindowEvidence {
+            carry_source: None,
             raster: None,
             project_resource: project.resource_key(),
             generation: project.generation,

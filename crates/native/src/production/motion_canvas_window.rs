@@ -5,7 +5,7 @@ use super::*;
 use crate::film::{MotionCanvasWindowPlan, build_motion_canvas_window};
 use motionwright_domain::{Project, SourceFrameWindow};
 use motionwright_service::{DerivedCacheRecord, RenderWindowCacheKey};
-use semwright_motion_authoring::{Film, MotionMeasurement};
+use semwright_motion_authoring::{Film, MotionMeasurement, SubjectContent};
 use semwright_semantic_composition::{
     ExecutionStatus, SupportLevel, Verdict, VerificationReport, canonical_digest,
 };
@@ -103,6 +103,7 @@ pub struct MotionCanvasWindowRequest {
 pub enum MotionCanvasWindowUse {
     NativePrefix,
     ExplicitOriginalReuse,
+    UnchangedFilmReuse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -173,6 +174,13 @@ pub struct MotionCanvasCachedWindowFrame {
     pub record: DerivedCacheRecord,
 }
 
+#[derive(Debug, Clone)]
+pub struct MotionCanvasWindowCarrySource {
+    branch: Uuid,
+    original_revision: u64,
+    connection_identity: String,
+}
+
 /// Backend-produced state. It is never deserialized from an IPC request and
 /// its private provenance is not the public preview response.
 #[derive(Debug, Clone, Serialize)]
@@ -188,6 +196,8 @@ pub struct MotionCanvasWindowEvidence {
     pub segment_window: SourceFrameWindow,
     pub film_digest: String,
     pub original_capture: MotionCanvasWindowCapture,
+    #[serde(skip)]
+    pub carry_source: Option<MotionCanvasWindowCarrySource>,
     pub validation: MotionCanvasWindowValidation,
     pub cached_frames: Vec<MotionCanvasCachedWindowFrame>,
     pub cost: MotionCanvasWindowCost,
@@ -198,6 +208,8 @@ pub struct MotionCanvasWindowEvidence {
 pub struct MotionCanvasWindowSummary {
     pub generation: Uuid,
     pub revision: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_revision: Option<u64>,
     pub deliverable_id: Uuid,
     pub source_scene_id: Uuid,
     pub source_window: SourceFrameWindow,
@@ -217,6 +229,11 @@ impl MotionCanvasWindowEvidence {
         MotionCanvasWindowSummary {
             generation: self.generation,
             revision: self.revision,
+            original_revision: self
+                .carry_source
+                .as_ref()
+                .map(|source| source.original_revision)
+                .filter(|revision| *revision < self.revision),
             deliverable_id: self.request.deliverable_id,
             source_scene_id: self.request.source_scene_id,
             source_window: self.request.source_window,
@@ -769,6 +786,11 @@ impl ProductionCoordinator {
                 verification: capture.verification,
                 timings: capture.timings,
             },
+            carry_source: Some(MotionCanvasWindowCarrySource {
+                branch: project.active_branch,
+                original_revision: project.revision,
+                connection_identity: self.client.connection().identity()?,
+            }),
             validation,
             cached_frames: Vec::with_capacity(selected.len()),
             cost: MotionCanvasWindowCost {
@@ -874,27 +896,11 @@ impl ProductionCoordinator {
     }
 }
 
-/// Read-only original reuse. A miss, stale revision, tamper or absent token at
-/// the registry is an error; this function has no producer/client to fall back to.
-pub fn reuse_motion_canvas_window(
-    service: &StudioService,
-    project_id: Uuid,
-    expected: &RevisionStamp,
+fn verify_reusable_window(
+    plan: &MotionCanvasWindowPlan,
     request: &MotionCanvasWindowRequest,
     original: &MotionCanvasWindowEvidence,
-) -> NativeResult<MotionCanvasWindowEvidence> {
-    let project = current_project(service, project_id, expected)?;
-    if original.project_resource != project.resource_key()
-        || original.generation != project.generation
-        || original.revision != project.revision
-        || &original.request != request
-    {
-        return Err(Error::new(
-            ErrorCode::StaleReference,
-            "Original native window scope or Film options differ from this request",
-        ));
-    }
-    let plan = request_plan(&project, request)?;
+) -> NativeResult<MotionCanvasWindowValidation> {
     let digest = canonical_digest(&plan.segment.film)
         .map_err(|_| invalid("Current canonical Film digest cannot be encoded"))?;
     let raster = request.render_scale.raster(
@@ -919,7 +925,7 @@ pub fn reuse_motion_canvas_window(
         ));
     }
     // Recheck the original typed measurement without claiming a current runtime.
-    let validation = validate_prefix_measurement(
+    validate_prefix_measurement(
         &original.original_capture.verification,
         &plan.segment.film,
         &original.original_capture.plan_ref,
@@ -927,7 +933,30 @@ pub fn reuse_motion_canvas_window(
         &original.original_capture.artifact,
         plan.segment_window.end,
         plan.segment.frame_count,
-    )?;
+    )
+}
+
+/// Read-only original reuse. A miss, stale revision, tamper or absent token at
+/// the registry is an error; this function has no producer/client to fall back to.
+pub fn reuse_motion_canvas_window(
+    service: &StudioService,
+    project_id: Uuid,
+    expected: &RevisionStamp,
+    request: &MotionCanvasWindowRequest,
+    original: &MotionCanvasWindowEvidence,
+) -> NativeResult<MotionCanvasWindowEvidence> {
+    let project = current_project(service, project_id, expected)?;
+    if original.project_resource != project.resource_key()
+        || original.generation != project.generation
+        || original.revision != project.revision
+        || &original.request != request
+    {
+        return Err(Error::new(
+            ErrorCode::StaleReference,
+            "Original native window scope or Film options differ from this request",
+        ));
+    }
+    let validation = verify_reusable_window(&request_plan(&project, request)?, request, original)?;
     let count = request.source_window.end - request.source_window.start;
     if original.cached_frames.len() as u64 != count {
         return Err(backend(
@@ -966,11 +995,130 @@ pub fn reuse_motion_canvas_window(
     Ok(reused)
 }
 
-pub fn read_cached_motion_canvas_window_frame(
+/// Admit a fresh preview of byte-identical, self-contained Film after a saved edit.
+/// Only retained provider PNGs are read. The old revision's Store entries stay revoked.
+pub fn carry_unchanged_motion_canvas_window(
     service: &StudioService,
+    project_id: Uuid,
+    expected: &RevisionStamp,
+    request: &MotionCanvasWindowRequest,
+    original: &MotionCanvasWindowEvidence,
+    connection: &ProductionConnection,
+) -> NativeResult<MotionCanvasWindowEvidence> {
+    let project = current_project(service, project_id, expected)?;
+    let resource = project.resource_key();
+    let source = original
+        .carry_source
+        .as_ref()
+        .ok_or_else(|| invalid("Native window has no retained original connection"))?;
+    if original.project_resource != resource
+        || original.generation != project.generation
+        || source.branch != project.active_branch
+        || original.revision >= project.revision
+        || source.original_revision > original.revision
+        || &original.request != request
+        || connection.resource != resource
+        || connection.identity()? != source.connection_identity
+    {
+        return Err(Error::new(
+            ErrorCode::StaleReference,
+            "Original native window and current saved source differ",
+        ));
+    }
+    let plan = request_plan(&project, request)?;
+    let film = &plan.segment.film;
+    // Text, media, and cues can depend on content outside the Film digest.
+    let self_contained = film.assets.is_empty()
+        && film.cues.cues.is_empty()
+        && film
+            .sequences
+            .iter()
+            .flat_map(|sequence| &sequence.beats)
+            .flat_map(|beat| &beat.shots)
+            .all(|shot| {
+                shot.annotations.is_empty()
+                    && shot.captions.is_empty()
+                    && shot.subjects.iter().all(|subject| {
+                        matches!(
+                            subject.content,
+                            SubjectContent::Group
+                                | SubjectContent::Rectangle { .. }
+                                | SubjectContent::Circle { .. }
+                                | SubjectContent::Path { .. }
+                                | SubjectContent::Camera { .. }
+                        )
+                    })
+            });
+    if !self_contained {
+        return Err(Error::new(
+            ErrorCode::Unsupported,
+            "Native window reuse after editing requires self-contained shape geometry",
+        ));
+    }
+    let validation = verify_reusable_window(&plan, request, original)?;
+    let count = request.source_window.end - request.source_window.start;
+    if original.cached_frames.len() as u64 != count {
+        return Err(backend(
+            "Original native window cache inventory is incomplete",
+        ));
+    }
+    let started = std::time::Instant::now();
+    let mut bytes = 0_u64;
+    let mut frames = Vec::with_capacity(original.cached_frames.len());
+    for index in 0..count {
+        let frame = original_window_frame(original, index)?;
+        bytes = bytes
+            .checked_add(frame.bytes)
+            .filter(|bytes| *bytes <= MAX_SELECTED_BYTES)
+            .ok_or_else(|| invalid("Original native window exceeds its retained byte bound"))?;
+        frames.push(frame.clone());
+    }
+    let mut reused = original.clone();
+    reused.revision = project.revision;
+    reused.validation = validation;
+    for (index, frame) in frames.iter_mut().enumerate() {
+        let path = output_artifact_path(
+            &connection.output_root,
+            &frame.original_relative_path,
+            MAX_WINDOW_FRAME_BYTES,
+        )?;
+        let key = frame_key(&reused, index as u64, &frame.sha256)?;
+        let record = service
+            .put_render_window_proxy_verified(
+                &key,
+                path,
+                &motionwright_service::BlobDescriptor {
+                    sha256: frame.sha256.clone(),
+                    size_bytes: frame.bytes,
+                },
+                MAX_WINDOW_FRAME_BYTES,
+                1,
+            )
+            .map_err(storage_error)?;
+        frame.key = key;
+        frame.record = record;
+    }
+    current_project(service, project_id, expected)?;
+    reused.cached_frames = frames;
+    reused.cost = MotionCanvasWindowCost {
+        operation: MotionCanvasWindowUse::UnchangedFilmReuse,
+        original_prefix_pngs: original.original_capture.prefix.end,
+        selected_pngs: count,
+        reused_original_pngs: count,
+        start_calls_observed: 0,
+        cached_png_bytes_returned: 0,
+        cache_payload_bytes_admitted: bytes,
+        cache_micros: elapsed_micros(started),
+        internal_simulation_steps: None,
+        internal_simulation_observation: "not_observed",
+    };
+    Ok(reused)
+}
+
+fn original_window_frame(
     original: &MotionCanvasWindowEvidence,
     index: u64,
-) -> NativeResult<Vec<u8>> {
+) -> NativeResult<&MotionCanvasCachedWindowFrame> {
     let frame = original
         .cached_frames
         .get(usize::try_from(index).map_err(|_| invalid("Native cached frame index overflow"))?)
@@ -993,6 +1141,15 @@ pub fn read_cached_motion_canvas_window_frame(
             "Native cached frame no longer matches its original scope",
         ));
     }
+    Ok(frame)
+}
+
+pub fn read_cached_motion_canvas_window_frame(
+    service: &StudioService,
+    original: &MotionCanvasWindowEvidence,
+    index: u64,
+) -> NativeResult<Vec<u8>> {
+    let frame = original_window_frame(original, index)?;
     let shared = service.store();
     let store = shared.lock();
     let project = store
@@ -1251,6 +1408,7 @@ mod tests {
                     verification_micros: 0,
                 },
             },
+            carry_source: None,
             validation,
             cached_frames: vec![],
             cost: MotionCanvasWindowCost {
@@ -1423,6 +1581,153 @@ mod tests {
             service.production_receipts(project.id, 512).unwrap(),
             before
         );
+    }
+
+    #[test]
+    fn unchanged_window_carry_admits_same_film_without_reactivating_old_keys() {
+        let (dir, service, project, mut evidence) = fixture();
+        let root = dir.path().canonicalize().unwrap();
+        let connection = ProductionConnection {
+            schema: "motionwright-semwright-connection/1".into(),
+            executable: root.join("unused-cli"),
+            executable_sha256: "a".repeat(64),
+            socket: root.join("unused-socket"),
+            session_file: root.join("unused-session"),
+            output_root: root.clone(),
+            resource: project.resource_key(),
+        };
+        evidence.carry_source = Some(MotionCanvasWindowCarrySource {
+            branch: project.active_branch,
+            original_revision: project.revision,
+            connection_identity: connection.identity().unwrap(),
+        });
+        for frame in &evidence.cached_frames {
+            let bytes = read_cached_motion_canvas_window_frame(
+                &service,
+                &evidence,
+                frame.source_frame - evidence.request.source_window.start,
+            )
+            .unwrap();
+            let path = root.join(&frame.original_relative_path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+        let original_keys = evidence
+            .cached_frames
+            .iter()
+            .map(|frame| &frame.key)
+            .collect::<Vec<_>>();
+        let edited = service
+            .apply(
+                project.id,
+                &project.stamp(),
+                "window-unrelated-title-change",
+                &Change::RenameProject {
+                    title: "Same rendered scene".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        assert!(read_cached_motion_canvas_window_frame(&service, &evidence, 0).is_err());
+        let reused = carry_unchanged_motion_canvas_window(
+            &service,
+            project.id,
+            &edited.stamp(),
+            &evidence.request,
+            &evidence,
+            &connection,
+        )
+        .unwrap();
+        assert_eq!(reused.summary().original_revision, Some(project.revision));
+        assert_eq!(reused.revision, edited.revision);
+        assert_eq!(
+            reused.cost.operation,
+            MotionCanvasWindowUse::UnchangedFilmReuse
+        );
+        assert_eq!(reused.cost.start_calls_observed, 0);
+        assert_eq!(reused.cost.reused_original_pngs, 2);
+        assert!(
+            reused
+                .cached_frames
+                .iter()
+                .zip(&evidence.cached_frames)
+                .all(|(new, old)| new.sha256 == old.sha256 && new.key != old.key)
+        );
+        for key in original_keys {
+            assert!(service.lookup_render_window_proxy(key).is_err());
+        }
+        assert!(
+            service
+                .production_receipts(project.id, 10)
+                .unwrap()
+                .is_empty()
+        );
+
+        let mut different = connection.clone();
+        different.socket = root.join("foreign-socket");
+        assert!(matches!(
+            carry_unchanged_motion_canvas_window(
+                &service,
+                project.id,
+                &edited.stamp(),
+                &evidence.request,
+                &evidence,
+                &different,
+            ),
+            Err(error) if error.code == ErrorCode::StaleReference
+        ));
+
+        fs::write(
+            root.join(&evidence.cached_frames[0].original_relative_path),
+            b"replacement",
+        )
+        .unwrap();
+        assert!(
+            carry_unchanged_motion_canvas_window(
+                &service,
+                project.id,
+                &edited.stamp(),
+                &evidence.request,
+                &evidence,
+                &connection,
+            )
+            .is_err()
+        );
+
+        let scene = &edited.scenes[0];
+        let node = &scene.nodes[0];
+        let changed = service
+            .apply(
+                project.id,
+                &edited.stamp(),
+                "window-change-rendered-shape",
+                &Change::TransformCanvasNode {
+                    scene_id: scene.id,
+                    node_id: node.id,
+                    transform: motionwright_domain::CanvasTransform {
+                        x: node.x + 10.0,
+                        y: node.y,
+                        width: node.width,
+                        height: node.height,
+                        rotation_deg: node.rotation_deg,
+                        opacity: node.opacity,
+                    },
+                },
+            )
+            .unwrap()
+            .project;
+        assert!(matches!(
+            carry_unchanged_motion_canvas_window(
+                &service,
+                project.id,
+                &changed.stamp(),
+                &evidence.request,
+                &evidence,
+                &connection,
+            ),
+            Err(error) if error.code == ErrorCode::StaleReference
+                && error.message == "Original native window does not match the saved canonical Film"
+        ));
     }
 
     #[test]

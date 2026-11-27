@@ -131,6 +131,7 @@ export function requireNativeWindowRasterPng(bytes: Uint8Array, raster: NativeWi
 export interface NativeWindowIntent {
   project_id: string; generation: string; revision: number; branch_id: string;
   request_id: string; reuse_token: string | null;
+  carry_original_revision?: number;
   /** Local expectation; not a provider dimension override. */
   expected_raster?: NativeWindowRaster;
   window: { deliverable_id: string; source_scene_id: string; source_window: SourceFrameWindow; options: MotionCanvasFilmOptions;
@@ -143,7 +144,7 @@ export interface NativeWindowFrameSelection extends NativeFrameSelection {
 
 export function createNativeWindowIntent(project: Project, scene: Scene, profile: DeliverableProfile,
   selected: SourceFrameWindow, options: MotionCanvasFilmOptions, requestId: string, reuseToken: string | null = null,
-  renderScale: NativeWindowScale = "full"): NativeWindowIntent {
+  renderScale: NativeWindowScale = "full", carryOriginalRevision?: number): NativeWindowIntent {
   currentScene(project, scene, profile); rate(options.frame_rate); checkRange(selected);
   require(options.frame_rate.num === Number(profile.frame_rate.num) && options.frame_rate.den === Number(profile.frame_rate.den),
     "Window options use a different saved delivery frame rate.");
@@ -151,9 +152,13 @@ export function createNativeWindowIntent(project: Project, scene: Scene, profile
   require(integer(project.revision) && text(project.id) && text(project.generation) && text(project.active_branch), "The saved project scope is invalid.");
   require(text(requestId) && requestId.trim() === requestId && requestId.length <= 96, "A new bounded original request identity is required.");
   require(reuseToken === null || text(reuseToken), "The original window token is invalid.");
+  require(carryOriginalRevision === undefined || (reuseToken !== null
+    && integer(carryOriginalRevision) && carryOriginalRevision < project.revision),
+    "A carried window must identify an earlier original revision.");
   const raster = nativeWindowRaster(profile, renderScale);
   return structuredClone({ project_id: project.id, generation: project.generation, revision: project.revision,
     branch_id: project.active_branch, request_id: requestId, reuse_token: reuseToken,
+    ...(carryOriginalRevision !== undefined ? { carry_original_revision: carryOriginalRevision } : {}),
     ...(raster ? { expected_raster: raster } : {}),
     window: { deliverable_id: profile.id, source_scene_id: scene.id, source_window: selected, options,
       ...(raster ? { render_scale: raster.scale } : {}) } });
@@ -181,7 +186,10 @@ export function acceptNativeWindowReceipt(intent: NativeWindowIntent, input: unk
       && integer(raster.width) && integer(raster.height) && raster.width > 0 && raster.height > 0
       && raster.width <= 4096 && raster.height <= 4096 && raster.width * raster.height <= 8847360,
     "Native window raster intent is malformed.");
-  keys(summary, ["generation", "revision", "deliverable_id", "source_scene_id", "source_window", "segment_window", "original_prefix", "frame_rate", "preview_only", "master_eligible", "validation", "cost", ...(raster ? ["raster"] : [])]);
+  const carried = summary !== null && typeof summary === "object" && "original_revision" in summary;
+  keys(summary, ["generation", "revision", "deliverable_id", "source_scene_id", "source_window", "segment_window", "original_prefix", "frame_rate", "preview_only", "master_eligible", "validation", "cost", ...(raster ? ["raster"] : []), ...(carried ? ["original_revision"] : [])]);
+  require(!carried || (integer(summary.original_revision) && summary.original_revision < intent.revision),
+    "Native window response contains an invalid original revision.");
   if (raster) {
     keys(summary.raster, ["scale", "width", "height"]);
     require(same(summary.raster, raster), "Native window response does not identify the requested reduced raster.");
@@ -223,18 +231,37 @@ export function acceptNativeWindowReceipt(intent: NativeWindowIntent, input: unk
     && (cost.cached_png_bytes_returned as number) <= 64 * 1024 * 1024 && (cost.cache_payload_bytes_admitted as number) <= 64 * 1024 * 1024
     && cost.internal_simulation_steps === null && cost.internal_simulation_observation === "not_observed",
     "Native window costs are not the bounded original observations.");
-  if (intent.reuse_token !== null) {
+  if (intent.carry_original_revision !== undefined) {
+    require(intent.reuse_token !== null && grant.token !== intent.reuse_token
+      && summary.original_revision === intent.carry_original_revision && cost.operation === "unchanged_film_reuse"
+      && cost.start_calls_observed === 0 && cost.reused_original_pngs === count && cost.cached_png_bytes_returned === 0
+      && (cost.cache_payload_bytes_admitted as number) > 0,
+      "Carried frames did not produce a fresh preview handle bound to the original revision.");
+  } else if (intent.reuse_token !== null) {
     require(grant.token === intent.reuse_token && cost.operation === "explicit_original_reuse"
       && cost.start_calls_observed === 0 && cost.reused_original_pngs === count && cost.cache_payload_bytes_admitted === 0
       && (cost.cached_png_bytes_returned as number) > 0,
       "Warm reuse was replaced by another handle or a fresh native capture.");
   } else {
-    require(cost.operation === "native_prefix" && (cost.start_calls_observed === 0 || cost.start_calls_observed === 1)
+    require(!carried && cost.operation === "native_prefix" && (cost.start_calls_observed === 0 || cost.start_calls_observed === 1)
       && cost.reused_original_pngs === 0 && cost.cached_png_bytes_returned === 0
       && (cost.cache_payload_bytes_admitted as number) > 0,
       "The original prefix response has inconsistent capture observations.");
   }
   return { kind: "window", intent: structuredClone(intent), response: structuredClone(input) as unknown as NativeWindowRenderResponse };
+}
+
+export function nativeWindowCarrySource(intent: NativeWindowIntent, receipt: NativeWindowReceipt | null):
+  { token: string; originalRevision: number } | null {
+  try {
+    if (!receipt || receipt.kind !== "window" || receipt.intent.revision >= intent.revision
+        || !same(intentIdentity(intent), intentIdentity({ ...receipt.intent, revision: intent.revision }))) return null;
+    acceptNativeWindowReceipt(receipt.intent, receipt.response);
+    return {
+      token: receipt.response.preview.token,
+      originalRevision: receipt.response.window.original_revision ?? receipt.intent.revision,
+    };
+  } catch { return null; }
 }
 
 export function nativeWindowReuseToken(intent: NativeWindowIntent, receipt: NativeWindowReceipt | null): string | null {

@@ -69,9 +69,10 @@ mod saved_motion;
 mod saved_workflow;
 pub use motion_canvas_window::{
     MotionCanvasCachedWindowFrame, MotionCanvasCaptureTimings, MotionCanvasStartOrigin,
-    MotionCanvasWindowCapture, MotionCanvasWindowCost, MotionCanvasWindowEvidence,
-    MotionCanvasWindowRaster, MotionCanvasWindowRequest, MotionCanvasWindowScale,
-    MotionCanvasWindowSummary, MotionCanvasWindowUse, MotionCanvasWindowValidation,
+    MotionCanvasWindowCapture, MotionCanvasWindowCarrySource, MotionCanvasWindowCost,
+    MotionCanvasWindowEvidence, MotionCanvasWindowRaster, MotionCanvasWindowRequest,
+    MotionCanvasWindowScale, MotionCanvasWindowSummary, MotionCanvasWindowUse,
+    MotionCanvasWindowValidation, carry_unchanged_motion_canvas_window,
     read_cached_motion_canvas_window_frame, reuse_motion_canvas_window,
 };
 pub use saved_media::{
