@@ -82,6 +82,33 @@ class InstalledAAC31ProofTests(unittest.TestCase):
         self.assertEqual(bridge.view(control).name, "Check hybrid sources")
         unrelated.get_name.assert_not_called()
 
+    def test_exact_accessible_button_uses_one_action_without_coordinate_visibility(self):
+        binding = {"pid": 9001, "window": "0x42", "start_time": "100"}
+        enabled = frozenset({"visible", "enabled", "sensitive"})
+        button = installed.ui.View("check", "button", "Check hybrid sources", enabled, frozenset())
+        bridge = SimpleNamespace(deadline=time.monotonic() + 5,
+                                 owner_pid=lambda _: binding["pid"], actions=lambda _: ["press"],
+                                 refresh_view=Mock(return_value=button), invoke=Mock(return_value=True))
+
+        with patch.object(installed.ui, "x11_identity", return_value=binding):
+            journal = Mock()
+            installed.invoke(bridge, binding, button, journal, "check-source")
+            bridge.invoke.assert_called_once_with("check", 0)
+            self.assertEqual([entry.args[0] for entry in journal.put.call_args_list],
+                             ["check-source-intent", "check-source-acknowledged"])
+
+            for changed in ({"visible"}, enabled | {"defunct"}):
+                with self.subTest(changed=changed):
+                    bridge.refresh_view.return_value = installed.ui.View(
+                        button.node, button.role, button.name, frozenset(changed), frozenset(),
+                    )
+                    journal.reset_mock()
+                    bridge.invoke.reset_mock()
+                    with self.assertRaisesRegex(ValueError, "target changed"):
+                        installed.invoke(bridge, binding, button, journal, "check-source")
+                    bridge.invoke.assert_not_called()
+                    journal.put.assert_not_called()
+
     def test_playback_requires_the_two_observed_scene_markers_in_order(self):
         red, green, blank = map(frame, ("motion-canvas", "manim", None))
         self.assertEqual([marker(value) for value in (red, green, blank)],
@@ -138,7 +165,7 @@ class InstalledAAC31ProofTests(unittest.TestCase):
                               ScrollType=SimpleNamespace(ANYWHERE=0), CoordType=SimpleNamespace(SCREEN=0))
         bridge = SimpleNamespace(api=api, deadline=time.monotonic() + 5, pump=lambda:None,
                                  owner_pid=lambda _:9001, call=lambda f,*a:f(*a),
-                                 view=view, children=lambda n:["play"] if n=="player" else [],
+                                 view=view, refresh_view=view, children=lambda n:["play"] if n=="player" else [],
                                  actions=lambda _:["click"], invoke=start)
         panel = SimpleNamespace(get_width=lambda:1440, get_height=lambda:940)
         gdk = SimpleNamespace(get_default_root_window=lambda:panel, pixbuf_get_from_window=capture)
@@ -189,7 +216,7 @@ class InstalledAAC31ProofTests(unittest.TestCase):
             known = initial + (["row", "saved-digest", "review"] if ("find", "find-saved") in action else [])
             return [views[node] for node in known + ["player", "metadata"]]
 
-        bridge = SimpleNamespace(tree=tree, view=views.__getitem__,
+        bridge = SimpleNamespace(tree=tree, view=views.__getitem__, refresh_view=views.__getitem__,
                                  children=lambda node: children.get(node, ()),
                                  deadline=time.monotonic() + 5)
         with patch.object(installed, "invoke", side_effect=invoke), patch.object(

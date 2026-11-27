@@ -30,6 +30,7 @@ from source_checkout_observation import regular_file
 
 PLAYER = "Verified native MP4 review player"
 METADATA = "1920 × 1080 · 1.03 s decoded metadata"
+ACTION_READY = frozenset({"visible", "enabled", "sensitive"})
 
 
 class ReviewBridge(ui.AtspiBridge):
@@ -54,6 +55,10 @@ class ReviewBridge(ui.AtspiBridge):
         named = role == "button" or (not self._button_names_only and role != "other")
         name = self.call(node.get_name) if named and "visible" in states and "defunct" not in states else ""
         return ui.View(node, role, name or "", states, frozenset())
+
+    def refresh_view(self, node):
+        self.call(node.clear_cache_single)
+        return self.view(node)
 
     def pump(self):
         context = self.glib.MainContext.default()
@@ -120,7 +125,7 @@ def bring_into_view(bridge, binding, view):
 
         def observed():
             bridge.pump()
-            current = bridge.view(view.node)
+            current = bridge.refresh_view(view.node)
             require((current.name, current.role) == (view.name, view.role),
                     "AAC31 control changed while scrolling")
             if not ui.VISIBLE <= current.states or "defunct" in current.states:
@@ -133,14 +138,16 @@ def bring_into_view(bridge, binding, view):
 
 
 def prepare_action(bridge, binding, view):
-    view = bring_into_view(bridge, binding, view)
+    # AT-SPI resolves the action by accessible object. Screen coordinates
+    # and the visible viewport are required separately for video readback.
+    same_window(bridge, binding, view)
     actions = bridge.actions(view.node)
     allowed = [index for index, name in enumerate(actions)
                if name.casefold() in {"click", "press", "activate", "play"}]
     require(len(allowed) == 1, "AAC31 control has no unique standard action")
-    current = bridge.view(view.node)
+    current = bridge.refresh_view(view.node)
     require((current.name, current.role) == (view.name, "button")
-            and ui.VISIBLE | {"enabled", "sensitive"} <= current.states
+            and ACTION_READY <= current.states
             and "defunct" not in current.states, "AAC31 action target changed before dispatch")
     same_window(bridge, binding, current)
     return current, allowed[0]
@@ -202,7 +209,7 @@ def player_proof(bridge, binding, player, journal, gdk, evidence):
         play = [
             view for view in ui.walk(bridge, player.node)
             if view.name.casefold() in expected and view.role == "button"
-            and ui.VISIBLE | {"enabled", "sensitive"} <= view.states
+            and ACTION_READY <= view.states and "defunct" not in view.states
         ]
         return ui.unique(play, "AAC31_VIDEO_PLAY")
 
