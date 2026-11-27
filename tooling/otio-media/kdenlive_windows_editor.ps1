@@ -11,6 +11,10 @@ $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -cne 'true' -or $env:GITHUB_JOB -cne 'kdenlive-native-editor' -or
     $env:GITHUB_RUN_ATTEMPT -cne '1' -or $env:RUNNER_OS -cne 'Windows') { throw 'Original Windows editor job required' }
 
+# The observer runs in Windows PowerShell 5.1 from a PowerShell 7 job.
+# Use the system modules for this engine instead of inheriting its caller's path.
+Import-Module -Name "$PSHOME\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1"
+Import-Module -Name "$PSHOME\Modules\Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1"
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 $editor = [Diagnostics.Process]::GetProcessById($EditorPid)

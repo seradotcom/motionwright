@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import ctypes as C
-from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -13,8 +12,8 @@ import sys
 import time
 
 from kdenlive_native_distribution import JOB, ROOT, publish, selection
-from kdenlive_native_source import MAX_METADATA_BYTES, installed_editor
-from kdenlive_readback import MAX_XML_BYTES, inspect_saved_kdenlive, read_capsule
+from kdenlive_native_source import admitted_source, inspect_initial_save
+from kdenlive_readback import MAX_XML_BYTES
 from source_checkout_observation import git, regular_file, require
 
 
@@ -308,29 +307,6 @@ def import_and_save(ui, evidence, original, initial, check_source):
     evidence.press("save-initial", button)
 
 
-def exact_source(owner, context, distribution):
-    receipt = owner / "otio-source-ready.json"
-    receipt_identity = regular_file(receipt, MAX_METADATA_BYTES)
-    with receipt.open("rb") as stream:
-        raw = stream.read(MAX_METADATA_BYTES + 1)
-    require(sha256(raw).hexdigest() == receipt_identity["sha256"],
-            "macOS source-ready receipt changed during read")
-    source = json.loads(raw)
-    editor, binary = installed_editor(owner, context, distribution)
-    require(source.get("schema") == "motionwright.kdenlive-native-source/1"
-            and source.get("context") == context
-            and source.get("editor_path") == str(editor)
-            and source.get("editor_sha256") == binary["sha256"],
-            "macOS editor source-ready receipt differs from this installation")
-    capsule = owner / "otio-original"
-    for role, filename in (("timeline", "timeline.otio"), ("manifest", "bridge-manifest.json")):
-        path = capsule / filename
-        require(source.get(role) == {"path": str(path), **regular_file(path, MAX_METADATA_BYTES)},
-                f"macOS editor source {role} differs from its original")
-    read_capsule(capsule, source["manifest"]["sha256"])
-    return editor, binary, source
-
-
 def editor_pid_executable(pid):
     library = C.CDLL("/usr/lib/libproc.dylib")
     proc_pidpath = bind(library, "proc_pidpath", C.c_int, C.c_int, C.c_void_p, C.c_uint32)
@@ -353,7 +329,7 @@ def wait_project(initial, guard):
 
 
 def run(owner, context, distribution, observe_editor):
-    editor, binary, source = exact_source(owner, context, distribution)
+    editor, binary, source = admitted_source(owner, context, distribution)
     ax = Accessibility()
     try:
         output = owner / ("macos-initial-observe" if observe_editor else "macos-initial")
@@ -394,20 +370,16 @@ def run(owner, context, distribution, observe_editor):
                         return {"status": "EDITOR_OBSERVED", "pid": process.pid, "editor_actions": 0}
 
                     def check_source():
-                        require(exact_source(owner, context, distribution) == (editor, binary, source),
+                        require(admitted_source(owner, context, distribution) == (editor, binary, source),
                                 "original editor or source changed")
 
                     import_and_save(ui, evidence, original, initial, check_source)
                     saved = wait_project(initial, guard)
                     evidence.write("project-saved", {"pid": process.pid, "path": str(initial), **saved})
                     check_source()
-                    readback = inspect_saved_kdenlive(initial, saved["sha256"], original.parent,
-                                                     source["manifest"]["sha256"])
+                    readback = inspect_initial_save(initial, saved["sha256"],
+                                                    source["manifest"]["sha256"], original.parent)
                     evidence.write("initial-readback", readback)
-                    clips = readback["observed_bound_editorial_clip_semantics"]
-                    require([(clip["original_inpoint_frame"], clip["duration_frames"]) for clip in clips]
-                            == [(0, 30), (30, 30), (60, 30)],
-                            "saved Kdenlive project does not preserve the three complete input intervals")
                     report = {
                         "schema": "motionwright.kdenlive-macos-initial-project/1", "context": context,
                         "status": "INITIAL_PROJECT_VERIFIED", "pid": process.pid,

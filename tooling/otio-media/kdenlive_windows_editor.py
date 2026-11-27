@@ -11,30 +11,10 @@ import sys
 
 from kdenlive_native_distribution import JOB, ROOT, publish, selection
 from kdenlive_native_installation import windows_accessibility_context
-from kdenlive_native_source import MAX_METADATA_BYTES, installed_editor
-from kdenlive_readback import MAX_XML_BYTES, inspect_saved_kdenlive
+from kdenlive_native_source import MAX_METADATA_BYTES, admitted_source, inspect_initial_save
+from kdenlive_readback import MAX_XML_BYTES
 from source_checkout_observation import git, regular_file, require
 from windows_updated_application import process_identity
-
-
-def original_cut(owner, context, editor, binary):
-    path = owner / "otio-source-ready.json"
-    original = regular_file(path, MAX_METADATA_BYTES)
-    raw = path.read_bytes()
-    require(len(raw) == original["bytes"], "OTIO source receipt grew during read")
-    receipt = json.loads(raw)
-    require(sha256(raw).hexdigest() == original["sha256"]
-            and receipt.get("schema") == "motionwright.kdenlive-native-source/1"
-            and receipt.get("context") == context
-            and receipt.get("editor_path") == str(editor)
-            and receipt.get("editor_sha256") == binary["sha256"],
-            "OTIO source receipt differs from the installed editor")
-    source = owner / "otio-original"
-    for field, name in (("timeline", "timeline.otio"), ("manifest", "bridge-manifest.json")):
-        member = source / name
-        require(receipt.get(field) == {"path": str(member), **regular_file(member, MAX_METADATA_BYTES)},
-                f"OTIO {field} differs from the prepared cut")
-    return receipt
 
 
 def run_windows(runner, context, distribution):
@@ -44,8 +24,7 @@ def run_windows(runner, context, distribution):
     accessibility = windows_accessibility_context()
     require(all(accessibility.values()), "interactive Windows desktop unavailable")
     owner = runner / f"{JOB}-{context['run_id']}-1"
-    editor, binary = installed_editor(owner, context, distribution)
-    source = original_cut(owner, context, editor, binary)
+    editor, binary, source = admitted_source(owner, context, distribution)
     powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
     regular_file(powershell, 16 * 1024 * 1024)
     directory = owner / "windows-editor"
@@ -62,7 +41,7 @@ def run_windows(runner, context, distribution):
         "editor_launch_count": 1, "automatic_retry": False,
     })
     process = None
-    terminal = {"status": "UNKNOWN", "automatic_retry": False, "process": None}
+    terminal = {"status": "IMPORT_NOT_DISPATCHED", "automatic_retry": False, "process": None}
     try:
         with (directory / "application.stdout.log").open("xb") as app_out, (
                 directory / "application.stderr.log").open("xb") as app_err:
@@ -85,9 +64,9 @@ def run_windows(runner, context, distribution):
                     cwd=directory, stdin=subprocess.DEVNULL, stdout=obs_out, stderr=obs_err, timeout=115,
                 )
             require(result.returncode == 0, f"Kdenlive window observer failed ({result.returncode})")
+            terminal["status"] = "UNKNOWN"
             require(process.poll() is None and process_identity(process, editor) == identity
-                    and installed_editor(owner, context, distribution) == (editor, binary)
-                    and original_cut(owner, context, editor, binary) == source,
+                    and admitted_source(owner, context, distribution) == (editor, binary, source),
                     "Kdenlive process, executable or source changed during import")
             saved = directory / "initial.kdenlive"
             observed = regular_file(saved, MAX_XML_BYTES)
@@ -101,8 +80,8 @@ def run_windows(runner, context, distribution):
                             "saved_sha256": observed["sha256"]},
                     "saved Kdenlive project differs from the window observer")
             terminal["status"] = "INITIAL_SAVE_OBSERVED"
-            readback = inspect_saved_kdenlive(
-                saved, observed["sha256"], owner / "otio-original", source["manifest"]["sha256"],
+            readback = inspect_initial_save(
+                saved, observed["sha256"], source["manifest"]["sha256"], owner / "otio-original",
             )
             require(regular_file(saved, MAX_XML_BYTES) == observed,
                     "native Kdenlive project changed during readback")
@@ -112,6 +91,10 @@ def run_windows(runner, context, distribution):
             })
             terminal["status"] = "INITIAL_SAVE_VERIFIED"
     finally:
+        if terminal["status"] == "IMPORT_NOT_DISPATCHED":
+            intent = directory / "import-submit-intent.json"
+            if intent.exists() or intent.is_symlink():
+                terminal["status"] = "UNKNOWN"
         try:
             if process is not None:
                 if process.poll() is None:

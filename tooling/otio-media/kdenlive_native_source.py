@@ -10,8 +10,9 @@ import shutil
 import sys
 
 from kdenlive_native_distribution import JOB, ROOT, publish, selection
-from kdenlive_complete_g2_fixture import produce_original
+from kdenlive_complete_g2_fixture import EXPECTED_SOURCE_INTERVALS, produce_original
 from kdenlive_native_installation import MAX_EDITOR_BYTES, windows_user_installation_root
+from kdenlive_readback import inspect_saved_kdenlive, read_capsule
 from source_checkout_observation import git, regular_file, require
 
 
@@ -49,6 +50,38 @@ def installed_editor(owner: Path, context: dict, distribution) -> tuple[Path, di
         **binary, "format": binary_format,
     }, "installed Kdenlive executable differs from the original receipt")
     return executable, binary
+
+
+def admitted_source(owner, context, distribution):
+    receipt = owner / "otio-source-ready.json"
+    receipt_identity = regular_file(receipt, MAX_METADATA_BYTES)
+    with receipt.open("rb") as stream:
+        raw = stream.read(MAX_METADATA_BYTES + 1)
+    require(sha256(raw).hexdigest() == receipt_identity["sha256"],
+            "source-ready receipt changed during read")
+    source = json.loads(raw)
+    editor, binary = installed_editor(owner, context, distribution)
+    require(source.get("schema") == "motionwright.kdenlive-native-source/1"
+            and source.get("context") == context
+            and source.get("editor_path") == str(editor)
+            and source.get("editor_sha256") == binary["sha256"],
+            "editor source-ready receipt differs from this installation")
+    capsule = owner / "otio-original"
+    for role, filename in (("timeline", "timeline.otio"), ("manifest", "bridge-manifest.json")):
+        path = capsule / filename
+        require(source.get(role) == {"path": str(path), **regular_file(path, MAX_METADATA_BYTES)},
+                f"editor source {role} differs from its original")
+    read_capsule(capsule, source["manifest"]["sha256"])
+    return editor, binary, source
+
+
+def inspect_initial_save(saved: Path, saved_sha: str, manifest_sha: str, capsule: Path) -> dict:
+    original = inspect_saved_kdenlive(saved, saved_sha, capsule, manifest_sha)
+    clips = original["observed_bound_editorial_clip_semantics"]
+    require(tuple((clip["original_inpoint_frame"], clip["duration_frames"]) for clip in clips)
+            == EXPECTED_SOURCE_INTERVALS,
+            "saved Kdenlive project does not preserve the three complete input intervals")
+    return original
 
 
 def fixture_executable(context: dict) -> Path:
