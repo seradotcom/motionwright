@@ -35,6 +35,14 @@ on:
         required: false
         type: boolean
         default: false
+      installed_aac31_retained_render_run:
+        description: Observe the already produced MP4 and its completed Store receipt with render disabled
+        required: false
+        type: string
+      installed_aac31_restore_sha256:
+        description: SHA-256 of the protected synthetic readback input
+        required: false
+        type: string
       evidence_recipient_spki:
         description: Approved RSA-3072 public SPKI DER in base64 for installed Native originals
         required: false
@@ -4370,6 +4378,8 @@ jobs:
       MOTIONWRIGHT_MLT_MODE: hybrid-av
       PLAYWRIGHT_BROWSERS_PATH: '0'
       AAC31_DELIVERY_OBSERVATION: ${{ inputs.installed_aac31_observe_delivery }}
+      AAC31_RETAINED_RENDER: ${{ inputs.installed_aac31_retained_render_run }}
+      AAC31_RESTORE_SHA256: ${{ inputs.installed_aac31_restore_sha256 }}
       SEMWRIGHT_TEST_PYTHON: /usr/bin/python3
       SEMWRIGHT_TEST_FFMPEG: /usr/bin/ffmpeg
       SEMWRIGHT_TEST_FFPROBE: /usr/bin/ffprobe
@@ -4460,6 +4470,7 @@ jobs:
           toolchain: 1.98.1
           components: rustfmt, clippy, rust-src
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        if: inputs.installed_aac31_retained_render_run == '' && inputs.installed_aac31_restore_sha256 == ''
         with:
           node-version: '22.22.0'
           cache: npm
@@ -4492,6 +4503,7 @@ jobs:
           verify_recipient()
           PY
       - name: Provision pinned Motion Canvas and Manim runtimes
+        if: inputs.installed_aac31_retained_render_run == '' && inputs.installed_aac31_restore_sha256 == ''
         run: |
           set -euo pipefail
           export SEMWRIGHT_TEST_MANIM_RUNTIME="$RUNNER_TEMP/aac31-manim-runtime"
@@ -4551,6 +4563,13 @@ jobs:
           RUSTUP_TOOLCHAIN: '1.98.1'
         run: |
           set -euo pipefail
+          if [[ -n "$AAC31_RETAINED_RENDER" || -n "$AAC31_RESTORE_SHA256" ]]; then
+            [[ "$AAC31_RETAINED_RENDER" =~ ^[1-9][0-9]{0,19}$ && "$AAC31_RESTORE_SHA256" =~ ^[a-f0-9]{64}$ ]]
+            [[ "$AAC31_DELIVERY_OBSERVATION" != true && -f "$RUNNER_TEMP/aac31-retained-package.json" ]]
+            cd _semwright
+            cargo build --locked -p semwright-daemon -p semwright-cli --bins
+            exit 0
+          fi
           cargo test --locked -p motionwright-native --example native-mlt-sequence-e2e \
             installed_aac31_seed_reopens_exact_cut_and_voice -- --test-threads=1
           (
@@ -4564,18 +4583,30 @@ jobs:
           )
           cargo build --locked -p motionwright-native --example native-mlt-sequence-e2e
           cargo build --locked -p motionwright-manim-community-driver --bins
-      - name: ${{ inputs.installed_aac31_observe_delivery && 'Observe installed Delivery controls' || 'Render once and verify playback and cold reopen of the same MP4' }}
+      - name: ${{ inputs.installed_aac31_retained_render_run != '' && 'Reopen the retained original MP4' || (inputs.installed_aac31_observe_delivery && 'Observe installed Delivery controls' || 'Render once and verify playback and cold reopen of the same MP4') }}
         timeout-minutes: 16
         env:
           PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
           PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+          AAC31_ORIGINAL_0: ${{ secrets[format('AAC31_ORIGINAL_{0}_0', inputs.installed_aac31_retained_render_run)] }}
+          AAC31_ORIGINAL_1: ${{ secrets[format('AAC31_ORIGINAL_{0}_1', inputs.installed_aac31_retained_render_run)] }}
+          AAC31_ORIGINAL_2: ${{ secrets[format('AAC31_ORIGINAL_{0}_2', inputs.installed_aac31_retained_render_run)] }}
+          AAC31_ORIGINAL_3: ${{ secrets[format('AAC31_ORIGINAL_{0}_3', inputs.installed_aac31_retained_render_run)] }}
+          AAC31_ORIGINAL_4: ${{ secrets[format('AAC31_ORIGINAL_{0}_4', inputs.installed_aac31_retained_render_run)] }}
+          AAC31_ORIGINAL_5: ${{ secrets[format('AAC31_ORIGINAL_{0}_5', inputs.installed_aac31_retained_render_run)] }}
+          AAC31_ORIGINAL_6: ${{ secrets[format('AAC31_ORIGINAL_{0}_6', inputs.installed_aac31_retained_render_run)] }}
+          AAC31_ORIGINAL_7: ${{ secrets[format('AAC31_ORIGINAL_{0}_7', inputs.installed_aac31_retained_render_run)] }}
+          AAC31_ORIGINAL_8: ${{ secrets[format('AAC31_ORIGINAL_{0}_8', inputs.installed_aac31_retained_render_run)] }}
+          AAC31_ORIGINAL_9: ${{ secrets[format('AAC31_ORIGINAL_{0}_9', inputs.installed_aac31_retained_render_run)] }}
         run: |
           set -euo pipefail
           umask 077
           chmod -R go-rwx "$RUNNER_TEMP/aac31-candidate"
           find "$RUNNER_TEMP/aac31-candidate" -type f -name '*.AppImage' -exec chmod u+x {} +
           observation=(--manim-inventory "$RUNNER_TEMP/aac31-manim-provision/runtime-inventory.json")
-          if [[ "$AAC31_DELIVERY_OBSERVATION" == true ]]; then
+          if [[ -n "$AAC31_RETAINED_RENDER" || -n "$AAC31_RESTORE_SHA256" ]]; then
+            observation=(--retained-render-run "$AAC31_RETAINED_RENDER" --restore-sha256 "$AAC31_RESTORE_SHA256")
+          elif [[ "$AAC31_DELIVERY_OBSERVATION" == true ]]; then
             observation+=(--inspect-delivery)
           fi
           retained=()

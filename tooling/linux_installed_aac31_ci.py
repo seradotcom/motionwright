@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import wave
 
 import ci_private_evidence as seal
+import linux_installed_aac31_readback as readback
 import native_host_installed_shared_state as installed
 import native_mlt_sequence_e2e as native
 import source_checkout_observation as source
@@ -63,7 +64,7 @@ def verify_recipient():
     return recipient
 
 
-def admit_candidate(bundle, retained_package):
+def admit_candidate(bundle, retained_package, *, readback_only=False):
     env = os.environ
     source_sha = env["GITHUB_SHA"]
     run_id = env["GITHUB_RUN_ID"]
@@ -108,13 +109,16 @@ def admit_candidate(bundle, retained_package):
             b"tooling/native_host_installed_shared_state.py",
             b"tooling/tests/test_ci_nsis_source_selection.py",
             b"tooling/linux_installed_aac31.py", b"tooling/tests/test_linux_installed_aac31.py",
-            b"tooling/linux_hybrid_original_receipt.py",
+            b"tooling/linux_hybrid_original_receipt.py", b"tooling/linux_installed_aac31_readback.py",
             b".github/workflows/v05-otio-real-media.yml", b"tooling/tests/test_ci_otio_alab_readonly.py",
         }, "AAC31_RETAINED_PRODUCT_SOURCE_CHANGED")
         inputs["candidate_origin"] = retained
     else:
         inputs["candidate_origin"] = {"source_sha": source_sha, "run_id": run_id}
-    native.exact_inputs()
+    if readback_only:
+        installed.need(retained_package is not None, "AAC31_READBACK_REQUIRES_ORIGINAL_APPIMAGE")
+    else:
+        native.exact_inputs()
     inputs["source"] = installed.source_inputs(args)
     return args, inputs
 
@@ -182,12 +186,19 @@ def main():
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--retained-package", type=Path)
     parser.add_argument("--sandbox-profile", type=Path, required=True)
-    parser.add_argument("--manim-inventory", type=Path, required=True)
-    parser.add_argument("--inspect-delivery", action="store_true")
+    parser.add_argument("--manim-inventory", type=Path)
+    observation = parser.add_mutually_exclusive_group()
+    observation.add_argument("--inspect-delivery", action="store_true")
+    observation.add_argument("--retained-render-run")
+    parser.add_argument("--restore-sha256")
     arguments = parser.parse_args()
+    readonly = arguments.retained_render_run is not None
+    installed.need(readonly == (arguments.restore_sha256 is not None)
+                   and (readonly or arguments.manim_inventory is not None),
+                   "AAC31_OBSERVATION_INPUTS_INVALID")
     os.umask(0o077)
     recipient = verify_recipient()
-    args, inputs = admit_candidate(arguments.bundle, arguments.retained_package)
+    args, inputs = admit_candidate(arguments.bundle, arguments.retained_package, readback_only=readonly)
     root = args.namespace
     root.mkdir(mode=0o700)
     evidence, owner, profile = root / "evidence", root / "o", root / "gui"
@@ -201,11 +212,12 @@ def main():
                "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": "1"}
     terminal = {**context, "schema": "motionwright.ci.installed-aac31-custody/1",
                 "observation": "UNKNOWN", "automatic_retry": False, "product_acceptance": False,
-                "observation_scope": "delivery-controls" if arguments.inspect_delivery else "aac31-original",
+                "observation_scope": ("retained-original-readback" if readonly else
+                                      "delivery-controls" if arguments.inspect_delivery else "aac31-original"),
                 "candidate_source_sha": inputs["candidate_origin"]["source_sha"],
                 "candidate_run_id": inputs["candidate_origin"]["run_id"]}
     installed.publish(evidence / "intent.json",
-                      {**context, "render_dispatch_limit": 0 if arguments.inspect_delivery else 1,
+                      {**context, "render_dispatch_limit": 0 if readonly or arguments.inspect_delivery else 1,
                        "automatic_retry": False,
                        "candidate_sha256": inputs["artifact"]["sha256"]})
     report = None
@@ -214,15 +226,21 @@ def main():
         effective_limit = min(CAPTURE_LIMIT, original_limit[0]) if original_limit[0] >= 0 else CAPTURE_LIMIT
         resource.setrlimit(resource.RLIMIT_FSIZE, (effective_limit, original_limit[1]))
         try:
-            report = observe(args, inputs, evidence, owner, profile, database,
-                             arguments.sandbox_profile, arguments.manim_inventory,
-                             inspect_delivery=arguments.inspect_delivery)
+            if readonly:
+                report = readback.run_readback(args, inputs, evidence, arguments.retained_render_run,
+                                               arguments.restore_sha256, run_original)
+            else:
+                report = observe(args, inputs, evidence, owner, profile, database,
+                                 arguments.sandbox_profile, arguments.manim_inventory,
+                                 inspect_delivery=arguments.inspect_delivery)
         finally:
             resource.setrlimit(resource.RLIMIT_FSIZE, original_limit)
     except Exception as error:
         installed.publish(evidence / "failure.json", {"type": type(error).__name__, "detail": str(error)})
     roots = {"evidence": evidence, "owner": profile / "data", "output": owner / "output",
               "configuration": owner / "config", "projects": owner / "project", "runtime-state": owner / "state"}
+    if readonly:
+        roots = {"evidence": evidence}
     try:
         raw, complete = seal.gather_snapshot(roots, preserve_partial=True, max_archive_bytes=CAPTURE_LIMIT)
         encoded = seal.encrypt_snapshot(raw, recipient, context)
@@ -231,7 +249,10 @@ def main():
         seal.new_bytes(sealed, encoded)
         terminal.update(sealed_sha256=seal.sha(encoded), complete_private_custody=complete)
         if report is not None and complete:
-            if arguments.inspect_delivery:
+            if readonly:
+                terminal.update(observation="READBACK_PASS", retained_render_run_id=report["retained_render_run_id"],
+                                original_mp4_sha256=report["original_sha256"])
+            elif arguments.inspect_delivery:
                 terminal.update(observation="PROBE_PASS", source_check_enabled=report["source_check_enabled"])
             else:
                 terminal.update(observation="PASS", original_mp4_sha256=report["original_sha256"],
@@ -239,7 +260,7 @@ def main():
     finally:
         installed.publish(transport / "status.json", terminal)
         print("Installed AAC31 observation " + terminal["observation"])
-    return 0 if terminal["observation"] in {"PASS", "PROBE_PASS"} else 1
+    return 0 if terminal["observation"] in {"PASS", "PROBE_PASS", "READBACK_PASS"} else 1
 
 
 if __name__ == "__main__":
