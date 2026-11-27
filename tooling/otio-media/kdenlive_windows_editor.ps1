@@ -329,7 +329,7 @@ function Find-Control($Windows, $Role, [string]$Name, [string]$AutomationId = ''
 }
 
 function Await-Unique([string]$Name, [ScriptBlock]$Select, [int]$Seconds = 20) {
-    $limit = [Math]::Min(95, $deadline.Elapsed.TotalSeconds + $Seconds)
+    $limit = [Math]::Min(140, $deadline.Elapsed.TotalSeconds + $Seconds)
     while ($deadline.Elapsed.TotalSeconds -lt $limit) {
         Assert-Editor
         $rows = @(& $Select)
@@ -479,7 +479,7 @@ function Choose-File([string[]]$Titles, [string]$Path, [string]$Button, [string]
         Assert-OriginalImport $Stage $Path
         Invoke-Control $submit "$Stage-submit" -ConfirmDialogTransition
     }
-    while ($deadline.Elapsed.TotalSeconds -lt 95) {
+    while ($deadline.Elapsed.TotalSeconds -lt 140) {
         Assert-Editor
         if (!@(Find-FileDialog $Titles).Count) { return }
         Start-Sleep -Milliseconds 120
@@ -492,8 +492,11 @@ if ($OriginalSha256 -cnotmatch '^[a-f0-9]{64}$' -or
     (Test-Path -LiteralPath $savePath)) { throw 'Kdenlive import input or save destination differs' }
 try {
     $main = Await-Unique 'Kdenlive window' {
-        Owned-Windows | Where-Object { $_.Current.NativeWindowHandle -gt 0 -and (Control-Name $_) -match 'Kdenlive$' }
-    }
+        Owned-Windows | Where-Object {
+            $_.Current.ClassName -ceq 'MainWindow' -and $_.Current.NativeWindowHandle -gt 0 -and
+                (Control-Name $_) -match 'Kdenlive$'
+        }
+    } 45
     Record 'initial-window.json' @{ editor_pid = $EditorPid; hwnd = $main.Current.NativeWindowHandle; name = (Control-Name $main) }
     File-Action 'OpenTimelineIO Import...' 'import'
     Choose-File @('OpenTimelineIO Import') $OriginalOtio 'Open' 'import'
