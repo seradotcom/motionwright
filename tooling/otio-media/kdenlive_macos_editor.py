@@ -418,17 +418,40 @@ class EditorUI:
         evidence.press("project-clock-overflow", control, opens=ax.text(control, "AXTitle"))
         return "open-project-monitor-overflow"
 
-    def seek_and_select_third_clip(self, evidence):
+    def project_monitor(self):
         ax = self.ax
-        field = self.await_target(self.project_clock, "unique Project Monitor clock")
-        self.commit_timecode(field, "00:00:02:15", "seek-third", evidence)
+        groups = []
+        for node in self.descend((self.top_window(),), limit=160, depth_limit=12):
+            if (self.title(node) == "project monitor" and ax.text(node, "AXRole") == "AXTabGroup"
+                    and ax.enabled(node) and not any(ax.equal(node, known) for known in groups)):
+                groups.append(node)
+        return groups[0] if len(groups) == 1 else None
 
-        def seek_acknowledged():
-            current = self.project_clock()
-            return (current and ax.text(current, "AXValue") == "00:00:02:15"
-                    and not ax.flag(current, "AXFocused"))
+    def project_monitor_tab(self):
+        ax = self.ax
+        group = self.project_monitor()
+        if not group:
+            return None
+        tabs = []
+        for node in ax.children(group):
+            if (ax.owns(node) and self.title(node) == "project monitor"
+                    and ax.text(node, "AXRole") == "AXRadioButton"
+                    and ax.enabled(node) and ax.action(node, ("AXPress",))):
+                parent = ax.value(node, "AXParent")
+                if ax.owns(parent) and ax.equal(group, parent):
+                    tabs.append(node)
+        return tabs[0] if len(tabs) == 1 else None
 
-        self.await_target(seek_acknowledged, "Project Monitor seek acknowledgement")
+    def seek_and_select_third_clip(self, evidence):
+        tab = self.await_target(self.project_monitor_tab, "owned Project Monitor tab")
+        evidence.press("activate-project-monitor", tab)
+        self.await_target(self.project_monitor, "selected Project Monitor tab group")
+        for name, stage, submenu in (
+            ("Go to Project End", "project-end", "Go To"),
+            ("Rewind 1 Frame", "rewind-one-frame", "Seek"),
+        ):
+            item = self.menu_item(name, evidence, stage, section="Monitor", submenu=submenu)
+            evidence.press(stage, item)
         evidence.key("select-video-track-one", 18)
         item = self.menu_item("Select Clip", evidence, "select-third",
                               section="Sequence", submenu="Selection")
@@ -506,15 +529,6 @@ class EditorUI:
     def project_monitor_diagnostic(self):
         ax = self.ax
 
-        def monitor():
-            groups = []
-            for node in self.descend((self.top_window(),), limit=160, depth_limit=12):
-                if (self.title(node) == "project monitor"
-                        and ax.text(node, "AXRole") == "AXTabGroup"
-                        and not any(ax.equal(node, known) for known in groups)):
-                    groups.append(node)
-            return groups[0] if len(groups) == 1 else None
-
         def row(node):
             if not ax.owns(node):
                 return None
@@ -528,7 +542,7 @@ class EditorUI:
                 "enabled": ax.enabled(node), "actions": ax.actions(node),
             }
 
-        tab = self.await_target(monitor, "empty project's Project Monitor tab group")
+        tab = self.await_target(self.project_monitor, "empty project's Project Monitor tab group")
         parent = ax.value(tab, "AXParent")
         require(ax.owns(parent), "observed Project Monitor has no parent in the editor PID")
         focused = ax.value(ax.app, "AXFocusedUIElement")
