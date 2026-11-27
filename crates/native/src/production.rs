@@ -6912,10 +6912,40 @@ mod tests {
         let prepared = coordinator
             .prepare_mlt_close(project.id, &project.stamp(), start_request)
             .unwrap();
+        let watermark = service.production_receipt_watermark(project.id).unwrap();
+        let mut replacement = original.to_vec();
+        replacement[0] ^= 1;
+        fs::write(connection.output_root.join("original.mkv"), replacement).unwrap();
+        let rejected = coordinator.close_prepared_mlt(prepared).await.unwrap_err();
+        assert_eq!(
+            rejected.message,
+            "MLT output differs from its original bytes"
+        );
+        assert_eq!(
+            coordinator
+                .client
+                .execute_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            service.production_receipt_watermark(project.id).unwrap(),
+            watermark
+        );
+        fs::write(connection.output_root.join("original.mkv"), original).unwrap();
+        let prepared = coordinator
+            .prepare_mlt_close(project.id, &project.stamp(), start_request)
+            .unwrap();
         let close_command = "driver.mlt-video.project.close";
         let request_id = format!("mlt-owner-close:{}", request_digest(close_command, &json!({
             "connection_identity":identity, "provider_generation":7, "project_ref":project_ref,
         })).unwrap());
+        assert!(
+            service
+                .root_operation_budget_for_key(project.id, &request_id)
+                .unwrap()
+                .is_none()
+        );
         let units = RootBudgetUnits {
             attempts: 1,
             ..RootBudgetUnits::default()

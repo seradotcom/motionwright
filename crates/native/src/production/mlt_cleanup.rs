@@ -1,6 +1,7 @@
 //! Owner-confirmed closure of the native project behind one retained MLT job.
 use super::{provider_binding::MLT_CLOSE, *};
 use motionwright_service::{OriginalMltTimeline, mlt_result_request, retained_mlt_close};
+use motionwright_storage::BlobDescriptor;
 
 const MAX_ORIGINAL_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_CONFIRMATION_HISTORY: usize = 32;
@@ -9,10 +10,28 @@ pub struct PreparedMltClose {
     project: Uuid,
     stamp: RevisionStamp,
     source: OriginalMltTimeline,
+    artifact: BlobDescriptor,
     start_request: String,
     result_receipt: Uuid,
     request_id: String,
     request_sha256: String,
+}
+
+fn require_original_output(
+    root: &Path,
+    output: &str,
+    expected: &BlobDescriptor,
+) -> NativeResult<()> {
+    let path = output_artifact_path(root, output, MAX_ORIGINAL_BYTES)?;
+    let measured = motionwright_storage::Store::file_import_source_descriptor_with_limit(
+        &path,
+        MAX_ORIGINAL_BYTES,
+    )
+    .map_err(storage_error)?;
+    if measured != *expected {
+        return Err(invalid("MLT output differs from its original bytes"));
+    }
+    Ok(())
 }
 
 impl ProductionCoordinator {
@@ -66,25 +85,20 @@ impl ProductionCoordinator {
         if timeline.connection_identity != self.client.connection().identity()? {
             return Err(invalid("The original MLT production connection changed"));
         }
-        let artifact = output_artifact_path(
+        let artifact = BlobDescriptor {
+            sha256: retained.artifact_sha256,
+            size_bytes: retained.artifact_bytes,
+        };
+        require_original_output(
             &self.client.connection().output_root,
             &timeline.output,
-            MAX_ORIGINAL_BYTES,
-        )?;
-        let measured = motionwright_storage::Store::file_import_source_descriptor_with_limit(
             &artifact,
-            MAX_ORIGINAL_BYTES,
-        )
-        .map_err(storage_error)?;
-        if measured.sha256 != retained.artifact_sha256
-            || measured.size_bytes != retained.artifact_bytes
-        {
-            return Err(invalid("MLT output differs from its original bytes"));
-        }
+        )?;
         Ok(PreparedMltClose {
             project,
             stamp: stamp.clone(),
             source: timeline,
+            artifact,
             start_request: start_request.to_owned(),
             result_receipt: retained.result_id,
             request_id: retained.request_id,
@@ -130,6 +144,15 @@ impl ProductionCoordinator {
         prepared: PreparedMltClose,
     ) -> NativeResult<MltCloseDisposition> {
         let target = &prepared.source;
+        let output_root = self.client.connection().output_root.clone();
+        let output = target.output.clone();
+        let artifact = prepared.artifact.clone();
+        // Recheck after preparation and before starting the Broker approval window.
+        tokio::task::spawn_blocking(move || {
+            require_original_output(&output_root, &output, &artifact)
+        })
+        .await
+        .map_err(|_| backend("Original MLT output could not be confirmed"))??;
         let binding = self
             .client
             .bind_mlt_close(target.provider_generation)
