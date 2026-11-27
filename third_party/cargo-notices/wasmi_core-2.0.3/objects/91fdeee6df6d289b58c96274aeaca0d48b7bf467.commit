@@ -1,0 +1,27 @@
+tree ea4758b9dba71ce7623b4f72c5fff41ec83905a5
+parent 50f5aaacbc949910ce0d7c90cf93d98c58f0b366
+author Robin Freyler <robin.freyler@gmail.com> 1795546736 +0100
+committer GitHub <noreply@github.com> 1795546736 +0100
+gpgsig -----BEGIN PGP SIGNATURE-----
+ 
+ wsFcBAABCAAQBQJrBd5wCRC1aQ7uu5UhlAAA84cQAHXuuQwx+/Tii0aW8gWChVEO
+ 4LMVZW5RmTtl6HHEFLaaR6CEMBYzNRt5ymB/qmJi7cxZLme4c/5KyJf0BTiu4C+v
+ vwiZbuKgX7IT34jpUxgaEGlLs9f7GcU+xX73v+4vFkxPkZtLQV0nizfo6xta4Tdf
+ kxoX7A02oN7U4AkeO/5vXAP5oXv5QAKKPUj+3YdTd3pk5didpWxFiSoUaMfPxvP1
+ Dl4VkVM4+VJOPf0OB6cYIC26bym+E9HBa8714/kRY9aKJ8sAa9VGYRrEZUlyFMpJ
+ o2n3FV/6ZLkMYhSVvXOEAXTeT/D+aQgJ+U3JfNP+A6FUFGJRFavcEugl9cZgKzQJ
+ qiBfHd/FR7b+urcSAbrdx+FiJEyRTVFy0E+gqPzFZZBZhOxi8WHg/mQxft78DhKq
+ htXXKw+gyhHn8aXramDj/HCRHbCfFHnwpTwhuVta78Aa8UiXKu2Y6+CKAxD8H5nh
+ aRw6DACsaJUJtjVM2YKtNbgU2uGU5HunFRk2jmBmIJ2+GPD20N1DuIj4tTXwj21u
+ Kw92fAimSvnE6595n7unVebURgoB8irs4OoGQSB9/4YGGTcwULCzH4hMRpnDZYs0
+ d7dNA/0mGswNCvGhFql1VsoLdifR/PLGZea1EC/sYjuXFiqAsBj1O/B1nc1PdljN
+ 4VwmdbuuG5aFz5w8IFGi
+ =E0Wb
+ -----END PGP SIGNATURE-----
+ 
+
+Prepare Wasmi v2.0.3 release (#2127)
+
+* bump Wasmi crate versions
+
+* finalize changelog for v2.0.3

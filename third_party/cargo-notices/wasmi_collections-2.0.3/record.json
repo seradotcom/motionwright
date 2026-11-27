@@ -1,0 +1,221 @@
+{
+  "commit": "91fdeee6df6d289b58c96274aeaca0d48b7bf467",
+  "component": {
+    "crate_sha256": "b62dc4c1a17f3294aa2b23ac39979e3b38f3ee6afe5673eea76b76902d11103b",
+    "id": "registry+https://github.com/rust-lang/crates.io-index#wasmi_collections@2.0.3",
+    "license": "MIT/Apache-2.0",
+    "name": "wasmi_collections",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "version": "2.0.3"
+  },
+  "members": [
+    {
+      "bytes": 112,
+      "kind": "cargo_vcs_metadata",
+      "path": ".cargo_vcs_info.json",
+      "sha256": "38e1d59106e3738ea2939d3f3b80c2074909f36ecc295836a9671f04a02e1c20"
+    },
+    {
+      "bytes": 2490,
+      "kind": "cargo_packaged_lock",
+      "path": "Cargo.lock",
+      "sha256": "a125c80f287f8d546ca5648f02da1a67315382d0d310fc7942948ef4db61860b"
+    },
+    {
+      "bytes": 1732,
+      "kind": "cargo_normalized_manifest",
+      "path": "Cargo.toml",
+      "sha256": "8f41616719325af435932b3f011b02c455d24282baed4808fe3814184096a1f8"
+    },
+    {
+      "bytes": 1976,
+      "kind": "git_package_manifest",
+      "path": "Cargo.toml.orig",
+      "sha256": "91a5cfed77ed0a646a69c52301acab9ff81cf5608396b941a50a5b6309016569"
+    },
+    {
+      "bytes": 8931,
+      "kind": "git_declared_workspace_readme",
+      "path": "README.md",
+      "sha256": "8f8d9239660a55a3a37e5ac0fea2cdc2387918ccadd49936b75901ab00e7670f"
+    },
+    {
+      "bytes": 6539,
+      "kind": "git_exact",
+      "path": "src/arena/component_vec.rs",
+      "sha256": "9e627757ba72000cbd7b25fe9cba5fd44780db1eb28cc8542767162cdfce73c4"
+    },
+    {
+      "bytes": 4617,
+      "kind": "git_exact",
+      "path": "src/arena/dedup.rs",
+      "sha256": "13ce3680ff351b5f5d6acae885b9268705671ece387160c4816a7c9eab964a82"
+    },
+    {
+      "bytes": 913,
+      "kind": "git_exact",
+      "path": "src/arena/error.rs",
+      "sha256": "d7001a42ffefa5fe70ebbfd4c6974aa593f4a8c32721d6cfe81a771c8ae0ed45"
+    },
+    {
+      "bytes": 2060,
+      "kind": "git_exact",
+      "path": "src/arena/key.rs",
+      "sha256": "9aac1875b53a71d19adada01f341b6fe072b9cac822d3d68e16f9e92ef137846"
+    },
+    {
+      "bytes": 9899,
+      "kind": "git_exact",
+      "path": "src/arena/mod.rs",
+      "sha256": "0da407b83f8d19da5aae249b2a1725a684541dc5d2ef100b961cc79b61a907f5"
+    },
+    {
+      "bytes": 12976,
+      "kind": "git_exact",
+      "path": "src/arena/stable_arena.rs",
+      "sha256": "5d6392e5801fbb91a2a5f141f7cb870f5b1a184fcd2ab0e6f5b31b49a4e00d37"
+    },
+    {
+      "bytes": 20659,
+      "kind": "git_exact",
+      "path": "src/arena/stable_vec.rs",
+      "sha256": "c7723fdb554ecfdc8c17311317a48ff85a6c99a02356b9e5560ddf79866d973a"
+    },
+    {
+      "bytes": 3033,
+      "kind": "git_exact",
+      "path": "src/hash.rs",
+      "sha256": "e6cbeacf7aaf9e7685a0a4c5fc421df56ab0edf369957a9252b7cd095351567d"
+    },
+    {
+      "bytes": 1981,
+      "kind": "git_exact",
+      "path": "src/head_vec.rs",
+      "sha256": "d90795467ee9625b8f403c483fea851980dafd38b55ea62118b543b6cac8835a"
+    },
+    {
+      "bytes": 2099,
+      "kind": "git_exact",
+      "path": "src/lib.rs",
+      "sha256": "331c3eead56b2c9e0015a71f6aa78c18f4d6e735f6c4ef639fab79a501fcd235"
+    },
+    {
+      "bytes": 21268,
+      "kind": "git_exact",
+      "path": "src/map.rs",
+      "sha256": "974b64fad2c842863689d1a2153d1315689d3ec9f86dcd4d34249aa41246e934"
+    },
+    {
+      "bytes": 15717,
+      "kind": "git_exact",
+      "path": "src/set.rs",
+      "sha256": "7400a6626a932bdc900a026fac5e2db75335da5eacbc6eb5aa6c272e436c268f"
+    },
+    {
+      "bytes": 4932,
+      "kind": "git_exact",
+      "path": "src/string_interner.rs",
+      "sha256": "3f605cc601fda25a4a057504d63e494185bdd397821325131937dfcdfcc18ae1"
+    },
+    {
+      "bytes": 5846,
+      "kind": "git_exact",
+      "path": "src/string_interner/detail.rs",
+      "sha256": "821f6e908330984e5b63c189ee916a0b8c7fded676ae6be641fe8bcaeaadcfbd"
+    },
+    {
+      "bytes": 5051,
+      "kind": "git_exact",
+      "path": "src/tests.rs",
+      "sha256": "92c59d8a4fdb9d80e37ebdb324db922ad153e783b6c680d55f59d3bf272c246d"
+    }
+  ],
+  "notices": [
+    {
+      "declared_by": "crates/collections/Cargo.toml",
+      "kind": "upstream_git",
+      "upstream_path": "LICENSE-APACHE"
+    },
+    {
+      "declared_by": "crates/collections/Cargo.toml",
+      "kind": "upstream_git",
+      "upstream_path": "LICENSE-MIT"
+    }
+  ],
+  "objects": [
+    {
+      "bytes": 1062,
+      "oid": "1399b075915d94e530b1aa7de1938139d713ab31",
+      "path": "objects/1399b075915d94e530b1aa7de1938139d713ab31.blob",
+      "sha256": "172bc1497507c1c363496bc23b0f16de8fa8e94befa85db6c8d9fa790e0a8657",
+      "type": "blob"
+    },
+    {
+      "bytes": 2001,
+      "oid": "700bd9c7d0b7d46b2960c4ca2f6ea6842a601695",
+      "path": "objects/700bd9c7d0b7d46b2960c4ca2f6ea6842a601695.blob",
+      "sha256": "83bfd11087549a9606afecb7fe285f7868b8357a3629095f2e237b26572b9857",
+      "type": "blob"
+    },
+    {
+      "bytes": 332,
+      "oid": "7bd84670a1e3bbeac072c85d1e9b69944f94bb2e",
+      "path": "objects/7bd84670a1e3bbeac072c85d1e9b69944f94bb2e.tree",
+      "sha256": "2d182b927f2ded906d8b6afa1d209c9f356fce73f1961f8c622f1e63ba178669",
+      "type": "tree"
+    },
+    {
+      "bytes": 268,
+      "oid": "88053d8e0083e26ef267077e52fdfa29b4bcb55d",
+      "path": "objects/88053d8e0083e26ef267077e52fdfa29b4bcb55d.tree",
+      "sha256": "9d6a643f4de7c2840ccb58a91b9ea852539b42fec6acd7a166f576063f8d01f5",
+      "type": "tree"
+    },
+    {
+      "bytes": 37,
+      "oid": "9117864b92fe8ec94685731bf3cdae743ef91c01",
+      "path": "objects/9117864b92fe8ec94685731bf3cdae743ef91c01.tree",
+      "sha256": "faef4b6a00b8f01d7f13a93c3a8d15ce7ce10ebe9acd7d5fc5086d323520b18e",
+      "type": "tree"
+    },
+    {
+      "bytes": 1137,
+      "oid": "91fdeee6df6d289b58c96274aeaca0d48b7bf467",
+      "path": "objects/91fdeee6df6d289b58c96274aeaca0d48b7bf467.commit",
+      "sha256": "dd748ca8ecf3362ae541fe6d50c06f0064a3d62646df895081a20ded598a3a58",
+      "type": "commit"
+    },
+    {
+      "bytes": 68,
+      "oid": "a65e822eda8299adbff1a099abde817956b7bc8b",
+      "path": "objects/a65e822eda8299adbff1a099abde817956b7bc8b.tree",
+      "sha256": "4f82513c425959c8d43ed000c316d1e9ab1b9ca66ce2a23566b161dbdc6f1715",
+      "type": "tree"
+    },
+    {
+      "bytes": 10842,
+      "oid": "b35f96d23531d1d9108fdbfe418eba812d3f3fb7",
+      "path": "objects/b35f96d23531d1d9108fdbfe418eba812d3f3fb7.blob",
+      "sha256": "f031c1608e4a19e8cbcc3394cdba838067e79189610227459e8ffcd669e6f52d",
+      "type": "blob"
+    },
+    {
+      "bytes": 790,
+      "oid": "ea4758b9dba71ce7623b4f72c5fff41ec83905a5",
+      "path": "objects/ea4758b9dba71ce7623b4f72c5fff41ec83905a5.tree",
+      "sha256": "ed7d203be88e4c6fc1a4e7a7d8ef062074012b907bdaafa0ac41e1e2d82d5899",
+      "type": "tree"
+    },
+    {
+      "bytes": 285,
+      "oid": "eab9fedbac8a94e0f0ad47993aed53742f332170",
+      "path": "objects/eab9fedbac8a94e0f0ad47993aed53742f332170.tree",
+      "sha256": "0ac30bd675a743dea2c5ee5e7fed1212dcefa53c5a79bb2514388a776f3de616",
+      "type": "tree"
+    }
+  ],
+  "package_path": "crates/collections",
+  "repository": "https://github.com/wasmi-labs/wasmi",
+  "schema": "motionwright.cargo-notice-supplement/1",
+  "workspace_manifest": "Cargo.toml"
+}

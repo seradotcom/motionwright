@@ -37,7 +37,8 @@ RESERVED = {"CON", "PRN", "AUX", "NUL"} | {
 REPOSITORIES = frozenset("https://github.com/" + name for name in (
     "dropbox/rust-alloc-no-stdlib", "Stranger6667/jsonschema", "servo/stylo",
     "tauri-apps/tauri", "Nugine/simd", "wravery/webview2-rs", "OpenByteDev/dlopen2",
-    "madsmtm/objc2"))
+    "madsmtm/objc2", "wasmi-labs/wasmi",
+    "bytecodealliance/wasm-tools/tree/main/crates/wasmparser"))
 REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
 MPL_URL = "https://mozilla.org/MPL/2.0/"
 MPL_TEXT_URL = "https://www.mozilla.org/media/MPL/2.0/index.txt"
@@ -1303,6 +1304,21 @@ def _verify(root, expected_record_sha256, component, crate_members, expected_cra
                     item.update(manifest_transform, git_byte_match=False)
         elif kind == "git_declared_parent_readme":
             item.update(_declared_parent_readme(record, descriptor, raw, original, normalized, git))
+        elif kind == "git_declared_workspace_readme":
+            # Wasmi's published workspace members copy the README declared by
+            # the root manifest. Match the original blob in the same Git tree.
+            _need(record["repository"] == "https://github.com/wasmi-labs/wasmi"
+                  and record["commit"] == "91fdeee6df6d289b58c96274aeaca0d48b7bf467"
+                  and record["workspace_manifest"] == "Cargo.toml"
+                  and inherited is not None and inherited.get("readme") == "README.md"
+                  and original.get("readme") == {"workspace": True}
+                  and normalized.get("readme") == name == "README.md",
+                  "declared_workspace_readme_scope_invalid")
+            oid = git.blob_id(name)
+            _need(_oid("blob", raw) == oid, "declared_workspace_readme_identity_mismatch")
+            item.update(upstream_path=name, git_blob_oid=oid, git_byte_match=True,
+                        source_copy="CARGO_DECLARED_WORKSPACE_README",
+                        declared_by="Cargo.toml")
         elif kind in {"git_pinned_submodule_copy", "git_pinned_inrepo_copy"}:
             item.update(_objc_materialized_member(record, descriptor, raw, git, secondary_git))
         elif kind == "cargo_packaged_lock":

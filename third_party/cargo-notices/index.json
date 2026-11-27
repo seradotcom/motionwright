@@ -199,6 +199,61 @@
       "version": "0.8.0"
     },
     {
+      "crate_sha256": "36dcb6cbd722c1575daf8c3063dd7ba1883fcd35b51fcbd377ae4f3371ac4dba",
+      "name": "wasmi",
+      "record": {
+        "bytes": 35801,
+        "path": "third_party/cargo-notices/wasmi-2.0.3/record.json",
+        "sha256": "41241441adb95278c4602b0eee1cddf55ab4f8d963d1d6b419e55c0f46c7fb45"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "2.0.3"
+    },
+    {
+      "crate_sha256": "b62dc4c1a17f3294aa2b23ac39979e3b38f3ee6afe5673eea76b76902d11103b",
+      "name": "wasmi_collections",
+      "record": {
+        "bytes": 7235,
+        "path": "third_party/cargo-notices/wasmi_collections-2.0.3/record.json",
+        "sha256": "2a0cf1b5fa37b2d679b11f4fa2a1febd00db1ddd8f0678a462a124560f990506"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "2.0.3"
+    },
+    {
+      "crate_sha256": "c19f6f7fcf32b9e12cebc8fec606fefac71af3d386bae1472e35d620b5471754",
+      "name": "wasmi_core",
+      "record": {
+        "bytes": 9469,
+        "path": "third_party/cargo-notices/wasmi_core-2.0.3/record.json",
+        "sha256": "e42e6012db42f482ffc9aafab83367b8bfb15d6125c5b5fc8f8e2fbc34d2141a"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "2.0.3"
+    },
+    {
+      "crate_sha256": "14f9c115dfd2397700880a64d14161db3a4da0a11059fac39c6a7935eb8f6b36",
+      "name": "wasmi_ir",
+      "record": {
+        "bytes": 9215,
+        "path": "third_party/cargo-notices/wasmi_ir-2.0.3/record.json",
+        "sha256": "f50b2036c5d621fc5c5b0aa3ab44105511d683bf3b1e033e056f5de50046e21e"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "2.0.3"
+    },
+    {
+      "crate_sha256": "4abf1132c1fdf747d56bbc1bb52152400c70f336870f968b85e89ea422198ae3",
+      "name": "wasmparser",
+      "record": {
+        "bytes": 19903,
+        "path": "third_party/cargo-notices/wasmparser-0.228.0/record.json",
+        "sha256": "8bc1ffd9f474fd076b6cc00cc964f8de99e3425f62ebfb71ff93025c47600de0"
+      },
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.228.0"
+    },
+    {
       "crate_sha256": "3f89fca7a704cee10dcb3654c1dbb8941d1783132f1917358af75bec37a7d7e6",
       "name": "webview2-com",
       "record": {

@@ -1,0 +1,27 @@
+tree d83714f826c375a16fc867e49addb3e3b2b92a48
+parent 8bd9442a363777a7ac289605247bb277f088532a
+author github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1743525413 -0500
+committer GitHub <noreply@github.com> 1743525413 +0000
+gpgsig -----BEGIN PGP SIGNATURE-----
+ 
+ wsFcBAABCAAQBQJn7BY1CRC1aQ7uu5UhlAAAgEEQABFbv8ToJXe1SoQFrqk/qUjY
+ XtIvVQd8CA8pR/kg+NiA1++EjUx/wCRwlF32JL0qbhO/LxMGX2BRtJ/npSZhP7wO
+ OFd2xao1Tz9gykH7onZh8UJIB3TAGUoUqwL+UliKy9fqe/dsXyB0l15bEQz26KmQ
+ bSgH/vS53S6joDj5OJvYuDkNXG9NdR5S6NZAcSMFSK1pbVv381YYdHF0L8H4Pwzt
+ LkoApUyX4bnIoK2Nmtq5BonUA8XQfirsDjYAE7gysjuUa67GSca1/01FHtl+0ItN
+ PrJ+E+OHwTGncujlyjDMLVJ4I5EzYPuDUWlg4uXaq7Da4PqoMv3jwS+URR/WL2s4
+ SZuexD7NhyKEfqDfoSxJGl48fU0w4/o6QUeg3wkZWh+ymWdUZNc3a3+gSufgoxvF
+ H0cHzrghB9X/nhmgOXx+ycBvy0d8gx41znTHhhUJnbpxcwAYFt0lC5CUzAJoSLdD
+ Al0e/ZyZyevNoZBOFcGf/Ty2KIX3XX/40gPefiRsl5GluZ1Z3bp39dgztRVnDIcl
+ VteqyiIRNafQ2ee1dNdTsxT30SzJLje8Hk/wn1wcIztgA1hMZnzCRjItyGitCCcg
+ GGDXyOh2CYG1VG3+hWYD7inAqblNmpMVabX0p9+ywrL3cfmT2uLDHgvRGn0YOeBP
+ PYO3/2VHX5qQ0tvg7Bla
+ =LGKw
+ -----END PGP SIGNATURE-----
+ 
+
+Release wasm-tools 1.228.0 (#2119)
+
+[automatically-tag-and-release-this-commit]
+
+Co-authored-by: Auto Release Process <auto-release-process@users.noreply.github.com>
