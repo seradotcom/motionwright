@@ -94,10 +94,14 @@ def stable_read(root, path, limit=MAX_SOURCE):
         raise CaptureError("file_budget_exceeded")
     with path.open("rb") as handle:
         opened = os.fstat(handle.fileno())
-        raw = handle.read(limit + 1)
+        if identity(opened) != identity(before):
+            raise CaptureError("file_changed_during_read")
+        # Read one extra byte to detect growth without allocating the entire
+        # caller's byte budget for every small source file.
+        raw = handle.read(before.st_size + 1)
         finished = os.fstat(handle.fileno())
     after = admitted(root, path).stat()
-    if len(raw) > limit or not identity(before) == identity(opened) == identity(finished) == identity(after):
+    if len(raw) != before.st_size or identity(before) != identity(finished) or identity(before) != identity(after):
         raise CaptureError("file_changed_during_read")
     return raw
 

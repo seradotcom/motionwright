@@ -119,6 +119,8 @@ def admit_candidate(bundle, retained_package, *, readback_only=False):
             b"tooling/otio-media/kdenlive_windows_editor.py",
             b"tooling/otio-media/kdenlive_macos_editor.py",
             b"tooling/otio-media/test_kdenlive_macos_editor.py",
+            b"scripts/candidate_dependency_capture.py",
+            b"scripts/test_candidate_dependency_capture.py",
             b"tooling/otio-media/kdenlive_native_distribution.py",
             b"tooling/otio-media/kdenlive_native_installation.py",
             b"tooling/otio-media/test_kdenlive_native_distribution.py",

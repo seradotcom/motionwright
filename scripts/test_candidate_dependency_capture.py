@@ -305,6 +305,21 @@ class CaptureContracts(unittest.TestCase):
         self.git("-c", "core.autocrlf=false", "add", "tracked.txt")
         with self.assertRaisesRegex(capture.CaptureError, "index_differs"):
             capture.source_snapshot(self.root, head)
+    def test_stable_read_allocates_only_for_the_observed_file_and_rejects_a_short_read(self):
+        member = self.root / "small.txt"
+        content = b"original bytes"
+        member.write_bytes(content)
+        with member.open("rb") as handle, mock.patch.object(pathlib.Path, "open") as open_file:
+            stream = mock.Mock(wraps=handle)
+            open_file.return_value.__enter__.return_value = stream
+            self.assertEqual(capture.stable_read(self.root, member.name), content)
+            stream.read.assert_called_once_with(len(content) + 1)
+            stream.read.side_effect = lambda _size: content[:-1]
+            with self.assertRaisesRegex(capture.CaptureError, "file_changed_during_read"):
+                capture.stable_read(self.root, member.name)
+        with self.assertRaisesRegex(capture.CaptureError, "file_budget_exceeded"):
+            capture.stable_read(self.root, member.name, len(content) - 1)
+
     def test_admitted_anchor_alias_works_and_internal_redirect_is_rejected(self):
         physical = self.root/"physical"; physical.mkdir()
         (physical/"notice.txt").write_bytes(b"actual original notice\n")
