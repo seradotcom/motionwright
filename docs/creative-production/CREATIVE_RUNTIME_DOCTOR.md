@@ -2,8 +2,8 @@
 
 Motionwright now exposes a **Run creative runtime doctor** action under
 Integrations, beside the existing OS-native Semwright connection selector.
-This is a read-only preflight, not the future installer. It cannot download,
-modify or remove packages, create effect grants or dispatch a Broker action.
+The doctor runs a read-only preflight. To copy an existing local package on a
+supported host, use [Integrations → Offline runtime profiles](../offline-runtime-profiles.md).
 
 ## Installed desktop boundaries
 
@@ -51,7 +51,7 @@ source state and redacted serialization. Browser tests cover renderer
 counts, unknown status and actual UI interaction. GitHub Actions verifies
 the native crate and desktop command integration on Windows.
 
-A future real installer requires explicit owner-selected profile,
-destination and exact package size, signature verification, available disk
-space and transactional rollback. None of this is performed here.
-MW05-E15-02 remains partial; human acceptance remains NOT_RUN.
+Offline runtime profiles show the package size, destination and available disk
+space before an explicit copy. Rollback keeps the installed bytes in a disabled
+folder. Check the supported package layouts for your host and configure the
+Semwright connection separately to use an authorized provider.

@@ -2,7 +2,7 @@
 
 **Scope:** an owner-selectable, locally remembered existing Semwright production connection. This does **not** bundle, install, trust, update, provision or start a Semwright Broker/Driver Host. Offline project work remains available without any native renderer. This flow is independent of the 60 human acceptance cases.
 
-A separate [offline runtime profile installer](offline-runtime-profiles.md) now provides explicit package inspection, size/destination review, local copy, original-result recovery and preserved rollback for admitted Linux profiles. It does not provision or authorize the Broker/Driver Host described below.
+Open [Integrations → Offline runtime profiles](offline-runtime-profiles.md) to inspect and install an existing Motion Canvas package on Linux x86_64 or macOS Apple Silicon, or a HyperFrames package on Linux x86_64. Review the size and destination before copying. The original installation can be recovered after a lost response, and rollback keeps the copied files in a disabled folder. Configure the Broker/Driver Host separately using the connection steps below.
 
 ## First project, first connection
 
