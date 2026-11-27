@@ -521,20 +521,14 @@ impl ProductionCoordinator {
         )?;
         let mut clips = Vec::with_capacity(ranges.len());
         let mut originals = Vec::new();
-        // The Manim contribution is the real static native MP4, not an
-        // invented MC manifest or a renderer label on a different source.
+        // The Manim contribution is its original source-bound native MP4.
         let manim = &sources.manim;
         require(
             manim.get("renderer").and_then(Value::as_str) == Some("manim-community")
                 && manim.get("project_revision").and_then(Value::as_u64) == Some(expected.revision)
                 && manim.get("scene_id") == Some(&json!(sources.manim_scene_id()))
-                && manim
-                    .pointer("/artifact/static_source")
-                    .is_some_and(|source| source.is_object())
-                && manim
-                    .pointer("/artifact/static_source_custody_error")
-                    .is_none(),
-            "Hybrid Manim contribution lacks its retained original static source",
+                && sources.retains_original_manim_source(),
+            "Hybrid Manim contribution lacks its retained original source",
         )?;
         let original = manim
             .pointer("/result/result/data/artifact")

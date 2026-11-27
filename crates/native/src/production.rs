@@ -5076,10 +5076,12 @@ impl ProductionCoordinator {
             "driver.manim-community.editable.render.start",
             &Value::Null,
         )?;
-        crate::manim_editable_projection::stage_font_inputs(
-            &self.client.connection().output_root,
-            &source,
-        )?;
+        if self.active_hybrid_budget.is_none() {
+            crate::manim_editable_projection::stage_font_inputs(
+                &self.client.connection().output_root,
+                &source,
+            )?;
+        }
         scoped
             .realize_prepared_manim_scene(
                 project_id,

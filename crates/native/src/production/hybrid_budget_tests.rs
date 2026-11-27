@@ -62,6 +62,10 @@ fn connection(directory: &Path, resource: String) -> ProductionConnection {
             "driver.manim-community.static.render.start",
             "driver:manim-community",
         ),
+        (
+            "driver.manim-community.editable.render.start",
+            "driver:manim-community",
+        ),
         ("driver.mlt-video.frames.encode", "driver:mlt-video"),
     ] {
         let envelope = Envelope {
@@ -984,6 +988,129 @@ fn hybrid_blend_admission_is_bound_to_the_prepared_owner() {
         4
     );
     assert_eq!(owner.client.execute_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn hybrid_editable_manim_preserves_opacity_and_stages_font_after_charge() {
+    use motionwright_domain::{FontRight, RightsStatus};
+    const FONT: &[u8] =
+        include_bytes!("../../../manim-profile/tests/fixtures/Montserrat-variable.ttf");
+    let mut f = fixture();
+    let scene_id = f.project.scenes[1].id;
+    let authored_font = f.directory.path().join("original.ttf");
+    fs::write(&authored_font, FONT).unwrap();
+    f.project = f
+        .service
+        .import_asset_file(
+            f.project.id,
+            &f.project.stamp(),
+            "fixture-import-font",
+            &authored_font,
+            "original.ttf".into(),
+            "font/ttf".into(),
+        )
+        .unwrap()
+        .project;
+    let font_id = f.project.assets.last().unwrap().id;
+    let font_digest = f
+        .project
+        .assets
+        .last()
+        .unwrap()
+        .content_sha256
+        .clone()
+        .unwrap();
+    let mut language = f.project.visual_language.clone();
+    language.fonts.push(FontRight {
+        family: "Montserrat".into(),
+        source: format!("asset:{font_id}"),
+        rights_status: RightsStatus::Cleared,
+    });
+    change(
+        &f.service,
+        &mut f.project,
+        "fixture-manim-font-right",
+        Change::SetVisualLanguage {
+            visual_language: language,
+        },
+    );
+    let mut node = f.project.scenes[1].nodes[0].clone();
+    node.id = Uuid::now_v7();
+    node.name = "Original editable text".into();
+    node.kind = "text".into();
+    node.text = Some("Readable original".into());
+    node.opacity = 0.5;
+    node.rotation_deg = 7.0;
+    node.style.font_family = Some("Montserrat".into());
+    node.style.font_size = Some(36.0);
+    node.style.font_weight = Some(400);
+    node.style.line_height = Some(1.2);
+    node.width = 550.0;
+    node.height = 180.0;
+    node.z_index = 1;
+    change(
+        &f.service,
+        &mut f.project,
+        "fixture-manim-text",
+        Change::AddCanvasNode { scene_id, node },
+    );
+
+    let owner = ProductionCoordinator::new(f.service.clone(), f.connection.clone()).unwrap();
+    let expected = f.project.stamp();
+    let preflight = owner
+        .preflight_native_hybrid_sources(f.project.id, &expected, f.deliverable, &f.options)
+        .unwrap();
+    assert_eq!((preflight.source_count, preflight.frame_count), (3, 180));
+    assert_eq!(owner.client.execute_calls.load(Ordering::SeqCst), 0);
+    let original_font = f
+        .connection
+        .output_root
+        .join(format!("mw_font_{font_digest}.ttf"));
+    assert!(!original_font.exists());
+    let scoped = owner
+        .with_native_hybrid_scope(f.project.id, &expected, f.deliverable, &f.options)
+        .unwrap();
+    let scope = scoped.active_hybrid_budget.as_ref().unwrap();
+    let plan = &scope.plan;
+    let native = plan.editable_manim.as_ref().unwrap();
+    let text = native
+        .plan
+        .nodes
+        .iter()
+        .find(|node| node.typography.is_some())
+        .unwrap();
+    assert_eq!((text.opacity, text.rotation_deg), (0.5, 7.0));
+    assert_eq!(
+        plan.source_plan["contributions"][1]["renderer"],
+        "manim_editable"
+    );
+    let args = json!({"plan":plan.manim_plan, "profile":plan.manim_profile});
+    assert!(
+        scope
+            .units_for("driver.manim-community.static.render.start", &args, true)
+            .is_err()
+    );
+    assert!(!original_font.exists());
+    let request = format!("{}-manim:start", plan.request_prefix);
+    let output = scoped
+        .execute(
+            f.project.id,
+            &expected,
+            &request,
+            "driver.manim-community.editable.render.start",
+            args,
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(output["result"]["data"]["state"], "queued");
+    assert_eq!(fs::read(original_font).unwrap(), FONT);
+    let root = f
+        .service
+        .root_operation_budget(f.project.id, scope.root.root_id)
+        .unwrap();
+    assert_eq!((root.spent.attempts, root.spent.render_frames), (1, 60));
+    assert_eq!(root.spent.output_bytes, plan.manim_output_bytes);
 }
 
 #[test]
