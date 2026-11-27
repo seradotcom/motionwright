@@ -245,6 +245,12 @@ fn fixed_runtime() -> Result<(PathBuf, PathBuf), String> {
     Err("This installed platform has no admitted OTIO Python+ffprobe bridge runtime. External proposals remain reviewable, but automated media inspection is unavailable.".into())
 }
 
+fn check_runtime_before_dispatch() -> Result<(), String> {
+    fixed_runtime()
+        .map(|_| ())
+        .map_err(|error| format!("OTIO bridge preflight unavailable: {error}"))
+}
+
 fn stage_bridge_sources(temp: &Path) -> Result<(PathBuf, PathBuf), String> {
     let tooling = temp.join("tooling");
     let source_dir = tooling.join("otio-media");
@@ -475,6 +481,7 @@ pub fn preview(
         &request.edited_file,
         request.received_file.as_deref(),
     )?;
+    check_runtime_before_dispatch()?;
     let bundle = canonical_owner_directory(&request.bundle_path)?;
     let project = service.project(request.project_id).map_err(|_| refused())?;
     if project.generation != request.generation || project.revision != request.revision {
@@ -506,7 +513,6 @@ pub fn preview(
         EffectScope::project(request.project_id, request.generation, request.revision),
         &subject,
     )?;
-    fixed_runtime()?;
     let parent = bundle.parent().ok_or_else(refused)?;
     let temp = tempfile::Builder::new()
         .prefix(".motionwright-otio-preview-")
@@ -1085,6 +1091,120 @@ mod tests {
             "missing source cannot become a complete receiver"
         );
     }
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn unavailable_otio_runtime_preserves_both_grants_and_leaves_the_workspace_untouched() {
+        let root = tempfile::tempdir().unwrap();
+        let service = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
+        let initial = service.create_project("OTIO runtime preflight").unwrap();
+        let with_scene = service
+            .apply(
+                initial.id,
+                &initial.stamp(),
+                "otio-preflight-fixture-scene",
+                &motionwright_domain::Change::AddScene {
+                    name: "Original cut".into(),
+                    objective: "Verify OTIO runtime preflight".into(),
+                    duration_seconds: 1,
+                },
+            )
+            .unwrap()
+            .project;
+        let original = root.path().join("original.mp4");
+        fs::write(&original, b"synthetic OTIO asset for preflight only").unwrap();
+        let project = service
+            .import_asset_file(
+                with_scene.id,
+                &with_scene.stamp(),
+                "otio-preflight-fixture-asset",
+                &original,
+                "original.mp4".into(),
+                "video/mp4".into(),
+            )
+            .unwrap()
+            .project;
+        let scope = EffectScope::project(project.id, project.generation, project.revision);
+        let grants = EffectGrantRegistry::default();
+
+        let abs = root.path().canonicalize().unwrap();
+        let source = abs.join("owner-originals");
+        fs::create_dir(&source).unwrap();
+        fs::write(
+            source.join("source-project.json"),
+            serde_json::to_vec(&project).unwrap(),
+        )
+        .unwrap();
+        fs::write(source.join("bridge-manifest.json"), b"{}").unwrap();
+        let timeline = motionwright_domain::otio_interchange(&project).unwrap();
+        fs::write(source.join("edited.otio"), timeline.body.as_bytes()).unwrap();
+        let bundle = source.to_str().unwrap().to_owned();
+        let subject = preview_subject(&bundle, "edited.otio", None).unwrap();
+        let import = grants
+            .issue(EffectKind::ImportLocal, scope, &subject)
+            .unwrap();
+        let preview_request = OtioMediaPreviewRequest {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            bundle_path: bundle,
+            edited_file: "edited.otio".into(),
+            received_file: None,
+            effect_grant: import.token,
+        };
+        assert_eq!(
+            preview(&service, &grants, preview_request).unwrap_err(),
+            format!(
+                "OTIO bridge preflight unavailable: {}",
+                fixed_runtime().unwrap_err()
+            )
+        );
+        assert!(
+            grants
+                .consume(import.token, EffectKind::ImportLocal, scope, &subject)
+                .is_ok()
+        );
+
+        let output = abs.join("owner-export");
+        let destination = output.to_str().unwrap().to_owned();
+        let export = grants
+            .issue(EffectKind::DeliverLocal, scope, &destination)
+            .unwrap();
+        let export_request = OtioMediaBundleExportRequest {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            destination: destination.clone(),
+            reviewer_declaration: "Local reviewer".into(),
+            media_owner: "Original author".into(),
+            media_license: "Local interchange fixture".into(),
+            authorized: true,
+            redistributable: true,
+            allow_synthetic: false,
+            bindings: vec![OtioOriginalMediaBinding {
+                scene_id: project.scenes[0].id,
+                asset_id: project.assets[0].id,
+                source_kind: Some(OtioOriginalSourceKind::ProjectCas),
+                source_path: None,
+                source_start_frame: 0,
+            }],
+            effect_grant: export.token,
+        };
+        assert_eq!(
+            export_portable(&service, &grants, export_request).unwrap_err(),
+            format!(
+                "OTIO bridge preflight unavailable: {}",
+                fixed_runtime().unwrap_err()
+            )
+        );
+        assert!(
+            grants
+                .consume(export.token, EffectKind::DeliverLocal, scope, &destination)
+                .is_ok()
+        );
+        assert!(!output.exists());
+        assert_eq!(service.project(project.id).unwrap(), project);
+    }
+
     #[test]
     fn media_bundle_export_rejects_implicit_rights_and_noncanonical_origins() {
         assert!(!owner_declaration("", 250));
@@ -1346,6 +1466,7 @@ pub fn export_portable(
     {
         return Err("Portable OTIO media export requires explicit original ownership, media redistribution permission and one bounded scene binding.".into());
     }
+    check_runtime_before_dispatch()?;
     let destination = new_owner_bundle_destination(&request.destination)?;
     let project = service.project(request.project_id).map_err(|_| refused())?;
     if project.generation != request.generation
@@ -1380,15 +1501,6 @@ pub fn export_portable(
             );
         }
     }
-    // The owner explicitly approves a new local media export. Consume its
-    // original one-use DeliverLocal grant before reading/copying the media.
-    grants.consume(
-        request.effect_grant,
-        EffectKind::DeliverLocal,
-        EffectScope::project(request.project_id, request.generation, request.revision),
-        &request.destination,
-    )?;
-    fixed_runtime()?;
     let project_bytes = serde_json::to_vec(&project).map_err(|_| refused())?;
     let interchange = motionwright_domain::otio_interchange(&project).map_err(|_| {
         "The original Project has no supported conservative 24fps OTIO cut.".to_string()
@@ -1402,6 +1514,14 @@ pub fn export_portable(
         );
     }
 
+    // Consume the exact one-use grant before creating a workspace or reading
+    // original media. Runtime qualification is repeated at process launch.
+    grants.consume(
+        request.effect_grant,
+        EffectKind::DeliverLocal,
+        EffectScope::project(request.project_id, request.generation, request.revision),
+        &request.destination,
+    )?;
     let parent = destination.parent().ok_or_else(refused)?;
     let temp = tempfile::Builder::new()
         .prefix(".motionwright-otio-export-")

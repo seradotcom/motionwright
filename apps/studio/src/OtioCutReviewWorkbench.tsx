@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowRightLeft, FileCheck2, ShieldAlert } from "lucide-react";
 import type { Change, Project } from "./types";
 import {
-  exportPortableOtioMediaBundle, previewInstalledOtioMediaCut,
+  exportPortableOtioMediaBundle, OtioBridgePreflightError, previewInstalledOtioMediaCut,
   type OtioOriginalMediaExportBinding,
 } from "./api";
 import {
@@ -90,9 +90,15 @@ export default function OtioCutReviewWorkbench({
       setStatus("Original verified OTIO media bundle exported to "+receipt.path+
         ". Open its timeline.otio in your trusted editor, save the edited cut as edited.otio inside that folder, then choose Preview edited OTIO with verified media. MissingReferences remain unbound. No editor was launched or publication approved.");
     }catch(reason){
-      if(latest.current===selectedScope&&fileAttempt.current===attempt)
-        setError((reason instanceof Error?reason.message:String(reason))+
-          " Check whether the destination already exists before choosing any new export. No automatic retry was made.");
+      if(latest.current===selectedScope&&fileAttempt.current===attempt){
+        if(reason instanceof OtioBridgePreflightError){
+          setExportAttempted(false);
+          setError(reason.message);
+        }else{
+          setError((reason instanceof Error?reason.message:String(reason))+
+            " Check whether the destination already exists before choosing any new export. No automatic retry was made.");
+        }
+      }
     }finally{
       if(latest.current===selectedScope&&fileAttempt.current===attempt)
         setExportingBundle(false);
@@ -119,8 +125,10 @@ export default function OtioCutReviewWorkbench({
         (returned.input_profile==="kdenlive-otio-pair"
           ?" The initial and edited Kdenlive file hashes are retained in this review; editor execution and visual approval remain unverified.":""));
     }catch(reason){
-      if(latest.current===selectedScope&&fileAttempt.current===attempt)
+      if(latest.current===selectedScope&&fileAttempt.current===attempt){
+        if(reason instanceof OtioBridgePreflightError)inspectedSelections.current.delete(inspectionKey);
         setError(reason instanceof Error?reason.message:String(reason));
+      }
     }finally{
       if(latest.current===selectedScope&&fileAttempt.current===attempt)setBridgeInspecting(false);
     }

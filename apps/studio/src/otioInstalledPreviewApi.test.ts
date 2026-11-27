@@ -81,6 +81,17 @@ describe("original Kdenlive export pair", () => {
     });
   }
 
+  it("reports an unavailable bridge before any review workspace was created", async () => {
+    invokeMock.mockResolvedValueOnce({ token })
+      .mockRejectedValueOnce("OTIO bridge preflight unavailable: Python 3 or ffprobe is missing.");
+    await expect(previewInstalledOtioMediaCut(reviewableOtioProject(),
+      bundle, "edited.otio", "received.otio")).rejects.toMatchObject({
+      name: "OtioBridgePreflightError",
+      message: "Python 3 or ffprobe is missing.",
+    });
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+  });
+
   it("does not downgrade, regrant or retry an unknown native inspection", async () => {
     const unknown = new Error("Original media operation UNKNOWN");
     invokeMock.mockResolvedValueOnce({ token }).mockRejectedValueOnce(unknown);

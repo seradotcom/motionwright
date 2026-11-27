@@ -537,6 +537,22 @@ export interface OtioPortableMediaExportReceipt {
   publication_authorized: false;
 }
 
+const OTIO_BRIDGE_PREFLIGHT = "OTIO bridge preflight unavailable: ";
+
+export class OtioBridgePreflightError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OtioBridgePreflightError";
+  }
+}
+
+function rethrowOtioBridgeError(reason: unknown): never {
+  if (typeof reason === "string" && reason.startsWith(OTIO_BRIDGE_PREFLIGHT)) {
+    throw new OtioBridgePreflightError(reason.slice(OTIO_BRIDGE_PREFLIGHT.length));
+  }
+  throw reason;
+}
+
 /** Produce the real first-party OTIO media capsule with a single locally
  * permissioned export. User-selected original MP4s must already be saved
  * as SHA-bound Project assets; owner rights are expressly declared. */
@@ -578,7 +594,7 @@ export async function exportPortableOtioMediaBundle(
       authorized: true, redistributable: true, allow_synthetic: input.allow_synthetic,
       bindings, effect_grant: grant.token,
     },
-  });
+  }).catch(rethrowOtioBridgeError);
   if (!receipt || receipt.path !== destination
       || !/^[0-9a-f]{64}$/.test(receipt.source_project_sha256)
       || receipt.media_refs_verified !== bindings.length
@@ -636,7 +652,7 @@ export async function previewInstalledOtioMediaCut(
       ...(received === undefined ? {} : { received_file: received }),
       effect_grant: grant.token,
     },
-  });
+  }).catch(rethrowOtioBridgeError);
   if (!response || response.input_profile !== (received === undefined
         ? "metadata-preserving-otio" : "kdenlive-otio-pair")
       || !/^[0-9a-f]{64}$/.test(response.edited_otio_sha256)

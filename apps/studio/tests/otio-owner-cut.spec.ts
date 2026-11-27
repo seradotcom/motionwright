@@ -106,3 +106,40 @@ test("explicit loss confirmation does not permit a tampered OTIO scene extension
   await expect(page.locator(".otio-cut-review [role=alert]")).toBeVisible();
   await expect(page.getByRole("button",{name:/Commit reviewed OTIO cut/})).toHaveCount(0);
 });
+
+test("only a confirmed OTIO preflight refusal allows a new manual inspection", async ({page}) => {
+  const boot = {...structuredClone(fixtureBootstrap), project: structuredClone(project)};
+  boot.native_sdk.mode = "tauri";
+  await page.addInitScript(({boot}) => {
+    const runtime = window as unknown as {
+      __TAURI_INTERNALS__: {invoke: (name: string, args?: Record<string, unknown>) => Promise<unknown>};
+      __OTIO_INSPECTIONS__: number;
+    };
+    runtime.__OTIO_INSPECTIONS__ = 0;
+    runtime.__TAURI_INTERNALS__ = {invoke: async (name, args) => {
+      if (name === "bootstrap" || name === "project_projection_head" || name === "open_project") {
+        return window.__SYNTHETIC_PROJECT_READ__(name, args, boot);
+      }
+      if (name === "issue_effect_grant") return {token: "synthetic-grant"};
+      if (name === "preview_otio_media_cut") {
+        runtime.__OTIO_INSPECTIONS__++;
+        if (runtime.__OTIO_INSPECTIONS__ === 1) {
+          throw "OTIO bridge preflight unavailable: Python 3 or ffprobe is missing.";
+        }
+        throw new Error("The original inspection outcome is unknown.");
+      }
+      throw new Error("Synthetic desktop did not implement " + name);
+    }};
+  }, {boot});
+  await openStation(page);
+  await page.getByLabel("Original OTIO media bundle folder").fill("/owner/original-bundle");
+  const inspect = page.getByRole("button", {name: "Preview edited OTIO with verified media"});
+  const error = page.locator(".otio-cut-review [role=alert]");
+  await inspect.click();
+  await expect(error).toContainText("Python 3 or ffprobe is missing.");
+  await expect(inspect).toBeEnabled();
+  await inspect.click();
+  await expect(error).toContainText("The original inspection outcome is unknown.");
+  await expect(inspect).toBeDisabled();
+  expect(await page.evaluate(() => Reflect.get(window, "__OTIO_INSPECTIONS__"))).toBe(2);
+});
