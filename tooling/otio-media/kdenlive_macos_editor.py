@@ -433,25 +433,55 @@ class EditorUI:
             return focused
         return None
 
-    def command_result(self, title):
+    def command_outline(self):
         ax = self.ax
-        matches = {role: [] for role in ("AXCell", "AXStaticText", "AXRow")}
-        for node in self.descend((*self.panels(), self.top_window()), limit=220, depth_limit=13):
+        outlines, placeholders = [], []
+        for node in self.descend((*self.panels(), self.top_window()), limit=150, depth_limit=11):
             role = ax.text(node, "AXRole")
-            if (role in matches and (ax.text(node, "AXTitle") == title or ax.text(node, "AXValue") == title)
-                    and self.belongs_to_command_bar(node)
-                    and not any(ax.equal(node, item) for item in matches[role])):
-                matches[role].append(node)
-        for role, rows in matches.items():
+            identifier = ax.text(node, "AXIdentifier")
+            if role == "AXOutline" and identifier.endswith(".KCommandBar.QTreeView"):
+                if not any(ax.equal(node, existing) for existing in outlines):
+                    outlines.append(node)
+            elif role == "AXStaticText" and ".KCommandBar." in identifier:
+                title = ax.text(node, "AXTitle") or ax.text(node, "AXValue")
+                if title.startswith("No commands"):
+                    placeholders.append(title)
+        if len(outlines) != 1:
+            return {"outline_matches": len(outlines), "placeholders": placeholders,
+                    "row_counts": {}, "nodes": []}
+
+        outline = outlines[0]
+        counts, starts = {}, []
+        for name in ("AXSelectedRows", "AXVisibleRows", "AXRows", "AXChildren"):
+            value = ax.value(outline, name)
+            counts[name] = ax.array_count(value) if value and ax.type_id(value) == ax.array_type else None
+            if counts[name] and counts[name] <= 128:
+                starts.extend(ax.array(value)[:12])
+        nodes, seen = [], []
+        for node in self.descend(starts, limit=36, depth_limit=3):
+            if any(ax.equal(node, other) for other in seen):
+                continue
+            seen.append(node)
+            parent = ax.value(node, "AXParent")
+            nodes.append({
+                "role": ax.text(node, "AXRole"), "identifier": ax.text(node, "AXIdentifier"),
+                "title": ax.text(node, "AXTitle"), "value": ax.text(node, "AXValue"),
+                "description": ax.text(node, "AXDescription"),
+                "parent_role": ax.text(parent, "AXRole") if ax.owns(parent) else None,
+                "enabled": ax.enabled(node), "selected": ax.flag(node, "AXSelected"),
+                "actions": ax.actions(node), "position": ax.pair(node, "AXPosition", 1),
+                "size": ax.pair(node, "AXSize", 2),
+            })
+        return {"outline_matches": 1, "identifier": ax.text(outline, "AXIdentifier"),
+                "row_counts": counts, "nodes": nodes, "placeholders": placeholders}
+
+    def command_result(self, title):
+        observed = self.command_outline()
+        for role in ("AXCell", "AXText", "AXStaticText", "AXRow"):
+            rows = [node for node in observed["nodes"] if node["role"] == role
+                    and title in (node["title"], node["value"], node["description"])]
             if rows:
-                if len(rows) != 1:
-                    return None
-                node = rows[0]
-                parent = ax.value(node, "AXParent")
-                return {"role": role, "title": title, "identifier": ax.text(node, "AXIdentifier"),
-                        "parent_role": ax.text(parent, "AXRole") if ax.owns(parent) else None,
-                        "enabled": ax.enabled(node), "actions": ax.actions(node),
-                        "position": ax.pair(node, "AXPosition", 1), "size": ax.pair(node, "AXSize", 2)}
+                return {**rows[0], "title": title} if len(rows) == 1 else None
         return None
 
     def set_text(self, element, value):
@@ -769,7 +799,11 @@ def observe_video_track_action(ui, evidence):
     evidence.press("open-find-action", item)
     field = ui.await_target(ui.command_filter, "focused KCommandBar filter")
     ui.set_text(field, name)
-    command = ui.await_target(lambda: ui.command_result(name), "exact Select Video Track 1 result")
+    evidence.write("find-action-filter", {"value": name, "editor_pid": ui.ax.pid})
+    try:
+        command = ui.await_target(lambda: ui.command_result(name), "exact Select Video Track 1 result")
+    finally:
+        evidence.write("find-action-outline", ui.command_outline())
     report = {"command": command, "timeline_actions": 0, "imports": 0, "saves": 0}
     evidence.write("find-action-result", report)
     return report

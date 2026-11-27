@@ -208,5 +208,16 @@ class MacEditorRouteTests(unittest.TestCase):
         self.assertEqual(report["command"]["title"], "Select Video Track 1")
         self.assertEqual(report["timeline_actions"], 0)
 
+    def test_command_probe_preserves_outline_state_when_the_exact_row_is_unavailable(self):
+        ui, evidence = Mock(), Mock()
+        ui.await_target.side_effect = ["command filter", TimeoutError("command did not resolve")]
+        ui.command_outline.return_value = {"row_counts": {"AXRows": 0}, "nodes": []}
+
+        with self.assertRaisesRegex(TimeoutError, "command did not resolve"):
+            editor.observe_video_track_action(ui, evidence)
+
+        evidence.write.assert_any_call("find-action-outline", ui.command_outline.return_value)
+        evidence.key.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()
