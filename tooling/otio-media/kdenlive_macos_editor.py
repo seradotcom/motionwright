@@ -476,6 +476,111 @@ class EditorUI:
 
         return self.await_target(lookup, f"{confirm} file dialog and its file name field")
 
+    def toolbar_dialog(self):
+        ax = self.ax
+        panels = []
+        for panel in self.panels():
+            if (self.title(panel) in {"configure toolbars", "configure toolbars - kdenlive"}
+                    and ax.owns(panel) and not any(ax.equal(panel, known) for known in panels)):
+                panels.append(panel)
+        return panels[0] if len(panels) == 1 else None
+
+    def toolbar_list(self, dialog, title):
+        ax = self.ax
+        lists = []
+        for node in self.descend((dialog,), limit=120, depth_limit=9):
+            if ax.text(node, "AXRole") not in {"AXList", "AXOutline", "AXTable"}:
+                continue
+            buddy = ax.value(node, "AXTitleUIElement")
+            names = [self.title(node).rstrip(":")]
+            if ax.owns(buddy):
+                names.extend((self.title(buddy).rstrip(":"), label(ax.text(buddy, "AXValue")).rstrip(":")))
+            if title in names and not any(ax.equal(node, known) for known in lists):
+                lists.append(node)
+        return lists[0] if len(lists) == 1 else None
+
+    def toolbar_filter(self):
+        ax = self.ax
+        dialog = self.toolbar_dialog()
+        if not dialog:
+            return None
+        available = self.toolbar_list(dialog, "available actions")
+        if not available:
+            return None
+        origin, extent = ax.pair(available, "AXPosition", 1), ax.pair(available, "AXSize", 2)
+        if not origin or not extent:
+            return None
+        filters = []
+        for node in self.descend((dialog,), limit=120, depth_limit=9):
+            if ax.text(node, "AXRole") != "AXTextField" or not ax.enabled(node):
+                continue
+            identifier = ax.text(node, "AXIdentifier")
+            if ("KListWidgetSearchLine" not in identifier.split(".")
+                    and label(ax.text(node, "AXPlaceholderValue")) != "filter"):
+                continue
+            field_origin, field_extent = ax.pair(node, "AXPosition", 1), ax.pair(node, "AXSize", 2)
+            if not field_origin or not field_extent:
+                continue
+            center = field_origin[0] + field_extent[0] / 2
+            if (origin[0] <= center < origin[0] + extent[0]
+                    and field_origin[1] + field_extent[1] <= origin[1] + 1
+                    and not any(ax.equal(node, known) for known in filters)):
+                filters.append(node)
+        return filters[0] if len(filters) == 1 else None
+
+    def toolbar_controls(self):
+        ax = self.ax
+        dialog = self.toolbar_dialog()
+        if not dialog:
+            return {"dialog": None, "nodes": []}
+        result = []
+        for node in self.descend((dialog,), limit=100, depth_limit=9):
+            role = ax.text(node, "AXRole")
+            if role in {"AXRow", "AXCell", "AXColumn"}:
+                continue
+            buddy = ax.value(node, "AXTitleUIElement")
+            result.append({
+                "role": role, "title": ax.text(node, "AXTitle"),
+                "identifier": ax.text(node, "AXIdentifier"), "value": ax.text(node, "AXValue"),
+                "description": ax.text(node, "AXDescription"), "enabled": ax.enabled(node),
+                "position": ax.pair(node, "AXPosition", 1), "size": ax.pair(node, "AXSize", 2),
+                "actions": ax.actions(node),
+                "title_buddy": self.title(buddy) if ax.owns(buddy) else None,
+            })
+        lists = {}
+        for title in ("available actions", "current actions"):
+            control = self.toolbar_list(dialog, title)
+            if not control:
+                continue
+            rows = {}
+            for name in ("AXRows", "AXSelectedRows", "AXChildren"):
+                elements = ax.value(control, name)
+                if elements and ax.type_id(elements) == ax.array_type:
+                    rows[name] = ax.array_count(elements)
+            lists[title] = {"rows": rows, "title": ax.text(control, "AXTitle"),
+                            "identifier": ax.text(control, "AXIdentifier")}
+        return {"dialog": ax.text(dialog, "AXTitle"), "nodes": result, "lists": lists}
+
+    def available_toolbar_track(self):
+        ax = self.ax
+        dialog = self.toolbar_dialog()
+        available = self.toolbar_list(dialog, "available actions") if dialog else None
+        if not available:
+            return None
+        matches = []
+        roots = (*ax.children(available, "AXRows"), *ax.children(available))
+        for node in self.descend(roots, limit=50, depth_limit=4):
+            if ("Select Video Track 1" in (ax.text(node, "AXTitle"), ax.text(node, "AXValue"),
+                                          ax.text(node, "AXDescription"))
+                    and ax.enabled(node) and not any(ax.equal(node, known) for known in matches)):
+                matches.append(node)
+        if len(matches) == 1:
+            node = matches[0]
+            return {"title": "Select Video Track 1", "role": ax.text(node, "AXRole"),
+                    "identifier": ax.text(node, "AXIdentifier"), "actions": ax.actions(node),
+                    "focused": ax.flag(node, "AXFocused"), "selected": ax.flag(node, "AXSelected")}
+        return None
+
     def belongs_to_command_bar(self, node):
         ax = self.ax
         for _ in range(6):
@@ -979,6 +1084,22 @@ def observe_video_track_action(ui, evidence, *, activate=False, probe_hit=False)
     return report
 
 
+def observe_video_track_toolbar(ui, evidence):
+    action = ui.menu_item("Configure Toolbars", evidence, "configure-toolbars", section="Settings")
+    evidence.press("open-configure-toolbars", action)
+    ui.await_target(ui.toolbar_dialog, "owned Configure Toolbars dialog")
+    evidence.write("toolbar-dialog-initial", ui.toolbar_controls())
+    field = ui.await_target(ui.toolbar_filter, "filter for the uniquely identified Available actions list")
+    ui.set_text(field, "Select Video Track 1")
+    try:
+        track = ui.await_target(ui.available_toolbar_track, "exact available Select Video Track 1 action")
+    finally:
+        evidence.write("toolbar-dialog-filtered", ui.toolbar_controls())
+    report = {"track": track, "profile_commits": 0, "timeline_actions": 0, "imports": 0, "saves": 0}
+    evidence.write("toolbar-action-observed", report)
+    return report
+
+
 def refresh_third_playlist(ui, evidence):
     for stage, before, after, text in (
         ("shorten", 30, 29, "00:00:00:29"),
@@ -1043,7 +1164,7 @@ def wait_project(initial, guard):
 
 
 def run(owner, context, distribution, observe_editor, *, observe_clock=False,
-        observe_actions=False, observe_track=False, observe_hit=False):
+        observe_actions=False, observe_track=False, observe_hit=False, observe_toolbars=False):
     if observe_editor:
         editor, binary = installed_editor(owner, context, distribution)
         source = None
@@ -1087,6 +1208,9 @@ def run(owner, context, distribution, observe_editor, *, observe_clock=False,
                     if observe_editor:
                         evidence.write("accessibility-tree", {"pid": process.pid, "nodes": ui.diagnostic()})
                         evidence.write("project-monitor-ax", ui.project_monitor_diagnostic())
+                        if observe_toolbars:
+                            return {"status": "TOOLBAR_ACTION_OBSERVED", "pid": process.pid,
+                                    **observe_video_track_toolbar(ui, evidence)}
                         if observe_actions or observe_track or observe_hit:
                             return {"status": "COMMAND_DISPATCHED" if observe_track else "COMMAND_OBSERVED",
                                     "pid": process.pid,
@@ -1159,6 +1283,7 @@ def main():
     observation.add_argument("--observe-editor-actions", action="store_true")
     observation.add_argument("--observe-editor-select-track", action="store_true")
     observation.add_argument("--observe-editor-command-hit", action="store_true")
+    observation.add_argument("--observe-editor-toolbars", action="store_true")
     options = parser.parse_args()
     context, distribution = selection(os.environ, sys.platform, platform.machine())
     require(context["runner_os"] == "macOS", "macOS editor qualification is restricted to macOS")
@@ -1170,11 +1295,12 @@ def main():
     print(json.dumps(run(runner / f"{JOB}-{context['run_id']}-1", context, distribution,
                          any((options.observe_editor, options.observe_editor_clock,
                               options.observe_editor_actions, options.observe_editor_select_track,
-                              options.observe_editor_command_hit)),
+                              options.observe_editor_command_hit, options.observe_editor_toolbars)),
                          observe_clock=options.observe_editor_clock,
                          observe_actions=options.observe_editor_actions,
                          observe_track=options.observe_editor_select_track,
-                         observe_hit=options.observe_editor_command_hit), sort_keys=True))
+                         observe_hit=options.observe_editor_command_hit,
+                         observe_toolbars=options.observe_editor_toolbars), sort_keys=True))
 
 
 if __name__ == "__main__":

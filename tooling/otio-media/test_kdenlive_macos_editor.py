@@ -269,5 +269,19 @@ class MacEditorRouteTests(unittest.TestCase):
         evidence.key.assert_not_called()
         self.assertEqual(report["timeline_actions"], 0)
 
+    def test_toolbar_observer_records_controls_before_touching_the_profile(self):
+        ui, evidence = Mock(), Mock()
+        ui.menu_item.return_value = "Configure Toolbars"
+        ui.await_target.side_effect = ["toolbar dialog", TimeoutError("no unique filter")]
+        ui.toolbar_controls.return_value = {"nodes": [{"title": "Available actions"}]}
+
+        with self.assertRaisesRegex(TimeoutError, "no unique filter"):
+            editor.observe_video_track_toolbar(ui, evidence)
+
+        evidence.press.assert_called_once_with("open-configure-toolbars", "Configure Toolbars")
+        evidence.write.assert_any_call("toolbar-dialog-initial", ui.toolbar_controls.return_value)
+        ui.set_text.assert_not_called()
+        evidence.key.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()
