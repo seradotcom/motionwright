@@ -2244,6 +2244,31 @@ fn require_acknowledged_motion_job(
     Ok(())
 }
 
+fn motion_render_generation(result: Option<&Value>) -> NativeResult<u64> {
+    result
+        .and_then(|value| value.pointer("/execution/provenance/provider_generation"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            unconfirmed_started_motion_render(Error::new(
+                ErrorCode::StaleReference,
+                "Motion Canvas receipt did not identify its provider generation",
+            ))
+        })
+}
+
+fn require_motion_render_generation(
+    result: Option<&Value>,
+    original_generation: u64,
+) -> NativeResult<()> {
+    if motion_render_generation(result)? != original_generation {
+        return Err(unconfirmed_started_motion_render(Error::new(
+            ErrorCode::StaleReference,
+            "Motion Canvas observation differs from the original provider generation",
+        )));
+    }
+    Ok(())
+}
+
 fn required_string(value: &Value, pointer: &str, context: &str) -> NativeResult<String> {
     value
         .pointer(pointer)
@@ -3866,6 +3891,7 @@ impl ProductionCoordinator {
             "Motion Canvas render did not return a job reference",
         )?;
 
+        let original_generation = motion_render_generation(started.get("result"))?;
         let deadline = Instant::now() + Duration::from_secs(MOTION_RENDER_POLL_DEADLINE_SECS);
         let mut poll = 0_u32;
         let terminal = loop {
@@ -3876,17 +3902,20 @@ impl ProductionCoordinator {
                 )));
             }
             let status = match self
-                .execute(
+                .execute_with_receipt_origin_context(
                     project_id,
                     expected,
                     &format!("{prefix}:render-status:{poll}"),
-                    "driver.motion-canvas.render.status",
+                    ("driver.motion-canvas.render.status", false),
                     json!({"job_ref": job_ref}),
-                    false,
+                    Some(ReceiptDispatchContext::MotionObservation {
+                        generation: original_generation,
+                        saved: None,
+                    }),
                 )
                 .await
             {
-                Ok(status) => status,
+                Ok(status) => status.into_legacy_value(),
                 Err(error) if retryable_motion_status_error(&error) => {
                     poll = poll
                         .checked_add(1)
@@ -3951,16 +3980,20 @@ impl ProductionCoordinator {
         }
 
         let rendered = self
-            .execute(
+            .execute_with_receipt_origin_context(
                 project_id,
                 expected,
                 &format!("{prefix}:render-result"),
-                "driver.motion-canvas.render.result",
+                ("driver.motion-canvas.render.result", false),
                 json!({"job_ref": job_ref}),
-                false,
+                Some(ReceiptDispatchContext::MotionObservation {
+                    generation: original_generation,
+                    saved: None,
+                }),
             )
             .await
-            .map_err(unconfirmed_started_motion_render)?;
+            .map_err(unconfirmed_started_motion_render)?
+            .into_legacy_value();
         self.revalidate_retained_brand_font_staging()
             .map_err(unconfirmed_started_motion_render)?;
         if let Some(admission) = blend {
@@ -3988,11 +4021,10 @@ impl ProductionCoordinator {
 
         let render_and_wait_micros = motion_canvas_window::elapsed_micros(phase_started);
         let phase_started = std::time::Instant::now();
-        let saved_context = self.saved_motion_capture.as_ref().map(|source| {
-            ReceiptDispatchContext::SavedMotion(saved_motion::SavedMotionReceiptContext::new(
-                source, index,
-            ))
-        });
+        let saved = self
+            .saved_motion_capture
+            .as_ref()
+            .map(|source| saved_motion::SavedMotionReceiptContext::new(source, index));
         let verified = self
             .execute_with_receipt_origin_context(
                 project_id,
@@ -4000,7 +4032,10 @@ impl ProductionCoordinator {
                 &format!("{prefix}:verify"),
                 ("driver.motion-canvas.composition.verify", false),
                 json!({"plan_ref": plan_ref, "job_ref": job_ref}),
-                saved_context,
+                Some(ReceiptDispatchContext::MotionObservation {
+                    generation: original_generation,
+                    saved,
+                }),
             )
             .await?
             .into_legacy_value();
@@ -5667,7 +5702,7 @@ impl ProductionCoordinator {
             media_binding,
             audio_staging,
             saved_context,
-            motion_context,
+            motion_observation,
             mlt_dispatch,
         ) = match dispatch_context {
             #[cfg(test)]
@@ -5683,8 +5718,8 @@ impl ProductionCoordinator {
             Some(ReceiptDispatchContext::SavedMaster(context)) => {
                 (None, None, None, Some(context), None, None)
             }
-            Some(ReceiptDispatchContext::SavedMotion(context)) => {
-                (None, None, None, None, Some(context), None)
+            Some(ReceiptDispatchContext::MotionObservation { generation, saved }) => {
+                (None, None, None, None, Some((generation, saved)), None)
             }
             Some(ReceiptDispatchContext::MltTimeline(dispatch)) => {
                 (None, None, None, None, None, Some(dispatch))
@@ -5715,6 +5750,29 @@ impl ProductionCoordinator {
                 "Original media context requires the existing closed mux",
             ));
         }
+        let (motion_generation, motion_context) = match motion_observation {
+            Some((generation, saved)) => (Some(generation), saved),
+            None => (None, None),
+        };
+        if motion_generation.is_some()
+            && (mutation
+                || !matches!(
+                    command,
+                    "driver.motion-canvas.render.status"
+                        | "driver.motion-canvas.render.result"
+                        | "driver.motion-canvas.composition.verify"
+                ))
+        {
+            return Err(invalid(
+                "Motion Canvas generation requires an original job observation",
+            ));
+        }
+        let check_motion_observation = |result: Option<&Value>| -> NativeResult<()> {
+            if let Some(generation) = motion_generation {
+                require_motion_render_generation(result, generation)?;
+            }
+            Ok(())
+        };
         if motion_context.is_some()
             && (command != "driver.motion-canvas.composition.verify" || mutation)
         {
@@ -5870,6 +5928,7 @@ impl ProductionCoordinator {
                 && let Some(result) = prior.payload.get("result")
             {
                 require_original_mlt_source(&prior)?;
+                check_motion_observation(Some(result))?;
                 manim_graph::validate_dispatch_source(&project, command, &args)?;
                 manim_graph::recheck_before_dispatch(&self.service, &project, command, &args)?;
                 return Ok(ReceiptExecutionOutcome {
@@ -5958,6 +6017,7 @@ impl ProductionCoordinator {
                 RootDispatchBudgetOutcome::Admitted(_) => {}
                 RootDispatchBudgetOutcome::AlreadyCompleted(prior) => {
                     require_original_mlt_source(&prior)?;
+                    check_motion_observation(prior.payload.get("result"))?;
                     let previous_result =
                         prior.payload.get("result").cloned().ok_or_else(|| {
                             backend("Stored native replay has no original result")
@@ -6014,10 +6074,11 @@ impl ProductionCoordinator {
                 // original-result custody and append path before propagation.
                 let bound_error = media_binding
                     .and_then(|binding| binding.qualify_result(&result, command, mutation).err());
-                let mlt_error = mlt_dispatch
+                let source_error = mlt_dispatch
                     .as_ref()
-                    .and_then(|dispatch| dispatch.check_result(&result.value).err());
-                let stage = match bound_error.as_ref().or(mlt_error.as_ref()) {
+                    .and_then(|dispatch| dispatch.check_result(&result.value).err())
+                    .or_else(|| check_motion_observation(Some(&result.value)).err());
+                let stage = match bound_error.as_ref().or(source_error.as_ref()) {
                     Some(error) if error.outcome_known => "failed_known",
                     Some(_) => "outcome_unknown",
                     None => "completed",
@@ -6047,7 +6108,7 @@ impl ProductionCoordinator {
                         original_payload["error"] = json!(error);
                     }
                 }
-                if let Some(error) = &mlt_error {
+                if let Some(error) = &source_error {
                     original_payload["error"] = json!(error);
                 }
                 // Optional transport custody separately retains binary streams.
@@ -6067,7 +6128,7 @@ impl ProductionCoordinator {
                 {
                     Ok(receipt) => {
                         custody.confirmed();
-                        if let Some(error) = bound_error.or(mlt_error) {
+                        if let Some(error) = bound_error.or(source_error) {
                             return Err(error);
                         }
                         Ok(ReceiptExecutionOutcome {
@@ -6250,7 +6311,10 @@ enum ReceiptDispatchContext<'a> {
     ),
     Bound(&'a provider_binding::BoundMediaContext),
     SavedMaster(saved_media::SavedMasterReceiptContext),
-    SavedMotion(saved_motion::SavedMotionReceiptContext),
+    MotionObservation {
+        generation: u64,
+        saved: Option<saved_motion::SavedMotionReceiptContext>,
+    },
     MltTimeline(mlt_timeline::MltTimelineDispatch<'a>),
 }
 

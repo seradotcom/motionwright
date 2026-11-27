@@ -488,7 +488,7 @@ impl ProductionCoordinator {
                 ));
             }
             let fingerprint = reference(applied, "/fingerprint")?;
-            let (_, started) = original(
+            let (start_row, started) = original(
                 &rows,
                 &base,
                 project,
@@ -502,7 +502,8 @@ impl ProductionCoordinator {
                 true,
             )?;
             let job_ref = reference(started, "/job_ref")?;
-            let (_, rendered) = original(
+            let original_generation = motion_render_generation(start_row.payload.get("result"))?;
+            let (result_row, rendered) = original(
                 &rows,
                 &base,
                 project,
@@ -510,6 +511,10 @@ impl ProductionCoordinator {
                 "driver.motion-canvas.render.result",
                 json!({"job_ref":job_ref}),
                 false,
+            )?;
+            require_motion_render_generation(
+                result_row.payload.get("result"),
+                original_generation,
             )?;
             require_acknowledged_motion_job(rendered, &job_ref, "saved result")?;
             if rendered.get("state").and_then(Value::as_str) != Some("succeeded") {
@@ -536,6 +541,10 @@ impl ProductionCoordinator {
                 VERIFY,
                 json!({"plan_ref":plan_ref,"job_ref":job_ref}),
                 false,
+            )?;
+            require_motion_render_generation(
+                verified_row.payload.get("result"),
+                original_generation,
             )?;
             let expected_context = SavedMotionReceiptContext::new(&base, index);
             for row in &rows[&format!("{prefix}:verify")] {

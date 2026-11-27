@@ -28,6 +28,78 @@ fn saved_capture_connection(temp: &tempfile::TempDir, resource: String) -> Produ
     connection
 }
 
+#[tokio::test]
+async fn saved_capture_rejects_foreign_generations_during_render_and_recovery() {
+    for command in [
+        "driver.motion-canvas.render.status",
+        "driver.motion-canvas.render.result",
+        "driver.motion-canvas.composition.verify",
+    ] {
+        let (service, initial, temp) = fixture_service();
+        let project = motion_canvas_fixture(&service, initial);
+        let mut connection = saved_capture_connection(&temp, project.resource_key());
+        let script = fs::read_to_string(&connection.executable).unwrap();
+        let marker = r#""provider_generation":2"#;
+        assert_eq!(script.matches(marker).count(), 1);
+        let foreign = script.replace(marker, r#""provider_generation":3"#);
+        fs::write(
+            &connection.executable,
+            format!(
+                "#!/bin/sh\nif [ \"$7\" = '{command}' ]; then\n{foreign}\nexit $?\nfi\n{script}"
+            ),
+        )
+        .unwrap();
+        connection.executable_sha256 = sha256_file(&connection.executable).unwrap();
+
+        let owner = ProductionCoordinator::new(service.clone(), connection.clone()).unwrap();
+        let profile = project.deliverables[0].id;
+        let result = owner
+            .render_motion_canvas_segments(
+                project.id,
+                &project.stamp(),
+                "foreign-generation",
+                profile,
+                &original_options(&project),
+            )
+            .await;
+        let error = result.expect_err(command);
+        assert!(!error.outcome_known, "{command}");
+        assert_eq!(error.code, ErrorCode::StaleReference, "{command}");
+        let receipts = service.production_receipts(project.id, 20).unwrap();
+        assert_eq!(
+            receipts
+                .iter()
+                .filter(|row| row.command == "driver.motion-canvas.render.start"
+                    && row.stage == "dispatching")
+                .count(),
+            1
+        );
+
+        let observation = receipts.iter().find(|row| row.command == command).unwrap();
+        assert_eq!(observation.stage, "outcome_unknown");
+        assert_eq!(
+            observation
+                .payload
+                .pointer("/result/execution/provenance/provider_generation")
+                .and_then(Value::as_u64),
+            Some(3)
+        );
+
+        drop(owner);
+        drop(service);
+        let store = StudioService::open(temp.path().join("motionwright.sqlite3")).unwrap();
+        let reader = ProductionCoordinator::new(store, connection).unwrap();
+        assert!(
+            reader
+                .saved_motion_capture_inventory(project.id, &project.stamp(), profile)
+                .unwrap()
+                .capture
+                .is_none()
+        );
+        assert_eq!(reader.client.execute_calls.load(Ordering::SeqCst), 0);
+    }
+}
+
 async fn completed_saved_capture_fixture() -> (
     StudioService,
     motionwright_domain::Project,
