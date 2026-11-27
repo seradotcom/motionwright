@@ -19221,10 +19221,10 @@
     },
     {
       "path": ".github/workflows/v05-otio-real-media.yml",
-      "sha256": "3a8e46fba1894e7c7918537e7f96a4e8f2d28fec8a8d3b66aedcfcada3d9abac",
-      "preamble_sha256": "bc85bc588c3dd5c633986c73f9812f2a6528bc1f96564f0b3979b22ae5be1a2f",
+      "sha256": "a64289e3d06f061ab12649897f04337c3eb650369300a179a32d5c5cb87bc11e",
+      "preamble_sha256": "ef815762d404ff2080628911a2b0020f449d4469b8726830c7151617ac390c14",
       "evidence_class": "mixed_source_media_native_readonly",
-      "purpose": "Source OTIO/media interchange and Windows junction controls, separate Kdenlive accessibility/roundtrip observations, and externally admitted read-only ALab metadata.",
+      "purpose": "Source OTIO/media interchange, Desktop checks on Windows and macOS, Windows junction controls, separate Kdenlive accessibility and roundtrip observations, and externally admitted read-only ALab metadata.",
       "inputs": {
         "verification_scope": {
           "type": "choice",
@@ -19232,10 +19232,20 @@
           "default": "source",
           "options": [
             "source",
+            "desktop-source",
             "kdenlive-distribution",
             "accessibility-only",
             "kdenlive-gui",
             "external-alab-readonly"
+          ]
+        },
+        "audio_source": {
+          "type": "choice",
+          "required": true,
+          "default": "silent",
+          "options": [
+            "silent",
+            "tone-997hz"
           ]
         },
         "expected_source_sha": {
@@ -19279,7 +19289,8 @@
           },
           "kdenlive-gui": {
             "covered_by": [
-              "kdenlive-gui"
+              "kdenlive-gui",
+              "kdenlive-gui-tone"
             ],
             "basis": "These cases describe this exact existing input selection, including its guarded jobs and steps. Alternative selection is not an authorization or an additional mandatory dispatch; original source-specific readback is required."
           },
@@ -19294,12 +19305,32 @@
               "kdenlive-distribution"
             ],
             "basis": "Independent static-distribution observation with exact source/public-recipient binding; no GUI, editor, native render or external ALab branch is selected. It is an existing optional dispatch, not an automatic prerequisite imposed on every other case."
+          },
+          "desktop-source": {
+            "covered_by": [
+              "desktop-source"
+            ],
+            "basis": "Existing Desktop source selection on Windows and macOS."
           }
         },
         "expected_source_sha": {},
         "evidence_recipient": {},
         "external_alab_admission": {},
-        "external_alab_admission_sha256": {}
+        "external_alab_admission_sha256": {},
+        "audio_source": {
+          "silent": {
+            "covered_by": [
+              "kdenlive-gui"
+            ],
+            "basis": "Default synthetic source for the native editor route."
+          },
+          "tone-997hz": {
+            "covered_by": [
+              "kdenlive-gui-tone"
+            ],
+            "basis": "Explicit AAC fixture selection for the same native editor route."
+          }
+        }
       },
       "jobs": {
         "verified-native-rust-otio-and-open-timeline-io": {
@@ -19308,7 +19339,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "0841c723277bf7e85e0e8dc073ddb92813c45dc5e8ac88d6d32b72c6897268b3",
+          "source_sha256": "1c8d025a17a2ddf4dc48088ede29daf6edde100f71c33b167553bdb788ddb7fb",
           "instance_sets": {
             "source": [
               {}
@@ -19384,7 +19415,7 @@
               "name": "Run complete OTIO discovery with explicit platform-specific cases",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "67ad3cf956c2de29e28fdc503461b405bcfa344187ef869b0bca1c9dfd82c72f",
+              "source_block_sha256": "f3abd0eb70b5bc1d864d743b366ba6a10001d778c5962753d9ccf154c938a5b0",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -19427,7 +19458,7 @@
           "runs_on": "windows-2022",
           "needs": null,
           "strategy": null,
-          "source_sha256": "89e2e513d5f251913113080c29d67d4f6bf3f2e8ba9b4bca870c0c9db1996614",
+          "source_sha256": "f47dce9fa7bcb4c857727f23fbb8996a5c88a45e425879e79c3dcb9614f43707",
           "instance_sets": {
             "source": [
               {}
@@ -19436,10 +19467,10 @@
           "steps": [
             {
               "ordinal": 3,
-              "name": "Verify three real Windows junction refusals without skips",
+              "name": "Verify the Windows OTIO path admission roster",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "1a4994d54bc7b4300ad9b48640827e4a47b1261f87a3fd06aface50027a5fb49",
+              "source_block_sha256": "954b72aed655c5bcc63a3ec6383eb50841a3f05d4c0bb2c45267e9795cdff9cb",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -19458,7 +19489,7 @@
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "995778e4a0a7bc34567c84e0b3c44b2d7997cc91e8a2ececad5f90d0c93b3367",
+          "source_sha256": "d191fb9ad6a9a9896853f0f45f34835b971c8fed10d32a20c619cafde13b2af2",
           "instance_sets": {
             "accessibility-only": [
               {}
@@ -19467,6 +19498,9 @@
               {}
             ],
             "external-alab-readonly": [
+              {}
+            ],
+            "kdenlive-gui-tone": [
               {}
             ]
           },
@@ -19524,7 +19558,7 @@
               "name": "Run exact offline GUI contracts without native effects or skips",
               "guard": "inputs.verification_scope != 'external-alab-readonly'",
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "369d073cf9ba0fefd7840d659f4997084ed4f6d314451160a92088fdb81928fb",
+              "source_block_sha256": "6ebc123a5080c30e22df1acc075fe56f9f6e994ce64d47effe1b3d7efac19de0",
               "api_binding": "EXPLICIT_NAME"
             },
             {
@@ -19679,6 +19713,74 @@
               "api_binding": "EXPLICIT_NAME"
             }
           ]
+        },
+        "verified-desktop-bridge-platforms": {
+          "source_name": "Desktop OTIO source checks (${{ matrix.os }})",
+          "guard": "github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'desktop-source'",
+          "runs_on": "${{ matrix.os }}",
+          "needs": null,
+          "strategy": {
+            "fail-fast": false,
+            "matrix": {
+              "os": [
+                "windows-2025",
+                "macos-15"
+              ]
+            }
+          },
+          "source_sha256": "a56c0fb1a54fec685dfc7e4dae978a5e059d5d0ce6204e1a8ef7b166ab1a91d2",
+          "steps": [
+            {
+              "ordinal": 4,
+              "name": "Use a canonical temporary directory for original files and SQLite",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "49ba49a91513825d056df6377ce9e5c2605ba57faa6f3e4f20299c3ee31b191d",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 5,
+              "name": "Provision the Windows synthetic-media decoder",
+              "guard": "runner.os == 'Windows'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "7801deab81d302ce7b23020dd7018221449d4f54322eb6be98bb607525451f26",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 6,
+              "name": "Provision the macOS synthetic-media decoder",
+              "guard": "runner.os == 'macOS'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "9fbf73d63a286ebb50bbab39d99568ffb46bdb920a2e92d393d0d88f5288e542",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 7,
+              "name": "Round-trip original synthetic H.264 media",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "a0edb83d232963b50ee89e77f48e0dbfc055814afb5652cf50b9c1262def5976",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 8,
+              "name": "Compile and test the shared Desktop OTIO bridge",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "ee95fa7fcf9aec774bb606b234279ae180bc52e170851302e066ca42bb5ab2a5",
+              "api_binding": "EXPLICIT_NAME"
+            }
+          ],
+          "instance_sets": {
+            "desktop-source": [
+              {
+                "os": "windows-2025"
+              },
+              {
+                "os": "macos-15"
+              }
+            ]
+          }
         }
       },
       "cases": [
@@ -19689,7 +19791,8 @@
             "expected_source_sha": "",
             "evidence_recipient": "",
             "external_alab_admission": "",
-            "external_alab_admission_sha256": ""
+            "external_alab_admission_sha256": "",
+            "audio_source": "silent"
           },
           "kind": "TECHNICAL_SCOPE",
           "required_job_instances": [
@@ -19730,6 +19833,51 @@
           "blocking_reason": null
         },
         {
+          "id": "desktop-source",
+          "inputs": {
+            "verification_scope": "desktop-source",
+            "expected_source_sha": "",
+            "evidence_recipient": "",
+            "external_alab_admission": "",
+            "external_alab_admission_sha256": "",
+            "audio_source": "silent"
+          },
+          "kind": "TECHNICAL_SCOPE",
+          "required_job_instances": [
+            {
+              "job_id": "verified-desktop-bridge-platforms",
+              "display_name": "Desktop OTIO source checks (windows-2025)",
+              "matrix": {
+                "os": "windows-2025"
+              },
+              "name_binding": "reviewed_literal_matrix_expansion",
+              "required_steps": [
+                4,
+                5,
+                7,
+                8
+              ]
+            },
+            {
+              "job_id": "verified-desktop-bridge-platforms",
+              "display_name": "Desktop OTIO source checks (macos-15)",
+              "matrix": {
+                "os": "macos-15"
+              },
+              "name_binding": "reviewed_literal_matrix_expansion",
+              "required_steps": [
+                4,
+                6,
+                7,
+                8
+              ]
+            }
+          ],
+          "coverage_basis": "The Desktop source selection runs synthetic H.264 OTIO export and import, then compiles and tests the shared bridge on Windows and macOS. Installed-editor and human acceptance require separate evidence.",
+          "original_attempt": null,
+          "blocking_reason": null
+        },
+        {
           "id": "accessibility-only",
           "inputs": {
             "verification_scope": "accessibility-only",
@@ -19740,7 +19888,8 @@
               "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
             },
             "external_alab_admission": "",
-            "external_alab_admission_sha256": ""
+            "external_alab_admission_sha256": "",
+            "audio_source": "silent"
           },
           "kind": "CONDITIONAL_ALTERNATIVE",
           "required_job_instances": [
@@ -19776,7 +19925,8 @@
               "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
             },
             "external_alab_admission": "",
-            "external_alab_admission_sha256": ""
+            "external_alab_admission_sha256": "",
+            "audio_source": "silent"
           },
           "kind": "CONDITIONAL_ALTERNATIVE",
           "required_job_instances": [
@@ -19806,6 +19956,47 @@
           "blocking_reason": null
         },
         {
+          "id": "kdenlive-gui-tone",
+          "inputs": {
+            "verification_scope": "kdenlive-gui",
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "evidence_recipient": {
+              "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
+            },
+            "external_alab_admission": "",
+            "external_alab_admission_sha256": "",
+            "audio_source": "tone-997hz"
+          },
+          "kind": "CONDITIONAL_ALTERNATIVE",
+          "required_job_instances": [
+            {
+              "job_id": "admitted-native-kdenlive-gui",
+              "display_name": "admitted-native-kdenlive-gui",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                2,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                17,
+                18,
+                19,
+                20
+              ]
+            }
+          ],
+          "coverage_basis": "The same exact-source Kdenlive import and edit route selects the existing bounded original 997 Hz AAC input. Audio on the edited output requires separate evidence.",
+          "original_attempt": 1,
+          "blocking_reason": null
+        },
+        {
           "id": "external-alab-readonly",
           "inputs": {
             "verification_scope": "external-alab-readonly",
@@ -19816,7 +20007,8 @@
               "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
             },
             "external_alab_admission": "",
-            "external_alab_admission_sha256": ""
+            "external_alab_admission_sha256": "",
+            "audio_source": "silent"
           },
           "kind": "NEEDS_DISPOSITION",
           "required_job_instances": [
@@ -19852,7 +20044,8 @@
               "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
             },
             "external_alab_admission": "",
-            "external_alab_admission_sha256": ""
+            "external_alab_admission_sha256": "",
+            "audio_source": "silent"
           },
           "kind": "COMPONENT_PREREQUISITE",
           "required_job_instances": [

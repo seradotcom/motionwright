@@ -444,6 +444,27 @@ class ReviewedScopeTests(unittest.TestCase):
         self.assertFalse(plan["automatic_dispatch"])
         self.assertFalse(plan["retry_authorized"])
 
+    def test_current_otio_desktop_source_selects_both_native_media_checks(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = ".github/workflows/v05-otio-real-media.yml"
+        review = json.loads((root / "tooling/release_scope_catalog.json").read_bytes())
+        entry = next(row for row in review["reviewed_scopes"] if row["path"] == workflow)
+        review["reviewed_scopes"] = [entry]
+        result = self.plan(review, workflows={workflow: (root / workflow).read_bytes()})
+        self.assertEqual(result["review_gaps"], [])
+        desktop = next(row for row in result["obligations"] if row["case_id"] == "desktop-source")
+        self.assertEqual(desktop["observation"]["status"], "READBACK_REQUIRED")
+        required = desktop["required_job_instances"]
+        self.assertEqual([job["matrix"]["os"] for job in required], ["windows-2025", "macos-15"])
+        steps = {
+            step["ordinal"]: step["name"]
+            for step in desktop["required_source_jobs"][required[0]["job_id"]]["steps"]
+        }
+        for job in required:
+            self.assertIn("Round-trip original synthetic H.264 media",
+                          [steps[ordinal] for ordinal in job["required_steps"]])
+        self.assertFalse(result["authority"]["authorizes_dispatch"])
+
     def test_api_success_or_skip_cannot_implement_an_unsupported_binding(self):
         for conclusion in ("success", "skipped"):
             record = {"workflow": REVIEW_PATH, "case_id": "full", "status": "success",
