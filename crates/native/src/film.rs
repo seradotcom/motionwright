@@ -1066,6 +1066,15 @@ fn append_native_pose_track(
     )
     .map_err(|error| contract("Native waypoint Hold frame duration", error))?;
     let target = subject_id(node.id, None);
+    let animated = |property| node.keyframes.iter().any(|key| key.property == property);
+    let position_animated = [
+        MotionProperty::X,
+        MotionProperty::Y,
+        MotionProperty::Width,
+        MotionProperty::Height,
+    ]
+    .into_iter()
+    .any(animated);
     for (index, from) in points.iter().enumerate() {
         let next = points.get(index + 1);
         // A Hold interval changes only at its start. Its next literal pose
@@ -1155,9 +1164,16 @@ fn append_native_pose_track(
             ),
         ];
         for (name, channel, start, end) in operands {
-            // Text follows by position alone. Keep FixedTxt shaping, line
-            // layout, dimensions and orientation untouched at every pose.
-            if node.kind == "text" && name != "position" {
+            // A resize also changes the center under Studio's top-left anchoring.
+            // Constant rotation remains owned by the existing frame-zero Set.
+            let keyed = match channel {
+                Channel::Position => position_animated,
+                Channel::Width => animated(MotionProperty::Width),
+                Channel::Height => animated(MotionProperty::Height),
+                Channel::Rotation => animated(MotionProperty::RotationDeg),
+                _ => false,
+            };
+            if !keyed || (node.kind == "text" && channel != Channel::Position) {
                 continue;
             }
             let primitive = if held {
@@ -6015,9 +6031,124 @@ mod tests {
         }
     }
 
+    fn assert_sparse_waypoint_track_preserves_authored_channels() {
+        use semwright_motion_authoring::NativeOp;
+        let (mut project, _, child_id) = clipped_opacity_source();
+        let child = project.scenes[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == child_id)
+            .unwrap();
+        child.rotation_deg = -31.0;
+        let half = RationalTime::new(1, 2).unwrap();
+        child.keyframes = [
+            (
+                RationalTime::ZERO,
+                child.x - 40.0,
+                MotionInterpolation::Linear,
+            ),
+            (half, child.x - 20.0, MotionInterpolation::EaseOutCubic),
+            (RationalTime::ONE, child.x, MotionInterpolation::Hold),
+        ]
+        .into_iter()
+        .map(|(at, value, interpolation)| CanvasKeyframe {
+            at,
+            property: MotionProperty::X,
+            value,
+            interpolation,
+        })
+        .collect();
+
+        let saved = project.clone();
+        let id = project.deliverables[0].id;
+        let options = fixture_options(&project);
+        let segments = build_motion_canvas_segments(&project, id, &options)
+            .expect("source-bound X waypoints must become a real native Film");
+        let compiled =
+            realize(&segments[0].film).expect("pinned SDK must realize sparse waypoints");
+        let target = subject_id(child_id, None);
+        let mut position_writes = vec![];
+        let mut rotation_writes = vec![];
+        for instruction in &compiled.instructions {
+            match &instruction.operation {
+                NativeOp::Tween {
+                    target: actual,
+                    channel: Channel::Position,
+                    ..
+                }
+                | NativeOp::Set {
+                    target: actual,
+                    channel: Channel::Position,
+                    ..
+                } if actual == &target => position_writes.push(instruction),
+                NativeOp::Tween {
+                    target: actual,
+                    channel: Channel::Rotation,
+                    ..
+                }
+                | NativeOp::Set {
+                    target: actual,
+                    channel: Channel::Rotation,
+                    ..
+                } if actual == &target => rotation_writes.push(instruction),
+                _ => {}
+            }
+        }
+        assert_eq!(position_writes.len(), 3);
+        let tween = position_writes
+            .iter()
+            .find(|item| matches!(item.operation, NativeOp::Tween { .. }))
+            .unwrap();
+        assert_eq!(tween.easing, MotionEasing::OutCubic);
+        assert_eq!(tween.start, RationalTime::ZERO);
+        assert_eq!(tween.duration, half);
+        let NativeOp::Tween {
+            from: Some(Operand::Vector(from)),
+            to: Operand::Vector(to),
+            ..
+        } = &tween.operation
+        else {
+            panic!("expected literal local position endpoints");
+        };
+        let sets: BTreeMap<_, _> = position_writes
+            .iter()
+            .filter_map(|item| match &item.operation {
+                NativeOp::Set {
+                    value: Operand::Vector(value),
+                    ..
+                } => Some((item.start, value)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sets.len(), 2);
+        assert_eq!(sets[&half], to);
+        let end = sets[&RationalTime::ONE];
+        assert_eq!(from.y, to.y);
+        assert_eq!(to.y, end.y);
+        assert!(from.x < to.x && to.x < end.x);
+        assert!(((to.x - from.x) - (end.x - to.x)).abs() < 1e-9);
+        assert_eq!(rotation_writes.len(), 1);
+        assert_eq!(rotation_writes[0].start, RationalTime::ZERO);
+        assert!(matches!(
+            &rotation_writes[0].operation,
+            NativeOp::Set { value: Operand::Number(value), .. } if *value == -31.0
+        ));
+        assert_eq!(project, saved, "rendering must preserve authored keyframes");
+
+        let child = project.scenes[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == child_id)
+            .unwrap();
+        child.keyframes[1].property = MotionProperty::Y;
+        let error = build_motion_canvas_segments(&project, id, &options).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+    }
+
     #[test]
     fn waypoint_track_realizes_mixed_curves_with_independent_fade_inside_clip() {
         use semwright_motion_authoring::NativeOp;
+        assert_sparse_waypoint_track_preserves_authored_channels();
         let (mut project, parent_id, child_id) = clipped_opacity_source();
         let child = project.scenes[0]
             .nodes

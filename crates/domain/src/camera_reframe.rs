@@ -78,10 +78,9 @@ pub struct CanvasPosePoint {
     pub curve: MotionInterpolation,
 }
 
-/// Admit the bounded multi-pose grammar only when every geometry channel
-/// has the exact same time slots and incoming interpolation. Alpha remains
-/// a separate original channel, validated by its own consumer. Two-pose
-/// and single-channel legacy routes continue through their existing code.
+/// Admit bounded shape waypoints when all animated geometry channels share
+/// exact time slots and an incoming curve. Unkeyed channels keep their saved
+/// values. Text and two-pose routes retain their existing admission rules.
 pub fn exact_canvas_pose_waypoints(
     node: &CanvasNode,
     scene: &Scene,
@@ -109,7 +108,7 @@ pub fn exact_canvas_pose_waypoints(
     }
     let fail = || {
         DomainError::Invalid(format!(
-            "Canvas node {} requires 3 to 6 complete frame-aligned geometry poses with exact curves and unchanged Clip or Group ancestors",
+            "Canvas node {} requires 3 to 6 frame-aligned geometry poses with matching animated channels, exact curves and unchanged Clip or Group ancestors",
             node.id
         ))
     };
@@ -138,6 +137,7 @@ pub fn exact_canvas_pose_waypoints(
     }
     let frame_duration = RationalTime::new(fps.den, fps.num).map_err(|_| fail())?;
     let mut points = Vec::with_capacity(slots.len());
+    let mut animated_properties = None;
     for (at, keys) in slots {
         let numerator = i128::from(at.num) * i128::from(fps.num);
         let denominator = i128::from(at.den) * i128::from(fps.den);
@@ -146,7 +146,8 @@ pub fn exact_canvas_pose_waypoints(
             || numerator < 0
             || numerator % denominator != 0
             || numerator / denominator > 36000
-            || keys.len() != if paired_text { 2 } else { 5 }
+            || keys.len() > 5
+            || (node.kind == "text" && keys.len() != if paired_text { 2 } else { 5 })
         {
             return Err(fail());
         }
@@ -183,6 +184,13 @@ pub fn exact_canvas_pose_waypoints(
         {
             return Err(fail());
         }
+        if animated_properties
+            .as_ref()
+            .is_some_and(|properties| properties != &seen)
+        {
+            return Err(fail());
+        }
+        animated_properties.get_or_insert(seen);
         if pose.width <= 0.0
             || pose.height <= 0.0
             || pose.width > 16384.0
