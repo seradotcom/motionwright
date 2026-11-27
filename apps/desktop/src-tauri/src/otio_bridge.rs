@@ -1133,6 +1133,15 @@ struct PreviewDocuments {
     received: Option<Vec<u8>>,
 }
 
+fn read_preview_cut(bundle: &Path, name: &str, label: &str) -> Result<Vec<u8>, String> {
+    match read_regular_bounded(&bundle.join(name), MAX_PROJECT) {
+        Ok(bytes) if bytes.len() >= 16 => Ok(bytes),
+        _ => Err(format!(
+            "OTIO bridge preflight unavailable: The selected {label} OTIO file could not be read safely. Check the name and save the file inside the original bundle."
+        )),
+    }
+}
+
 fn read_authorized_preview_documents(
     grants: &EffectGrantRegistry,
     request: &OtioMediaPreviewRequest,
@@ -1155,15 +1164,14 @@ fn read_authorized_preview_documents(
         return Err("The original OTIO media bundle does not belong to the currently saved project revision.".into());
     }
     let manifest = read_regular_bounded(&bundle.join("bridge-manifest.json"), MAX_PROJECT)?;
-    let edited = read_regular_bounded(&bundle.join(&request.edited_file), MAX_PROJECT)?;
+    // An unreadable selection has no bridge attempt. A new explicit selection
+    // review still needs its own grant.
+    let edited = read_preview_cut(bundle, &request.edited_file, "edited")?;
     let received = request
         .received_file
         .as_ref()
-        .map(|name| read_regular_bounded(&bundle.join(name), MAX_PROJECT))
+        .map(|name| read_preview_cut(bundle, name, "received"))
         .transpose()?;
-    if edited.len() < 16 || received.as_ref().is_some_and(|bytes| bytes.len() < 16) {
-        return Err(refused());
-    }
     Ok(PreviewDocuments {
         original,
         manifest,
@@ -1582,6 +1590,44 @@ mod tests {
                 )
                 .is_err()
         );
+
+        fs::write(
+            directory.path().join("source-project.json"),
+            serde_json::to_vec(&project).unwrap(),
+        )
+        .unwrap();
+        fs::write(directory.path().join("bridge-manifest.json"), b"{}").unwrap();
+        let issue = || {
+            grants
+                .issue(EffectKind::ImportLocal, scope, &subject)
+                .unwrap()
+                .token
+        };
+        let read = |request: &OtioMediaPreviewRequest| {
+            read_authorized_preview_documents(
+                &grants,
+                request,
+                &subject,
+                directory.path(),
+                &project,
+            )
+        };
+        request.effect_grant = issue();
+        assert!(matches!(
+            read(&request),
+            Err(error) if error.starts_with("OTIO bridge preflight unavailable: The selected edited OTIO file")
+        ));
+        fs::write(
+            directory.path().join("edited.otio"),
+            br#"{"test_original_otio":true}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            read(&request),
+            Err(error) if error == "Effect grant is missing, expired, or outside its exact scope."
+        ));
+        request.effect_grant = issue();
+        assert!(read(&request).is_ok());
     }
     #[test]
     fn uncertain_otio_process_retains_original_and_blocks_another_dispatch_after_reopen() {

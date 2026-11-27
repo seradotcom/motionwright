@@ -154,8 +154,7 @@ test("runtime checks and folder choices preserve the scoped OTIO inspection rule
         return runtime.__OTIO_FOLDER_CHOICES__ === 1 ? null : "E:/Original cuts/Edición final";
       }
       if (name === "issue_effect_grant") {
-        runtime.__OTIO_PREVIEW_GRANTS__++;
-        return {token: "synthetic-grant"};
+        return {token: "synthetic-grant-" + ++runtime.__OTIO_PREVIEW_GRANTS__};
       }
       if (name === "read_otio_bridge_status") {
         const request = args?.request as {project_id: string; generation: string; revision: number};
@@ -167,6 +166,14 @@ test("runtime checks and folder choices preserve the scoped OTIO inspection rule
         runtime.__OTIO_INSPECTIONS__++;
         if (runtime.__OTIO_INSPECTIONS__ === 1) {
           throw "OTIO bridge preflight unavailable: Python 3 or ffprobe is missing.";
+        }
+        const request = args?.request as {edited_file: string; effect_grant: string};
+        if (request.edited_file !== "edited.otio"
+            || request.effect_grant !== "synthetic-grant-" + runtime.__OTIO_INSPECTIONS__) {
+          throw new Error("Each explicit preview must retain its file selection and use a fresh grant");
+        }
+        if (runtime.__OTIO_INSPECTIONS__ === 2) {
+          throw "OTIO bridge preflight unavailable: The selected edited OTIO file could not be read safely. Check the name and save the file inside the original bundle.";
         }
         const original = {
           schema: "motionwright.otio-bridge-unsettled/1", certainty: "outcome_unknown",
@@ -208,11 +215,16 @@ test("runtime checks and folder choices preserve the scoped OTIO inspection rule
   await expect(error).toContainText("Python 3 or ffprobe is missing.");
   await expect(inspect).toBeEnabled();
   await inspect.click();
+  await expect(error).toContainText("Check the name and save the file inside the original bundle.");
+  await expect(inspect).toBeEnabled();
+  expect(await page.evaluate(() => Reflect.get(window, "__OTIO_INSPECTIONS__"))).toBe(2);
+  expect(await page.evaluate(() => Reflect.get(window, "__OTIO_PREVIEW_GRANTS__"))).toBe(2);
+  await inspect.click();
   await expect(error).toContainText(".motionwright-otio-preview-original");
   await expect(inspect).toBeDisabled();
   await folder.fill("/owner/another-bundle");
   await expect(inspect).toBeDisabled();
-  expect(await page.evaluate(() => Reflect.get(window, "__OTIO_INSPECTIONS__"))).toBe(2);
+  expect(await page.evaluate(() => Reflect.get(window, "__OTIO_INSPECTIONS__"))).toBe(3);
 
   await openStation(page);
   await page.getByRole("button", {name: "Read retained OTIO attempts", exact: true}).click();
