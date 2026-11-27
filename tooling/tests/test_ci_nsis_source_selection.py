@@ -640,20 +640,21 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
     def assert_source_and_installed_routes(self, text):
         import re
         jobs_text = text.split("\njobs:\n", 1)[1]
-        matches = list(re.finditer(r"(?m)^  ([a-z][a-z-]*):\n", jobs_text))
+        matches = list(re.finditer(r"(?m)^  ([a-z][a-z0-9-]*):\n", jobs_text))
         jobs = {match.group(1): jobs_text[match.end():matches[index + 1].start() if index + 1 < len(matches) else len(jobs_text)]
                 for index, match in enumerate(matches)}
         self.assertEqual(set(jobs), {"receipt-policy", "nsis-source-windows", "linux", "windows-contracts",
                                      "windows", "windows-update", "macos", "attest-candidates",
-                                     "linux-first-use-source", "linux-first-use-installed", "windows-uninstall-tamper"})
-        def enabled(body, event, scope, ref="refs/heads/main"):
+                                     "linux-first-use-source", "linux-first-use-installed", "linux-installed-aac31",
+                                     "windows-uninstall-tamper"})
+        def enabled(body, event, scope, ref="refs/heads/main", *, installed=False,
+                    retained_run="", linux_result="success", attempt=1):
             found = re.search(r"(?m)^    if: (.+)$", body)
             if found is None:
                 return True
             expr = found[1]
             if expr == ">-":
-                # The actual Windows job has a folded YAML condition. Bind its
-                # successful prerequisites here; the separate tests enforce them.
+                # Bind the reviewed prerequisite outcomes used by these routes.
                 continuation = body[found.end():].splitlines()
                 folded = []
                 for line in continuation:
@@ -666,10 +667,20 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
                 expr = expr[4:-3]
                 self.assertIn("!cancelled()", expr)
                 expr = expr.replace("!cancelled()", "True")
-                for dependency in ("receipt-policy", "windows-contracts", "nsis-source-windows"):
-                    expected = "needs['" + dependency + "'].result"
-                    self.assertIn(expected, expr)
-                    expr = expr.replace(expected, "'success'")
+                if "needs.linux.result" in expr:
+                    self.assertIn("needs.receipt-policy.result", expr)
+                    expr = expr.replace("needs.linux.result", repr(linux_result))
+                    expr = expr.replace("needs.receipt-policy.result", "'success'")
+                else:
+                    for dependency in ("receipt-policy", "windows-contracts", "nsis-source-windows"):
+                        expected = "needs['" + dependency + "'].result"
+                        self.assertIn(expected, expr)
+                        expr = expr.replace(expected, "'success'")
+            expr = expr.replace("inputs.installed_aac31_bundle_run", repr(retained_run))
+            expr = expr.replace("!inputs.installed_aac31", repr(not installed))
+            expr = expr.replace("inputs.installed_aac31", repr(installed))
+            expr = expr.replace("github.repository", "'seradotcom/motionwright'")
+            expr = expr.replace("github.run_attempt", repr(attempt))
             expr = expr.replace("github.event_name", repr(event)).replace("inputs.verification_scope", repr(scope))
             expr = expr.replace("github.ref", repr(ref)).replace("&&", " and ").replace("||", " or ")
             try:
@@ -687,7 +698,17 @@ class DistributionWorkflowRoutingTests(unittest.TestCase):
         for scope, extra in (("linux_first_use_source", set()),
                              ("linux_first_use", {"linux-first-use-installed"})):
             self.assertEqual({name for name, body in jobs.items() if enabled(body, "workflow_dispatch", scope)}, first_use | extra, scope)
-        manual_first_use = {"linux-first-use-source", "linux-first-use-installed"}
+        manual_first_use = {"linux-first-use-source", "linux-first-use-installed", "linux-installed-aac31"}
+        ref = "refs/heads/integrate/phase1-final-composition-20261027"
+        options = ("workflow_dispatch", "linux_bundle", ref)
+        self.assertTrue(enabled(jobs["linux"], *options, installed=True))
+        self.assertFalse(enabled(jobs["linux"], *options, installed=True, retained_run="123"))
+        aac31 = jobs["linux-installed-aac31"]
+        self.assertTrue(enabled(aac31, *options, installed=True))
+        self.assertTrue(enabled(aac31, *options, installed=True, retained_run="123", linux_result="skipped"))
+        self.assertFalse(enabled(aac31, *options, installed=True, linux_result="skipped"))
+        self.assertFalse(enabled(aac31, *options, installed=True, retained_run="123", linux_result="failure"))
+        self.assertFalse(enabled(aac31, *options, installed=True, attempt=2))
         self.assertEqual({name for name, body in jobs.items() if enabled(body, "push", "")},
                          set(jobs) - {"windows-update", "windows-uninstall-tamper"} - manual_first_use)
         self.assertEqual({name for name, body in jobs.items() if enabled(body, "pull_request", "")},

@@ -4345,12 +4345,12 @@ jobs:
 
   linux-installed-aac31:
     if: >-
-      !cancelled() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle'
+      ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle'
       && needs.receipt-policy.result == 'success'
       && (needs.linux.result == 'success' || (inputs.installed_aac31_bundle_run != '' && needs.linux.result == 'skipped'))
       && inputs.installed_aac31 && github.run_attempt == 1
       && github.repository == 'seradotcom/motionwright'
-      && github.ref == 'refs/heads/integrate/phase1-final-composition-20261027'
+      && github.ref == 'refs/heads/integrate/phase1-final-composition-20261027' }}
     needs: [receipt-policy, linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 55
