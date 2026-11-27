@@ -16,11 +16,12 @@ declare global {interface Window {__HYBRID_DELIVERY__:Harness}}
 let project:Project=structuredClone(fixtureBootstrap.project);
 project.locks=[];project.revision=20;
 const layout=new URLSearchParams(location.search).get("layout");
-const twoSource=layout==="manim-first";
+const shortenedClock=layout==="short-clock";
+const twoSource=layout==="manim-first"||shortenedClock;
 const grouped=layout==="grouped-motion";
 const sceneCount=grouped?5:twoSource?2:3;
 const duration=grouped?1:2;
-const frameCount=sceneCount*duration*30;
+const frameCount=shortenedClock?31:sceneCount*duration*30;
 const manimIndex=grouped?2:twoSource?0:1;
 const savedScenes=project.scenes;
 project.scenes=Array.from({length:sceneCount},(_,index)=>savedScenes[index]??{
@@ -28,7 +29,8 @@ project.scenes=Array.from({length:sceneCount},(_,index)=>savedScenes[index]??{
 });
 project.scenes.forEach((scene,index)=>{
   scene.renderer=index===manimIndex?"manim-community":"motion-canvas";
-  scene.start={num:String(index*duration),den:"1"};scene.duration={num:String(duration),den:"1"};
+  scene.start=shortenedClock?{num:index===0?"0":"15",den:"30"}:{num:String(index*duration),den:"1"};
+  scene.duration=shortenedClock?{num:index===0?"15":"16",den:"30"}:{num:String(duration),den:"1"};
 });
 for(const branch of project.branches)if(branch.id===project.active_branch)branch.head_revision=20;
 const profile=project.deliverables[0];
@@ -72,8 +74,10 @@ Object.assign(window,{__TAURI_INTERNALS__:{invoke:async(command:string,args:{req
   if(command==="render_native_hybrid_master"){
     if(unknown)throw {schema:"motionwright.hybrid-desktop-failure/1",status:"unknown",stage:"master",
       outcome_known:false,may_have_native_effects:true,automatic_retry:false,message:"Synthetic original mux reply is unknown."};
-    const completed={schema:"motionwright.hybrid-desktop-master/1",status:"completed",...scope(request),
+    const completed={schema:"motionwright.hybrid-desktop-master/2",status:"completed",...scope(request),
       master_sha256:"c".repeat(64),frame_count:frameCount,fps_num:30,fps_den:1,saved_master:hint(),
+      stream_clock:{exact_video_clock:true,audio_start_sample:0,
+        presented_audio_samples:shortenedClock?49_584:frameCount*1600,authored_audio_samples:frameCount*1600},
       review_warning:null,automatic_retry:false};
     if(holdMaster){holdMaster=false;return new Promise(resolve=>{masterReply=()=>resolve(completed);});}
     return completed;

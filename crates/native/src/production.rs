@@ -50,7 +50,7 @@ mod hybrid_mlt;
 mod hybrid_owner;
 mod hyperframes;
 pub use hybrid_budget::{HybridNativeSources, HybridSourcePreflight, PreparedHybridNativeSources};
-pub use hybrid_mlt::{HybridNativeMaster, HybridNativeTimeline};
+pub use hybrid_mlt::{HybridMasterStreamClock, HybridNativeMaster, HybridNativeTimeline};
 mod manim_graph;
 mod manim_graph_profile;
 pub use hyperframes::{

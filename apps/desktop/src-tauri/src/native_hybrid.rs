@@ -9,7 +9,8 @@ use motionwright_domain::{Project, RendererKind, RevisionStamp};
 use motionwright_native::{
     film::FilmBuildOptions,
     production::{
-        HybridSourcePreflight, ProductionConnection, ProductionCoordinator, SavedMasterReceiptHint,
+        HybridMasterStreamClock, HybridSourcePreflight, ProductionConnection,
+        ProductionCoordinator, SavedMasterReceiptHint,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -99,6 +100,7 @@ pub(crate) struct HybridRenderResponse {
     frame_count: u64,
     fps_num: u32,
     fps_den: u32,
+    stream_clock: HybridMasterStreamClock,
     saved_master: Option<SavedMasterReceiptHint>,
     review_warning: Option<&'static str>,
     automatic_retry: bool,
@@ -107,6 +109,7 @@ pub(crate) struct HybridRenderResponse {
 fn completed(
     source: &HybridSourcePreflight,
     sha256: String,
+    stream_clock: HybridMasterStreamClock,
     hint: Option<SavedMasterReceiptHint>,
 ) -> HybridRenderResponse {
     // Discovery can fail after an irreversible, verified completion. Never
@@ -118,7 +121,7 @@ fn completed(
             && hint.fps_den == source.fps_den
     });
     HybridRenderResponse {
-        schema: "motionwright.hybrid-desktop-master/1",
+        schema: "motionwright.hybrid-desktop-master/2",
         status: "completed",
         project_id: source.project_id,
         generation: source.generation,
@@ -132,6 +135,7 @@ fn completed(
             "The original master completed. Open saved masters to recover it; do not render it again."
         ),
         saved_master: hint,
+        stream_clock,
         automatic_retry: false,
     }
 }
@@ -359,11 +363,12 @@ pub(crate) async fn render(
         .await.map_err(|error| failure("master", error.outcome_known, true,
             format!("Hybrid mastering did not complete ({:?}); inspect the original Jobs before another render.", error.code)))?;
     let sha256 = master.sha256().to_owned();
+    let stream_clock = master.stream_clock();
     if owner.begin_phase().is_err() {
-        return Ok(completed(&source, sha256, None));
+        return Ok(completed(&source, sha256, stream_clock, None));
     }
     let Some(preparation) = state.av_review.admit_preparation() else {
-        return Ok(completed(&source, sha256, None));
+        return Ok(completed(&source, sha256, stream_clock, None));
     };
     let project_id = request.project_id;
     let deliverable_id = request.deliverable_id;
@@ -378,7 +383,7 @@ pub(crate) async fn render(
             .into_iter()
             .find(|hint| hint.master_sha256 == sha256)
     });
-    Ok(completed(&source, sha256, hint))
+    Ok(completed(&source, sha256, stream_clock, hint))
 }
 
 #[cfg(test)]
@@ -520,8 +525,15 @@ mod tests {
         wrong_sha.master_sha256 = "d".repeat(64);
         let mut wrong_clock = original.clone();
         wrong_clock.frame_count = 181;
+        let stream_clock = HybridMasterStreamClock {
+            exact_video_clock: true,
+            audio_start_sample: Some(0),
+            presented_audio_samples: Some(287_968),
+            authored_audio_samples: 288_000,
+        };
         for hint in [None, Some(wrong_sha), Some(wrong_clock)] {
-            let result = completed(&source, sha.clone(), hint);
+            let result = completed(&source, sha.clone(), stream_clock, hint);
+            assert_eq!(result.stream_clock.presented_audio_samples, Some(287_968));
             assert_eq!(result.status, "completed");
             assert_eq!(result.master_sha256, sha);
             assert_eq!(result.project_id, source.project_id);
@@ -529,7 +541,7 @@ mod tests {
             assert!(result.review_warning.is_some());
             assert!(!result.automatic_retry);
         }
-        let result = completed(&source, sha, Some(original.clone()));
+        let result = completed(&source, sha, stream_clock, Some(original.clone()));
         assert_eq!(result.saved_master, Some(original));
         assert!(result.review_warning.is_none());
     }

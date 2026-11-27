@@ -31,6 +31,22 @@ describe("original hybrid Desktop result",()=>{
     expect(()=>parseHybridMaster(result,project,profile,180)).toThrow();
     expect(()=>parseHybridPreflight({...source(),frame_count:29},project,profile)).toThrow();
   });
+  it("retains an observed audio mismatch without inventing authority or weakening the authored clock",()=>{
+    const frame_count=31;
+    const stream_clock={exact_video_clock:true,audio_start_sample:0,presented_audio_samples:49_584,
+      authored_audio_samples:49_600};
+    const result={...complete(),schema:"motionwright.hybrid-desktop-master/2",frame_count,
+      saved_master:{...hint(),frame_count},stream_clock};
+    expect(parseHybridMaster(result,project,profile,frame_count)).toEqual(result);
+    expect(parseHybridMaster({...result,stream_clock:{...stream_clock,presented_audio_samples:null}},project,profile,frame_count).stream_clock?.presented_audio_samples).toBeNull();
+    for(const patch of [{authored_audio_samples:49_584},{exact_video_clock:"true"},
+      {presented_audio_samples:-1},{audio_start_sample:1.5},{delivery_authorized:true}]){
+      expect(()=>parseHybridMaster({...result,stream_clock:{...stream_clock,...patch}},project,profile,frame_count)).toThrow();
+    }
+    const {stream_clock:_,...withoutMeasurement}=result;
+    expect(()=>parseHybridMaster(withoutMeasurement,project,profile,frame_count)).toThrow();
+    expect(()=>parseHybridMaster({...result,schema:"motionwright.hybrid-desktop-master/1"},project,profile,frame_count)).toThrow();
+  });
   it("preserves known completion after the review owner closes",()=>{
     const value={...complete(),saved_master:null,
       review_warning:"The original master completed. Open saved masters to recover it; do not render it again."};

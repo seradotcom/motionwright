@@ -46,6 +46,19 @@ test("a two-source cut checks and creates a master with the normal render permis
   expect(observed.filter(call=>call.command==="render_native_hybrid_master")).toHaveLength(1);
   expect(observed.filter(call=>call.command==="issue_effect_grant").map(call=>call.request.effect)).toEqual(["render_local"]);
 });
+test("a shortened presentation of the original audio remains reviewable without requesting delivery",async({page})=>{
+  await page.goto("/tests/fixtures/hybrid-delivery.html?layout=short-clock");
+  await ready(page);
+  await panel(page).getByRole("button",{name:"Create hybrid master",exact:true}).click();
+  const notice=panel(page).getByRole("status").filter({hasText:"Review only."});
+  await expect(notice).toContainText(/49\D?584 samples/);
+  await expect(notice).toContainText(/requires 49\D?600/);
+  await panel(page).getByRole("button",{name:"Review completed hybrid original",exact:true}).click();
+  await expect.poll(async()=>(await commands(page)).filter(call=>call.command==="review_native_av_master").length).toBe(1);
+  await expect(panel(page).getByRole("region",{name:"Deliver saved original MP4",exact:true})).toHaveCount(0);
+  expect((await commands(page)).filter(call=>call.command==="issue_effect_grant").map(call=>call.request.effect)).toEqual(["render_local"]);
+  await expect(panel(page).getByRole("button",{name:"Create hybrid master",exact:true})).toBeDisabled();
+});
 test("a project revision arriving during the normal grant dialog prevents native dispatch",async({page})=>{
   await ready(page);
   await page.evaluate(()=>window.__HYBRID_DELIVERY__.holdGrant());

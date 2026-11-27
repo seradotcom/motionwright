@@ -46,6 +46,7 @@ impl HybridNativeTimeline {
 pub struct HybridNativeMaster {
     evidence: Value,
     master_sha256: String,
+    stream_clock: HybridMasterStreamClock,
 }
 impl HybridNativeMaster {
     pub fn evidence(&self) -> &Value {
@@ -55,6 +56,10 @@ impl HybridNativeMaster {
     /// Identity of the already verified original master, never a read grant.
     pub fn sha256(&self) -> &str {
         &self.master_sha256
+    }
+
+    pub fn stream_clock(&self) -> HybridMasterStreamClock {
+        self.stream_clock
     }
 }
 
@@ -657,12 +662,12 @@ fn complete_video_observation(
 
 /// These clocks are measured by the original Host from the final MP4. The
 /// emitted WAV can contain enough decoded samples when the MP4 edit is short.
-#[derive(serde::Serialize)]
-struct HybridMasterStreamClock {
-    exact_video_clock: bool,
-    audio_start_sample: Option<i64>,
-    presented_audio_samples: Option<u64>,
-    authored_audio_samples: u64,
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct HybridMasterStreamClock {
+    pub exact_video_clock: bool,
+    pub audio_start_sample: Option<i64>,
+    pub presented_audio_samples: Option<u64>,
+    pub authored_audio_samples: u64,
 }
 
 impl HybridMasterStreamClock {
@@ -1387,6 +1392,7 @@ impl ProductionCoordinator {
         let master_sha256 = text_at(master, "/artifact/sha256")?;
         Ok(HybridNativeMaster {
             master_sha256,
+            stream_clock: observed_stream_clock,
             evidence: json!({"schema":"motionwright.native.hybrid-master/1",
             "project_sha256":sources.project_sha256,"frame_count":frame_count,
             "original_native_return":original,"master":master,"complete_video_observation":color,
