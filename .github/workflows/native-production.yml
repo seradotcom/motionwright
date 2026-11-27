@@ -497,6 +497,8 @@ jobs:
         run: cargo test --locked -p motionwright-storage production
       - name: Broker client and coordinator
         run: cargo test --locked -p motionwright-native production::tests --all-targets
+      - name: Verified Native preview window reuse
+        run: cargo test --locked -p motionwright-native --lib production::motion_canvas_window::tests
       - name: Original terminal receipt custody
         run: cargo test --locked -p motionwright-native --lib production::receipt_custody::tests -- --nocapture
       - name: Compile and test HyperFrames source targets without provisioning a runtime

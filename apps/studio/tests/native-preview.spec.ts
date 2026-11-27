@@ -283,7 +283,7 @@ test("invalid synthetic frame bytes display a truthful readback error and a retr
 // they are not native renderer, SQLite, quality or master-delivery evidence.
 type SyntheticWindowRequest = {
   project_id: string; generation: string; revision: number; request_id: string;
-  effect_grant: string; reuse_token: string | null;
+  effect_grant: string; reuse_token: string | null; carry_original_revision?: number;
   window: { deliverable_id: string; source_scene_id: string;
     source_window: { start: number; end: number }; options: import("../src/types").MotionCanvasFilmOptions;
     render_scale?: "half"|"quarter" };
@@ -331,7 +331,7 @@ async function installNativeWindowFixture(page: RecipeFixturePage) {
     const pending = new Map<string, { resolve: () => void; reject: () => void }>();
     const pendingFrames: Array<() => void> = [];
     const pendingRenderGrants: Array<() => void> = [];
-    const issued = new Map<string, { request: SyntheticWindowRequest; count: number }>();
+    const issued = new Map<string, { request: SyntheticWindowRequest; count: number; originalRevision?: number }>();
     let ordinal = 0;
     const state: SyntheticWindowHarness = {
       project: structuredClone(initialBoot.project), trace: [], holdWindows: false, holdFrames: false,
@@ -439,15 +439,23 @@ async function installNativeWindowFixture(page: RecipeFixturePage) {
         if (!Number.isInteger(source.start) || !Number.isInteger(source.end) || source.start < 0 || source.end > 210 || source.start >= source.end) {
           throw new Error("Synthetic Window source must lie in its original first scene.");
         }
-        const warm = original.reuse_token !== null;
-        const prior = warm ? issued.get(original.reuse_token!) : null;
-        if (warm && (state.rejectWarm || !prior || prior.request.project_id !== original.project_id
-            || prior.request.generation !== original.generation || prior.request.revision !== original.revision
+        const reuse = original.reuse_token !== null;
+        const prior = reuse ? issued.get(original.reuse_token!) : null;
+        const carried = original.carry_original_revision !== undefined;
+        if (reuse && (state.rejectWarm || !prior || prior.request.project_id !== original.project_id
+            || prior.request.generation !== original.generation
             || !same(prior.request.window, original.window))) {
           throw new Error("Synthetic original window payload is unavailable; no replacement is rendered.");
         }
+        if (carried && (!prior || prior.request.revision >= original.revision
+            || (prior.originalRevision ?? prior.request.revision) !== original.carry_original_revision)
+            || !carried && prior && prior.request.revision !== original.revision) {
+          throw new Error("Synthetic window reuse selected the wrong revision.");
+        }
         const count = source.end - source.start;
-        const token = original.reuse_token ?? "cb060ec7-a16b-4f38-bae2-" + String(++ordinal).padStart(12, "0");
+        const warm = reuse && !carried;
+        const token = warm ? original.reuse_token! : "cb060ec7-a16b-4f38-bae2-" + String(++ordinal).padStart(12, "0");
+        const originalRevision = original.carry_original_revision ?? prior?.originalRevision;
         // The original second scene lasts 9 seconds. The selected cut is B,A;
         // source A[1,3) therefore maps to segment[271,273), token-local[0,2).
         const segment = { start: 270 + source.start, end: 270 + source.end };
@@ -457,17 +465,18 @@ async function installNativeWindowFixture(page: RecipeFixturePage) {
             source_scene_id: original.window.source_scene_id, source_window: structuredClone(source), segment_window: segment,
             original_prefix: { start: 0, end: segment.end }, frame_rate: structuredClone(original.window.options.frame_rate),
             preview_only: true, master_eligible: false,
+            ...(originalRevision !== undefined ? { original_revision: originalRevision } : {}),
             ...(raster(original)?{raster:raster(original)}:{}),
             validation: { verdict: "UNKNOWN", native_frame_coverage: "UNKNOWN", pass_checks: 3, unknown_checks: 1, unknown_findings: 0 },
-            cost: { operation: warm ? "explicit_original_reuse" : "native_prefix", original_prefix_pngs: segment.end,
-              selected_pngs: count, reused_original_pngs: warm ? count : 0, start_calls_observed: warm ? 0 : 1,
+            cost: { operation: carried ? "unchanged_film_reuse" : warm ? "explicit_original_reuse" : "native_prefix", original_prefix_pngs: segment.end,
+              selected_pngs: count, reused_original_pngs: reuse ? count : 0, start_calls_observed: reuse ? 0 : 1,
               cached_png_bytes_returned: warm ? count * 70 : 0, cache_payload_bytes_admitted: warm ? 0 : count * 70,
               cache_micros: 10, internal_simulation_steps: null, internal_simulation_observation: "not_observed" },
           },
           preview: { token, segment_id: "synthetic-window-run", scene_ids: [original.window.source_scene_id], frame_count: count },
         };
-        const result = () => { issued.set(token, { request: original, count }); return structuredClone(response); };
-        if (!warm && state.holdWindows) return new Promise((resolve, reject) => {
+        const result = () => { issued.set(token, { request: original, count, originalRevision }); return structuredClone(response); };
+        if (!reuse && state.holdWindows) return new Promise((resolve, reject) => {
           pending.set(original.request_id, { resolve: () => resolve(result()), reject: () => reject(new Error("Synthetic late original outcome is unknown.")) });
           state.pendingWindows = [...pending.keys()];
         });
@@ -707,6 +716,41 @@ test("explicit Window reuse failure never dispatches a cold replacement or promo
   await expect(page.getByRole("button", { name: "Reuse original window", exact: true })).toBeDisabled();
   expect((await nativeWindowTrace(page, "render_motion_canvas_window")).length).toBe(2);
   expect(await nativeWindowTrace(page, "preview_native_frame")).toEqual([]);
+  await expectNoWindowPromotion(page);
+});
+
+test("a saved unrelated revision can request its original window and display only the new read handle", async ({ page }) => {
+  const boot = await installNativeWindowFixture(page);
+  const revision = await prepareWindowThroughUi(page, boot);
+  await page.getByRole("button", { name: "Capture native window", exact: true }).click();
+  await expect(page.getByLabel("Native window evidence")).toContainText("PREVIEW ONLY");
+
+  await page.getByRole("button", { name: "Brief", exact: true }).click();
+  await page.locator("#project-title-rich").fill("Same visual composition");
+  await page.getByRole("button", { name: "Save title", exact: true }).click();
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + (revision + 1));
+  await page.getByRole("button", { name: "Timeline", exact: true }).click();
+  await page.getByText("Native window preview", { exact: true }).click();
+  await expect(page.getByLabel("Native window evidence")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Show window frames", exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Reuse unchanged window", exact: true }).click();
+  await expect(page.getByLabel("Native window evidence")).toContainText("Original PNGs from revision " + revision);
+  const requests = await nativeWindowTrace(page, "render_motion_canvas_window") as unknown as SyntheticWindowRequest[];
+  expect(requests).toHaveLength(2);
+  expect(requests[0].reuse_token).toBeNull();
+  expect(requests[1]).toMatchObject({
+    revision: revision + 1, carry_original_revision: revision,
+    reuse_token: "cb060ec7-a16b-4f38-bae2-000000000001", window: requests[0].window,
+  });
+  await page.getByRole("button", { name: "Step forward one frame", exact: true }).click();
+  await page.getByRole("button", { name: "Show window frames", exact: true }).click();
+  const frame = page.getByRole("region", { name: "Native window PNG frame preview", exact: true });
+  await expect.poll(() => frame.getByRole("img").evaluate(image => (image as HTMLImageElement).naturalWidth)).toBe(1);
+  expect(await nativeWindowTrace(page, "preview_native_frame")).toEqual([{
+    project_id: boot.project.id, generation: boot.project.generation, revision: revision + 1,
+    token: "cb060ec7-a16b-4f38-bae2-000000000002", frame_index: 0,
+  }]);
   await expectNoWindowPromotion(page);
 });
 

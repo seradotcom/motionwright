@@ -356,6 +356,8 @@ struct MotionCanvasWindowRenderRequest {
     window: MotionCanvasWindowRequest,
     /// Original session handle, never raw cached provenance or a file path.
     reuse_token: Option<Uuid>,
+    /// The capture revision asserted by an explicit carry after an edit.
+    carry_original_revision: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2709,6 +2711,14 @@ async fn render_motion_canvas_window(
     {
         return Err("Native window request identity is invalid.".into());
     }
+    if request.carry_original_revision.is_some()
+        && (request.reuse_token.is_none()
+            || request
+                .carry_original_revision
+                .is_some_and(|original| original >= request.revision))
+    {
+        return Err("An earlier native window and its original revision are required.".into());
+    }
     state.effect_grants.consume(
         request.effect_grant,
         EffectKind::RenderLocal,
@@ -2719,7 +2729,28 @@ async fn render_motion_canvas_window(
     let registry = state.preview.clone();
     let mut retained_font_owner = None;
     let mut currency_work = None;
-    let (evidence, preview) = if let Some(token) = request.reuse_token {
+    let mut carried_connection = None;
+    let (evidence, preview) = if let (Some(token), Some(original_revision)) =
+        (request.reuse_token, request.carry_original_revision)
+    {
+        let path = selected_connection_path(&state, request.project_id)?.ok_or_else(|| {
+            "Select the original Semwright connection for window reuse.".to_owned()
+        })?;
+        let original_path = path.clone();
+        let window = request.window.clone();
+        let (result, identity) = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+            let connection = ProductionConnection::load(path)
+                .map_err(|_| "Original window connection is unavailable.".to_owned())?;
+            let identity = connection.identity().map_err(sanitized)?;
+            let result =
+                registry.carry_window(&project, token, &window, &connection, original_revision)?;
+            Ok::<_, String>((result, identity))
+        })
+        .await
+        .map_err(|_| "Original native window read task failed.".to_owned())??;
+        carried_connection = Some((original_path, identity));
+        result
+    } else if let Some(token) = request.reuse_token {
         let original_project = project.clone();
         let window = request.window.clone();
         desktop_owner::spawn_blocking(owner.worker_owner(), move || {
@@ -2774,6 +2805,16 @@ async fn render_motion_canvas_window(
     owner.begin_phase().map_err(|_|
         "The native window result is retained, but the desktop closed before its current-source check. Inspect the original request before another capture; do not repeat it automatically.".to_owned()
     )?;
+    if let Some((path, identity)) = carried_connection {
+        saved_motion_read_still_current(
+            &state,
+            request.project_id,
+            request.generation,
+            request.revision,
+            &path,
+            &identity,
+        )?;
+    }
     let check_currency = || -> Result<(), String> {
         let latest = state
             .service

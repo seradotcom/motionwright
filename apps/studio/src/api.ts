@@ -1356,7 +1356,8 @@ export async function renderMotionCanvasWindow(
     throw new Error("Native window intent belongs to another saved source.");
   }
   const options = savedFilmOptions(project, profile.id, intent.window.options);
-  const submitted = createNativeWindowIntent(project, scene, profile, intent.window.source_window, options, intent.request_id, intent.reuse_token, intent.window.render_scale ?? "full");
+  const submitted = createNativeWindowIntent(project, scene, profile, intent.window.source_window, options,
+    intent.request_id, intent.reuse_token, intent.window.render_scale ?? "full", intent.carry_original_revision);
   beforeDispatch?.();
   const grant = await issueEffectGrant("render_local", project, submitted.request_id);
   beforeDispatch?.();
@@ -1365,7 +1366,8 @@ export async function renderMotionCanvasWindow(
   onDispatched?.();
   const response = await invoke<NativeWindowRenderResponse>("render_motion_canvas_window", {
     request: { project_id: submitted.project_id, generation: submitted.generation, revision: submitted.revision,
-      request_id: submitted.request_id, effect_grant: grant.token, window: submitted.window, reuse_token: submitted.reuse_token },
+      request_id: submitted.request_id, effect_grant: grant.token, window: submitted.window, reuse_token: submitted.reuse_token,
+      ...(submitted.carry_original_revision !== undefined ? { carry_original_revision: submitted.carry_original_revision } : {}) },
   });
   return acceptNativeWindowReceipt(submitted, response);
 }

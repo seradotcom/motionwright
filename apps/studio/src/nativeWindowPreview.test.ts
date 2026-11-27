@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fixtureProject } from "./fixture";
 import {
-  acceptNativeWindowReceipt, createNativeWindowIntent, nativeWindowCutRange,
+  acceptNativeWindowReceipt, createNativeWindowIntent, nativeWindowCarrySource, nativeWindowCutRange,
   nativeWindowFrameAtPlayhead, nativeWindowIntentMatches, nativeWindowReuseToken,
   nativeWindowSceneBounds, nativeWindowRaster, requireNativeWindowRasterPng, parseNativeWindowRange,
   clearConfirmedNativeWindow, markNativeWindowUncertain, readNativeWindowUncertainties,
@@ -59,6 +59,32 @@ function reply(intent: NativeWindowIntent, segmentStart = 61): NativeWindowRende
 }
 
 describe("native Window authority uses source frames and the original bounded response", () => {
+
+  it("carries only the same choice after a saved edit and requires a fresh preview handle", () => {
+    const f = selected();
+    const original = acceptNativeWindowReceipt(f.intent, reply(f.intent));
+    const edited = { ...f.project, revision: f.project.revision + 1 };
+    const request = createNativeWindowIntent(edited, f.scene, f.profile, f.range, f.options, "verify-unchanged-window");
+    const source = nativeWindowCarrySource(request, original);
+    expect(source).toEqual({ token, originalRevision: f.project.revision });
+    expect(nativeWindowCarrySource({ ...request, branch_id: otherToken }, original)).toBeNull();
+    expect(nativeWindowCarrySource({ ...request, window: { ...request.window, source_window: { start: 2, end: 89 } } }, original)).toBeNull();
+    expect(nativeWindowReuseToken(request, original)).toBeNull();
+
+    const carried = { ...request, reuse_token: token, carry_original_revision: f.project.revision };
+    const response = reply(carried);
+    response.window.original_revision = f.project.revision;
+    response.window.cost.operation = "unchanged_film_reuse";
+    response.window.cost.cached_png_bytes_returned = 0;
+    response.window.cost.cache_payload_bytes_admitted = 6160;
+    response.preview.token = otherToken;
+    expect(acceptNativeWindowReceipt(carried, response).response.preview.token).toBe(otherToken);
+    expect(() => acceptNativeWindowReceipt(carried, { ...response, preview: { ...response.preview, token } })).toThrow();
+    expect(() => acceptNativeWindowReceipt(request, response)).toThrow();
+    expect(() => acceptNativeWindowReceipt(carried, { ...response,
+      window: { ...response.window, original_revision: f.project.revision + 1 } })).toThrow();
+  });
+
   it("keeps original source, reordered cut, realized segment and token-local clocks distinct", () => {
     const f = selected();
     const before = structuredClone(f.project);

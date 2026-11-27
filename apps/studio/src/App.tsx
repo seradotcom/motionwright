@@ -112,7 +112,7 @@ import { nativeFrameAtPlayhead } from "./nativeFrameSelection";
 import {
   clearConfirmedNativeWindow, createNativeWindowIntent, markNativeWindowUncertain,
   nativeWindowCutRange, nativeWindowFrameAtPlayhead, nativeWindowIntentMatches,
-  nativeWindowReuseToken, nativeWindowSceneBounds, nativeWindowRaster, parseNativeWindowRange, readNativeWindowUncertainties,
+  nativeWindowCarrySource, nativeWindowReuseToken, nativeWindowSceneBounds, nativeWindowRaster, parseNativeWindowRange, readNativeWindowUncertainties,
   NATIVE_WINDOW_UNCERTAINTY_PREFIX,
   type NativeWindowIntent, type NativeWindowReceipt, type NativeWindowUncertaintyClaim,
 } from "./nativeWindowPreview";
@@ -333,6 +333,11 @@ export function PreviewSurface({
   const currentWindowReceipt = scene && profile && windowRange && windowOptions && windowEditor.receipt
     && nativeWindowIntentMatches(windowEditor.receipt.intent, project, scene, profile, windowRange, windowOptions, windowScale)
     ? windowEditor.receipt : null;
+  const previousWindowReceipt = !currentWindowReceipt && scene && profile && windowRange && windowOptions
+    && windowEditor.receipt && windowEditor.receipt.intent.revision < project.revision
+    && nativeWindowIntentMatches({ ...windowEditor.receipt.intent, revision: project.revision },
+      project, scene, profile, windowRange, windowOptions, windowScale)
+    ? windowEditor.receipt : null;
   const windowFrame = nativeWindowFrameAtPlayhead(project, scene, profile, currentWindowReceipt, playhead);
   const windowAuthorityKey = JSON.stringify(["window", project.id, project.generation, project.active_branch,
     project.revision, scene?.id, profile?.id, windowEditor.startRaw, windowEditor.endRaw, windowOptions, windowScale,
@@ -369,9 +374,11 @@ export function PreviewSurface({
       updateWindow(key, initial, value => ({ ...value, error: reason instanceof Error ? reason.message : "The saved window intent is invalid." }));
       return;
     }
-    const token = reuse ? nativeWindowReuseToken(intent, currentWindowReceipt) : null;
+    const carried = reuse ? nativeWindowCarrySource(intent, previousWindowReceipt) : null;
+    const token = reuse ? carried?.token ?? nativeWindowReuseToken(intent, currentWindowReceipt) : null;
     if (reuse && !token) return;
-    intent = { ...intent, reuse_token: token };
+    intent = { ...intent, reuse_token: token,
+      ...(carried ? { carry_original_revision: carried.originalRevision } : {}) };
     let dispatched = false;
     let claim: NativeWindowUncertaintyClaim | null = null;
     const fresh = () => {
@@ -520,8 +527,8 @@ export function PreviewSurface({
               <button type="button" className="button compact" disabled={!desktopMode || !scene || !profile || !windowRange || !windowOptions
                 || anyWindowPending || unresolvedWindows.length > 0 || windowCopyIssue !== null}
                 onClick={() => { void captureWindow(false); }}>Capture native window</button>
-              <button type="button" className="button compact" disabled={!desktopMode || !currentWindowReceipt || anyWindowPending}
-                onClick={() => { void captureWindow(true); }}>Reuse original window</button>
+              <button type="button" className="button compact" disabled={!desktopMode || (!currentWindowReceipt && !previousWindowReceipt) || anyWindowPending}
+                onClick={() => { void captureWindow(true); }}>{previousWindowReceipt ? "Reuse unchanged window" : "Reuse original window"}</button>
               <button type="button" className="button compact" onClick={onInspectRender}>Inspect saved Film</button>
               {onInspectWindow && <button type="button" className="button compact" onClick={onInspectWindow}>Inspect original jobs</button>}
             </div>
@@ -539,6 +546,8 @@ export function PreviewSurface({
             {windowEditor.error && <p role="alert" style={{ margin: 0 }}>{windowEditor.error}</p>}
             {currentWindowReceipt && <div role="status" aria-label="Native window evidence" style={{ minWidth: 0 }}>
               <strong>WINDOW · {currentWindowReceipt.response.window.validation.verdict} · PREVIEW ONLY · NOT A MASTER</strong>
+              {currentWindowReceipt.response.window.original_revision !== undefined &&
+                <p style={{ margin: "4px 0 0" }}>Original PNGs from revision {currentWindowReceipt.response.window.original_revision}. Film inputs and raster matched the current revision.</p>}
               {currentWindowReceipt.response.window.raster && <p style={{ margin: "4px 0 0" }}>Provider-rendered {currentWindowReceipt.response.window.raster.scale} raster: {currentWindowReceipt.response.window.raster.width} x {currentWindowReceipt.response.window.raster.height}. Not full-resolution fidelity evidence.</p>}
               <p style={{ margin: "4px 0 0" }}>Source frames {currentWindowReceipt.response.window.source_window.start} to {currentWindowReceipt.response.window.source_window.end} (end excluded). Coverage {currentWindowReceipt.response.window.validation.native_frame_coverage}.</p>
               <details style={{ marginTop: 4, minWidth: 0 }}>

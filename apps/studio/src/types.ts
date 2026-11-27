@@ -569,6 +569,7 @@ export interface NativeWindowRaster {
 export interface MotionCanvasWindowSummary {
   generation: string;
   revision: number;
+  original_revision?: number;
   deliverable_id: string;
   source_scene_id: string;
   source_window: SourceFrameWindow;
@@ -586,7 +587,7 @@ export interface MotionCanvasWindowSummary {
     unknown_findings: number;
   };
   cost: {
-    operation: "native_prefix" | "explicit_original_reuse";
+    operation: "native_prefix" | "explicit_original_reuse" | "unchanged_film_reuse";
     original_prefix_pngs: number;
     selected_pngs: number;
     reused_original_pngs: number;
