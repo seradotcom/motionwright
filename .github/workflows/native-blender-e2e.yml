@@ -1430,7 +1430,11 @@ jobs:
           },
           {
             "target": "--lib",
-            "name": "multi_renderer::tests::original_blender_plan_refuses_unsupported_zoom_and_rotation"
+            "name": "multi_renderer::tests::original_blender_plan_projects_zoom_and_roll_without_baking_geometry"
+          },
+          {
+            "target": "--lib",
+            "name": "multi_renderer::tests::original_blender_plan_refuses_out_of_profile_roll_and_unrepresentable_scale"
           },
           {
             "target": "--lib",
@@ -1604,7 +1608,7 @@ jobs:
             (out / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
         retain()
         try:
-            if len(ROSTER) != 51 or len({r["name"] for r in ROSTER}) != 51:
+            if len(ROSTER) != 52 or len({r["name"] for r in ROSTER}) != 52:
                 raise ValueError("required Rust roster differs")
             for index, row in enumerate(ROSTER):
                 argv = ["cargo", "test", "--locked", "-p", "motionwright-native"] + shlex.split(row["target"]) + [row["name"], "--", "--exact", "--nocapture"]
