@@ -8123,8 +8123,8 @@
     },
     {
       "path": ".github/workflows/native-render-e2e.yml",
-      "sha256": "2dbab5e36b3b53f01f16d09a9ceda8cdca5671f0f96ef88d20877f7fa34210c6",
-      "preamble_sha256": "c97aabcfb60ba999584cfd4c0bf85170aa9df14d94e30ab56ae6092bdcecf8aa",
+      "sha256": "aee6009d5e35026ba6a22dddefd0cf3c6a8f173c6a3ac553c457287053a6466b",
+      "preamble_sha256": "272357a90932a5e0ef4d9e264db166a277a1ff9b0697fa22d597fb5b0f067c95",
       "evidence_class": "native_render",
       "purpose": "Existing standard independent native repeats and the explicitly selected source-bound N83 preview fixture; neither scope grants formal acceptance. The separate editable-source selection preserves four original/reopened/edited phases, exact first-attempt source/recipient admission and sealed originals.",
       "inputs": {
@@ -8135,8 +8135,57 @@
           "options": [
             "standard",
             "n83-preview",
-            "editable-source-cycle"
+            "editable-source-cycle",
+            "out-cubic-xy"
           ]
+        },
+        "geometry_e2e": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": []
+        },
+        "geometry_profile": {
+          "type": "choice",
+          "required": false,
+          "default": "out-cubic",
+          "options": [
+            "out-cubic",
+            "hold"
+          ]
+        },
+        "layer_order_e2e": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": []
+        },
+        "clip_e2e": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": []
+        },
+        "clip_composition": {
+          "type": "choice",
+          "required": false,
+          "default": "static",
+          "options": [
+            "static",
+            "pose"
+          ]
+        },
+        "clipped_opacity_source_only": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": []
+        },
+        "waypoint_studio_only": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": []
         },
         "expected_source_sha": {
           "type": "string",
@@ -8161,9 +8210,17 @@
         "native_scope": {
           "standard": {
             "covered_by": [
-              "independent-repeat"
+              "independent-repeat",
+              "standard-single",
+              "geometry-out-cubic",
+              "geometry-hold",
+              "layer-order",
+              "clip-static",
+              "clip-pose",
+              "clipped-opacity-source",
+              "waypoint-studio-source"
             ],
-            "basis": "Standard remains the default and pull-request selection. The reviewed repeat includes the shared single-run subset; N83-only source controls, fixture stages and sealed uploads are excluded."
+            "basis": "These explicit selections name the existing steps for this input value."
           },
           "n83-preview": {
             "covered_by": [
@@ -8171,14 +8228,217 @@
               "n83-preflight-failure",
               "n83-rust-controls-failure"
             ],
-            "basis": "N83 requires an explicit first-attempt manual dispatch, exact candidate source binding and an existing admitted public recovery recipient. The failure-retention alternative applies only when that same attempt fails its source controls; it is not another dispatch or a success requirement. The former combined source-control failure is now split explicitly into the early Python75 and later Rust3 retention branches of that same attempt; neither branch is dispatched independently."
+            "basis": "These explicit selections name the existing steps for this input value."
           },
           "editable-source-cycle": {
             "covered_by": [
               "editable-source-cycle",
               "editable-source-preflight-failure"
             ],
-            "basis": "Explicit first-attempt source/recipient selection with repeat=false; the conditional preflight seal belongs to that same attempt and is never another dispatch or Native success."
+            "basis": "These explicit selections name the existing steps for this input value."
+          },
+          "out-cubic-xy": {
+            "covered_by": [
+              "out-cubic-xy",
+              "out-cubic-xy-preflight-failure"
+            ],
+            "basis": "These explicit selections name the existing steps for this input value."
+          }
+        },
+        "geometry_e2e": {
+          "true": {
+            "covered_by": [
+              "geometry-out-cubic",
+              "geometry-hold"
+            ],
+            "basis": "These explicit selections name the existing steps for this input value."
+          },
+          "false": {
+            "covered_by": [
+              "independent-repeat",
+              "n83-preview",
+              "n83-preflight-failure",
+              "n83-rust-controls-failure",
+              "editable-source-cycle",
+              "editable-source-preflight-failure",
+              "standard-single",
+              "out-cubic-xy",
+              "out-cubic-xy-preflight-failure",
+              "layer-order",
+              "clip-static",
+              "clip-pose",
+              "clipped-opacity-source",
+              "waypoint-studio-source"
+            ],
+            "basis": "These explicit selections name the existing steps for this input value."
+          }
+        },
+        "geometry_profile": {
+          "out-cubic": {
+            "covered_by": [
+              "independent-repeat",
+              "n83-preview",
+              "n83-preflight-failure",
+              "n83-rust-controls-failure",
+              "editable-source-cycle",
+              "editable-source-preflight-failure",
+              "standard-single",
+              "out-cubic-xy",
+              "out-cubic-xy-preflight-failure",
+              "geometry-out-cubic",
+              "layer-order",
+              "clip-static",
+              "clip-pose",
+              "clipped-opacity-source",
+              "waypoint-studio-source"
+            ],
+            "basis": "These explicit selections name the existing steps for this input value."
+          },
+          "hold": {
+            "covered_by": [
+              "geometry-hold"
+            ],
+            "basis": "These explicit selections name the existing steps for this input value."
+          }
+        },
+        "layer_order_e2e": {
+          "true": {
+            "covered_by": [
+              "layer-order"
+            ],
+            "basis": "These explicit selections name the existing steps for this input value."
+          },
+          "false": {
+            "covered_by": [
+              "independent-repeat",
+              "n83-preview",
+              "n83-preflight-failure",
+              "n83-rust-controls-failure",
+              "editable-source-cycle",
+              "editable-source-preflight-failure",
+              "standard-single",
+              "out-cubic-xy",
+              "out-cubic-xy-preflight-failure",
+              "geometry-out-cubic",
+              "geometry-hold",
+              "clip-static",
+              "clip-pose",
+              "clipped-opacity-source",
+              "waypoint-studio-source"
+            ],
+            "basis": "These explicit selections name the existing steps for this input value."
+          }
+        },
+        "clip_e2e": {
+          "true": {
+            "covered_by": [
+              "clip-static",
+              "clip-pose"
+            ],
+            "basis": "These explicit selections name the existing steps for this input value."
+          },
+          "false": {
+            "covered_by": [
+              "independent-repeat",
+              "n83-preview",
+              "n83-preflight-failure",
+              "n83-rust-controls-failure",
+              "editable-source-cycle",
+              "editable-source-preflight-failure",
+              "standard-single",
+              "out-cubic-xy",
+              "out-cubic-xy-preflight-failure",
+              "geometry-out-cubic",
+              "geometry-hold",
+              "layer-order",
+              "clipped-opacity-source",
+              "waypoint-studio-source"
+            ],
+            "basis": "These explicit selections name the existing steps for this input value."
+          }
+        },
+        "clip_composition": {
+          "static": {
+            "covered_by": [
+              "independent-repeat",
+              "n83-preview",
+              "n83-preflight-failure",
+              "n83-rust-controls-failure",
+              "editable-source-cycle",
+              "editable-source-preflight-failure",
+              "standard-single",
+              "out-cubic-xy",
+              "out-cubic-xy-preflight-failure",
+              "geometry-out-cubic",
+              "geometry-hold",
+              "layer-order",
+              "clip-static",
+              "clipped-opacity-source",
+              "waypoint-studio-source"
+            ],
+            "basis": "These explicit selections name the existing steps for this input value."
+          },
+          "pose": {
+            "covered_by": [
+              "clip-pose"
+            ],
+            "basis": "These explicit selections name the existing steps for this input value."
+          }
+        },
+        "clipped_opacity_source_only": {
+          "true": {
+            "covered_by": [
+              "clipped-opacity-source",
+              "waypoint-studio-source"
+            ],
+            "basis": "These explicit selections name the existing steps for this input value."
+          },
+          "false": {
+            "covered_by": [
+              "independent-repeat",
+              "n83-preview",
+              "n83-preflight-failure",
+              "n83-rust-controls-failure",
+              "editable-source-cycle",
+              "editable-source-preflight-failure",
+              "standard-single",
+              "out-cubic-xy",
+              "out-cubic-xy-preflight-failure",
+              "geometry-out-cubic",
+              "geometry-hold",
+              "layer-order",
+              "clip-static",
+              "clip-pose"
+            ],
+            "basis": "These explicit selections name the existing steps for this input value."
+          }
+        },
+        "waypoint_studio_only": {
+          "true": {
+            "covered_by": [
+              "waypoint-studio-source"
+            ],
+            "basis": "These explicit selections name the existing steps for this input value."
+          },
+          "false": {
+            "covered_by": [
+              "independent-repeat",
+              "n83-preview",
+              "n83-preflight-failure",
+              "n83-rust-controls-failure",
+              "editable-source-cycle",
+              "editable-source-preflight-failure",
+              "standard-single",
+              "out-cubic-xy",
+              "out-cubic-xy-preflight-failure",
+              "geometry-out-cubic",
+              "geometry-hold",
+              "layer-order",
+              "clip-static",
+              "clip-pose",
+              "clipped-opacity-source"
+            ],
+            "basis": "These explicit selections name the existing steps for this input value."
           }
         },
         "expected_source_sha": {},
@@ -8188,29 +8448,400 @@
             "covered_by": [
               "independent-repeat"
             ],
-            "basis": "The standard manual repeat selection explicitly runs two fresh owner/Broker/Driver Host renders. N83 admission rejects repeat=true."
+            "basis": "These explicit selections name the existing steps for this input value."
           },
           "false": {
             "covered_by": [
-              "independent-repeat",
               "n83-preview",
               "n83-preflight-failure",
               "n83-rust-controls-failure",
               "editable-source-cycle",
-              "editable-source-preflight-failure"
+              "editable-source-preflight-failure",
+              "standard-single",
+              "out-cubic-xy",
+              "out-cubic-xy-preflight-failure",
+              "geometry-out-cubic",
+              "geometry-hold",
+              "layer-order",
+              "clip-static",
+              "clip-pose",
+              "clipped-opacity-source",
+              "waypoint-studio-source"
             ],
-            "basis": "Standard false selects its shared single-run subset. N83 and editable-source require false and disable repeat/event replay; their separate conditional failure retention never grants another Native attempt."
+            "basis": "These explicit selections name the existing steps for this input value."
           }
         }
       },
       "jobs": {
         "real-native-render": {
           "source_name": "real-native-render",
-          "guard": null,
+          "guard": "${{ !inputs.clipped_opacity_source_only && !inputs.waypoint_studio_only }}",
           "runs_on": "ubuntu-24.04",
           "needs": null,
           "strategy": null,
-          "source_sha256": "26e572199c4573ed8167ac9ad74029b06b0ab20e3ca582721745dd339cd79060",
+          "source_sha256": "5ef46a3481caedfe69668713df21e36d1bfa5396f0a132e38d3f6b6d4ef16e66",
+          "steps": [
+            {
+              "ordinal": 2,
+              "name": "Admit closed native selection before bootstrap",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "3eaca5dcfd1a808eb7f195f9cf69ba2861c71e2cb055c6302ad1f7074bcc825a",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 3,
+              "name": "Install pinned custody and PNG verifier in a private runner venv",
+              "guard": "${{ inputs.native_scope == 'n83-preview' || inputs.native_scope == 'editable-source-cycle' || inputs.native_scope == 'out-cubic-xy' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "8800d30f4fdff2190e4ae797e87024d54ca29a3a78c8549845c0f02e201ea964",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 4,
+              "name": "Verify exact OutCubic XY source controls before Native",
+              "guard": "${{ inputs.native_scope == 'out-cubic-xy' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "f86b585fa1fb1da2dae8abd6a826702abba240929f40ecfdd798278a0fd3c6bb",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 5,
+              "name": "Verify editable-source reader before any native attempt",
+              "guard": "${{ inputs.native_scope == 'editable-source-cycle' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "78ed22be583b2e0b924eb69fb0e3652f3b49d050c7ba3b79bea7b897248ff232",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 6,
+              "name": "Verify exact N83 source controls before Native",
+              "guard": "${{ inputs.native_scope == 'n83-preview' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "624cfc1bff5a0e2e6792cc0ca252226bb2c3ff250c5d1ec3b0ba807ac7f91267",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 7,
+              "name": "Seal failed N83 source controls without any owner or Native attempt",
+              "guard": "${{ always() && inputs.native_scope == 'n83-preview' && steps.n83_source_controls.outcome == 'failure' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "842e754ff6c556e4fec657ed38bfdcf7a1c9430eb96a68d00e15c5cd6b17b242",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 8,
+              "name": "Resolve exact Semwright source pin",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "2295ea5f626f5622e2973cc752993b3fcd7a8c772b3b085f965898a106ffe59c",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 10,
+              "name": "Verify immutable source identities",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "15efdd3445e2fe8655d0b1730f672d296708b5a01f0367a26d39d37b8957ddd1",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 11,
+              "name": "Verify v0.1 native CLI failures never expose private job receipts",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "552747fa7915eced006d6b44f6b4fb20ac1ab43d948d3e64e56a5d109e278a42",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 12,
+              "name": "Reject raw Broker session or forged native parity in public evidence",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "613470b82f57cb77a295358497d6f065b773d223589be8cef44b575fcb52582e",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 16,
+              "name": "Configure disposable-runner Driver Host sandbox",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "6cca3435dbaa0c5fc9d199a6c801938879eb548084469689132329d3dc4be264",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 17,
+              "name": "Install Semwright daemon build dependencies",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "7485141fabbc275dff38bd03a2488c7d74574909538aec8ed0f7628439455f17",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 18,
+              "name": "Build and verify exact Native geometry source before Host effect",
+              "guard": "${{ inputs.geometry_e2e }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "558d9d6e80b89e5cec65dfc0313a6db77d378f3c33312c0d26c62df16c743940",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 19,
+              "name": "Prepare the real Studio Service and browser for authored Hold",
+              "guard": "${{ inputs.geometry_e2e && inputs.geometry_profile == 'hold' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "6cd04964291b46cdd685a96d5b8702f22dbed152a76b5a63c9ac0a6ad4b5ec7d",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 20,
+              "name": "Retain source-only geometry test originals",
+              "guard": "${{ always() && inputs.geometry_e2e }}",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "9bf8b959087adb6960329bda74a32691c91bf92c63845b751dd758389481dc97",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 21,
+              "name": "Verify authored FadeOut, layer order and Clip source before Native Host",
+              "guard": "${{ inputs.layer_order_e2e || inputs.clip_e2e }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "4603256dc9153350d22d7411abb702cd1b6d228742300da3ce04c59b97b7c930",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 22,
+              "name": "Install exact Motion Canvas runtime and Firefox",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "800d16321736490511ff761405babd393f555e9757e7287d1db79594fe66c1c7",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 23,
+              "name": "Build exact Semwright Broker, sandbox and Motion Canvas provider",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "b29c57238cfba0f0b855988e76d03bdc3a7db30fc1db4c4e84ee6925c0dbf12f",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 24,
+              "name": "Build admitted N83 preview producer",
+              "guard": "${{ inputs.native_scope == 'n83-preview' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "35d36b768f1c3db7f634d79aaf1abe8857482ab4416a95c527571038a1d9a60e",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 25,
+              "name": "Build Motionwright production acceptance",
+              "guard": "${{ inputs.native_scope != 'n83-preview' && !inputs.geometry_e2e && !inputs.layer_order_e2e && !inputs.clip_e2e }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "93ad903e2735db11b6821c6aa8c2042b2ee1d81bbc00f5106f3b4e5493046d3f",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 26,
+              "name": "Verify actual editable source Service cycle before Native",
+              "guard": "${{ inputs.native_scope == 'editable-source-cycle' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "040a67d9e86910f44867990e46d40854c1e1adb2bb79409d54c9e67c997b1ced",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 27,
+              "name": "Verify exact N83 Rust3 source controls before Native",
+              "guard": "${{ inputs.native_scope == 'n83-preview' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "08a322eb1f49018f6e2d67cf7c3cc704f4bf0ad0dcf03821c0b6d0f59af02bb2",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 28,
+              "name": "Seal failed N83 Rust3 source controls without any owner or Native attempt",
+              "guard": "${{ always() && inputs.native_scope == 'n83-preview' && steps.n83_source_controls.outcome == 'success' && steps.n83_rust_controls.outcome == 'failure' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "afd649b1cbaafa8c4c4498502a54d4ab13bc2605d62d27f2fe690e0086a3dae3",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 29,
+              "name": "Verify direct-vs-mediated parity invariants before native rendering",
+              "guard": "${{ !inputs.geometry_e2e }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "fe652e6768b0fbebf562188cf96948c5d0edd63ed2a5716ab35fff04f65fdd9d",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 30,
+              "name": "Reject synthetic or incorrectly interpolated cubic ROI evidence",
+              "guard": "${{ !inputs.geometry_e2e }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "b2d60278804a4c6fad177c6fedde2f03075d997991dc03ff2f4ead506e8693af",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 31,
+              "name": "Reject invented render stage timing claims",
+              "guard": "${{ !inputs.geometry_e2e }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "2f78e4ce4c1749ce34c20aa9a35a38da46d2b966c87b1ef01a8ea02def845798",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 32,
+              "name": "Verify bounded provider lifecycle diagnostics",
+              "guard": "${{ !inputs.geometry_e2e }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "bcea1fd32e79a86d1d4c3bcb64b9daa8fe31cd9d5ec2d99566336c80db32ad81",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 33,
+              "name": "Reject fabricated independent-run reliability evidence",
+              "guard": "${{ !inputs.geometry_e2e }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "8c95d17f9172152ba17cec29126878a9e48d2cd5ed517280fd0a6254987b2284",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 34,
+              "name": "Render application-owned revision through real Broker and Driver Host",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "f8686b9c60e644e0decd0e7cd81ce9558ebfc37fdc4a224bf7a4dd90707d64ab",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 35,
+              "name": "Authenticate one real Native geometry Host render and stage only safe original frames",
+              "guard": "${{ inputs.geometry_e2e }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "56642d57c01e1b99a7fb99a80bc32d343641a0fd882b9848e0fb9827cd0c26af",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 36,
+              "name": "Retain only verified original geometry PNGs and safe digest receipt",
+              "guard": "${{ inputs.geometry_e2e && success() }}",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "b4fbf2de5a88cf5fc0f21fddb358b3496168dd21fd1a753a68746e7ccdfa50c9",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 37,
+              "name": "Preserve independently verified selected Native frames before review",
+              "guard": "${{ (inputs.clip_e2e || inputs.layer_order_e2e) && steps.native_original_effect.outcome == 'success' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "9fa7bdf14101a41d2be950bf0bc9e1857f47ef391bee0a3aaf402a344371963f",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 38,
+              "name": null,
+              "guard": "${{ (inputs.clip_e2e || inputs.layer_order_e2e) && steps.native_original_effect.outcome == 'success' }}",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "e97e61cc4fd6e8d2c42af1f36490f2de0297f66798671f1c6ade51c16af8ca63",
+              "api_binding": "REQUIRES_ORIGINAL_RUN_MAPPING"
+            },
+            {
+              "ordinal": 39,
+              "name": "Verify review evidence",
+              "guard": "${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "284d63b273f35c277e045f439169c5e6e8b28e37785ff60af142a09b7a72762b",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 40,
+              "name": "Repeat native render with a fresh owner Broker and Driver Host (v0.1 diagnostic only)",
+              "guard": "${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && !inputs.layer_order_e2e && !inputs.clip_e2e && ((github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat/v01-provider-repeat-ci'))) }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "91b6d8c0b02416c91385603f8242f97c00a1342870956bd33a15f12d3cd2ff36",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 41,
+              "name": "Stage only verified v0.1 native PNG review, not original Broker receipts",
+              "guard": "${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && !inputs.layer_order_e2e && !inputs.clip_e2e && (steps.native_original_effect.outcome == 'success' || steps.native_original_effect.outcome == 'failure') }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "ebcd9a1c34e104dffafd054664ae4bd9bbdf1d1778542fe418e71614bd54a33a",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 42,
+              "name": null,
+              "guard": "${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && inputs.native_scope != 'out-cubic-xy' && !inputs.geometry_e2e && !inputs.layer_order_e2e && !inputs.clip_e2e && (steps.native_original_effect.outcome == 'success' || steps.native_original_effect.outcome == 'failure') }}",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "071d9bb3630d8695128d5e4469e15d902d3fb7cda3f094e5a14ccdb8afea260c",
+              "api_binding": "REQUIRES_ORIGINAL_RUN_MAPPING"
+            },
+            {
+              "ordinal": 43,
+              "name": "Verify complete sealed N83 fixture outcome",
+              "guard": "${{ inputs.native_scope == 'n83-preview' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "bc017898efc6423a533f8cab4aac43b851948647fa5a1ca37c82209b621d7b2e",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 44,
+              "name": "Publish only sealed N83 originals and closed manifest",
+              "guard": "${{ always() && inputs.native_scope == 'n83-preview' }}",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "087c7921f19d263ec29de22aa2b45d66f8a6536f734e45cd17eabe49612c55a5",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 45,
+              "name": "Preserve editable-source preflight failure without starting an owner",
+              "guard": "${{ always() && inputs.native_scope == 'editable-source-cycle' && !hashFiles('verification/native-editable-public/sealed-originals.bin') }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "e3bcc2e77fea74ed307a345f70cc7909c95a5439688a3a70967ad6eab9ec4ac4",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 46,
+              "name": "Verify sealed editable native source cycle",
+              "guard": "${{ inputs.native_scope == 'editable-source-cycle' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "988473c396de3ca6c7f3945c90f4ac3724b08c27323cd905bb64d210a66e1d8f",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 47,
+              "name": "Publish only sealed editable-source originals and closed manifest",
+              "guard": "${{ always() && inputs.native_scope == 'editable-source-cycle' }}",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "910cdb940012fb0af438df572dac769a29cc33b0edb7ccc17780281feae3847c",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 48,
+              "name": "Preserve OutCubic XY preflight failure without starting an owner",
+              "guard": "${{ always() && inputs.native_scope == 'out-cubic-xy' && !hashFiles('verification/native-out-cubic-xy-public/sealed-originals.bin') }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "e6b64c2ff3f8be09141d2c19ddecb874c645b52b78cc4571b5241a62be6fa0a1",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 49,
+              "name": "Verify sealed single-pair OutCubic XY outcome",
+              "guard": "${{ inputs.native_scope == 'out-cubic-xy' }}",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "0a24ac54cfe1e4e41146026756e8ca9524cdf8726b0bd92f5e90ee74130374fd",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 50,
+              "name": "Publish only sealed OutCubic XY originals and closed manifest",
+              "guard": "${{ always() && inputs.native_scope == 'out-cubic-xy' }}",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "0ab82c2fd7d724900a00e3f560c7547a1033860ed951cc78642ea929d7077df2",
+              "api_binding": "EXPLICIT_NAME"
+            }
+          ],
           "instance_sets": {
             "independent-repeat": [
               {}
@@ -8229,274 +8860,74 @@
             ],
             "editable-source-preflight-failure": [
               {}
+            ],
+            "standard-single": [
+              {}
+            ],
+            "out-cubic-xy": [
+              {}
+            ],
+            "out-cubic-xy-preflight-failure": [
+              {}
+            ],
+            "geometry-out-cubic": [
+              {}
+            ],
+            "geometry-hold": [
+              {}
+            ],
+            "layer-order": [
+              {}
+            ],
+            "clip-static": [
+              {}
+            ],
+            "clip-pose": [
+              {}
             ]
-          },
+          }
+        },
+        "clipped-opacity-source-g1": {
+          "source_name": "clipped-opacity-source-g1",
+          "guard": "${{ github.event_name == 'workflow_dispatch' && (inputs.clipped_opacity_source_only || inputs.waypoint_studio_only) }}",
+          "runs_on": "ubuntu-24.04",
+          "needs": null,
+          "strategy": null,
+          "source_sha256": "1aac8705f0ac071cdc1425cb47b74ed79b93da5f99c77c3f2d0888790a907139",
           "steps": [
             {
               "ordinal": 2,
-              "name": "Admit closed native selection before bootstrap",
+              "name": "Admit exact clipped animation source without an effect",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "70b0656b1152717a3adfcd03c55a7cd68ba1369eafe23695b68ddd3ba2721e96",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 3,
-              "name": "Install pinned custody and PNG verifier in a private runner venv",
-              "guard": "${{ inputs.native_scope == 'n83-preview' || inputs.native_scope == 'editable-source-cycle' }}",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "d452dd5a37dc4e769410116cc20dd8e16fa6e268f3de8b4aadc16e4142f3696a",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 4,
-              "name": "Verify editable-source reader before any native attempt",
-              "guard": "${{ inputs.native_scope == 'editable-source-cycle' }}",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "78ed22be583b2e0b924eb69fb0e3652f3b49d050c7ba3b79bea7b897248ff232",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 5,
-              "name": "Verify exact N83 source controls before Native",
-              "guard": "${{ inputs.native_scope == 'n83-preview' }}",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "624cfc1bff5a0e2e6792cc0ca252226bb2c3ff250c5d1ec3b0ba807ac7f91267",
+              "source_block_sha256": "e3ebdb095653cdfc542c9242bae5fc890ba559b5b264cb92222dcf44de074920",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 6,
-              "name": "Seal failed N83 source controls without any owner or Native attempt",
-              "guard": "${{ always() && inputs.native_scope == 'n83-preview' && steps.n83_source_controls.outcome == 'failure' }}",
+              "name": "Install only source-test build and Chromium prerequisites",
+              "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "842e754ff6c556e4fec657ed38bfdcf7a1c9430eb96a68d00e15c5cd6b17b242",
+              "source_block_sha256": "01c31a1e29147f805218908ed2ca431c936b59ad0bb1891032fc669b49f43b2e",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 7,
-              "name": "Resolve exact Semwright source pin",
+              "name": "Verify grouped Clip animation through Film and real Studio Save",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "2295ea5f626f5622e2973cc752993b3fcd7a8c772b3b085f965898a106ffe59c",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 9,
-              "name": "Verify immutable source identities",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "15efdd3445e2fe8655d0b1730f672d296708b5a01f0367a26d39d37b8957ddd1",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 10,
-              "name": "Verify v0.1 native CLI failures never expose private job receipts",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "552747fa7915eced006d6b44f6b4fb20ac1ab43d948d3e64e56a5d109e278a42",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 11,
-              "name": "Reject raw Broker session or forged native parity in public evidence",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "613470b82f57cb77a295358497d6f065b773d223589be8cef44b575fcb52582e",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 15,
-              "name": "Configure disposable-runner Driver Host sandbox",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "6cca3435dbaa0c5fc9d199a6c801938879eb548084469689132329d3dc4be264",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 16,
-              "name": "Install Semwright daemon build dependencies",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "7485141fabbc275dff38bd03a2488c7d74574909538aec8ed0f7628439455f17",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 17,
-              "name": "Install exact Motion Canvas runtime and Firefox",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "800d16321736490511ff761405babd393f555e9757e7287d1db79594fe66c1c7",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 18,
-              "name": "Build exact Semwright Broker, sandbox and Motion Canvas provider",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "b29c57238cfba0f0b855988e76d03bdc3a7db30fc1db4c4e84ee6925c0dbf12f",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 19,
-              "name": "Build admitted N83 preview producer",
-              "guard": "${{ inputs.native_scope == 'n83-preview' }}",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "35d36b768f1c3db7f634d79aaf1abe8857482ab4416a95c527571038a1d9a60e",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 20,
-              "name": "Build Motionwright production acceptance",
-              "guard": "${{ inputs.native_scope != 'n83-preview' }}",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "8571872b28d8582769e1f1b80d784b214cf31f03905ad24a4a0df1e54a64a947",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 21,
-              "name": "Verify actual editable source Service cycle before Native",
-              "guard": "${{ inputs.native_scope == 'editable-source-cycle' }}",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "040a67d9e86910f44867990e46d40854c1e1adb2bb79409d54c9e67c997b1ced",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 22,
-              "name": "Verify exact N83 Rust3 source controls before Native",
-              "guard": "${{ inputs.native_scope == 'n83-preview' }}",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "08a322eb1f49018f6e2d67cf7c3cc704f4bf0ad0dcf03821c0b6d0f59af02bb2",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 23,
-              "name": "Seal failed N83 Rust3 source controls without any owner or Native attempt",
-              "guard": "${{ always() && inputs.native_scope == 'n83-preview' && steps.n83_source_controls.outcome == 'success' && steps.n83_rust_controls.outcome == 'failure' }}",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "afd649b1cbaafa8c4c4498502a54d4ab13bc2605d62d27f2fe690e0086a3dae3",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 24,
-              "name": "Verify direct-vs-mediated parity invariants before native rendering",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "503420ac5f7ab61f3b9b47051f3ac4ddc2849bfcbf8865ee3d118c63742816cd",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 25,
-              "name": "Reject synthetic or incorrectly interpolated cubic ROI evidence",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "74db043f8c8b58886893a9a39bdec1b03867a2c1cf7ad7ce02c9fbbf85167090",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 26,
-              "name": "Reject invented render stage timing claims",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "bb8b4af18819c89de4283c0156fa61ba6c27da6e62a101be525487a63e3fdfc6",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 27,
-              "name": "Verify bounded provider lifecycle diagnostics",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "a4a11ac418cd794e7eb31b7569e62995e1d66db0cf14693c889226a096a8d16f",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 28,
-              "name": "Reject fabricated independent-run reliability evidence",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "aeb705935633e2efc0bc49ea3c83dfe2d785e57726ae0607bce1c0d8ba4a3e70",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 29,
-              "name": "Render application-owned revision through real Broker and Driver Host",
-              "guard": null,
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "cf4210e4fbae29fcf79e1e0d77f5d5ca11cb19137d68b5903f27e201cbd1c59d",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 30,
-              "name": "Verify review evidence",
-              "guard": "${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' }}",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "4f630f89d39a2b8cc213182451b678ec51193bb98cb0ab3a6c800d0dc4c5033a",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 31,
-              "name": "Repeat native render with a fresh owner Broker and Driver Host (v0.1 diagnostic only)",
-              "guard": "${{ inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' && ((github.event_name == 'workflow_dispatch' && inputs.v01_provider_repeat) || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat/v01-provider-repeat-ci'))) }}",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "49cad0f6932f3ecf85af939a0bc34b7987dcae59c651f6a6081f517e0bbcf7f5",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 32,
-              "name": "Stage only verified v0.1 native PNG review, not original Broker receipts",
-              "guard": "${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' }}",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "6366ae33976a3b491adccc7ec74a567eec695a8bbe590a03296dd3c3a999818c",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 33,
-              "name": null,
-              "guard": "${{ always() && inputs.native_scope != 'n83-preview' && inputs.native_scope != 'editable-source-cycle' }}",
-              "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "14a5df7b40418effb56a87c5b88a77d89df29a97102c2355b896df875f31fb31",
-              "api_binding": "REQUIRES_ORIGINAL_RUN_MAPPING"
-            },
-            {
-              "ordinal": 34,
-              "name": "Verify complete sealed N83 fixture outcome",
-              "guard": "${{ inputs.native_scope == 'n83-preview' }}",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "bc017898efc6423a533f8cab4aac43b851948647fa5a1ca37c82209b621d7b2e",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 35,
-              "name": "Publish only sealed N83 originals and closed manifest",
-              "guard": "${{ always() && inputs.native_scope == 'n83-preview' }}",
-              "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "087c7921f19d263ec29de22aa2b45d66f8a6536f734e45cd17eabe49612c55a5",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 36,
-              "name": "Preserve editable-source preflight failure without starting an owner",
-              "guard": "${{ always() && inputs.native_scope == 'editable-source-cycle' && !hashFiles('verification/native-editable-public/sealed-originals.bin') }}",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "e3bcc2e77fea74ed307a345f70cc7909c95a5439688a3a70967ad6eab9ec4ac4",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 37,
-              "name": "Verify sealed editable native source cycle",
-              "guard": "${{ inputs.native_scope == 'editable-source-cycle' }}",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "988473c396de3ca6c7f3945c90f4ac3724b08c27323cd905bb64d210a66e1d8f",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 38,
-              "name": "Publish only sealed editable-source originals and closed manifest",
-              "guard": "${{ always() && inputs.native_scope == 'editable-source-cycle' }}",
-              "kind": "ARTIFACT_RETENTION",
-              "source_block_sha256": "910cdb940012fb0af438df572dac769a29cc33b0edb7ccc17780281feae3847c",
+              "source_block_sha256": "e3d6ff90622b8d22946b3984bc6f52f2965d8079f4e08d51b4258a808fbe41c6",
               "api_binding": "EXPLICIT_NAME"
             }
-          ]
+          ],
+          "instance_sets": {
+            "clipped-opacity-source": [
+              {}
+            ],
+            "waypoint-studio-source": [
+              {}
+            ]
+          }
         }
       },
       "cases": [
@@ -8504,6 +8935,13 @@
           "id": "independent-repeat",
           "inputs": {
             "native_scope": "standard",
+            "geometry_e2e": false,
+            "geometry_profile": "out-cubic",
+            "layer_order_e2e": false,
+            "clip_e2e": false,
+            "clip_composition": "static",
+            "clipped_opacity_source_only": false,
+            "waypoint_studio_only": false,
             "expected_source_sha": "",
             "recovery_recipient": "",
             "v01_provider_repeat": true
@@ -8517,25 +8955,25 @@
               "name_binding": "literal_definition",
               "required_steps": [
                 2,
-                7,
-                9,
+                8,
                 10,
                 11,
-                15,
+                12,
                 16,
                 17,
-                18,
-                20,
-                24,
+                22,
+                23,
                 25,
-                26,
-                27,
-                28,
                 29,
                 30,
                 31,
                 32,
-                33
+                33,
+                34,
+                39,
+                40,
+                41,
+                42
               ]
             }
           ],
@@ -8547,6 +8985,13 @@
           "id": "n83-preview",
           "inputs": {
             "native_scope": "n83-preview",
+            "geometry_e2e": false,
+            "geometry_profile": "out-cubic",
+            "layer_order_e2e": false,
+            "clip_e2e": false,
+            "clip_composition": "static",
+            "clipped_opacity_source_only": false,
+            "waypoint_studio_only": false,
             "expected_source_sha": {
               "binding": "CANDIDATE_SOURCE_SHA"
             },
@@ -8565,25 +9010,25 @@
               "required_steps": [
                 2,
                 3,
-                5,
-                7,
-                9,
+                6,
+                8,
                 10,
                 11,
-                15,
+                12,
                 16,
                 17,
-                18,
-                19,
                 22,
+                23,
                 24,
-                25,
-                26,
                 27,
-                28,
                 29,
+                30,
+                31,
+                32,
+                33,
                 34,
-                35
+                43,
+                44
               ]
             }
           ],
@@ -8595,6 +9040,51 @@
           "id": "n83-preflight-failure",
           "inputs": {
             "native_scope": "n83-preview",
+            "geometry_e2e": false,
+            "geometry_profile": "out-cubic",
+            "layer_order_e2e": false,
+            "clip_e2e": false,
+            "clip_composition": "static",
+            "clipped_opacity_source_only": false,
+            "waypoint_studio_only": false,
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "recovery_recipient": {
+              "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
+            },
+            "v01_provider_repeat": false
+          },
+          "kind": "CONDITIONAL_ALTERNATIVE",
+          "required_job_instances": [
+            {
+              "job_id": "real-native-render",
+              "display_name": "real-native-render",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                2,
+                3,
+                7,
+                44
+              ]
+            }
+          ],
+          "coverage_basis": "The preserved early Python75 failure alternative belongs to the same first N83 attempt when n83_source_controls step5 has outcome failure. Successful admission/setup2,3 precede rescue6 and sealed upload35. The failed anchor5, SDK/bootstrap/Rust3, Native29 and positive outcome34 are not positive requirements. The rescue refuses existing owner/native/public evidence and emits NOT_VERIFIED. This is conditional diagnostic retention, never a provoked failure, another dispatch or a substitute for the N83 success case.",
+          "original_attempt": 1,
+          "blocking_reason": null
+        },
+        {
+          "id": "n83-rust-controls-failure",
+          "inputs": {
+            "native_scope": "n83-preview",
+            "geometry_e2e": false,
+            "geometry_profile": "out-cubic",
+            "layer_order_e2e": false,
+            "clip_e2e": false,
+            "clip_composition": "static",
+            "clipped_opacity_source_only": false,
+            "waypoint_studio_only": false,
             "expected_source_sha": {
               "binding": "CANDIDATE_SOURCE_SHA"
             },
@@ -8614,48 +9104,17 @@
                 2,
                 3,
                 6,
-                35
-              ]
-            }
-          ],
-          "coverage_basis": "The preserved early Python75 failure alternative belongs to the same first N83 attempt when n83_source_controls step5 has outcome failure. Successful admission/setup2,3 precede rescue6 and sealed upload35. The failed anchor5, SDK/bootstrap/Rust3, Native29 and positive outcome34 are not positive requirements. The rescue refuses existing owner/native/public evidence and emits NOT_VERIFIED. This is conditional diagnostic retention, never a provoked failure, another dispatch or a substitute for the N83 success case.",
-          "original_attempt": 1,
-          "blocking_reason": null
-        },
-        {
-          "id": "n83-rust-controls-failure",
-          "inputs": {
-            "native_scope": "n83-preview",
-            "expected_source_sha": {
-              "binding": "CANDIDATE_SOURCE_SHA"
-            },
-            "recovery_recipient": {
-              "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
-            },
-            "v01_provider_repeat": false
-          },
-          "kind": "CONDITIONAL_ALTERNATIVE",
-          "required_job_instances": [
-            {
-              "job_id": "real-native-render",
-              "display_name": "real-native-render",
-              "matrix": {},
-              "name_binding": "literal_definition",
-              "required_steps": [
-                2,
-                3,
-                5,
-                7,
-                9,
+                8,
                 10,
                 11,
-                15,
+                12,
                 16,
                 17,
-                18,
-                19,
+                22,
                 23,
-                35
+                24,
+                28,
+                44
               ]
             }
           ],
@@ -8667,6 +9126,13 @@
           "id": "editable-source-cycle",
           "inputs": {
             "native_scope": "editable-source-cycle",
+            "geometry_e2e": false,
+            "geometry_profile": "out-cubic",
+            "layer_order_e2e": false,
+            "clip_e2e": false,
+            "clip_composition": "static",
+            "clipped_opacity_source_only": false,
+            "waypoint_studio_only": false,
             "expected_source_sha": {
               "binding": "CANDIDATE_SOURCE_SHA"
             },
@@ -8685,25 +9151,25 @@
               "required_steps": [
                 2,
                 3,
-                4,
-                7,
-                9,
+                5,
+                8,
                 10,
                 11,
-                15,
+                12,
                 16,
                 17,
-                18,
-                20,
-                21,
-                24,
+                22,
+                23,
                 25,
                 26,
-                27,
-                28,
                 29,
-                37,
-                38
+                30,
+                31,
+                32,
+                33,
+                34,
+                46,
+                47
               ]
             }
           ],
@@ -8715,6 +9181,13 @@
           "id": "editable-source-preflight-failure",
           "inputs": {
             "native_scope": "editable-source-cycle",
+            "geometry_e2e": false,
+            "geometry_profile": "out-cubic",
+            "layer_order_e2e": false,
+            "clip_e2e": false,
+            "clip_composition": "static",
+            "clipped_opacity_source_only": false,
+            "waypoint_studio_only": false,
             "expected_source_sha": {
               "binding": "CANDIDATE_SOURCE_SHA"
             },
@@ -8733,14 +9206,471 @@
               "required_steps": [
                 2,
                 3,
-                36,
-                38
+                45,
+                47
               ]
             }
           ],
           "coverage_basis": "Conditional retention of the same editable-source attempt when no sealed cycle exists after preflight failure. The successful closed admission/private custody setup2,3 precedes seal36 and upload38; the sealer refuses an existing owner, native evidence or public capture and emits NOT_VERIFIED with no selected-original completeness. It observes no Native success and cannot replace the positive cycle, recreate a failed owner capture or authorize another dispatch.",
           "original_attempt": 1,
           "blocking_reason": null
+        },
+        {
+          "id": "standard-single",
+          "inputs": {
+            "native_scope": "standard",
+            "geometry_e2e": false,
+            "geometry_profile": "out-cubic",
+            "layer_order_e2e": false,
+            "clip_e2e": false,
+            "clip_composition": "static",
+            "clipped_opacity_source_only": false,
+            "waypoint_studio_only": false,
+            "expected_source_sha": "",
+            "recovery_recipient": "",
+            "v01_provider_repeat": false
+          },
+          "kind": "CONDITIONAL_ALTERNATIVE",
+          "coverage_basis": "The standard Native path retains the verified review frames from one original operation.",
+          "original_attempt": null,
+          "blocking_reason": null,
+          "required_job_instances": [
+            {
+              "job_id": "real-native-render",
+              "display_name": "real-native-render",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                2,
+                8,
+                10,
+                11,
+                12,
+                16,
+                17,
+                22,
+                23,
+                25,
+                29,
+                30,
+                31,
+                32,
+                33,
+                34,
+                39,
+                41,
+                42
+              ]
+            }
+          ]
+        },
+        {
+          "id": "out-cubic-xy",
+          "inputs": {
+            "native_scope": "out-cubic-xy",
+            "geometry_e2e": false,
+            "geometry_profile": "out-cubic",
+            "layer_order_e2e": false,
+            "clip_e2e": false,
+            "clip_composition": "static",
+            "clipped_opacity_source_only": false,
+            "waypoint_studio_only": false,
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "recovery_recipient": {
+              "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
+            },
+            "v01_provider_repeat": false
+          },
+          "kind": "TECHNICAL_SCOPE",
+          "coverage_basis": "An exact-source single-pair OutCubic XY original is checked before closed custody.",
+          "original_attempt": 1,
+          "blocking_reason": null,
+          "required_job_instances": [
+            {
+              "job_id": "real-native-render",
+              "display_name": "real-native-render",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                2,
+                3,
+                4,
+                8,
+                10,
+                11,
+                12,
+                16,
+                17,
+                22,
+                23,
+                25,
+                29,
+                30,
+                31,
+                32,
+                33,
+                34,
+                49,
+                50
+              ]
+            }
+          ]
+        },
+        {
+          "id": "out-cubic-xy-preflight-failure",
+          "inputs": {
+            "native_scope": "out-cubic-xy",
+            "geometry_e2e": false,
+            "geometry_profile": "out-cubic",
+            "layer_order_e2e": false,
+            "clip_e2e": false,
+            "clip_composition": "static",
+            "clipped_opacity_source_only": false,
+            "waypoint_studio_only": false,
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "recovery_recipient": {
+              "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
+            },
+            "v01_provider_repeat": false
+          },
+          "kind": "CONDITIONAL_ALTERNATIVE",
+          "coverage_basis": "If preparation fails before an owner starts, preserve only the failure originals.",
+          "original_attempt": 1,
+          "blocking_reason": null,
+          "required_job_instances": [
+            {
+              "job_id": "real-native-render",
+              "display_name": "real-native-render",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                2,
+                3,
+                48,
+                50
+              ]
+            }
+          ]
+        },
+        {
+          "id": "geometry-out-cubic",
+          "inputs": {
+            "native_scope": "standard",
+            "geometry_e2e": true,
+            "geometry_profile": "out-cubic",
+            "layer_order_e2e": false,
+            "clip_e2e": false,
+            "clip_composition": "static",
+            "clipped_opacity_source_only": false,
+            "waypoint_studio_only": false,
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "recovery_recipient": "",
+            "v01_provider_repeat": false
+          },
+          "kind": "TECHNICAL_SCOPE",
+          "coverage_basis": "One exact-source geometry operation verifies the covered curve and preserves the original pixel observations.",
+          "original_attempt": 1,
+          "blocking_reason": null,
+          "required_job_instances": [
+            {
+              "job_id": "real-native-render",
+              "display_name": "real-native-render",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                2,
+                8,
+                10,
+                11,
+                12,
+                16,
+                17,
+                18,
+                20,
+                22,
+                23,
+                34,
+                35,
+                36
+              ]
+            }
+          ]
+        },
+        {
+          "id": "geometry-hold",
+          "inputs": {
+            "native_scope": "standard",
+            "geometry_e2e": true,
+            "geometry_profile": "hold",
+            "layer_order_e2e": false,
+            "clip_e2e": false,
+            "clip_composition": "static",
+            "clipped_opacity_source_only": false,
+            "waypoint_studio_only": false,
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "recovery_recipient": "",
+            "v01_provider_repeat": false
+          },
+          "kind": "TECHNICAL_SCOPE",
+          "coverage_basis": "One exact-source Hold operation includes a real Studio preparation and original pixel evidence.",
+          "original_attempt": 1,
+          "blocking_reason": null,
+          "required_job_instances": [
+            {
+              "job_id": "real-native-render",
+              "display_name": "real-native-render",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                2,
+                8,
+                10,
+                11,
+                12,
+                16,
+                17,
+                18,
+                19,
+                20,
+                22,
+                23,
+                34,
+                35,
+                36
+              ]
+            }
+          ]
+        },
+        {
+          "id": "layer-order",
+          "inputs": {
+            "native_scope": "standard",
+            "geometry_e2e": false,
+            "geometry_profile": "out-cubic",
+            "layer_order_e2e": true,
+            "clip_e2e": false,
+            "clip_composition": "static",
+            "clipped_opacity_source_only": false,
+            "waypoint_studio_only": false,
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "recovery_recipient": "",
+            "v01_provider_repeat": false
+          },
+          "kind": "TECHNICAL_SCOPE",
+          "coverage_basis": "One exact-source Studio layer edit, Native pixel verification and same-Store reopen.",
+          "original_attempt": 1,
+          "blocking_reason": null,
+          "required_job_instances": [
+            {
+              "job_id": "real-native-render",
+              "display_name": "real-native-render",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                2,
+                8,
+                10,
+                11,
+                12,
+                16,
+                17,
+                21,
+                22,
+                23,
+                29,
+                30,
+                31,
+                32,
+                33,
+                34,
+                37,
+                38,
+                39
+              ]
+            }
+          ]
+        },
+        {
+          "id": "clip-static",
+          "inputs": {
+            "native_scope": "standard",
+            "geometry_e2e": false,
+            "geometry_profile": "out-cubic",
+            "layer_order_e2e": false,
+            "clip_e2e": true,
+            "clip_composition": "static",
+            "clipped_opacity_source_only": false,
+            "waypoint_studio_only": false,
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "recovery_recipient": "",
+            "v01_provider_repeat": false
+          },
+          "kind": "TECHNICAL_SCOPE",
+          "coverage_basis": "One exact-source Clip Save, native pixel verification and reopening of the same Store.",
+          "original_attempt": 1,
+          "blocking_reason": null,
+          "required_job_instances": [
+            {
+              "job_id": "real-native-render",
+              "display_name": "real-native-render",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                2,
+                8,
+                10,
+                11,
+                12,
+                16,
+                17,
+                21,
+                22,
+                23,
+                29,
+                30,
+                31,
+                32,
+                33,
+                34,
+                37,
+                38,
+                39
+              ]
+            }
+          ]
+        },
+        {
+          "id": "clip-pose",
+          "inputs": {
+            "native_scope": "standard",
+            "geometry_e2e": false,
+            "geometry_profile": "out-cubic",
+            "layer_order_e2e": false,
+            "clip_e2e": true,
+            "clip_composition": "pose",
+            "clipped_opacity_source_only": false,
+            "waypoint_studio_only": false,
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "recovery_recipient": "",
+            "v01_provider_repeat": false
+          },
+          "kind": "TECHNICAL_SCOPE",
+          "coverage_basis": "One exact-source Clip Save, native pixel verification and reopening of the same Store.",
+          "original_attempt": 1,
+          "blocking_reason": null,
+          "required_job_instances": [
+            {
+              "job_id": "real-native-render",
+              "display_name": "real-native-render",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                2,
+                8,
+                10,
+                11,
+                12,
+                16,
+                17,
+                21,
+                22,
+                23,
+                29,
+                30,
+                31,
+                32,
+                33,
+                34,
+                37,
+                38,
+                39
+              ]
+            }
+          ]
+        },
+        {
+          "id": "clipped-opacity-source",
+          "inputs": {
+            "native_scope": "standard",
+            "geometry_e2e": false,
+            "geometry_profile": "out-cubic",
+            "layer_order_e2e": false,
+            "clip_e2e": false,
+            "clip_composition": "static",
+            "clipped_opacity_source_only": true,
+            "waypoint_studio_only": false,
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "recovery_recipient": "",
+            "v01_provider_repeat": false
+          },
+          "kind": "TECHNICAL_SCOPE",
+          "coverage_basis": "Exact-source Clip and evaluated Film checks with a real Studio Save and reopen.",
+          "original_attempt": 1,
+          "blocking_reason": null,
+          "required_job_instances": [
+            {
+              "job_id": "clipped-opacity-source-g1",
+              "display_name": "clipped-opacity-source-g1",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                2,
+                6,
+                7
+              ]
+            }
+          ]
+        },
+        {
+          "id": "waypoint-studio-source",
+          "inputs": {
+            "native_scope": "standard",
+            "geometry_e2e": false,
+            "geometry_profile": "out-cubic",
+            "layer_order_e2e": false,
+            "clip_e2e": false,
+            "clip_composition": "static",
+            "clipped_opacity_source_only": true,
+            "waypoint_studio_only": true,
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "recovery_recipient": "",
+            "v01_provider_repeat": false
+          },
+          "kind": "TECHNICAL_SCOPE",
+          "coverage_basis": "The focused Studio waypoint Save and reopen in the source-only job.",
+          "original_attempt": 1,
+          "blocking_reason": null,
+          "required_job_instances": [
+            {
+              "job_id": "clipped-opacity-source-g1",
+              "display_name": "clipped-opacity-source-g1",
+              "matrix": {},
+              "name_binding": "literal_definition",
+              "required_steps": [
+                2,
+                6,
+                7
+              ]
+            }
+          ]
         }
       ],
       "job_dispositions": [],
@@ -8750,7 +9680,8 @@
         "N83 is a bounded preview fixture, not formal acceptance. Its first-attempt source/lock/recipient admission and selected original custody remain mandatory; no recovery identity is created by this catalog.",
         "The preserved preflight-failure alternative is Python75 conditional retention only; the separate Rust3 failure alternative carries the later half of the former combined failure obligation. Their NOT_VERIFIED seals cannot satisfy N83 success. Rescue steps6 and23 are required only in their exact diagnostic alternatives and never on the success path; failed source-control anchors5 and22 are not positive requirements of their respective failure branches.",
         "The catalogue describes possible success and failure observations of one selected N83 attempt. Its case declarations are not182 executions or a universal release denominator; no runtime reader, dispatch authority or automatic retry is added.",
-        "Editable-source-cycle has a distinct positive cycle and a same-attempt preflight-only NOT_VERIFIED retention branch. No source, diagnostic or encrypted artifact alone establishes physical/G2 or release acceptance; existing applicability review determines selection."
+        "Editable-source-cycle has a distinct positive cycle and a same-attempt preflight-only NOT_VERIFIED retention branch. No source, diagnostic or encrypted artifact alone establishes physical/G2 or release acceptance; existing applicability review determines selection.",
+        "A source-only selection never requires a Native job. Render, diagnostic and artifact readback remain separate obligations, and plan output grants no execution authority."
       ]
     },
     {

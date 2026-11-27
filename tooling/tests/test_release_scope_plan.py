@@ -1387,6 +1387,33 @@ class N83ConditionalFailureTests(unittest.TestCase):
         self.assertTrue(anchors <= set(n83["required_job_instances"][0]["required_steps"]))
         self.assertFalse(anchors & set(standard["required_job_instances"][0]["required_steps"]))
 
+    def test_source_only_job_cannot_be_made_eligible_for_n83_by_rebinding(self):
+        job_id = "clipped-opacity-source-g1"
+        _, jobs = scope._source_outline(self.raw.decode("utf-8"))
+        old = jobs[job_id]["guard"]
+        new = "${{ always() }}"
+        raw = self.raw.replace(old.encode("utf-8"), new.encode("utf-8"), 1)
+        self.assertNotEqual(raw, self.raw)
+        entry = self._rebind(raw)
+        _, changed_jobs = scope._source_outline(raw.decode("utf-8"))
+        entry["jobs"][job_id]["guard"] = new
+        entry["jobs"][job_id]["source_sha256"] = scope.digest(
+            changed_jobs[job_id]["raw"].encode("utf-8"))
+        with self.assertRaisesRegex(scope.ScopeError, "conditional_diagnostic_companion_source"):
+            self._review(raw, entry)
+
+    def test_each_current_source_only_mode_excludes_the_native_job(self):
+        self._review()
+        for case_id, waypoint in (("clipped-opacity-source", False), ("waypoint-studio-source", True)):
+            with self.subTest(case=case_id):
+                case = self._case(case_id)
+                self.assertIs(case["inputs"]["clipped_opacity_source_only"], True)
+                self.assertIs(case["inputs"]["waypoint_studio_only"], waypoint)
+                self.assertEqual(case["original_attempt"], 1)
+                job, = case["required_job_instances"]
+                self.assertEqual(job["job_id"], "clipped-opacity-source-g1")
+                self.assertEqual(job["required_steps"], [2, 6, 7])
+
     def test_reviewed_n83_definition_does_not_admit_execution(self):
         catalog = {"schema": scope.REVIEWED_CATALOG_SCHEMA, "workflows": [],
                    "reviewed_scopes": [self.entry], "limitations": ["No runtime evidence."]}
@@ -1416,7 +1443,8 @@ class N83ConditionalFailureTests(unittest.TestCase):
 
     def test_selected_n83_case_inputs_and_attempt_cannot_be_substituted(self):
         for key, value in [("v01_provider_repeat", True), ("expected_source_sha", ""),
-                           ("recovery_recipient", "")]:
+                           ("recovery_recipient", ""), ("geometry_e2e", True),
+                           ("clip_e2e", True), ("clipped_opacity_source_only", True)]:
             with self.subTest(input=key):
                 entry = copy.deepcopy(self.entry)
                 self._case("n83-preview", entry)["inputs"][key] = value
@@ -1492,23 +1520,23 @@ class N83FailureBranchTests(unittest.TestCase):
     _rebind = N83ConditionalFailureTests._rebind
     _changed_step = N83ConditionalFailureTests._changed_step
 
-    def test_a1_preflight_failure_id_is_retained_for_early_python(self):
+    def test_preflight_failure_id_is_retained_for_early_python(self):
         self._review()
         case = self._case("n83-preflight-failure")
         self.assertEqual(case["kind"], "CONDITIONAL_ALTERNATIVE")
-        self.assertEqual(case["required_job_instances"][0]["required_steps"], [2, 3, 6, 35])
-        self.assertNotIn(5, case["required_job_instances"][0]["required_steps"])
-        self.assertNotIn(29, case["required_job_instances"][0]["required_steps"])
+        self.assertEqual(case["required_job_instances"][0]["required_steps"], [2, 3, 7, 44])
+        self.assertNotIn(6, case["required_job_instances"][0]["required_steps"])
+        self.assertNotIn(34, case["required_job_instances"][0]["required_steps"])
 
     def test_rust_failure_requires_python_success_without_failed_rust_or_native(self):
         self._review()
         case = self._case("n83-rust-controls-failure")
         required = case["required_job_instances"][0]["required_steps"]
-        self.assertEqual(required, [2, 3, 5, 7, 9, 10, 11, 15, 16, 17, 18, 19, 23, 35])
-        self.assertIn(5, required)
-        self.assertNotIn(22, required)
-        self.assertNotIn(29, required)
+        self.assertEqual(required, [2, 3, 6, 8, 10, 11, 12, 16, 17, 22, 23, 24, 28, 44])
+        self.assertIn(6, required)
+        self.assertNotIn(27, required)
         self.assertNotIn(34, required)
+        self.assertNotIn(43, required)
 
     def test_three_n83_branches_share_one_attempt_without_dispatch_authority(self):
         success = self._case("n83-preview")
@@ -1551,8 +1579,8 @@ class N83FailureBranchTests(unittest.TestCase):
                         scope.review_scope_definition(self.raw, entry)
 
     def test_failure_cannot_require_its_failed_anchor_or_native_success(self):
-        for name, failed in (("n83-preflight-failure", 5), ("n83-rust-controls-failure", 22)):
-            for forbidden in (failed, 29, 34):
+        for name, failed in (("n83-preflight-failure", 6), ("n83-rust-controls-failure", 27)):
+            for forbidden in (failed, 34, 43):
                 with self.subTest(case=name, step=forbidden):
                     entry = copy.deepcopy(self.entry)
                     self._case(name, entry)["required_job_instances"][0]["required_steps"].append(forbidden)
@@ -1560,8 +1588,8 @@ class N83FailureBranchTests(unittest.TestCase):
                         self._review(entry=entry)
 
     def test_failure_cannot_omit_successful_setup_or_sealed_upload(self):
-        for name, selected in (("n83-preflight-failure", (2, 3, 35)),
-                               ("n83-rust-controls-failure", (2, 3, 5, 19, 35))):
+        for name, selected in (("n83-preflight-failure", (2, 3, 44)),
+                               ("n83-rust-controls-failure", (2, 3, 6, 24, 44))):
             for missing in selected:
                 with self.subTest(case=name, step=missing):
                     entry = copy.deepcopy(self.entry)
@@ -1570,8 +1598,8 @@ class N83FailureBranchTests(unittest.TestCase):
                         self._review(entry=entry)
 
     def test_failure_branch_cannot_claim_the_other_rescue(self):
-        for name, old, wrong in (("n83-preflight-failure", 6, 23),
-                                  ("n83-rust-controls-failure", 23, 6)):
+        for name, old, wrong in (("n83-preflight-failure", 7, 28),
+                                  ("n83-rust-controls-failure", 28, 7)):
             with self.subTest(case=name):
                 entry = copy.deepcopy(self.entry)
                 required = self._case(name, entry)["required_job_instances"][0]["required_steps"]
