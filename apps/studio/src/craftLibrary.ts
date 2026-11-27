@@ -5,7 +5,9 @@ import { defaultProceduralConfig, defaultProceduralInfluence, defaultProceduralP
 
 export const CRAFT_FAMILIES=["typography","product","layout","transition","camera","data","procedural","sound"] as const;
 export type CraftFamily=typeof CRAFT_FAMILIES[number];
-export type CraftRoute="component"|"stage"|"procedural"|"patch"|"boundary"|"camera"|"data"|"canvas"|"graph"|"source_board"|"sources";
+export type CraftRoute="component"|"stage"|"procedural"|"patch"|"boundary"|"camera"|"data"|"canvas"|"graph"|"source_board"|"sources"|"audio";
+export type CraftSoundPreset="focus-hit"|"transition-tail";
+export type CraftAudioTarget="transcript"|"music-source"|"silence-release"|CraftSoundPreset;
 export type CraftExample=
   | {kind:"hero";config:HeroConfig}
   | {kind:"stage";config:ProductStageConfig}
@@ -39,7 +41,7 @@ export const CRAFT_LIBRARY:readonly CraftDefinition[]=[
   entry("typography","hero-focus","Headline focus","editable_candidate","Grouped entrance, one dominant typographic idea.",heroLimits,"component",hero("typography_focus","A clear idea","Keep the source visible.")),
   entry("typography","contrast-pair","Typographic contrast","editable_candidate","Primary and supporting ideas enter with different hierarchy.",heroLimits,"component",hero("typography_contrast","One clear idea","Context makes the difference.")),
   entry("typography","measured-number","Measured number","bounded_partial","Bind exact fixed-point counters and labels to a saved measured table.","Requires an imported source, units, precision and original node. No synthetic measurement preview.","data"),
-  entry("typography","caption-emphasis","Caption emphasis","bounded_partial","Saved word emphasis already uses transcript and native caption cues.","Requires measured voice, aligned transcript and supported caption output. Not a standalone generator."),
+  entry("typography","caption-emphasis","Caption emphasis","bounded_partial","Saved word emphasis already uses transcript and native caption cues.","Requires measured voice, aligned transcript and supported caption output. Not a standalone generator.","audio"),
   entry("typography","context-label","Context label","editable_candidate","Create an editable label tied to an original translating object.","Canvas Follow supports bounded exact translation, not arbitrary parent transforms.","canvas"),
   entry("product","hero-reveal","Product hero reveal","editable_candidate","Editable opening composition for authored product benefits.",heroLimits,"component",hero("product_hero_reveal","Make the work.\nKeep the craft.","A composition you can direct and revise.")),
   entry("product","screen-focus","Screen focus","bounded_partial","An original semantic screen and animated focus marker.",stageLimits,"stage",stage("browser",true)),
@@ -68,10 +70,10 @@ export const CRAFT_LIBRARY:readonly CraftDefinition[]=[
   entry("procedural","path-distribution","Path distribution","editable_candidate","Equal-distance placement on an authored polyline.",fieldLimits,"procedural",field({distribution:"path",count:17,shape:"circle",path:defaultProceduralPath()})),
   entry("procedural","grid-response","Responsive grid","editable_candidate","Replan columns from count and physical output without shrinking source items.",fieldLimits,"procedural",field({distribution:"adaptive_grid",count:24,shape:"circle",size:38})),
   entry("procedural","seeded-texture","Seeded texture","bounded_partial","Original seeded scatter of individual editable shapes.","No raster texture/shader synthesis or unbounded density.","procedural",field({distribution:"scatter",seed:127,count:48,size:18,shape:"circle"})),
-  entry("sound","focus-hit","Focus hit","bounded_partial","Existing semantic sound cue authoring and source-bound PCM mixing.","Needs approved cue, selected voice/output clock and real mix; no sample audio invented."),
-  entry("sound","transition-tail","Transition tail","bounded_partial","Original cue and envelope timing against the saved output clock.","No arbitrary transition-linked audio generator or invented native playback."),
-  entry("sound","energy-bed","Energy bed","bounded_partial","Original music source, reviewed cut and voice-aware mix.","Requires authorized music bytes and a valid saved mix recipe."),
-  entry("sound","silence-release","Silence release","bounded_partial","Fade the three verified original buses into an exact silent tail without extending the cut.","Open Audio, then Original mix. Requires an exact 48-kHz saved cut, original sources and reviewed narration before the fade. PCM silence is not encoded-output or listening acceptance."),
+  entry("sound","focus-hit","Focus hit","bounded_partial","Existing semantic sound cue authoring and source-bound PCM mixing.","Needs approved cue, selected voice/output clock and real mix; no sample audio invented.","audio"),
+  entry("sound","transition-tail","Transition tail","bounded_partial","Original cue and envelope timing against the saved output clock.","No arbitrary transition-linked audio generator or invented native playback.","audio"),
+  entry("sound","energy-bed","Energy bed","bounded_partial","Original music source, reviewed cut and voice-aware mix.","Requires authorized music bytes and a valid saved mix recipe.","audio"),
+  entry("sound","silence-release","Silence release","bounded_partial","Fade the three verified original buses into an exact silent tail without extending the cut.","Open Audio, then Original mix. Requires an exact 48-kHz saved cut, original sources and reviewed narration before the fade. PCM silence is not encoded-output or listening acceptance.","audio"),
 ];
 const previewId="00000000-0000-4000-8000-000000000031";
 export const craftDefinition=(id:string)=>CRAFT_LIBRARY.find(item=>item.id===id);
@@ -105,6 +107,17 @@ export function craftSourceBoardMode(definition:CraftDefinition|null|undefined):
   if(definition.id==="motionwright.layout.reference-board")return "reference_board";
   if(definition.id==="motionwright.product.flow-bridge")return "product_flow_bridge";
   return undefined;
+}
+
+export function craftAudioTarget(definition:CraftDefinition):CraftAudioTarget|undefined{
+  if(definition.route!=="audio")return undefined;
+  switch(definition.id){
+    case "motionwright.type.caption-emphasis": return "transcript";
+    case "motionwright.sound.focus-hit": return "focus-hit";
+    case "motionwright.sound.transition-tail": return "transition-tail";
+    case "motionwright.sound.energy-bed": return "music-source";
+    case "motionwright.sound.silence-release": return "silence-release";
+  }
 }
 
 /** Library navigation chooses the typed editor, never a new admission path. */

@@ -245,7 +245,7 @@ impl LocalHybridOwner {
 
     pub(super) fn require_unused_snapshots(&self, namespace: &str) -> NativeResult<()> {
         self.output.recheck()?;
-        for ordinal in [0, 2] {
+        for ordinal in 0..3 {
             for suffix in [
                 "semwright-motion.original.json",
                 "semwright-motion-custody.original.json",

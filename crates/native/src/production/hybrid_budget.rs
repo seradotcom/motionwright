@@ -1,4 +1,4 @@
-//! A producer-owned root for the admitted MC / static Manim / MC route.
+//! A producer-owned root for a cut with Motion Canvas and static Manim.
 //!
 //! This is accounting, not a Host grant. All calls still pass the original
 //! permission, revision, receipt custody and UNKNOWN fences. A caller receives
@@ -6,7 +6,7 @@
 use super::*;
 use motionwright_domain::{Project, RendererKind};
 use semwright_video_domain::native_observation;
-use std::{collections::BTreeMap, io::Write, sync::Arc};
+use std::{collections::BTreeMap, io::Write, ops::Range, sync::Arc};
 
 const MEDIA_MAX_BYTES: u64 = 256_000_000;
 const MASTER_MAX_BYTES: u64 = 32 * 1024 * 1024;
@@ -404,7 +404,7 @@ impl HybridCiProjectGrant {
     }
 
     fn require_unused_snapshots(&self, namespace: &str) -> NativeResult<()> {
-        for ordinal in [0, 2] {
+        for ordinal in 0..3 {
             for suffix in [
                 "semwright-motion.original.json",
                 "semwright-motion-custody.original.json",
@@ -530,7 +530,7 @@ fn write_hybrid_source_original(
     ))
 }
 
-/// Retained outputs of the actual two MC jobs and actual static Manim job.
+/// Retained outputs of the admitted MC and static Manim jobs.
 /// It cannot be reconstructed from JSON or rebound to another coordinator.
 pub struct HybridNativeSources {
     pub(super) project: Project,
@@ -551,6 +551,22 @@ pub struct HybridNativeSources {
 impl HybridNativeSources {
     pub fn evidence(&self) -> &Value {
         &self.evidence
+    }
+
+    pub(super) fn segment_ranges(&self) -> &[Range<u64>] {
+        &self.scope.plan.segment_ranges
+    }
+
+    pub(super) fn manim_ordinal(&self) -> usize {
+        self.scope.plan.manim_ordinal
+    }
+
+    pub(super) fn frame_count(&self) -> u64 {
+        self.scope.plan.total_frames
+    }
+
+    pub(super) fn original_audio_bytes(&self) -> u64 {
+        self.scope.plan.source_audio_bytes
     }
 
     /// Selector of the original PCM already staged after the first charged
@@ -611,6 +627,8 @@ struct HybridBudgetPlan {
     manim_plan_sha256: String,
     manim_profile: Value,
     manim_frames: u64,
+    manim_ordinal: usize,
+    segment_ranges: Vec<Range<u64>>,
     total_frames: u64,
     width: u32,
     height: u32,
@@ -690,6 +708,35 @@ fn exact_frames(num: i64, den: i64, rate: Rate) -> NativeResult<u64> {
     u64::try_from(numerator / denominator)
         .map_err(|_| invalid("Hybrid native clock overflows its frame bound"))
 }
+/// Return the exact whole-frame spans of the saved full cut for production
+/// and cold original-media recovery.
+pub(super) fn authored_hybrid_ranges(
+    project: &Project,
+    rate: Rate,
+) -> NativeResult<Vec<Range<u64>>> {
+    supported(
+        (2..=3).contains(&project.scenes.len()),
+        "The admitted hybrid clock requires two or three contributions",
+    )?;
+    let mut ranges = Vec::with_capacity(project.scenes.len());
+    let mut cursor = 0;
+    for scene in &project.scenes {
+        let start = exact_frames(scene.start.num, scene.start.den, rate)?;
+        let frames = exact_frames(scene.duration.num, scene.duration.den, rate)?;
+        supported(
+            start == cursor && frames > 0,
+            "The admitted hybrid cut requires contiguous nonempty contributions",
+        )?;
+        cursor = bounded_add(cursor, frames)?;
+        ranges.push(start..cursor);
+    }
+    supported(
+        (30..=180).contains(&cursor),
+        "The admitted hybrid cut contains 30 to 180 canonical frames",
+    )?;
+    Ok(ranges)
+}
+
 fn operation_key(project: &Project, deliverable_id: Uuid) -> String {
     // Deliberately the SAME key as the pre-existing MC root. A new label,
     // renderer route, coordinator or process cannot buy replacement credit.
@@ -1016,13 +1063,23 @@ impl HybridBudgetPlan {
             project.production_design.scene_boundaries.is_empty(),
             "The mixed native route has no typed lowering for declared SceneBoundaries",
         )?;
-        supported(
-            project.scenes.len() == 3
-                && project.scenes[0].renderer == RendererKind::MotionCanvas
-                && project.scenes[1].renderer == RendererKind::ManimCommunity
-                && project.scenes[2].renderer == RendererKind::MotionCanvas,
-            "The admitted hybrid route requires exactly MC / static Manim / MC",
-        )?;
+        use RendererKind::{ManimCommunity, MotionCanvas};
+        let layout: Vec<_> = project
+            .scenes
+            .iter()
+            .take(4)
+            .map(|scene| &scene.renderer)
+            .collect();
+        let manim_ordinal = match layout.as_slice() {
+            [ManimCommunity, MotionCanvas] => 0,
+            [MotionCanvas, ManimCommunity] | [MotionCanvas, ManimCommunity, MotionCanvas] => 1,
+            _ => {
+                return Err(Error::new(
+                    ErrorCode::Unsupported,
+                    "The admitted hybrid route requires one static Manim scene and one Motion Canvas scene on either or both sides",
+                ));
+            }
+        };
         let profile = project
             .deliverables
             .iter()
@@ -1059,25 +1116,11 @@ impl HybridBudgetPlan {
             "The hybrid native route cannot discard authored mixing, voice-cut conform or captions",
         )?;
 
-        let mut counts = Vec::with_capacity(project.scenes.len());
-        let mut cursor = 0;
-        for scene in &project.scenes {
-            let start = exact_frames(scene.start.num, scene.start.den, options.frame_rate)?;
-            let frames = exact_frames(scene.duration.num, scene.duration.den, options.frame_rate)?;
-            supported(
-                start == cursor && frames == 60,
-                "The admitted hybrid cut requires contiguous sixty-frame contributions",
-            )?;
-            cursor = bounded_add(cursor, frames)?;
-            counts.push(frames);
-        }
-        // This guard describes the currently implemented finite route. Costs
-        // below use the actual canonical clocks, never a caller's limits or a
-        // global replacement for the general MC or Manim producers.
-        supported(
-            cursor == 180,
-            "The admitted hybrid cut contains 180 canonical frames",
-        )?;
+        let segment_ranges = authored_hybrid_ranges(&project, options.frame_rate)?;
+        let cursor = segment_ranges
+            .last()
+            .ok_or_else(|| invalid("Hybrid saved cut is empty"))?
+            .end;
 
         let segments = plan_motion_canvas_segments(&project, deliverable_id, options)?;
         supported(
@@ -1087,23 +1130,24 @@ impl HybridBudgetPlan {
             "Experimental hybrid root has no Film v2 blend admission",
         )?;
         supported(
-            segments.len() == 2,
-            "Hybrid MC source partition is not exactly two runs",
+            segments.len() + 1 == segment_ranges.len(),
+            "Hybrid MC source partition differs from the saved renderer order",
         )?;
         let mut motion = Vec::with_capacity(segments.len());
         let mut motion_frames = 0;
         let mut frame_reservation = MOTION_ROOT_FRAME_RESERVE_MIN_BYTES;
-        for (index, segment) in segments.iter().enumerate() {
-            let ordinal = index * 2;
+        let motion_ordinals = (0..segment_ranges.len()).filter(|&index| index != manim_ordinal);
+        for (ordinal, segment) in motion_ordinals.zip(&segments) {
             let scene = &project.scenes[ordinal];
+            let range = &segment_ranges[ordinal];
             require(
                 segment.scene_ids == [scene.id]
-                    && segment.frame_count == counts[ordinal]
+                    && segment.frame_count == range.end - range.start
                     && exact_frames(
                         segment.global_start.num,
                         segment.global_start.den,
                         options.frame_rate,
-                    )? == exact_frames(scene.start.num, scene.start.den, options.frame_rate)?
+                    )? == range.start
                     && segment.film.output.width == profile.width
                     && segment.film.output.height == profile.height,
                 "Hybrid MC plan differs from the canonical contribution",
@@ -1122,7 +1166,7 @@ impl HybridBudgetPlan {
                 output_ordinal: ordinal,
             });
         }
-        let manim_scene_id = project.scenes[1].id;
+        let manim_scene_id = project.scenes[manim_ordinal].id;
         manim_graph::require_non_graph_saved_selection(
             &coordinator.service,
             project_id,
@@ -1140,11 +1184,11 @@ impl HybridBudgetPlan {
             deliverable_id,
         )?;
         let manim_frames = u64::from(source.plan.clock.frame_count);
+        let manim_range = &segment_ranges[manim_ordinal];
         require(
-            manim_frames == counts[1]
-                && source.plan.clock.project_start_frame == counts[0]
-                && source.plan.clock.project_end_frame_exclusive
-                    == bounded_add(counts[0], counts[1])?
+            manim_frames == manim_range.end - manim_range.start
+                && source.plan.clock.project_start_frame == manim_range.start
+                && source.plan.clock.project_end_frame_exclusive == manim_range.end
                 && source.plan.clock.local_start_frame == 0
                 && source.plan.render_profile.width == profile.width
                 && source.plan.render_profile.height == profile.height
@@ -1210,16 +1254,23 @@ impl HybridBudgetPlan {
                 &json!({"project_sha256":project_sha256,"deliverable_id":deliverable_id})
             )?
         );
+        let mut contributions = Vec::with_capacity(segment_ranges.len());
+        let mut mc = motion.iter();
+        for (ordinal, range) in segment_ranges.iter().enumerate() {
+            if ordinal == manim_ordinal {
+                contributions.push(json!({"renderer":"manim_static","scene_ids":[manim_scene_id],
+                    "plan_sha256":source.closure.plan_sha256,"output_start_frame":range.start,"frame_count":manim_frames}));
+            } else {
+                let segment = mc
+                    .next()
+                    .ok_or_else(|| invalid("Hybrid MC contribution is absent"))?;
+                contributions.push(json!({"renderer":"motion_canvas","scene_ids":segment.scene_ids,
+                    "segment_id":segment.segment_id,"output_start_frame":range.start,"frame_count":segment.frames}));
+            }
+        }
         let source_plan = json!({"schema":"motionwright.native.hybrid-source-plan/1",
-        "project_sha256":project_sha256,"contributions":[
-            {"renderer":"motion_canvas","scene_ids":motion[0].scene_ids,
-                "segment_id":motion[0].segment_id,"output_start_frame":0,"frame_count":counts[0]},
-            {"renderer":"manim_static","scene_ids":[manim_scene_id],
-                "plan_sha256":source.closure.plan_sha256,"output_start_frame":counts[0],"frame_count":counts[1]},
-            {"renderer":"motion_canvas","scene_ids":motion[1].scene_ids,
-                "segment_id":motion[1].segment_id,"output_start_frame":bounded_add(counts[0],counts[1])?,
-                "frame_count":counts[2]}
-        ]});
+            "project_sha256":project_sha256,"contributions":contributions});
+        let contribution_count = segment_ranges.len() as u64;
         let segment_count =
             u64::try_from(motion.len()).map_err(|_| invalid("Hybrid MC count overflows"))?;
         let mc_polls = bounded_add(
@@ -1234,13 +1285,13 @@ impl HybridBudgetPlan {
         // lookup/duration + plan/start/result + bounded status + one mux.
         let mlt_calls = bounded_add(
             segment_count,
-            bounded_add(bounded_mul(counts.len() as u64, 4)?, 3 + 2 + 3 + 330 + 1)?,
+            bounded_add(bounded_mul(contribution_count, 4)?, 3 + 2 + 3 + 330 + 1)?,
         )?;
         let attempts = bounded_add(
             bounded_add(bounded_mul(segment_count, mc_polls)?, manim_polls)?,
             mlt_calls,
         )?;
-        // Actual native frame passes: MC, Manim, two MC encodes, one semantic
+        // Actual native frame passes: MC, Manim, MC encodes, one semantic
         // timeline, one mux. Manim is never charged as a fictitious MC encode.
         let render_frames = bounded_add(
             bounded_add(motion_frames, manim_frames)?,
@@ -1278,12 +1329,12 @@ impl HybridBudgetPlan {
         }
         let mlt_output = [
             encode_output,
-            bounded_mul(counts.len() as u64, mlt_import_output_bytes()?)?,
+            bounded_mul(contribution_count, mlt_import_output_bytes()?)?,
             mlt_timeline_output_bytes(
                 profile.width,
                 profile.height,
                 cursor,
-                counts.len() as u64,
+                contribution_count,
                 &format!("{namespace}-visual.mkv"),
             )?,
             mlt_mux_output_bytes(
@@ -1336,6 +1387,8 @@ impl HybridBudgetPlan {
             manim_plan_sha256: source.closure.plan_sha256,
             manim_profile,
             manim_frames,
+            manim_ordinal,
+            segment_ranges,
             total_frames: cursor,
             width,
             height,
@@ -1453,7 +1506,7 @@ impl HybridRootBudgetScope {
         require(
             matches!(&self.phase, HybridPhase::Sources)
                 && planned.segment_id == segment.id
-                && planned.output_ordinal == index * 2
+                && planned.scene_ids == segment.scene_ids
                 && request == format!("{}-mc:motion:{index}:apply", self.plan.request_prefix)
                 && is_sha256(fingerprint)
                 && applied.get("replayed").and_then(Value::as_bool) == Some(false),

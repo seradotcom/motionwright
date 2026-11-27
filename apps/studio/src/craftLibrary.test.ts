@@ -43,6 +43,14 @@ describe("first-party craft definitions",()=>{
     }
     expect(CRAFT_LIBRARY.filter(item=>item.coverage==="spec_only")).toEqual([]);
   });
+  it("opens source editors for every caption and sound craft entry",()=>{
+    for(const id of ["type.caption-emphasis","sound.focus-hit","sound.transition-tail","sound.energy-bed","sound.silence-release"]){
+      const definition=craftDefinition("motionwright."+id)!;
+      expect(definition.route,id).toBe("audio");
+      expect(definition.status).toBe("DRAFT");
+      expect(definition.example).toBeUndefined();
+    }
+  });
   it("routes both typed Graph definitions to their real source editor without claiming admission",()=>{
     for(const [id,kind] of [["motionwright.data.causal-diagram","causal_diagram"],["motionwright.data.system-flow","system_flow"]] as const){
       const definition=craftDefinition(id)!;

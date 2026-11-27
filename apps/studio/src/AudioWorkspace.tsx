@@ -17,6 +17,7 @@ import SemanticSfxWorkbench from "./SemanticSfxWorkbench";
 import NarrationTakeReview from "./NarrationTakeReview";
 import VoiceTakeAudition from "./VoiceTakeAudition";
 import type { AudioReviewActions } from "./audioReviewClock";
+import type { CraftAudioTarget } from "./craftLibrary";
 import NativeOriginalMixReview from "./NativeOriginalMixReview";
 import type {
   AudioCue,
@@ -328,7 +329,7 @@ function MixEditor({ project, commit }: { project: Project; commit: Commit }) {
   </section>;
 }
 
-type AudioWorkspaceProps = { audioReview?: AudioReviewActions; project: Project; commit: Commit; commitRequired: Commit; commitRecipe: (change: Change) => Promise<Project>; desktopMode: boolean; importVoice: (path: string, label?: string) => Promise<void>; playhead: number; onSeek: (seconds: number) => void };
+type AudioWorkspaceProps = { audioReview?: AudioReviewActions; craftTarget?: CraftAudioTarget; onCraftTargetHandled?: () => void; project: Project; commit: Commit; commitRequired: Commit; commitRecipe: (change: Change) => Promise<Project>; desktopMode: boolean; importVoice: (path: string, label?: string) => Promise<void>; playhead: number; onSeek: (seconds: number) => void };
 
 function AudioRetainedDrafts({ project }: { project: Project }) {
   const [copies, setCopies] = useState<AudioRecoveryCopy[]>([]), [error, setError] = useState<string | null>(null);
@@ -407,17 +408,19 @@ function AudioWorkspaceEditor({
   playhead,
   onSeek,
   audioReview,
-}: {
-  audioReview?: AudioReviewActions;
-  project: Project;
-  commit: Commit;
-  commitRequired: Commit;
-  commitRecipe: (change: Change) => Promise<Project>;
-  desktopMode: boolean;
-  importVoice: (path: string, label?: string) => Promise<void>;
-  playhead: number;
-  onSeek: (absoluteSeconds: number) => void;
-}) {
+  craftTarget,
+  onCraftTargetHandled,
+}: AudioWorkspaceProps) {
+  const workspace = useRef<HTMLElement>(null);
+  const soundPreset = craftTarget === "focus-hit" || craftTarget === "transition-tail" ? craftTarget : undefined;
+  const focusTarget = soundPreset ? "sound-events" : craftTarget;
+  useEffect(() => {
+    if (!focusTarget) return;
+    const destination = workspace.current?.querySelector<HTMLElement>(`[data-craft-audio-target="${focusTarget}"]`);
+    (destination ?? workspace.current)?.focus();
+    onCraftTargetHandled?.();
+  }, [focusTarget, onCraftTargetHandled]);
+
   // A recorded original voice protects the media, transcript and timed cues.
   // The domain/SQLite CAS enforce authority; disabled controls explain it.
   const sourceLocked = !!project.production_design?.narration_take_lock;
@@ -502,7 +505,7 @@ function AudioWorkspaceEditor({
     : 0;
 
   return (
-    <section className="audio-workspace" aria-label="Audio workspace" onKeyDown={event => {
+    <section ref={workspace} tabIndex={-1} className="audio-workspace" aria-label="Audio workspace" onKeyDown={event => {
       if (event.code === "Space" && !event.ctrlKey && !event.metaKey && !event.altKey
         && event.target instanceof HTMLElement && event.target.closest("button, summary")) event.stopPropagation();
     }}>
@@ -651,7 +654,7 @@ function AudioWorkspaceEditor({
 
           <section className="audio-editor-section audio-transcript-section">
             <header>
-              <div><strong>Transcript alignment</strong><span>Saving edited timing records manual evidence.</span></div>
+              <div><strong tabIndex={-1} data-craft-audio-target="transcript">Transcript alignment</strong><span>Saving edited timing records manual evidence.</span></div>
               <span className="mono">{active ? "take:" + active.id.slice(0, 8) : "no-active-take"}</span>
             </header>
             {activeSegments.map(segment => <TranscriptRow key={audioDraftScope(project, { kind: "transcript", id: segment.id, voiceId: segment.voice_track_id })} segment={segment} project={project} commit={commit} playhead={playhead} onSeek={onSeek}/>)}
@@ -665,8 +668,9 @@ function AudioWorkspaceEditor({
           </section>
 
           <NarrationTakeReview project={project} desktopMode={desktopMode} commit={commit}/>
-          <NativeOriginalMixReview project={project} desktopMode={desktopMode} commit={commitRecipe} audioReview={audioReview}/>
-          <SemanticSfxWorkbench project={project} commit={commitRecipe} onSeek={onSeek}/>
+          <NativeOriginalMixReview project={project} desktopMode={desktopMode} commit={commitRecipe} audioReview={audioReview}
+            initiallyExpanded={craftTarget==="music-source"||craftTarget==="silence-release"}/>
+          <SemanticSfxWorkbench project={project} commit={commitRecipe} onSeek={onSeek} craftPreset={soundPreset}/>
           <MixEditor project={project} commit={commit}/>
           <AudioRetainedDrafts project={project}/>
         </div>

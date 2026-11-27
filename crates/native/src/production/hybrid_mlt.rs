@@ -1,4 +1,4 @@
-//! The closed original 180-frame mixed-renderer MLT continuation.
+//! The closed original mixed-renderer MLT continuation.
 //!
 //! Only sealed HybridNativeSources from the real MC/Manim producer enter this
 //! module. The existing all-MotionCanvas preflight remains unchanged. All
@@ -12,14 +12,11 @@ use semwright_video_domain::native_observation::{
     ObservationProfile, PNG_LIMIT, REPORT_LIMIT, parse_complete_observation,
 };
 
-pub(super) const FRAME_COUNT: u64 = 180;
-const CLIP_FRAMES: u64 = 60;
 pub(super) const MEDIA_MAX_BYTES: u64 = 256_000_000;
 pub(super) const MASTER_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const REPORT_MAX_BYTES: u64 = REPORT_LIMIT as u64;
 const PNG_MAX_BYTES: u64 = PNG_LIMIT as u64;
 const NATIVE_INPUT_MAX_BYTES: u64 = 8 * 1024 * 1024;
-const WAV_BYTES: u64 = 1_152_044;
 const SEQUENCE_NAME: &str = "Original Motionwright MC-Manim-MC cut";
 const TRACK_NAME: &str = "Original native hybrid contributions";
 
@@ -206,18 +203,23 @@ fn artifact(
         bytes: count,
     })
 }
-fn verify_ffv1(root: &Path, value: &Value, expected_path: &str) -> NativeResult<Artifact> {
+fn verify_ffv1(
+    root: &Path,
+    value: &Value,
+    expected_path: &str,
+    expected_frames: u64,
+) -> NativeResult<Artifact> {
     require(
         value.get("codec").and_then(Value::as_str) == Some("ffv1")
             && value.get("container").and_then(Value::as_str) == Some("matroska")
-            && value.get("frame_count").and_then(Value::as_u64) == Some(CLIP_FRAMES)
+            && value.get("frame_count").and_then(Value::as_u64) == Some(expected_frames)
             && value.get("width").and_then(Value::as_u64) == Some(1920)
             && value.get("height").and_then(Value::as_u64) == Some(1080)
             && value.get("fps_num").and_then(Value::as_u64) == Some(30)
             && value.get("fps_den").and_then(Value::as_u64) == Some(1)
             && value.pointer("/media/video").and_then(Value::as_bool) == Some(true)
             && value.pointer("/media/audio").and_then(Value::as_bool) == Some(false),
-        "Hybrid original MC encode did not return exactly sixty audio-free FFV1 frames",
+        "Hybrid original MC encode differs from the planned audio-free FFV1 contribution",
     )?;
     artifact(
         root,
@@ -234,6 +236,7 @@ fn verify_lossless(
     expected_path: &str,
     job: &str,
     revision: &str,
+    frame_count: u64,
 ) -> NativeResult<Artifact> {
     require(
         value.get("state").and_then(Value::as_str) == Some("succeeded")
@@ -250,12 +253,12 @@ fn verify_lossless(
             && value.pointer("/media/audio").and_then(Value::as_bool) == Some(false)
             && value.pointer("/media/width").and_then(Value::as_u64) == Some(1920)
             && value.pointer("/media/height").and_then(Value::as_u64) == Some(1080)
-            && value.pointer("/media/frames").and_then(Value::as_u64) == Some(FRAME_COUNT)
+            && value.pointer("/media/frames").and_then(Value::as_u64) == Some(frame_count)
             && value
                 .pointer("/media/codecs")
                 .and_then(Value::as_array)
                 .is_some_and(|codecs| codecs.len() == 1 && codecs[0].as_str() == Some("ffv1")),
-        "Hybrid visual result is not an independently counted 180-frame FFV1 video-only source",
+        "Hybrid visual result differs from the authored FFV1 video-only clock",
     )?;
     let numerator = value
         .pointer("/media/duration_num")
@@ -268,7 +271,7 @@ fn verify_lossless(
         .filter(|value| *value > 0)
         .ok_or_else(|| backend("Hybrid visual timebase is absent"))?;
     require(
-        (u128::from(numerator) * 30).abs_diff(u128::from(FRAME_COUNT) * u128::from(denominator))
+        (u128::from(numerator) * 30).abs_diff(u128::from(frame_count) * u128::from(denominator))
             <= u128::from(denominator),
         "Hybrid visual duration differs from the exact authored clock",
     )?;
@@ -317,6 +320,7 @@ fn complete_video_observation(
     original_result: &Value,
     expected_profile: ObservationProfile,
     sources: &[Artifact],
+    frame_count: u64,
 ) -> NativeResult<Value> {
     let original_receipt = original_result.get("color_observation").ok_or_else(|| {
         backend("Original hybrid native return omitted its color observation descriptor")
@@ -349,7 +353,7 @@ fn complete_video_observation(
     let document = parsed.document().clone();
     require(
         document.get("artifact") == Some(&media.descriptor())
-            && document.get("frame_count").and_then(Value::as_u64) == Some(FRAME_COUNT)
+            && document.get("frame_count").and_then(Value::as_u64) == Some(frame_count)
             && document.get("canonical_fps_num").and_then(Value::as_u64) == Some(30)
             && document.get("canonical_fps_den").and_then(Value::as_u64) == Some(1)
             && document.pointer("/stream/width").and_then(Value::as_u64) == Some(1920)
@@ -398,7 +402,7 @@ fn complete_video_observation(
         .and_then(Value::as_array)
         .ok_or_else(|| backend("Original hybrid native color observation has no frame roster"))?;
     require(
-        frames.len() == FRAME_COUNT as usize,
+        frames.len() == frame_count as usize,
         "Original hybrid native frame roster is incomplete",
     )?;
     for (index, frame) in frames.iter().enumerate() {
@@ -487,7 +491,7 @@ async fn reference(
 }
 
 impl ProductionCoordinator {
-    /// Assemble exactly the retained MC/Manim/MC originals. Neither a JSON
+    /// Assemble exactly the retained Motion Canvas and static Manim originals. Neither a JSON
     /// caller nor another project can construct the input source capability.
     pub async fn assemble_native_hybrid_timeline(
         &self,
@@ -499,38 +503,50 @@ impl ProductionCoordinator {
         let expected = &sources.expected;
         let output = &scoped.client.connection().output_root;
         let namespace = &sources.namespace;
+        let ranges = sources.segment_ranges();
+        let frame_count = sources.frame_count();
+        let manim_ordinal = sources.manim_ordinal();
+        let manim_range = &ranges[manim_ordinal];
+        let manim_frames = manim_range.end - manim_range.start;
+        // Preserve the original sequence name in the three-source route so the
+        // same saved input never presents different arguments under an old ID.
+        let sequence_name = if ranges.len() == 3 {
+            SEQUENCE_NAME
+        } else {
+            "Original Motionwright two-source cut"
+        };
         require(
-            sources.motion_canvas.segments.len() == 2,
+            sources.motion_canvas.segments.len() + 1 == ranges.len(),
             "Hybrid source lost a native MC contribution",
         )?;
-        let mut clips = Vec::with_capacity(3);
+        let mut clips = Vec::with_capacity(ranges.len());
         let mut originals = Vec::new();
-        // The middle contribution is the real static Manim native MP4, not an
+        // The Manim contribution is the real static native MP4, not an
         // invented MC manifest or a renderer label on a different source.
         let manim = &sources.manim;
         require(
             manim.get("renderer").and_then(Value::as_str) == Some("manim-community")
                 && manim.get("project_revision").and_then(Value::as_u64) == Some(expected.revision)
-                && manim.get("scene_id") == Some(&json!(sources.project.scenes[1].id))
+                && manim.get("scene_id") == Some(&json!(sources.project.scenes[manim_ordinal].id))
                 && manim
                     .pointer("/artifact/static_source")
                     .is_some_and(|source| source.is_object())
                 && manim
                     .pointer("/artifact/static_source_custody_error")
                     .is_none(),
-            "Hybrid middle contribution lacks its retained original static Manim source",
+            "Hybrid Manim contribution lacks its retained original static source",
         )?;
         let original = manim
             .pointer("/result/result/data/artifact")
             .ok_or_else(|| {
-                backend("Hybrid middle contribution lacks its original native Manim artifact")
+                backend("Hybrid Manim contribution lacks its original native artifact")
             })?;
         let manim_path = text_at(original, "/relative_path")?;
         let manim_descriptor = json!({"root":"output","path":manim_path,
             "sha256":original.get("sha256"),"bytes":original.get("bytes")});
         let manim_media = artifact(output, &manim_descriptor, &manim_path, MEDIA_MAX_BYTES)?;
         let report = original.get("decoded_video").ok_or_else(|| {
-            backend("Hybrid middle contribution lacks its original decoded-video report")
+            backend("Hybrid Manim contribution lacks its original decoded-video report")
         })?;
         let report_path = text_at(report, "/relative_path")?;
         require(
@@ -550,15 +566,16 @@ impl ProductionCoordinator {
         let observed: Value =
             serde_json::from_slice(&raw).map_err(|_| backend("Hybrid Manim report is not JSON"))?;
         require(
-            observed.get("frame_count").and_then(Value::as_u64) == Some(CLIP_FRAMES)
+            observed.get("frame_count").and_then(Value::as_u64) == Some(manim_frames)
                 && observed
                     .get("frames")
                     .and_then(Value::as_array)
-                    .is_some_and(|frames| frames.len() == CLIP_FRAMES as usize),
-            "Hybrid middle contribution was not observed as sixty native frames",
+                    .is_some_and(|frames| frames.len() == manim_frames as usize),
+            "Hybrid Manim contribution differs from its planned native frame count",
         )?;
-        for (index, segment) in sources.motion_canvas.segments.iter().enumerate() {
-            let ordinal = index * 2;
+        let motion_ordinals = (0..ranges.len()).filter(|&index| index != manim_ordinal);
+        for (ordinal, segment) in motion_ordinals.zip(&sources.motion_canvas.segments) {
+            let range = &ranges[ordinal];
             let manifest = text_at(&segment.artifact, "/manifest")?;
             let manifest_sha = text_at(&segment.artifact, "/manifest_sha256")?;
             // Read the pinned manifest immediately before the real encoder.
@@ -572,11 +589,16 @@ impl ProductionCoordinator {
             let original = scoped.execute(id, expected, &format!("{request}:ffv1:{ordinal}"),
                 "driver.mlt-video.frames.encode", json!({"root":"output","manifest_path":manifest,
                     "expected_manifest_sha256":manifest_sha,"output_path":path,"max_bytes":MEDIA_MAX_BYTES}), true).await?;
-            let actual = verify_ffv1(output, response_data(&original)?, &path)?;
+            let actual = verify_ffv1(
+                output,
+                response_data(&original)?,
+                &path,
+                range.end - range.start,
+            )?;
             originals.push(original);
             clips.push(actual);
         }
-        clips.insert(1, manim_media);
+        clips.insert(manim_ordinal, manim_media);
 
         let provider_profile = crate::mlt_edit_plan::MltOwnedVideoProfile {
             width: 1920,
@@ -610,7 +632,7 @@ impl ProductionCoordinator {
             &format!("{request}:mlt:sequence-create"),
             "driver.mlt-video.sequence.create",
             session,
-            json!({"name":SEQUENCE_NAME}),
+            json!({"name":sequence_name}),
         )
         .await?;
         let sequence = created(&created_sequence, "sequence")?;
@@ -628,7 +650,7 @@ impl ProductionCoordinator {
         let _ = created(&created_track, "track")?;
         session = next;
         let mut edit_receipts = vec![created_sequence, created_track];
-        for (index, clip) in clips.iter().enumerate() {
+        for (index, (clip, range)) in clips.iter().zip(ranges).enumerate() {
             // Rehash every actual contribution before import; a provider ref
             // from an earlier native revision is never carried across edits.
             artifact(output, &clip.descriptor(), &clip.path, MEDIA_MAX_BYTES)?;
@@ -644,7 +666,7 @@ impl ProductionCoordinator {
                 &format!("{request}:mlt:sequence-ref:{index}"),
                 &session,
                 None,
-                SEQUENCE_NAME,
+                sequence_name,
             )
             .await?;
             let track = reference(
@@ -665,14 +687,13 @@ impl ProductionCoordinator {
                 "driver.mlt-video.clip.insert",
                 session,
                 json!({"sequence":sequence,"track":track,"asset":asset,
-                    "start":index as u64 * CLIP_FRAMES,"source_in":0,"source_out":CLIP_FRAMES,
+                    "start":range.start,"source_in":0,"source_out":range.end-range.start,
                     "name":format!("Original hybrid cut {index}"),"ripple":false}),
             )
             .await?;
             let _ = created(&inserted, "clip")?;
             require(
-                inserted.get("after_frames").and_then(Value::as_u64)
-                    == Some((index as u64 + 1) * CLIP_FRAMES),
+                inserted.get("after_frames").and_then(Value::as_u64) == Some(range.end),
                 "Hybrid MLT edit changed an original cut boundary",
             )?;
             edit_receipts.push(imported);
@@ -686,7 +707,7 @@ impl ProductionCoordinator {
             &format!("{request}:mlt:final-sequence-ref"),
             &session,
             None,
-            SEQUENCE_NAME,
+            sequence_name,
         )
         .await?;
         let duration = scoped
@@ -701,10 +722,10 @@ impl ProductionCoordinator {
             .await?;
         let duration_data = response_data(&duration)?;
         require(
-            duration_data.get("frames").and_then(Value::as_u64) == Some(FRAME_COUNT)
+            duration_data.get("frames").and_then(Value::as_u64) == Some(frame_count)
                 && duration_data.get("fps_num").and_then(Value::as_u64) == Some(30)
                 && duration_data.get("fps_den").and_then(Value::as_u64) == Some(1),
-            "Hybrid MLT semantic timeline differs from the original 180-frame clock",
+            "Hybrid MLT semantic timeline differs from the original frame clock",
         )?;
         originals.push(duration);
         let visual_path = format!("{namespace}-visual.mkv");
@@ -722,7 +743,7 @@ impl ProductionCoordinator {
         let plan = response_data(&planned)?;
         require(
             plan.get("runnable").and_then(Value::as_bool) == Some(true)
-                && plan.get("frames").and_then(Value::as_u64) == Some(FRAME_COUNT)
+                && plan.get("frames").and_then(Value::as_u64) == Some(frame_count)
                 && plan.get("project_revision").and_then(Value::as_str)
                     == Some(session.revision.as_str())
                 && plan.get("output_root").and_then(Value::as_str) == Some("output")
@@ -835,6 +856,7 @@ impl ProductionCoordinator {
             &visual_path,
             &job,
             &session.revision,
+            frame_count,
         )
         .map_err(unconfirmed_render)?;
         // The producer only reads native observations. Missing originals fail;
@@ -845,17 +867,24 @@ impl ProductionCoordinator {
             response_data(&original_result)?,
             ObservationProfile::MltVisualFfv1,
             &clips,
+            frame_count,
         )?;
         require(
             scoped.service.project(id).map_err(storage_error)? == sources.project,
             "Hybrid editable source changed during native assembly",
         )?;
+        let source_segment_frames: Vec<_> =
+            ranges.iter().map(|range| range.end - range.start).collect();
+        let cut_frames: Vec<_> = ranges[..ranges.len() - 1]
+            .iter()
+            .map(|range| range.end)
+            .collect();
         let evidence = json!({"schema":"motionwright.native.hybrid-timeline/1",
             "project_sha256":sources.project_sha256,"project_resource":sources.project.resource_key(),
             "generation":expected.generation,"revision":expected.revision,
-            "frame_count":FRAME_COUNT,"source_segment_frames":[60,60,60],"cut_frames":[60,120],
+            "frame_count":frame_count,"source_segment_frames":source_segment_frames,"cut_frames":cut_frames,
             "native_render_profile":"lossless-video-only","transport_pcm_audio":false,
-            "native_frame_count_observed":FRAME_COUNT,"artifact_path":visual.path,
+            "native_frame_count_observed":frame_count,"artifact_path":visual.path,
             "artifact_sha256":visual.sha256,"artifact_bytes":visual.bytes,
             "native_job_ref":job,"provider_revision":session.revision,
             "native_operation_returns":originals,"native_edit_returns":edit_receipts,
@@ -881,6 +910,8 @@ impl ProductionCoordinator {
     ) -> NativeResult<HybridNativeMaster> {
         let scoped = self.hybrid_mlt_scope(sources)?;
         let output = &scoped.client.connection().output_root;
+        let frame_count = sources.frame_count();
+        let wav_bytes = sources.original_audio_bytes();
         require(
             timeline.project_sha256 == sources.project_sha256
                 && timeline.connection_identity == scoped.client.connection().identity()?
@@ -909,17 +940,17 @@ impl ProductionCoordinator {
                 && audio.sha256 == verified.sha256
                 && audio.sample_rate == 48_000
                 && audio.channels == 2
-                && verified.size_bytes == WAV_BYTES,
+                && verified.size_bytes == wav_bytes,
             "Hybrid mux selected a different source audio artifact",
         )?;
         let wave = read_verified_production_artifact(
             output,
             &audio.relative_path,
             &audio.sha256,
-            WAV_BYTES,
+            wav_bytes,
         )?;
         require(
-            wave.len() as u64 == WAV_BYTES,
+            wave.len() as u64 == wav_bytes,
             "Hybrid staged original source WAV has a changed byte count",
         )?;
         let source_parent = verified
@@ -935,7 +966,7 @@ impl ProductionCoordinator {
             source_parent,
             source_name,
             &verified.sha256,
-            WAV_BYTES,
+            wav_bytes,
         )?;
         require(
             original_wave == wave,
@@ -947,7 +978,7 @@ impl ProductionCoordinator {
                 sources,
                 json!({"video_root":"output","video_path":visual.path,"video_sha256":visual.sha256,
                 "audio_root":"output","audio_path":audio.relative_path,"audio_sha256":audio.sha256,
-                "width":1920,"height":1080,"fps_num":30,"fps_den":1,"frame_count":FRAME_COUNT,
+                "width":1920,"height":1080,"fps_num":30,"fps_den":1,"frame_count":frame_count,
                 "sample_rate":48_000,"channels":2,"profile":"h264-aac-mp4",
                 "output_path":master_path,"max_bytes":MASTER_MAX_BYTES}),
             )
@@ -956,7 +987,7 @@ impl ProductionCoordinator {
         verify_exact_native_mux(
             master,
             &MuxExpected {
-                frames: FRAME_COUNT,
+                frames: frame_count,
                 width: 1920,
                 height: 1080,
                 fps_num: 30,
@@ -988,7 +1019,7 @@ impl ProductionCoordinator {
             Artifact {
                 path: audio.relative_path.clone(),
                 sha256: audio.sha256.clone(),
-                bytes: WAV_BYTES,
+                bytes: wav_bytes,
             },
         ];
         let color = complete_video_observation(
@@ -997,6 +1028,7 @@ impl ProductionCoordinator {
             master,
             ObservationProfile::MltH264AacMaster,
             &original_inputs,
+            frame_count,
         )?;
         artifact(output, &visual.descriptor(), &visual.path, MEDIA_MAX_BYTES)?;
         require(
@@ -1004,7 +1036,7 @@ impl ProductionCoordinator {
                 output,
                 &audio.relative_path,
                 &audio.sha256,
-                WAV_BYTES,
+                wav_bytes,
             )? == wave,
             "Original hybrid source WAV changed during the native mux",
         )?;
@@ -1020,9 +1052,9 @@ impl ProductionCoordinator {
         Ok(HybridNativeMaster {
             master_sha256,
             evidence: json!({"schema":"motionwright.native.hybrid-master/1",
-            "project_sha256":sources.project_sha256,"frame_count":FRAME_COUNT,
+            "project_sha256":sources.project_sha256,"frame_count":frame_count,
             "original_native_return":original,"master":master,"complete_video_observation":color,
-            "original_audio_sha256":audio.sha256,"measured_original_audio_frames":288000,
+            "original_audio_sha256":audio.sha256,"measured_original_audio_frames":(wav_bytes - 44) / 4,
             "automatic_retry":false,"packet_PTS_and_AAC_priming_verified":false,
             "physical_acceptance":false,"human_approval":false}),
         })

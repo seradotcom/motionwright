@@ -29,8 +29,7 @@ fn change(service: &StudioService, project: &mut Project, label: &str, change: C
         .project;
 }
 
-fn original_test_wave(path: &Path) {
-    let samples = 288_000_u32;
+fn original_test_wave(path: &Path, samples: u32) {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"RIFF");
     bytes.extend_from_slice(&(samples * 4 + 36).to_le_bytes());
@@ -118,6 +117,11 @@ fn connection(directory: &Path, resource: String) -> ProductionConnection {
 }
 
 fn fixture() -> Fixture {
+    use RendererKind::{ManimCommunity, MotionCanvas};
+    fixture_with_layout(&[MotionCanvas, ManimCommunity, MotionCanvas], 2)
+}
+
+fn fixture_with_layout(layout: &[RendererKind], scene_seconds: i64) -> Fixture {
     let directory = tempfile::tempdir().unwrap();
     let service = StudioService::open(directory.path().join("hybrid.sqlite3")).unwrap();
     let mut project = service
@@ -138,7 +142,7 @@ fn fixture() -> Fixture {
         "fixture-matte",
         Change::SetVisualLanguage { visual_language },
     );
-    for index in 0..3 {
+    for (index, renderer) in layout.iter().cloned().enumerate() {
         change(
             &service,
             &mut project,
@@ -146,19 +150,16 @@ fn fixture() -> Fixture {
             Change::AddScene {
                 name: format!("Contribution {index}"),
                 objective: "Budget-bound native accounting fixture".into(),
-                duration_seconds: 2,
+                duration_seconds: scene_seconds,
             },
         );
         let scene_id = project.scenes.last().unwrap().id;
-        if index == 1 {
+        if renderer != RendererKind::MotionCanvas {
             change(
                 &service,
                 &mut project,
                 "fixture-static-manim",
-                Change::SetSceneRenderer {
-                    scene_id,
-                    renderer: RendererKind::ManimCommunity,
-                },
+                Change::SetSceneRenderer { scene_id, renderer },
             );
         }
         let node = CanvasNode {
@@ -197,7 +198,10 @@ fn fixture() -> Fixture {
         );
     }
     let wav = directory.path().join("synthetic-test-only-original.wav");
-    original_test_wave(&wav);
+    original_test_wave(
+        &wav,
+        u32::try_from(48_000 * scene_seconds * layout.len() as i64).unwrap(),
+    );
     project = service
         .import_voice_file(
             project.id,
@@ -734,6 +738,118 @@ async fn hybrid_dispatch_rechecks_a_peer_commit_before_the_durable_debit() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn hybrid_saved_cut_preserves_unequal_contributions_and_frame_reservations() {
+    let mut f = fixture();
+    for (index, frames) in [45, 70, 65].into_iter().enumerate() {
+        let scene_id = f.project.scenes[index].id;
+        change(
+            &f.service,
+            &mut f.project,
+            &format!("authored-duration-{index}"),
+            Change::SetSceneDuration {
+                scene_id,
+                duration: RationalTime::new(frames, 30).unwrap(),
+            },
+        );
+    }
+
+    let owner = ProductionCoordinator::new(f.service.clone(), f.connection.clone()).unwrap();
+    let preflight = owner
+        .preflight_native_hybrid_sources(
+            f.project.id,
+            &f.project.stamp(),
+            f.deliverable,
+            &f.options,
+        )
+        .unwrap();
+    assert_eq!(preflight.frame_count, 180);
+    assert!(owner.active_hybrid_budget.is_none());
+    let scoped = owner
+        .with_native_hybrid_scope(f.project.id, &f.project.stamp(), f.deliverable, &f.options)
+        .unwrap();
+    let scope = scoped.active_hybrid_budget.as_ref().unwrap();
+    let plan = &scope.plan;
+    for (index, (start, frames)) in [(0, 45), (45, 70), (115, 65)].into_iter().enumerate() {
+        let contribution = &plan.source_plan["contributions"][index];
+        assert_eq!(contribution["output_start_frame"], start);
+        assert_eq!(contribution["frame_count"], frames);
+    }
+    assert_eq!(plan.limits.render_frames, 650); // 110 MC + 70 Manim + 110 FFV1 + 180 visual + 180 mux.
+    assert_eq!(scoped.client.execute_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn hybrid_two_sources_preserve_renderer_order_and_exact_cut_origin() {
+    use RendererKind::{ManimCommunity, MotionCanvas};
+    for (layout, expected_renderers, motion_ordinal) in [
+        (
+            [MotionCanvas, ManimCommunity],
+            ["motion_canvas", "manim_static"],
+            0,
+        ),
+        (
+            [ManimCommunity, MotionCanvas],
+            ["manim_static", "motion_canvas"],
+            1,
+        ),
+    ] {
+        let f = fixture_with_layout(&layout, 3);
+        let owner = ProductionCoordinator::new(f.service.clone(), f.connection).unwrap();
+        let report = owner
+            .preflight_native_hybrid_sources(
+                f.project.id,
+                &f.project.stamp(),
+                f.deliverable,
+                &f.options,
+            )
+            .unwrap();
+        assert_eq!(report.source_count, 2);
+        let scoped = owner
+            .with_native_hybrid_scope(f.project.id, &f.project.stamp(), f.deliverable, &f.options)
+            .unwrap();
+        let scope = scoped.active_hybrid_budget.as_ref().unwrap();
+        assert_eq!(scope.plan.segment_ranges, [0..90, 90..180]);
+        assert_eq!(scope.plan.manim_ordinal, 1 - motion_ordinal);
+        assert_eq!(scope.plan.motion[0].output_ordinal, motion_ordinal);
+        assert_eq!(scope.plan.limits.render_frames, 630);
+        let contributions = scope.plan.source_plan["contributions"].as_array().unwrap();
+        assert_eq!(contributions.len(), 2);
+        for (index, (contribution, renderer)) in
+            contributions.iter().zip(expected_renderers).enumerate()
+        {
+            assert_eq!(contribution["renderer"], renderer);
+            assert_eq!(contribution["output_start_frame"], index * 90);
+            assert_eq!(contribution["frame_count"], 90);
+        }
+        assert_eq!(scoped.client.execute_calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn hybrid_shorter_cut_uses_the_exact_saved_wav_and_budget_clock() {
+    use RendererKind::{ManimCommunity, MotionCanvas};
+    let f = fixture_with_layout(&[ManimCommunity, MotionCanvas], 2);
+    let owner = ProductionCoordinator::new(f.service.clone(), f.connection).unwrap();
+    let report = owner
+        .preflight_native_hybrid_sources(
+            f.project.id,
+            &f.project.stamp(),
+            f.deliverable,
+            &f.options,
+        )
+        .unwrap();
+    assert_eq!(report.frame_count, 120);
+    let scoped = owner
+        .with_native_hybrid_scope(f.project.id, &f.project.stamp(), f.deliverable, &f.options)
+        .unwrap();
+    let scope = scoped.active_hybrid_budget.as_ref().unwrap();
+    assert_eq!(scope.plan.segment_ranges, [0..60, 60..120]);
+    assert_eq!(scope.plan.source_audio_bytes, 44 + 192_000 * 4);
+    assert_eq!(scope.plan.limits.render_frames, 420);
+    assert_eq!(scoped.client.execute_calls.load(Ordering::SeqCst), 0);
 }
 
 #[test]

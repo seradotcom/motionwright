@@ -19,19 +19,54 @@ impl Fixture {
     }
 
     fn configured(captioned: bool, targeted: bool) -> Self {
-        Self::configured_kind(captioned, targeted, false)
+        Self::configured_kind(captioned, targeted, None)
     }
 
     fn hybrid() -> Self {
-        Self::configured_kind(false, false, true)
+        Self::configured_kind(false, false, Some(3))
     }
 
-    fn configured_kind(captioned: bool, targeted: bool, hybrid: bool) -> Self {
+    fn configured_kind(
+        captioned: bool,
+        targeted: bool,
+        hybrid_seconds_per_scene: Option<u32>,
+    ) -> Self {
+        let hybrid = hybrid_seconds_per_scene.is_some();
         let root = tempfile::tempdir().unwrap();
         let service = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
         let mut project = service
             .create_project("Synthetic original media; no Native effect")
             .unwrap();
+        if let Some(seconds) = hybrid_seconds_per_scene {
+            use motionwright_domain::{Change, RendererKind};
+            for index in 0..2 {
+                project = service
+                    .apply(
+                        project.id,
+                        &project.stamp(),
+                        &format!("hybrid-scene-{index}"),
+                        &Change::AddScene {
+                            name: format!("Contribution {index}"),
+                            objective: "Hybrid source custody fixture".into(),
+                            duration_seconds: i64::from(seconds),
+                        },
+                    )
+                    .unwrap()
+                    .project;
+            }
+            project = service
+                .apply(
+                    project.id,
+                    &project.stamp(),
+                    "hybrid-scene-renderer",
+                    &Change::SetSceneRenderer {
+                        scene_id: project.scenes[0].id,
+                        renderer: RendererKind::ManimCommunity,
+                    },
+                )
+                .unwrap()
+                .project;
+        }
         if captioned {
             let mut profile = project.deliverables[0].clone();
             profile.burn_in_captions = true;
@@ -97,7 +132,7 @@ impl Fixture {
         )
         .unwrap();
         let video = b"SYNTHETIC-VIDEO-NOT-DECODABLE";
-        let frame_count = if hybrid { 180_u32 } else { 60 };
+        let frame_count = hybrid_seconds_per_scene.map_or(60, |seconds| seconds * 60);
         let samples = frame_count * 1_600;
         let audio = synthetic_stereo(samples, true);
         let decoded = synthetic_stereo(samples + 128, true);
@@ -610,6 +645,37 @@ fn saved_hybrid_master_reopens_and_qualifies_without_restoring_native_authority(
         )
         .unwrap();
     assert_eq!(roots, 0);
+    assert!(coordinator.active_hybrid_budget.is_none());
+    assert!(coordinator.hybrid_project_grant.is_none());
+    assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn saved_hybrid_master_inventory_reopens_the_exact_shorter_source_clock() {
+    let f = Fixture::configured_kind(false, false, Some(2));
+    let mut foreign = f.context.clone();
+    foreign.args["frame_count"] = json!(180);
+    assert!(foreign.check_current(&f.coordinator, &f.project).is_err());
+    let selected = f.seed(|_, _| {});
+    let connection = f.coordinator.client.connection().clone();
+    let Fixture {
+        root,
+        service,
+        coordinator,
+        project,
+        ..
+    } = f;
+    drop(coordinator);
+    drop(service);
+    let service = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
+    let coordinator = ProductionCoordinator::new(service, connection).unwrap();
+    let profile = project.deliverables[0].id;
+    let inventory = coordinator
+        .saved_master_receipt_inventory(project.id, &project.stamp(), profile)
+        .unwrap();
+    assert_eq!(inventory.items.len(), 1);
+    assert_eq!(inventory.items[0].mux_receipt_id, selected.id);
+    assert_eq!(inventory.items[0].frame_count, 120);
     assert!(coordinator.active_hybrid_budget.is_none());
     assert!(coordinator.hybrid_project_grant.is_none());
     assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 0);

@@ -34,14 +34,15 @@ function measuredVoiceProblem(voice: VoiceTrack): string | null {
   return null;
 }
 
-export default function NativeOriginalMixReview({ project, desktopMode, commit, audioReview }: {
+export default function NativeOriginalMixReview({ project, desktopMode, commit, audioReview, initiallyExpanded = false }: {
   project: Project;
   desktopMode: boolean;
   commit: (change: Change) => Promise<Project>;
   audioReview?: AudioReviewActions;
+  initiallyExpanded?: boolean;
 }) {
   const player = useLocalAudioElement();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(initiallyExpanded);
   const panelId = useId();
   const [profileId, setProfileId] = useState(() => project.deliverables.find(profile =>
     savedDeliveryRecipe(project, profile.id)?.original_mix || savedDeliveryRecipe(project, profile.id)?.voice_only_cut_sha256)?.id ?? project.deliverables[0]?.id ?? "");
@@ -266,7 +267,9 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
     {([
       ["music_asset_id", "Original music asset", "Select imported WAV music"],
       ["sfx_asset_id", "Original SFX asset", "No imported base; use authored cues in this cut"],
-    ] as const).map(([key, label, placeholder]) => <label key={key} className="production-field"><span>{label}</span>
+    ] as const).map(([key, label, placeholder]) => <label key={key} className="production-field">
+      <span tabIndex={key==="music_asset_id"?-1:undefined}
+        data-craft-audio-target={key==="music_asset_id"?"music-source":undefined}>{label}</span>
       <select id={fields[key].controlId} aria-label={label} value={mixDraft.values[key] ?? ""} disabled={inputsDisabled}
         onChange={event => setField(key, event.target.value)}>
         <option value="">{placeholder}</option>
@@ -332,7 +335,7 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
       </section>)}
     </section>
     <section aria-label="Original mix silence release">
-      <h4>Silence release</h4>
+      <h4 tabIndex={-1} data-craft-audio-target="silence-release">Silence release</h4>
       <p className="production-help">Fade all three original buses together, then retain an exact silent tail inside the saved cut.
         No new samples, source trimming or duration change. The fade must follow every reviewed narration interval.
         Enter both 48-kHz sample counts (48,000 = one second), or clear both to remove this release.

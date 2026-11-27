@@ -1102,7 +1102,7 @@ export async function renderNativeHybridMaster(
   const source=structuredClone(project);
   const savedOptions=savedFilmOptions(source,deliverableId,options);
   beforeDispatch();
-  await preflightNativeHybrid(source,deliverableId,savedOptions);
+  const preflight=await preflightNativeHybrid(source,deliverableId,savedOptions);
   beforeDispatch();
   const requestId=crypto.randomUUID();
   const grant=await issueEffectGrant("render_local",source,requestId);
@@ -1114,7 +1114,7 @@ export async function renderNativeHybridMaster(
       deliverable_id:deliverableId,options:savedOptions,
       request_id:requestId,effect_grant:grant.token,
     }});
-    return parseHybridMaster(value,source,deliverableId);
+    return parseHybridMaster(value,source,deliverableId,preflight.frame_count);
   }catch(error){throw new HybridNativeOperationError(error,true);}
 }
 

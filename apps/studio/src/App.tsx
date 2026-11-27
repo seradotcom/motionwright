@@ -90,6 +90,7 @@ import {
   savedNativeWindowFilmOptions,
 } from "./api";
 import AudioWorkspace from "./AudioWorkspace";
+import type { CraftAudioTarget } from "./craftLibrary";
 import CanvasWorkspace from "./CanvasWorkspace";
 import DependenciesWorkspace from "./DependenciesWorkspace";
 import DeliveryProfiles from "./DeliveryProfiles";
@@ -1444,6 +1445,8 @@ export default function App() {
   }, []);
   const [workspace, setWorkspace] = useState<Workspace>("Timeline");
   const [timelineEditorRequest, setTimelineEditorRequest] = useState<TimelineEditorRequest | null>(null);
+  const [craftAudioRequest, setCraftAudioRequest] = useState<{scope:string;target:CraftAudioTarget}|null>(null);
+  const consumeCraftAudioRequest = useCallback(() => setCraftAudioRequest(null), []);
   const [beatTimelineOpen,setBeatTimelineOpen]=useState(false);
   const timelineRequestSequence = useRef(0);
   const consumeTimelineEditorRequest = useCallback((nonce: number) => setTimelineEditorRequest(current => current?.nonce === nonce ? null : current), []);
@@ -2145,6 +2148,8 @@ export default function App() {
             desktopMode={boot.native_sdk.mode === "tauri"}
             importVoice={ingestVoice}
             audioReview={audioReviewActions}
+            craftTarget={craftAudioRequest?.scope===timelineSelectionScope(project)?craftAudioRequest.target:undefined}
+            onCraftTargetHandled={consumeCraftAudioRequest}
             playhead={playhead}
             onSeek={seekTo}
           />
@@ -2195,7 +2200,10 @@ export default function App() {
               return projectHistory(source, after, limit);
             },
           }, refreshProject: refreshGraphProject, openReview: openGraphReview,
-        }} busy={busy} playhead={playhead} onSeek={seekTo} onSelectScene={selectScene} onOpenCanvas={() => setWorkspace("Canvas")} displayProfile={selectedProfile} evidence={nativeRenderReceipt} onOpenRender={() => setWorkspace("Deliver")} />;
+        }} busy={busy} playhead={playhead} onSeek={seekTo} onSelectScene={selectScene} onOpenCanvas={() => setWorkspace("Canvas")} onOpenAudio={target=>{
+            setCraftAudioRequest({scope:timelineSelectionScope(project),target});
+            setWorkspace("Audio");
+          }} displayProfile={selectedProfile} evidence={nativeRenderReceipt} onOpenRender={() => setWorkspace("Deliver")} />;
       case "Canvas":
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit}
           commitRequired={commitCamera} playhead={playhead} onSeek={seekTo} profile={selectedProfile} busy={busy} timelineRequest={timelineEditorRequest} onTimelineRequestHandled={consumeTimelineEditorRequest} />;

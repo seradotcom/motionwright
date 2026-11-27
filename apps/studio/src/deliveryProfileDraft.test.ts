@@ -1598,6 +1598,20 @@ describe("hybrid bounded producer admission",()=>{
     current=false;held.resolve({token:grantToken});await rejected;
     expect(invokeFixture.mock.calls.map(call=>call[0])).toEqual(["native_hybrid_preflight","issue_effect_grant"]);
   });
+  it("preserves an uncertain outcome when native completion disagrees with the original preflight clock",async()=>{
+    const sample=source();
+    invokeFixture.mockImplementation((command:string)=>{
+      if(command==="native_hybrid_preflight")return Promise.resolve({...projection(sample),frame_count:120});
+      if(command==="issue_effect_grant")return Promise.resolve({token:grantToken});
+      if(command==="render_native_hybrid_master")return Promise.resolve(completion(sample));
+      throw new Error("Unexpected hybrid command");
+    });
+    await expect(api.renderNativeHybridMaster(sample.project,sample.profileId,sample.options,()=>{}))
+      .rejects.toMatchObject({failure:{status:"unknown",may_have_native_effects:true,automatic_retry:false}});
+    expect(invokeFixture.mock.calls.map(call=>call[0])).toEqual([
+      "native_hybrid_preflight","issue_effect_grant","render_native_hybrid_master",
+    ]);
+  });
   it("keeps completed production when subsequent review is unavailable, without another dispatch",async()=>{
     const sample=source(),raw=JSON.stringify(sample.project),check=vi.fn();
     const completed=completion(sample);

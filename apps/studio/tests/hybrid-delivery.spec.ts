@@ -32,6 +32,18 @@ test("hybrid product routes source check, one render, original review and a fres
   expect(observed.filter(call=>call.command==="render_native_hybrid_master")).toHaveLength(1);
   expect(observed.filter(call=>call.command==="issue_effect_grant").map(call=>call.request.effect)).toEqual(["render_local","deliver_local"]);
 });
+test("a two-source cut checks and creates a master with the normal render permission",async({page})=>{
+  await page.goto("/tests/fixtures/hybrid-delivery.html?layout=manim-first");
+  await ready(page);
+  await expect(panel(page).getByRole("status")).toContainText("2 sources checked for 4.00 s");
+  await panel(page).getByRole("button",{name:"Create hybrid master",exact:true}).click();
+  const master=panel(page).getByLabel("Completed original hybrid master");
+  await expect(master).toContainText("c".repeat(64));
+  await expect(master).toContainText("4.00 s · H.264/AAC");
+  const observed=await commands(page);
+  expect(observed.filter(call=>call.command==="render_native_hybrid_master")).toHaveLength(1);
+  expect(observed.filter(call=>call.command==="issue_effect_grant").map(call=>call.request.effect)).toEqual(["render_local"]);
+});
 test("a project revision arriving during the normal grant dialog prevents native dispatch",async({page})=>{
   await ready(page);
   await page.evaluate(()=>window.__HYBRID_DELIVERY__.holdGrant());
