@@ -15,6 +15,11 @@ on:
         options: [both, windows, macos]
         default: both
         required: false
+      kdenlive_accessibility_probe:
+        description: Observe hosted accessibility without installing or launching the editor
+        type: boolean
+        default: false
+        required: false
       audio_source:
         description: 'Kdenlive GUI only: silent original or bounded 997 Hz AAC source. No output audio credit.'
         type: choice
@@ -618,7 +623,7 @@ jobs:
 
   kdenlive-native-editor:
     if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'kdenlive-native-editor'
-    name: Kdenlive native editor installation (${{ matrix.os }})
+    name: ${{ inputs.kdenlive_accessibility_probe && 'Kdenlive hosted accessibility' || 'Kdenlive native editor installation' }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 14
     strategy:
@@ -635,9 +640,14 @@ jobs:
       - name: Verify the native editor admission and installation controls
         working-directory: tooling/otio-media
         run: python -B -E -s -m unittest -v test_kdenlive_native_distribution test_kdenlive_native_installation
+      - name: Observe native accessibility without changing its permissions
+        if: inputs.kdenlive_accessibility_probe
+        run: python -B -E -s tooling/otio-media/kdenlive_native_installation.py --observe-host
       - name: Obtain the pinned KDE distribution once
+        if: inputs.kdenlive_accessibility_probe != true
         run: python -B -E -s tooling/otio-media/kdenlive_native_distribution.py
       - name: Install the bound editor in the disposable runner
+        if: inputs.kdenlive_accessibility_probe != true
         run: python -B -E -s tooling/otio-media/kdenlive_native_installation.py
       - name: Retain archive and installed executable identities
         if: always()
@@ -645,6 +655,7 @@ jobs:
         with:
           name: kdenlive-native-installation-${{ runner.os }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/accessibility.json
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/download-intent.json
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/distribution.json
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/installation-intent.json

@@ -1,6 +1,7 @@
 """Install one admitted KDE distribution in the native editor qualification job."""
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -240,11 +241,81 @@ def install(runner, context, distribution):
     return report
 
 
+def windows_accessibility_context():
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    user = ctypes.WinDLL("user32", use_last_error=True)
+    kernel.ProcessIdToSessionId.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    kernel.ProcessIdToSessionId.restype = wintypes.BOOL
+    user.GetProcessWindowStation.argtypes = []
+    user.GetProcessWindowStation.restype = wintypes.HANDLE
+    user.OpenInputDesktop.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    user.OpenInputDesktop.restype = wintypes.HANDLE
+    user.CloseDesktop.argtypes = [wintypes.HANDLE]
+    user.CloseDesktop.restype = wintypes.BOOL
+    user.GetUserObjectInformationW.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                               wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    user.GetUserObjectInformationW.restype = wintypes.BOOL
+
+    def name(handle):
+        text = ctypes.create_unicode_buffer(256)
+        needed = wintypes.DWORD()
+        if handle and user.GetUserObjectInformationW(handle, 2, text, ctypes.sizeof(text), ctypes.byref(needed)):
+            return text.value.casefold()
+        return ""
+
+    session = wintypes.DWORD()
+    user_session = bool(kernel.ProcessIdToSessionId(os.getpid(), ctypes.byref(session)) and session.value)
+    interactive_station = name(user.GetProcessWindowStation()) == "winsta0"
+    desktop = user.OpenInputDesktop(0, False, 0x0001)
+    try:
+        default_desktop = name(desktop) == "default"
+    finally:
+        if desktop:
+            user.CloseDesktop(desktop)
+    return {"user_session": user_session, "interactive_station": interactive_station,
+            "default_input_desktop": default_desktop}
+
+
+def macos_accessibility_context():
+    import ctypes
+
+    services = ctypes.CDLL("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
+    services.AXIsProcessTrusted.argtypes = []
+    services.AXIsProcessTrusted.restype = ctypes.c_bool
+    services.CGMainDisplayID.argtypes = []
+    services.CGMainDisplayID.restype = ctypes.c_uint32
+    return {"accessible_process": bool(services.AXIsProcessTrusted()),
+            "visible_display": bool(services.CGMainDisplayID())}
+
+
+def observe_host(runner, context):
+    owner = runner / f"{JOB}-{context['run_id']}-1"
+    owner.mkdir(mode=0o700)
+    observed = (windows_accessibility_context() if context["runner_os"] == "Windows"
+                else macos_accessibility_context())
+    report = {"schema": "motionwright.kdenlive-host-accessibility/1", "context": context,
+              "status": "AVAILABLE" if all(observed.values()) else "HOLD",
+              "observed": observed, "installer_launches": 0, "editor_launches": 0}
+    publish(owner / "accessibility.json", report)
+    return report
+
+
 def main():
+    parser = argparse.ArgumentParser(allow_abbrev=False)
+    parser.add_argument("--observe-host", action="store_true")
+    arguments = parser.parse_args()
     context, distribution = selection(os.environ, sys.platform, platform.machine())
     require(git(ROOT, "rev-parse", "HEAD").decode("ascii").strip() == context["source_sha"],
             "native Kdenlive checkout differs from the workflow")
-    print(json.dumps(install(Path(os.environ["RUNNER_TEMP"]), context, distribution), sort_keys=True))
+    runner = Path(os.environ["RUNNER_TEMP"])
+    if arguments.observe_host:
+        report = observe_host(runner, context)
+        print(json.dumps(report, sort_keys=True))
+        raise SystemExit(0 if report["status"] == "AVAILABLE" else 1)
+    print(json.dumps(install(runner, context, distribution), sort_keys=True))
 
 
 if __name__ == "__main__":
