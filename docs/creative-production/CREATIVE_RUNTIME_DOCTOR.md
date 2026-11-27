@@ -13,14 +13,16 @@ asynchronous canonical Semwright CLI version-only probe. It then builds the
 source-pinned Native SDK application operation catalogue through the actual
 Motionwright service to validate local contracts, without a native render.
 
-The report separates source/project validity, Native SDK contracts and
-digest-checked CLI version compatibility from the following NOT_TESTED gates:
-Broker session and effect grants, Driver Host renderer discovery, content-
-addressed asset byte integrity, installation footprint and rollback,
-source media rendering and independent creative acceptance.
+With a compatible CLI and a project-bound connection, the doctor reads the
+authenticated Broker registry. It then queries runtime versions for connected
+Motion Canvas, MLT, Blender and Manim Community providers. Registration and
+version compatibility are reported separately. If a version query fails, its
+result stays unobserved and the other providers can still be checked. When the
+project, connection or provider generation changes during diagnosis, run a
+fresh check to get a report for the current scope.
 
-Even when the CLI version matches, the overall result is PRE-FLIGHT ONLY.
-The backend never reports ready-for-native-production from this diagnosis.
+The result is a preflight. Rendering, asset byte integrity, effect authority
+and installation footprint are checked by their own operations.
 
 ## Project-specific facts and limitations
 

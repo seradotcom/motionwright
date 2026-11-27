@@ -18,6 +18,10 @@ use motionwright_service::StudioService;
 use serde::Serialize;
 use uuid::Uuid;
 
+const MANIM_RENDERER: &str = "manim-community";
+const MANIM_PROVIDER: &str = "driver:manim-community";
+const MANIM_VERSION_CHECK: &str = "native_runtime_manim_community_version";
+
 pub(crate) struct DoctorRequest<'a> {
     pub project_id: Uuid,
     pub expected: &'a RevisionStamp,
@@ -166,38 +170,42 @@ fn include_native_observation(
 
 fn include_native_failure(
     report: &mut CreativeRuntimeDoctorReport,
-    probe: NativeProbe,
+    renderer_name: &'static str,
+    provider: &'static str,
+    version_check: &'static str,
     provider_generation: u64,
     error: &semwright_native_sdk::Error,
 ) -> Result<NativeRuntimeProbeFailure, String> {
+    if error.code == semwright_native_sdk::ErrorCode::StaleReference {
+        return Err(
+            "The native runtime observation became stale during diagnosis; refresh and recheck."
+                .into(),
+        );
+    }
     let check = report
         .checks
         .iter_mut()
-        .find(|check| check.id == probe.version_check())
+        .find(|check| check.id == version_check)
         .ok_or_else(|| "The runtime report is missing its native version check.".to_owned())?;
     check.status = "not_tested";
-    let dependency = if matches!(probe, NativeProbe::MotionCanvas) {
+    let dependency = if renderer_name == "motion-canvas" {
         " Motion Canvas requires the reviewed opt-in package-probe contract; a metadata-only doctor response is not native version evidence."
     } else {
         ""
     };
     check.detail = format!(
         "provider={}; registry_provider_generation={}; probe_error={:?}; outcome_known={}. Native availability and compatibility remain unobserved. The failed request was not retried.{}",
-        probe.provider(),
-        provider_generation,
-        error.code,
-        error.outcome_known,
-        dependency,
+        provider, provider_generation, error.code, error.outcome_known, dependency,
     );
     let renderer = report
         .renderers
         .iter_mut()
-        .find(|renderer| renderer.renderer == probe.renderer())
+        .find(|renderer| renderer.renderer == renderer_name)
         .ok_or_else(|| "The runtime report is missing its renderer row.".to_owned())?;
     renderer.state = "native_runtime_not_observed";
     Ok(NativeRuntimeProbeFailure {
-        renderer: probe.renderer(),
-        provider: probe.provider(),
+        renderer: renderer_name,
+        provider,
         registry_provider_generation: provider_generation,
         state: "not_observed",
         version_compatible: None,
@@ -219,7 +227,7 @@ fn registry_evidence(
         ("motion-canvas", "driver:motion-canvas"),
         ("mlt", "driver:mlt-video"),
         ("blender", "driver:blender"),
-        ("manim-community", "driver:manim-community"),
+        (MANIM_RENDERER, MANIM_PROVIDER),
     ]
     .into_iter()
     .map(|(renderer, provider)| {
@@ -339,7 +347,7 @@ fn include_manim_observation(
     let check = report
         .checks
         .iter_mut()
-        .find(|check| check.id == "native_runtime_manim_community_version")
+        .find(|check| check.id == MANIM_VERSION_CHECK)
         .ok_or_else(|| {
             "The runtime diagnosis report is missing its native version check.".to_owned()
         })?;
@@ -361,11 +369,10 @@ fn include_manim_observation(
     if let Some(renderer) = report
         .renderers
         .iter_mut()
-        .find(|renderer| renderer.renderer == "manim-community")
+        .find(|renderer| renderer.renderer == MANIM_RENDERER)
     {
         renderer.state = renderer_state;
     }
-    report.runtime_version_detail = "Semwright CLI compatibility and an authenticated Broker registry response were observed. The scoped Manim Driver Host probe has its own result below; other native versions, rendering, fonts and effect grants remain separate checks.";
     Ok(())
 }
 
@@ -416,7 +423,7 @@ pub(crate) async fn inspect(
             .to_owned()
     })?;
     let (current, _) = current_connection(owner, service, connections, &request, &identity)?;
-    let manim_generation = match registry.state_for("manim-community") {
+    let manim_generation = match registry.state_for(MANIM_RENDERER) {
         Some(RendererRegistryState::PresentConnected { generation }) => Some(generation),
         _ => None,
     };
@@ -444,19 +451,28 @@ pub(crate) async fn inspect(
     )
     .map_err(str::to_owned)?;
     if let Some(generation) = manim_generation {
-        let observation = {
+        let result = {
             let _phase = owner.phase()?;
             client.observe_manim_runtime_version(request.expected).await
-        }
-        .map_err(|_| {
-            "The selected Driver Host runtime probe failed; its package availability and compatibility remain unobserved."
-                .to_owned()
-        })?;
-        // Do not attach a late result after an edit, a connection replacement,
-        // or removal of the selected reference.
+        };
+        // Both a version and a failed read belong to the original connection.
         current_connection(owner, service, connections, &request, &identity)?;
-        include_manim_observation(&mut report, request.expected, generation, &observation)?;
-        manim_runtime_observation = Some(observation);
+        match result {
+            Ok(observation) => {
+                include_manim_observation(&mut report, request.expected, generation, &observation)?;
+                manim_runtime_observation = Some(observation);
+            }
+            Err(error) => {
+                native_runtime_probe_failures.push(include_native_failure(
+                    &mut report,
+                    MANIM_RENDERER,
+                    MANIM_PROVIDER,
+                    MANIM_VERSION_CHECK,
+                    generation,
+                    &error,
+                )?);
+            }
+        }
     }
     for (probe, generation) in native_generations {
         // Each read uses the original canonical client only while the selected
@@ -490,18 +506,14 @@ pub(crate) async fn inspect(
                 )?;
                 native_runtime_observations.push(observation);
             }
-            Err(error) if error.code == semwright_native_sdk::ErrorCode::StaleReference => {
-                return Err(
-                    "The native runtime observation became stale during diagnosis; refresh and recheck."
-                        .into(),
-                );
-            }
             Err(error) => {
                 // Do not infer absence or retry a failed/UNKNOWN probe. A later
                 // iteration is a different provider's independent read.
                 native_runtime_probe_failures.push(include_native_failure(
                     &mut report,
-                    probe,
+                    probe.renderer(),
+                    probe.provider(),
+                    probe.version_check(),
                     generation,
                     &error,
                 )?);
@@ -522,6 +534,89 @@ pub(crate) async fn inspect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manim_timeout_preserves_other_checks_without_claiming_absence_or_compatibility() {
+        let project = Project::new("Owned runtime diagnosis").unwrap();
+        let mut report =
+            inspect_creative_runtime(&project, "pin", CliEvidence::VersionCompatible, true);
+        let other_state = report
+            .renderers
+            .iter()
+            .find(|row| row.renderer == "motion-canvas")
+            .unwrap()
+            .state;
+        report
+            .checks
+            .push(motionwright_native::creative_doctor::CreativeDoctorCheck {
+                id: MANIM_VERSION_CHECK,
+                status: "not_tested",
+                detail: "The registered provider has not been queried.".into(),
+            });
+        let mut timeout = semwright_native_sdk::Error::new(
+            semwright_native_sdk::ErrorCode::Timeout,
+            "private provider diagnostic",
+        );
+        timeout.outcome_known = false;
+        let failure = include_native_failure(
+            &mut report,
+            MANIM_RENDERER,
+            MANIM_PROVIDER,
+            MANIM_VERSION_CHECK,
+            7,
+            &timeout,
+        )
+        .unwrap();
+        assert_eq!(failure.registry_provider_generation, 7);
+        assert_eq!(failure.state, "not_observed");
+        assert_eq!(failure.version_compatible, None);
+        assert!(!failure.outcome_known);
+        let check = report
+            .checks
+            .iter()
+            .find(|row| row.id == MANIM_VERSION_CHECK)
+            .unwrap();
+        assert_eq!(check.status, "not_tested");
+        assert!(!check.detail.contains("private provider diagnostic"));
+        let manim = report
+            .renderers
+            .iter()
+            .find(|row| row.renderer == MANIM_RENDERER)
+            .unwrap();
+        assert_eq!(manim.state, "native_runtime_not_observed");
+        assert_eq!(
+            report
+                .renderers
+                .iter()
+                .find(|row| row.renderer == "motion-canvas")
+                .unwrap()
+                .state,
+            other_state
+        );
+    }
+
+    #[test]
+    fn stale_manim_version_read_rejects_the_diagnosis() {
+        let project = Project::new("Owned runtime diagnosis").unwrap();
+        let mut report =
+            inspect_creative_runtime(&project, "pin", CliEvidence::VersionCompatible, true);
+        let stale = semwright_native_sdk::Error::new(
+            semwright_native_sdk::ErrorCode::StaleReference,
+            "stale provider generation",
+        );
+        assert!(
+            include_native_failure(
+                &mut report,
+                MANIM_RENDERER,
+                MANIM_PROVIDER,
+                MANIM_VERSION_CHECK,
+                7,
+                &stale
+            )
+            .unwrap_err()
+            .contains("became stale")
+        );
+    }
 
     #[test]
     fn exact_scope_and_runtime_identity_remain_admissible() {

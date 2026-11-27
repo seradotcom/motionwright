@@ -330,6 +330,9 @@ jobs:
       - name: Effect-grant boundary regressions
         if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope) || (inputs.verification_scope == 'desktop-compile' && inputs.first_use_case == 'runtime-profiles')
         run: cargo test --locked --jobs 2 -p motionwright-desktop effect_grants
+      - name: Runtime doctor failure and provider scope regressions
+        if: inputs.verification_scope == 'desktop-compile' && inputs.first_use_case == 'runtime-profiles'
+        run: cargo test --locked --jobs 2 -p motionwright-desktop runtime_doctor::tests
       - name: Original offline runtime files, SQLite reopen and rollback
         if: github.event_name != 'workflow_dispatch' || !contains(fromJSON('["desktop-compile","desktop-hyperframes","desktop-blender","desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope) || (inputs.verification_scope == 'desktop-compile' && inputs.first_use_case == 'runtime-profiles')
         shell: bash
