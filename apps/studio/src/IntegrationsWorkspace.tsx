@@ -11,6 +11,8 @@ import {
   chooseSemwrightConnection,
   clearSavedSemwrightConnection,
   productionRuntimeCompatibility,
+  reviewSignedObserverEvidence,
+  type SignedObserverReview,
 } from "./api";
 import type {
   Bootstrap,
@@ -51,6 +53,46 @@ function BoundaryRow({
         <span>{body}</span>
       </div>
       <span className={"status-pill status-" + tone}>{status}</span>
+    </div>
+  );
+}
+
+
+function SignedObserverPanel({project}: {project: Project}) {
+  const [busy, setBusy] = useState(false);
+  const [review, setReview] = useState<SignedObserverReview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function inspect() {
+    setBusy(true);
+    setReview(null);
+    setError(null);
+    try {
+      setReview(await reviewSignedObserverEvidence(project));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="integration-runtime-setup" aria-label="Signed frame evidence">
+      <div>
+        <strong>Signed frame evidence</strong>
+        <p>Check an independent observation against the owner policy in Motionwright’s local app data.</p>
+      </div>
+      <div className="integration-runtime-actions">
+        <button type="button" className="button" disabled={busy} onClick={() => void inspect()}>
+          {busy ? "Verifying…" : "Review signed evidence"}
+        </button>
+      </div>
+      {error && <p className="integration-runtime-note" role="alert">{error}</p>}
+      {review && <div className="integration-runtime-note" role="status">
+        <strong>{review.gate_eligible ? "Technical observation eligible" : "Verifier revoked"}</strong>
+        <p>{review.width} × {review.height} pixels at frame {review.frame_index} with owner policy generation {review.owner_generation}.</p>
+        <ul>{review.limitations.map((limitation, index) => <li key={index}>{limitation}</li>)}</ul>
+      </div>}
     </div>
   );
 }
@@ -369,6 +411,7 @@ function IntegrationWorkspaceEditor({project,nativeSdk,commit}:IntegrationProps)
         <CreativeRuntimeDoctorPanel project={project} nativeSdk={nativeSdk}
           runtime={runtimeCompatibility} />
         <RuntimeProfilesPanel project={project} desktop={nativeSdk.mode === "tauri"} />
+        {nativeSdk.mode === "tauri" && <SignedObserverPanel project={project} />}
       </section>
 
       <section className="integration-section" aria-label="Launchwright public handoff bindings">

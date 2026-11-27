@@ -8,7 +8,7 @@ import "../../src/styles.css";
 // Real Integration component and API wrappers, explicitly synthetic deferred IPC.
 // These requests do not inspect/install a runtime or mutate canonical projects.
 type Command = "production_runtime_status" | "choose_semwright_connection" |
-  "clear_saved_semwright_connection" | "choose_brand_font_media_root";
+  "clear_saved_semwright_connection" | "choose_brand_font_media_root" | "review_signed_observer_evidence";
 type Request = Record<string, unknown>;
 type Pending = { id: number; command: Command; request: Request; settled: boolean;
   resolve(value: unknown): void; reject(error: Error): void };
@@ -28,7 +28,8 @@ const runtime = window as unknown as Record<string, unknown>;
 runtime.__TAURI_INTERNALS__ = {
   invoke(command: string, args: { request?: Request }): Promise<unknown> {
     if (!(["production_runtime_status", "choose_semwright_connection",
-      "clear_saved_semwright_connection", "choose_brand_font_media_root"] as string[]).includes(command) || !args.request) {
+      "clear_saved_semwright_connection", "choose_brand_font_media_root", "review_signed_observer_evidence",
+      "runtime_profile_inventory"] as string[]).includes(command) || !args.request) {
       unexpectedCommands.push(command);
       return Promise.reject(new Error("Unrelated command in synthetic runtime fixture: " + command));
     }
@@ -43,6 +44,11 @@ runtime.__TAURI_INTERNALS__ = {
     const revision = command === "production_runtime_status" ? request.expected_revision : request.revision;
     if (!project || generation !== project.generation || revision !== project.revision) {
       throw new Error("API request did not identify one of the exact fixture sources.");
+    }
+    if (command === "runtime_profile_inventory") {
+      return Promise.resolve({schema: "motionwright.runtime-profile-inventory/1",
+        scope: {project_id: project.id, generation: project.generation, revision: project.revision},
+        supported: false, platform: "unsupported", profiles: [], alternatives: "Synthetic fixture has no runtime packages."});
     }
     let entry: Pending;
     return new Promise<unknown>((resolve, reject) => {
@@ -77,6 +83,13 @@ runtime.__integrationRuntimeSchedule = {
     const entry = unresolved(id);
     if (entry.command === "production_runtime_status") throw new Error("Expected a chooser/clear request.");
     entry.resolve(changed);
+  },
+  observation(id: number, eligible: boolean) {
+    const entry = unresolved(id);
+    if (entry.command !== "review_signed_observer_evidence") throw new Error("Expected an evidence inspection.");
+    entry.resolve({owner_generation: 8, verifier_id: "fixture_png", producer_sha256: "a".repeat(64),
+      source_frame_sha256: "b".repeat(64), frame_index: 30, width: 320, height: 180,
+      limitations: ["Dimensions only."], gate_eligible: eligible});
   },
   reject(id: number, label: string) {
     unresolved(id).reject(new Error("SYNTHETIC FAILURE: " + label));

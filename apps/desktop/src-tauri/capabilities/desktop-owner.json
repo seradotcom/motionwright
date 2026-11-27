@@ -27,6 +27,7 @@
     "allow-production-runtime-status",
     "allow-creative-runtime-doctor",
     "allow-choose-semwright-connection",
+    "allow-review-signed-observer-evidence",
     "allow-runtime-profile-inventory",
     "allow-choose-runtime-profile-bundle",
     "allow-install-runtime-profile",

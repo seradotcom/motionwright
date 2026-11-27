@@ -8,6 +8,9 @@ license-file.workspace = true
 
 [dependencies]
 base64 = "=0.23.1"
+ed25519-dalek = { version = "=3.0.0", default-features = false }
+png = "=0.18.1"
+rusqlite.workspace = true
 wasmi = { version = "=2.0.3", default-features = false, features = ["stable", "std", "wat", "validate", "portable-dispatch"] }
 cssparser = "=0.37.0"
 quick-xml = "=0.42.0"
@@ -24,7 +27,6 @@ semwright-driver-motion-canvas.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-rusqlite.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2.190"

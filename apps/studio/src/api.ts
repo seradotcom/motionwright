@@ -757,6 +757,26 @@ export async function exportOtio(project: Project, path: string): Promise<OtioEx
   });
 }
 
+
+export interface SignedObserverReview {
+  owner_generation: number;
+  verifier_id: string;
+  producer_sha256: string;
+  source_frame_sha256: string;
+  frame_index: number;
+  width: number;
+  height: number;
+  limitations: string[];
+  gate_eligible: boolean;
+}
+
+export async function reviewSignedObserverEvidence(project: Project): Promise<SignedObserverReview | null> {
+  if (!isTauri()) throw new Error("Signed evidence review requires the installed desktop app.");
+  return invoke<SignedObserverReview | null>("review_signed_observer_evidence", {
+    request: {project_id: project.id, generation: project.generation, revision: project.revision},
+  });
+}
+
 /** Native OS picker only: the WebView never receives the chosen path, file
  * contents, Semwright session ticket or Broker socket details. Cancellation
  * returns false; the owner may keep editing without configuring a renderer.

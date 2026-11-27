@@ -11,6 +11,7 @@ mod legacy_project_archive;
 mod mlt_cleanup;
 mod models;
 mod native_capsule_source;
+mod observer;
 mod portability;
 mod project_creation;
 mod project_projection;
@@ -43,6 +44,7 @@ pub use models::{
     ModelContextDisclosure, ModelProviderKind, ModelRequestDraft, ModelRequestPreflight,
 };
 pub use native_capsule_source::{MAX_NATIVE_CAPSULE_INSPECT_BYTES, VerifiedNativeCapsuleSource};
+pub use observer::ObserverReview;
 pub use project_projection::{
     MAX_NODE_PAGE_ITEMS, MAX_PROJECTION_RESPONSE_BYTES, MAX_SCENE_PAGE_ITEMS, NodePage,
     NodePageCursor, ProjectionError, ProjectionFailure, ProjectionHead, ProjectionIdentity,
@@ -73,12 +75,13 @@ pub struct VerifiedMasterVoice {
 }
 
 use motionwright_domain::{Change, DomainError, Project, RenderTailInspectRequest, RevisionStamp};
+pub use motionwright_storage::StorageError;
 #[cfg(windows)]
 pub use motionwright_storage::open_portable_source;
 pub use motionwright_storage::{
     ASSET_MEDIA_RANGE_BYTES, VerifiedAssetMedia, publish_bundle_directory,
 };
-use motionwright_storage::{ApplyOutcome, Result as StorageResult, StorageError, Store};
+use motionwright_storage::{ApplyOutcome, Result as StorageResult, Store};
 pub use motionwright_storage::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, BlobDescriptor,
     BundleFingerprint, BundleImportCommit, BundleImportPlan, BundleImportRecoveryRequest,

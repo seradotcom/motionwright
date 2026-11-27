@@ -903,6 +903,74 @@ fn selected_connection_path(state: &AppState, project_id: Uuid) -> Result<Option
         .resolve(project.id, project.generation)
 }
 
+#[tauri::command]
+async fn review_signed_observer_evidence(
+    mut owner: desktop_owner::OwnerInvocation,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: RuntimeConnectionSelectionRequest,
+) -> Result<Option<motionwright_service::ObserverReview>, String> {
+    checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    let config = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "Motionwright app data is unavailable.")?
+        .join("observer-policy");
+    if !config.is_dir() {
+        return Err(
+            "Provision the owner observer policy in the app data folder before reviewing evidence."
+                .into(),
+        );
+    }
+    let selected = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        app.dialog()
+            .file()
+            .set_title("Choose a signed frame evidence folder")
+            .blocking_pick_folder()
+    })
+    .await
+    .map_err(|_| "The native evidence folder picker failed.".to_owned())?;
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    owner.begin_phase()?;
+    checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    let evidence = selected
+        .into_path()
+        .map_err(|_| "Choose a local evidence folder.")?;
+    let service = state.service.clone();
+    let project = service.project(request.project_id).map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err(
+            "The saved project changed. Open the current revision to review evidence.".into(),
+        );
+    }
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        service.review_observer_evidence(project.id, &project.stamp(), &config, &evidence)
+    })
+    .await
+    .map_err(|_| "The evidence inspection did not complete.".to_owned())?
+    .map(Some)
+    .map_err(|error| {
+        if let motionwright_service::StorageError::InvalidBackup(message) = &error
+            && let Some(reason) = message.strip_prefix("observer evidence: ")
+        {
+            return reason.to_owned();
+        }
+        "The evidence or the local owner policy could not be verified.".into()
+    })
+}
+
 /// The OS native file dialog is the trusted owner gesture. JavaScript never
 /// sees the selected path, connection JSON, private session ticket or Broker
 /// authentication. The canonical Semwright client remains responsible for
@@ -4749,6 +4817,7 @@ fn main() {
             production_runtime_status,
             creative_runtime_doctor,
             choose_semwright_connection,
+            review_signed_observer_evidence,
             runtime_profile_inventory,
             choose_runtime_profile_bundle,
             install_runtime_profile,

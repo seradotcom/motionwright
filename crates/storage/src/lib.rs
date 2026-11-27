@@ -62,6 +62,20 @@ pub fn open_portable_source(path: &Path, limit: u64) -> Result<(File, String)> {
     let identity = cas_retention::file_identity(&file)?;
     Ok((file, identity))
 }
+
+/// Capture one bounded regular source from its opened local file.
+pub fn capture_portable_source(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    let file = file_import::open_regular_import_source(path, limit)?;
+    let mut data = Vec::new();
+    file.take(limit.saturating_add(1)).read_to_end(&mut data)?;
+    if data.len() as u64 > limit {
+        return Err(StorageError::BlobTooLarge {
+            size: data.len() as u64,
+            limit,
+        });
+    }
+    Ok(data)
+}
 pub use production::{
     ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark,
     voice_alignment_receipt_sha256_v1,

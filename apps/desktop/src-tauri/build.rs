@@ -22,6 +22,7 @@ fn main() {
             "production_runtime_status",
             "creative_runtime_doctor",
             "choose_semwright_connection",
+            "review_signed_observer_evidence",
             "runtime_profile_inventory",
             "choose_runtime_profile_bundle",
             "install_runtime_profile",

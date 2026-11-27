@@ -170,3 +170,25 @@ test("an owner action from source A cannot publish or launch its follow-up probe
   await expect(boundary(page)).toContainText("CURRENT SOURCE B AFTER CLEAR");
   await expect(note(page)).toContainText("No saved project connection was present");
 });
+
+test("signed evidence review sends only saved project scope and displays revocation", async ({ page }) => {
+  await settle(page, 0, "status", "LOCAL");
+  await button(page, "Review signed evidence").click();
+  await count(page, 2);
+  const [probe, review] = (await snapshot(page)).calls;
+  expect(review.command).toBe("review_signed_observer_evidence");
+  expect(review.request).toEqual({project_id: probe.request.project_id,
+    generation: probe.request.expected_generation, revision: probe.request.expected_revision});
+  await page.evaluate(() => {
+    const control = (window as unknown as { __integrationRuntimeSchedule: {
+      observation(id: number, eligible: boolean): void;
+    }}).__integrationRuntimeSchedule;
+    control.observation(1, false);
+  });
+  const result = page.getByLabel("Signed frame evidence").getByRole("status");
+  await expect(result).toContainText("Verifier revoked");
+  await expect(result).toContainText("320 × 180 pixels at frame 30");
+  await expect(result).toContainText("Dimensions only.");
+  await button(page, "Source B").click();
+  await expect(page.getByText("Verifier revoked", {exact: true})).toHaveCount(0);
+});

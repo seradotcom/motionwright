@@ -120,6 +120,25 @@ Keep the registry and public-key file under the owner's filesystem control.
 Restoring an older database snapshot also restores its earlier policy state.
 The legacy JSON head remains available for explicitly selected file-based checks.
 
+## Review in Desktop
+
+In the owner-controlled Motionwright app data folder, place the registry and
+trusted inputs in `observer-policy/`.
+
+- `policies.sqlite3` is the registry managed by `adopt-policy`.
+- `owner.pub` is the separately provisioned raw Ed25519 public key.
+- `verifier.py` holds the reviewed verifier source bytes.
+- `producer.sha256` is the independently selected producer source digest in
+  lowercase hexadecimal.
+
+Open a saved project, go to **Integrations**, and choose **Review signed
+evidence**. Select the evidence folder in the operating system picker. Desktop
+shows the dimensions, policy generation, eligibility and limitations of
+the result. StudioService uses strict Ed25519 verification and independently
+decodes the original PNG. It checks both the saved project and the current
+owner policy before returning the review. The result is a technical
+observation. Creative and release approvals remain separate.
+
 ## Negative tests and limits
 
 `test_observer.py` covers distinct owner/observer identities, forged
@@ -136,8 +155,8 @@ demonstrating successful technical admission and subsequent policy
 revocation. The artifact explicitly contains **no private keys**,
 no real owner authentication and **no production gate acceptance**.
 
-**Still NOT implemented:** integration of the owner policy registry with
-the canonical StudioService/Native SDK, independently provisioned production
+**Still NOT implemented:** use of these technical results as Native SDK
+production gates, independently provisioned production
 public keys/rights, semantically richer observation methods,
 separate real renderer-host conformance, optional paid/source-code
 verifier installation, multi-machine revocation propagation, and human
