@@ -163,7 +163,7 @@ reviewed_otio_sources = {
     "tooling/mlt_official_runtime_intake.py":
         "0d5e640f0b4750c30666bcdad1968d9883c1ab86866b391949f4bf45fa1f1467",
     "tooling/otio-media/bridge.py":
-        "55e8dce65316610abe60ce586abd3a3a5ce1e4610dca1da26979ad94c5e05e68",
+        "e7d4f10b66a5a5c1a0b9278d979a7d8158ae93e6014c7568587fdb8e97f075ea",
     "tooling/otio-media/kdenlive_firstparty_audio_track.py":
         "3995594d644563b9d89fa7d7543afa006144167763048d72f93209ceeecb93a1",
 }

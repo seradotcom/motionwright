@@ -500,6 +500,16 @@ class BoundedKdenliveCutTests(unittest.TestCase):
         result=self.check(roots=(self.out,))
         self.assertEqual(result["rejection_code"],"unauthorized_media_root")
 
+    @unittest.skipUnless(os.name == "nt", "Windows native separators")
+    def test_mixed_separators_cannot_hide_a_network_path(self):
+        for target in (r"/\server\share\clip#1.mp4", r"\/server/share/clip#1.mp4"):
+            with self.subTest(target=target), patch.object(
+                _retained_bridge, "_resolve_plain_path",
+                side_effect=AssertionError("network path reached filesystem checks"),
+            ):
+                with self.assertRaisesRegex(BridgeRefused, "traversal or network path"):
+                    _nle_local_media(self.root, target, (self.root,))
+
     def test_protocol_traversal_and_symlink_targets_do_not_gain_scope(self):
         self.prepare()
         ref=self.ref(self.children()[0])

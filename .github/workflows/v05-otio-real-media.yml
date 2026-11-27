@@ -484,6 +484,12 @@ jobs:
           ffmpeg -hide_banner -version
           ffprobe -hide_banner -protocols | grep -E '^[[:space:]]+fd[[:space:]]*$'
           python -B -m unittest -v test_native_media.NativeMediaAdmissionTests
+      - name: Verify native media paths and reject network aliases
+        working-directory: tooling/otio-media
+        run: >-
+          python -B -m unittest -v
+          test_kdenlive_readback.KdenliveNativeReadbackTests.test_native_absolute_media_path_preserves_literal_hash
+          test_bridge.BoundedKdenliveCutTests.test_mixed_separators_cannot_hide_a_network_path
       - name: Compile and test the shared Desktop OTIO bridge
         run: |
           cargo test --locked --jobs 2 -p motionwright-service --example studio_review_session otio_bridge:: -- --test-threads=1

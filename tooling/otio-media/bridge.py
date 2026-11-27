@@ -1112,23 +1112,27 @@ def _nle_local_media(raw_parent:Path,target:object,roots:tuple[Path,...],
     _nle_require(isinstance(target,str) and 1<=len(target)<=250
                  and not any(ord(c)<32 for c in target),"unsafe_media_target",
                  "Native media target is absent or outside path bounds")
-    parsed=urlsplit(target)
-    if parsed.scheme=="file":
-        _nle_require(not parsed.netloc and not parsed.query and not parsed.fragment,
-                     "unsafe_media_target","Only local file URLs without authority are admitted")
-        text=unquote(parsed.path)
-        if os.name=="nt" and re.match(r"^/[A-Za-z]:/",text):text=text[1:]
-    elif os.name=="nt" and re.match(r"^[A-Za-z]:[\\/]",target):
+    if Path(target).is_absolute():
+        # Kdenlive writes native paths as well as file URLs. In a native
+        # filename, characters such as '#' belong to the local path.
         text=target
     else:
-        _nle_require(not parsed.scheme and not parsed.netloc and not parsed.query
-                     and not parsed.fragment,"unsafe_media_target",
-                     "Network/protocol media references are not admitted")
-        text=target
+        parsed=urlsplit(target)
+        if parsed.scheme=="file":
+            _nle_require(not parsed.netloc and not parsed.query and not parsed.fragment,
+                         "unsafe_media_target","Only local file URLs without authority are admitted")
+            text=unquote(parsed.path)
+            if os.name=="nt" and re.match(r"^/[A-Za-z]:/",text):text=text[1:]
+        else:
+            _nle_require(not parsed.scheme and not parsed.netloc and not parsed.query
+                         and not parsed.fragment,"unsafe_media_target",
+                         "Network/protocol media references are not admitted")
+            text=target
     _nle_require(bool(text) and not any(ord(c)<32 for c in text),
                  "unsafe_media_target","Decoded native path contains an invalid character")
     relative=Path(text)
-    _nle_require(".." not in relative.parts and not text.startswith(("//","\\\\")),
+    separators=text.replace("\\","/") if os.name=="nt" else text
+    _nle_require(".." not in relative.parts and not separators.startswith(("//","\\\\")),
                  "unsafe_media_target","Native target traversal or network path is not admitted")
     path=relative if relative.is_absolute() else raw_parent/relative
     path=path.absolute()

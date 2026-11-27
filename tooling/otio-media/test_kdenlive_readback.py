@@ -97,6 +97,18 @@ class KdenliveNativeReadbackTests(unittest.TestCase):
             self.assertFalse(result["reopened_in_distinct_editor_process"])
             self.assertFalse(result["human_rights_or_visual_approval"])
 
+    def test_native_absolute_media_path_preserves_literal_hash(self):
+        with tempfile.TemporaryDirectory(prefix="Cut #1-") as scratch:
+            bundle, seal = capsule(Path(scratch).resolve())
+            media = bundle / "media" / f"{MEDIA_SHA}.mp4"
+            for target in (str(media), media.as_uri()):
+                with self.subTest(target=target):
+                    project, sha = native_file(bundle, mlt_xml(media_name=target))
+                    result = inspect_saved_kdenlive(project, sha, bundle, seal)
+                    self.assertEqual(
+                        result["observed_source_media"][0]["original_media_sha256"], MEDIA_SHA,
+                    )
+
     def test_native_saved_reopen_content_equivalence_not_process_provenance(self):
         with tempfile.TemporaryDirectory() as scratch:
             bundle, seal, project, sha = self.scene(Path(scratch))
@@ -781,21 +793,20 @@ class KdenliveRetainedAlabReadbackContracts(unittest.TestCase):
 
 class ImmutableKdenliveOriginalReadTests(unittest.TestCase):
     def test_verified_read_uses_the_exact_captured_bytes_without_reopening_path(self):
-        import ci_private_evidence as custody
         import kdenlive_readback as reader
         with tempfile.TemporaryDirectory()as folder:
             path=Path(folder).resolve()/"original.kdenlive"
             original=b'<mlt producer="original"/>'
             changed=b'<mlt producer="replaced"/>'
             path.write_bytes(original)
-            real=custody.regular
+            real=reader.capture_original
             calls=[]
             def replace_after_capture(candidate,limit):
                 result=real(candidate,limit)
                 calls.append(candidate)
                 path.write_bytes(changed)
                 return result
-            with mock.patch.object(custody,"regular",side_effect=replace_after_capture), \
+            with mock.patch.object(reader,"capture_original",side_effect=replace_after_capture), \
                  mock.patch.object(Path,"read_bytes",side_effect=AssertionError("readback reopened pathname")):
                 observed=reader.read_closed_bytes(path,SHA(original),1024)
             self.assertEqual(observed,original)
