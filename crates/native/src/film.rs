@@ -6103,7 +6103,7 @@ mod tests {
         assert_eq!(tween.start, RationalTime::ZERO);
         assert_eq!(tween.duration, half);
         let NativeOp::Tween {
-            from: Operand::Vector(from),
+            from: Some(Operand::Vector(from)),
             to: Operand::Vector(to),
             ..
         } = &tween.operation
