@@ -427,21 +427,32 @@ jobs:
         with:
           python-version: '3.12'
       - name: Use a canonical temporary directory for original files and SQLite
-        shell: python
+        shell: pwsh
         run: |
-          import os, tempfile
-          from pathlib import Path
-
-          # A shared Windows Temp pool can have extra effective write ACEs.
-          # Keep the fixture below the user profile and exercise real NTFS admission.
-          if os.name == "nt":
-              parent = Path(os.environ["LOCALAPPDATA"])
-          else:
-              parent = Path(os.environ["RUNNER_TEMP"])
-          scratch = Path(tempfile.mkdtemp(prefix="motionwright-otio-", dir=parent.resolve(strict=True)))
-          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as env:
-              for variable in ("TMPDIR", "TEMP", "TMP"):
-                  env.write(f"{variable}={scratch}\n")
+          $ErrorActionPreference = 'Stop'
+          if ($IsWindows) {
+            # Give the disposable fixture an explicit DACL at creation. The
+            # compiled bridge still independently admits every path from the volume root.
+            $volumeRoot = [IO.Path]::GetPathRoot($env:SystemRoot)
+            $drive = [IO.DriveInfo]::new($volumeRoot)
+            if ($drive.DriveType -ne [IO.DriveType]::Fixed -or $drive.DriveFormat -ne 'NTFS') {
+              throw 'OTIO Windows source checks require a fixed NTFS system volume'
+            }
+            $scratch = Join-Path $volumeRoot ('motionwright-otio-' + [Guid]::NewGuid().ToString('N'))
+            if (Test-Path -LiteralPath $scratch) { throw 'OTIO scratch path is already occupied' }
+            $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            $access = [Security.AccessControl.DirectorySecurity]::new()
+            $access.SetSecurityDescriptorSddlForm("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;$sid)")
+            [IO.FileSystemAclExtensions]::Create([IO.DirectoryInfo]::new($scratch), $access)
+            $observed = Get-Acl -LiteralPath $scratch
+            if (!$observed.AreAccessRulesProtected) { throw 'OTIO scratch DACL is not protected' }
+          } else {
+            $scratch = python -c 'import os,tempfile; from pathlib import Path; print(tempfile.mkdtemp(prefix="motionwright-otio-",dir=Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)))'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          foreach ($variable in @('TMPDIR','TEMP','TMP')) {
+            Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Value "$variable=$scratch"
+          }
       - name: Provision the Windows synthetic-media decoder
         if: runner.os == 'Windows'
         shell: pwsh
