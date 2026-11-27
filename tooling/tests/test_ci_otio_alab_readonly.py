@@ -1,8 +1,8 @@
 """Offline caller contracts. All media, terminals and admissions are fixtures.
 
 No test starts a real ffprobe, accesses the network, creates an encryption key,
-or admits an external source. Positive snapshot controls use the existing A4
-intake/capture with explicit I/O doubles and the existing immutable collector.
+or admits an external source. Positive snapshot controls use the existing
+intake and capture with explicit I/O doubles and the existing immutable collector.
 """
 from __future__ import annotations
 
@@ -165,14 +165,17 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(gate.descriptor_bytes({"alab/safe/file.bin": b"x"},
             {"path": "safe/file.bin", "bytes": 1, "sha256": gate.custody.sha(b"x")}), b"x")
 
-    def test_owner_roster_contains_all_144_controls_including_linux_symlinks(self):
+    def test_owner_roster_includes_linux_symlinks_and_mixed_windows_separators(self):
         def ids(suite):
             if isinstance(suite, unittest.TestSuite):
                 for child in suite: yield from ids(child)
             else: yield suite.id()
         roster = list(ids(unittest.defaultTestLoader.loadTestsFromModule(owner_controls)))
-        self.assertEqual(len(roster), 144)
-        self.assertEqual(len(set(roster)), 144)
+        self.assertEqual(len(roster), 145)
+        self.assertEqual(len(set(roster)), 145)
+        self.assertIn(
+            'test_bridge.BoundedKdenliveCutTests.test_mixed_separators_cannot_hide_a_network_path', roster,
+        )
         self.assertTrue(any("symlink" in name for name in roster))
 
     def test_workflow_reuses_existing_job_and_excludes_gui_effects_for_alab(self):
