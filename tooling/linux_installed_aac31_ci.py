@@ -63,7 +63,7 @@ def verify_recipient():
     return recipient
 
 
-def admit_candidate(bundle, retained_package, *, inspect_delivery):
+def admit_candidate(bundle, retained_package):
     env = os.environ
     source_sha = env["GITHUB_SHA"]
     run_id = env["GITHUB_RUN_ID"]
@@ -108,14 +108,12 @@ def admit_candidate(bundle, retained_package, *, inspect_delivery):
             b"tooling/native_host_installed_shared_state.py",
             b"tooling/tests/test_ci_nsis_source_selection.py",
             b"tooling/linux_installed_aac31.py", b"tooling/tests/test_linux_installed_aac31.py",
+            b".github/workflows/v05-otio-real-media.yml", b"tooling/tests/test_ci_otio_alab_readonly.py",
         }, "AAC31_RETAINED_PRODUCT_SOURCE_CHANGED")
         inputs["candidate_origin"] = retained
     else:
         inputs["candidate_origin"] = {"source_sha": source_sha, "run_id": run_id}
-    if inspect_delivery:
-        installed.need(native.MW_BIN.is_file(), "AAC31_STUDIO_SEED_BINARY_REQUIRED")
-    else:
-        native.exact_inputs()
+    native.exact_inputs()
     inputs["source"] = installed.source_inputs(args)
     return args, inputs
 
@@ -154,23 +152,20 @@ def observe(args, inputs, evidence, owner, profile, database, apparmor, manim_in
                           "--request", str(request), *flags], evidence, "installed-desktop",
                          env=env, seconds=timeout)
 
-        if inspect_delivery:
-            run_desktop({"seconds": 75}, ["--inspect-delivery"], 90)
-        else:
-            resource_key = "project:" + seeded["project"]
-            with native.native_owner_broker(owner_paths, owner_env, resource_key, evidence,
-                                           hybrid=True, manim_inventory=manim_inventory) as (
-                _, connection, ffmpeg, ffprobe, tools,
-            ):
-                installed.publish(evidence / "provider-bindings.json",
-                                  {key: native.digest(path) for key, path in tools.items()})
-                run_desktop({
-                    "connection": str(connection), "connection_sha256": native.digest(connection),
-                    "wave": str(wave_path), "wave_sha256": audio["sha256"],
-                    "ffmpeg": str(ffmpeg), "ffmpeg_sha256": native.digest(ffmpeg),
-                    "ffprobe": str(ffprobe), "ffprobe_sha256": native.digest(ffprobe),
-                    "seconds": 540,
-                }, [], 630)
+        resource_key = "project:" + seeded["project"]
+        with native.native_owner_broker(owner_paths, owner_env, resource_key, evidence,
+                                       hybrid=True, manim_inventory=manim_inventory) as (
+            _, connection, ffmpeg, ffprobe, tools,
+        ):
+            installed.publish(evidence / "provider-bindings.json",
+                              {key: native.digest(path) for key, path in tools.items()})
+            run_desktop({
+                "connection": str(connection), "connection_sha256": native.digest(connection),
+                "wave": str(wave_path), "wave_sha256": audio["sha256"],
+                "ffmpeg": str(ffmpeg), "ffmpeg_sha256": native.digest(ffmpeg),
+                "ffprobe": str(ffprobe), "ffprobe_sha256": native.digest(ffprobe),
+                "seconds": 90 if inspect_delivery else 540,
+            }, ["--inspect-delivery"] if inspect_delivery else [], 105 if inspect_delivery else 630)
     installed.need(inputs["artifact"] == source.regular_file(args.artifact, BUNDLE_LIMIT)
                    and inputs["receipt"] == source.regular_file(args.candidate_receipt, 4 * 1024 * 1024)
                    and original["extracted_tree"] == installed.installed_bundle_inventory(args.app_run.parent)
@@ -186,15 +181,12 @@ def main():
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--retained-package", type=Path)
     parser.add_argument("--sandbox-profile", type=Path, required=True)
-    parser.add_argument("--manim-inventory", type=Path)
+    parser.add_argument("--manim-inventory", type=Path, required=True)
     parser.add_argument("--inspect-delivery", action="store_true")
     arguments = parser.parse_args()
     os.umask(0o077)
     recipient = verify_recipient()
-    installed.need(arguments.inspect_delivery or arguments.manim_inventory is not None,
-                   "AAC31_MANIM_INVENTORY_REQUIRED")
-    args, inputs = admit_candidate(arguments.bundle, arguments.retained_package,
-                                   inspect_delivery=arguments.inspect_delivery)
+    args, inputs = admit_candidate(arguments.bundle, arguments.retained_package)
     root = args.namespace
     root.mkdir(mode=0o700)
     evidence, owner, profile = root / "evidence", root / "o", root / "gui"

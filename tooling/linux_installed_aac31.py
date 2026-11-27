@@ -132,7 +132,7 @@ def bring_into_view(bridge, binding, view):
     return view
 
 
-def invoke(bridge, binding, view, journal, label):
+def prepare_action(bridge, binding, view):
     view = bring_into_view(bridge, binding, view)
     actions = bridge.actions(view.node)
     allowed = [index for index, name in enumerate(actions)
@@ -143,14 +143,19 @@ def invoke(bridge, binding, view, journal, label):
             and ui.VISIBLE | {"enabled", "sensitive"} <= current.states
             and "defunct" not in current.states, "AAC31 action target changed before dispatch")
     same_window(bridge, binding, current)
+    return current, allowed[0]
+
+
+def invoke(bridge, binding, view, journal, label):
+    view, index = prepare_action(bridge, binding, view)
     journal.put(label + "-intent", {"control": view.name, "binding": binding, "automatic_retry": False})
     started = time.monotonic_ns()
-    require(bridge.invoke(view.node, allowed[0]) is True, "AAC31 action is unconfirmed")
+    require(bridge.invoke(view.node, index) is True, "AAC31 action is unconfirmed")
     journal.put(label + "-acknowledged", {"control": view.name, "observed_click": True})
     return started
 
 
-def press(bridge, binding, label, journal, stage, *, seconds=30):
+def wait_for_button(bridge, binding, label, journal, stage, *, seconds=30):
     try:
         view = wait_for(
             bridge, lambda: exact(bridge, binding, label, button=True, enabled=True), seconds=seconds,
@@ -163,6 +168,11 @@ def press(bridge, binding, label, journal, stage, *, seconds=30):
         except OSError as custody_error:
             error.add_note("Could not retain the unavailable-control diagnostic: " + str(custody_error))
         raise
+    return view
+
+
+def press(bridge, binding, label, journal, stage, *, seconds=30):
+    view = wait_for_button(bridge, binding, label, journal, stage, seconds=seconds)
     return invoke(bridge, binding, view, journal, stage)
 
 
@@ -277,6 +287,9 @@ def worker(request, phase, binding, seconds):
     from gi.repository import Atspi, Gdk, GLib
 
     deadline = time.monotonic() + seconds
+    # A libatspi call can outlive its advertised IPC timeout. Retain the
+    # original stack before the external supervisor stops a stalled worker.
+    faulthandler.dump_traceback_later(10, file=sys.stderr)
     if phase in {"inspect-delivery", "capture-window"}:
         gi.require_version("GdkX11", "3.0")
         from gi.repository import GdkX11
@@ -284,7 +297,6 @@ def worker(request, phase, binding, seconds):
         capture_delivery_window(Path(request["evidence"]), binding, deadline, Gdk, GdkX11)
         if phase == "capture-window":
             return {"phase": phase, "binding": binding}
-        faulthandler.dump_traceback_later(10, file=sys.stderr)
     require(Atspi.init() in (0, 1), "AAC31_ATSPI_INIT")
     Atspi.set_timeout(800, 2500)
 
@@ -302,11 +314,12 @@ def worker(request, phase, binding, seconds):
             journal.put("before-check-source", {"binding": binding})
             press(bridge, binding, "Check hybrid sources", journal, "check-source")
         elif phase == "inspect-delivery":
-            view = wait_for(bridge, lambda: exact(bridge, binding, "Check hybrid sources", button=True))
-            state = {"phase": phase, "binding": binding,
-                     "source_check_enabled": {"enabled", "sensitive"} <= view.states}
+            journal.put("before-check-source", {"binding": binding})
+            view = wait_for_button(bridge, binding, "Check hybrid sources", journal, "check-source")
+            journal.put("located-check-source", {"control": view.name})
+            prepare_action(bridge, binding, view)
+            state = {"phase": phase, "binding": binding, "source_check_enabled": True}
             journal.put("delivery-controls", state)
-            faulthandler.cancel_dump_traceback_later()
             return state
         elif phase == "create":
             require(not rows(database, source), "AAC31 mux was already attempted for this saved source")
@@ -316,6 +329,7 @@ def worker(request, phase, binding, seconds):
                                   database, output, source)
         return {"phase": phase, "binding": binding}
     finally:
+        faulthandler.cancel_dump_traceback_later()
         journal.close()
 
 
