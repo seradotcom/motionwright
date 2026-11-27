@@ -32,6 +32,31 @@ test(platform+" reviewed package, lost acknowledgement, reopen, original read an
   expect(calls.filter(row=>row.command==="read_original_runtime_profile")).toHaveLength(1);
 });
 }
+test("an original installed profile remains readable with damaged browser history", async ({page}) => {
+  await page.goto("/tests/fixtures/runtime-profiles.html?platform=macos-aarch64");
+  const panel = page.getByRole("region", {name: "Offline runtime profiles"});
+  await panel.getByRole("button", {name: "Choose offline runtime package"}).click();
+  await panel.getByRole("button", {name: "Install reviewed local copy"}).click();
+  await expect(panel.getByText("Installed · original files verified", {exact: true})).toBeVisible();
+  const retainedKey = await page.evaluate(() => {
+    const key = Object.keys(localStorage).find(name => name.startsWith("motionwright:runtime-profile:v1:"));
+    if (!key) throw new Error("The fixture did not retain its runtime intent.");
+    localStorage.setItem(key, "damaged runtime history");
+    return key;
+  });
+  await page.reload();
+  await panel.getByRole("button", {name: "Read original files"}).click();
+  await expect(panel.getByText("Installed · original files verified", {exact: true})).toBeVisible();
+  await expect(panel.getByText("The browser’s runtime history could not be read.", {exact: false})).toBeVisible();
+  await expect(panel.getByRole("button", {name: "Choose offline runtime package"})).toBeDisabled();
+  await expect(panel.getByRole("button", {name: "Roll back and keep files"})).toBeDisabled();
+  expect(await page.evaluate(key => localStorage.getItem(key), retainedKey)).toBe("damaged runtime history");
+  const commands = await page.evaluate(() => window.__runtimeProfileFixture.calls().map(call => call.command));
+  expect(commands.filter(command => command === "issue_effect_grant")).toHaveLength(1);
+  expect(commands.filter(command => command === "install_runtime_profile")).toHaveLength(1);
+  expect(commands).not.toContain("rollback_runtime_profile");
+});
+
 test("an old runtime permission cannot dispatch after revision ABA",async({page})=>{
   await page.goto("/tests/fixtures/runtime-profiles.html");
   const panel=page.getByRole("region",{name:"Offline runtime profiles"});

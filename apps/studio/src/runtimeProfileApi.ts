@@ -186,18 +186,23 @@ export async function installRuntimeProfile(project:Project,plan:RuntimePlan,bef
     throw failure?new Error(failure.message):error;
   }
 }
-export async function readOriginalRuntimeProfile(project:Project,original:{install_id:string;manifest_sha256:string}):Promise<RuntimeInstallation>{
+export function acknowledgeRuntimeProfileResult(project:Project,result:RuntimeInstallation){
+  if(!sameValue(result.scope,scopeOf(project)))throw new Error("The original runtime result is from another project revision.");
+  if(result.state==="outcome_unknown")return;
+  const originals=readRuntimeRetention(project).filter(row=>row.install_id===result.install_id&&runtimeUnconfirmed(row));
+  if(originals.some(row=>row.manifest_sha256!==result.manifest_sha256||row.profile!==result.profile))
+    throw new Error("The retained original runtime identity differs from its stored outcome.");
+  for(const row of originals){
+    if(row.kind==="install"||result.state==="rolled_back")transition(project,row,"acknowledged");
+  }
+}
+export async function readOriginalRuntimeProfile(
+  project:Project,original:{install_id:string;manifest_sha256:string},mode:"acknowledge"|"read_only"="acknowledge",
+):Promise<RuntimeInstallation>{
   desktop();const current=structuredClone(project);
   if(!uuid(original.install_id)||!sha(original.manifest_sha256))throw new Error("Select an original runtime operation.");
   const result=parseRuntimeInstallation(await invoke<unknown>("read_original_runtime_profile",{request:{scope:scopeOf(current),install_id:original.install_id}}),current,original);
-  if(result.state!=="outcome_unknown"){
-    const rows=readRuntimeRetention(current);
-    for(const row of rows.filter(row=>row.install_id===original.install_id&&runtimeUnconfirmed(row))){
-      if(row.manifest_sha256!==result.manifest_sha256)throw new Error("The retained original runtime digest differs from its stored outcome.");
-      if(row.kind==="rollback"&&result.state!=="rolled_back")continue;
-      transition(current,row,"acknowledged");
-    }
-  }
+  if(mode==="acknowledge")acknowledgeRuntimeProfileResult(current,result);
   return result;
 }
 export async function rollbackRuntimeProfile(project:Project,installation:RuntimeInstallation,beforeDispatch:()=>void):Promise<RuntimeInstallation>{
