@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -239,7 +240,7 @@ class InstalledAAC31ProofTests(unittest.TestCase):
                         "3c6e0f63-f976-4904-a671-b8348f1a0936", 11,
                         "897e54a3-de24-474b-8e70-365e5e8af251")
         receipt_id = "fd12950f-8495-47fa-b6d7-d5698b852366"
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as cleanup:
             root = Path(directory).resolve()
             master = root / "master.mp4"
             content = b"opaque receipt-binding control"
@@ -256,13 +257,13 @@ class InstalledAAC31ProofTests(unittest.TestCase):
                 "result": {
                     "execution": {"dry_run": False, "provenance": {"provider": "driver:mlt-video"}},
                     "provenance_checked": True,
-                    "artifact": {"root": "output", "path": master.name,
-                                 "bytes": len(content), "sha256": digest},
+                    "data": {"artifact": {"root": "output", "path": master.name,
+                                          "bytes": len(content), "sha256": digest}},
                 },
             }
             database = root / "studio.sqlite3"
             db = sqlite3.connect(database)
-            self.addCleanup(db.close)
+            cleanup.callback(db.close)
             db.execute(
                 "CREATE TABLE production_receipts(receipt_id,project_id,generation,revision,"
                 "request_id,request_sha256,command,stage,payload_json)"
@@ -288,7 +289,6 @@ class InstalledAAC31ProofTests(unittest.TestCase):
                    {"original_media_reopen": context})
             with self.assertRaisesRegex(ValueError, "one original completed"):
                 original_master(database, source, root)
-            db.close()
 
 
 if __name__ == "__main__":

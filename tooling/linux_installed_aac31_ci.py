@@ -108,6 +108,7 @@ def admit_candidate(bundle, retained_package):
             b"tooling/native_host_installed_shared_state.py",
             b"tooling/tests/test_ci_nsis_source_selection.py",
             b"tooling/linux_installed_aac31.py", b"tooling/tests/test_linux_installed_aac31.py",
+            b"tooling/linux_hybrid_original_receipt.py",
             b".github/workflows/v05-otio-real-media.yml", b"tooling/tests/test_ci_otio_alab_readonly.py",
         }, "AAC31_RETAINED_PRODUCT_SOURCE_CHANGED")
         inputs["candidate_origin"] = retained

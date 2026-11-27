@@ -90,7 +90,7 @@ def original_master(database: Path, source: Source, output: Path) -> Master:
     require(result["provenance_checked"] is True and execution["dry_run"] is False
             and execution["provenance"]["provider"] == "driver:mlt-video",
             "AAC31 completion does not prove real MLT execution")
-    artifact = result["artifact"]
+    artifact = result["data"]["artifact"]
     rel = PurePosixPath(artifact["path"])
     require(str(rel) == artifact["path"] == args["output_path"]
             and not rel.is_absolute() and ".." not in rel.parts
