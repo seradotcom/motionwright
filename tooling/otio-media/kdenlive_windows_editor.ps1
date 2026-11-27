@@ -22,7 +22,7 @@ Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 
-public static class KdenliveMenuInput
+public static class KdenliveWindowsInput
 {
     [StructLayout(LayoutKind.Sequential)]
     private struct Point { public int X, Y; }
@@ -67,6 +67,126 @@ public static class KdenliveMenuInput
             return owned.Count <= 16;
         }, IntPtr.Zero);
         return owned.ToArray();
+    }
+
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(IntPtr parent, WindowCallback callback, IntPtr data);
+    [DllImport("user32.dll")]
+    private static extern bool IsChild(IntPtr parent, IntPtr child);
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowEnabled(IntPtr window);
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetParent(IntPtr window);
+    [DllImport("user32.dll")]
+    private static extern int GetDlgCtrlID(IntPtr window);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr window, System.Text.StringBuilder result, int count);
+    [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW", CharSet = CharSet.Unicode)]
+    private static extern IntPtr SetTextMessage(IntPtr window, uint message, UIntPtr count,
+        string text, uint flags, uint timeout, out UIntPtr result);
+    [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW", CharSet = CharSet.Unicode)]
+    private static extern IntPtr GetTextMessage(IntPtr window, uint message, UIntPtr count,
+        System.Text.StringBuilder text, uint flags, uint timeout, out UIntPtr result);
+    [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW")]
+    private static extern IntPtr SendMessage(IntPtr window, uint message, UIntPtr first,
+        IntPtr second, uint flags, uint timeout, out UIntPtr result);
+
+    public sealed class Control
+    {
+        public IntPtr Handle;
+        public int Id;
+        public string ClassName;
+        public bool Enabled;
+    }
+
+    private static string ClassOf(IntPtr window)
+    {
+        var name = new System.Text.StringBuilder(128);
+        return GetClassName(window, name, name.Capacity) > 0 ? name.ToString() : "";
+    }
+
+    private static bool IsOwned(IntPtr window, uint owner)
+    {
+        uint found;
+        return GetWindowThreadProcessId(window, out found) != 0 && found == owner;
+    }
+
+    public static Control[] DialogControls(IntPtr dialog, uint owner)
+    {
+        var outcome = new System.Collections.Generic.List<Control>();
+        if (!IsOwned(dialog, owner) || ClassOf(dialog) != "#32770")
+            return outcome.ToArray();
+        int observed = 0;
+        EnumChildWindows(dialog, (child, data) => {
+            if (++observed > 256)
+                return false;
+            if (!IsOwned(child, owner) || !IsWindowVisible(child))
+                return true;
+            string name = ClassOf(child);
+            if (name == "Edit" || name == "Button" || name == "ComboBox" || name == "ComboBoxEx32")
+                outcome.Add(new Control { Handle = child, Id = GetDlgCtrlID(child),
+                    ClassName = name, Enabled = IsWindowEnabled(child) });
+            return true;
+        }, IntPtr.Zero);
+        if (observed > 256)
+            throw new InvalidOperationException("Kdenlive native dialog exceeds its window budget");
+        return outcome.ToArray();
+    }
+
+    public static bool FileNameEdit(IntPtr dialog, IntPtr edit, uint owner)
+    {
+        if (!IsOwned(dialog, owner) || ClassOf(dialog) != "#32770" || !IsOwned(edit, owner)
+            || !IsChild(dialog, edit) || !IsWindowVisible(edit) || !IsWindowEnabled(edit)
+            || ClassOf(edit) != "Edit")
+            return false;
+        if (GetDlgCtrlID(edit) == 1148)
+            return true;
+        IntPtr parent = GetParent(edit);
+        for (int depth = 0; parent != IntPtr.Zero && parent != dialog && depth < 5; depth++)
+        {
+            string name = ClassOf(parent);
+            if (IsOwned(parent, owner) && GetDlgCtrlID(parent) == 1148 &&
+                (name == "ComboBox" || name == "ComboBoxEx32"))
+                return true;
+            parent = GetParent(parent);
+        }
+        return false;
+    }
+
+    public static bool ConfirmButton(IntPtr dialog, IntPtr button, uint owner, string label)
+    {
+        return IsOwned(dialog, owner) && ClassOf(dialog) == "#32770"
+            && IsOwned(button, owner) && IsChild(dialog, button)
+            && IsWindowVisible(button) && IsWindowEnabled(button)
+            && GetDlgCtrlID(button) == 1 && ClassOf(button) == "Button"
+            && ReadControlText(button, 64).Replace("&", "") == label;
+    }
+
+    private static string ReadControlText(IntPtr window, int capacity)
+    {
+        var raw = new System.Text.StringBuilder(capacity);
+        UIntPtr count;
+        if (GetTextMessage(window, 0x000D, (UIntPtr)(uint)capacity, raw, 0x0002, 1500, out count) == IntPtr.Zero)
+            throw new InvalidOperationException("Kdenlive native dialog control did not answer");
+        return raw.ToString();
+    }
+
+    public static bool SetFileName(IntPtr dialog, IntPtr edit, uint owner, string path)
+    {
+        UIntPtr result;
+        return path.Length <= 4096 && FileNameEdit(dialog, edit, owner)
+            && SetTextMessage(edit, 0x000C, UIntPtr.Zero, path, 0x0002, 1500, out result) != IntPtr.Zero
+            && result != UIntPtr.Zero && FileNameEdit(dialog, edit, owner)
+            && ReadControlText(edit, path.Length + 2) == path;
+    }
+
+    public static bool SubmitDialog(IntPtr dialog, IntPtr button, uint owner, string label)
+    {
+        if (!ConfirmButton(dialog, button, owner, label))
+            throw new InvalidOperationException("Kdenlive native dialog button changed");
+        UIntPtr result;
+        return SendMessage(button, 0x00F5, UIntPtr.Zero, IntPtr.Zero, 0x0002, 1500, out result) != IntPtr.Zero;
     }
 
     public static bool OwnedPoint(int x, int y, uint owner)
@@ -119,7 +239,7 @@ function Record([string]$Name, [object]$Value) {
 
 function Owned-Windows {
     Assert-Editor
-    $windows = [KdenliveMenuInput]::OwnedWindows([uint32]$EditorPid)
+    $windows = [KdenliveWindowsInput]::OwnedWindows([uint32]$EditorPid)
     if ($windows.Count -gt 16) { throw 'Kdenlive top-level window limit exceeded' }
     foreach ($handle in $windows) {
         try {
@@ -137,7 +257,10 @@ function Observe-Windows {
         $name = Control-Name $window
         $className = $window.Current.ClassName
         $controls = @()
+        $native = @()
         if ($className -ceq '#32770' -and $name -cin @('OpenTimelineIO Import', 'Save As', 'Save Project')) {
+            $native = @([KdenliveWindowsInput]::DialogControls([IntPtr]$window.Current.NativeWindowHandle, [uint32]$EditorPid) |
+                ForEach-Object { @{ id = $_.Id; class_name = $_.ClassName; enabled = $_.Enabled } })
             foreach ($role in @([System.Windows.Automation.ControlType]::Edit,
                     [System.Windows.Automation.ControlType]::ComboBox, [System.Windows.Automation.ControlType]::Button)) {
                 $filter = [System.Windows.Automation.PropertyCondition]::new(
@@ -159,6 +282,7 @@ function Observe-Windows {
             role = $window.Current.ControlType.ProgrammaticName
             class_name = $className
             controls = $controls
+            native_controls = $native
         }
     }
 }
@@ -255,7 +379,7 @@ function Select-MenuItem($Item, [string]$Name, [string]$Stage) {
     $point = $Item.GetClickablePoint()
     $x = [int][Math]::Floor($point.X)
     $y = [int][Math]::Floor($point.Y)
-    if (![KdenliveMenuInput]::OwnedPoint($x, $y, [uint32]$EditorPid)) { throw 'Kdenlive menu point is obscured' }
+    if (![KdenliveWindowsInput]::OwnedPoint($x, $y, [uint32]$EditorPid)) { throw 'Kdenlive menu point is obscured' }
     $hit = [System.Windows.Automation.AutomationElement]::FromPoint([Windows.Point]::new($x, $y))
     $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
     for ($depth = 0; $null -ne $hit -and $depth -lt 3; $depth++) {
@@ -265,7 +389,7 @@ function Select-MenuItem($Item, [string]$Name, [string]$Stage) {
     if (!$hit -or ($hit.GetRuntimeId() -join '.') -cne $identity) { throw 'Kdenlive menu hit target differs' }
     Assert-Editor
     Record "$Stage-intent.json" @{ editor_pid = $EditorPid; control = $Name; operation = 'click'; automatic_retry = $false }
-    if (![KdenliveMenuInput]::ClickOwnedPoint($x, $y, [uint32]$EditorPid)) { throw 'Kdenlive menu click unconfirmed' }
+    if (![KdenliveWindowsInput]::ClickOwnedPoint($x, $y, [uint32]$EditorPid)) { throw 'Kdenlive menu click unconfirmed' }
     Record "$Stage-acknowledged.json" @{ editor_pid = $EditorPid; control = $Name }
 }
 
@@ -302,25 +426,59 @@ function Find-FileDialog([string[]]$Titles) {
     }
 }
 
-function Choose-File([string[]]$Titles, [string]$Path, [string]$Button, [string]$Stage) {
-    $dialog = Await-Unique ($Titles -join ' / ') { Find-FileDialog $Titles }
-    $entry = Await-Unique 'File name' {
-        Find-Control @($dialog) ([System.Windows.Automation.ControlType]::Edit) 'File name:' 'fileNameEdit'
+function Choose-NativeFile($Dialog, [string]$Path, [string]$Button, [string]$Stage) {
+    $handle = [IntPtr]$Dialog.Current.NativeWindowHandle
+    $owner = [uint32]$EditorPid
+    $entry = Await-Unique 'native File name' {
+        [KdenliveWindowsInput]::DialogControls($handle, $owner) | Where-Object {
+            $_.ClassName -ceq 'Edit' -and [KdenliveWindowsInput]::FileNameEdit($handle, $_.Handle, $owner)
+        }
     }
-    $value = $entry.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-    if ($value.Current.IsReadOnly) { throw 'Kdenlive filename control is read-only' }
+    $confirm = Await-Unique "native $Button" {
+        [KdenliveWindowsInput]::DialogControls($handle, $owner) | Where-Object {
+            $_.ClassName -ceq 'Button' -and $_.Id -eq 1 -and
+            [KdenliveWindowsInput]::ConfirmButton($handle, $_.Handle, $owner, $Button)
+        }
+    }
     Assert-Editor
     Record "$Stage-path-intent.json" @{ editor_pid = $EditorPid; file = $Path; automatic_retry = $false }
-    $value.SetValue($Path)
-    if ($value.Current.Value -cne $Path) { throw 'Kdenlive filename readback differs' }
-    $submit = Await-Unique $Button {
-        Find-Control @($dialog) ([System.Windows.Automation.ControlType]::Button) $Button
+    if (![KdenliveWindowsInput]::SetFileName($handle, $entry.Handle, $owner, $Path)) {
+        throw 'Kdenlive native dialog did not read back the original filename'
     }
+    Assert-OriginalImport $Stage $Path
+    Assert-Editor
+    Record "$Stage-submit-intent.json" @{ editor_pid = $EditorPid; control = $Button; automatic_retry = $false }
+    $acknowledged = [KdenliveWindowsInput]::SubmitDialog($handle, $confirm.Handle, $owner, $Button)
+    Record "$Stage-submit-terminal.json" @{ editor_pid = $EditorPid; control = $Button; returned = $acknowledged }
+}
+
+function Assert-OriginalImport([string]$Stage, [string]$Path) {
     if ($Stage -ceq 'import' -and
         (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $OriginalSha256) {
         throw 'Kdenlive import input changed before confirmation'
     }
-    Invoke-Control $submit "$Stage-submit" -ConfirmDialogTransition
+}
+
+function Choose-File([string[]]$Titles, [string]$Path, [string]$Button, [string]$Stage) {
+    $dialog = Await-Unique ($Titles -join ' / ') { Find-FileDialog $Titles }
+    if ($dialog.Current.ClassName -ceq '#32770') {
+        Choose-NativeFile $dialog $Path $Button $Stage
+    } else {
+        $entry = Await-Unique 'File name' {
+            Find-Control @($dialog) ([System.Windows.Automation.ControlType]::Edit) 'File name:' 'fileNameEdit'
+        }
+        $value = $entry.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        if ($value.Current.IsReadOnly) { throw 'Kdenlive filename control is read-only' }
+        Assert-Editor
+        Record "$Stage-path-intent.json" @{ editor_pid = $EditorPid; file = $Path; automatic_retry = $false }
+        $value.SetValue($Path)
+        if ($value.Current.Value -cne $Path) { throw 'Kdenlive filename readback differs' }
+        $submit = Await-Unique $Button {
+            Find-Control @($dialog) ([System.Windows.Automation.ControlType]::Button) $Button
+        }
+        Assert-OriginalImport $Stage $Path
+        Invoke-Control $submit "$Stage-submit" -ConfirmDialogTransition
+    }
     while ($deadline.Elapsed.TotalSeconds -lt 95) {
         Assert-Editor
         if (!@(Find-FileDialog $Titles).Count) { return }
