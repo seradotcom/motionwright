@@ -94,7 +94,7 @@ const mltCloseLabels: Record<MltCloseDisposition, string> = {
 
 function JobRow({
   job, desktopMode, ownerReadBusy, ownerObservation, onReadOriginalStatus,
-  onCloseMlt, closeBusy, closure,
+  onCloseMlt, closeBusy, closePending, closure,
 }: {
   job: ProductionJobProjection;
   desktopMode: boolean;
@@ -103,6 +103,7 @@ function JobRow({
   onReadOriginalStatus: (job: ProductionJobProjection) => void;
   onCloseMlt?: (job: ProductionJobProjection) => void;
   closeBusy: boolean;
+  closePending: boolean;
   closure?: MltCloseDisposition;
 }) {
   const progress = job.progress
@@ -146,10 +147,14 @@ function JobRow({
           <button type="button" className="button compact"
             disabled={closeBusy || (closure !== undefined && closure !== "confirmation_unavailable")}
             onClick={() => onCloseMlt(job)}>
-            {closeBusy ? "Waiting for Broker…" : "Request MLT project closure"}
+            {closePending ? "Waiting for Broker…" : "Request MLT project closure"}
           </button>
         )}
-        {closure && <span role="status" className="job-secondary-state">{mltCloseLabels[closure]}</span>}
+        {closePending ? (
+          <span role="status" className="job-secondary-state">
+            When prompted, answer in the original Semwright Broker approval console.
+          </span>
+        ) : closure && <span role="status" className="job-secondary-state">{mltCloseLabels[closure]}</span>}
         {ownerObservation && (
           <span role="status" aria-label="Original native job status observation"
             className="job-secondary-state">
@@ -203,7 +208,7 @@ export default function ProductionJobsWorkspace({
   const [mltInventoryBusy, setMltInventoryBusy] = useState(false);
   const [mltInventoryError, setMltInventoryError] = useState<string | null>(null);
   const activeMltClose = useRef<string | null>(null);
-  const [closeBusy, setCloseBusy] = useState(false);
+  const [closingJobKey, setClosingJobKey] = useState<string | null>(null);
   const [closeError, setCloseError] = useState<string | null>(null);
   const [closures, setClosures] = useState<Record<string, MltCloseDisposition>>({});
   const [ownerReadBusy, setOwnerReadBusy] = useState<string | null>(null);
@@ -455,7 +460,7 @@ export default function ProductionJobsWorkspace({
     const scoped = historyKey;
     const key = productionJobKey(project.id, job);
     activeMltClose.current = key;
-    setCloseBusy(true);
+    setClosingJobKey(key);
     setCloseError(null);
     try {
       const disposition = await closeOriginalMltProject(project, job.root_request_id);
@@ -467,7 +472,7 @@ export default function ProductionJobsWorkspace({
       }
     } finally {
       activeMltClose.current = null;
-      setCloseBusy(false);
+      setClosingJobKey(null);
     }
   }
 
@@ -687,7 +692,8 @@ export default function ProductionJobsWorkspace({
               desktopMode={desktopMode} ownerReadBusy={ownerReadBusy !== null}
               ownerObservation={originalStatusFor(job)}
               onCloseMlt={historyOpen ? undefined : (entry) => { void requestMltClosure(entry); }}
-              closeBusy={closeBusy}
+              closeBusy={closingJobKey !== null}
+              closePending={!historyOpen && closingJobKey === productionJobKey(project.id, job)}
               closure={closureFor(job)}
               onReadOriginalStatus={(entry) => { void readOwnerOriginal(entry); }}
             />)}

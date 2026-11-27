@@ -128,7 +128,8 @@ test("MLT closure uses the original saved job and fences an unconfirmed outcome"
   const boot = structuredClone(fixtureBootstrap);
   boot.native_sdk.mode = "tauri";
   const job = {
-    ...jobFixture(boot), provider: "driver:mlt-video", root_request_id: "take:mlt:render-start",
+    ...jobFixture(boot), provider: "driver:mlt-video", job_ref: "render:original",
+    root_request_id: "take:mlt:render-start",
     state: "succeeded", result_available: true, artifact_available: true, provider_generation: 7,
     mlt_closure: { disposition: null },
   };
@@ -136,6 +137,7 @@ test("MLT closure uses the original saved job and fences an unconfirmed outcome"
     const app = window as unknown as {
       __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
       __MLT_CLOSE__: Array<[string, unknown]>;
+      __FINISH_MLT_CLOSE__?: () => void;
     };
     app.__MLT_CLOSE__ = [];
     app.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
@@ -143,13 +145,15 @@ test("MLT closure uses the original saved job and fences an unconfirmed outcome"
         return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(initial));
       }
       if (command === "production_jobs") {
-        return [{ ...original, mlt_closure: {
-          disposition: sessionStorage.getItem("fixture-retained-mlt-closure"),
-        } }];
+        return [
+          { ...original, mlt_closure: { disposition: sessionStorage.getItem("fixture-retained-mlt-closure") } },
+          { ...original, job_ref: "render:other", root_request_id: "other:mlt:render-start" },
+        ];
       }
       app.__MLT_CLOSE__.push([command, args?.request]);
       if (command === "issue_effect_grant") return { token: "test-owner-grant" };
       if (command === "close_original_mlt_project") {
+        await new Promise<void>((resolve) => { app.__FINISH_MLT_CLOSE__ = resolve; });
         sessionStorage.setItem("fixture-retained-mlt-closure", "outcome_unknown");
         return "outcome_unknown";
       }
@@ -158,10 +162,17 @@ test("MLT closure uses the original saved job and fences an unconfirmed outcome"
   }, { initial: boot, original: job });
   await page.goto("/");
   await page.getByRole("button", { name: "Jobs", exact: true }).click();
-  const close = page.getByRole("button", { name: "Request MLT project closure" });
+  const originalRow = page.getByRole("row").filter({ hasText: "render:original" });
+  const otherRow = page.getByRole("row").filter({ hasText: "render:other" });
+  const close = originalRow.getByRole("button", { name: "Request MLT project closure" });
   await expect(close).toBeEnabled();
   expect(await page.evaluate(() => Reflect.get(window, "__MLT_CLOSE__"))).toEqual([]);
   await close.click();
+  await expect(originalRow.getByRole("status").filter({ hasText: "Semwright Broker approval console" })).toBeVisible();
+  await expect(otherRow.getByRole("button", { name: "Request MLT project closure" })).toBeDisabled();
+  await expect(otherRow.getByRole("status")).toHaveCount(0);
+  await page.waitForFunction(() => typeof Reflect.get(window, "__FINISH_MLT_CLOSE__") === "function");
+  await page.evaluate(() => Reflect.get(window, "__FINISH_MLT_CLOSE__")());
   await expect(page.getByRole("status").filter({ hasText: "Closure could not be confirmed" })).toBeVisible();
   await expect(close).toBeDisabled();
   const scope = { project_id: boot.project.id, generation: boot.project.generation, revision: boot.project.revision };
