@@ -695,15 +695,16 @@ fn observed_hybrid_master_stream_clock(
     }
 }
 
-/// Delivery of a persisted hybrid master reopens its original bounded report
-/// even after the renderer and original Studio process have closed.
-pub(super) fn verify_saved_hybrid_master_stream_clock(
+/// Reopen the original bounded report without observing, decoding or rendering again.
+pub(super) fn read_saved_hybrid_master_stream_clock(
     root: &Path,
     original_result: &Value,
     original_video_path: &str,
     authored_video_frames: u64,
-    authored_audio_samples: u64,
-) -> NativeResult<()> {
+) -> NativeResult<HybridMasterStreamClock> {
+    let authored_audio_samples = authored_video_frames
+        .checked_mul(1_600)
+        .ok_or_else(|| invalid("Saved hybrid audio clock exceeds the supported bounds"))?;
     let media = original_result
         .get("artifact")
         .ok_or_else(|| backend("Saved hybrid master has no MP4 identity"))?;
@@ -734,9 +735,27 @@ pub(super) fn verify_saved_hybrid_master_stream_clock(
             && document.get("native_input_sources") == original_result.get("native_input_sources"),
         "Saved hybrid clock report does not identify its original input and media roster",
     )?;
-    let clock = observed_hybrid_master_stream_clock(document, authored_audio_samples);
+    Ok(observed_hybrid_master_stream_clock(
+        document,
+        authored_audio_samples,
+    ))
+}
+
+pub(super) fn verify_saved_hybrid_master_stream_clock(
+    root: &Path,
+    original_result: &Value,
+    original_video_path: &str,
+    authored_video_frames: u64,
+    authored_audio_samples: u64,
+) -> NativeResult<()> {
+    let clock = read_saved_hybrid_master_stream_clock(
+        root,
+        original_result,
+        original_video_path,
+        authored_video_frames,
+    )?;
     require(
-        authored_video_frames.checked_mul(1_600) == Some(authored_audio_samples)
+        clock.authored_audio_samples == authored_audio_samples
             && clock.exact_video_clock
             && clock.exact_audio_presentation(),
         "Original hybrid MP4 stream presentation differs from the authored video or audio clock",
@@ -1469,6 +1488,11 @@ mod tests {
         }});
         let exact = observed_hybrid_master_stream_clock(&report, 49_600);
         assert!(exact.exact_video_clock && exact.exact_audio_presentation());
+        assert_eq!(
+            serde_json::to_value(super::SavedHybridTiming::Observed(exact)).unwrap(),
+            json!({"status":"observed","clock":{"exact_video_clock":true,"audio_start_sample":0,
+                "presented_audio_samples":49_600,"authored_audio_samples":49_600}})
+        );
 
         let mut shortened = report.clone();
         shortened["audio_stream"]["duration_ts"] = json!(49_584);

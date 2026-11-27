@@ -1,7 +1,8 @@
 import { CircleDashed, RefreshCw, TriangleAlert } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useLocalMediaElement } from "./audioReviewPlayback";
-import type {NativeAvPlayback} from "./nativeAvMedia";
+import type {NativeAvPlayback,SavedHybridTiming} from "./nativeAvMedia";
+import {streamClockIssue,type HybridMasterStreamClock} from "./hybridNative";
 import type {SavedMasterHint} from "./savedNativeMedia";
 import { readNativeAvAudioQc, prepareVerifiedNativeAvReview, prepareSavedNativeAvReview, prepareSavedNativeMuxReview, readNativeAudioQcReceiptInventory, readNativeAudioQcReceipt } from "./api";
 import {
@@ -31,6 +32,8 @@ export default function NativeAvReview({
   receiptHint,
   muxReceiptHint,
   reviewOnly = false,
+  initialHybridClock,
+  savedDelivery,
   seekTimeSeconds,
   onMediaTime,
   onMediaPlay,
@@ -42,6 +45,8 @@ export default function NativeAvReview({
   project: Project;
   /** Owner source SHA passed, but no installed decoded caption glyph proof. */
   reviewOnly?: boolean;
+  initialHybridClock?: HybridMasterStreamClock;
+  savedDelivery?: ReactNode;
   /** Optional exact Film output-relative time when embedded in Program. */
   seekTimeSeconds?: number;
   onMediaTime?: (seconds: number) => void;
@@ -58,12 +63,18 @@ export default function NativeAvReview({
     ? "saved-receipt:"+receiptHint.decoded_measurement_receipt_id+":"+receiptHint.master_sha256
     : muxReceiptHint ? "saved-mux:"+muxReceiptHint.mux_receipt_id+":"+muxReceiptHint.master_sha256 : exportToken;
   const identity = nativeAvReadScope(project, selector, deliverableId, masterSha256);
+  const timingKey = JSON.stringify(identity);
   const readKey = guard.current.viewKey(JSON.stringify([identity, retry]));
   const visibleKey = useRef(readKey);
   visibleKey.current = readKey;
   const [storedPlayback, storePlayback] = useState<{ key: string; value: PlaybackState } | null>(null);
   const playback: PlaybackState = storedPlayback?.key === readKey ? storedPlayback.value : { kind: "loading" };
   const setPlayback = (value: PlaybackState) => storePlayback({ key: readKey, value });
+  const [storedTiming, storeTiming] = useState<{key:string;value:SavedHybridTiming}|null>(null);
+  const savedHybridTiming = storedTiming?.key===timingKey ? storedTiming.value : undefined;
+  const clockIssue = savedHybridTiming?.status==="unavailable"
+    ? "The saved MP4’s original timing report could not be verified."
+    : streamClockIssue(savedHybridTiming?.clock??initialHybridClock);
   const [storedMetadata, storeMetadata] = useState<{ key: string; value: string | null } | null>(null);
   const metadata = storedMetadata?.key === readKey ? storedMetadata.value : null;
   const setMetadata = (value: string | null) => storeMetadata({ key: readKey, value });
@@ -103,6 +114,7 @@ export default function NativeAvReview({
       .then((source) => {
         if (!guard.current.isCurrent(ticket, visibleKey.current)) return;
         if(source.kind==="stream"){
+          if(source.savedHybridTiming) storeTiming({key:timingKey,value:source.savedHybridTiming});
           setPlayback({kind:"ready",url:source.url});
         }else{
           // Legacy small binary responses retain their previous playback path.
@@ -155,7 +167,7 @@ export default function NativeAvReview({
     if (editorialPlaying) videoRef.current?.pause();
   }, [editorialPlaying]);
 
-  return (
+  return <>
     <div className={"native-av-review" + (embedded ? " in-program" : "")}
       role="region" aria-label="Native master playback review">
       <div className="native-av-review-header">
@@ -250,10 +262,12 @@ export default function NativeAvReview({
           ? "Native media clock follows source-scoped editorial seeks"
           : "Independent media review · not timeline-synchronized"}</span>
       </div>
+      {clockIssue&&<p className="delivery-truth-note" role="status"><strong>Review only.</strong> {clockIssue}</p>}
       {!embedded && !muxReceiptHint && <NativeAudioQcReview project={project} selection={receiptHint ? {kind:"receipt",hint:receiptHint} : { kind: "session", exportToken }}
         deliverableId={deliverableId} masterSha256={masterSha256} />}
     </div>
-  );
+    {!clockIssue&&savedDelivery}
+  </>;
 }
 
 type AudioQcReadState = { kind: "loading" } | { kind: "unavailable" }

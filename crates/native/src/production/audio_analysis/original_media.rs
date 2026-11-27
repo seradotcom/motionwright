@@ -35,6 +35,7 @@ impl ProductionCoordinator {
             sha256: parent.master.sha256.clone(),
             bytes: parent.master.bytes,
             clock: (parent.fps_num, parent.fps_den, parent.video_frames),
+            saved_hybrid_timing: None,
         })
     }
 }

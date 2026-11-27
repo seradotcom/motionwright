@@ -773,7 +773,15 @@ fn saved_hybrid_master_requires_its_retained_clock_report_only_for_delivery() {
         .production_receipts(fixture.project.id, 256)
         .unwrap();
 
-    assert!(fixture.recover(selected.id).is_ok());
+    let review = fixture.recover(selected.id).unwrap();
+    assert!(matches!(
+        review.saved_hybrid_timing(),
+        Some(SavedHybridTiming::Unavailable)
+    ));
+    assert_eq!(
+        serde_json::to_value(review.saved_hybrid_timing()).unwrap(),
+        json!({"status":"unavailable"})
+    );
     let error = fixture.qualify(selected.id).err().unwrap();
     assert!(
         error
@@ -816,7 +824,12 @@ fn saved_hybrid_master_checks_actual_file_sizes_and_preserves_read_only_review()
     let mut changed = fs::read(&audio).unwrap();
     changed[44] ^= 1;
     fs::write(&audio, changed).unwrap();
-    assert!(f.recover(selected.id).is_ok());
+    assert!(
+        f.recover(selected.id)
+            .unwrap()
+            .saved_hybrid_timing()
+            .is_none()
+    );
     assert!(f.qualify(selected.id).is_err());
     fs::OpenOptions::new()
         .write(true)

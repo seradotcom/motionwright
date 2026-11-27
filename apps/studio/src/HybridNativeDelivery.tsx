@@ -3,24 +3,13 @@ import {CircleCheck,Play} from "lucide-react";
 import NativeAvReview from "./NativeAvReview";
 import SavedMasterDelivery from "./SavedMasterDelivery";
 import type {DeliveryProjectState} from "./deliveryProfileDraft";
-import type {HybridFailure,HybridMasterResult,HybridMasterStreamClock,HybridSourcePreflight} from "./hybridNative";
+import {streamClockIssue,type HybridFailure,type HybridMasterResult,type HybridSourcePreflight} from "./hybridNative";
 import type {Project} from "./types";
 
 export type HybridDeliveryAttempt=
   |{status:"dispatching"}
   |{status:"completed";result:HybridMasterResult}
   |{status:"stopped";failure:HybridFailure};
-
-function streamClockIssue(clock?:HybridMasterStreamClock):string|null {
-  if(!clock) return null;
-  if(!clock.exact_video_clock) return "The rendered video timing differs from the saved cut.";
-  const {audio_start_sample:start,presented_audio_samples:presented,authored_audio_samples:authored}=clock;
-  if(start===null||presented===null) return "The original MP4 has no complete audio timing measurement.";
-  if(start!==0) return "The original audio starts at sample "+start.toLocaleString()+". The saved cut starts at zero.";
-  if(presented!==authored) return "The original audio presents "+presented.toLocaleString()+
-    " samples. The saved cut requires "+authored.toLocaleString()+".";
-  return null;
-}
 
 export default function HybridNativeDelivery({
   project,deliverableId,canCheck,canRender,checking,attempt,source,
@@ -79,14 +68,14 @@ export default function HybridNativeDelivery({
       </button>}
       {!hint&&<p>Use “Find saved MP4s” below to reopen this original.</p>}
       {clockIssue
-        ? <p className="delivery-truth-note" role="status"><strong>Review only.</strong> {clockIssue}</p>
+        ? !reviewing && <p className="delivery-truth-note" role="status"><strong>Review only.</strong> {clockIssue}</p>
         : <p className="delivery-truth-note">Review the picture and sound before delivery. Export requires a separate destination permission.</p>}
     </>}
     {reviewing&&hint&&<>
       <NativeAvReview project={project} muxReceiptHint={hint} deliverableId={deliverableId}
-        masterSha256={hint.master_sha256} embedded/>
-      {!clockIssue&&<SavedMasterDelivery key={key!} project={project} deliverableId={deliverableId} hint={hint}
-        blocked={blocked} currentProjectState={currentProjectState}/>}
+        masterSha256={hint.master_sha256} embedded initialHybridClock={result?.stream_clock}
+        savedDelivery={<SavedMasterDelivery key={key!} project={project} deliverableId={deliverableId} hint={hint}
+          blocked={blocked} currentProjectState={currentProjectState}/>}/>
     </>}
   </section>;
 }

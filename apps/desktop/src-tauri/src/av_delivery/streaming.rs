@@ -81,6 +81,21 @@ pub(crate) struct ReviewDescriptor {
     size_bytes: u64,
     max_range_bytes: u64,
     media_type: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    saved_hybrid_timing: Option<motionwright_native::production::SavedHybridTiming>,
+}
+
+impl ReviewDescriptor {
+    pub(super) fn with_saved_hybrid_timing(
+        mut self,
+        timing: Option<motionwright_native::production::SavedHybridTiming>,
+    ) -> Self {
+        if timing.is_some() {
+            self.schema = "motionwright.native-av-review/2";
+            self.saved_hybrid_timing = timing;
+        }
+        self
+    }
 }
 
 struct ReviewStream {
@@ -135,6 +150,7 @@ impl ReviewStream {
             size_bytes: self.size,
             max_range_bytes: MAX_RANGE_BYTES,
             media_type: "video/mp4",
+            saved_hybrid_timing: None,
         }
     }
 
