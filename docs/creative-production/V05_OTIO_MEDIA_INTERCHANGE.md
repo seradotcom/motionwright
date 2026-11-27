@@ -251,7 +251,10 @@ existing directories and dangling symlinks are never replaced. An interrupted
 or unconfirmed export is not retried automatically. Inspect the selected
 folder before deciding what to do next.
 
-The Desktop source checks verify the bridge. The native Kdenlive jobs observe
-the editor and its saved project on the selected platform. Product acceptance
-also tracks installation qualification and human review.
-See [Owner-reviewed OTIO cut commit](V05_OTIO_OWNER_CUT_COMMIT.md).
+The native Kdenlive 26.08.3 checks on Windows x64 and macOS arm64 save the
+original cut, reopen the same project and media in a new process, and return
+one end trim for Motionwright review. See the [Windows run](https://github.com/seradotcom/motionwright/actions/runs/46007674228)
+and the [macOS run](https://github.com/seradotcom/motionwright/actions/runs/46019402697).
+
+The returned edit is a proposal. To commit it to the current saved project,
+follow the [owner-reviewed cut workflow](V05_OTIO_OWNER_CUT_COMMIT.md).
