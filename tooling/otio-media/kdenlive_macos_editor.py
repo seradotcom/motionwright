@@ -126,10 +126,13 @@ class Accessibility:
         value = self.value(element, "AXEnabled")
         return bool(value and self.type_id(value) == self.boolean_type and self.boolean_value(value))
 
-    def action(self, element, allowed):
+    def actions(self, element):
         output = C.c_void_p()
         actions = self.capture(self.copy_actions(element, C.byref(output)), output)
-        observed = {self.string(name) for name in self.array(actions)}
+        return sorted({self.string(name) for name in self.array(actions)} - {""})
+
+    def action(self, element, allowed):
+        observed = self.actions(element)
         return next((name for name in allowed if name in observed), None)
 
     def set_text(self, element, value):
@@ -185,12 +188,18 @@ class EditorUI:
 
     def file_menu(self):
         ax = self.ax
-        menu_bar = ax.value(ax.app, "AXMenuBar")
-        window = self.top_window()
-        return next((element for element in self.descend((menu_bar, window))
-                     if self.title(element) == "file"
-                     and ax.text(element, "AXRole") in {"AXMenu", "AXMenuBarItem", "AXMenuItem"}
-                     and ax.enabled(element)), None)
+        native_bar = ax.value(ax.app, "AXMenuBar")
+        widget_bar = next((node for node in self.descend((self.top_window(),), limit=40)
+                           if ax.text(node, "AXRole") == "AXMenuBar"
+                           and ax.text(node, "AXIdentifier").endswith(".QMenuBar")), None)
+        for bar in (widget_bar, native_bar):
+            if bar and ax.owns(bar):
+                files = [node for node in ax.children(bar) if ax.owns(node) and self.title(node) == "file"
+                         and ax.text(node, "AXRole") in {"AXMenu", "AXMenuBarItem", "AXMenuItem"}
+                         and ax.enabled(node)]
+                if len(files) == 1:
+                    return files[0]
+        return None
 
     def menu_item(self, title, evidence, stage):
         ax = self.ax
@@ -210,6 +219,10 @@ class EditorUI:
         if item:
             return item
         menu = self.await_target(self.file_menu, "File menu")
+        evidence.write(stage + "-file-menu-observed", {
+            "pid": ax.pid, "role": ax.text(menu, "AXRole"), "title": ax.text(menu, "AXTitle"),
+            "identifier": ax.text(menu, "AXIdentifier"), "actions": ax.actions(menu),
+        })
         evidence.press(stage + "-file-menu", menu)
         return self.await_target(lookup, title)
 
@@ -275,12 +288,17 @@ class Evidence:
     def press(self, stage, target):
         self.guard()
         ax = self.ax
-        allowed = ("AXPress", "AXPick") if ax.text(target, "AXRole").startswith("AXMenu") else ("AXPress",)
+        role, title = ax.text(target, "AXRole"), ax.text(target, "AXTitle")
+        allowed = ("AXPress",)
+        if role.startswith("AXMenu"):
+            allowed = ("AXPress", "AXPick")
+            if stage in {"import-file-menu", "save-file-menu"} and label(title) == "file":
+                allowed = ("AXShowMenu", *allowed)
         action = ax.action(target, allowed)
         require(ax.owns(target) and ax.enabled(target) and action,
                 f"macOS {stage} target is outside the editor, disabled or has no exact action")
         self.write(stage + "-intent", {
-            "pid": ax.pid, "action": action, "title": ax.text(target, "AXTitle"),
+            "pid": ax.pid, "action": action, "title": title, "role": role,
         })
         status = ax.perform(target, ax.name(action))
         self.write(stage + "-terminal", {"pid": ax.pid, "ax_error": status})

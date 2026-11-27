@@ -1,5 +1,6 @@
 """Test the bounded installed-editor route without macOS UI effects."""
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import Mock, call
 
@@ -57,6 +58,24 @@ class MacEditorRouteTests(unittest.TestCase):
         evidence.press.assert_called_once_with("open-import", "import item")
         ui.after_import.assert_not_called()
 
+
+    def test_open_file_menu_can_use_cocoa_show_menu_but_import_cannot(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ax = Mock(pid=42)
+            ax.enabled.return_value = True
+            ax.owns.return_value = True
+            ax.text.side_effect = lambda _, name: {"AXRole": "AXMenuItem", "AXTitle": "File"}[name]
+            ax.action.side_effect = lambda _, allowed: "AXShowMenu" if "AXShowMenu" in allowed else None
+            ax.perform.return_value = 0
+            evidence = editor.Evidence(Path(folder), ax, lambda: None)
+
+            evidence.press("import-file-menu", "File")
+            self.assertTrue((Path(folder) / "import-file-menu-terminal.json").is_file())
+
+            with self.assertRaisesRegex(ValueError, "no exact action"):
+                evidence.press("open-import", "File")
+            ax.perform.assert_called_once()
+            self.assertFalse((Path(folder) / "open-import-intent.json").exists())
 
 if __name__ == "__main__":
     unittest.main()
