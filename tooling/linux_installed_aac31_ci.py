@@ -117,6 +117,7 @@ def admit_candidate(bundle, retained_package, *, readback_only=False):
             b"tooling/otio-media/setup_windows_fixture_ffmpeg.ps1",
             b"tooling/otio-media/kdenlive_windows_editor.ps1",
             b"tooling/otio-media/kdenlive_windows_editor.py",
+            b"tooling/otio-media/kdenlive_windows_reopen.py",
             b"tooling/otio-media/kdenlive_macos_editor.py",
             b"tooling/otio-media/test_kdenlive_macos_editor.py",
             b"scripts/candidate_dependency_capture.py",

@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory)][string]$Executable,
     [Parameter(Mandatory)][string]$OriginalOtio,
     [Parameter(Mandatory)][string]$OriginalSha256,
-    [Parameter(Mandatory)][string]$Evidence
+    [Parameter(Mandatory)][string]$Evidence,
+    [switch]$VerifySavedProject
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -720,6 +721,31 @@ function Verify-ThirdClipPlaylist {
 if ($OriginalSha256 -cnotmatch '^[a-f0-9]{64}$' -or
     (Get-FileHash -LiteralPath $OriginalOtio -Algorithm SHA256).Hash.ToLowerInvariant() -cne $OriginalSha256 -or
     (Test-Path -LiteralPath $savePath)) { throw 'Kdenlive import input or save destination differs' }
+if ($VerifySavedProject) {
+    if ([IO.Path]::GetFileName($OriginalOtio) -cne 'initial.kdenlive') {
+        throw 'The exact retained Kdenlive project is required'
+    }
+    $exactTitle = 'initial / 320x180 30FPS - Kdenlive'
+    $window = Await-Unique 'the retained native project in the new process' {
+        $windows = @(Owned-Windows)
+        if (@($windows | Where-Object {
+            $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Window
+        }).Count -eq 1) {
+            $windows | Where-Object {
+                $_.Current.ClassName -ceq 'MainWindow' -and
+                    (Control-Name $_) -ceq $exactTitle
+            }
+        }
+    } 50
+    Assert-Editor
+    $digest = (Get-FileHash -LiteralPath $OriginalOtio -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($digest -cne $OriginalSha256) { throw 'Reopened Kdenlive project bytes changed' }
+    Record 'reopen-window.json' @{
+        editor_pid = $EditorPid; hwnd = $window.Current.NativeWindowHandle; name = (Control-Name $window)
+        saved_sha256 = $digest; submit_actions = 0
+    }
+    return
+}
 try {
     $main = Await-Unique 'Kdenlive window' {
         Owned-Windows | Where-Object {

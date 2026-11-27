@@ -25,6 +25,11 @@ on:
         type: boolean
         default: false
         required: false
+      kdenlive_editor_reopen:
+        description: Reopen the retained Windows native project and its original media
+        type: boolean
+        default: false
+        required: false
       kdenlive_editor_first_save:
         description: Import the synthetic OTIO cut in the installed editor and verify its initial save
         type: boolean
@@ -619,9 +624,12 @@ jobs:
 
   kdenlive-native-editor:
     if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'kdenlive-native-editor'
-    name: ${{ inputs.kdenlive_accessibility_probe && 'Kdenlive hosted accessibility' || inputs.kdenlive_editor_window_probe && 'Kdenlive native window observation' || (inputs.kdenlive_editor_first_save && 'Kdenlive native editor first save' || 'Kdenlive native editor installation') }} (${{ matrix.os }})
+    name: ${{ inputs.kdenlive_accessibility_probe && 'Kdenlive hosted accessibility' || inputs.kdenlive_editor_window_probe && 'Kdenlive native window observation' || inputs.kdenlive_editor_reopen && 'Kdenlive retained project reopen' || (inputs.kdenlive_editor_first_save && 'Kdenlive native editor first save' || 'Kdenlive native editor installation') }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 32
+    permissions:
+      actions: read
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -636,6 +644,12 @@ jobs:
       - name: Verify the native editor admission and installation controls
         working-directory: tooling/otio-media
         run: python -B -E -s -m unittest -v test_kdenlive_native_distribution test_kdenlive_native_installation test_kdenlive_native_source test_kdenlive_macos_editor
+      - name: Require exact Windows reopen scope
+        if: inputs.kdenlive_editor_reopen && (inputs.kdenlive_editor_platform != 'windows' || inputs.kdenlive_accessibility_probe || inputs.kdenlive_editor_first_save || inputs.kdenlive_editor_window_probe)
+        shell: bash
+        run: |
+          echo 'The retained project reopen requires Windows and its own verification scope.' >&2
+          exit 2
       - name: Require the native window probe to be selected on its own
         if: inputs.kdenlive_editor_window_probe && (inputs.kdenlive_editor_platform != 'macos' || inputs.kdenlive_accessibility_probe || inputs.kdenlive_editor_first_save)
         shell: bash
@@ -687,6 +701,11 @@ jobs:
       - name: Read the installed Kdenlive window without editing
         if: inputs.kdenlive_editor_window_probe && runner.os == 'macOS'
         run: python -B -E -s tooling/otio-media/kdenlive_macos_editor.py --observe-editor-actions
+      - name: Reopen the exact retained Windows project
+        if: inputs.kdenlive_editor_reopen && runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -B -E -s tooling/otio-media/kdenlive_windows_reopen.py
       - name: Produce the first-party OTIO cut and its original media
         if: inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe
         run: python -B -E -s tooling/otio-media/kdenlive_native_source.py
@@ -720,6 +739,16 @@ jobs:
           path: |
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/macos-initial-observe/*.json
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/macos-initial-observe/editor.stderr
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Retain the Windows reopen observation
+        if: always() && inputs.kdenlive_editor_reopen && runner.os == 'Windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: kdenlive-windows-reopen-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/windows-reopen/*.json
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/windows-reopen/*.log
           if-no-files-found: warn
           retention-days: 7
       - name: Retain native save and readback results
