@@ -2113,6 +2113,9 @@ jobs:
       run: |
         set -euo pipefail
         evidence="$RUNNER_TEMP/mw-mlt-g2-contracts-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        cargo test --locked -p motionwright-native --lib production::mlt_timeline::tests:: -- --nocapture \
+          2>&1 | tee "$evidence/mlt-timeline-rust.log"
+        grep -F 'mlt_job_observations_require_the_project_creation_generation ... ok' "$evidence/mlt-timeline-rust.log"
         cargo test --locked -p motionwright-native --example native-mlt-sequence-e2e \
           -- --nocapture 2>&1 | tee "$evidence/original-wav-rust.log"
         "$CUSTODY_PYTHON" -B -E -s - "$evidence/original-wav-rust.log" <<'PY'

@@ -45,9 +45,66 @@ impl MltTimelineMode {
 }
 
 #[derive(Debug, Clone)]
-struct MltSession {
+pub(super) struct MltSession {
     project_ref: String,
     revision: String,
+    provider_generation: u64,
+}
+
+fn mlt_provider_generation(response: &Value) -> Option<u64> {
+    response
+        .pointer("/execution/provenance/provider_generation")
+        .and_then(Value::as_u64)
+}
+
+pub(super) const RESULT_COMMAND: &str = "driver.mlt-video.render.result";
+pub(super) const TIMELINE_SOURCE: &str = "mlt_timeline_source";
+
+impl MltSession {
+    pub(super) fn receipt_source(&self, connection: &ProductionConnection) -> NativeResult<Value> {
+        Ok(json!({
+            "schema": "motionwright.mlt-timeline-source/1",
+            "connection_identity": connection.identity()?,
+            "project_ref": self.project_ref,
+            "semantic_revision": self.revision,
+            "provider_generation": self.provider_generation,
+        }))
+    }
+
+    pub(super) fn check_result(&self, result: &Value, job: Option<&str>) -> NativeResult<()> {
+        self.check_generation(result)?;
+        if job.is_none()
+            || result.pointer("/data/job").and_then(Value::as_str) != job
+            || result
+                .pointer("/data/project_revision")
+                .and_then(Value::as_str)
+                != Some(self.revision.as_str())
+        {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "MLT terminal response does not identify the original job and semantic revision",
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_generation(&self, result: &Value) -> NativeResult<()> {
+        if mlt_provider_generation(result) != Some(self.provider_generation) {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "MLT response belongs to a different or missing provider generation",
+            ));
+        }
+        Ok(())
+    }
+
+    fn provider_data<'a>(&self, response: &'a Value) -> NativeResult<&'a Value> {
+        let result = response
+            .get("result")
+            .ok_or_else(|| backend("Canonical production response is missing provider result"))?;
+        self.check_generation(result)?;
+        response_data(response)
+    }
 }
 
 /// Closed native production request, never deserialized from WebView.
@@ -120,9 +177,15 @@ fn mutation_response(prior: &MltSession, value: &Value) -> NativeResult<MltSessi
     Ok(MltSession {
         project_ref: opaque(value, "project")?,
         revision,
+        provider_generation: prior.provider_generation,
     })
 }
-fn new_session(value: &Value) -> NativeResult<MltSession> {
+fn new_session(response: &Value) -> NativeResult<MltSession> {
+    let provider_generation = response
+        .get("result")
+        .and_then(mlt_provider_generation)
+        .ok_or_else(|| backend("MLT project creation has no provider generation"))?;
+    let value = response_data(response)?;
     let revision = opaque(value, "revision")?;
     if !sha256(&revision) {
         return Err(backend(
@@ -132,6 +195,7 @@ fn new_session(value: &Value) -> NativeResult<MltSession> {
     Ok(MltSession {
         project_ref: opaque(value, "project")?,
         revision,
+        provider_generation,
     })
 }
 fn only_reference(value: &Value, expected_name: &str) -> NativeResult<String> {
@@ -468,7 +532,10 @@ impl ProductionCoordinator {
         let response = self
             .execute(id, expected, request, command, Value::Object(args), true)
             .await?;
-        let data = response_data(&response)?.clone();
+        let data = session
+            .provider_data(&response)
+            .map_err(Error::uncertain)?
+            .clone();
         let updated = mutation_response(&session, &data)?;
         Ok((updated, data))
     }
@@ -498,7 +565,7 @@ impl ProductionCoordinator {
                 false,
             )
             .await?;
-        let data = response_data(&result)?;
+        let data = query.session.provider_data(&result)?;
         if data.get("revision").and_then(Value::as_str) != Some(query.session.revision.as_str()) {
             return Err(backend(
                 "MLT entity query returned an outdated native revision",
@@ -637,7 +704,7 @@ impl ProductionCoordinator {
                 true,
             )
             .await?;
-        let mut session = new_session(response_data(&create)?)?;
+        let mut session = new_session(&create).map_err(Error::uncertain)?;
         let (after_sequence, sequence_result) = scoped
             .apply_mlt_edit(
                 project_id,
@@ -773,7 +840,7 @@ impl ProductionCoordinator {
                 false,
             )
             .await?;
-        let duration = response_data(&duration)?;
+        let duration = session.provider_data(&duration)?;
         if duration.get("frames").and_then(Value::as_u64) != Some(recipe.total_frames)
             || duration.get("fps_num").and_then(Value::as_u64)
                 != Some(u64::from(recipe.provider_profile.fps_num))
@@ -799,7 +866,7 @@ impl ProductionCoordinator {
                 false,
             )
             .await?;
-        let plan = response_data(&planned)?;
+        let plan = session.provider_data(&planned)?;
         if plan.get("runnable").and_then(Value::as_bool) != Some(true)
             || plan.get("frames").and_then(Value::as_u64) != Some(recipe.total_frames)
             || plan.get("project_revision").and_then(Value::as_str)
@@ -828,7 +895,9 @@ impl ProductionCoordinator {
                 true,
             )
             .await?;
-        let started = response_data(&started).map_err(unconfirmed_mlt_render)?;
+        let started = session
+            .provider_data(&started)
+            .map_err(unconfirmed_mlt_render)?;
         let job_ref = opaque(started, "job").map_err(unconfirmed_mlt_render)?;
         let job_expected = MltRenderJobExpected {
             job: &job_ref,
@@ -859,21 +928,26 @@ impl ProductionCoordinator {
                 )
                 .await
                 .map_err(unconfirmed_mlt_render)?;
-            let status = response_data(&status).map_err(unconfirmed_mlt_render)?;
+            let status = session
+                .provider_data(&status)
+                .map_err(unconfirmed_mlt_render)?;
             succeeded = observe_mlt_render_state(status, &job_expected)?;
         }
         let result = scoped
-            .execute(
+            .execute_with_receipt_origin_context(
                 project_id,
                 expected,
                 &format!("{request_id}:mlt:render-result"),
-                "driver.mlt-video.render.result",
-                json!({"job":job_ref}),
-                false,
+                (RESULT_COMMAND, false),
+                json!({"job": job_ref}),
+                Some(ReceiptDispatchContext::MltTimeline(&session)),
             )
             .await
+            .map_err(unconfirmed_mlt_render)?
+            .into_legacy_value();
+        let result = session
+            .provider_data(&result)
             .map_err(unconfirmed_mlt_render)?;
-        let result = response_data(&result).map_err(unconfirmed_mlt_render)?;
         if !observe_mlt_render_state(result, &job_expected)? {
             return Err(unconfirmed_mlt_render(backend(
                 "MLT final result returned a nonterminal original job",
@@ -1286,10 +1360,55 @@ mod tests {
     }
 
     #[test]
+    fn mlt_job_observations_require_the_project_creation_generation() {
+        let mut observed = json!({"result": {
+            "execution": {"provenance": {"provider_generation": 7}},
+            "data": {"project":"video:abcdef", "revision":"a".repeat(64)}
+        }});
+        let session = new_session(&observed).unwrap();
+        assert_eq!(
+            session.provider_data(&observed).unwrap(),
+            &observed["result"]["data"]
+        );
+        for foreign in [json!(8), json!(null), json!("7")] {
+            observed["result"]["execution"]["provenance"]["provider_generation"] = foreign;
+            let error = session
+                .provider_data(&observed)
+                .map_err(unconfirmed_mlt_render)
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::StaleReference);
+            assert!(!error.outcome_known);
+        }
+        assert!(new_session(&observed).is_err());
+
+        let mut terminal = json!({
+            "execution": {"provenance": {"provider_generation": 7}},
+            "data": {"job": "render:original", "project_revision": "a".repeat(64)}
+        });
+        assert!(
+            session
+                .check_result(&terminal, Some("render:original"))
+                .is_ok()
+        );
+        assert!(
+            session
+                .check_result(&terminal, Some("render:foreign"))
+                .is_err()
+        );
+        terminal["data"]["project_revision"] = json!("b".repeat(64));
+        assert!(
+            session
+                .check_result(&terminal, Some("render:original"))
+                .is_err()
+        );
+    }
+
+    #[test]
     fn rejects_forged_revision_and_multientity_or_nonadvancing_edits() {
         let one = MltSession {
             project_ref: "owner-ref".into(),
             revision: "a".repeat(64),
+            provider_generation: 7,
         };
         let mut valid = json!({
             "applied": true, "expected_revision": "a".repeat(64),

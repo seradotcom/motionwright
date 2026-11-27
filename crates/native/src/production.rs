@@ -5659,26 +5659,35 @@ impl ProductionCoordinator {
         dispatch_context: Option<ReceiptDispatchContext<'_>>,
     ) -> NativeResult<ReceiptExecutionOutcome> {
         let (command, mutation) = operation;
-        let (receipt_context, media_binding, audio_staging, saved_context, motion_context) =
-            match dispatch_context {
-                #[cfg(test)]
-                Some(ReceiptDispatchContext::Audio(context)) => {
-                    (Some(context), None, None, None, None)
-                }
-                Some(ReceiptDispatchContext::PreparedAudio(context, staging)) => {
-                    (Some(context), None, Some(staging), None, None)
-                }
-                Some(ReceiptDispatchContext::Bound(binding)) => {
-                    (None, Some(binding), None, None, None)
-                }
-                Some(ReceiptDispatchContext::SavedMaster(context)) => {
-                    (None, None, None, Some(context), None)
-                }
-                Some(ReceiptDispatchContext::SavedMotion(context)) => {
-                    (None, None, None, None, Some(context))
-                }
-                None => (None, None, None, None, None),
-            };
+        let (
+            receipt_context,
+            media_binding,
+            audio_staging,
+            saved_context,
+            motion_context,
+            mlt_session,
+        ) = match dispatch_context {
+            #[cfg(test)]
+            Some(ReceiptDispatchContext::Audio(context)) => {
+                (Some(context), None, None, None, None, None)
+            }
+            Some(ReceiptDispatchContext::PreparedAudio(context, staging)) => {
+                (Some(context), None, Some(staging), None, None, None)
+            }
+            Some(ReceiptDispatchContext::Bound(binding)) => {
+                (None, Some(binding), None, None, None, None)
+            }
+            Some(ReceiptDispatchContext::SavedMaster(context)) => {
+                (None, None, None, Some(context), None, None)
+            }
+            Some(ReceiptDispatchContext::SavedMotion(context)) => {
+                (None, None, None, None, Some(context), None)
+            }
+            Some(ReceiptDispatchContext::MltTimeline(session)) => {
+                (None, None, None, None, None, Some(session))
+            }
+            None => (None, None, None, None, None, None),
+        };
         let media_mutation = if let Some(binding) = media_binding {
             binding.check_connection(&self.client)?;
             binding.mutation_for(command)?
@@ -5710,6 +5719,14 @@ impl ProductionCoordinator {
                 "Saved capture context requires the original full verification",
             ));
         }
+        if mlt_session.is_some() && (command != mlt_timeline::RESULT_COMMAND || mutation) {
+            return Err(invalid(
+                "MLT timeline custody requires the original read-only result",
+            ));
+        }
+        let mlt_source = mlt_session
+            .map(|session| session.receipt_source(self.client.connection()))
+            .transpose()?;
         let receipt_context = receipt_context.map(|context| context.payload());
         let media_context =
             media_binding.map(|binding| (binding.receipt_key(), binding.receipt_context()));
@@ -5725,6 +5742,9 @@ impl ProductionCoordinator {
             }
             if let Some(context) = &motion_context {
                 payload["original_motion_reopen"] = context.payload();
+            }
+            if let Some(source) = &mlt_source {
+                payload[mlt_timeline::TIMELINE_SOURCE] = source.clone();
             }
             payload
         };
@@ -5824,6 +5844,14 @@ impl ProductionCoordinator {
             {
                 return Err(invalid(
                     "Saved capture source differs from its original reopen context",
+                ));
+            }
+            if prior.stage == "completed"
+                && let Some(recorded) = prior.payload.get(mlt_timeline::TIMELINE_SOURCE)
+                && mlt_source.as_ref().is_some_and(|source| source != recorded)
+            {
+                return Err(invalid(
+                    "Original MLT result differs from its retained timeline source",
                 ));
             }
             // A legacy completed result is returned unchanged. Replaying it
@@ -5974,7 +6002,13 @@ impl ProductionCoordinator {
                 // original-result custody and append path before propagation.
                 let bound_error = media_binding
                     .and_then(|binding| binding.qualify_result(&result, command, mutation).err());
-                let stage = match &bound_error {
+                let mlt_error = mlt_session.and_then(|session| {
+                    session
+                        .check_result(&result.value, job_ref.as_deref())
+                        .map_err(Error::uncertain)
+                        .err()
+                });
+                let stage = match bound_error.as_ref().or(mlt_error.as_ref()) {
                     Some(error) if error.outcome_known => "failed_known",
                     Some(_) => "outcome_unknown",
                     None => "completed",
@@ -6004,7 +6038,9 @@ impl ProductionCoordinator {
                         original_payload["error"] = json!(error);
                     }
                 }
-                // The original JSON structure is unchanged in this payload.
+                if let Some(error) = &mlt_error {
+                    original_payload["error"] = json!(error);
+                }
                 // Optional transport custody separately retains binary streams.
                 custody.observe(ProductionReceiptInput {
                     project_id,
@@ -6022,7 +6058,7 @@ impl ProductionCoordinator {
                 {
                     Ok(receipt) => {
                         custody.confirmed();
-                        if let Some(error) = bound_error {
+                        if let Some(error) = bound_error.or(mlt_error) {
                             return Err(error);
                         }
                         Ok(ReceiptExecutionOutcome {
@@ -6206,6 +6242,7 @@ enum ReceiptDispatchContext<'a> {
     Bound(&'a provider_binding::BoundMediaContext),
     SavedMaster(saved_media::SavedMasterReceiptContext),
     SavedMotion(saved_motion::SavedMotionReceiptContext),
+    MltTimeline(&'a mlt_timeline::MltSession),
 }
 
 // Private dispatch provenance. Stored JSON cannot construct an observed result.
