@@ -5665,7 +5665,7 @@ impl ProductionCoordinator {
             audio_staging,
             saved_context,
             motion_context,
-            mlt_session,
+            mlt_dispatch,
         ) = match dispatch_context {
             #[cfg(test)]
             Some(ReceiptDispatchContext::Audio(context)) => {
@@ -5683,8 +5683,8 @@ impl ProductionCoordinator {
             Some(ReceiptDispatchContext::SavedMotion(context)) => {
                 (None, None, None, None, Some(context), None)
             }
-            Some(ReceiptDispatchContext::MltTimeline(session)) => {
-                (None, None, None, None, None, Some(session))
+            Some(ReceiptDispatchContext::MltTimeline(dispatch)) => {
+                (None, None, None, None, None, Some(dispatch))
             }
             None => (None, None, None, None, None, None),
         };
@@ -5719,14 +5719,29 @@ impl ProductionCoordinator {
                 "Saved capture context requires the original full verification",
             ));
         }
-        if mlt_session.is_some() && (command != mlt_timeline::RESULT_COMMAND || mutation) {
-            return Err(invalid(
-                "MLT timeline custody requires the original read-only result",
-            ));
-        }
-        let mlt_source = mlt_session
-            .map(|session| session.receipt_source(self.client.connection()))
-            .transpose()?;
+        let mlt_source = if let Some(dispatch) = &mlt_dispatch {
+            dispatch.require_command(command, mutation)?;
+            dispatch.receipt_source(self.client.connection())?
+        } else {
+            None
+        };
+        let require_original_mlt_source = |prior: &ProductionReceipt| {
+            if let Some(recorded) = prior.payload.get(mlt_timeline::TIMELINE_SOURCE)
+                && mlt_source.as_ref() != Some(recorded)
+            {
+                return Err(invalid(
+                    "Original MLT result differs from its retained timeline source",
+                ));
+            }
+            if let Some(dispatch) = &mlt_dispatch {
+                let result = prior
+                    .payload
+                    .get("result")
+                    .ok_or_else(|| backend("Stored MLT replay has no original result"))?;
+                dispatch.check_result(result)?;
+            }
+            Ok(())
+        };
         let receipt_context = receipt_context.map(|context| context.payload());
         let media_context =
             media_binding.map(|binding| (binding.receipt_key(), binding.receipt_context()));
@@ -5846,19 +5861,12 @@ impl ProductionCoordinator {
                     "Saved capture source differs from its original reopen context",
                 ));
             }
-            if prior.stage == "completed"
-                && let Some(recorded) = prior.payload.get(mlt_timeline::TIMELINE_SOURCE)
-                && mlt_source.as_ref().is_some_and(|source| source != recorded)
-            {
-                return Err(invalid(
-                    "Original MLT result differs from its retained timeline source",
-                ));
-            }
             // A legacy completed result is returned unchanged. Replaying it
             // cannot add missing capture context to old durable history.
             if prior.stage == "completed"
                 && let Some(result) = prior.payload.get("result")
             {
+                require_original_mlt_source(&prior)?;
                 manim_graph::validate_dispatch_source(&project, command, &args)?;
                 manim_graph::recheck_before_dispatch(&self.service, &project, command, &args)?;
                 return Ok(ReceiptExecutionOutcome {
@@ -5946,6 +5954,7 @@ impl ProductionCoordinator {
             {
                 RootDispatchBudgetOutcome::Admitted(_) => {}
                 RootDispatchBudgetOutcome::AlreadyCompleted(prior) => {
+                    require_original_mlt_source(&prior)?;
                     let previous_result =
                         prior.payload.get("result").cloned().ok_or_else(|| {
                             backend("Stored native replay has no original result")
@@ -6002,12 +6011,9 @@ impl ProductionCoordinator {
                 // original-result custody and append path before propagation.
                 let bound_error = media_binding
                     .and_then(|binding| binding.qualify_result(&result, command, mutation).err());
-                let mlt_error = mlt_session.and_then(|session| {
-                    session
-                        .check_result(&result.value, job_ref.as_deref())
-                        .map_err(Error::uncertain)
-                        .err()
-                });
+                let mlt_error = mlt_dispatch
+                    .as_ref()
+                    .and_then(|dispatch| dispatch.check_result(&result.value).err());
                 let stage = match bound_error.as_ref().or(mlt_error.as_ref()) {
                     Some(error) if error.outcome_known => "failed_known",
                     Some(_) => "outcome_unknown",
@@ -6242,7 +6248,7 @@ enum ReceiptDispatchContext<'a> {
     Bound(&'a provider_binding::BoundMediaContext),
     SavedMaster(saved_media::SavedMasterReceiptContext),
     SavedMotion(saved_motion::SavedMotionReceiptContext),
-    MltTimeline(&'a mlt_timeline::MltSession),
+    MltTimeline(mlt_timeline::MltTimelineDispatch<'a>),
 }
 
 // Private dispatch provenance. Stored JSON cannot construct an observed result.

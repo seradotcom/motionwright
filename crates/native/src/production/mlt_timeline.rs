@@ -45,7 +45,7 @@ impl MltTimelineMode {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct MltSession {
+struct MltSession {
     project_ref: String,
     revision: String,
     provider_generation: u64,
@@ -57,37 +57,72 @@ fn mlt_provider_generation(response: &Value) -> Option<u64> {
         .and_then(Value::as_u64)
 }
 
-pub(super) const RESULT_COMMAND: &str = "driver.mlt-video.render.result";
+const RESULT_COMMAND: &str = "driver.mlt-video.render.result";
 pub(super) const TIMELINE_SOURCE: &str = "mlt_timeline_source";
 
-impl MltSession {
-    pub(super) fn receipt_source(&self, connection: &ProductionConnection) -> NativeResult<Value> {
-        Ok(json!({
-            "schema": "motionwright.mlt-timeline-source/1",
-            "connection_identity": connection.identity()?,
-            "project_ref": self.project_ref,
-            "semantic_revision": self.revision,
-            "provider_generation": self.provider_generation,
-        }))
-    }
+pub(super) struct MltTimelineDispatch<'a> {
+    session: &'a MltSession,
+    result: Option<LosslessExpected<'a>>,
+}
 
-    pub(super) fn check_result(&self, result: &Value, job: Option<&str>) -> NativeResult<()> {
-        self.check_generation(result)?;
-        if job.is_none()
-            || result.pointer("/data/job").and_then(Value::as_str) != job
-            || result
-                .pointer("/data/project_revision")
-                .and_then(Value::as_str)
-                != Some(self.revision.as_str())
-        {
-            return Err(Error::new(
-                ErrorCode::StaleReference,
-                "MLT terminal response does not identify the original job and semantic revision",
-            ));
+impl MltTimelineDispatch<'_> {
+    pub(super) fn require_command(&self, command: &str, mutation: bool) -> NativeResult<()> {
+        let valid = if self.result.is_some() {
+            command == RESULT_COMMAND && !mutation
+        } else {
+            mutation
+                && matches!(
+                    command,
+                    "driver.mlt-video.sequence.create"
+                        | "driver.mlt-video.track.create"
+                        | "driver.mlt-video.asset.import"
+                        | "driver.mlt-video.clip.insert"
+                        | "driver.mlt-video.render.start"
+                )
+        };
+        if !valid {
+            return Err(invalid("Command does not match its MLT timeline operation"));
         }
         Ok(())
     }
 
+    pub(super) fn receipt_source(
+        &self,
+        connection: &ProductionConnection,
+    ) -> NativeResult<Option<Value>> {
+        self.result
+            .as_ref()
+            .map(|expected| {
+                Ok(json!({
+                    "schema": "motionwright.mlt-timeline-source/1",
+                    "connection_identity": connection.identity()?,
+                    "project_ref": self.session.project_ref,
+                    "semantic_revision": self.session.revision,
+                    "provider_generation": self.session.provider_generation,
+                    "job": expected.job,
+                    "output": expected.path,
+                    "profile": expected.mode.profile(),
+                }))
+            })
+            .transpose()
+    }
+
+    pub(super) fn check_result(&self, result: &Value) -> NativeResult<()> {
+        self.session
+            .check_generation(result)
+            .map_err(Error::uncertain)?;
+        let Some(expected) = &self.result else {
+            return Ok(());
+        };
+        let data = result
+            .get("data")
+            .ok_or_else(|| unconfirmed_mlt_render(backend("MLT result has no native job")))?;
+        verified_terminal(data, expected)?;
+        Ok(())
+    }
+}
+
+impl MltSession {
     fn check_generation(&self, result: &Value) -> NativeResult<()> {
         if mlt_provider_generation(result) != Some(self.provider_generation) {
             return Err(Error::new(
@@ -241,6 +276,7 @@ fn only_reference(value: &Value, expected_name: &str) -> NativeResult<String> {
 /// must prove the exact frame count before product acceptance.
 ///
 /// All diagnostics are fixed strings, never provider messages or local paths.
+#[derive(Clone, Copy)]
 struct LosslessExpected<'a> {
     job: &'a str,
     revision: &'a str,
@@ -251,6 +287,21 @@ struct LosslessExpected<'a> {
     fps_num: u32,
     fps_den: u32,
     mode: MltTimelineMode,
+}
+
+fn verified_terminal(data: &Value, expected: &LosslessExpected<'_>) -> NativeResult<Option<u64>> {
+    let job = MltRenderJobExpected {
+        job: expected.job,
+        revision: expected.revision,
+        path: expected.path,
+        mode: expected.mode,
+    };
+    if !observe_mlt_render_state(data, &job)? {
+        return Err(unconfirmed_mlt_render(backend(
+            "MLT final result returned a nonterminal original job",
+        )));
+    }
+    verify_lossless_render_result(data, expected).map_err(unconfirmed_mlt_render)
 }
 
 struct MltRenderJobExpected<'a> {
@@ -530,8 +581,19 @@ impl ProductionCoordinator {
             Value::String(session.revision.clone()),
         );
         let response = self
-            .execute(id, expected, request, command, Value::Object(args), true)
-            .await?;
+            .execute_with_receipt_origin_context(
+                id,
+                expected,
+                request,
+                (command, true),
+                Value::Object(args),
+                Some(ReceiptDispatchContext::MltTimeline(MltTimelineDispatch {
+                    session: &session,
+                    result: None,
+                })),
+            )
+            .await?
+            .into_legacy_value();
         let data = session
             .provider_data(&response)
             .map_err(Error::uncertain)?
@@ -886,15 +948,19 @@ impl ProductionCoordinator {
         let mut started_args = render_args.as_object().unwrap().clone();
         started_args.insert("expected_revision".into(), session.revision.clone().into());
         let started = scoped
-            .execute(
+            .execute_with_receipt_origin_context(
                 project_id,
                 expected,
                 &format!("{request_id}:mlt:render-start"),
-                "driver.mlt-video.render.start",
+                ("driver.mlt-video.render.start", true),
                 Value::Object(started_args),
-                true,
+                Some(ReceiptDispatchContext::MltTimeline(MltTimelineDispatch {
+                    session: &session,
+                    result: None,
+                })),
             )
-            .await?;
+            .await?
+            .into_legacy_value();
         let started = session
             .provider_data(&started)
             .map_err(unconfirmed_mlt_render)?;
@@ -933,6 +999,17 @@ impl ProductionCoordinator {
                 .map_err(unconfirmed_mlt_render)?;
             succeeded = observe_mlt_render_state(status, &job_expected)?;
         }
+        let output_expected = LosslessExpected {
+            job: &job_ref,
+            revision: &session.revision,
+            path: &recipe.lossless_sequence_path,
+            frames: recipe.total_frames,
+            width: recipe.provider_profile.width,
+            height: recipe.provider_profile.height,
+            fps_num: recipe.provider_profile.fps_num,
+            fps_den: recipe.provider_profile.fps_den,
+            mode,
+        };
         let result = scoped
             .execute_with_receipt_origin_context(
                 project_id,
@@ -940,7 +1017,10 @@ impl ProductionCoordinator {
                 &format!("{request_id}:mlt:render-result"),
                 (RESULT_COMMAND, false),
                 json!({"job": job_ref}),
-                Some(ReceiptDispatchContext::MltTimeline(&session)),
+                Some(ReceiptDispatchContext::MltTimeline(MltTimelineDispatch {
+                    session: &session,
+                    result: Some(output_expected),
+                })),
             )
             .await
             .map_err(unconfirmed_mlt_render)?
@@ -948,26 +1028,7 @@ impl ProductionCoordinator {
         let result = session
             .provider_data(&result)
             .map_err(unconfirmed_mlt_render)?;
-        if !observe_mlt_render_state(result, &job_expected)? {
-            return Err(unconfirmed_mlt_render(backend(
-                "MLT final result returned a nonterminal original job",
-            )));
-        }
-        let native_frame_count_observed = verify_lossless_render_result(
-            result,
-            &LosslessExpected {
-                job: &job_ref,
-                revision: &session.revision,
-                path: &recipe.lossless_sequence_path,
-                frames: recipe.total_frames,
-                width: recipe.provider_profile.width,
-                height: recipe.provider_profile.height,
-                fps_num: recipe.provider_profile.fps_num,
-                fps_den: recipe.provider_profile.fps_den,
-                mode,
-            },
-        )
-        .map_err(unconfirmed_mlt_render)?;
+        let native_frame_count_observed = verified_terminal(result, &output_expected)?;
         let artifact_sha256 = required_string(
             result,
             "/artifact/sha256",
@@ -1381,26 +1442,49 @@ mod tests {
         }
         assert!(new_session(&observed).is_err());
 
-        let mut terminal = json!({
-            "execution": {"provenance": {"provider_generation": 7}},
-            "data": {"job": "render:original", "project_revision": "a".repeat(64)}
+        let update = MltTimelineDispatch {
+            session: &session,
+            result: None,
+        };
+        let provenance = json!({"execution": {"provenance": {"provider_generation": 7}}});
+        assert!(update.check_result(&provenance).is_ok());
+        assert!(update.check_result(&observed["result"]).is_err());
+        assert!(
+            update
+                .require_command("driver.mlt-video.project.close", true)
+                .is_err()
+        );
+
+        let job = expected_render_job();
+        let result = MltTimelineDispatch {
+            session: &session,
+            result: Some(LosslessExpected {
+                job: job.job,
+                revision: job.revision,
+                path: job.path,
+                frames: 33,
+                width: 1280,
+                height: 720,
+                fps_num: 30,
+                fps_den: 1,
+                mode: job.mode,
+            }),
+        };
+        let original = json!({
+            "execution": provenance["execution"],
+            "data": render_job_view("succeeded"),
         });
-        assert!(
-            session
-                .check_result(&terminal, Some("render:original"))
-                .is_ok()
-        );
-        assert!(
-            session
-                .check_result(&terminal, Some("render:foreign"))
-                .is_err()
-        );
-        terminal["data"]["project_revision"] = json!("b".repeat(64));
-        assert!(
-            session
-                .check_result(&terminal, Some("render:original"))
-                .is_err()
-        );
+        assert!(result.check_result(&original).is_ok());
+        for (field, foreign) in [
+            ("/data", render_job_view("running")),
+            ("/data/artifact/path", json!("foreign.mkv")),
+            ("/data/job", json!("render:foreign")),
+            ("/data/project_revision", json!("c".repeat(64))),
+        ] {
+            let mut changed = original.clone();
+            *changed.pointer_mut(field).unwrap() = foreign;
+            assert!(!result.check_result(&changed).unwrap_err().outcome_known);
+        }
     }
 
     #[test]
