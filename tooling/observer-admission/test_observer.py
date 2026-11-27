@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Adversarial cryptographic admission tests, ephemeral identities only."""
 from __future__ import annotations
-import base64,hashlib,io,json,os
+import base64,hashlib,io,json,os,sqlite3,subprocess,sys
+from contextlib import closing
 from unittest.mock import patch
 from pathlib import Path
 import tempfile,unittest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding,PublicFormat
 from PIL import Image
+import verify_observer as observer_gate
 from verify_observer import png_dimensions,inspect,AdmissionRejected,SCHEMA,POLICY,EVIDENCE,HEAD,canonical
 
 SHA="ab"*32
@@ -69,6 +71,70 @@ class SignedVerifierTests(unittest.TestCase):
   })+"\n")
  def check(self):
   return inspect(self.root,self.keyfile,self.policy_head_file,self.source,SHA)
+ def test_signed_policy_registry_reopens_and_refuses_rollback_or_reused_generation(self):
+  database=self.trust/"policy.sqlite3"
+  policy_file=self.root/"owner-policy.json"
+  previous=policy_file.read_bytes()
+  with self.assertRaisesRegex(AdmissionRejected,"existing trusted head"):
+   observer_gate.adopt_policy(database,self.keyfile,policy_file)
+  self.assertFalse(database.exists())
+  self.assertEqual(observer_gate.adopt_policy(database,self.keyfile,policy_file,self.policy_head_file),7)
+  def read():
+   return inspect(self.root,self.keyfile,None,self.source,SHA,policy_store_file=database)
+  self.assertTrue(read()["gate_eligible"])
+  self.policy["owner_generation"]=8
+  self.policy["revoked_ids"]=[self.admission["admission_id"]]
+  self.write_all()
+  self.assertEqual(observer_gate.adopt_policy(database,self.keyfile,policy_file),8)
+  self.assertEqual(observer_gate.adopt_policy(database,self.keyfile,policy_file),8)
+  self.assertFalse(read()["gate_eligible"])
+  policy_file.write_bytes(previous)
+  with self.assertRaisesRegex(AdmissionRejected,"stale"):
+   observer_gate.adopt_policy(database,self.keyfile,policy_file)
+  with self.assertRaisesRegex(AdmissionRejected,"Replay of a stale"):
+   read()
+  self.policy["revoked_ids"]=[]
+  self.write_all()
+  with self.assertRaisesRegex(AdmissionRejected,"generation already"):
+   observer_gate.adopt_policy(database,self.keyfile,policy_file)
+  self.policy["owner_generation"]=9
+  self.write_all()
+  with self.assertRaisesRegex(AdmissionRejected,"cannot remove"):
+   observer_gate.adopt_policy(database,self.keyfile,policy_file)
+  with closing(sqlite3.connect(database)) as connection:
+   self.assertEqual(connection.execute("SELECT generation FROM policies ORDER BY generation").fetchall(),[(7,),(8,)])
+ def test_policy_registry_revocation_during_decode_prevents_admission(self):
+  database=self.trust/"policy.sqlite3"
+  policy_file=self.root/"owner-policy.json"
+  observer_gate.adopt_policy(database,self.keyfile,policy_file,self.policy_head_file)
+  def revoke(value):
+   self.policy["owner_generation"]=8
+   self.policy["revoked_ids"]=[self.admission["admission_id"]]
+   self.write_all()
+   observer_gate.adopt_policy(database,self.keyfile,policy_file)
+   return png_dimensions(value)
+  with patch("verify_observer.png_dimensions",side_effect=revoke):
+   with self.assertRaisesRegex(AdmissionRejected,"Trusted owner policy changed during"):
+    inspect(self.root,self.keyfile,None,self.source,SHA,policy_store_file=database)
+ def test_policy_registry_bootstrap_and_observation_work_in_separate_commands(self):
+  database=self.trust/"policy registry.sqlite3"
+  policy=self.root/"owner-policy.json"
+  script=Path(observer_gate.__file__).resolve()
+  adopted=subprocess.run([sys.executable,"-B",str(script),"adopt-policy","--trusted-policy-store",str(database),
+    "--trusted-owner-key",str(self.keyfile),"--signed-policy",str(policy),"--bootstrap-head",
+    str(self.policy_head_file)],capture_output=True,text=True,timeout=15)
+  self.assertEqual(adopted.returncode,0,adopted.stderr)
+  output=self.base/"observation.json"
+  observed=subprocess.run([sys.executable,"-B",str(script),"--root",str(self.root),
+    "--trusted-policy-store",str(database),"--trusted-owner-key",str(self.keyfile),
+    "--admitted-verifier-source",str(self.source),"--expected-producer-sha256",SHA,
+    "--output",str(output)],capture_output=True,text=True,timeout=15)
+  self.assertEqual(observed.returncode,0,observed.stderr)
+  self.assertTrue(json.loads(output.read_bytes())["gate_eligible"])
+  copied=self.root/"policy.sqlite3"
+  copied.write_bytes(database.read_bytes())
+  with self.assertRaisesRegex(AdmissionRejected,"outside the untrusted evidence bundle"):
+   inspect(self.root,self.keyfile,None,self.source,SHA,policy_store_file=copied)
  def test_separate_owner_and_observer_signatures_plus_actual_png_decode(self):
   result=self.check()
   self.assertTrue(result["gate_eligible"])

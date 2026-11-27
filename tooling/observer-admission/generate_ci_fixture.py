@@ -12,7 +12,8 @@ import re
 from pathlib import Path
 import sys
 
-from test_observer import SignedVerifierTests
+from test_observer import SHA, SignedVerifierTests
+from verify_observer import adopt_policy, inspect
 
 def main()->None:
     if os.environ.get("GITHUB_ACTIONS")!="true":
@@ -26,7 +27,10 @@ def main()->None:
     fixture=SignedVerifierTests(methodName="test_separate_owner_and_observer_signatures_plus_actual_png_decode")
     fixture.setUp()
     try:
-        passed=fixture.check()
+        registry=fixture.trust/"owner-policy.sqlite3"
+        policy_path=fixture.root/"owner-policy.json"
+        adopt_policy(registry,fixture.keyfile,policy_path,fixture.policy_head_file)
+        passed=inspect(fixture.root,fixture.keyfile,None,fixture.source,SHA,policy_store_file=registry)
         assert passed["gate_eligible"] and passed["status"]=="TECHNICAL_OBSERVATION_ADMITTED"
         target.mkdir(parents=True)
         original=fixture.image.read_bytes()
@@ -43,7 +47,8 @@ def main()->None:
         fixture.policy["owner_generation"]=8
         fixture.policy["revoked_ids"]=[fixture.admission["admission_id"]]
         fixture.write_all()
-        revoked=fixture.check()
+        adopt_policy(registry,fixture.keyfile,policy_path)
+        revoked=inspect(fixture.root,fixture.keyfile,None,fixture.source,SHA,policy_store_file=registry)
         assert not revoked["gate_eligible"]
         assert revoked["status"]=="REVOKED_RETAIN_HISTORICAL_EVIDENCE"
         (target/"owner-revocation-experiment.json").write_text(json.dumps({

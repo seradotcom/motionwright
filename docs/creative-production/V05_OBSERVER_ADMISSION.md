@@ -96,6 +96,30 @@ a self-created document. The proof does not claim that the test's ephemeral
 signing keys represent an actual Motionwright human owner. The true platform
 gate still has to incorporate an authenticated owner policy source.
 
+## Persisting the owner policy
+
+Choose a local SQLite path in an owner-controlled directory outside any evidence bundle.
+The initial signed policy must match the existing trusted head.
+
+```bash
+python3 tooling/observer-admission/verify_observer.py adopt-policy \
+  --trusted-policy-store /path/to/owner/policies.sqlite3 \
+  --trusted-owner-key /path/to/owner/trusted-owner.pub \
+  --signed-policy /path/to/owner/current-signed-policy.json \
+  --bootstrap-head /path/to/owner/current-head.json
+```
+
+Use `--trusted-policy-store` in place of `--trusted-policy-head` when inspecting
+evidence. Subsequent `adopt-policy` commands omit `--bootstrap-head`. The
+registry verifies each owner signature, retains past signed generations and
+accepts only a newer generation or an exact retry of the current generation.
+A new policy must retain previous revocations. Technical admission opens the
+registry read-only and checks the current generation again after image decoding.
+
+Keep the registry and public-key file under the owner's filesystem control.
+Restoring an older database snapshot also restores its earlier policy state.
+The legacy JSON head remains available for explicitly selected file-based checks.
+
 ## Negative tests and limits
 
 `test_observer.py` covers distinct owner/observer identities, forged
@@ -112,7 +136,7 @@ demonstrating successful technical admission and subsequent policy
 revocation. The artifact explicitly contains **no private keys**,
 no real owner authentication and **no production gate acceptance**.
 
-**Still NOT implemented:** owner-authenticated policy head persistence in
+**Still NOT implemented:** integration of the owner policy registry with
 the canonical StudioService/Native SDK, independently provisioned production
 public keys/rights, semantically richer observation methods,
 separate real renderer-host conformance, optional paid/source-code
