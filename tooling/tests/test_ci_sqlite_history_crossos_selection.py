@@ -37,16 +37,16 @@ class HistoryCrossOsSelectionTests(unittest.TestCase):
     def test_reviewed_composed_storage_source_pins_are_exact_in_both_jobs(self):
         source = WORKFLOW.read_text(encoding="utf-8")
         expected = {
-            "crates/storage/src/lib.rs": "89a570fe61955dcef6063e7ce12c2774b43eab842d79359014ea271b5d606b2d",
-            "crates/storage/src/portability.rs": "b6be0e3e5c25851d021585ea51cff02800a81158ac6ec05d52504fcf22d9ecb4",
-            "Cargo.lock": "5be0c32401f8734d577f88c33130d4bdbd345eae5c853363402f03267d0c9ba8",
-            "SOURCE_LOCK.json": "234ddd72a087d58a766707affdf9b1e3bbc1d0f7cb4f24a5b532e006155a9550",
+            "crates/storage/src/lib.rs": "f5c2ee567971efff48a9198b088f8fd59b7afa56f5cc41d132778c3ec8893485",
+            "crates/storage/src/portability.rs": "685025f806c73e83676a1c487161f50aee2bea2901ccdeec89d9d0184eb3099a",
+            "Cargo.lock": "d59d987a8ad7cabf00fcc4e0a9dae1effe9bef54edd5694eaaf8436eef984091",
+            "SOURCE_LOCK.json": "4a03e1e5f7b91b4608260fb8437ce51e7df346683d50667860dc5354cb1074b8",
         }
         maps = re.findall(r"^          pins=(\{[^\n]+\})$", source, flags=re.M)
         self.assertEqual(len(maps), 2, "G0 and real CrossOS must bind the same reviewed inputs")
-        self.assertEqual(source.count('foundation_reviewed_source="f2651aea8fc82ff0f7f762d356404e81609a12df"'), 2)
-        self.assertEqual(source.count('source_lock_reviewed_source="7d3e0386f65ea531cfaa3e7723afab29c55eba3e"'), 2)
-        self.assertEqual(source.count('workspace_lock_source="a3166211285b3f25207c09e247253470a4a7b6ae"'), 2)
+        self.assertEqual(source.count('foundation_reviewed_source="576201b3fca3a7a6f7bc57cc4d6cbf5dd7d3d347"'), 2)
+        self.assertEqual(source.count('source_lock_reviewed_source="576201b3fca3a7a6f7bc57cc4d6cbf5dd7d3d347"'), 2)
+        self.assertEqual(source.count('workspace_lock_source="576201b3fca3a7a6f7bc57cc4d6cbf5dd7d3d347"'), 2)
         self.assertIn('source_lock_reviewed_source if rel=="SOURCE_LOCK.json"', source)
         self.assertIn('workspace_lock_source if rel=="Cargo.lock"', source)
         origin = 'foundation_reviewed_source if rel in ("crates/storage/src/lib.rs","crates/storage/src/portability.rs")'
