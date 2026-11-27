@@ -6,11 +6,15 @@
 //! pinned Driver Host; neither an arbitrary scoped client nor native refs are
 //! exposed to the caller.
 use super::hybrid_budget::HybridNativeSources;
-use super::mlt_multisegment_av::{MuxExpected, verify_exact_native_mux, verify_mux_artifact_file};
+use super::mlt_multisegment_av::{
+    MuxExpected, require_native_mux_stereo_tail, verify_exact_native_mux,
+};
 use super::*;
+use semwright_audio_domain::wav::WaveReader;
 use semwright_video_domain::native_observation::{
     ObservationProfile, PNG_LIMIT, REPORT_LIMIT, parse_complete_observation,
 };
+use std::io::Cursor;
 use std::ops::Range;
 
 pub(super) const MEDIA_MAX_BYTES: u64 = 256_000_000;
@@ -18,6 +22,7 @@ pub(super) const MASTER_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const REPORT_MAX_BYTES: u64 = REPORT_LIMIT as u64;
 const PNG_MAX_BYTES: u64 = PNG_LIMIT as u64;
 const NATIVE_INPUT_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const DECODED_WAVE_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const SEQUENCE_NAME: &str = "Original Motionwright MC-Manim-MC cut";
 const TRACK_NAME: &str = "Original native hybrid contributions";
 
@@ -609,6 +614,38 @@ fn complete_video_observation(
     Ok(json!({"original_receipt":original_receipt,"document":document}))
 }
 
+/// Read the pinned Host's decoded WAV and run the same terminal stereo check
+/// used when qualifying the saved master for delivery.
+fn verify_hybrid_mux_audio(
+    output: &Path,
+    master: &Value,
+    decoded_path: &str,
+    source_wave: &[u8],
+    expected_frames: u64,
+) -> NativeResult<()> {
+    let decoded_receipt = master
+        .get("decoded_audio")
+        .ok_or_else(|| backend("Hybrid native decoded audio is absent"))?;
+    let (_, decoded_bytes) = artifact_and_bytes(
+        output,
+        decoded_receipt,
+        decoded_path,
+        DECODED_WAVE_MAX_BYTES,
+    )?;
+    let source = WaveReader::open(Cursor::new(source_wave), source_wave.len() as u64)
+        .map_err(|_| backend("Hybrid authored WAV could not be inspected"))?;
+    let decoded = WaveReader::open(Cursor::new(decoded_bytes), DECODED_WAVE_MAX_BYTES)
+        .map_err(|_| backend("Hybrid original decoded WAV could not be inspected"))?;
+    require(
+        master
+            .get("decoded_audio_sample_frames")
+            .and_then(Value::as_u64)
+            == Some(decoded.info().frames),
+        "Hybrid original decoded WAV sample count differs from the native return",
+    )?;
+    require_native_mux_stereo_tail(source, decoded, expected_frames)
+}
+
 fn source_evidence_sha256(sources: &HybridNativeSources) -> NativeResult<String> {
     let bytes = serde_json::to_vec(sources.evidence())
         .map_err(|_| invalid("Original hybrid source evidence cannot be bound"))?;
@@ -1143,7 +1180,8 @@ impl ProductionCoordinator {
             original_wave == wave,
             "Hybrid staged WAV differs from the original saved source bytes",
         )?;
-        let master_path = format!("{}-master.mp4", sources.namespace);
+        let master_stem = format!("{}-master", sources.namespace);
+        let master_path = format!("{master_stem}.mp4");
         let original = scoped
             .execute_hybrid_master_mux(
                 sources,
@@ -1176,15 +1214,14 @@ impl ProductionCoordinator {
             &master_path,
             MASTER_MAX_BYTES,
         )?;
-        // Existing validator rehashes both real mux products. A tighter local
-        // decoded-WAV bound precedes it, so malformed observations stay finite.
-        let decoded = master
-            .get("decoded_audio")
-            .ok_or_else(|| backend("Hybrid native decoded audio is absent"))?;
-        let decoded_path = text_at(decoded, "/path")?;
-        artifact(output, decoded, &decoded_path, 2 * 1024 * 1024)?;
-        verify_mux_artifact_file(output, master.get("artifact").unwrap())?;
-        verify_mux_artifact_file(output, decoded)?;
+        let measured_source_frames = (wav_bytes - 44) / 4;
+        verify_hybrid_mux_audio(
+            output,
+            master,
+            &format!("{master_stem}.decoded.wav"),
+            &wave,
+            measured_source_frames,
+        )?;
         let original_inputs = [
             visual.clone(),
             Artifact {
@@ -1226,7 +1263,8 @@ impl ProductionCoordinator {
             evidence: json!({"schema":"motionwright.native.hybrid-master/1",
             "project_sha256":sources.project_sha256,"frame_count":frame_count,
             "original_native_return":original,"master":master,"complete_video_observation":color,
-            "original_audio_sha256":audio.sha256,"measured_original_audio_frames":(wav_bytes - 44) / 4,
+            "original_audio_sha256":audio.sha256,"measured_original_audio_frames":measured_source_frames,
+            "decoded_wav_stereo_tail_verified":true,
             "automatic_retry":false,"packet_PTS_and_AAC_priming_verified":false,
             "physical_acceptance":false,"human_approval":false}),
         })
@@ -1242,6 +1280,69 @@ fn unconfirmed_render(error: Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hybrid_native_master_audio_binds_the_exact_decode_and_both_source_channels() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = "authored-master.decoded.wav";
+        let frames = 48_000_u64;
+        let wave = |count: u64, lose_terminal_right: bool| {
+            let mut bytes = b"RIFF".to_vec();
+            bytes.extend_from_slice(&(36 + count as u32 * 4).to_le_bytes());
+            bytes.extend_from_slice(b"WAVEfmt ");
+            bytes.extend_from_slice(&16_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u16.to_le_bytes());
+            bytes.extend_from_slice(&2_u16.to_le_bytes());
+            bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+            bytes.extend_from_slice(&192_000_u32.to_le_bytes());
+            bytes.extend_from_slice(&4_u16.to_le_bytes());
+            bytes.extend_from_slice(&16_u16.to_le_bytes());
+            bytes.extend_from_slice(b"data");
+            bytes.extend_from_slice(&(count as u32 * 4).to_le_bytes());
+            for index in 0..count {
+                bytes.extend_from_slice(&2500_i16.to_le_bytes());
+                let right: i16 = if lose_terminal_right && index >= frames - 256 {
+                    0
+                } else {
+                    -5000
+                };
+                bytes.extend_from_slice(&right.to_le_bytes());
+            }
+            bytes
+        };
+        let authored = wave(frames, false);
+
+        let put_decode = |name: &str, bytes: Vec<u8>, count: u64| {
+            fs::write(directory.path().join(name), &bytes).unwrap();
+            json!({
+                "decoded_audio": {
+                    "root": "output", "path": name, "bytes": bytes.len(),
+                    "sha256": hex::encode(Sha256::digest(&bytes))
+                },
+                "decoded_audio_sample_frames": count
+            })
+        };
+        let verify = |result: &Value| {
+            verify_hybrid_mux_audio(directory.path(), result, path, &authored, frames)
+        };
+        let exact = put_decode(path, wave(frames, false), frames);
+        assert!(verify(&exact).is_ok());
+        let padded = put_decode(path, wave(frames + 512, false), frames + 512);
+        assert!(verify(&padded).is_ok());
+        let wrong_receipt = put_decode(path, wave(frames + 512, false), frames);
+        assert!(verify(&wrong_receipt).is_err());
+        let shortened = put_decode(path, wave(frames - 1, false), frames - 1);
+        assert!(verify(&shortened).is_err());
+        let muted = put_decode(path, wave(frames, true), frames);
+        assert!(
+            verify(&muted)
+                .unwrap_err()
+                .to_string()
+                .contains("lost authored stereo channel")
+        );
+        let unrelated = put_decode("another.decoded.wav", authored.clone(), frames);
+        assert!(verify(&unrelated).is_err());
+    }
+
     #[test]
     fn hybrid_native_input_binds_authored_order_and_inclusive_endpoints() {
         let sources = ["original-mc.mkv", "original-manim.mp4"].map(|path| Artifact {
