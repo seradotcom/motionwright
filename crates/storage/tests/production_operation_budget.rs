@@ -2452,7 +2452,7 @@ fn main() {
     }
 
     #[test]
-    #[ignore = "requires the exact v5 producer overlay and a fresh same-path fixture; required A6 lane must select this case explicitly"]
+    #[ignore = "requires the exact v5 producer overlay and a fresh same-path fixture; the runtime test must select this case explicitly"]
     fn genuine_v5_public_import_preserves_cas_marker_blob_and_receipts_through_v6() {
         let root = PathBuf::from(
             std::env::var_os("MOTIONWRIGHT_BUDGET_V5_FIXTURE")

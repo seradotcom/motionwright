@@ -5,7 +5,7 @@ No renderer, Native call, workflow dispatch or API mutation is performed.
 P1 format validity is necessary but insufficient: original source, clock,
 fifteen supervised preparation children and runtime handoff are also checked.
 Only a bounded new R28 dispatch may be written after those checks. It permits
-one selected candidate24 context, with no A5, G2, F or product acceptance.
+one selected candidate24 context for technical preparation.
 """
 from __future__ import annotations
 import argparse
@@ -929,7 +929,7 @@ def main(*, configure_private_paths=None):
             selected_profile={"arm": arm, "fixture": fixture, "purpose": PURPOSE, "frames": 180,
                               "width": 1920, "height": 1080, "fps": "30/1", "selected_frames": list(selected_frames)},
             new_R28_dispatch=fixed.descriptor(dispatch_raw),
-            reviewer="independent technical preparation review; no historical A5 signature adopted",
+            reviewer="independent technical preparation review for the current source",
             physical_font_color_baseline="PENDING_SELECTED_CANDIDATE_NATIVE_OUTPUT",
             candidate24_executed_contexts=0, candidate24_total_contexts=24, candidate24_accepted=0)
         output.write("dispatch.intent.json", {"context": context,

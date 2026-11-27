@@ -138,8 +138,8 @@ impl ResolvedFontStaging {
 
     /// Move the same already-opened root into the native coordinator. The path
     /// is provenance for the independent active Host MediaRO binding, not a
-    /// write grant and not permission to reopen it. A4 must retain this object
-    /// and use stage_new_retained; generic observe/output_root grants no write.
+    /// write grant or permission to reopen it. The native coordinator retains
+    /// this object for stage_new_retained. Generic observe/output_root grants no write.
     pub(crate) fn into_retained_root(
         self,
         registry: &RuntimeConnectionRegistry,

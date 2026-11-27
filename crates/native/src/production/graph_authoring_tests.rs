@@ -999,7 +999,7 @@ fn graph_recipe_original_unknown_error_is_not_reclassified_by_decode() {
     );
 }
 
-// This shell fixture requires A2's Linux retained-connection identity successor.
+// This shell fixture requires retained connection identity on Linux.
 // Unsupported identity is a test failure, never a skip or a fabricated value.
 #[cfg(target_os = "linux")]
 #[tokio::test]

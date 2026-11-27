@@ -1266,7 +1266,7 @@ export async function preflightNativeHybrid(
 
 /** One original mixed producer, with the normal render permission and draft barriers.
  * A returned completion remains valid if subsequent read-only discovery is unavailable.
- * A4 callers reuse the saved-master review/delivery surface with saved_master.
+ * Hybrid callers reuse the saved-master review/delivery surface with saved_master.
  */
 export async function renderNativeHybridMaster(
   project:Project,deliverableId:string,options:MotionCanvasFilmOptions,

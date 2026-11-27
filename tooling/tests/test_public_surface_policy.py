@@ -162,6 +162,18 @@ class PublicSurfacePolicyTests(unittest.TestCase):
                 self.assertEqual(len(outcome), 1)
                 self.assertNotIn(phrase, outcome[0])
 
+        instruction = "A" + "4 must retain this object."
+        for path in ("apps/desktop/src/native.rs", "tooling/native_reader.py"):
+            with self.subTest(path=path):
+                self.assertEqual(scan_text(path, instruction), [
+                    f"public_development_text:{path}:1:private_role_instruction",
+                ])
+        self.assertEqual(scan_text("tooling/native_reader.py", "Use this master " + "prompt."), [
+            "public_development_text:tooling/native_reader.py:1:private_prompt_marker",
+        ])
+        self.assertEqual(scan_text("tooling/tests/test_sample.py", instruction), [])
+        self.assertEqual(scan_text("tooling/sqlite.py", 'authority == "A' + '1"'), [])
+
     def test_multiline_instructions_report_their_start_line(self):
         for phrase in (
             "Another agent may\nbe implementing this.",

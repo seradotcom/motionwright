@@ -10,7 +10,7 @@ the original ZIP and TAR, and hashes every TAR member without extracting wheels
 or installing a runtime. An exclusive attempt directory prevents an automatic
 second attempt. Failed and partial originals remain in that directory.
 
-Invoke with the exact, already reviewed A4 memory helper. Its existing Windows
+Invoke with the exact reviewed memory helper. Its existing Windows
 Job enforces the 1536 MiB process/aggregate cap; this reader observes the 512 MiB
 physical reserve and preserves the same kill-on-job-close ownership boundary.
 No historical private key, Project input, Native call or renderer is used.
@@ -186,7 +186,7 @@ def retain_small(path, raw, guard):
 
 
 class HostResources:
-    """Use the pinned existing A4 Job implementation; never emulate its cap."""
+    """Use the pinned Windows Job implementation to enforce its cap."""
     def __init__(self, helper, destination):
         need(os.name == "nt" and ctypes.sizeof(ctypes.c_void_p) == 8, "windows_64bit_required")
         identity, raw = small_original(helper, MAX_GATE, lambda: None)

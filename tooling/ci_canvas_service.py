@@ -3300,7 +3300,7 @@ def require(condition, reason):
         raise ValueError(reason)
 
 
-# Exact A3 R31 catalogue; this is not an inherited runtime result.
+# Exact catalogue for this run; previous runtime results are out of scope.
 PHASE1_SERVICE47_SCOPE = "phase1-service47"
 PHASE1_SERVICE47_ROSTER_SHA256 = 'ad64c74ee276ebefeec92beaa28d28c0ea5c95abfc187127d488ab15d0a52de7'
 PHASE1_SERVICE47_CATALOG_SHA256 = '264db36daddb770a814ca43753f9451151f62e1097dd0a463453e4eb22cf04fa'
@@ -7899,7 +7899,7 @@ def studio68_main(arguments):
 import time
 
 # Existing Graph J1/R74 selection. All outputs below remain private evidence;
-# source intake, external owner admission and closed custody are not G2/A5 PASS.
+# Source intake, owner admission and custody each require their own verification.
 GRAPH_SCOPE = "phase1-native-graph"
 GRAPH_REPOSITORY = "seradotcom/motionwright"
 GRAPH_WORKFLOW = ".github/workflows/studio-service-verification.yml"

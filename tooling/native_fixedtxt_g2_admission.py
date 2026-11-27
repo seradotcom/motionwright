@@ -2,8 +2,8 @@
 
 This module supplies data validation and selected-original custody, not an
 approval issuer or a native dispatcher. Legacy P/1 and its empty catalogue are
-unchanged. A5 must review this new selection meaning before A6 composes a
-producer. Nothing here manufactures a reviewed dispatch from producer bytes.
+unchanged. Independent review of the selected input is required before
+assembling the producer. Its bytes alone grant no dispatch authority.
 """
 from __future__ import annotations
 

@@ -88,7 +88,7 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store read
     // display profile at the moment its editor is created. Retargeting only
     // "Graph Deliverable" afterwards keeps the previous frame and makes
     // the first native Save fail its exact profile-dimension admission.
-    // Select the A4-owned profile BEFORE creating the source (no rescaling,
+    // Select the delivery profile before creating the source (no rescaling,
     // new project write or fabricated Native context).
     await field(page, "Editor preview timebase").selectOption(profile.id);
     await expect(field(page, "Editor preview timebase")).toHaveValue(profile.id);

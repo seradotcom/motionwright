@@ -1656,7 +1656,7 @@ def fixed_samples(key):
 
 
 def admit_fixedtxt_wrapper_originals(runtime_path, cycle_path, *, selected_fixture):
-    """Use the actual A6 guard/layout; keep P/R/Q in the same invocation."""
+    """Keep P/R/Q in one invocation with the existing source and custody checks."""
     import native_mlt_evidence_selection as selected
     selected.fixedtxt_owner_selection_guard()
     return custody.fixedtxt_acquire_owner_originals(os.environ,

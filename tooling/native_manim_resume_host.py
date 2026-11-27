@@ -147,7 +147,7 @@ def private_root(path):
     require(path.is_absolute() and path.is_dir() and path.resolve(strict=True) == path
             and not any(item.is_symlink() for item in (path, *path.parents)), "resume_host_canonical_private_root")
     if os.name == "nt":
-        # A protected, current-user-only root is the existing A4 custody boundary.
+        # The retained workspace is restricted to the current user.
         # Pass its path as data via an environment variable, never interpolated code.
         script = ("$ErrorActionPreference='Stop'; $a=Get-Acl -LiteralPath $env:MW_RESUME_PRIVATE_ROOT; "
                   "$sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; "

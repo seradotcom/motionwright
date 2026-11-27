@@ -292,7 +292,7 @@ class RetainedProcess:
 
 
 class OuterAssembler:
-    """Own five channels and independently assemble the existing A2 receipt.
+    """Own five channels and independently assemble the startup receipt.
 
     Construct before launching the consumer. ``launch`` starts exactly one
     source-bound direct child; ``step`` never renews the inherited budget.

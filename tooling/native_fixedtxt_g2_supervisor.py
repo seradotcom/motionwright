@@ -314,7 +314,7 @@ def supervise_owner(held, *, environment, source_root, custody_directory):
     """Closed existing wrapper then selected custody, one owner context only.
 
     The P/2 route is explicit and independently committed. The wrapper's legacy
-    path retains its original guard. This candidate still needs A5 review.
+    path retains its original guard. This candidate still requires independent review.
     """
     import native_fixedtxt_g2_admission as fixed
     import native_mlt_g2_observation as g2

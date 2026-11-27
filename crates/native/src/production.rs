@@ -11549,7 +11549,7 @@ os._exit(0)
         }
     }
 
-    // A4 Native SceneBoundary late-observation causal tests.
+    // Native scene-boundary tests for late observations.
     // Synthetic source fixtures; compilation and execution are tracked externally.
     // Insert this submodule inside production.rs::tests.
     // Existing Native17 tests and fixtures remain unchanged.

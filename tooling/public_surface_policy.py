@@ -22,7 +22,7 @@ REQUIRED_IGNORES = tuple("/" + name for name in FORBIDDEN_ROOTS)
 GENERATED_NAMES = {".git", "node_modules", "target", "dist",
                    "test-results", "playwright-report"}
 PUBLIC_TEXT_EXTENSIONS = {".md", ".rs", ".ts", ".tsx", ".py", ".yml", ".yaml"}
-PUBLIC_TEXT_ROOTS = ("docs/", "apps/", "crates/", ".github/workflows/")
+PUBLIC_TEXT_ROOTS = ("docs/", "apps/", "crates/", ".github/workflows/", "tooling/")
 METATEXT = (
     ("cross_operator_instruction", re.compile(
         r"\b(?:another\s+agent\s+may\s+be|other\s+agents['\u2019]\s+work|"
@@ -30,7 +30,10 @@ METATEXT = (
         r"\s+(?:edit|implement|continue|resume|fix|finish|complete|merge|rebase)|"
         r"agent\s+handoff\s+(?:notes|instructions))\b", re.I)),
     ("delegation_boilerplate", re.compile(
-        r"\bdelegated\s+by\s+the\s+user\b|impeccable:product-schema", re.I)),
+        r"\bdelegated\s+by\s+the\s+user\b|impeccable[:]product-schema", re.I)),
+    ("private_role_instruction", re.compile(
+        r"\bA[1-6]\s+(?:(?:must|should|needs\s+to)\s+"
+        r"(?:retain|review|merge|integrate|implement)|callers|lane\s+must)\b", re.I)),
     ("private_prompt_marker", re.compile(r"\bmaster\s+prompt\b", re.I)),
 )
 
@@ -89,8 +92,9 @@ def scan_paths(tracked: list[str]) -> list[str]:
 
 
 def _is_public_text(name: str) -> bool:
+    # Tooling tests include deliberate samples of rejected source text.
     suffix = PurePosixPath(name).suffix.lower()
-    return suffix in PUBLIC_TEXT_EXTENSIONS and (
+    return not name.startswith("tooling/tests/") and suffix in PUBLIC_TEXT_EXTENSIONS and (
         ("/" not in name and suffix == ".md")
         or name.startswith(PUBLIC_TEXT_ROOTS)
     )

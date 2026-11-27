@@ -157,7 +157,7 @@ def owned_tree(root):
     return tuple(owned.values())
 
 class PhaseChannel:
-    """Independent A2 channel; never A6's supervisor stream or journal."""
+    """Read the independent startup channel outside the supervisor stream and journal."""
     def __init__(self, fd, operation_id):
         require(type(fd) is int and fd >= 3 and not os.isatty(fd), "PHASE_CHANNEL_REQUIRED")
         require(any(f(os.fstat(fd).st_mode) for f in (stat.S_ISFIFO, stat.S_ISSOCK)), "PHASE_PIPE_OR_SOCKET_REQUIRED")
