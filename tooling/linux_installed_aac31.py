@@ -258,13 +258,23 @@ def worker(request, phase, binding, seconds):
     bridge = ReviewBridge(Atspi, deadline=time.monotonic() + seconds, glib=GLib)
     journal = ui.DiskJournal(Path(request["evidence"]) / (phase + "-ui"))
     try:
-        return operate_window(request, phase, binding, bridge, journal, Gdk,
-                              database, output, source)
+        if phase.startswith("navigate-"):
+            navigate_window(request, binding, bridge, journal)
+        elif phase == "check-source":
+            journal.put("before-check-source", {"binding": binding})
+            press(bridge, binding, "Check hybrid sources", journal, "check-source")
+        elif phase == "create":
+            require(not rows(database, source), "AAC31 mux was already attempted for this saved source")
+            press(bridge, binding, "Create hybrid master", journal, "create-one-master", seconds=90)
+        else:
+            return operate_window(request, phase, binding, bridge, journal, Gdk,
+                                  database, output, source)
+        return {"phase": phase, "binding": binding}
     finally:
         journal.close()
 
 
-def operate_window(request, phase, binding, bridge, journal, gdk, database, output, source):
+def navigate_window(request, binding, bridge, journal):
     def project_or_editor():
         try:
             return exact(bridge, binding, "Deliver", button=True, enabled=True)
@@ -277,25 +287,23 @@ def operate_window(request, phase, binding, bridge, journal, gdk, database, outp
         invoke(bridge, binding, initial, journal, "open-saved-project")
     press(bridge, binding, "Deliver", journal, "open-deliver")
 
-    if phase == "render":
-        press(bridge, binding, "Check hybrid sources", journal, "check-source")
-        require(not rows(database, source), "AAC31 mux was already attempted for this saved source")
-        press(bridge, binding, "Create hybrid master", journal, "create-one-master", seconds=90)
 
-        def original_completed():
-            status = rows(database, source)
-            if len(status) <= 1:
-                if any(item["stage"] != "dispatching" for item in status):
-                    raise ValueError("original AAC31 mux outcome is unconfirmed")
-                raise ui.NotReady("AAC31_ORIGINAL_STILL_RUNNING")
+def await_original(database, source, output, deadline):
+    while time.monotonic() < deadline:
+        status = rows(database, source)
+        if len(status) >= 2:
             return original_master(database, source, output)
+        require(all(item["stage"] == "dispatching" for item in status), "original AAC31 mux outcome is unconfirmed")
+        time.sleep(0.15)
+    raise ui.ProbeError("AAC31_ORIGINAL_COMPLETION_DEADLINE")
 
-        master = wait_for(bridge, original_completed)
+
+def operate_window(request, phase, binding, bridge, journal, gdk, database, output, source):
+    require(phase in {"render", "reopen"}, "invalid installed AAC31 review phase")
+    master = original_master(database, source, output)
+    if phase == "render":
         completed = wait_for(bridge, lambda: exact(bridge, binding, "Completed original hybrid master"))
         wait_for(bridge, lambda: exact(bridge, binding, master.sha256, within=completed.node))
-    else:
-        require(phase == "reopen", "invalid installed AAC31 phase")
-        master = original_master(database, source, output)
 
     press(bridge, binding, "Find saved MP4s", journal, "find-saved")
     review = wait_for(bridge, lambda: saved_review_control(bridge, binding, master))
@@ -337,6 +345,38 @@ def admitted_owner_connection(request, source, output):
     return connection
 
 
+def observe_stage(request_path, evidence, phase, binding, deadline, *, limit=None):
+    remaining = int(deadline - time.monotonic())
+    if limit is not None:
+        remaining = min(remaining, limit)
+    require(remaining > 0, "AAC31 window has no remaining budget")
+    (evidence / (phase + "-ui")).mkdir(mode=0o700)
+    argv = [sys.executable, "-B", "-E", "-s", __file__, "--worker", phase,
+            "--request", str(request_path), "--binding", json.dumps(binding),
+            "--seconds", str(remaining)]
+    result_path = evidence / (phase + "-ui.stdout")
+    # Each bounded process keeps its originals even when an IPC call never returns.
+    with result_path.open("xb") as stdout, (evidence / (phase + "-ui.stderr")).open("xb") as stderr:
+        child = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=stdout,
+                               stderr=stderr, timeout=remaining, check=False)
+    require(child.returncode == 0, "installed AAC31 UI observation failed: " + phase)
+    regular_file(result_path, 64 * 1024)
+    result = json.loads(result_path.read_bytes())
+    require(result["binding"] == binding and result["phase"] == phase,
+            "AAC31 UI report changed its launch identity")
+    return result
+
+
+def observe_window(request_path, evidence, phase, binding, deadline, database, source, output):
+    observe_stage(request_path, evidence, "navigate-" + phase, binding, deadline, limit=35)
+    if phase == "render":
+        observe_stage(request_path, evidence, "check-source", binding, deadline, limit=30)
+        observe_stage(request_path, evidence, "create", binding, deadline, limit=90)
+        await_original(database, source, output, deadline)
+    return observe_stage(request_path, evidence, phase, binding, deadline)
+
+
+
 def run_installed(request_path: Path) -> dict:
     """One owned AppRun render/play session and one fresh AppRun reopen."""
     request = json.loads(request_path.read_bytes())
@@ -368,8 +408,6 @@ def run_installed(request_path: Path) -> dict:
         started = time.monotonic()
         deadline = started + (seconds if phase == "render" else 45)
         observation = {}
-        journal = evidence / (phase + "-ui")
-        journal.mkdir(mode=0o700)
 
         def interaction(_profile):
             # Refuse a second invocation even if the observer cannot determine
@@ -383,24 +421,8 @@ def run_installed(request_path: Path) -> dict:
             observation["binding"] = binding
             observation["executing_binary"] = observed
             publish(evidence / (phase + "-window-intent.json"), observation)
-            remaining = int(deadline - time.monotonic())
-            require(remaining > 0, "AAC31 window has no remaining budget")
-            argv = [sys.executable, "-B", "-E", "-s", __file__, "--worker", phase,
-                    "--request", str(request_path), "--binding", json.dumps(binding),
-                    "--seconds", str(remaining)]
-            # The stdout/stderr originals remain exclusive files even on a
-            # timeout. No cancellation result is treated as no effect.
-            with (evidence / (phase + "-ui.stdout")).open("xb") as stdout, (
-                    evidence / (phase + "-ui.stderr")).open("xb") as stderr:
-                child = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=stdout,
-                                       stderr=stderr, timeout=remaining, check=False)
-            require(child.returncode == 0, "installed AAC31 UI observation failed")
-            result_path = evidence / (phase + "-ui.stdout")
-            regular_file(result_path, 64 * 1024)
-            result = json.loads(result_path.read_bytes())
-            require(result["binding"] == binding and result["phase"] == phase,
-                    "AAC31 UI report changed its launch identity")
-            screens[phase] = result
+            screens[phase] = observe_window(request_path, evidence, phase, binding, deadline,
+                                            database, source, output)
             return True
 
         owner_connection = admitted_owner_connection(request, source, output)
@@ -441,7 +463,8 @@ def run_installed(request_path: Path) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--request", type=Path, required=True)
-    parser.add_argument("--worker", choices=("render", "reopen"))
+    parser.add_argument("--worker", choices=("navigate-render", "navigate-reopen", "check-source",
+                                             "create", "render", "reopen"))
     parser.add_argument("--binding")
     parser.add_argument("--seconds", type=int)
     args = parser.parse_args()
