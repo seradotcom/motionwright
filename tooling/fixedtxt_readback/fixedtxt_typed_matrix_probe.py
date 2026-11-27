@@ -49,6 +49,8 @@ GEOMETRY_OBSERVED = {
     'GREEN': 'afc197bacf9d73c007833a315b253b1b901005a2c9ef7506eec57b2683aaf3c7',
 }
 OBSERVED = {'RED': 'ed4f0d8f6630f14d1c3d890b3249fab79381a2fe9c8424bdb302b1ae98488cd2', 'GREEN': 'e787ab2bc03af94f7e432d380b1c5ff058fb881492232ed59b5988f487b69c96'}
+CURRENT_SDK = "00ef6d6bb7d842827e8a5dcf00a417199aa72188"
+CURRENT_SDK_TREE = "86f9ae4ee84039e05002b7cf71f6cfc8a04909f1"
 CURRENT_OBSERVED = {
     "RED": "ea1e87522ea8d0363a7213fbfb3454f20d4ab5b5e8124ca1e967973f2efcd482",
     "GREEN": "19b3e19e050e21f8976e37dc7fcfad1c6c5bea74fa428a00e331b3364a86825f",
@@ -60,6 +62,7 @@ def pixel_observers(arm):
 
 GEOMETRY_FIELDS = ('native_geometry', 'camera_scene')
 FIXTURE_HELPER_SHA = '372b1aab1412fa61b7003b897729f9ac2e6152f3cc5334890256ba025a1984f6'
+CURRENT_FIXTURE_HELPER = (44695, 'e00805121f062abae5554a2419e26e53fde701f919b44b79c19a9a4eb6cd65c1')
 IDENTITY = [1, 0, 0, 1, 0, 0]
 NATIVE_TYPES = frozenset(('Node', 'Layout', 'Rect', 'Circle', 'Line', 'Txt',
                           'Code', 'Img', 'Video', 'Camera'))
@@ -585,8 +588,22 @@ def bind_fixture_sources(originals, plan, film_path, expectation_path, effective
     need(type(files) is list and 0 < len(files) <= 4096, 'typed_geometry_compiler_source_roster')
     helpers = [item for item in files if item.get('path') ==
                'crates/driver-motion-canvas/examples/support/fixed_text_fixtures_v4.rs']
-    need(len(helpers) == 1 and helpers[0].get('bytes') == 44617
-         and helpers[0].get('sha256') == FIXTURE_HELPER_SHA, 'typed_geometry_original_fixture_helper_source')
+    arm = plan['arm']
+    sources = plan['arm_sources']
+    revision = sources[arm]['source_sha']
+    context_sdk = plan.get('context', {}).get('semwright_sha')
+    helper = (44617, FIXTURE_HELPER_SHA)
+    if (CURRENT_SDK in (revision, context_sdk)
+            or any(source.get('native_source_sha256') in CURRENT_OBSERVED.values()
+                   for source in sources.values())):
+        need(effective == CURRENT_OBSERVED[arm] and revision == context_sdk == CURRENT_SDK
+             and all(sources.get(side) == {'source_sha': CURRENT_SDK, 'tree_sha': CURRENT_SDK_TREE,
+                                           'native_source_sha256': digest}
+                     for side, digest in CURRENT_OBSERVED.items()),
+             'typed_geometry_current_fixture_observer_pair')
+        helper = CURRENT_FIXTURE_HELPER
+    need(len(helpers) == 1 and (helpers[0].get('bytes'), helpers[0].get('sha256')) == helper,
+         'typed_geometry_original_fixture_helper_source')
     fixture_set = originals.json(one_role(plan, 'fixture-set'), MIB)
     need(fixture_set.get('schema') == 'motionwright-fixedtxt-film-fixture-set/4'
          and fixture_set.get('fixture_count') == 12
@@ -605,7 +622,7 @@ def bind_fixture_sources(originals, plan, film_path, expectation_path, effective
                            ('film.original.json' if name == 'film' else 'expectations.json'),
                            **originals.descriptor(path)}, 'typed_geometry_fixture_original_roster_binding')
     return {'common_compiler_sources_original': originals.descriptor(common_path),
-            'fixture_helper_source_sha256': FIXTURE_HELPER_SHA,
+            'fixture_helper_source_sha256': helper[1],
             'fixture_set_original': originals.descriptor(one_role(plan, 'fixture-set'))}
 
 

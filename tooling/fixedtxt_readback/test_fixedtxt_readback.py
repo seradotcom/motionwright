@@ -212,6 +212,71 @@ class TypedSourceContracts(unittest.TestCase):
                     typed.actual_layout({}, arm=arm, source_sha="0" * 64)
 
 
+        legacy = (44617, typed.FIXTURE_HELPER_SHA)
+        candidate = (44695, "e00805121f062abae5554a2419e26e53fde701f919b44b79c19a9a4eb6cd65c1")
+        old_revision = CONTEXT["semwright_sha"]
+        for revision, tree, pair, helper in (
+            (old_revision, "c" * 40, typed.OBSERVED, legacy),
+            (typed.CURRENT_SDK, typed.CURRENT_SDK_TREE, typed.CURRENT_OBSERVED, candidate),
+        ):
+            with self.subTest(revision=revision):
+                self.assertEqual(self.compiler_binding(revision, tree, pair, helper), helper[1])
+                crossed_helper = legacy if helper == candidate else candidate
+                with self.assertRaisesRegex(typed.ProbeRejected, "typed_geometry_original_fixture_helper_source"):
+                    self.compiler_binding(revision, tree, pair, crossed_helper)
+                crossed_pair = dict(pair)
+                other = typed.OBSERVED if pair == typed.CURRENT_OBSERVED else typed.CURRENT_OBSERVED
+                crossed_pair["GREEN"] = other["GREEN"]
+                with self.assertRaisesRegex(typed.ProbeRejected, "typed_geometry_current_fixture_observer_pair"):
+                    self.compiler_binding(revision, tree, crossed_pair, helper)
+
+    def compiler_binding(self, revision, tree, pair, helper):
+        fixture = "flow-text-control"
+        common_path = "inputs/common-sources.original.json"
+        values = {
+            common_path: serial.canonical({
+                "schema": "motionwright.fixed-text-common-compiler-sources/1",
+                "semwright_revision": revision,
+                "files": [{"path": route.FIXTURE_HELPER, "bytes": helper[0], "sha256": helper[1]}],
+            }),
+            "inputs/film.json": b"synthetic Film original",
+            "inputs/expectations.json": b"synthetic fixture expectations original",
+        }
+
+        def descriptor(path):
+            return serial.descriptor(values[path])
+
+        read = ContractOriginals(values).small
+
+        def member_json(path, maximum):
+            return route.strict(read(path, maximum), maximum)
+
+        values["inputs/cycle.json"] = serial.canonical({
+            "schema": "motionwright.fixed-text-native-cycle-inputs/4", "arm": "RED",
+            "common_sources": descriptor(common_path),
+        })
+        roster = [{"key": name} for name in sorted(typed.FIXTURE_ROSTER)]
+        selected = next(row for row in roster if row["key"] == fixture)
+        selected["film"] = {"path": f"fixtures/{fixture}/film.original.json", **descriptor("inputs/film.json")}
+        selected["expectations"] = {"path": f"fixtures/{fixture}/expectations.json",
+                                    **descriptor("inputs/expectations.json")}
+        values["inputs/fixture-set.json"] = serial.canonical({
+            "schema": "motionwright-fixedtxt-film-fixture-set/4", "fixture_count": 12,
+            "compiler": {"runtime_source_sha256": pair["RED"]}, "fixtures": roster,
+        })
+        plan = {
+            "arm": "RED", "fixture": fixture, "context": {"semwright_sha": revision},
+            "arm_sources": {arm: {"source_sha": revision, "tree_sha": tree, "native_source_sha256": digest}
+                            for arm, digest in pair.items()},
+            "members": [{"role": role, "root": "inputs", "relative_path": path}
+                        for role, path in (("cycle-inputs", "cycle.json"), ("fixture-set", "fixture-set.json"))],
+        }
+        originals = SimpleNamespace(small=read, json=member_json, descriptor=descriptor)
+        bound = typed.bind_fixture_sources(
+            originals, plan, "inputs/film.json", "inputs/expectations.json", pair["RED"], route)
+        return bound["fixture_helper_source_sha256"]
+
+
 class ReadbackOutputOwnershipTests(unittest.TestCase):
     """Real directory ownership and immutable receipts; no Native operation."""
 
