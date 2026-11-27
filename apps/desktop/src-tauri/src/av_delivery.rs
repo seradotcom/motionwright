@@ -355,7 +355,8 @@ pub(crate) fn recover_saved_mux_review(
             .register_recovered_review(&original)
             .ok_or_else(|| UNAVAILABLE.to_owned())?;
         let source = playback.0.resolve(project, token)?;
-        playback.1.prepare(&source, token)
+        let descriptor = playback.1.prepare(&source, token)?;
+        Ok(descriptor.with_saved_hybrid_timing(original.saved_hybrid_timing()))
     })
     .map_err(|_| UNAVAILABLE.to_owned())?
 }

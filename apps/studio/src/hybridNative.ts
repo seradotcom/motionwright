@@ -7,10 +7,15 @@ export interface HybridSourcePreflight {
   project_sha256:string;source_count:2|3;frame_count:number;width:1920;height:1080;
   fps_num:30;fps_den:1;source_audio_sha256:string;
 }
+export interface HybridMasterStreamClock {
+  exact_video_clock:boolean;audio_start_sample:number|null;
+  presented_audio_samples:number|null;authored_audio_samples:number;
+}
 export interface HybridMasterResult {
-  schema:"motionwright.hybrid-desktop-master/1";status:"completed";
+  schema:"motionwright.hybrid-desktop-master/1"|"motionwright.hybrid-desktop-master/2";status:"completed";
   project_id:string;generation:string;revision:number;deliverable_id:string;
   master_sha256:string;frame_count:number;fps_num:30;fps_den:1;
+  stream_clock?:HybridMasterStreamClock;
   saved_master:SavedMasterHint|null;review_warning:string|null;automatic_retry:false;
 }
 export interface HybridFailure {
@@ -45,14 +50,37 @@ export function parseHybridPreflight(value:unknown,project:Project,profile:strin
     throw new Error("The hybrid source projection exceeds the supported original route.");
   return data as unknown as HybridSourcePreflight;
 }
+export function parseHybridMasterStreamClock(value:unknown,frames:number):HybridMasterStreamClock {
+  const clock=closed(value,["exact_video_clock","audio_start_sample","presented_audio_samples","authored_audio_samples"]);
+  if(typeof clock.exact_video_clock!=="boolean"||clock.authored_audio_samples!==frames*1600
+    ||(clock.audio_start_sample!==null&&!Number.isSafeInteger(clock.audio_start_sample))
+    ||(clock.presented_audio_samples!==null&&(!Number.isSafeInteger(clock.presented_audio_samples)||Number(clock.presented_audio_samples)<=0)))
+    throw new Error("The original hybrid stream measurement is invalid.");
+  return clock as unknown as HybridMasterStreamClock;
+}
+export function streamClockIssue(clock?:HybridMasterStreamClock):string|null {
+  if(!clock) return null;
+  if(!clock.exact_video_clock) return "The rendered video timing differs from the saved cut.";
+  const {audio_start_sample:start,presented_audio_samples:presented,authored_audio_samples:authored}=clock;
+  if(start===null||presented===null) return "The original MP4 has no complete audio timing measurement.";
+  if(start!==0) return "The original audio starts at sample "+start.toLocaleString()+". The saved cut starts at zero.";
+  if(presented!==authored) return "The original audio presents "+presented.toLocaleString()+
+    " samples. The saved cut requires "+authored.toLocaleString()+".";
+  return null;
+}
+
 export function parseHybridMaster(value:unknown,project:Project,profile:string,expectedFrames:number):HybridMasterResult {
-  const data=closed(value,["schema","status","project_id","generation","revision","deliverable_id",
-    "master_sha256","frame_count","fps_num","fps_den","saved_master","review_warning","automatic_retry"]);
+  const version2=!!value&&typeof value==="object"&&"schema" in value
+    &&value.schema==="motionwright.hybrid-desktop-master/2";
+  const keys=["schema","status","project_id","generation","revision","deliverable_id",
+    "master_sha256","frame_count","fps_num","fps_den","saved_master","review_warning","automatic_retry"];
+  const data=closed(value,version2?[...keys,"stream_clock"]:keys);
   scope(data,project,profile);
-  if(data.schema!=="motionwright.hybrid-desktop-master/1"||data.status!=="completed"
+  if((data.schema!=="motionwright.hybrid-desktop-master/1"&&!version2)||data.status!=="completed"
     ||data.automatic_retry!==false||!validFrameCount(data.frame_count)||data.frame_count!==expectedFrames||data.fps_num!==30||data.fps_den!==1
     ||typeof data.master_sha256!=="string"||!sha.test(data.master_sha256))
     throw new Error("The hybrid master result is invalid. Inspect the original operation before rendering again.");
+  if(version2) parseHybridMasterStreamClock(data.stream_clock, data.frame_count);
   if(data.saved_master===null) {
     if(data.review_warning!=="The original master completed. Open saved masters to recover it; do not render it again.")
       throw new Error("The completed hybrid master has no bounded recovery status.");

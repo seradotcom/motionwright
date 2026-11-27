@@ -50,7 +50,7 @@ mod hybrid_mlt;
 mod hybrid_owner;
 mod hyperframes;
 pub use hybrid_budget::{HybridNativeSources, HybridSourcePreflight, PreparedHybridNativeSources};
-pub use hybrid_mlt::{HybridNativeMaster, HybridNativeTimeline};
+pub use hybrid_mlt::{HybridMasterStreamClock, HybridNativeMaster, HybridNativeTimeline};
 mod manim_graph;
 mod manim_graph_profile;
 pub use hyperframes::{
@@ -72,8 +72,8 @@ pub use motion_canvas_window::{
     read_cached_motion_canvas_window_frame, reuse_motion_canvas_window,
 };
 pub use saved_media::{
-    SavedMasterReceiptHint, SavedMasterReceiptInventory, VerifiedOriginalMasterReview,
-    VerifiedSavedMasterDelivery,
+    SavedHybridTiming, SavedMasterReceiptHint, SavedMasterReceiptInventory,
+    VerifiedOriginalMasterReview, VerifiedSavedMasterDelivery,
 };
 pub use saved_motion::{
     RecoveredMotionCapture, SavedMotionCaptureHint, SavedMotionCaptureInventory,

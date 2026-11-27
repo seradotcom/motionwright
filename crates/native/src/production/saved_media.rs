@@ -15,6 +15,13 @@ const CONTEXT_SCHEMA: &str = "motionwright.original-media-reopen/1";
 const HYBRID_CONTEXT_SCHEMA: &str = "motionwright.original-hybrid-media-reopen/1";
 const MAX_HINTS: usize = 32;
 
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(tag = "status", content = "clock", rename_all = "snake_case")]
+pub enum SavedHybridTiming {
+    Observed(super::HybridMasterStreamClock),
+    Unavailable,
+}
+
 pub struct VerifiedOriginalMasterReview {
     pub(super) project_id: Uuid,
     pub(super) stamp: RevisionStamp,
@@ -24,6 +31,7 @@ pub struct VerifiedOriginalMasterReview {
     pub(super) sha256: String,
     pub(super) bytes: u64,
     pub(super) clock: (u32, u32, u64),
+    pub(super) saved_hybrid_timing: Option<SavedHybridTiming>,
 }
 
 impl VerifiedOriginalMasterReview {
@@ -46,6 +54,9 @@ impl VerifiedOriginalMasterReview {
     }
     pub fn clock(&self) -> (u32, u32, u64) {
         self.clock
+    }
+    pub fn saved_hybrid_timing(&self) -> Option<SavedHybridTiming> {
+        self.saved_hybrid_timing
     }
 }
 
@@ -561,14 +572,39 @@ impl ProductionCoordinator {
         deliverable_id: Uuid,
         expected_master_sha256: &str,
     ) -> NativeResult<VerifiedOriginalMasterReview> {
-        self.recover_saved_master_parts(
+        let (mut original, receipt, context) = self.recover_saved_master_parts(
             project_id,
             expected,
             mux_receipt_id,
             deliverable_id,
             expected_master_sha256,
-        )
-        .map(|(original, _, _)| original)
+        )?;
+        if context.schema == HYBRID_CONTEXT_SCHEMA {
+            let result = context.original(&receipt)?;
+            if result.get("color_observation").is_some() {
+                let original_video_path = context.args["video_path"]
+                    .as_str()
+                    .ok_or_else(|| invalid("Original video is absent"))?;
+                original.saved_hybrid_timing = Some(
+                    match super::hybrid_mlt::read_saved_hybrid_master_stream_clock(
+                        &original.owner_root,
+                        result,
+                        original_video_path,
+                        original.clock.2,
+                    ) {
+                        Ok(clock) => SavedHybridTiming::Observed(clock),
+                        Err(_) => SavedHybridTiming::Unavailable,
+                    },
+                );
+                let latest = current_project(self, project_id, expected)?;
+                context.check_current(self, &latest)?;
+                audio_analysis::receipt_history::verify_selected_atomic_history(
+                    &self.service,
+                    &receipt,
+                )?;
+            }
+        }
+        Ok(original)
     }
 
     fn recover_saved_master_parts(
@@ -700,6 +736,7 @@ impl ProductionCoordinator {
                     observation.fps_den,
                     observation.frame_count,
                 ),
+                saved_hybrid_timing: None,
             },
             selected,
             context,

@@ -53,9 +53,9 @@ export default function SavedNativeMasters({project,deliverableId,blocked=false,
     <p className="delivery-truth-note">Reopening verifies the recorded original and reads its MP4.
       Audio measurements are optional for review. Export uses a separate fresh destination permission and rechecks the saved profile.</p>
     {hint&&<NativeAvReview project={project} muxReceiptHint={hint} deliverableId={deliverableId}
-      masterSha256={hint.master_sha256} embedded/>}
-    {hint&&currentProjectState&&<SavedMasterDelivery key={JSON.stringify([readKey,hint.mux_receipt_id,hint.master_sha256])}
-      project={project} deliverableId={deliverableId} hint={hint} blocked={blocked}
-      currentProjectState={currentProjectState}/>}
+      masterSha256={hint.master_sha256} embedded
+      savedDelivery={currentProjectState&&<SavedMasterDelivery key={JSON.stringify([readKey,hint.mux_receipt_id,hint.master_sha256])}
+        project={project} deliverableId={deliverableId} hint={hint} blocked={blocked}
+        currentProjectState={currentProjectState}/>}/>}
   </section>;
 }

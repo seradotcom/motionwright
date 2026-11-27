@@ -86,11 +86,45 @@ test("a saved original with a mismatched returned hash stays closed without fall
 });
 
 
+test("reopening after reload shows the original audio timing without another render or a delivery grant",async({page})=>{
+  await page.route("http://motionwright-media.localhost/**",route=>route.abort());
+  await page.goto("/tests/fixtures/native-av-audio-qc.html?saved=1&export=1&playback=1");
+  await page.reload();
+  const current=await selection(page), sha="1".repeat(64);
+  await find(page).click();await expect.poll(async()=>(await calls(page)).length).toBe(1);
+  const available=inventory(current,sha);
+  available.items[0].frame_count=31;
+  await resolve(page,1,available);
+  await choose(page).click();
+  await expect.poll(async()=>(await calls(page)).length).toBe(2);
+  const delivery=page.getByRole("region",{name:"Deliver saved original MP4",exact:true});
+  await expect(delivery).toHaveCount(0);
+  await resolve(page,2,{...descriptor(current,sha,1000),schema:"motionwright.native-av-review/2",
+    saved_hybrid_timing:{status:"observed",clock:{exact_video_clock:true,audio_start_sample:0,
+      presented_audio_samples:49_584,authored_audio_samples:49_600}}});
+  const review=page.getByRole("region",{name:"Native master playback review",exact:true});
+  const notice=review.getByRole("status").filter({hasText:"Review only."});
+  await expect(notice).toContainText(/49\D?584 samples/);
+  await expect(notice).toContainText(/requires 49\D?600/);
+  await expect(review.getByRole("alert")).toContainText("This WebView could not decode the recovered original MP4.");
+  await expect(page.getByRole("region",{name:"Deliver saved original MP4",exact:true})).toHaveCount(0);
+  await review.getByRole("button",{name:"Retry readback",exact:true}).click();
+  await expect.poll(async()=>(await calls(page)).length).toBe(3);
+  await expect(notice).toContainText(/requires 49\D?600/);
+  await expect(page.getByRole("region",{name:"Deliver saved original MP4",exact:true})).toHaveCount(0);
+  expect((await calls(page)).map(call=>call.command)).toEqual([
+    "native_av_saved_master_inventory","review_native_av_master","review_native_av_master",
+  ]);
+});
+
 async function selectForExport(page:Page){
-  await page.goto("/tests/fixtures/native-av-audio-qc.html?saved=1&export=1");
+  await page.route("http://motionwright-media.localhost/**",route=>route.abort());
+  await page.goto("/tests/fixtures/native-av-audio-qc.html?saved=1&export=1&playback=1");
   const current=await selection(page);
   await find(page).click();await expect.poll(async()=>(await calls(page)).length).toBe(1);
   await resolve(page,1,inventory(current));await choose(page).click();
+  await expect.poll(async()=>(await calls(page)).length).toBe(2);
+  await resolve(page,2,descriptor(current,"1".repeat(64),1024));
   await expect(page.getByRole("region",{name:"Deliver saved original MP4",exact:true})).toBeVisible();
   await page.getByRole("textbox",{name:"Saved MP4 export path",exact:true}).fill("E:\\Exports\\original.mp4");
   return current;

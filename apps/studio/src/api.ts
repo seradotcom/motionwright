@@ -2925,7 +2925,10 @@ export async function prepareSavedNativeMuxReview(project:Project,deliverableId:
     request:{project_id:project.id,generation:project.generation,revision:project.revision,
       deliverable_id:deliverableId,mux_receipt_id:hint.mux_receipt_id,expected_master_sha256:hint.master_sha256},
   });
-  return parseNativeAvPlayback(data,{project,exportToken:null,deliverableId,masterSha256:hint.master_sha256});
+  return parseNativeAvPlayback(data,{
+    project,exportToken:null,deliverableId,masterSha256:hint.master_sha256,
+    savedHybridFrameCount:hint.fps_num===30&&hint.fps_den===1?hint.frame_count:undefined,
+  });
 }
 
 

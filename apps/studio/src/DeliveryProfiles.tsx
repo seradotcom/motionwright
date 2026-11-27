@@ -1040,7 +1040,7 @@ export default function DeliveryProfiles({
         // Preserve completion for its original context before current-view adoption.
         if(liveFilm.current.mounted)setHybridAttempt({key,attempt:{status:"completed",result}});
         if(!gesture.stillCurrent()){notePreviousNativeResult();return;}
-        setMessage("Original hybrid master completed. Review it before requesting delivery to a new destination.");
+        setMessage("Original hybrid master saved. Review it in Native hybrid master.");
       }catch(cause){
         if(dispatched && liveFilm.current.mounted){
           const failure=(cause instanceof HybridNativeOperationError

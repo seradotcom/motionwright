@@ -45,6 +45,20 @@ describe("original Native media playback",()=>{
     for(const value of [[...bytes,NaN],[...bytes,256],[...bytes,-1],[...bytes,"1"],new Uint8Array(16*1024*1024+1),{},null])
       expect(()=>verifiedNativeReviewBytes(value)).toThrow();
   });
+  it("admits timing only on the selected saved mux and checks its authored sample count",()=>{
+    const recovered={...scope,exportToken:null,savedHybridFrameCount:31};
+    const clock={exact_video_clock:true,audio_start_sample:0,presented_audio_samples:49_584,
+      authored_audio_samples:49_600};
+    const source={...descriptor(),schema:"motionwright.native-av-review/2",export_token:token,
+      saved_hybrid_timing:{status:"observed",clock}};
+    expect(parseNativeAvPlayback(source,recovered)).toMatchObject({kind:"stream",savedHybridTiming:{status:"observed",clock}});
+    expect(parseNativeAvPlayback({...source,saved_hybrid_timing:{status:"unavailable"}},recovered))
+      .toMatchObject({kind:"stream",savedHybridTiming:{status:"unavailable"}});
+    expect(()=>parseNativeAvPlayback(source,{...scope,exportToken:null})).toThrow();
+    expect(()=>parseNativeAvPlayback(source,{...recovered,savedHybridFrameCount:32})).toThrow();
+    expect(()=>parseNativeAvPlayback({...source,saved_hybrid_timing:{status:"unavailable",clock}},recovered)).toThrow();
+    expect(()=>parseNativeAvPlayback({...source,schema:"motionwright.native-av-review/1"},recovered)).toThrow();
+  });
   it("requires a source-bound streamed reader for saved receipts and retains no prior export token",()=>{
     const recovered={...scope,exportToken:null};
     const source={...descriptor(),export_token:"00000000-0000-4000-8000-000000000002"};

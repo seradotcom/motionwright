@@ -63,11 +63,12 @@ impl ProductionCoordinator {
         let data = context.original(&receipt)?;
         let root = &self.client.connection().output_root;
         let maximum = context.maximum_bytes()?;
+        let original_video_path = context.args["video_path"]
+            .as_str()
+            .ok_or_else(|| invalid("Original video is absent"))?;
         verify_output_artifact(
             root,
-            context.args["video_path"]
-                .as_str()
-                .ok_or_else(|| invalid("Original video is absent"))?,
+            original_video_path,
             context.args["video_sha256"]
                 .as_str()
                 .ok_or_else(|| invalid("Original video identity is absent"))?,
@@ -124,6 +125,18 @@ impl ProductionCoordinator {
             return Err(invalid(
                 "Saved delivery audio does not cover the original video clock",
             ));
+        }
+        // Preserve historical originals that predate retained stream reports.
+        // A retained hybrid measurement, when present, must qualify the actual
+        // MP4 interval independently of the decoded WAV's sample count.
+        if context.schema == HYBRID_CONTEXT_SCHEMA && data.get("color_observation").is_some() {
+            super::super::hybrid_mlt::verify_saved_hybrid_master_stream_clock(
+                root,
+                data,
+                original_video_path,
+                frames,
+                samples,
+            )?;
         }
         super::super::mlt_multisegment_av::require_native_mux_stereo_tail(
             source, decoded, samples,
