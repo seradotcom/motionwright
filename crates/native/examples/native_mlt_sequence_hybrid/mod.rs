@@ -209,19 +209,29 @@ impl PrivateEvidence {
     }
 }
 fn source_wave(bytes: &[u8], expected_sha256: &str, expected_bytes: u64) -> Result<()> {
+    pcm16_source(bytes, expected_sha256, expected_bytes, PCM_FRAMES)
+}
+
+fn pcm16_source(
+    bytes: &[u8],
+    expected_sha256: &str,
+    expected_bytes: u64,
+    sample_frames: u64,
+) -> Result<()> {
+    let wav_bytes = 44 + sample_frames * 4;
     need(
-        digest_literal(expected_sha256) && expected_bytes == WAV_BYTES,
+        digest_literal(expected_sha256) && expected_bytes == wav_bytes,
         "Hybrid original WAV identity is outside its closed profile",
     )?;
     need(
-        bytes.len() as u64 == WAV_BYTES && sha256(bytes) == expected_sha256,
+        bytes.len() as u64 == wav_bytes && sha256(bytes) == expected_sha256,
         "Hybrid original WAV bytes do not match their admitted identity",
     )?;
     need(
         &bytes[0..4] == b"RIFF"
             && &bytes[8..16] == b"WAVEfmt "
             && &bytes[36..40] == b"data"
-            && u32::from_le_bytes(bytes[4..8].try_into()?) == (WAV_BYTES - 8) as u32
+            && u32::from_le_bytes(bytes[4..8].try_into()?) == (wav_bytes - 8) as u32
             && u32::from_le_bytes(bytes[16..20].try_into()?) == 16
             && u16::from_le_bytes(bytes[20..22].try_into()?) == 1
             && u16::from_le_bytes(bytes[22..24].try_into()?) == 2
@@ -229,8 +239,8 @@ fn source_wave(bytes: &[u8], expected_sha256: &str, expected_bytes: u64) -> Resu
             && u32::from_le_bytes(bytes[28..32].try_into()?) == 192_000
             && u16::from_le_bytes(bytes[32..34].try_into()?) == 4
             && u16::from_le_bytes(bytes[34..36].try_into()?) == 16
-            && u32::from_le_bytes(bytes[40..44].try_into()?) == (PCM_FRAMES * 4) as u32,
-        "Hybrid source is not the unchanged six-second Film180 PCM16 stereo WAV",
+            && u32::from_le_bytes(bytes[40..44].try_into()?) == (sample_frames * 4) as u32,
+        "Hybrid source does not match its PCM16 stereo WAV profile",
     )
 }
 fn source_node(index: usize) -> CanvasNode {
@@ -368,6 +378,75 @@ fn verify_source(project: &Project, expected_sha256: &str) -> Result<()> {
     )
 }
 
+fn seed_black_matte(service: &StudioService, project: &mut Project, key: &str) -> Result<()> {
+    let mut visual_language = project.visual_language.clone();
+    let mut matte = false;
+    for token in &mut visual_language.palette {
+        if token.name.eq_ignore_ascii_case("background")
+            || token.name.eq_ignore_ascii_case("surface")
+        {
+            token.name.make_ascii_lowercase();
+            token.value = "#000000".into();
+            matte = true;
+        }
+    }
+    need(
+        matte,
+        "Hybrid source has no authored background or surface token",
+    )?;
+    apply(
+        service,
+        project,
+        &format!("{key}:opaque-black-matte"),
+        Change::SetVisualLanguage { visual_language },
+    )?;
+    Ok(())
+}
+
+fn seed_master(
+    service: &StudioService,
+    project: &mut Project,
+    key: &str,
+    voice_id: Uuid,
+) -> Result<Uuid> {
+    let mut profile = master(project)?.clone();
+    profile.width = 1920;
+    profile.height = 1080;
+    profile.frame_rate = RationalTime::new(30, 1)?;
+    profile.voice_track_id = Some(voice_id);
+    profile.captions = false;
+    profile.burn_in_captions = false;
+    let profile_id = profile.id;
+    apply(
+        service,
+        project,
+        &format!("{key}:master-profile"),
+        Change::UpsertDeliverable { profile },
+    )?;
+    let scene_intents = project
+        .scenes
+        .iter()
+        .map(|scene| DeliverySceneIntent {
+            scene_id: scene.id,
+            role: Some(DeliveryNarrativeRole::Evidence),
+            archetype: Some(DeliveryArchetype::Statement),
+        })
+        .collect();
+    apply(
+        service,
+        project,
+        &format!("{key}:saved-intents"),
+        Change::SetDeliveryRecipe {
+            deliverable_profile_id: profile_id,
+            recipe: Some(DeliveryRecipe {
+                scene_intents,
+                ..Default::default()
+            }),
+        },
+    )?;
+    Ok(profile_id)
+}
+
 fn seed_source(
     database: &Path,
     source: &Path,
@@ -395,27 +474,7 @@ fn seed_source(
     )?;
     let mut project =
         service.create_project("Original editable MC-Manim-MC 180-frame native source")?;
-    let mut visual_language = project.visual_language.clone();
-    let mut matte = false;
-    for token in &mut visual_language.palette {
-        if token.name.eq_ignore_ascii_case("background")
-            || token.name.eq_ignore_ascii_case("surface")
-        {
-            token.name.make_ascii_lowercase();
-            token.value = "#000000".into();
-            matte = true;
-        }
-    }
-    need(
-        matte,
-        "Hybrid source has no authored background or surface token",
-    )?;
-    apply(
-        &service,
-        &mut project,
-        "hybrid180:opaque-black-matte",
-        Change::SetVisualLanguage { visual_language },
-    )?;
+    seed_black_matte(&service, &mut project, "hybrid180")?;
     for index in 0..3 {
         apply(
             &service,
@@ -479,41 +538,7 @@ fn seed_source(
             && voice.channels == 2,
         "Hybrid original WAV import changed its measured identity",
     )?;
-    let mut profile = master(&project)?.clone();
-    profile.width = 1920;
-    profile.height = 1080;
-    profile.frame_rate = RationalTime::new(30, 1)?;
-    profile.voice_track_id = Some(voice.id);
-    profile.captions = false;
-    profile.burn_in_captions = false;
-    let profile_id = profile.id;
-    apply(
-        &service,
-        &mut project,
-        "hybrid180:master-profile",
-        Change::UpsertDeliverable { profile },
-    )?;
-    let scene_intents = project
-        .scenes
-        .iter()
-        .map(|scene| DeliverySceneIntent {
-            scene_id: scene.id,
-            role: Some(DeliveryNarrativeRole::Evidence),
-            archetype: Some(DeliveryArchetype::Statement),
-        })
-        .collect();
-    apply(
-        &service,
-        &mut project,
-        "hybrid180:saved-intents",
-        Change::SetDeliveryRecipe {
-            deliverable_profile_id: profile_id,
-            recipe: Some(DeliveryRecipe {
-                scene_intents,
-                ..Default::default()
-            }),
-        },
-    )?;
+    let profile_id = seed_master(&service, &mut project, "hybrid180", voice.id)?;
     let bytes = json_bytes(&project)?;
     let project_sha256 = sha256(&bytes);
     verify_source(&project, &project_sha256)?;
@@ -563,6 +588,139 @@ pub(super) fn seed(
         )?)?
     );
     Ok(())
+}
+
+/// Create only the synthetic source used by the installed Desktop clock check.
+pub(super) fn seed_installed_aac31(
+    database: &Path,
+    source: &Path,
+    expected_sha256: &str,
+) -> Result<()> {
+    ci_envelope()?;
+    need(
+        std::env::var("GITHUB_EVENT_NAME").as_deref() == Ok("workflow_dispatch")
+            && std::env::var("GITHUB_RUN_ATTEMPT").as_deref() == Ok("1"),
+        "The installed clock fixture requires the original manual Linux job",
+    )?;
+    let seeded = save_aac31_source(database, source, expected_sha256)?;
+    println!("{}", serde_json::to_string(&seeded)?);
+    Ok(())
+}
+
+fn save_aac31_source(database: &Path, source: &Path, expected_sha256: &str) -> Result<Value> {
+    const TITLE: &str = "Phase 1 AAC 31-frame qualification fixture";
+    const SAMPLES: u64 = 49_600;
+    const BYTES: u64 = 44 + SAMPLES * 4;
+    let verify_wave = || {
+        pcm16_source(
+            &capture_absolute(source, BYTES)?,
+            expected_sha256,
+            BYTES,
+            SAMPLES,
+        )
+    };
+    verify_wave()?;
+    unused(database)?;
+    let service = StudioService::open(database)?;
+    need(
+        service.projects(2)?.is_empty(),
+        "AAC31 source Store must be empty",
+    )?;
+    let mut project = service.create_project(TITLE)?;
+    seed_black_matte(&service, &mut project, "aac31")?;
+    for (index, (name, frames, x, color)) in [
+        ("motion-canvas", 15, 400., "#FF0000"),
+        ("manim-community", 16, 750., "#00FF00"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        apply(
+            &service,
+            &mut project,
+            &format!("aac31:scene:{index}"),
+            Change::AddScene {
+                name: name.into(),
+                objective: "Observe this marker at its authored point in the cut".into(),
+                duration_seconds: 1,
+            },
+        )?;
+        let scene_id = project.scenes.last().ok_or("Missing AAC31 scene")?.id;
+        apply(
+            &service,
+            &mut project,
+            &format!("aac31:duration:{index}"),
+            Change::SetSceneDuration {
+                scene_id,
+                duration: RationalTime::new(frames, 30)?,
+            },
+        )?;
+        if index == 1 {
+            apply(
+                &service,
+                &mut project,
+                "aac31:manim",
+                Change::SetSceneRenderer {
+                    scene_id,
+                    renderer: RendererKind::ManimCommunity,
+                },
+            )?;
+        }
+        let mut marker = super::node(index);
+        [marker.x, marker.y, marker.width, marker.height] = [x, 420., 180., 140.];
+        marker.z_index = 0;
+        marker.style.fill = Some(color.into());
+        apply(
+            &service,
+            &mut project,
+            &format!("aac31:marker:{index}"),
+            Change::AddCanvasNode {
+                scene_id,
+                node: marker,
+            },
+        )?;
+    }
+    project = service
+        .import_voice_file(
+            project.id,
+            &RevisionStamp::from(&project),
+            "aac31:original-wave",
+            source,
+            VoiceImportMetadata {
+                name: "aac31-stereo.wav".into(),
+                media_type: "audio/wav".into(),
+                label: "Synthetic clock and stereo-channel reference".into(),
+            },
+        )?
+        .project;
+    let voice = project
+        .audio
+        .voice_tracks
+        .last()
+        .ok_or("Missing AAC31 audio")?;
+    need(
+        voice.source_sha256 == expected_sha256
+            && voice.measured_duration == RationalTime::new(31, 30)?
+            && voice.sample_rate_hz == 48_000
+            && voice.channels == 2,
+        "AAC31 source WAV changed when saved",
+    )?;
+    let voice_id = voice.id;
+    let profile_id = seed_master(&service, &mut project, "aac31", voice_id)?;
+    drop(service);
+    let reopened = StudioService::open(database)?.project(project.id)?;
+    need(
+        reopened == project,
+        "AAC31 project changed after Store reopened",
+    )?;
+    verify_wave()?;
+    Ok(json!({
+        "project_title": reopened.title,
+        "project": reopened.id,
+        "generation": reopened.generation,
+        "revision": reopened.revision,
+        "deliverable": profile_id,
+    }))
 }
 
 fn source_plan(
@@ -984,10 +1142,14 @@ mod tests {
         assert!(!dir.path().join("not-an-original.json").exists());
     }
     fn original_wave(directory: &Path) -> (PathBuf, String) {
-        // Synthetic unit-test bytes are not retained production evidence.
-        let mut bytes = Vec::with_capacity(WAV_BYTES as usize);
+        synthetic_wave(directory, PCM_FRAMES)
+    }
+
+    fn synthetic_wave(directory: &Path, sample_frames: u64) -> (PathBuf, String) {
+        let wav_bytes = 44 + 4 * sample_frames;
+        let mut bytes = Vec::with_capacity(wav_bytes as usize);
         bytes.extend_from_slice(b"RIFF");
-        bytes.extend_from_slice(&((WAV_BYTES - 8) as u32).to_le_bytes());
+        bytes.extend_from_slice(&((wav_bytes - 8) as u32).to_le_bytes());
         bytes.extend_from_slice(b"WAVEfmt ");
         bytes.extend_from_slice(&16_u32.to_le_bytes());
         bytes.extend_from_slice(&1_u16.to_le_bytes());
@@ -997,8 +1159,8 @@ mod tests {
         bytes.extend_from_slice(&4_u16.to_le_bytes());
         bytes.extend_from_slice(&16_u16.to_le_bytes());
         bytes.extend_from_slice(b"data");
-        bytes.extend_from_slice(&((PCM_FRAMES * 4) as u32).to_le_bytes());
-        for index in 0..PCM_FRAMES {
+        bytes.extend_from_slice(&((sample_frames * 4) as u32).to_le_bytes());
+        for index in 0..sample_frames {
             bytes.extend_from_slice(&((((index % 120) as i16) - 60) * 220).to_le_bytes());
             bytes.extend_from_slice(&((((index % 80) as i16) - 40) * 230).to_le_bytes());
         }
@@ -1007,6 +1169,37 @@ mod tests {
         new_bytes(&path, &bytes).unwrap();
         (path, sha)
     }
+    #[test]
+    fn installed_aac31_seed_reopens_exact_cut_and_voice() {
+        let directory = tempfile::tempdir().unwrap();
+        let (wave, digest) = synthetic_wave(directory.path(), 49_600);
+        let database = directory.path().join("aac31.sqlite");
+        assert!(save_aac31_source(&database, &wave, &"0".repeat(64)).is_err());
+        assert!(!database.exists());
+        let saved = save_aac31_source(&database, &wave, &digest).unwrap();
+        let service = StudioService::open(&database).unwrap();
+        let project = service.projects(2).unwrap().remove(0);
+        assert_eq!(saved["project"], json!(project.id));
+        assert_eq!(saved["revision"], json!(project.revision));
+        assert_eq!(project.scenes.len(), 2);
+        assert_eq!(
+            project.scenes[0].duration,
+            RationalTime::new(15, 30).unwrap()
+        );
+        assert_eq!(
+            project.scenes[1].duration,
+            RationalTime::new(16, 30).unwrap()
+        );
+        assert_eq!(project.scenes[0].renderer, RendererKind::MotionCanvas);
+        assert_eq!(project.scenes[1].renderer, RendererKind::ManimCommunity);
+        let profile = master(&project).unwrap();
+        let voice = &project.audio.voice_tracks[0];
+        assert_eq!(profile.voice_track_id, Some(voice.id));
+        assert_eq!(voice.source_sha256, digest);
+        assert_eq!(voice.measured_duration, RationalTime::new(31, 30).unwrap());
+        assert!(save_aac31_source(&database, &wave, &digest).is_err());
+    }
+
     #[test]
     fn hybrid_seed_reopens_exact_three_renderer_source_and_original_wave() {
         let dir = tempfile::tempdir().unwrap();

@@ -521,7 +521,7 @@ def run_hybrid_original_json(argv, *, env, evidence, label, timeout):
     return result
 
 
-def hybrid_manim_manifest(paths,ffmpeg,ffprobe):
+def hybrid_manim_manifest(paths, ffmpeg, ffprobe, evidence, inventory_source):
     """Same admitted Manim driver/runner contract, on the existing owner session."""
     import native_manim_e2e as manim
     from native_mlt_g2_observation import new_json
@@ -529,9 +529,9 @@ def hybrid_manim_manifest(paths,ffmpeg,ffprobe):
             or any(not path.exists() for path in (manim.MW_DRIVER,manim.MW_RUNNER,manim.PYTHON,
                 manim.MANIM_RUNTIME/"runtime.json",manim.MANIM_RUNTIME/"site-packages"))):
         raise AssertionError("hybrid_MCE_MLT_Manim_runtime_inputs_are_not_the_same_pinned_tools")
-    runtime_evidence=EVIDENCE/"manim-runtime-originals"
+    runtime_evidence=evidence/"manim-runtime-originals"
     runtime_evidence.mkdir(mode=0o700)
-    inventory=manim.retain_runtime_inventory(runtime_evidence)
+    inventory=manim.retain_runtime_inventory(runtime_evidence, inventory_source)
     driver=paths["bin"]/"motionwright-manim-community-driver"
     runner=paths["bin"]/"motionwright-manim-runner"
     shutil.copyfile(manim.MW_DRIVER,driver); driver.chmod(0o700)
@@ -558,7 +558,7 @@ def hybrid_manim_manifest(paths,ffmpeg,ffprobe):
     }
     target=paths["config"]/"manim-driver.json"
     write_private_json(target,manifest)
-    new_json(EVIDENCE/"hybrid-manim-provider-binding.json",{
+    new_json(evidence/"hybrid-manim-provider-binding.json",{
         "driver_sha256":digest(driver),"runner_sha256":digest(runner),"python_sha256":digest(manim.PYTHON),
         "runtime_inventory_sha256":inventory,"native_manim_source_profile":"static-v2",
         "same_owner_Broker_session":True,"physical_provider_probe_still_required":True,
@@ -631,6 +631,380 @@ def close_native_owner(daemon,log_stream):
     if primary is not None:raise primary
 
 
+@contextmanager
+def native_owner_broker(paths, env, resource, evidence, *, hybrid, g2=None, manim_inventory=None):
+    """Keep the original broker and its admitted providers alive for one consumer."""
+    driver = paths["bin"] / "semwright-motion-canvas-driver"
+    node_tool = paths["bin"] / "semwright-motion-node"
+    mlt_driver = paths["bin"] / "semwright-mlt-video-driver"
+    mlt_runner = paths["bin"] / "semwright-mlt-runtime-runner"
+    shutil.copyfile(SW_BINS / "semwright-motion-canvas-driver", driver)
+    shutil.copyfile(Path(shutil.which("node") or ""), node_tool)
+    shutil.copyfile(SW_BINS / "semwright-mlt-video-driver", mlt_driver)
+    shutil.copyfile(SW_BINS / "semwright-mlt-runtime-runner", mlt_runner)
+    for executable in [driver, node_tool, mlt_driver, mlt_runner]:
+        executable.chmod(0o700)
+
+    melt = Path(shutil.which("melt") or "").resolve()
+    ffprobe = Path(shutil.which("ffprobe") or "").resolve()
+    ffmpeg = Path(shutil.which("ffmpeg") or "").resolve()
+    for executable in [melt, ffprobe, ffmpeg]:
+        if not executable.is_file():
+            raise SystemExit(f"missing pinned MLT runtime tool: {executable}")
+    mlt_runtime = melt.parent.parent.resolve()
+
+    manifest = {
+        "manifest_version": 1,
+        "protocol": 7,
+        "id": "motion-canvas",
+        "version": semwright_version(),
+        "publisher": "semwright",
+        "executable": str(driver),
+        "sha256": digest(driver),
+        "application": {
+            "desktop_id": None,
+            "process_names": ["node"],
+            "supported_versions": ["Motion Canvas 3.17.2", "Node 22.22.0"],
+        },
+        "transport": "stdio_v1",
+        "mounts": [
+            {"root": "project", "read_only": False},
+            {"root": "media", "read_only": True},
+            {"root": "output", "read_only": False},
+            {"root": "runtime", "read_only": True, "execute": True},
+            {"root": "fontconfig", "read_only": True},
+        ],
+        "system_config": [],
+        "secrets": [],
+        "tools": [
+            {
+                "root": "motion-node-tool",
+                "name": "motion-node",
+                "sha256": digest(node_tool),
+                "mounts": ["project", "output", "runtime", "fontconfig"],
+            }
+        ],
+        "network": False,
+        "loopback_port": None,
+        "resources": {
+            "open_files": 512,
+            "processes": 256,
+            "cpu_seconds": 300,
+            "operation_cpu_seconds": 0,
+            "address_space_bytes": 4_294_967_296,
+            "file_size_bytes": 1_073_741_824,
+        },
+        "request_timeout_ms": 300_000,
+        "interfaces": {
+            "dynamic_capabilities": False,
+            "cooperative_cancellation": True,
+            "events": False,
+            "health": True,
+            "progress": True,
+            "artifacts": True,
+            "native_refs": False,
+            "host_tools": True,
+        },
+    }
+    manifest_path = paths["config"] / "motion-canvas-driver.json"
+    write_private_json(manifest_path, manifest)
+
+    mlt_manifest = {
+        "manifest_version": 1,
+        "protocol": 7,
+        "id": "mlt-video",
+        "version": semwright_version(),
+        "publisher": "semwright",
+        "executable": str(mlt_driver),
+        "sha256": digest(mlt_driver),
+        "application": {
+            "desktop_id": None,
+            "process_names": ["melt"],
+            "supported_versions": [],
+        },
+        "transport": "stdio_v1",
+        "mounts": [
+            {"root": "project", "read_only": True},
+            {"root": "media", "read_only": True},
+            {"root": "output", "read_only": False},
+            {"root": "mlt-runtime", "read_only": True, "execute": True},
+            {"root": "scratch", "read_only": False},
+        ],
+        "system_config": [],
+        "secrets": [],
+        "tools": [
+            {
+                "root": "mlt-runner-root",
+                "name": "mlt-runner",
+                "sha256": digest(mlt_runner),
+                "mounts": ["mlt-runtime", "scratch", "project", "media", "output"],
+                "dependencies": ["melt", "ffprobe", "ffmpeg"],
+            },
+            {
+                "root": "melt-root",
+                "name": "melt",
+                "sha256": digest(melt),
+                "mounts": [],
+                "dependencies": [],
+            },
+            {
+                "root": "ffprobe-root",
+                "name": "ffprobe",
+                "sha256": digest(ffprobe),
+                "mounts": [],
+                "dependencies": [],
+            },
+            {
+                "root": "ffmpeg-root",
+                "name": "ffmpeg",
+                "sha256": digest(ffmpeg),
+                "mounts": [],
+                "dependencies": [],
+            },
+        ],
+        "network": False,
+        "loopback_port": None,
+        "resources": {
+            "open_files": 512,
+            "processes": 256,
+            "cpu_seconds": 300,
+            "operation_cpu_seconds": 0,
+            "address_space_bytes": 4_294_967_296,
+            "file_size_bytes": 1_073_741_824,
+        },
+        "request_timeout_ms": 300_000,
+        "interfaces": {
+            "dynamic_capabilities": False,
+            "cooperative_cancellation": False,
+            "events": False,
+            "health": True,
+            "progress": False,
+            "artifacts": False,
+            "native_refs": False,
+            "host_tools": True,
+        },
+    }
+    mlt_manifest_path = paths["config"] / "mlt-video-driver.json"
+    write_private_json(mlt_manifest_path, mlt_manifest)
+
+    grants = [
+        ("project", paths["project"], True),
+        ("media", paths["media"], False),
+        ("output", paths["output"], True),
+        ("runtime", RUNTIME, False),
+        ("fontconfig", Path("/etc/fonts"), False),
+        ("motion-node-tool", node_tool, False),
+        ("mlt-runtime", mlt_runtime, False),
+        ("scratch", paths["scratch"], True),
+        ("mlt-runner-root", mlt_runner, False),
+        ("melt-root", melt, False),
+        ("ffprobe-root", ffprobe, False),
+        ("ffmpeg-root", ffmpeg, False),
+    ]
+    driver_manifests=[manifest_path,mlt_manifest_path]
+    if hybrid:
+        manim_manifest,manim_grants=hybrid_manim_manifest(paths, ffmpeg, ffprobe, evidence, manim_inventory)
+        driver_manifests.append(manim_manifest)
+        grants.extend(manim_grants)
+    config_lines = [
+        "drivers = [" + ", ".join(json.dumps(str(path)) for path in driver_manifests) + "]",
+        "driver_network = false",
+        "",
+        "[policy]",
+        'profile = "workspace"' if hybrid else 'profile = "observe"',
+        ('allow = ["driver:motion-canvas", "driver:mlt-video", "driver:manim-community"]'
+         if hybrid else 'allow = ["driver:motion-canvas", "driver:mlt-video"]'),
+    ]
+    for name, path, write in grants:
+        config_lines.extend(
+            [
+                "",
+                "[[policy.filesystem]]",
+                f"name = {json.dumps(name)}",
+                f"path = {json.dumps(str(path.resolve()))}",
+                "read = true",
+                f"write = {'true' if write else 'false'}",
+            ]
+        )
+    config_path = paths["config"] / "owner.toml"
+    config_path.write_text("\n".join(config_lines) + "\n", encoding="utf-8")
+    config_path.chmod(0o600)
+
+    socket = paths["runtime"] / "broker.sock"
+    session = paths["runtime"] / "motionwright.session"
+    daemon_log = evidence / "semwrightd.log"
+    log_stream = daemon_log.open("wb")
+    daemon = subprocess.Popen(
+        [
+            str(SW_BINS / "semwrightd"),
+            "--config",
+            str(config_path),
+            "--socket",
+            str(socket),
+        ],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=log_stream,
+        stderr=log_stream,
+        start_new_session=True,
+    )
+
+    primary_owner_error = None
+    try:
+        wait_for_socket(daemon, socket, daemon_log)
+        discovered = run_json(
+            [
+                str(SW_BINS / "semwright"),
+                "--socket",
+                str(socket),
+                "--session-file",
+                str(session),
+                "--json",
+                "capabilities",
+                "search",
+                "motion-canvas",
+                "--provider",
+                "driver:motion-canvas",
+            ],
+            env=env,
+        )
+        capabilities = discovered.get("data", {}).get("capabilities", [])
+        if not capabilities:
+            raise AssertionError("pinned Motion Canvas provider exposed no capabilities")
+        required_mlt = (
+            "driver.mlt-video.frames.encode",
+            "driver.mlt-video.project.create",
+            "driver.mlt-video.sequence.create",
+            "driver.mlt-video.sequence.list",
+            "driver.mlt-video.track.create",
+            "driver.mlt-video.track.list",
+            "driver.mlt-video.asset.import",
+            "driver.mlt-video.clip.insert",
+            "driver.mlt-video.sequence.duration",
+            "driver.mlt-video.render.plan",
+            "driver.mlt-video.render.start",
+            "driver.mlt-video.render.status",
+            "driver.mlt-video.render.result",
+            "driver.mlt-video.project.close",
+        )
+        for capability_name in required_mlt:
+            described = run_json(
+                [
+                    str(SW_BINS / "semwright"),
+                    "--socket",
+                    str(socket),
+                    "--session-file",
+                    str(session),
+                    "--json",
+                    "capabilities",
+                    "describe",
+                    capability_name,
+                ],
+                env=env,
+            )
+            payload = described.get("data", {})
+            capability = payload.get("capability", {})
+            provenance = payload.get("provenance", {})
+            if capability.get("name") != capability_name:
+                raise AssertionError(
+                    f"pinned MLT capability describe mismatch: {capability_name}: {capability}"
+                )
+            if provenance.get("provider") != "driver:mlt-video":
+                raise AssertionError(
+                    f"pinned MLT capability has unexpected provider: "
+                    f"{capability_name}: {provenance}"
+                )
+        if hybrid:
+            for command,provider in [
+                ("driver.manim-community.doctor","driver:manim-community"),
+                ("driver.manim-community.static.render.start","driver:manim-community"),
+                ("driver.manim-community.render.status","driver:manim-community"),
+                ("driver.manim-community.render.result","driver:manim-community"),
+                ("driver.mlt-video.av.mux","driver:mlt-video"),
+            ]:
+                described=run_json([str(SW_BINS/"semwright"),"--socket",str(socket),"--session-file",str(session),
+                                    "--json","capabilities","describe",command],env=env)
+                payload=described.get("data",{})
+                if (payload.get("capability",{}).get("name")!=command
+                        or payload.get("provenance",{}).get("provider")!=provider):
+                    raise AssertionError("hybrid_existing_provider_not_provisioned")
+        if not session.is_file() or (session.stat().st_mode & 0o777) != 0o600:
+            raise AssertionError("Semwright did not create a private persistent session ticket")
+
+        connection_path = paths["config"] / "motionwright-connection.json"
+        write_private_json(
+            connection_path,
+            {
+                "schema": "motionwright-semwright-connection/1",
+                "executable": str((SW_BINS / "semwright").resolve()),
+                "executable_sha256": digest(SW_BINS / "semwright"),
+                "socket": str(socket),
+                "session_file": str(session),
+                "output_root": str(paths["output"]),
+                "resource": resource,
+            },
+        )
+
+        yield daemon, connection_path, ffmpeg, ffprobe, {
+            "motion_canvas_driver_sha256": driver,
+            "mlt_driver_sha256": mlt_driver,
+            "mlt_runner_sha256": mlt_runner,
+            "melt_sha256": melt,
+        }
+    except BaseException as error:
+        primary_owner_error=error
+        raise
+    finally:
+        try:close_native_owner(daemon,log_stream)
+        except BaseException as cleanup:
+            if g2 is not None:
+                try:
+                    from native_mlt_g2_observation import bounded_error
+                    g2.observer_error_details["existing_owner_close"]=bounded_error(cleanup)
+                    g2.secondary("existing_owner_close")
+                except BaseException:pass
+            if primary_owner_error is None:raise
+
+
+def native_owner_layout(root, *, hybrid):
+    root.chmod(0o700)
+    paths: dict[str, Path] = {}
+    for name in [
+        "runtime",
+        "state",
+        "home",
+        "config",
+        "bin",
+        "project",
+        "media",
+        "output",
+        "scratch",
+        "motionwright-data",
+    ]:
+        path = root / name
+        path.mkdir(mode=0o700)
+        paths[name] = path
+    if hybrid:
+        paths["manim-work"] = root / "manim-work"
+        paths["manim-work"].mkdir(mode=0o700)
+
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"}
+    }
+    env.update(
+        HOME=str(paths["home"]),
+        XDG_RUNTIME_DIR=str(paths["runtime"]),
+        XDG_STATE_HOME=str(paths["state"]),
+        RUST_BACKTRACE="1",
+        SEMWRIGHT_TEST_DRIVER_SANDBOX="1",
+        SEMWRIGHT_TEST_SANDBOX_HELPER=str(SW_BINS / "semwright-sandbox"),
+    )
+
+    return paths, env
+
+
 def main(g2=None):
     global EVIDENCE
     exact_inputs()
@@ -648,41 +1022,7 @@ def main(g2=None):
     EVIDENCE.mkdir(mode=0o700, parents=True, exist_ok=False)
 
     with native_owner_workspace(g2) as raw:
-        root = Path(raw).resolve()
-        root.chmod(0o700)
-        paths: dict[str, Path] = {}
-        for name in [
-            "runtime",
-            "state",
-            "home",
-            "config",
-            "bin",
-            "project",
-            "media",
-            "output",
-            "scratch",
-            "motionwright-data",
-        ]:
-            path = root / name
-            path.mkdir(mode=0o700)
-            paths[name] = path
-        if HYBRID:
-            paths["manim-work"] = root / "manim-work"
-            paths["manim-work"].mkdir(mode=0o700)
-
-        env = {
-            key: value
-            for key, value in os.environ.items()
-            if key not in {"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"}
-        }
-        env.update(
-            HOME=str(paths["home"]),
-            XDG_RUNTIME_DIR=str(paths["runtime"]),
-            XDG_STATE_HOME=str(paths["state"]),
-            RUST_BACKTRACE="1",
-            SEMWRIGHT_TEST_DRIVER_SANDBOX="1",
-            SEMWRIGHT_TEST_SANDBOX_HELPER=str(SW_BINS / "semwright-sandbox"),
-        )
+        paths, env = native_owner_layout(Path(raw).resolve(), hybrid=HYBRID)
 
         if g2 is not None:
             env = g2.seed_environment(env)
@@ -705,317 +1045,9 @@ def main(g2=None):
             or seeded["deliverable_count"] != CONTRACT.deliverable_count):
             raise AssertionError(f"unexpected real default profiles or source scenes: {seeded}")
 
-        driver = paths["bin"] / "semwright-motion-canvas-driver"
-        node_tool = paths["bin"] / "semwright-motion-node"
-        mlt_driver = paths["bin"] / "semwright-mlt-video-driver"
-        mlt_runner = paths["bin"] / "semwright-mlt-runtime-runner"
-        shutil.copyfile(SW_BINS / "semwright-motion-canvas-driver", driver)
-        shutil.copyfile(Path(shutil.which("node") or ""), node_tool)
-        shutil.copyfile(SW_BINS / "semwright-mlt-video-driver", mlt_driver)
-        shutil.copyfile(SW_BINS / "semwright-mlt-runtime-runner", mlt_runner)
-        for executable in [driver, node_tool, mlt_driver, mlt_runner]:
-            executable.chmod(0o700)
-
-        melt = Path(shutil.which("melt") or "").resolve()
-        ffprobe = Path(shutil.which("ffprobe") or "").resolve()
-        ffmpeg = Path(shutil.which("ffmpeg") or "").resolve()
-        for executable in [melt, ffprobe, ffmpeg]:
-            if not executable.is_file():
-                raise SystemExit(f"missing pinned MLT runtime tool: {executable}")
-        mlt_runtime = melt.parent.parent.resolve()
-
-        manifest = {
-            "manifest_version": 1,
-            "protocol": 7,
-            "id": "motion-canvas",
-            "version": semwright_version(),
-            "publisher": "semwright",
-            "executable": str(driver),
-            "sha256": digest(driver),
-            "application": {
-                "desktop_id": None,
-                "process_names": ["node"],
-                "supported_versions": ["Motion Canvas 3.17.2", "Node 22.22.0"],
-            },
-            "transport": "stdio_v1",
-            "mounts": [
-                {"root": "project", "read_only": False},
-                {"root": "media", "read_only": True},
-                {"root": "output", "read_only": False},
-                {"root": "runtime", "read_only": True, "execute": True},
-                {"root": "fontconfig", "read_only": True},
-            ],
-            "system_config": [],
-            "secrets": [],
-            "tools": [
-                {
-                    "root": "motion-node-tool",
-                    "name": "motion-node",
-                    "sha256": digest(node_tool),
-                    "mounts": ["project", "output", "runtime", "fontconfig"],
-                }
-            ],
-            "network": False,
-            "loopback_port": None,
-            "resources": {
-                "open_files": 512,
-                "processes": 256,
-                "cpu_seconds": 300,
-                "operation_cpu_seconds": 0,
-                "address_space_bytes": 4_294_967_296,
-                "file_size_bytes": 1_073_741_824,
-            },
-            "request_timeout_ms": 300_000,
-            "interfaces": {
-                "dynamic_capabilities": False,
-                "cooperative_cancellation": True,
-                "events": False,
-                "health": True,
-                "progress": True,
-                "artifacts": True,
-                "native_refs": False,
-                "host_tools": True,
-            },
-        }
-        manifest_path = paths["config"] / "motion-canvas-driver.json"
-        write_private_json(manifest_path, manifest)
-
-        mlt_manifest = {
-            "manifest_version": 1,
-            "protocol": 7,
-            "id": "mlt-video",
-            "version": semwright_version(),
-            "publisher": "semwright",
-            "executable": str(mlt_driver),
-            "sha256": digest(mlt_driver),
-            "application": {
-                "desktop_id": None,
-                "process_names": ["melt"],
-                "supported_versions": [],
-            },
-            "transport": "stdio_v1",
-            "mounts": [
-                {"root": "project", "read_only": True},
-                {"root": "media", "read_only": True},
-                {"root": "output", "read_only": False},
-                {"root": "mlt-runtime", "read_only": True, "execute": True},
-                {"root": "scratch", "read_only": False},
-            ],
-            "system_config": [],
-            "secrets": [],
-            "tools": [
-                {
-                    "root": "mlt-runner-root",
-                    "name": "mlt-runner",
-                    "sha256": digest(mlt_runner),
-                    "mounts": ["mlt-runtime", "scratch", "project", "media", "output"],
-                    "dependencies": ["melt", "ffprobe", "ffmpeg"],
-                },
-                {
-                    "root": "melt-root",
-                    "name": "melt",
-                    "sha256": digest(melt),
-                    "mounts": [],
-                    "dependencies": [],
-                },
-                {
-                    "root": "ffprobe-root",
-                    "name": "ffprobe",
-                    "sha256": digest(ffprobe),
-                    "mounts": [],
-                    "dependencies": [],
-                },
-                {
-                    "root": "ffmpeg-root",
-                    "name": "ffmpeg",
-                    "sha256": digest(ffmpeg),
-                    "mounts": [],
-                    "dependencies": [],
-                },
-            ],
-            "network": False,
-            "loopback_port": None,
-            "resources": {
-                "open_files": 512,
-                "processes": 256,
-                "cpu_seconds": 300,
-                "operation_cpu_seconds": 0,
-                "address_space_bytes": 4_294_967_296,
-                "file_size_bytes": 1_073_741_824,
-            },
-            "request_timeout_ms": 300_000,
-            "interfaces": {
-                "dynamic_capabilities": False,
-                "cooperative_cancellation": False,
-                "events": False,
-                "health": True,
-                "progress": False,
-                "artifacts": False,
-                "native_refs": False,
-                "host_tools": True,
-            },
-        }
-        mlt_manifest_path = paths["config"] / "mlt-video-driver.json"
-        write_private_json(mlt_manifest_path, mlt_manifest)
-
-        grants = [
-            ("project", paths["project"], True),
-            ("media", paths["media"], False),
-            ("output", paths["output"], True),
-            ("runtime", RUNTIME, False),
-            ("fontconfig", Path("/etc/fonts"), False),
-            ("motion-node-tool", node_tool, False),
-            ("mlt-runtime", mlt_runtime, False),
-            ("scratch", paths["scratch"], True),
-            ("mlt-runner-root", mlt_runner, False),
-            ("melt-root", melt, False),
-            ("ffprobe-root", ffprobe, False),
-            ("ffmpeg-root", ffmpeg, False),
-        ]
-        driver_manifests=[manifest_path,mlt_manifest_path]
-        if HYBRID:
-            manim_manifest,manim_grants=hybrid_manim_manifest(paths,ffmpeg,ffprobe)
-            driver_manifests.append(manim_manifest)
-            grants.extend(manim_grants)
-        config_lines = [
-            "drivers = [" + ", ".join(json.dumps(str(path)) for path in driver_manifests) + "]",
-            "driver_network = false",
-            "",
-            "[policy]",
-            'profile = "workspace"' if HYBRID else 'profile = "observe"',
-            ('allow = ["driver:motion-canvas", "driver:mlt-video", "driver:manim-community"]'
-             if HYBRID else 'allow = ["driver:motion-canvas", "driver:mlt-video"]'),
-        ]
-        for name, path, write in grants:
-            config_lines.extend(
-                [
-                    "",
-                    "[[policy.filesystem]]",
-                    f"name = {json.dumps(name)}",
-                    f"path = {json.dumps(str(path.resolve()))}",
-                    "read = true",
-                    f"write = {'true' if write else 'false'}",
-                ]
-            )
-        config_path = paths["config"] / "owner.toml"
-        config_path.write_text("\n".join(config_lines) + "\n", encoding="utf-8")
-        config_path.chmod(0o600)
-
-        socket = paths["runtime"] / "broker.sock"
-        session = paths["runtime"] / "motionwright.session"
-        daemon_log = EVIDENCE / "semwrightd.log"
-        log_stream = daemon_log.open("wb")
-        daemon = subprocess.Popen(
-            [
-                str(SW_BINS / "semwrightd"),
-                "--config",
-                str(config_path),
-                "--socket",
-                str(socket),
-            ],
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=log_stream,
-            stderr=log_stream,
-            start_new_session=True,
-        )
-
-        primary_owner_error = None
-        try:
-            wait_for_socket(daemon, socket, daemon_log)
-            discovered = run_json(
-                [
-                    str(SW_BINS / "semwright"),
-                    "--socket",
-                    str(socket),
-                    "--session-file",
-                    str(session),
-                    "--json",
-                    "capabilities",
-                    "search",
-                    "motion-canvas",
-                    "--provider",
-                    "driver:motion-canvas",
-                ],
-                env=env,
-            )
-            capabilities = discovered.get("data", {}).get("capabilities", [])
-            if not capabilities:
-                raise AssertionError("pinned Motion Canvas provider exposed no capabilities")
-            required_mlt = (
-                "driver.mlt-video.frames.encode",
-                "driver.mlt-video.project.create",
-                "driver.mlt-video.sequence.create",
-                "driver.mlt-video.sequence.list",
-                "driver.mlt-video.track.create",
-                "driver.mlt-video.track.list",
-                "driver.mlt-video.asset.import",
-                "driver.mlt-video.clip.insert",
-                "driver.mlt-video.sequence.duration",
-                "driver.mlt-video.render.plan",
-                "driver.mlt-video.render.start",
-                "driver.mlt-video.render.status",
-                "driver.mlt-video.render.result",
-                "driver.mlt-video.project.close",
-            )
-            for capability_name in required_mlt:
-                described = run_json(
-                    [
-                        str(SW_BINS / "semwright"),
-                        "--socket",
-                        str(socket),
-                        "--session-file",
-                        str(session),
-                        "--json",
-                        "capabilities",
-                        "describe",
-                        capability_name,
-                    ],
-                    env=env,
-                )
-                payload = described.get("data", {})
-                capability = payload.get("capability", {})
-                provenance = payload.get("provenance", {})
-                if capability.get("name") != capability_name:
-                    raise AssertionError(
-                        f"pinned MLT capability describe mismatch: {capability_name}: {capability}"
-                    )
-                if provenance.get("provider") != "driver:mlt-video":
-                    raise AssertionError(
-                        f"pinned MLT capability has unexpected provider: "
-                        f"{capability_name}: {provenance}"
-                    )
-            if HYBRID:
-                for command,provider in [
-                    ("driver.manim-community.doctor","driver:manim-community"),
-                    ("driver.manim-community.static.render.start","driver:manim-community"),
-                    ("driver.manim-community.render.status","driver:manim-community"),
-                    ("driver.manim-community.render.result","driver:manim-community"),
-                    ("driver.mlt-video.av.mux","driver:mlt-video"),
-                ]:
-                    described=run_json([str(SW_BINS/"semwright"),"--socket",str(socket),"--session-file",str(session),
-                                        "--json","capabilities","describe",command],env=env)
-                    payload=described.get("data",{})
-                    if (payload.get("capability",{}).get("name")!=command
-                            or payload.get("provenance",{}).get("provider")!=provider):
-                        raise AssertionError("hybrid_existing_provider_not_provisioned")
-            if not session.is_file() or (session.stat().st_mode & 0o777) != 0o600:
-                raise AssertionError("Semwright did not create a private persistent session ticket")
-
-            connection_path = paths["config"] / "motionwright-connection.json"
-            write_private_json(
-                connection_path,
-                {
-                    "schema": "motionwright-semwright-connection/1",
-                    "executable": str((SW_BINS / "semwright").resolve()),
-                    "executable_sha256": digest(SW_BINS / "semwright"),
-                    "socket": str(socket),
-                    "session_file": str(session),
-                    "output_root": str(paths["output"]),
-                    "resource": seeded["resource"],
-                },
-            )
-
+        with native_owner_broker(paths, env, seeded["resource"], EVIDENCE,
+                                 hybrid=HYBRID, g2=g2) as owner:
+            daemon, connection_path, ffmpeg, ffprobe, provider_tools = owner
             try:
                 def assemble_original():
                     if HYBRID:
@@ -1323,10 +1355,7 @@ def main(g2=None):
                     "semwright_sha": PIN,
                     "semwright_version": semwright_version(),
                     "project": seeded,
-                    "motion_canvas_driver_sha256": digest(driver),
-                    "mlt_driver_sha256": digest(mlt_driver),
-                    "mlt_runner_sha256": digest(mlt_runner),
-                    "melt_sha256": digest(melt),
+                    **{key: digest(path) for key, path in provider_tools.items()},
                     "ffprobe_sha256": digest(ffprobe),
                     "ffmpeg_sha256": digest(ffmpeg),
                     "rendered_source_frames": list(CONTRACT.source_segment_frames),
@@ -1348,19 +1377,6 @@ def main(g2=None):
                     **master_check,
                 },
             )
-        except BaseException as error:
-            primary_owner_error=error
-            raise
-        finally:
-            try:close_native_owner(daemon,log_stream)
-            except BaseException as cleanup:
-                if g2 is not None:
-                    try:
-                        from native_mlt_g2_observation import bounded_error
-                        g2.observer_error_details["existing_owner_close"]=bounded_error(cleanup)
-                        g2.secondary("existing_owner_close")
-                    except BaseException:pass
-                if primary_owner_error is None:raise
 
     summary = {
         "native_mlt_multisegment_e2e": "PASS",

@@ -350,9 +350,9 @@ def exact_inputs() -> None:
         raise SystemExit(f"unexpected Manim/PyAV runtime versions: {observed_versions!r}")
 
 
-def retain_runtime_inventory(evidence: Path) -> str:
+def retain_runtime_inventory(evidence: Path, inventory: Path | None = None) -> str:
     """Retain the measured runtime identity inside the existing private custody."""
-    source = ROOT / "verification/native-manim-e2e/runtime-inventory.json"
+    source = inventory if inventory is not None else ROOT / "verification/native-manim-e2e/runtime-inventory.json"
     raw = source.read_bytes()
     if not 0 < len(raw) <= 2 * 1024 * 1024:
         raise ValueError("Manim runtime inventory exceeds its bound")

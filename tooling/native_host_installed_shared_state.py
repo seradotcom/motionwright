@@ -202,7 +202,7 @@ def source_inputs(args):
     return {"motionwright": own, "semwright": sdk, "storage_cohort": cohort}
 
 
-def extract_installed_bundle(args):
+def extract_installed_bundle(args, *, evidence=None):
     """Observe the canonical AppImage extraction once in a fresh private directory."""
     need(args.artifact.is_absolute() and args.candidate_receipt.is_absolute(),
          "ABSOLUTE_CANDIDATE_INPUTS_REQUIRED")
@@ -213,18 +213,19 @@ def extract_installed_bundle(args):
          and verified["candidate"]["semwright_revision"] == args.semwright_sha,
          "CANDIDATE_RECEIPT_SOURCE")
     need(os.access(args.artifact, os.X_OK), "APPIMAGE_NOT_EXECUTABLE")
+    evidence = args.namespace if evidence is None else evidence
     work = args.namespace / "appimage"
     work.mkdir(mode=0o700)
     command = [str(args.artifact), "--appimage-extract"]
-    publish(args.namespace / "appimage-extraction-intent.json", {
+    publish(evidence / "appimage-extraction-intent.json", {
         "command": command, "cwd": str(work), "artifact": artifact_before,
         "candidate_receipt": receipt_before, "automatic_retry": False,
     })
     terminal = {"status": "FAIL", "exit_code": None, "automatic_retry": False}
     try:
-        with owned_process_scope(args.namespace / "appimage-extraction-closure.json"):
-            with (args.namespace / "appimage-extraction.stdout.original").open("xb") as stdout, (
-                args.namespace / "appimage-extraction.stderr.original"
+        with owned_process_scope(evidence / "appimage-extraction-closure.json"):
+            with (evidence / "appimage-extraction.stdout.original").open("xb") as stdout, (
+                evidence / "appimage-extraction.stderr.original"
             ).open("xb") as stderr:
                 completed = subprocess.run(command, cwd=work, stdin=subprocess.DEVNULL,
                                            stdout=stdout, stderr=stderr, timeout=90, check=False)
@@ -236,7 +237,7 @@ def extract_installed_bundle(args):
         # only after the complete extraction cohort has closed.
         terminal["streams"] = {}
         for name in ("appimage-extraction.stdout.original", "appimage-extraction.stderr.original"):
-            path = args.namespace / name
+            path = evidence / name
             descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
             try:
                 os.fsync(descriptor)
@@ -267,7 +268,7 @@ def extract_installed_bundle(args):
             installed_binary=args.installed_binary, kind="appimage", method="appimage_extract",
             linux_desktop_entry=desktop_entries[0], linux_gui_probe=None,
         )
-        publish(args.namespace / "appimage-candidate-smoke.original.json", smoke)
+        publish(evidence / "appimage-candidate-smoke.original.json", smoke)
         terminal.update(
             status="PASS", app_run=str(args.app_run), installed_binary=str(args.installed_binary),
             app_run_target=source.regular_file(app_run.resolve(strict=True), MAX_INPUT_BYTES),
@@ -276,7 +277,7 @@ def extract_installed_bundle(args):
         )
         return terminal
     finally:
-        publish(args.namespace / "appimage-extraction-terminal.json", terminal)
+        publish(evidence / "appimage-extraction-terminal.json", terminal)
 
 
 def closed_profile_identity(data):

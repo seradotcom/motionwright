@@ -21,12 +21,17 @@ on:
           - nsis_lifecycle
           - linux_first_use_source
           - linux_first_use
+      installed_aac31:
+        description: Verify one installed 31-frame master in the isolated Linux bundle scope
+        required: false
+        type: boolean
+        default: false
       evidence_recipient_spki:
         description: Approved RSA-3072 public SPKI DER in base64 for installed Native originals
         required: false
         type: string
       evidence_recipient_sha256:
-        description: SHA256 of that canonical public SPKI DER; required for linux_first_use
+        description: SHA256 of that canonical public SPKI DER for installed Native verification
         required: false
         type: string
   pull_request:
@@ -4333,6 +4338,172 @@ jobs:
             ci-evidence/windows-uninstall-tamper-${{ matrix.role }}/received/transport/*.txt
             ci-evidence/windows-uninstall-tamper-${{ matrix.role }}/received/transport/*.log
           if-no-files-found: warn
+
+  linux-installed-aac31:
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle'
+      && inputs.installed_aac31 && github.run_attempt == 1
+      && github.repository == 'seradotcom/motionwright'
+      && github.ref == 'refs/heads/integrate/phase1-final-composition-20261027'
+    needs: linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    permissions:
+      actions: read
+      contents: read
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      MOTIONWRIGHT_MLT_MODE: hybrid-av
+      SEMWRIGHT_TEST_MANIM_RUNTIME: ${{ runner.temp }}/aac31-manim-runtime
+      SEMWRIGHT_TEST_PYTHON: /usr/bin/python3
+      SEMWRIGHT_TEST_FFMPEG: /usr/bin/ffmpeg
+      SEMWRIGHT_TEST_FFPROBE: /usr/bin/ffprobe
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Resolve the exact Semwright revision
+        id: aac31-sdk
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 -B -E -s - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          pin = json.loads(Path("SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"]
+          assert re.fullmatch("[a-f0-9]{40}", pin)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="ascii") as output:
+              print(f"revision={pin}", file=output)
+          PY
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.aac31-sdk.outputs.revision }}
+          path: _semwright
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: motionwright-linux-candidate
+          path: ${{ runner.temp }}/aac31-candidate
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: 1.98.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: _semwright/integrations/motion-canvas/runtime/package-lock.json
+      - name: Install the admitted Linux desktop and sandbox prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            apparmor-profiles apparmor-utils bubblewrap libmlt7=7.22.0-1build6 melt=7.22.0-1build6 \
+            ffmpeg libpipewire-0.3-dev pkg-config clang fontconfig libcairo2-dev libpango1.0-dev \
+            python3-dev python3-venv python3-gi python3-pip libwebkit2gtk-4.1-0 libfuse2 \
+            gir1.2-atspi-2.0 gir1.2-gtk-3.0 at-spi2-core xvfb xauth x11-utils dbus-x11 \
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
+          umask 077
+          /usr/bin/python3 -m venv --system-site-packages "$RUNNER_TEMP/aac31-venv"
+          "$RUNNER_TEMP/aac31-venv/bin/python" -m pip install --disable-pip-version-check \
+            --only-binary=:all: --require-hashes -r tooling/requirements/mlt-g2-custody.txt
+          bash _semwright/scripts/dev/ci-driver-bwrap-profile.sh "$RUNNER_TEMP/aac31-sandbox-profile"
+      - name: Verify evidence custody before provisioning providers
+        env:
+          PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/aac31-venv/bin/python" -B -E -s - <<'PY'
+          import sys
+          sys.path.insert(0, "tooling")
+          from linux_installed_aac31_ci import verify_recipient
+          verify_recipient()
+          PY
+      - name: Provision pinned Motion Canvas and Manim runtimes
+        run: |
+          set -euo pipefail
+          (
+            cd _semwright/integrations/motion-canvas/runtime
+            npm ci --ignore-scripts
+            npx --no-install playwright install --with-deps firefox
+            npm run probe
+          )
+          umask 077
+          provision="$RUNNER_TEMP/aac31-manim-provision"
+          mkdir -m 700 "$SEMWRIGHT_TEST_MANIM_RUNTIME" "$provision"
+          mkdir -m 700 "$provision/wheels"
+          python="$RUNNER_TEMP/aac31-venv/bin/python"
+          "$python" -m pip download --disable-pip-version-check --no-cache-dir \
+            --no-deps --only-binary=:all: --dest "$provision/wheels" 'av==15.0.0'
+          "$python" -B -E -s - "$provision" <<'PY'
+          import hashlib, json, os, subprocess, sys
+          from pathlib import Path
+          provision = Path(sys.argv[1])
+          [wheel] = (provision / "wheels").glob("av-15.0.0-*.whl")
+          assert wheel.is_file() and not wheel.is_symlink()
+          original = {"filename": wheel.name, "bytes": wheel.stat().st_size,
+                      "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest()}
+          runtime = Path(os.environ["SEMWRIGHT_TEST_MANIM_RUNTIME"])
+          subprocess.run([
+              sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir",
+              "--no-compile", "--target", str(runtime / "site-packages"),
+              "--report", str(provision / "pip-install.json"), "manim==0.21.0", "manimpango==0.6.1", str(wheel),
+          ], check=True, timeout=900)
+          assert wheel.stat().st_size == original["bytes"]
+          assert hashlib.sha256(wheel.read_bytes()).hexdigest() == original["sha256"]
+          with (provision / "pyav-wheel.json").open("x", encoding="utf-8") as manifest:
+              json.dump(original, manifest, sort_keys=True)
+          PY
+          cat > "$SEMWRIGHT_TEST_MANIM_RUNTIME/runtime.json" <<'JSON'
+          {"schema":2,"manim_version":"0.21.0","pyav_version":"15.0.0","source_color_policy":"srgb-rgba8-opaque-v1","color_recipe":"srgb-to-rec709-full12-v2"}
+          JSON
+          PYTHONPATH="$SEMWRIGHT_TEST_MANIM_RUNTIME/site-packages" PYTHONNOUSERSITE=1 \
+            /usr/bin/python3 -B tooling/native_manim_runtime_inventory.py \
+              --provision "$provision" --output "$provision/runtime-inventory.json"
+      - name: Build the locked Native providers and StudioService source fixture
+        run: |
+          set -euo pipefail
+          cargo test --locked -p motionwright-native --example native-mlt-sequence-e2e \
+            installed_aac31_seed_reopens_exact_cut_and_voice -- --test-threads=1
+          (
+            cd _semwright
+            cargo build --locked -p semwright-daemon -p semwright-cli --bins
+            cargo build --locked \
+              -p semwright-plugin-host --bin semwright-sandbox \
+              -p semwright-driver-motion-canvas --bin semwright-motion-canvas-driver \
+              -p semwright-mlt-video-driver --bin semwright-mlt-video-driver \
+              -p semwright-mlt-video-driver --bin semwright-mlt-runtime-runner
+          )
+          cargo build --locked -p motionwright-native --example native-mlt-sequence-e2e
+          cargo build --locked -p motionwright-manim-community-driver --bins
+      - name: Render once and verify playback and cold reopen of the same MP4
+        timeout-minutes: 16
+        env:
+          PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          chmod -R go-rwx "$RUNNER_TEMP/aac31-candidate"
+          find "$RUNNER_TEMP/aac31-candidate" -type f -name '*.AppImage' -exec chmod u+x {} +
+          xvfb-run -a -s "-screen 0 1440x940x24" dbus-run-session -- \
+            "$RUNNER_TEMP/aac31-venv/bin/python" -B -E -s tooling/linux_installed_aac31_ci.py \
+            --bundle "$RUNNER_TEMP/aac31-candidate" --sandbox-profile "$RUNNER_TEMP/aac31-sandbox-profile" \
+            --manim-inventory "$RUNNER_TEMP/aac31-manim-provision/runtime-inventory.json"
+      - name: Retain only the bounded status and encrypted originals
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: motionwright-installed-aac31-${{ github.sha }}-${{ github.run_id }}-1
+          path: |
+            ${{ runner.temp }}/mwa-${{ github.run_id }}/transport/status.json
+            ${{ runner.temp }}/mwa-${{ github.run_id }}/transport/installed-aac31.mwseal
+          if-no-files-found: warn
+          retention-days: 30
 
   macos:
     if: github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'all' || inputs.verification_scope == 'macos_bundle'

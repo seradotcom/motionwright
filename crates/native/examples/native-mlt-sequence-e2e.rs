@@ -33,6 +33,7 @@ fn arg(args: &mut impl Iterator<Item = std::ffi::OsString>) -> PathBuf {
         eprintln!(
             "usage: native-mlt-sequence-e2e seed DATABASE | assemble DATABASE CONNECTION EVIDENCE | \
              seed-hybrid FRESH_DATABASE ORIGINAL_FILM180_WAV WAV_SHA256 WAV_BYTES NEW_PROJECT_JSON | \
+             seed-installed-aac31 FRESH_DATABASE ORIGINAL_WAV WAV_SHA256 | \
              assemble-hybrid EXISTING_DATABASE OWNED_CONNECTION ORIGINAL_PROJECT_SHA256 NEW_EVIDENCE_DIRECTORY"
         );
         std::process::exit(2);
@@ -730,6 +731,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("Unexpected seed-hybrid argument".into());
             }
             hybrid::seed(&database, &source, &sha256, bytes, &source_project)
+        }
+        "seed-installed-aac31" => {
+            let source = arg(&mut args);
+            let sha256 = args.next().ok_or("Missing original AAC31 WAV digest")?;
+            let sha256 = sha256
+                .to_str()
+                .ok_or("Non UTF-8 original AAC31 WAV digest")?;
+            if args.next().is_some() {
+                return Err("Unexpected seed-installed-aac31 argument".into());
+            }
+            hybrid::seed_installed_aac31(&database, &source, sha256)
         }
         "assemble-hybrid" => {
             let connection = arg(&mut args);
