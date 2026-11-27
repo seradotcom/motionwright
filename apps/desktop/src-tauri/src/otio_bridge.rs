@@ -429,7 +429,7 @@ const UNCERTAIN_BRIDGE_EXIT: &str = "The OTIO process-tree cleanup could not be 
 #[serde(untagged)]
 pub enum OtioBridgeError {
     Message(String),
-    Unsettled(OtioBridgeUnsettled),
+    Unsettled(Box<OtioBridgeUnsettled>),
 }
 
 #[derive(Debug, Serialize)]
@@ -749,9 +749,9 @@ fn require_bridge_idle(
         .unsettled_otio_bridge(project.id, project.generation, operation)
         .map_err(|_| "The original OTIO process state could not be checked.")?
     {
-        return Err(OtioBridgeError::Unsettled(unsettled_bridge_details(
-            receipt, operation,
-        )?));
+        return Err(OtioBridgeError::Unsettled(Box::new(
+            unsettled_bridge_details(receipt, operation)?,
+        )));
     }
     Ok(())
 }
@@ -832,17 +832,17 @@ fn run_tracked_bridge(
     }
     .into();
     if service.append_production_receipt(record).is_err() || !stopped {
-        return Err(OtioBridgeError::Unsettled(unsettled_bridge_details(
-            original, operation,
-        )?));
+        return Err(OtioBridgeError::Unsettled(Box::new(
+            unsettled_bridge_details(original, operation)?,
+        )));
     }
     temp.temp.disable_cleanup(false);
     match outcome {
         Ok(()) => Ok(()),
         Err(BridgeExecutionFailure::Stopped(message)) => Err(message.into()),
-        Err(BridgeExecutionFailure::Unsettled) => Err(OtioBridgeError::Unsettled(
+        Err(BridgeExecutionFailure::Unsettled) => Err(OtioBridgeError::Unsettled(Box::new(
             unsettled_bridge_details(original, operation)?,
-        )),
+        ))),
     }
 }
 
