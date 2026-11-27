@@ -230,6 +230,11 @@ public static class KdenliveWindowsInput
         return PressUnmodifiedKey(owner, 0x31);
     }
 
+    public static bool StepTimecodeField(uint owner, bool increase)
+    {
+        return PressUnmodifiedKey(owner, increase ? (ushort)0x26 : (ushort)0x28);
+    }
+
     public static bool CommitTimecodeField(uint owner)
     {
         return PressUnmodifiedKey(owner, 0x09);
@@ -647,8 +652,8 @@ function Verify-ThirdClipPlaylist {
     Select-EditorMenu 'Sequence' 'Select Clip' 'select-third' 'Selection'
 
     foreach ($edit in @(
-        @{ stage = 'shorten-third'; before = 30; after = 29; value = '00:00:00:29' },
-        @{ stage = 'restore-third'; before = 29; after = 30; value = '00:00:01:00' }
+        @{ stage = 'shorten-third'; before = 30; after = 29 },
+        @{ stage = 'restore-third'; before = 29; after = 30 }
     )) {
         $dialog = Open-ClipDuration $edit.stage
         $fields = @(Read-DurationFields $dialog)
@@ -660,15 +665,25 @@ function Verify-ThirdClipPlaylist {
             throw 'Kdenlive third clip duration cannot be edited'
         }
         Assert-Editor
-        Record "$($edit.stage)-text-intent.json" @{ editor_pid = $EditorPid; duration = $edit.after; automatic_retry = $false }
         $fields[2].control.SetFocus()
         $focus = [System.Windows.Automation.AutomationElement]::FocusedElement
         if ($null -eq $focus -or $focus.Current.ProcessId -ne $EditorPid -or
             $focus.Current.AutomationId -cnotmatch '^QApplication\.ClipDurationDialog_UI\.m_dur($|\.)') {
             throw 'Kdenlive Duration field did not receive focus'
         }
-        $fields[2].pattern.SetValue($edit.value)
-        Assert-ClipDuration @(Read-DurationFields $dialog) $edit.after
+        Assert-Editor
+        Record "$($edit.stage)-one-frame-intent.json" @{ editor_pid = $EditorPid; duration = $edit.after; automatic_retry = $false }
+        if (![KdenliveWindowsInput]::StepTimecodeField([uint32]$EditorPid, $edit.after -gt $edit.before)) {
+            throw 'Kdenlive did not receive the one-frame action in the original window'
+        }
+        $requested = Await-Unique 'requested one-frame duration' {
+            $model = @(Read-DurationFields $dialog)
+            if ($model[2].frames -eq $edit.after) {
+                Assert-ClipDuration $model $edit.after
+                @{ duration = $model[2].frames }
+            }
+        }
+        Record "$($edit.stage)-one-frame-observed.json" $requested
         # TimecodeDisplay keeps a numeric model and updates it on editingFinished.
         # Move focus once, then require its dependent out-point field to change.
         Assert-Editor
