@@ -10,7 +10,7 @@ Motionwright Desktop can inspect and install an owner-prepared local runtime pac
 | Motion Canvas | 3.17.2 | macOS Apple Silicon (arm64) | 22.22.0 |
 | HyperFrames | 0.8.181 | Linux x86_64 | 22.22.0 |
 
-The supported entry and lock identities follow the current Semwright source pin `c2c40c74e5714a3e680415d0dddcf27743f0f0fa`. Motion Canvas uses the exact pinned `render.mjs`, `package.json` and `package-lock.json`. HyperFrames uses the existing reviewed runner and its closed runtime lock, including the original distribution metadata, Node digest and dependency roster.
+The supported entry and lock identities follow the current Semwright source pin `00ef6d6bb7d842827e8a5dcf00a417199aa72188`. Motion Canvas uses the exact pinned `render.mjs`, `package.json` and `package-lock.json`. HyperFrames uses the existing reviewed runner and its closed runtime lock, including the original distribution metadata, Node digest and dependency roster.
 
 The application inspects bytes and layout. It does not execute a version probe during installation, establish executable provenance from a declared version, start a provider or grant a Native render. A separately authorized Semwright Host still validates its runtime, mounts, resource, executable identities and effects. The corresponding installed operating system and provider checks remain necessary. Browser system libraries and fontconfig remain separate operating system dependencies; an npm lock and this file copy do not supply that system closure.
 

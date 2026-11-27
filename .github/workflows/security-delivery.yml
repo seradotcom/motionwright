@@ -338,7 +338,7 @@ jobs:
           python3 -B - <<'PY_RUNTIME_PROFILES'
           import hashlib, importlib.util, json, os, re, subprocess
           from pathlib import Path
-          pin = "c2c40c74e5714a3e680415d0dddcf27743f0f0fa"
+          pin = "00ef6d6bb7d842827e8a5dcf00a417199aa72188"
           metadata = json.loads(subprocess.run(
               ["cargo", "metadata", "--locked", "--format-version", "1"],
               check=True, capture_output=True, text=True).stdout)

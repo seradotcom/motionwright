@@ -84,7 +84,7 @@
       "status": "OPEN_SOURCE_REMOVED_RUNTIME_UNVERIFIED",
       "direct_dependency": false,
       "registry_checksum": "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31",
-      "reviewed_motion_canvas_lock_source": "git+https://github.com/seradotcom/semwright?rev=c2c40c74e5714a3e680415d0dddcf27743f0f0fa#c2c40c74e5714a3e680415d0dddcf27743f0f0fa",
+      "reviewed_motion_canvas_lock_source": "git+https://github.com/seradotcom/semwright?rev=00ef6d6bb7d842827e8a5dcf00a417199aa72188#00ef6d6bb7d842827e8a5dcf00a417199aa72188",
       "required_lock_context": {
         "motionwright-manim-profile": "0.1.0",
         "semwright-driver-motion-canvas": "1.0.0",

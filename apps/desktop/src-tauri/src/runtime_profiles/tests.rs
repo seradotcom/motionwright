@@ -7,7 +7,7 @@ use std::{
     os::unix::{ffi::OsStrExt, fs::symlink},
     path::PathBuf,
 };
-const PIN: &str = "c2c40c74e5714a3e680415d0dddcf27743f0f0fa";
+const PIN: &str = "00ef6d6bb7d842827e8a5dcf00a417199aa72188";
 fn executable_header() -> Vec<u8> {
     let mut bytes = vec![0_u8; 128];
     #[cfg(target_os = "linux")]

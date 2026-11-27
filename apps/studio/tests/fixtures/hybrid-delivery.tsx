@@ -58,7 +58,7 @@ Object.assign(window,{__TAURI_INTERNALS__:{invoke:async(command:string,args:{req
   if(command==="production_runtime_status")return {
     status:"ready",version_compatible:true,expected_version:"1.0.0",observed_version:"1.0.0",
     executable_sha256:"d".repeat(64),connection_identity:"e".repeat(64),
-    pinned_revision:"c2c40c74e5714a3e680415d0dddcf27743f0f0fa",
+    pinned_revision:"00ef6d6bb7d842827e8a5dcf00a417199aa72188",
   };
   if(command==="native_hybrid_preflight")return {
     schema:"motionwright.hybrid-source-preflight/1",...scope(request),
