@@ -527,7 +527,7 @@ impl ProductionCoordinator {
         require(
             manim.get("renderer").and_then(Value::as_str) == Some("manim-community")
                 && manim.get("project_revision").and_then(Value::as_u64) == Some(expected.revision)
-                && manim.get("scene_id") == Some(&json!(sources.project.scenes[manim_ordinal].id))
+                && manim.get("scene_id") == Some(&json!(sources.manim_scene_id()))
                 && manim
                     .pointer("/artifact/static_source")
                     .is_some_and(|source| source.is_object())

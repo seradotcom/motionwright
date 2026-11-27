@@ -158,7 +158,7 @@ fn fixture_with_layout(layout: &[RendererKind], scene_seconds: i64) -> Fixture {
             change(
                 &service,
                 &mut project,
-                "fixture-static-manim",
+                &format!("fixture-static-manim-{index}"),
                 Change::SetSceneRenderer { scene_id, renderer },
             );
         }
@@ -177,7 +177,7 @@ fn fixture_with_layout(layout: &[RendererKind], scene_seconds: i64) -> Fixture {
             coordinate_space: CoordinateSpace::ProjectPixels,
             z_index: 0,
             style: NodeStyle {
-                fill: Some(["#FF0000", "#00FF00", "#0000FF"][index].into()),
+                fill: Some(["#FF0000", "#00FF00", "#0000FF"][index % 3].into()),
                 stroke: None,
                 stroke_width: 0.0,
                 font_family: None,
@@ -826,6 +826,69 @@ fn hybrid_two_sources_preserve_renderer_order_and_exact_cut_origin() {
         }
         assert_eq!(scoped.client.execute_calls.load(Ordering::SeqCst), 0);
     }
+}
+
+#[test]
+fn hybrid_groups_adjacent_motion_scenes_without_losing_their_order_or_clock() {
+    use RendererKind::{ManimCommunity, MotionCanvas};
+    let f = fixture_with_layout(
+        &[
+            MotionCanvas,
+            MotionCanvas,
+            ManimCommunity,
+            MotionCanvas,
+            MotionCanvas,
+        ],
+        1,
+    );
+    let owner = ProductionCoordinator::new(f.service.clone(), f.connection).unwrap();
+    let report = owner
+        .preflight_native_hybrid_sources(
+            f.project.id,
+            &f.project.stamp(),
+            f.deliverable,
+            &f.options,
+        )
+        .unwrap();
+    assert_eq!(report.source_count, 3);
+    assert_eq!(report.frame_count, 150);
+    assert_eq!(owner.client.execute_calls.load(Ordering::SeqCst), 0);
+
+    let scoped = owner
+        .with_native_hybrid_scope(f.project.id, &f.project.stamp(), f.deliverable, &f.options)
+        .unwrap();
+    let plan = &scoped.active_hybrid_budget.as_ref().unwrap().plan;
+    let scenes = f
+        .project
+        .scenes
+        .iter()
+        .map(|scene| scene.id)
+        .collect::<Vec<_>>();
+    assert_eq!(plan.segment_ranges, [0..60, 60..90, 90..150]);
+    assert_eq!(plan.manim_scene_id, scenes[2]);
+    assert_eq!(plan.manim_ordinal, 1);
+    assert_eq!(plan.motion[0].scene_ids, scenes[..2]);
+    assert_eq!(plan.motion[1].scene_ids, scenes[3..]);
+    assert_eq!(plan.limits.render_frames, 570);
+    assert_eq!(scoped.client.execute_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn hybrid_refuses_a_second_manim_scene_before_native_dispatch() {
+    use RendererKind::{ManimCommunity, MotionCanvas};
+    let f = fixture_with_layout(&[ManimCommunity, MotionCanvas, ManimCommunity], 1);
+    let owner = ProductionCoordinator::new(f.service.clone(), f.connection).unwrap();
+    let error = owner
+        .preflight_native_hybrid_sources(
+            f.project.id,
+            &f.project.stamp(),
+            f.deliverable,
+            &f.options,
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("one static Manim scene"));
+    assert!(owner.active_hybrid_budget.is_none());
+    assert_eq!(owner.client.execute_calls.load(Ordering::SeqCst), 0);
 }
 
 #[test]
