@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRightLeft, FileCheck2, ShieldAlert } from "lucide-react";
 import type { Change, Project } from "./types";
 import {
-  checkOtioMediaRuntime, chooseOtioMediaBundleFolder, exportPortableOtioMediaBundle,
+  checkOtioMediaRuntime, chooseBundleExportDestination, chooseOtioMediaBundleFolder, exportPortableOtioMediaBundle,
   OtioBridgePreflightError, previewInstalledOtioMediaCut,
   type OtioOriginalMediaExportBinding,
 } from "./api";
@@ -129,15 +129,21 @@ export default function OtioCutReviewWorkbench({
       setCheckingRuntime(false);
     }
   };
-  const chooseBundleFolder=async()=>{
+  const changeExportDestination=(path:string)=>{
+    setExportDestination(path);setExportAttempted(false);setSelected(null);setStatus(null);setError(null);
+  };
+  const chooseBundlePath=async(kind:"source"|"destination")=>{
     if(!desktopMode||operationBusy)return;
     const selectedScope=scope;
     const attempt=++fileAttempt.current;
     setPickingBundle(true);
     try{
-      const path=await chooseOtioMediaBundleFolder(project);
-      if(latest.current===selectedScope&&fileAttempt.current===attempt&&path!==null&&path!==bundlePath)
-        changeBundlePath(path);
+      const path=kind==="source"
+        ? await chooseOtioMediaBundleFolder(project)
+        : await chooseBundleExportDestination(project,"otio_media");
+      if(latest.current!==selectedScope||fileAttempt.current!==attempt||path===null)return;
+      if(kind==="source"&&path!==bundlePath)changeBundlePath(path);
+      if(kind==="destination"&&path!==exportDestination)changeExportDestination(path);
     }catch(reason){
       if(latest.current===selectedScope&&fileAttempt.current===attempt)
         setError(reason instanceof Error?reason.message:String(reason));
@@ -255,17 +261,18 @@ export default function OtioCutReviewWorkbench({
         media, provenance and property losses. Rights are your declarations, not
         independent authorization; no NLE or publication is launched.
       </p>
-      <label>
-        <span className="field-label">New OTIO media bundle destination</span>
-        <input aria-label="New OTIO media bundle destination" value={exportDestination}
-          maxLength={1800} autoComplete="off" spellCheck={false}
-          placeholder="Absolute path to a NEW export folder"
-          disabled={busy||working||exportingBundle||bridgeInspecting}
-          onChange={event=>{
-            fileAttempt.current++;setExportDestination(event.target.value);
-            setExportAttempted(false);setSelected(null);setStatus(null);setError(null);
-          }}/>
-      </label>
+      <div className="otio-bundle-folder">
+        <label>
+          <span className="field-label">New OTIO media bundle destination</span>
+          <input aria-label="New OTIO media bundle destination" value={exportDestination}
+            maxLength={1800} autoComplete="off" spellCheck={false}
+            placeholder="Absolute path to a new export folder"
+            disabled={operationBusy}
+            onChange={event=>{fileAttempt.current++;changeExportDestination(event.target.value);}}/>
+        </label>
+        {desktopMode&&<button type="button" className="button" disabled={operationBusy}
+          onClick={()=>void chooseBundlePath("destination")}>Choose OTIO export destination</button>}
+      </div>
       <label>
         <span className="field-label">Original source reviewer declaration</span>
         <input aria-label="Original OTIO source reviewer" maxLength={200}
@@ -397,7 +404,7 @@ export default function OtioCutReviewWorkbench({
             onChange={event=>{fileAttempt.current++;changeBundlePath(event.target.value);}}/>
         </label>
         {desktopMode&&<button type="button" className="button" disabled={operationBusy}
-          onClick={()=>void chooseBundleFolder()}>
+          onClick={()=>void chooseBundlePath("source")}>
           Choose OTIO bundle folder
         </button>}
       </div>

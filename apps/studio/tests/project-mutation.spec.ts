@@ -187,6 +187,7 @@ test("a pending portable restore cannot race source edits or publish into anothe
   await page.addInitScript(boot => {
     let current = structuredClone(boot.project);
     let resolveRestore: ((project: typeof current) => void) | null = null;
+    let destinationPicks = 0;
     const state = {
       calls: [] as string[], revisions: [] as number[],
       complete: () => {
@@ -208,6 +209,16 @@ test("a pending portable restore cannot race source edits or publish into anothe
       state.calls.push(command);
       if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
         return window.__SYNTHETIC_PROJECT_READ__(command, args, {...boot, project: structuredClone(current)});
+      }
+      if (command === "choose_bundle_export_destination") {
+        const { kind, request } = args as { kind?: string; request?: {
+          project_id?: string; generation?: string; revision?: number;
+        } };
+        if (kind !== "portable_project" || request?.project_id !== current.id ||
+            request.generation !== current.generation || request.revision !== current.revision) {
+          throw new Error("Expected the current project and portable destination mode");
+        }
+        return ++destinationPicks === 1 ? null : "E:/Original projects/Edición final.motionwright";
       }
       if (command === "choose_portable_project_source") {
         const kind = (args as { kind?: string } | undefined)?.kind;
@@ -250,11 +261,18 @@ test("a pending portable restore cannot race source edits or publish into anothe
   await page.keyboard.press("Escape");
   await expect(library).toBeHidden();
   await page.getByRole("button", { name: "Deliver", exact: true }).click();
+  const chooseDestination = page.getByRole("button", { name: "Choose portable bundle destination", exact: true });
+  await page.getByLabel("Portable export path").fill("/owner/previous.motionwright");
+  await chooseDestination.click();
+  await expect(chooseDestination).toBeEnabled();
+  await expect(page.getByLabel("Portable export path")).toHaveValue("/owner/previous.motionwright");
+  await chooseDestination.click();
+  await expect(page.getByLabel("Portable export path")).toHaveValue("E:/Original projects/Edición final.motionwright");
   await page.getByRole("button", { name: "Choose project folder", exact: true }).click();
   await expect(page.getByLabel("Portable import path")).toHaveValue("/synthetic-fixture/portable.motionwright");
   expect(await page.evaluate(() => (window as unknown as {
     __RESTORE_FIXTURE__: {calls: string[]};
-  }).__RESTORE_FIXTURE__.calls.filter(call => /^(inspect_project_bundle|issue_effect_grant|import_project_bundle)$/.test(call))))
+  }).__RESTORE_FIXTURE__.calls.filter(call => /^(inspect_project_bundle|issue_effect_grant|import_project_bundle|export_project_bundle)$/.test(call))))
     .toEqual([]);
   await page.getByRole("button", { name: "Inspect bundle", exact: true }).click();
   await expect(page.getByLabel("Portable bundle preflight")).toContainText("Portable restored project");

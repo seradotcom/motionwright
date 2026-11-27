@@ -76,6 +76,7 @@ fn main() {
             "import_native_capsule_source_file",
             "recover_native_capsule_source_file",
             "waveform_page",
+            "choose_bundle_export_destination",
             "export_project_bundle",
             "export_native_capsule_source",
             "native_hyperframes_source",

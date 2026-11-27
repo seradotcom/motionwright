@@ -58,7 +58,7 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ProjectMutationGate, ProjectReadSupersededError } from "./projectMutation";
 import { ProjectLibraryDialog } from "./ProjectLibraryDialog";
 import ProjectProjectionWorkspace from "./ProjectProjectionWorkspace";
@@ -85,6 +85,7 @@ import {
   importProjectBundle,
   importVoiceFile,
   recoverOriginalFileImport,
+  chooseBundleExportDestination,
   choosePortableProjectSource,
   inspectProjectBundle,
   type PortableProjectSourceKind,
@@ -950,9 +951,36 @@ function DeliverView({
   } | null>(null);
   const bundlePlan = bundleInspection && bundleInspection.path === importPath.trim()
     ? bundleInspection.plan : null;
-  const [portableBusy, setPortableBusy] = useState<"export" | "inspect" | "import" | "choose" | null>(null);
+  const [portableBusy, setPortableBusy] = useState<"export" | "inspect" | "import" | "choose" | "choose_export" | null>(null);
   const [portableStatus, setPortableStatus] = useState<string | null>(null);
   const [portableError, setPortableError] = useState<string | null>(null);
+
+  const destinationPickerTurn = useRef(0);
+  const destinationScope = JSON.stringify([desktopMode, project.id, project.generation, project.revision]);
+  useLayoutEffect(() => {
+    setPortableBusy(current => current === "choose_export" ? null : current);
+    return () => { destinationPickerTurn.current++; };
+  }, [destinationScope]);
+
+  const chooseExportDestination = async () => {
+    if (!desktopMode || portableBusy !== null) return;
+    const turn = ++destinationPickerTurn.current;
+    setPortableBusy("choose_export");
+    setPortableError(null);
+    try {
+      const path = await chooseBundleExportDestination(project, "portable_project");
+      if (destinationPickerTurn.current === turn && path !== null && path !== exportPath) {
+        setExportPath(path);
+        setPortableStatus(null);
+      }
+    } catch (reason) {
+      if (destinationPickerTurn.current === turn) {
+        setPortableError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (destinationPickerTurn.current === turn) setPortableBusy(null);
+    }
+  };
 
   const chooseImportSource = async (kind: PortableProjectSourceKind) => {
     if (!desktopMode || portableBusy !== null) return;
@@ -1119,15 +1147,21 @@ function DeliverView({
               onChange={(event) => setExportPath(event.target.value)}
             />
           </label>
-          <button
-            type="button"
-            className="button button-primary"
-            disabled={!desktopMode || !exportPath.trim() || portableBusy !== null
-              || portableReport.blocking.length > 0}
-            onClick={() => void exportBundle()}
-          >
-            {portableBusy === "export" ? "Exporting…" : "Export bundle"}
-          </button>
+          <div className="portable-actions">
+            {desktopMode && (
+              <button type="button" className="button" disabled={portableBusy !== null}
+                onClick={() => void chooseExportDestination()}>Choose portable bundle destination</button>
+            )}
+            <button
+              type="button"
+              className="button button-primary"
+              disabled={!desktopMode || !exportPath.trim() || portableBusy !== null
+                || portableReport.blocking.length > 0}
+              onClick={() => void exportBundle()}
+            >
+              {portableBusy === "export" ? "Exporting…" : "Export bundle"}
+            </button>
+          </div>
         </div>
 
         <div className="portable-operation import-operation">

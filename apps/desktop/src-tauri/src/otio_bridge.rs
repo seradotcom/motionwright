@@ -1658,7 +1658,7 @@ fn destination_unclaimed(path: &Path) -> Result<bool, String> {
     }
 }
 
-fn new_owner_bundle_destination(value: &str) -> Result<PathBuf, String> {
+pub(super) fn new_owner_bundle_destination(value: &str) -> Result<PathBuf, String> {
     if value.is_empty()
         || value.trim() != value
         || value.len() > 1800

@@ -81,6 +81,7 @@
     "allow-import-native-capsule-source-file",
     "allow-recover-native-capsule-source-file",
     "allow-waveform-page",
+    "allow-choose-bundle-export-destination",
     "allow-export-project-bundle",
     "allow-export-native-capsule-source",
     "allow-native-hyperframes-source",

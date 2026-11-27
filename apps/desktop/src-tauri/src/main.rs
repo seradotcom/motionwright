@@ -3981,6 +3981,86 @@ fn export_hyperframes_source_file(
     hyperframes_source::export_source(&state.service, &state.effect_grants, request)
 }
 
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BundleExportDestination {
+    PortableProject,
+    OtioMedia,
+}
+
+#[tauri::command]
+async fn choose_bundle_export_destination(
+    mut owner: desktop_owner::OwnerInvocation,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: RuntimeConnectionSelectionRequest,
+    kind: BundleExportDestination,
+) -> Result<Option<String>, String> {
+    checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    let (title, name) = match kind {
+        BundleExportDestination::PortableProject => (
+            "Choose a new portable project folder",
+            "project.motionwright",
+        ),
+        BundleExportDestination::OtioMedia => {
+            ("Choose a new OTIO media bundle folder", "cut.otio-bundle")
+        }
+    };
+    let selected = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        app.dialog()
+            .file()
+            .set_title(title)
+            .set_file_name(name)
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|_| "The native bundle destination picker did not finish.".to_string())?;
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    owner.begin_phase()?;
+    checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    let selected = selected
+        .into_path()
+        .map_err(|_| "Choose a local bundle destination.".to_string())?;
+    let path = selected
+        .to_str()
+        .filter(|path| {
+            path.trim() == *path && path.len() <= 1800 && !path.chars().any(char::is_control)
+        })
+        .ok_or("The selected bundle destination cannot be represented safely.")?;
+    match kind {
+        BundleExportDestination::PortableProject => {
+            let destination = absolute_bundle_path(path)?;
+            match std::fs::symlink_metadata(destination) {
+                Ok(_) => {
+                    return Err(
+                        "The export destination already exists. Choose a new folder name.".into(),
+                    );
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => {
+                    return Err("The new portable project destination could not be checked.".into());
+                }
+            }
+        }
+        BundleExportDestination::OtioMedia => {
+            otio_bridge::new_owner_bundle_destination(path)?;
+        }
+    }
+    Ok(Some(path.to_owned()))
+}
+
 #[tauri::command]
 fn export_project_bundle(
     _owner: desktop_owner::OwnerInvocation,
@@ -4981,6 +5061,7 @@ fn main() {
             import_native_capsule_source_file,
             recover_native_capsule_source_file,
             waveform_page,
+            choose_bundle_export_destination,
             export_project_bundle,
             export_native_capsule_source,
             native_hyperframes_source,

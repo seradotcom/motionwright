@@ -136,6 +136,14 @@ test("runtime checks and folder choices preserve the scoped OTIO inspection rule
         }
         return null;
       }
+      if (name === "choose_bundle_export_destination") {
+        const request = args?.request as {project_id: string; generation: string; revision: number};
+        if (args?.kind !== "otio_media" || request.project_id !== boot.project.id
+            || request.generation !== boot.project.generation || request.revision !== boot.project.revision) {
+          throw new Error("Expected the current project and OTIO destination mode");
+        }
+        return "/Users/owner/Documents/Edición final.otio-bundle";
+      }
       if (name === "choose_otio_media_bundle_folder") {
         const request = args?.request as {project_id: string; generation: string; revision: number};
         if (request.project_id !== boot.project.id || request.generation !== boot.project.generation
@@ -166,6 +174,11 @@ test("runtime checks and folder choices preserve the scoped OTIO inspection rule
   await check.click();
   await expect(page.getByText("Protected Python and ffprobe files passed the runtime check.")).toBeVisible();
   expect(await page.evaluate(() => Reflect.get(window, "__OTIO_INSPECTIONS__"))).toBe(0);
+  expect(await page.evaluate(() => Reflect.get(window, "__OTIO_PREVIEW_GRANTS__"))).toBe(0);
+  await page.getByText("Create the original media-bound OTIO bundle", {exact: true}).click();
+  await page.getByRole("button", {name: "Choose OTIO export destination", exact: true}).click();
+  await expect(page.getByLabel("New OTIO media bundle destination")).toHaveValue("/Users/owner/Documents/Edición final.otio-bundle");
+  await expect(page.getByRole("button", {name: "Export original media-bound OTIO bundle"})).toBeDisabled();
   expect(await page.evaluate(() => Reflect.get(window, "__OTIO_PREVIEW_GRANTS__"))).toBe(0);
   const folder = page.getByLabel("Original OTIO media bundle folder");
   await folder.fill("/owner/original-bundle");

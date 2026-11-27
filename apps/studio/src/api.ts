@@ -694,6 +694,22 @@ export async function previewInstalledOtioMediaCut(
   return response;
 }
 
+export async function chooseBundleExportDestination(
+  project: Project, kind: "portable_project" | "otio_media",
+): Promise<string | null> {
+  if (!isTauri()) throw new Error("Choosing a bundle destination requires Motionwright desktop.");
+  const path = await invoke<unknown>("choose_bundle_export_destination", {
+    request: { project_id: project.id, generation: project.generation, revision: project.revision },
+    kind,
+  });
+  if (path === null) return null;
+  if (typeof path !== "string" || !path || path !== path.trim()
+    || new TextEncoder().encode(path).length > 1800 || /[\u0000-\u001f\u007f-\u009f]/.test(path)) {
+    throw new Error("The native picker returned an invalid bundle destination.");
+  }
+  return path;
+}
+
 export async function exportProjectBundle(
   project: Project,
   destination: string,
