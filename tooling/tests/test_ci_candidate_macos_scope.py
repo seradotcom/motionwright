@@ -82,6 +82,18 @@ class IsolatedMacOSBundleScopeTests(unittest.TestCase):
         self.assertIn("--target aarch64-apple-darwin", mac)
         self.assertNotIn("-- cargo build --locked", mac)
 
+    def test_receipt_uses_required_arguments_before_optional_capture(self) -> None:
+        mac = job_source(self.workflow, "macos")
+        receipt = mac.split("      - name: Record exact macOS candidate artifact\n", 1)[1]
+        receipt = receipt.split("      - name: ", 1)[0]
+        required = 'set -- --git-sha "$GITHUB_SHA" --platform macos'
+        optional = 'set -- "$@" --cargo-index '
+        invocation = 'python3 tooling/package_receipt.py "$@" --arch "$arch" --artifact "$dmg"'
+        self.assertLess(receipt.index(required), receipt.index(optional))
+        self.assertLess(receipt.index(optional), receipt.index(invocation))
+        self.assertIn("--require-cargo-binding", receipt)
+        self.assertNotIn("cargo_args[@]", receipt)
+
     def test_common_upload_keeps_diagnostics_outside_attestation_subject_inputs(self) -> None:
         import sys
         sys.path.insert(0, str(ROOT / "tooling"))

@@ -4779,24 +4779,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo_args=()
+          set -- --git-sha "$GITHUB_SHA" --platform macos --output ci-evidence/macos-candidate.json
           if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' && "$MW_MACOS_CANDIDATE_SCOPE" == 'macos_bundle' ]]; then
             python3 -B tooling/ci_macos_dependency_capture.py frontend-recheck
-            cargo_args=(--cargo-index ci-evidence/macos-cargo/resources/cargo/index.json
-              --cargo-binary target/macos-captured/aarch64-apple-darwin/release/motionwright-desktop
-              --require-cargo-binding)
+            set -- "$@" --cargo-index ci-evidence/macos-cargo/resources/cargo/index.json \
+              --cargo-binary target/macos-captured/aarch64-apple-darwin/release/motionwright-desktop \
+              --require-cargo-binding
           fi
           dmg_count="$(find "$MW_MACOS_BUNDLE_ROOT/bundle/dmg" -maxdepth 1 -type f -name '*.dmg' | wc -l)"
           test "$dmg_count" -eq 1
           dmg="$(find "$MW_MACOS_BUNDLE_ROOT/bundle/dmg" -maxdepth 1 -type f -name '*.dmg' -print)"
           arch="$(uname -m)"
-          python3 tooling/package_receipt.py \
-            --git-sha "$GITHUB_SHA" \
-            --platform macos \
-            --arch "$arch" \
-            --artifact "$dmg" \
-            "${cargo_args[@]}" \
-            --output ci-evidence/macos-candidate.json
+          python3 tooling/package_receipt.py "$@" --arch "$arch" --artifact "$dmg"
       - name: Read-only DMG mount, copy application and inspect macOS Mach-O
         shell: bash
         timeout-minutes: 5
