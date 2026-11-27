@@ -89,15 +89,20 @@ fn protected_metadata(path: &Path) -> io::Result<fs::Metadata> {
         || metadata.mode() & 0o022 != 0
         || metadata.dev() != initial.dev()
         || metadata.ino() != initial.ino()
-        || !no_extended_acl(&handle)
+        || !acl_cannot_grant_access(&handle)
     {
         return Err(unsafe_entry());
     }
     Ok(metadata)
 }
 
-fn no_extended_acl(handle: &File) -> bool {
+fn acl_cannot_grant_access(handle: &File) -> bool {
     // Darwin's descriptor ACL interface in libSystem (sys/acl.h).
+    const ACL_TYPE_EXTENDED: libc::c_int = 0x100;
+    const ACL_FIRST_ENTRY: libc::c_int = 0;
+    const ACL_NEXT_ENTRY: libc::c_int = -1;
+    const ACL_EXTENDED_DENY: libc::c_int = 2;
+
     unsafe extern "C" {
         fn acl_get_fd_np(fd: libc::c_int, kind: libc::c_int) -> *mut libc::c_void;
         fn acl_valid(acl: *mut libc::c_void) -> libc::c_int;
@@ -106,27 +111,67 @@ fn no_extended_acl(handle: &File) -> bool {
             id: libc::c_int,
             entry: *mut *mut libc::c_void,
         ) -> libc::c_int;
+        fn acl_get_tag_type(entry: *mut libc::c_void, tag: *mut libc::c_int) -> libc::c_int;
         fn acl_free(acl: *mut libc::c_void) -> libc::c_int;
     }
     // SAFETY: the descriptor is live and the Darwin functions operate on a
     // single owned ACL value without mutating the filesystem.
     unsafe {
         *libc::__error() = 0;
-        let acl = acl_get_fd_np(handle.as_raw_fd(), 0x100);
+        let acl = acl_get_fd_np(handle.as_raw_fd(), ACL_TYPE_EXTENDED);
         if acl.is_null() {
             return io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT);
         }
-        let mut entry = std::ptr::null_mut();
-        let empty = acl_valid(acl) == 0
-            && acl_get_entry(acl, 0, &mut entry) == -1
-            && io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL);
-        acl_free(acl) == 0 && empty
+        let safe = acl_valid(acl) == 0 && {
+            let mut index = ACL_FIRST_ENTRY;
+            loop {
+                let mut entry = std::ptr::null_mut();
+                if acl_get_entry(acl, index, &mut entry) == -1 {
+                    break io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL);
+                }
+                // Deny entries can only restrict the already checked POSIX mode.
+                let mut tag = 0;
+                if entry.is_null()
+                    || acl_get_tag_type(entry, &mut tag) != 0
+                    || tag != ACL_EXTENDED_DENY
+                {
+                    break false;
+                }
+                index = ACL_NEXT_ENTRY;
+            }
+        };
+        acl_free(acl) == 0 && safe
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn macos_runtime_accepts_deny_only_acl_and_refuses_mixed_acl() {
+        let fixture = tempfile::tempdir().unwrap();
+        let file = fixture.path().join("python3");
+        fs::write(&file, b"temporary ACL fixture").unwrap();
+        let handle = File::open(&file).unwrap();
+        assert!(acl_cannot_grant_access(&handle));
+        for (entry, safe) in [
+            ("everyone deny delete", true),
+            ("everyone allow write", false),
+        ] {
+            let output = std::process::Command::new("/bin/chmod")
+                .args(["+a", entry])
+                .arg(&file)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(acl_cannot_grant_access(&handle), safe);
+        }
+    }
 
     #[test]
     fn macos_runtime_refuses_non_plain_executables_and_writable_closure() {

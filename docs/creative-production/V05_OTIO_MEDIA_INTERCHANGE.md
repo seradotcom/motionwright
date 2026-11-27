@@ -163,7 +163,7 @@ administrator-managed Python 3 and ffprobe installation on the same host.
   installed architecture, with regular executable files at `bin/python3`
   and `bin/ffprobe`. Keep Python's standard library inside this installation.
   The runtime and its parent directories must be root-owned and protected
-  against group or world writes and extended ACLs.
+  against group or world writes. Any extended ACL entries must deny access.
 
 Use runtime packages from a trusted distribution channel. Motionwright checks
 the installed paths and permissions before using the one-time local grant. A
