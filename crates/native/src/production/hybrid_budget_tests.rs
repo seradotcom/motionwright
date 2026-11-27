@@ -853,6 +853,155 @@ fn hybrid_shorter_cut_uses_the_exact_saved_wav_and_budget_clock() {
 }
 
 #[test]
+fn hybrid_preserves_exact_motion_boundary_admission_in_its_mlt_continuation() {
+    use motionwright_domain::{
+        SceneBoundary, SceneBoundaryArchetype, SceneBoundaryDefinition, SceneBoundaryEndpoint,
+        SceneBoundaryFilmOptions, SceneBoundaryInput, SceneBoundaryNarrativeRole,
+    };
+
+    let mut f = fixture();
+    let scene = &f.project.scenes[0];
+    let scene_id = scene.id;
+    let endpoint = SceneBoundaryEndpoint {
+        nodes: scene.nodes.clone(),
+        camera: Some(scene.camera.clone()),
+        assets: vec![],
+    };
+    let source = f
+        .project
+        .capture_scene_boundary_source(
+            scene_id,
+            f.deliverable,
+            &SceneBoundaryFilmOptions {
+                frame_rate: f.options.frame_rate,
+                font_family: f.options.font_family.clone(),
+                mono_font_family: f.options.mono_font_family.clone(),
+                role: SceneBoundaryNarrativeRole::Evidence,
+                archetype: SceneBoundaryArchetype::Statement,
+            },
+        )
+        .unwrap();
+    change(
+        &f.service,
+        &mut f.project,
+        "save-explicit-motion-boundary",
+        Change::UpsertSceneBoundary {
+            boundary: Box::new(SceneBoundary {
+                version: 1,
+                id: Uuid::now_v7(),
+                scene_id,
+                input: SceneBoundaryInput::SelfContained,
+                definition: SceneBoundaryDefinition::Explicit {
+                    source,
+                    entry: endpoint.clone(),
+                    exit: endpoint,
+                },
+            }),
+        },
+    );
+
+    let owner = ProductionCoordinator::new(f.service.clone(), f.connection).unwrap();
+    let mut changed_options = f.options.clone();
+    changed_options.scene_intents[0].role = NarrativeRole::Hook;
+    let error = owner
+        .preflight_native_hybrid_sources(
+            f.project.id,
+            &f.project.stamp(),
+            f.deliverable,
+            &changed_options,
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("Native SceneBoundary admission failed"),
+        "{error:?}"
+    );
+    assert!(
+        f.service
+            .production_receipts(f.project.id, 20)
+            .unwrap()
+            .is_empty()
+    );
+
+    let preflight = owner
+        .preflight_native_hybrid_sources(
+            f.project.id,
+            &f.project.stamp(),
+            f.deliverable,
+            &f.options,
+        )
+        .unwrap();
+    assert_eq!(preflight.source_count, 3);
+    let scoped = owner
+        .with_native_hybrid_scope(f.project.id, &f.project.stamp(), f.deliverable, &f.options)
+        .unwrap();
+    let scope = scoped
+        .active_hybrid_budget
+        .as_ref()
+        .unwrap()
+        .plan
+        .mlt_boundary_scope()
+        .unwrap();
+    let command = "driver.mlt-video.frames.encode";
+    assert!(
+        crate::native_scene_boundary::guard_new_effect(&f.project, command, None, None).is_err()
+    );
+    crate::native_scene_boundary::guard_new_effect(&f.project, command, Some(&scope), None)
+        .unwrap();
+    assert_eq!(scoped.client.execute_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn hybrid_refuses_unadmitted_manim_or_incomplete_motion_boundaries_before_a_root() {
+    use motionwright_domain::{SceneBoundary, SceneBoundaryDefinition, SceneBoundaryInput};
+    for (ordinal, reason) in [(0, "unsourced Draft"), (1, "without actual Film options")] {
+        let mut f = fixture();
+        let scene_id = f.project.scenes[ordinal].id;
+        change(
+            &f.service,
+            &mut f.project,
+            "save-unadmitted-boundary",
+            Change::UpsertSceneBoundary {
+                boundary: Box::new(SceneBoundary {
+                    version: 1,
+                    id: Uuid::now_v7(),
+                    scene_id,
+                    input: SceneBoundaryInput::SelfContained,
+                    definition: SceneBoundaryDefinition::DraftIncomplete {
+                        source: None,
+                        entry: None,
+                        exit: None,
+                    },
+                }),
+            },
+        );
+        let owner = ProductionCoordinator::new(f.service.clone(), f.connection).unwrap();
+        let error = owner
+            .with_native_hybrid_scope(f.project.id, &f.project.stamp(), f.deliverable, &f.options)
+            .err()
+            .unwrap();
+        assert!(error.message.contains(reason), "{error:?}");
+        assert_eq!(owner.client.execute_calls.load(Ordering::SeqCst), 0);
+        assert!(
+            f.service
+                .production_receipts(f.project.id, 20)
+                .unwrap()
+                .is_empty()
+        );
+        let db = rusqlite::Connection::open(f.directory.path().join("hybrid.sqlite3")).unwrap();
+        let roots: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM production_operation_roots",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(roots, 0);
+    }
+}
+
+#[test]
 fn unsupported_hybrid_clock_and_static_source_are_refused_before_any_root_or_native_effect() {
     let mut f = fixture();
     let scene_id = f.project.scenes[1].id;

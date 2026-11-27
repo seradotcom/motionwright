@@ -1036,6 +1036,27 @@ fn manim_output_bytes(frames: u64) -> NativeResult<u64> {
 }
 
 impl HybridBudgetPlan {
+    fn mlt_boundary_scope(&self) -> Option<Arc<crate::native_scene_boundary::ExecutionScope>> {
+        if self.project.production_design.scene_boundaries.is_empty() {
+            return None;
+        }
+        // Static Manim declarations were refused before reserving this root.
+        // MLT rechecks the original Motion Canvas declarations on every new effect.
+        let scene_ids: Vec<_> = self
+            .motion
+            .iter()
+            .flat_map(|segment| segment.scene_ids.iter().copied())
+            .collect();
+        Some(Arc::new(
+            crate::native_scene_boundary::ExecutionScope::mlt_motion(
+                &self.project,
+                self.deliverable_id,
+                &self.options,
+                &scene_ids,
+            ),
+        ))
+    }
+
     fn build(
         coordinator: &ProductionCoordinator,
         project_id: Uuid,
@@ -1059,10 +1080,6 @@ impl HybridBudgetPlan {
             "Hybrid provider connection belongs to another project",
         )?;
         let connection_identity = coordinator.client.connection().identity()?;
-        supported(
-            project.production_design.scene_boundaries.is_empty(),
-            "The mixed native route has no typed lowering for declared SceneBoundaries",
-        )?;
         use RendererKind::{ManimCommunity, MotionCanvas};
         let layout: Vec<_> = project
             .scenes
@@ -1167,6 +1184,18 @@ impl HybridBudgetPlan {
             });
         }
         let manim_scene_id = project.scenes[manim_ordinal].id;
+        crate::native_scene_boundary::guard_scene_without_film_options(&project, manim_scene_id)?;
+        let motion_scene_ids: Vec<_> = motion
+            .iter()
+            .flat_map(|segment| segment.scene_ids.iter().copied())
+            .collect();
+        crate::native_scene_boundary::guard_motion_scenes(
+            &project,
+            deliverable_id,
+            options,
+            &motion_scene_ids,
+        )?;
+
         manim_graph::require_non_graph_saved_selection(
             &coordinator.service,
             project_id,
@@ -2400,10 +2429,8 @@ impl ProductionCoordinator {
             source_paths,
         });
         let mut scoped = self.clone();
+        scoped.scene_boundary_scope = scope.plan.mlt_boundary_scope();
         scoped.active_hybrid_budget = Some(scope);
-        // Declared boundaries were refused before first effect. Do not pass an
-        // MC-only typed selection as a purported proof for the Manim clip.
-        scoped.scene_boundary_scope = None;
         Ok(scoped)
     }
 }

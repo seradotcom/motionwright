@@ -109,7 +109,9 @@ This Linux route accepts one static Manim scene and one Motion Canvas scene on
 either or both sides. Contiguous, frame-aligned contributions total 30 to 180 frames.
 The 1080p30 Rec.709 H264/AAC master uses original stereo 48 kHz PCM of the exact cut length and the
 bundled text fonts, with a 32 MiB cap. MLT inserts each source at its saved cut boundary after
-verifying the original contribution's frame count.
+verifying the original contribution's frame count. Motion Canvas declarations
+use the existing Film boundary admission and are rechecked during MLT assembly.
+A declared boundary on the static Manim contribution blocks preflight.
 
 
 The Output profiles panel now exposes this route for saved mixed-renderer cuts:
