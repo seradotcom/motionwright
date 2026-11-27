@@ -1691,7 +1691,7 @@ mod fixed_text_v4 {
     }
     // Exact observer derivations from native_fixedtxt_observer_overlay.py.
     // This selects measurement transport; it does not grant Native admission.
-    const OBSERVED_NATIVE_SOURCES: [(&str, &str); 2] = [
+    const OBSERVED_NATIVE_SOURCES: [(&str, &str); 4] = [
         (
             "RED",
             "ed4f0d8f6630f14d1c3d890b3249fab79381a2fe9c8424bdb302b1ae98488cd2",
@@ -1699,6 +1699,14 @@ mod fixed_text_v4 {
         (
             "GREEN",
             "e787ab2bc03af94f7e432d380b1c5ff058fb881492232ed59b5988f487b69c96",
+        ),
+        (
+            "RED",
+            "ea1e87522ea8d0363a7213fbfb3454f20d4ab5b5e8124ca1e967973f2efcd482",
+        ),
+        (
+            "GREEN",
+            "19b3e19e050e21f8976e37dc7fcfad1c6c5bea74fa428a00e331b3364a86825f",
         ),
     ];
     fn observes_text_pixels(arm: &str, source: &str) -> bool {
@@ -3079,7 +3087,7 @@ mod fixed_text_v4 {
             ] {
                 assert_eq!(frames(key), vec![45, 120, 179]);
             }
-            // Both admitted observers carry each fixture's existing roster.
+            // Each admitted observer arm carries the fixture's existing roster.
             for (arm, source) in OBSERVED_NATIVE_SOURCES {
                 for key in KEYS {
                     let expected = json!(frames(key));
@@ -3139,6 +3147,8 @@ mod fixed_text_v4 {
                 ),
                 ("GREEN", OBSERVED_NATIVE_SOURCES[0].1),
                 ("RED", OBSERVED_NATIVE_SOURCES[1].1),
+                ("GREEN", OBSERVED_NATIVE_SOURCES[2].1),
+                ("RED", OBSERVED_NATIVE_SOURCES[3].1),
             ] {
                 let key = "fixed-multirun-control";
                 assert!(

@@ -201,9 +201,13 @@ class TypedSourceContracts(unittest.TestCase):
     def test_exact_current_sources_preserve_unknown_and_reject_foreign_source(self):
         for arm in ("RED", "GREEN"):
             with self.subTest(arm=arm):
-                value, missing = typed.actual_layout({}, arm=arm, source_sha=typed.OBSERVED[arm])
-                self.assertIsNone(value)
-                self.assertEqual(missing, list(typed.FIELDS))
+                for source in (typed.OBSERVED[arm], typed.CURRENT_OBSERVED[arm]):
+                    value, missing = typed.actual_layout({}, arm=arm, source_sha=source)
+                    self.assertIsNone(value)
+                    self.assertEqual(missing, list(typed.FIELDS))
+                    other_arm = "GREEN" if arm == "RED" else "RED"
+                    with self.assertRaisesRegex(typed.ProbeRejected, "typed_probe_exact_observer_source"):
+                        typed.actual_layout({}, arm=other_arm, source_sha=source)
                 with self.assertRaisesRegex(typed.ProbeRejected, "typed_probe_exact_observer_source"):
                     typed.actual_layout({}, arm=arm, source_sha="0" * 64)
 

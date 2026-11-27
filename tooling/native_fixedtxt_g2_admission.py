@@ -359,9 +359,10 @@ def acquire_wrapper_inputs(environment, *, runtime_input_path, cycle_input_path,
 def verify_text_pixel_host_samples(plan, config, manifest):
     """The new observer requires the original closed fixture sample roster."""
     from native_film180_evidence_selection import fixedtxt_frames
-    from native_fixedtxt_observer_overlay import OBSERVED
-    source = plan["arm_sources"][plan["arm"]]["native_source_sha256"]
-    if source == OBSERVED[plan["arm"]]:
+    from native_fixedtxt_observer_overlay import CURRENT_OBSERVED, OBSERVED
+    arm = plan["arm"]
+    source = plan["arm_sources"][arm]["native_source_sha256"]
+    if source in (OBSERVED[arm], CURRENT_OBSERVED[arm]):
         requested = config.get("textPixelObservationFrames")
         need(type(requested) is list and requested == list(fixedtxt_frames(plan["fixture"]))
              and all(type(frame) is int for frame in requested)

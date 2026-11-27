@@ -450,15 +450,17 @@ class OriginalBudgetAndPreparationTests(unittest.TestCase):
     def test_original_plan_builder_keeps_all180_existing_supervision_and_exact_Q(self):
         original = fixed.strict(self.p,512*1024)
         request = source_request(self.current,original)
+        import native_fixedtxt_observer_overlay as overlay
+        if self.current["semwright_sha"] == overlay.CURRENT_SDK:
+            request["semwright_tree"] = overlay.CURRENT_SDK_TREE
         source = {'files':{row['path']:row['sha256'] for row in original['source_bindings']}}
         known = {('inputs',fixed.CYCLE_MEMBER):self.q,('control','request.original.json'):route.canonical(request)}
-        import native_fixedtxt_observer_overlay as overlay
         # This older structural fixture has no observed source bundle. Its
         # current-pair attempt must stay negative; it cannot certify custody.
         with self.assertRaisesRegex(overlay.OverlayRejected, 'observer_custody_original_missing'):
             route.make_plan(request, self.current, self.q, source, known=known)
         # Preserve the original historical structural control and its scope.
-        with mock.patch.object(route, 'PAIR', route.HISTORICAL_PAIR):
+        with mock.patch.object(route, 'reviewed_pair', return_value=route.HISTORICAL_PAIR):
             raw = route.make_plan(request,self.current,self.q,source,known=known)
         result = fixed.validate_plan(fixed.strict(raw,512*1024),current=self.current)
         self.assertEqual(sum(row['role']=='native-png' for row in result['members']),180)
@@ -894,9 +896,10 @@ class FixedTxtSourceKitPinTests(unittest.TestCase):
         import native_fixedtxt_observer_overlay as overlay
         rust = (root / 'crates/native/examples/native-film180-e2e.rs').read_text()
         block = rust.split('const OBSERVED_NATIVE_SOURCES:', 1)[1].split('];', 1)[0]
-        pins = dict(re.findall(r'\(\s*"(RED|GREEN)",\s*"([0-9a-f]{64})",?\s*\)', block))
-        self.assertEqual(pins, overlay.OBSERVED)
+        pins = set(re.findall(r'\(\s*"(RED|GREEN)",\s*"([0-9a-f]{64})",?\s*\)', block))
+        self.assertEqual(pins, set(overlay.OBSERVED.items()) | set(overlay.CURRENT_OBSERVED.items()))
         self.assertEqual(route.PAIR, overlay.OBSERVED)
+        self.assertEqual(route.reviewed_pair(overlay.CURRENT_SDK), overlay.CURRENT_OBSERVED)
 
         # Cross-language producer/selector contract. Derive the filename from
         # the actual Python argv, Rust command route, retained directory and
@@ -1700,7 +1703,7 @@ class ReusedPreparationPathTests(unittest.TestCase):
             known[("control", retained)] = ("synthetic-original-resource-" + str(ordinal)).encode()
         # Same historical structural fixture as the pre-existing plan-builder
         # test: no source catalogue, resource grant or Native effect is issued.
-        with mock.patch.object(route, "PAIR", route.HISTORICAL_PAIR):
+        with mock.patch.object(route, "reviewed_pair", return_value=route.HISTORICAL_PAIR):
             result = fixed.strict(route.make_plan(request, current, cycle, source, known=known), 512 * 1024)
         fixed.validate_plan(result, current=current)
         self.assertEqual(result["limits"], original["limits"])
@@ -1784,23 +1787,39 @@ class ReusedObserverBundleTests(unittest.TestCase):
             self.assertEqual(sources, before)
             self.assertIn("source-kit.original.zip", selected)
             self.assertIn("source/project/font.ttf", selected)
-            descriptors = overlay.bundle_descriptors()
-            def plan(names):
-                return {"context": {"semwright_sha": "b" * 40},
-                        "arm_sources": {arm: {"source_sha": "b" * 40, "tree_sha": "c" * 40,
+            sdk = "00ef6d6bb7d842827e8a5dcf00a417199aa72188"
+            tree = "86f9ae4ee84039e05002b7cf71f6cfc8a04909f1"
+            current_pair = {
+                "RED": "ea1e87522ea8d0363a7213fbfb3454f20d4ab5b5e8124ca1e967973f2efcd482",
+                "GREEN": "19b3e19e050e21f8976e37dc7fcfad1c6c5bea74fa428a00e331b3364a86825f",
+            }
+
+            def plan(names, revision, source_tree, pair, descriptors):
+                return {"context": {"semwright_sha": revision},
+                        "arm_sources": {arm: {"source_sha": revision, "tree_sha": source_tree,
                                               "native_source_sha256": digest}
-                                        for arm, digest in overlay.OBSERVED.items()},
+                                        for arm, digest in pair.items()},
                         "members": [{"root": "inputs", "relative_path": name,
                                      "role": "input-original", "maximum": desc["bytes"],
                                      "expected_sha256": desc["sha256"]}
                                     for name, desc in descriptors.items() if name in names]}
-            # The previous selection contains every source variant but omits
-            # the manifest. The original custody validator must still deny it.
-            with self.assertRaisesRegex(overlay.OverlayRejected, "observer_custody_original_missing"):
-                overlay.validate_bundle_plan(plan(set(overlay.BUNDLE_PATHS.values())))
-            self.assertTrue(overlay.validate_bundle_plan(plan(selected)))
-            self.assertIn(overlay.MANIFEST_PATH, selected)
-            self.assertEqual(set(descriptors) - selected, set())
+
+            for revision, source_tree, pair in (("b" * 40, "c" * 40, overlay.OBSERVED),
+                                                  (sdk, tree, current_pair)):
+                with self.subTest(sdk=revision):
+                    descriptors = overlay.bundle_descriptors(revision)
+                    args = (revision, source_tree, pair, descriptors)
+                    with self.assertRaisesRegex(overlay.OverlayRejected, "observer_custody_original_missing"):
+                        overlay.validate_bundle_plan(plan(set(overlay.BUNDLE_PATHS.values()), *args))
+                    self.assertTrue(overlay.validate_bundle_plan(plan(selected, *args)))
+                    self.assertIn(overlay.MANIFEST_PATH, selected)
+                    self.assertEqual(set(descriptors) - selected, set())
+            with self.assertRaises(overlay.OverlayRejected):
+                overlay.validate_bundle_plan(plan(selected, sdk, tree, overlay.OBSERVED, descriptors))
+            with self.assertRaises(overlay.OverlayRejected):
+                overlay.validate_bundle_plan(plan(selected, sdk, "c" * 40, current_pair, descriptors))
+            with self.assertRaises(overlay.OverlayRejected):
+                overlay.validate_bundle_plan(plan(selected, "b" * 40, tree, current_pair, descriptors))
 
     def test_reused_source_and_asset_paths_stay_inside_the_original_input_root(self):
         import native_fixedtxt_session as serial

@@ -635,6 +635,13 @@ OBSERVED = {
     "RED": "ed4f0d8f6630f14d1c3d890b3249fab79381a2fe9c8424bdb302b1ae98488cd2",
     "GREEN": "e787ab2bc03af94f7e432d380b1c5ff058fb881492232ed59b5988f487b69c96",
 }
+CURRENT_SDK = "00ef6d6bb7d842827e8a5dcf00a417199aa72188"
+CURRENT_SDK_TREE = "86f9ae4ee84039e05002b7cf71f6cfc8a04909f1"
+CURRENT_OBSERVED = {
+    "RED": "ea1e87522ea8d0363a7213fbfb3454f20d4ab5b5e8124ca1e967973f2efcd482",
+    "GREEN": "19b3e19e050e21f8976e37dc7fcfad1c6c5bea74fa428a00e331b3364a86825f",
+}
+CURRENT_OBSERVED_BYTES = {"RED": 66893, "GREEN": 67343}
 HISTORICAL_BYTES = {"RED": 33809, "GREEN": 34259}
 OBSERVED_BYTES = {'RED': 65732, 'GREEN': 66182}
 MANIFEST_PATH = "observer-derivation.original.json"
@@ -651,8 +658,18 @@ def canonical(value: dict) -> bytes:
     return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode()
 
 
-def derivation_manifest() -> dict:
-    return {
+def observed_pair(sdk=None) -> dict[str, str]:
+    return CURRENT_OBSERVED if sdk == CURRENT_SDK else OBSERVED
+
+
+def observed_descriptors(sdk=None) -> dict[str, dict]:
+    sizes = CURRENT_OBSERVED_BYTES if sdk == CURRENT_SDK else OBSERVED_BYTES
+    return {arm: {"bytes": sizes[arm], "sha256": digest}
+            for arm, digest in observed_pair(sdk).items()}
+
+
+def derivation_manifest(sdk=None) -> dict:
+    manifest = {
         "schema": "motionwright.fixedtxt.observation-overlay/4",
         "sdk_original_revision": SDK,
         "motion_canvas_api": "3.17.2",
@@ -672,6 +689,15 @@ def derivation_manifest() -> dict:
         "G2_accepted": False,
         "F_accepted": False,
     }
+    if sdk == CURRENT_SDK:
+        previous_derivation = sha(canonical(manifest))
+        manifest.update(
+            schema="motionwright.fixedtxt.observation-overlay/5",
+            producer_sdk_revision=sdk, producer_sdk_tree=CURRENT_SDK_TREE,
+            previous_observer_derivation_sha256=previous_derivation,
+            derived=observed_descriptors(sdk),
+        )
+    return manifest
 
 
 def pair(red: bytes, green: bytes) -> tuple[dict, dict]:
@@ -689,14 +715,30 @@ def pair(red: bytes, green: bytes) -> tuple[dict, dict]:
     return derived, derivation_manifest()
 
 
-def build_bundle(historical_red: bytes, committed_green: bytes) -> dict[str, bytes]:
+def build_bundle(historical_red: bytes, committed_green: bytes, sdk=None) -> dict[str, bytes]:
     need(type(historical_red) is bytes and type(committed_green) is bytes,
          "observer_original_bytes_required")
-    need(len(committed_green) == OBSERVED_BYTES["GREEN"]
-         and sha(committed_green) == OBSERVED["GREEN"], "committed_observer_green_identity")
-    historical_green = reverse(committed_green)
-    derived, proof = pair(historical_red, historical_green)
-    need(derived["GREEN"] == committed_green, "committed_green_not_reviewed_derivation")
+    expected = observed_descriptors(sdk)
+    need(len(committed_green) == expected["GREEN"]["bytes"]
+         and sha(committed_green) == expected["GREEN"]["sha256"], "committed_observer_green_identity")
+    if sdk == CURRENT_SDK:
+        red_attachment, green_attachment = RED_ATTACHMENT.encode(), GREEN_ATTACHMENT.encode()
+        need(len(historical_red) == HISTORICAL_BYTES["RED"], "historical_source_identity")
+        historical_green = historical_red.replace(red_attachment, green_attachment, 1)
+        pair(historical_red, historical_green)
+        need(committed_green.count(green_attachment) == 1 and red_attachment not in committed_green,
+             "observer_candidate_attachment_preimage")
+        candidate_red = committed_green.replace(green_attachment, red_attachment, 1)
+        need(descriptor(candidate_red) == expected["RED"]
+             and candidate_red.count(red_attachment) == 1
+             and candidate_red.replace(red_attachment, green_attachment, 1) == committed_green,
+             "observer_candidate_attachment_delta")
+        derived = {"RED": candidate_red, "GREEN": committed_green}
+        proof = derivation_manifest(sdk)
+    else:
+        historical_green = reverse(committed_green)
+        derived, proof = pair(historical_red, historical_green)
+        need(derived["GREEN"] == committed_green, "committed_green_not_reviewed_derivation")
     manifest = canonical(proof)
     need(0 < len(manifest) <= MANIFEST_MAXIMUM, "observer_manifest_bound")
     return {
@@ -708,13 +750,14 @@ def build_bundle(historical_red: bytes, committed_green: bytes) -> dict[str, byt
     }
 
 
-def bundle_descriptors() -> dict[str, dict]:
+def bundle_descriptors(sdk=None) -> dict[str, dict]:
+    observed = observed_descriptors(sdk)
     return {
         BUNDLE_PATHS["historical_red"]: {"bytes": HISTORICAL_BYTES["RED"], "sha256": HISTORICAL["RED"]},
         BUNDLE_PATHS["historical_green"]: {"bytes": HISTORICAL_BYTES["GREEN"], "sha256": HISTORICAL["GREEN"]},
-        BUNDLE_PATHS["observed_green"]: {"bytes": OBSERVED_BYTES["GREEN"], "sha256": OBSERVED["GREEN"]},
-        BUNDLE_PATHS["observed_red"]: {"bytes": OBSERVED_BYTES["RED"], "sha256": OBSERVED["RED"]},
-        MANIFEST_PATH: descriptor(canonical(derivation_manifest())),
+        BUNDLE_PATHS["observed_green"]: observed["GREEN"],
+        BUNDLE_PATHS["observed_red"]: observed["RED"],
+        MANIFEST_PATH: descriptor(canonical(derivation_manifest(sdk))),
     }
 
 
@@ -729,11 +772,13 @@ def validate_bundle_plan(plan: dict) -> bool:
     sources = plan["arm_sources"]
     need(all(type(sources[arm]) is dict for arm in HISTORICAL), "observer_arm_source_rows")
     selected = {arm: sources[arm].get("native_source_sha256") for arm in HISTORICAL}
-    if not any(value in OBSERVED.values() for value in selected.values()):
+    context = plan.get("context")
+    sdk = context.get("semwright_sha") if type(context) is dict else None
+    known = (*OBSERVED.values(), *CURRENT_OBSERVED.values())
+    if not any(value in known for value in selected.values()):
         return False
-    need(selected == OBSERVED, "observer_pair_partial_or_foreign")
-    need(type(plan.get("context")) is dict, "observer_context")
-    sdk = plan["context"].get("semwright_sha")
+    need(selected == observed_pair(sdk), "observer_pair_partial_or_foreign")
+    need(type(context) is dict, "observer_context")
     tree = sources["GREEN"].get("tree_sha")
     need(all(type(value) is str and len(value) == 40 and all(c in "0123456789abcdef" for c in value)
              for value in (sdk, tree))
@@ -741,7 +786,8 @@ def validate_bundle_plan(plan: dict) -> bool:
                  for arm in HISTORICAL),
          "observer_pair_common_pinned_sdk")
     need(type(plan.get("members")) is list, "observer_member_roster")
-    expected = bundle_descriptors()
+    need(sdk != CURRENT_SDK or tree == CURRENT_SDK_TREE, "observer_candidate_sdk_tree")
+    expected = bundle_descriptors(sdk)
     actual = {}
     for row in plan["members"]:
         need(type(row) is dict, "observer_member_row")
@@ -762,8 +808,9 @@ def verify_bundle_originals(originals, *, plan: dict) -> dict:
     """Verify original bytes from the authenticated snapshot; no filesystem I/O."""
     if not validate_bundle_plan(plan):
         return {"status": "HISTORICAL_OR_UNREVIEWED_NO_TYPED_CUSTODY", "typed_source_bound": False}
+    sdk = plan["context"]["semwright_sha"]
     actual = {}
-    for name, desc in bundle_descriptors().items():
+    for name, desc in bundle_descriptors(sdk).items():
         try:
             raw = originals["inputs/" + name]
         except KeyError as error:
@@ -771,8 +818,9 @@ def verify_bundle_originals(originals, *, plan: dict) -> dict:
         need(type(raw) is bytes and len(raw) <= MAX_SOURCE_BYTES and descriptor(raw) == desc,
              "observer_original_bytes_changed")
         actual[name] = raw
-    expected = build_bundle(actual[BUNDLE_PATHS["historical_red"]], actual[BUNDLE_PATHS["observed_green"]])
+    expected = build_bundle(actual[BUNDLE_PATHS["historical_red"]],
+                            actual[BUNDLE_PATHS["observed_green"]], sdk)
     need(actual == expected, "observer_original_derivation_mismatch")
     return {"status": "OBSERVATION_DERIVATION_BYTES_BOUND", "typed_source_bound": True,
-            "historical_pair": dict(HISTORICAL), "observed_pair": dict(OBSERVED),
+            "historical_pair": dict(HISTORICAL), "observed_pair": dict(observed_pair(sdk)),
             "native_effects": 0, "G2_accepted": False, "F_accepted": False}

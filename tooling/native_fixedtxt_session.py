@@ -513,7 +513,7 @@ def shared_identity(current, request, *, readonly):
     verify_mounts(readonly)
     return {"schema": "motionwright.native.fixedtxt-shared-identity/1", "context": current,
         "arm": request["arm"], "source": source, "semwright_tree": request["semwright_tree"],
-        "native_source_sha256": route.PAIR[request["arm"]], "binaries": binaries,
+        "native_source_sha256": route.reviewed_pair(current["semwright_sha"])[request["arm"]], "binaries": binaries,
         "readonly_original": descriptor(canonical(readonly))}
 
 
