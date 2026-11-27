@@ -50,6 +50,7 @@ PAIR = {
 }
 FIXTURE_HELPER = "crates/driver-motion-canvas/examples/support/fixed_text_fixtures_v4.rs"
 FIXTURE_HELPER_SHA256 = "372b1aab1412fa61b7003b897729f9ac2e6152f3cc5334890256ba025a1984f6"
+CURRENT_FIXTURE_HELPER_SHA256 = "e00805121f062abae5554a2419e26e53fde701f919b44b79c19a9a4eb6cd65c1"
 CALIBRATION_KEYS = ("fixed-multirun-control", "fixed-multirun", "fixed-camera-scene")
 SHA = re.compile(r"[0-9a-f]{64}\Z")
 RUN = re.compile(r"[1-9][0-9]*\Z")
@@ -734,6 +735,11 @@ def read_git(root, *args):
     return result.stdout
 
 
+def reviewed_pair(sdk):
+    from native_fixedtxt_observer_overlay import CURRENT_OBSERVED, CURRENT_SDK
+    return CURRENT_OBSERVED if sdk == CURRENT_SDK else PAIR
+
+
 def check_sources(current, request, *, physical_arm):
     import native_mlt_g2_custody as custody
     from ci_private_evidence import regular
@@ -747,9 +753,16 @@ def check_sources(current, request, *, physical_arm):
     changed = set(filter(None, read_git(sdk, "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
                                       "--name-only", "-z", "HEAD", "--").decode().split("\0")))
     need(changed <= ({NATIVE_PATH} if physical_arm == "RED" else set()), "fixedtxt-SDK-unreviewed-source-change")
-    need(sha(read_git(sdk, "show", current["semwright_sha"] + ":" + NATIVE_PATH)) == PAIR["GREEN"]
-         and sha(regular(sdk / NATIVE_PATH, 2 * 1024 * 1024)[0]) == PAIR[physical_arm]
-         and sha(regular(sdk / FIXTURE_HELPER, 2 * 1024 * 1024)[0]) == FIXTURE_HELPER_SHA256,
+    from native_fixedtxt_observer_overlay import CURRENT_SDK, CURRENT_SDK_TREE
+    revision = current["semwright_sha"]
+    pair = reviewed_pair(revision)
+    fixture_digest = FIXTURE_HELPER_SHA256
+    if revision == CURRENT_SDK:
+        need(request["semwright_tree"] == CURRENT_SDK_TREE, "fixedtxt-current-observer-SDK-tree")
+        fixture_digest = CURRENT_FIXTURE_HELPER_SHA256
+    need(sha(read_git(sdk, "show", revision + ":" + NATIVE_PATH)) == pair["GREEN"]
+         and sha(regular(sdk / NATIVE_PATH, 2 * 1024 * 1024)[0]) == pair[physical_arm]
+         and sha(regular(sdk / FIXTURE_HELPER, 2 * 1024 * 1024)[0]) == fixture_digest,
          "fixedtxt-reviewed-arm-and-fixture-source")
     return source
 
@@ -933,21 +946,23 @@ def apply_reviewed_arm(request, sources):
     import native_fixedtxt_observer_overlay as overlay
     sdk = Path(os.environ["SEMWRIGHT_CHECKOUT"])
     path = sdk / NATIVE_PATH
-    original, observed = regular(path, overlay.MAX_SOURCE_BYTES)
-    need(PAIR == overlay.OBSERVED and HISTORICAL_PAIR == overlay.HISTORICAL,
+    original, _ = regular(path, overlay.MAX_SOURCE_BYTES)
+    revision = request.get("semwright_sha")
+    pair = reviewed_pair(revision)
+    need(pair == overlay.observed_pair(revision) and HISTORICAL_PAIR == overlay.HISTORICAL,
          "fixedtxt-reviewed-observer-pair")
-    need(sha(original) == PAIR["GREEN"], "fixedtxt-original-GREEN-source-before-overlay")
+    need(sha(original) == pair["GREEN"], "fixedtxt-original-GREEN-source-before-overlay")
     red_path = Path(sources["red_native"]["path"])
     inputs = red_path.parents[1]
     need(red_path == inputs / overlay.BUNDLE_PATHS["historical_red"], "fixedtxt-original-RED-custody-path")
     historical_red = regular(red_path, overlay.MAX_SOURCE_BYTES)[0]
-    bundle = overlay.build_bundle(historical_red, original)
+    bundle = overlay.build_bundle(historical_red, original, revision)
     for relative, raw in bundle.items():
         if relative != overlay.BUNDLE_PATHS["historical_red"]:
             new_bytes(inputs / relative, raw)
     if request["arm"] == "RED":
         replacement = bundle[overlay.BUNDLE_PATHS["observed_red"]]
-        need(sha(replacement) == PAIR["RED"], "fixedtxt-derived-RED-source-before-overlay")
+        need(sha(replacement) == pair["RED"], "fixedtxt-derived-RED-source-before-overlay")
         fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
         try:
             before = os.fstat(fd)
@@ -961,7 +976,7 @@ def apply_reviewed_arm(request, sources):
                 os.fsync(fd)
         finally:
             os.close(fd)
-    need(sha(regular(path, 2 * 1024 * 1024)[0]) == PAIR[request["arm"]],
+    need(sha(regular(path, 2 * 1024 * 1024)[0]) == pair[request["arm"]],
          "fixedtxt-reviewed-overlay-readback")
 
 
@@ -995,7 +1010,7 @@ def make_cycle(request, current, sources):
         **{key: sources[key] for key in ("template_film", "managed_project", "caption_source", "project_files")},
         "runtime": {"semwright_revision": current["semwright_sha"],
             "driver_sha256": binary(wrapper.SW_BIN / "semwright-motion-canvas-driver"),
-            "node_sha256": binary(node), "native_source_sha256": dict(PAIR),
+            "node_sha256": binary(node), "native_source_sha256": dict(reviewed_pair(current["semwright_sha"])),
             "render_helper": wrapper.fixed_descriptor(runtime / "render.mjs", 2 * 1024 * 1024),
             "dependency_lock": wrapper.fixed_descriptor(runtime / "package-lock.json", 2 * 1024 * 1024),
             "core_package": wrapper.fixed_descriptor(runtime / "node_modules/@motion-canvas/core/package.json", 2 * 1024 * 1024),
@@ -1040,7 +1055,7 @@ def make_plan(request, current, cycle_raw, source, *, known):
     plan = {"schema": fixed.PLAN_SCHEMA, "scope": SCOPE, "context": current,
         "arm": request["arm"], "fixture": request["fixture"], "case_roster": selection.fixedtxt_case_roster(),
         "arm_sources": {arm: {"source_sha": current["semwright_sha"], "tree_sha": request["semwright_tree"],
-                              "native_source_sha256": digest} for arm, digest in PAIR.items()},
+                              "native_source_sha256": digest} for arm, digest in reviewed_pair(current["semwright_sha"]).items()},
         "source_bindings": [{"path": name, "sha256": digest} for name, digest in sorted(source["files"].items())],
         "cycle_input_sha256": sha(cycle_raw), "decoder_sha256": cycle["decoder_sha256"],
         "native_directory": fixed.NATIVE_SLOT, "native_directory_selector": fixed.SELECTOR,

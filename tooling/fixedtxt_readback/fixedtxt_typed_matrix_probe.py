@@ -49,6 +49,14 @@ GEOMETRY_OBSERVED = {
     'GREEN': 'afc197bacf9d73c007833a315b253b1b901005a2c9ef7506eec57b2683aaf3c7',
 }
 OBSERVED = {'RED': 'ed4f0d8f6630f14d1c3d890b3249fab79381a2fe9c8424bdb302b1ae98488cd2', 'GREEN': 'e787ab2bc03af94f7e432d380b1c5ff058fb881492232ed59b5988f487b69c96'}
+CURRENT_OBSERVED = {
+    "RED": "ea1e87522ea8d0363a7213fbfb3454f20d4ab5b5e8124ca1e967973f2efcd482",
+    "GREEN": "19b3e19e050e21f8976e37dc7fcfad1c6c5bea74fa428a00e331b3364a86825f",
+}
+
+
+def pixel_observers(arm):
+    return (OBSERVED[arm], CURRENT_OBSERVED[arm])
 
 GEOMETRY_FIELDS = ('native_geometry', 'camera_scene')
 FIXTURE_HELPER_SHA = '372b1aab1412fa61b7003b897729f9ac2e6152f3cc5334890256ba025a1984f6'
@@ -103,13 +111,13 @@ def valid_box(box):
 
 
 def actual_layout(row, *, arm, source_sha):
-    need(arm in OBSERVED and source_sha in (OBSERVED[arm], GEOMETRY_OBSERVED[arm], LAYOUT_OBSERVED[arm], HISTORICAL[arm]),
+    need(arm in OBSERVED and source_sha in (*pixel_observers(arm), GEOMETRY_OBSERVED[arm], LAYOUT_OBSERVED[arm], HISTORICAL[arm]),
          'typed_probe_exact_observer_source')
     present = [key in row for key in FIELDS]
     need(all(present) or not any(present), 'typed_probe_partial_extension')
     if not any(present):
         return None, list(FIELDS)
-    need(source_sha in (OBSERVED[arm], GEOMETRY_OBSERVED[arm], LAYOUT_OBSERVED[arm]), 'typed_probe_fields_not_emitted_by_historical_source')
+    need(source_sha in (*pixel_observers(arm), GEOMETRY_OBSERVED[arm], LAYOUT_OBSERVED[arm]), 'typed_probe_fields_not_emitted_by_historical_source')
     type_known, native_type = known(row['native_type'],
         lambda value: type(value) is str and value in NATIVE_TYPES, 'native_type')
     root_known, root = known(row['layout_root'], lambda value: type(value) is bool, 'layout_root')
@@ -353,7 +361,7 @@ def actual_geometry(row, *, arm, source_sha):
     if not any(present):
         result['missing'].extend(GEOMETRY_FIELDS)
         return result
-    need(source_sha in (OBSERVED[arm], GEOMETRY_OBSERVED[arm]) and layout is not None,
+    need(source_sha in (*pixel_observers(arm), GEOMETRY_OBSERVED[arm]) and layout is not None,
          'typed_geometry_fields_not_emitted_by_bound_source')
     geometry = value_of(row['native_geometry'], lambda v: type(v) is dict, 'native_geometry')
     camera = value_of(row['camera_scene'], lambda v: type(v) is dict, 'camera_scene')
@@ -843,9 +851,9 @@ def bind_text_pixel_frame(*, rows, texts, aliases, actual, authored, film, confi
     wanted = {aliases[role] for role in texts}
     need(fields <= wanted, 'typed_pixels_nontext_observation')
     if fields:
-        need(source_sha == OBSERVED[arm], 'typed_pixels_not_emitted_by_bound_source')
+        need(source_sha in pixel_observers(arm), 'typed_pixels_not_emitted_by_bound_source')
     requested = config.get('textPixelObservationFrames')
-    if source_sha == OBSERVED[arm]:
+    if source_sha in pixel_observers(arm):
         need(type(requested) is list and requested == list(frames)
              and all(type(value) is int for value in requested), 'typed_pixels_original_Host_sample_roster')
     elif requested is not None:
@@ -955,7 +963,7 @@ def bind_originals(originals, plan, profile, spec, base, *, transform_spec_raw=N
     need(fixture in FIXTURES and arm in OBSERVED, 'typed_matrix_closed_fixture_scope')
     frames = FIXTURES[fixture]
     effective = plan['arm_sources'][arm]['native_source_sha256']
-    need(effective in (OBSERVED[arm], GEOMETRY_OBSERVED[arm], LAYOUT_OBSERVED[arm], HISTORICAL[arm]), 'typed_matrix_exact_observer_source')
+    need(effective in (*pixel_observers(arm), GEOMETRY_OBSERVED[arm], LAYOUT_OBSERVED[arm], HISTORICAL[arm]), 'typed_matrix_exact_observer_source')
     film_path, expectation_path = one_role(plan, 'authored-film'), one_role(plan, 'fixture-expectations')
     film_raw = originals.small(film_path, MIB); film = base.strict(film_raw, MIB)
     expectations = originals.json(expectation_path, MIB)
@@ -994,7 +1002,7 @@ def bind_originals(originals, plan, profile, spec, base, *, transform_spec_raw=N
         text_pixels = bind_text_pixel_frame(rows=rows, texts=texts, aliases=aliases, actual=actual,
             authored=authored, film=film, config=config, frames=frames, frame=frame,
             source_sha=effective, arm=arm, base=base)
-        pixel_profile_bound = (effective == OBSERVED[arm]
+        pixel_profile_bound = (effective in pixel_observers(arm)
             and profile.get('native_text_pixel_profile_bound') is True
             and config.get('textPixelObservationFrames') == list(frames))
         font_verified = all(row['font_and_text_verified'] for row in texts.values())
@@ -1056,7 +1064,7 @@ def bind_originals(originals, plan, profile, spec, base, *, transform_spec_raw=N
         'fixture_expectations_original': originals.descriptor(expectation_path),
         'font_inventory_original': originals.descriptor(inventory_path), 'font_resources_digest': config['fontResourcesDigest'],
         **source_binding, 'selected_frame_bindings': details,
-        'native_text_pixel_sample_frames': list(frames) if effective == OBSERVED[arm] else None,
+        'native_text_pixel_sample_frames': list(frames) if effective in pixel_observers(arm) else None,
         'all_selected_native_text_pixel_coverage_known': all(row['native_text_pixel_coverage_known'] for row in details),
         'native_text_pixel_mask_source': 'per-arm before/after actual glyph operations',
         'R39_GOLD_baseline_or_final_pixel_visibility_claimed': False,

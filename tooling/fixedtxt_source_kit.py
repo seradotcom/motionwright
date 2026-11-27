@@ -28,7 +28,7 @@ MARKER = "managed-project-source-kit"
 SDK = "00ef6d6bb7d842827e8a5dcf00a417199aa72188"
 SDK_SOURCE = "git+https://github.com/seradotcom/semwright?rev=" + SDK + "#" + SDK
 FACTORY = "tooling/fixedtxt/prepare_fixedtxt_managed_project.rs"
-FACTORY_SHA = "f8012589e4fed06ba4bb309720e3a9f4d79faaa8b02c87ccc62b11d69515a990"
+FACTORY_SHA = "f01b25a530255092932962f315b49aa996dc60daa898d6dd9f2210b914f22aba"
 TEMPLATE_SHA = "5b1f9e7befb11c3ef6354a9b3b292d105647f444cac4a13d6eb8d27bf7c10b97"
 WORKFLOW = ".github/workflows/native-mlt-sequence-e2e.yml"
 SOURCE_PATHS = (WORKFLOW, FACTORY, "tooling/fixedtxt_source_kit.py",
