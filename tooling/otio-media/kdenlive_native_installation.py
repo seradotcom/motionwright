@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import platform
 import plistlib
+import stat
 import subprocess
 import sys
 
@@ -19,16 +20,83 @@ MAX_EDITOR_BYTES = 128 * 1024 * 1024
 MAX_PLIST_BYTES = 1024 * 1024
 
 
-def install_windows(archive, owner, original):
+def windows_user_installation_root():
+    import ctypes
+    from ctypes import wintypes
+    from uuid import UUID
+
+    shell = ctypes.WinDLL("shell32", use_last_error=True)
+    memory = ctypes.WinDLL("ole32", use_last_error=True)
+    shell.SHGetKnownFolderPath.argtypes = (
+        ctypes.c_void_p, wintypes.DWORD, wintypes.HANDLE, ctypes.POINTER(ctypes.c_void_p),
+    )
+    shell.SHGetKnownFolderPath.restype = ctypes.c_long
+    memory.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
+    memory.CoTaskMemFree.restype = None
+    identifier = (ctypes.c_ubyte * 16).from_buffer_copy(
+        UUID("5cd7aee2-2219-4a67-b85d-6c9ce15660cb").bytes_le,
+    )
+    raw = ctypes.c_void_p()
+    try:
+        status = shell.SHGetKnownFolderPath(identifier, 0x4000, None, ctypes.byref(raw))
+        programs = (Path(ctypes.wstring_at(raw)) if status == 0 and raw.value
+                    else Path(os.environ["LOCALAPPDATA"]) / "Programs")
+    finally:
+        if raw.value:
+            memory.CoTaskMemFree(raw)
+    require(programs.is_absolute() and len(programs.drive) == 2 and programs.drive[1] == ":"
+            and programs == programs.resolve(strict=False),
+            "Windows user program files folder is not a canonical local path")
+    for path in (programs, *programs.parents):
+        try:
+            observed = path.lstat()
+        except FileNotFoundError:
+            continue
+        require(stat.S_ISDIR(observed.st_mode)
+                and not getattr(observed, "st_file_attributes", 0) & 0x400,
+                "Windows user program files folder crosses a link or reparse point")
+    return programs / "Kdenlive"
+
+
+def windows_user_registration():
+    import winreg
+
+    results = []
+    paths = {
+        "product": r"Software\KDE e.V.\Kdenlive",
+        "uninstall": r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Kdenlive",
+    }
+    for view in (winreg.KEY_WOW64_32KEY, winreg.KEY_WOW64_64KEY):
+        for kind, path in paths.items():
+            try:
+                handle = winreg.OpenKey(winreg.HKEY_CURRENT_USER, path, 0, winreg.KEY_READ | view)
+            except FileNotFoundError:
+                continue
+            with handle:
+                names = (("root", "Install_Dir"), ("mode", "Install_Mode")) if kind == "product" else (
+                    ("uninstall", "UninstallString"),
+                )
+                fields = {}
+                for key, name in names:
+                    try:
+                        value, representation = winreg.QueryValueEx(handle, name)
+                    except FileNotFoundError:
+                        value, representation = None, None
+                    fields[key] = value if representation == winreg.REG_SZ else None
+                results.append(fields)
+    return results
+
+
+def install_windows(archive, owner, original, destination):
     from windows_installer_lifecycle import custody_error, observed_terminal
     from windows_updated_application import process_identity
 
-    destination = owner / "installed"
     require(not destination.exists() and not destination.is_symlink()
-            and not any(character in str(destination) for character in ('"', "\r", "\n", "\0")),
-            "Windows editor installation destination is unsafe")
-    # NSIS expects the final /D= argument to consume the rest of the command line.
-    line = subprocess.list2cmdline([str(archive), "/S"]) + " /D=" + str(destination)
+            and not windows_user_registration(),
+            "Windows Kdenlive is already registered or its destination already exists")
+    # KDE Craft initializes INSTDIR through NSIS MultiUser in .onInit.
+    # CurrentUser selects the runner account's genuine UserProgramFiles.
+    line = subprocess.list2cmdline([str(archive), "/S", "/CurrentUser"])
     environment = {name: os.environ[name] for name in ("SystemRoot", "WINDIR", "PATH", "USERPROFILE",
                    "APPDATA", "LOCALAPPDATA", "ProgramData", "TEMP", "TMP") if name in os.environ}
     with _publication_guard(archive, archive.lstat(), original["sha256"], original["bytes"],
@@ -56,6 +124,19 @@ def install_windows(archive, owner, original):
     require(outcome["original_terminal"] == observed_terminal(0)
             and outcome["process"] is not None and not outcome["custody_errors"],
             "native Windows Kdenlive installation did not close successfully")
+    registered = windows_user_registration()
+    products = [record for record in registered if "root" in record]
+    uninstallers = [record for record in registered if "uninstall" in record]
+    require(products and all(isinstance(record["root"], str)
+                             and Path(record["root"]) == destination
+                             and record["mode"] == "CurrentUser" for record in products)
+            and all(record["uninstall"] == '"' + str(destination / "uninstall.exe") + '"'
+                    for record in uninstallers),
+            "installed Kdenlive registration does not point to the selected current user folder")
+    publish(owner / "windows-installed-location.json", {
+        "installation_root": str(destination), "mode": "CurrentUser",
+        "product_registration_count": len(products), "uninstaller_registration_count": len(uninstallers),
+    })
     return destination / "bin/kdenlive.exe"
 
 
@@ -134,10 +215,14 @@ def install(runner, context, distribution):
     publish(owner / "installation-intent.json", {"context": context, "archive": original,
                                                 "installation_attempts": 1, "automatic_retry": False})
     if context["runner_os"] == "Windows":
-        executable = install_windows(archive, owner, original)
+        installation_root = windows_user_installation_root()
+        executable = install_windows(archive, owner, original, installation_root)
+        require(executable == installation_root / "bin/kdenlive.exe",
+                "editor binary outside its registered installation")
     else:
+        installation_root = owner
         executable = install_macos(archive, owner, original)
-    require(executable.is_relative_to(owner / "installed"), "editor binary outside its installation")
+        require(executable.is_relative_to(owner / "installed"), "editor binary outside its installation")
     executable_original = regular_file(executable, MAX_EDITOR_BYTES)
     system, arch = (("windows", "x86_64") if context["runner_os"] == "Windows"
                     else ("macos", "arm64"))
@@ -148,7 +233,8 @@ def install(runner, context, distribution):
             "installed executable or original archive changed")
     executable_original["format"] = native["binary_format"]
     report = {"schema": "motionwright.kdenlive-native-installation/1", "context": context,
-              "archive": original, "relative_executable": executable.relative_to(owner).as_posix(),
+              "archive": original, "installation_root": str(installation_root),
+              "relative_executable": executable.relative_to(installation_root).as_posix(),
               "original_executable": executable_original}
     publish(owner / "installation.json", report)
     return report

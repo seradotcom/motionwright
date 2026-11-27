@@ -28,23 +28,28 @@ class NativeInstallationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             context, chosen, owner = self.fixture(root)
-            target = owner / "installed/bin/kdenlive.exe"
+            destination = root / "user-programs/Kdenlive"
+            target = destination / "bin/kdenlive.exe"
             header = bytearray(256)
             header[:2] = b"MZ"
             header[60:64] = (128).to_bytes(4, "little")
             header[128:134] = b"PE\0\0\x64\x86"
-            with patch.object(installation, "install_windows") as launch:
-                def observed(archive, parent, identity):
+            with patch.object(installation, "install_windows") as launch, patch.object(
+                installation, "windows_user_installation_root", return_value=destination,
+            ):
+                def observed(archive, parent, identity, selected):
                     self.assertTrue((owner / "installation-intent.json").exists())
                     self.assertEqual(archive, owner / chosen.filename)
                     self.assertEqual(parent, owner)
                     self.assertEqual(identity["sha256"], chosen.sha256)
+                    self.assertEqual(selected, destination)
                     target.parent.mkdir(parents=True)
                     target.write_bytes(header)
                     return target
                 launch.side_effect = observed
                 report = installation.install(root, context, chosen)
-                self.assertEqual(report["relative_executable"], "installed/bin/kdenlive.exe")
+                self.assertEqual(report["installation_root"], str(destination))
+                self.assertEqual(report["relative_executable"], "bin/kdenlive.exe")
                 self.assertEqual(report["original_executable"]["sha256"],
                                  sha256(header).hexdigest())
                 self.assertEqual(report["original_executable"]["format"], "PE64_x86_64")
@@ -60,14 +65,55 @@ class NativeInstallationTests(unittest.TestCase):
             context, chosen, owner = self.fixture(root)
             archive = owner / chosen.filename
             original = installation.regular_file(archive, 1024)
+            destination = root / "user-programs/Kdenlive"
+            registered = {"root": str(destination), "mode": "CurrentUser"}
             with patch.object(installation.subprocess, "Popen") as launch, patch.object(
                 windows, "process_identity", return_value={"pid": 42, "creation_filetime": 8},
-            ) as observe:
+            ) as observe, patch.object(installation, "windows_user_registration",
+                                       side_effect=[[], [registered]]):
                 launch.return_value.wait.return_value = 0
-                executable = installation.install_windows(archive, owner, original)
+                executable = installation.install_windows(archive, owner, original, destination)
             observe.assert_called_once_with(launch.return_value, archive)
-            self.assertEqual(executable, owner / "installed/bin/kdenlive.exe")
+            self.assertTrue(launch.call_args.args[0].endswith(" /S /CurrentUser"))
+            self.assertNotIn("/D=", launch.call_args.args[0])
+            self.assertEqual(executable, destination / "bin/kdenlive.exe")
             self.assertTrue((owner / "windows-installer-terminal.json").exists())
+            launch.assert_called_once()
+
+    def test_windows_refuses_existing_registration_without_a_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            _, chosen, owner = self.fixture(root)
+            archive = owner / chosen.filename
+            original = installation.regular_file(archive, 1024)
+            destination = root / "user-programs/Kdenlive"
+            with patch.object(installation.subprocess, "Popen") as launch, patch.object(
+                installation, "windows_user_registration",
+                return_value=[{"root": str(destination), "mode": "CurrentUser"}],
+            ):
+                with self.assertRaisesRegex(ValueError, "already registered"):
+                    installation.install_windows(archive, owner, original, destination)
+            launch.assert_not_called()
+
+    def test_windows_ack_at_an_unregistered_destination_cannot_pass(self):
+        import windows_updated_application as windows
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            _, chosen, owner = self.fixture(root)
+            archive = owner / chosen.filename
+            original = installation.regular_file(archive, 1024)
+            destination = root / "user-programs/Kdenlive"
+            registered = {"root": str(root / "wrong/Kdenlive"), "mode": "CurrentUser"}
+            with patch.object(installation.subprocess, "Popen") as launch, patch.object(
+                windows, "process_identity", return_value={"pid": 42, "creation_filetime": 8},
+            ), patch.object(installation, "windows_user_registration",
+                            side_effect=[[], [registered]]):
+                launch.return_value.wait.return_value = 0
+                with self.assertRaisesRegex(ValueError, "does not point"):
+                    installation.install_windows(archive, owner, original, destination)
+            self.assertTrue((owner / "windows-installer-terminal.json").exists())
+            self.assertFalse((owner / "windows-installed-location.json").exists())
             launch.assert_called_once()
 
     def test_macos_mounts_a_byte_identical_copy_and_preserves_the_archive(self):
@@ -123,10 +169,13 @@ class NativeInstallationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             context, chosen, owner = self.fixture(root)
-            target = owner / "installed/bin/kdenlive.exe"
+            destination = root / "user-programs/Kdenlive"
+            target = destination / "bin/kdenlive.exe"
             target.parent.mkdir(parents=True)
             target.write_bytes(bytes(256))
-            with patch.object(installation, "install_windows", return_value=target):
+            with patch.object(installation, "install_windows", return_value=target), patch.object(
+                installation, "windows_user_installation_root", return_value=destination,
+            ):
                 with self.assertRaisesRegex(ValueError, "MZ header"):
                     installation.install(root, context, chosen)
                 self.assertFalse((owner / "installation.json").exists())

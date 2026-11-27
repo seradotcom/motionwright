@@ -9,6 +9,12 @@ on:
         options: [source, desktop-source, kdenlive-distribution, kdenlive-native-editor, accessibility-only, kdenlive-gui, external-alab-readonly]
         default: source
         required: true
+      kdenlive_editor_platform:
+        description: Select the native editor installation platform
+        type: choice
+        options: [both, windows, macos]
+        default: both
+        required: false
       audio_source:
         description: 'Kdenlive GUI only: silent original or bounded 997 Hz AAC source. No output audio credit.'
         type: choice
@@ -618,7 +624,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, macos-15]
+        os: ${{ fromJSON(inputs.kdenlive_editor_platform == 'windows' && '["windows-2025"]' || (inputs.kdenlive_editor_platform == 'macos' && '["macos-15"]' || '["windows-2025","macos-15"]')) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -644,6 +650,7 @@ jobs:
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/installation-intent.json
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/installation.json
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/windows-installer-terminal.json
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/windows-installed-location.json
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/macos-readonly-mount.json
           if-no-files-found: warn
           retention-days: 7
