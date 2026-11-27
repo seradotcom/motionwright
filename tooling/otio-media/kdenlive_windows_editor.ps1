@@ -259,6 +259,7 @@ $editor = [Diagnostics.Process]::GetProcessById($EditorPid)
 $deadline = [Diagnostics.Stopwatch]::StartNew()
 $scope = [System.Windows.Automation.TreeScope]::Descendants
 $savePath = Join-Path $Evidence 'initial.kdenlive'
+$durationTitles = @('Duration', 'Duration - Kdenlive')
 
 function Assert-Editor {
     $editor.Refresh()
@@ -300,7 +301,7 @@ function Observe-Windows {
         $className = $window.Current.ClassName
         $controls = @()
         $native = @()
-        if ($name -cin @('OpenTimelineIO Import', 'Save As', 'Save Project', 'Duration')) {
+        if ($name -cin @('OpenTimelineIO Import', 'Save As', 'Save Project') -or $name -cin $durationTitles) {
             $native = @([KdenliveWindowsInput]::DialogControls([IntPtr]$window.Current.NativeWindowHandle, [uint32]$EditorPid) |
                 ForEach-Object { @{ id = $_.Id; class_name = $_.ClassName; enabled = $_.Enabled } })
             foreach ($role in @([System.Windows.Automation.ControlType]::Edit,
@@ -606,13 +607,15 @@ function Assert-ClipDuration($Fields, [int]$Expected) {
 
 function Open-ClipDuration([string]$Stage) {
     Select-EditorMenu 'Sequence' 'Edit Duration' $Stage 'Current Item'
-    return Await-Unique 'single-clip Duration' { Find-FileDialog @('Duration') }
+    return Await-Unique 'single-clip Duration' {
+        Find-FileDialog $durationTitles | Where-Object { $_.Current.ClassName -ceq 'ClipDurationDialog' }
+    }
 }
 
 function Await-DurationClosed {
     while ($deadline.Elapsed.TotalSeconds -lt 210) {
         Assert-Editor
-        if (!@(Find-FileDialog @('Duration')).Count) { return }
+        if (!@(Find-FileDialog $durationTitles).Count) { return }
         Start-Sleep -Milliseconds 120
     }
     throw 'Original Kdenlive Duration dialog did not close'
