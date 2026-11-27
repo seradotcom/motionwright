@@ -62,6 +62,15 @@ class PortabilityContractTests(unittest.TestCase):
             "project_history": ".history(",
             "project_history_recent": ".history_recent(",
             "issue_effect_grant": "effect_authority::issue_effect_grant(",
+            "model_request_preflight": ".model_request_preflight(",
+            "clear_saved_semwright_connection": ".clear_saved(",
+            "production_jobs": ".production_jobs(",
+            "native_hyperframes_source": "hyperframes_source::inspect_source(",
+            "export_hyperframes_source_file": "hyperframes_source::export_source(",
+            "export_native_capsule_source": "project_export::export_native_capsule_source(",
+            "export_caption_sidecar": "caption_export::export_caption_sidecar(",
+            "export_otio": "project_export::export_otio(",
+            "export_otio_source_snapshot": "project_export::export_otio_source_snapshot(",
         }
         for command, service_call in calls.items():
             with self.subTest(command=command):

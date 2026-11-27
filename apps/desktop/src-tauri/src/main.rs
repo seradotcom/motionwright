@@ -922,15 +922,19 @@ async fn project_history_recent(
 }
 
 #[tauri::command]
-fn model_request_preflight(
-    _owner: desktop_owner::OwnerInvocation,
+async fn model_request_preflight(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ModelRequestPreflightRequest,
 ) -> Result<ModelRequestPreflight, String> {
-    state
-        .service
-        .model_request_preflight(request.project_id, &request.draft)
-        .map_err(sanitized)
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        service
+            .model_request_preflight(request.project_id, &request.draft)
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// Read an owner-selected per-project pointer or retain the legacy explicit
@@ -1146,19 +1150,27 @@ async fn choose_brand_font_media_root(
 /// It cannot cancel running native jobs, remove the owner's Semwright ticket,
 /// disable a separately configured environment override, or delete artifacts.
 #[tauri::command]
-fn clear_saved_semwright_connection(
-    _owner: desktop_owner::OwnerInvocation,
+async fn clear_saved_semwright_connection(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: RuntimeConnectionSelectionRequest,
 ) -> Result<bool, String> {
-    let project = state
-        .service
-        .project(request.project_id)
-        .map_err(sanitized)?;
-    if project.generation != request.generation || project.revision != request.revision {
-        return Err("Project changed; refresh before clearing a runtime selection.".into());
-    }
-    state.runtime_connections.clear_saved(project.id)
+    let service = state.service.clone();
+    let connections = state.runtime_connections.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        let project = service.project(request.project_id).map_err(sanitized)?;
+        if project.generation != request.generation || project.revision != request.revision {
+            return Err("Project changed; refresh before clearing a runtime selection.".into());
+        }
+        connections.clear_saved(project.id)
+    })
+    .await
+    .map_err(|error| match error {
+        desktop_owner::OwnerTaskFailure::OwnerUnavailable => error.to_string(),
+        desktop_owner::OwnerTaskFailure::WorkerJoinFailure => {
+            "The runtime selection change could not be confirmed. Refresh Integrations.".to_string()
+        }
+    })?
 }
 
 #[tauri::command]
@@ -1586,15 +1598,19 @@ async fn workflow_action(
 }
 
 #[tauri::command]
-fn production_jobs(
-    _owner: desktop_owner::OwnerInvocation,
+async fn production_jobs(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ProductionJobsRequest,
 ) -> Result<Vec<ProductionJobProjection>, String> {
-    state
-        .service
-        .production_jobs(request.project_id, request.limit)
-        .map_err(sanitized)
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        service
+            .production_jobs(request.project_id, request.limit)
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// Read-only inventory of native MLT project lifetime receipts.
@@ -4004,21 +4020,42 @@ async fn waveform_page(
 }
 
 #[tauri::command]
-fn native_hyperframes_source(
-    _owner: desktop_owner::OwnerInvocation,
+async fn native_hyperframes_source(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: hyperframes_source::SourceRequest,
 ) -> Result<hyperframes_source::SourceSnapshot, String> {
-    hyperframes_source::inspect_source(&state.service, request)
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        hyperframes_source::inspect_source(&service, request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn export_worker_error(error: desktop_owner::OwnerTaskFailure) -> String {
+    match error {
+        desktop_owner::OwnerTaskFailure::OwnerUnavailable => error.to_string(),
+        desktop_owner::OwnerTaskFailure::WorkerJoinFailure => {
+            "The export outcome is unknown. Check the selected destination before trying again."
+                .to_string()
+        }
+    }
 }
 
 #[tauri::command]
-fn export_hyperframes_source_file(
-    _owner: desktop_owner::OwnerInvocation,
+async fn export_hyperframes_source_file(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: hyperframes_source::ExportRequest,
 ) -> Result<hyperframes_source::ExportResponse, String> {
-    hyperframes_source::export_source(&state.service, &state.effect_grants, request)
+    let service = state.service.clone();
+    let grants = state.effect_grants.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        hyperframes_source::export_source(&service, &grants, request)
+    })
+    .await
+    .map_err(export_worker_error)?
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -4192,39 +4229,63 @@ async fn preview_manim_editable_source_edit(
 }
 
 #[tauri::command]
-fn export_native_capsule_source(
-    _owner: desktop_owner::OwnerInvocation,
+async fn export_native_capsule_source(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: NativeSourceExportRequest,
 ) -> Result<NativeSourceExportResponse, String> {
-    project_export::export_native_capsule_source(&state.service, &state.effect_grants, request)
+    let service = state.service.clone();
+    let grants = state.effect_grants.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        project_export::export_native_capsule_source(&service, &grants, request)
+    })
+    .await
+    .map_err(export_worker_error)?
 }
 
 #[tauri::command]
-fn export_caption_sidecar(
-    _owner: desktop_owner::OwnerInvocation,
+async fn export_caption_sidecar(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ExportCaptionRequest,
 ) -> Result<CaptionExportResponse, String> {
-    caption_export::export_caption_sidecar(&state.service, &state.effect_grants, request)
+    let service = state.service.clone();
+    let grants = state.effect_grants.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        caption_export::export_caption_sidecar(&service, &grants, request)
+    })
+    .await
+    .map_err(export_worker_error)?
 }
 
 #[tauri::command]
-fn export_otio(
-    _owner: desktop_owner::OwnerInvocation,
+async fn export_otio(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ExportOtioRequest,
 ) -> Result<OtioExportResponse, String> {
-    project_export::export_otio(&state.service, &state.effect_grants, request)
+    let service = state.service.clone();
+    let grants = state.effect_grants.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        project_export::export_otio(&service, &grants, request)
+    })
+    .await
+    .map_err(export_worker_error)?
 }
 
 #[tauri::command]
-fn export_otio_source_snapshot(
-    _owner: desktop_owner::OwnerInvocation,
+async fn export_otio_source_snapshot(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ExportOtioSourceSnapshotRequest,
 ) -> Result<OtioSourceSnapshotResponse, String> {
-    project_export::export_otio_source_snapshot(&state.service, &state.effect_grants, request)
+    let service = state.service.clone();
+    let grants = state.effect_grants.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        project_export::export_otio_source_snapshot(&service, &grants, request)
+    })
+    .await
+    .map_err(export_worker_error)?
 }
 
 #[tauri::command]
