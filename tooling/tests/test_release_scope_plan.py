@@ -461,8 +461,32 @@ class ReviewedScopeTests(unittest.TestCase):
             for step in desktop["required_source_jobs"][required[0]["job_id"]]["steps"]
         }
         for job in required:
-            self.assertIn("Round-trip original synthetic H.264 media",
-                          [steps[ordinal] for ordinal in job["required_steps"]])
+            names = [steps[ordinal] for ordinal in job["required_steps"]]
+            self.assertIn("Round-trip original synthetic H.264 media", names)
+            self.assertIn("Export, review and reopen a verified media cut through Studio", names)
+
+        for platform, runner, return_steps in (
+            ("windows", "windows-2025", ("Verify the Windows native save, reopen and edited OTIO return",)),
+            ("macos", "macos-15", ("Observe the macOS native import and initial save",
+                                  "Verify the macOS cold reopen and edited OTIO return")),
+        ):
+            with self.subTest(platform=platform):
+                case = next(row for row in result["obligations"]
+                            if row["case_id"] == f"kdenlive-{platform}-roundtrip")
+                self.assertEqual(case["observation"]["status"], "READBACK_REQUIRED")
+                self.assertTrue(case["inputs"]["kdenlive_editor_first_save"])
+                self.assertEqual(case["inputs"]["kdenlive_editor_platform"], platform)
+                job, = case["required_job_instances"]
+                self.assertEqual(job["matrix"], {"os": runner})
+                steps = {step["ordinal"]: step["name"]
+                         for step in case["required_source_jobs"][job["job_id"]]["steps"]}
+                names = [steps[ordinal] for ordinal in job["required_steps"]]
+                self.assertIn("Produce the first-party OTIO cut and its original media", names)
+                self.assertLess(names.index(return_steps[-1]),
+                                names.index("Retain native save and readback results"))
+                for name in return_steps:
+                    self.assertIn(name, names)
+                self.assertNotIn("Observe native accessibility without changing its permissions", names)
         self.assertFalse(result["authority"]["authorizes_dispatch"])
 
     def test_api_success_or_skip_cannot_implement_an_unsupported_binding(self):

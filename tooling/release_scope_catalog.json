@@ -19221,8 +19221,8 @@
     },
     {
       "path": ".github/workflows/v05-otio-real-media.yml",
-      "sha256": "a64289e3d06f061ab12649897f04337c3eb650369300a179a32d5c5cb87bc11e",
-      "preamble_sha256": "ef815762d404ff2080628911a2b0020f449d4469b8726830c7151617ac390c14",
+      "sha256": "457155de580b53525bcfa3df8f9610e48e85aec0930926c34cc63ce805404381",
+      "preamble_sha256": "ca186d34ab8706be5fe03bdc9044e0869ddb01a4f97ba23ad344dff98839a5fc",
       "evidence_class": "mixed_source_media_native_readonly",
       "purpose": "Source OTIO/media interchange, Desktop checks on Windows and macOS, Windows junction controls, separate Kdenlive accessibility and roundtrip observations, and externally admitted read-only ALab metadata.",
       "inputs": {
@@ -19234,10 +19234,39 @@
             "source",
             "desktop-source",
             "kdenlive-distribution",
+            "kdenlive-native-editor",
             "accessibility-only",
             "kdenlive-gui",
             "external-alab-readonly"
           ]
+        },
+        "kdenlive_editor_platform": {
+          "type": "choice",
+          "required": false,
+          "default": "both",
+          "options": [
+            "both",
+            "windows",
+            "macos"
+          ]
+        },
+        "kdenlive_accessibility_probe": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": []
+        },
+        "kdenlive_editor_window_probe": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": []
+        },
+        "kdenlive_editor_first_save": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": []
         },
         "audio_source": {
           "type": "choice",
@@ -19311,6 +19340,16 @@
               "desktop-source"
             ],
             "basis": "Existing Desktop source selection on Windows and macOS."
+          },
+          "kdenlive-native-editor": {
+            "covered_by": [
+              "kdenlive-native-installation",
+              "kdenlive-native-accessibility",
+              "kdenlive-macos-window-observation",
+              "kdenlive-windows-roundtrip",
+              "kdenlive-macos-roundtrip"
+            ],
+            "basis": "Installed editor probes and platform round trips use the existing closed dispatch selections."
           }
         },
         "expected_source_sha": {},
@@ -19329,6 +19368,79 @@
               "kdenlive-gui-tone"
             ],
             "basis": "Explicit AAC fixture selection for the same native editor route."
+          }
+        },
+        "kdenlive_editor_platform": {
+          "both": {
+            "covered_by": [
+              "kdenlive-native-installation",
+              "kdenlive-native-accessibility"
+            ],
+            "basis": "The default expands to the Windows and macOS runners."
+          },
+          "windows": {
+            "covered_by": [
+              "kdenlive-windows-roundtrip"
+            ],
+            "basis": "The Windows editor case selects only its native runner."
+          },
+          "macos": {
+            "covered_by": [
+              "kdenlive-macos-window-observation",
+              "kdenlive-macos-roundtrip"
+            ],
+            "basis": "The macOS editor case selects only its native runner."
+          }
+        },
+        "kdenlive_accessibility_probe": {
+          "true": {
+            "covered_by": [
+              "kdenlive-native-accessibility"
+            ],
+            "basis": "The probe reads host accessibility before obtaining the editor."
+          },
+          "false": {
+            "covered_by": [
+              "kdenlive-native-installation",
+              "kdenlive-macos-window-observation",
+              "kdenlive-windows-roundtrip",
+              "kdenlive-macos-roundtrip"
+            ],
+            "basis": "Installation, window observation and editor round trips run with the accessibility probe disabled."
+          }
+        },
+        "kdenlive_editor_window_probe": {
+          "true": {
+            "covered_by": [
+              "kdenlive-macos-window-observation"
+            ],
+            "basis": "Only the standalone macOS window observation accepts this flag."
+          },
+          "false": {
+            "covered_by": [
+              "kdenlive-native-installation",
+              "kdenlive-native-accessibility",
+              "kdenlive-windows-roundtrip",
+              "kdenlive-macos-roundtrip"
+            ],
+            "basis": "The other editor selections leave window observation disabled."
+          }
+        },
+        "kdenlive_editor_first_save": {
+          "true": {
+            "covered_by": [
+              "kdenlive-windows-roundtrip",
+              "kdenlive-macos-roundtrip"
+            ],
+            "basis": "The selected editor handles the original cut and retains the return evidence."
+          },
+          "false": {
+            "covered_by": [
+              "kdenlive-native-installation",
+              "kdenlive-native-accessibility",
+              "kdenlive-macos-window-observation"
+            ],
+            "basis": "The editor installation and probes do not save or reopen a project."
           }
         }
       },
@@ -19728,26 +19840,26 @@
               ]
             }
           },
-          "source_sha256": "a56c0fb1a54fec685dfc7e4dae978a5e059d5d0ce6204e1a8ef7b166ab1a91d2",
+          "source_sha256": "66baf7684e607597ac05393079046d56bd7f554dd56541317c832131afbe217d",
           "steps": [
             {
-              "ordinal": 4,
+              "ordinal": 5,
               "name": "Use a canonical temporary directory for original files and SQLite",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "49ba49a91513825d056df6377ce9e5c2605ba57faa6f3e4f20299c3ee31b191d",
-              "api_binding": "EXPLICIT_NAME"
-            },
-            {
-              "ordinal": 5,
-              "name": "Provision the Windows synthetic-media decoder",
-              "guard": "runner.os == 'Windows'",
-              "kind": "EXECUTABLE_STEP",
-              "source_block_sha256": "7801deab81d302ce7b23020dd7018221449d4f54322eb6be98bb607525451f26",
+              "source_block_sha256": "18fa6ccbbaef6fc1ee900f695dd2da4cf54b531e16ba550574d718ba380eef06",
               "api_binding": "EXPLICIT_NAME"
             },
             {
               "ordinal": 6,
+              "name": "Provision the Windows synthetic-media decoder",
+              "guard": "runner.os == 'Windows'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "1da7b6a9c8231dad05fc1979509628b85024d2b4bcb5da6aa6da21b892e68814",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 7,
               "name": "Provision the macOS synthetic-media decoder",
               "guard": "runner.os == 'macOS'",
               "kind": "EXECUTABLE_STEP",
@@ -19755,7 +19867,23 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 7,
+              "ordinal": 8,
+              "name": "Provision the protected Windows bridge runtime",
+              "guard": "runner.os == 'Windows'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "f5a9283e1c781192d10b7035f5a9c68e2e91d9671c4762861a29ec3cc30272ae",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 9,
+              "name": "Provision the protected macOS bridge runtime",
+              "guard": "runner.os == 'macOS'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "b5674056699f9de4f94bb71558463f53aadb33f6e81a42745a04436d0fd9fa16",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 10,
               "name": "Round-trip original synthetic H.264 media",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
@@ -19763,11 +19891,35 @@
               "api_binding": "EXPLICIT_NAME"
             },
             {
-              "ordinal": 8,
+              "ordinal": 11,
+              "name": "Verify native media paths and reject network aliases",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "e1a4db1230fc2e8c4fe422391a3e7ef8895fadb207932b5e02dffdf7d5e070ea",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 12,
               "name": "Compile and test the shared Desktop OTIO bridge",
               "guard": null,
               "kind": "EXECUTABLE_STEP",
               "source_block_sha256": "ee95fa7fcf9aec774bb606b234279ae180bc52e170851302e066ca42bb5ab2a5",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 13,
+              "name": "Build the StudioService entry point for the protected bridge",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "1430ce39b845b995f7251ff2db50f7e40fedce6765adc700122ef73104f6d444",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 14,
+              "name": "Export, review and reopen a verified media cut through Studio",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "1d001b01ce92a8dc3ce0a56f643aa91488df8d9fcb88bc4d95412a00c1468730",
               "api_binding": "EXPLICIT_NAME"
             }
           ],
@@ -19776,6 +19928,190 @@
               {
                 "os": "windows-2025"
               },
+              {
+                "os": "macos-15"
+              }
+            ]
+          }
+        },
+        "kdenlive-native-editor": {
+          "source_name": "${{ inputs.kdenlive_accessibility_probe && 'Kdenlive hosted accessibility' || inputs.kdenlive_editor_window_probe && 'Kdenlive native window observation' || (inputs.kdenlive_editor_first_save && 'Kdenlive native editor first save' || 'Kdenlive native editor installation') }} (${{ matrix.os }})",
+          "guard": "github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'kdenlive-native-editor'",
+          "runs_on": "${{ matrix.os }}",
+          "needs": null,
+          "strategy": {
+            "fail-fast": false,
+            "matrix": {
+              "os": "${{ fromJSON(inputs.kdenlive_editor_platform == 'windows' && '[\"windows-2025\"]' || (inputs.kdenlive_editor_platform == 'macos' && '[\"macos-15\"]' || '[\"windows-2025\",\"macos-15\"]')) }}"
+            }
+          },
+          "source_sha256": "19903937b92dcfb3e1aaba460b40bf5a0d9babb4974177c8f14eca8190869fc1",
+          "steps": [
+            {
+              "ordinal": 3,
+              "name": "Verify the native editor admission and installation controls",
+              "guard": null,
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "a98bfdef383b3b96de8454b440edb3919f3a4258040d5144423556076b953dab",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 4,
+              "name": "Observe native accessibility without changing its permissions",
+              "guard": "inputs.kdenlive_accessibility_probe",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "95f3ca649844cccfc6207cec8f9399939eb59bd0a9629352546cb951d2f3051c",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 6,
+              "name": "Require a native save observer for the selected platform",
+              "guard": "inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "37a7d0411856170e44dcab01866ac0f65a871122701914d3f62dc9d63ab47206",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 7,
+              "name": "Build the synthetic OTIO source producer before installing the editor",
+              "guard": "inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "53824fb7cab33f9c418aa9707cc02491eb1fb07b07b057a244517efc8f01d3c5",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 8,
+              "name": "Provision the Windows synthetic-media decoder",
+              "guard": "inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe && runner.os == 'Windows'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "16254619c967dd3b530fc71631d2f1cf9b1e3b2fe84c24764a5b985309855e90",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 9,
+              "name": "Provision the macOS synthetic-media decoder",
+              "guard": "inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe && runner.os == 'macOS'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "0369a834d57473a7979799b4e9fe356c34d951c93a3ab5a62f4d57720725b87c",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 10,
+              "name": "Verify the hosted fixture encoders",
+              "guard": "inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "68c6391c756680598f9632d576a545cfec6fb417cf5d77d58e991f76f5b51de6",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 11,
+              "name": "Obtain the pinned KDE distribution once",
+              "guard": "inputs.kdenlive_accessibility_probe != true",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "fe51bc8a61b8c4c18efd36dad3ab258d16cce604cab8d05509d94d183f108d3d",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 12,
+              "name": "Install the bound editor in the disposable runner",
+              "guard": "inputs.kdenlive_accessibility_probe != true",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "7b4a471f883d4aadf73683d5154ad27cd69455008d36475094df807b78ff101a",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 13,
+              "name": "Verify the Kdenlive track action in the disposable profile",
+              "guard": "inputs.kdenlive_editor_window_probe && runner.os == 'macOS'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "cf175e33e9e18f34679c938805bdd7290924a6fca5c52874a297dc5442997201",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 14,
+              "name": "Produce the first-party OTIO cut and its original media",
+              "guard": "inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "64577d7af8974b1fffcd435ef372ef367ae9be7928df3bf680d5bad8bf3154b2",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 15,
+              "name": "Verify the Windows native save, reopen and edited OTIO return",
+              "guard": "inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe && runner.os == 'Windows'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "52d96091fcd1ed4071cb4ad19c44c224befdb89f7abba74827ca5e68e37543a9",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 16,
+              "name": "Observe the macOS native import and initial save",
+              "guard": "inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe && runner.os == 'macOS'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "b3249b8d4a0df3fe6d3ce1f76665b17870ab8c00b07b08e633c8a866dd102fe9",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 17,
+              "name": "Verify the macOS cold reopen and edited OTIO return",
+              "guard": "inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe && runner.os == 'macOS'",
+              "kind": "EXECUTABLE_STEP",
+              "source_block_sha256": "4407da3017c306c50845af44e09dd41a297c5420e80c177db296a7df532ec5ad",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 18,
+              "name": "Retain archive and installed executable identities",
+              "guard": "always()",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "376082a61bb696ccfd7dd9dec322bb9bb148f72569399bd9d4692ca03f9b47bc",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 19,
+              "name": "Retain the macOS editor window observation",
+              "guard": "always() && inputs.kdenlive_editor_window_probe && runner.os == 'macOS'",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "2c99c64b40fff61bdd191b3e726545bfe1700a4a84b0aec194c604ae2fd2f525",
+              "api_binding": "EXPLICIT_NAME"
+            },
+            {
+              "ordinal": 20,
+              "name": "Retain native save and readback results",
+              "guard": "always() && inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe",
+              "kind": "ARTIFACT_RETENTION",
+              "source_block_sha256": "a78be33a4e622c200a2fcc1e38ad0fcec3cb8e6f6e04c8f5c5839baa44ed2a1d",
+              "api_binding": "EXPLICIT_NAME"
+            }
+          ],
+          "instance_sets": {
+            "kdenlive-native-installation": [
+              {
+                "os": "windows-2025"
+              },
+              {
+                "os": "macos-15"
+              }
+            ],
+            "kdenlive-native-accessibility": [
+              {
+                "os": "windows-2025"
+              },
+              {
+                "os": "macos-15"
+              }
+            ],
+            "kdenlive-macos-window-observation": [
+              {
+                "os": "macos-15"
+              }
+            ],
+            "kdenlive-windows-roundtrip": [
+              {
+                "os": "windows-2025"
+              }
+            ],
+            "kdenlive-macos-roundtrip": [
               {
                 "os": "macos-15"
               }
@@ -19792,7 +20128,11 @@
             "evidence_recipient": "",
             "external_alab_admission": "",
             "external_alab_admission_sha256": "",
-            "audio_source": "silent"
+            "audio_source": "silent",
+            "kdenlive_editor_platform": "both",
+            "kdenlive_accessibility_probe": false,
+            "kdenlive_editor_window_probe": false,
+            "kdenlive_editor_first_save": false
           },
           "kind": "TECHNICAL_SCOPE",
           "required_job_instances": [
@@ -19840,7 +20180,11 @@
             "evidence_recipient": "",
             "external_alab_admission": "",
             "external_alab_admission_sha256": "",
-            "audio_source": "silent"
+            "audio_source": "silent",
+            "kdenlive_editor_platform": "both",
+            "kdenlive_accessibility_probe": false,
+            "kdenlive_editor_window_probe": false,
+            "kdenlive_editor_first_save": false
           },
           "kind": "TECHNICAL_SCOPE",
           "required_job_instances": [
@@ -19852,10 +20196,14 @@
               },
               "name_binding": "reviewed_literal_matrix_expansion",
               "required_steps": [
-                4,
                 5,
-                7,
-                8
+                6,
+                8,
+                10,
+                11,
+                12,
+                13,
+                14
               ]
             },
             {
@@ -19866,14 +20214,18 @@
               },
               "name_binding": "reviewed_literal_matrix_expansion",
               "required_steps": [
-                4,
-                6,
+                5,
                 7,
-                8
+                9,
+                10,
+                11,
+                12,
+                13,
+                14
               ]
             }
           ],
-          "coverage_basis": "The Desktop source selection runs synthetic H.264 OTIO export and import, then compiles and tests the shared bridge on Windows and macOS. Installed-editor and human acceptance require separate evidence.",
+          "coverage_basis": "Both hosted platforms provision their protected runtime, exercise the original H.264 media and path contracts, and export, review and reopen the cut through Studio.",
           "original_attempt": null,
           "blocking_reason": null
         },
@@ -19889,7 +20241,11 @@
             },
             "external_alab_admission": "",
             "external_alab_admission_sha256": "",
-            "audio_source": "silent"
+            "audio_source": "silent",
+            "kdenlive_editor_platform": "both",
+            "kdenlive_accessibility_probe": false,
+            "kdenlive_editor_window_probe": false,
+            "kdenlive_editor_first_save": false
           },
           "kind": "CONDITIONAL_ALTERNATIVE",
           "required_job_instances": [
@@ -19926,7 +20282,11 @@
             },
             "external_alab_admission": "",
             "external_alab_admission_sha256": "",
-            "audio_source": "silent"
+            "audio_source": "silent",
+            "kdenlive_editor_platform": "both",
+            "kdenlive_accessibility_probe": false,
+            "kdenlive_editor_window_probe": false,
+            "kdenlive_editor_first_save": false
           },
           "kind": "CONDITIONAL_ALTERNATIVE",
           "required_job_instances": [
@@ -19967,7 +20327,11 @@
             },
             "external_alab_admission": "",
             "external_alab_admission_sha256": "",
-            "audio_source": "tone-997hz"
+            "audio_source": "tone-997hz",
+            "kdenlive_editor_platform": "both",
+            "kdenlive_accessibility_probe": false,
+            "kdenlive_editor_window_probe": false,
+            "kdenlive_editor_first_save": false
           },
           "kind": "CONDITIONAL_ALTERNATIVE",
           "required_job_instances": [
@@ -20008,7 +20372,11 @@
             },
             "external_alab_admission": "",
             "external_alab_admission_sha256": "",
-            "audio_source": "silent"
+            "audio_source": "silent",
+            "kdenlive_editor_platform": "both",
+            "kdenlive_accessibility_probe": false,
+            "kdenlive_editor_window_probe": false,
+            "kdenlive_editor_first_save": false
           },
           "kind": "NEEDS_DISPOSITION",
           "required_job_instances": [
@@ -20045,7 +20413,11 @@
             },
             "external_alab_admission": "",
             "external_alab_admission_sha256": "",
-            "audio_source": "silent"
+            "audio_source": "silent",
+            "kdenlive_editor_platform": "both",
+            "kdenlive_accessibility_probe": false,
+            "kdenlive_editor_window_probe": false,
+            "kdenlive_editor_first_save": false
           },
           "kind": "COMPONENT_PREREQUISITE",
           "required_job_instances": [
@@ -20068,6 +20440,244 @@
           "coverage_basis": "One explicit first-attempt distribution-only observation binds exact source and an admitted public recipient, retains immutable inputs, executes finite source controls, extracts the exact distribution once, and records only original hooks and static ELF declarations with sealed custody. It does not load libraries, initialize AT-SPI, launch the editor, edit media or establish GUI/G2 success. Partial observations remain NOT_VERIFIED.",
           "original_attempt": 1,
           "blocking_reason": null
+        },
+        {
+          "id": "kdenlive-native-installation",
+          "inputs": {
+            "verification_scope": "kdenlive-native-editor",
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "evidence_recipient": {
+              "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
+            },
+            "external_alab_admission": "",
+            "external_alab_admission_sha256": "",
+            "audio_source": "silent",
+            "kdenlive_editor_platform": "both",
+            "kdenlive_accessibility_probe": false,
+            "kdenlive_editor_window_probe": false,
+            "kdenlive_editor_first_save": false
+          },
+          "kind": "CONDITIONAL_ALTERNATIVE",
+          "coverage_basis": "Technical prerequisite for the two supported hosted editor installations.",
+          "original_attempt": null,
+          "blocking_reason": null,
+          "required_job_instances": [
+            {
+              "job_id": "kdenlive-native-editor",
+              "display_name": "Kdenlive native editor installation (windows-2025)",
+              "matrix": {
+                "os": "windows-2025"
+              },
+              "name_binding": "reviewed_literal_matrix_expansion",
+              "required_steps": [
+                3,
+                11,
+                12,
+                18
+              ]
+            },
+            {
+              "job_id": "kdenlive-native-editor",
+              "display_name": "Kdenlive native editor installation (macos-15)",
+              "matrix": {
+                "os": "macos-15"
+              },
+              "name_binding": "reviewed_literal_matrix_expansion",
+              "required_steps": [
+                3,
+                11,
+                12,
+                18
+              ]
+            }
+          ]
+        },
+        {
+          "id": "kdenlive-native-accessibility",
+          "inputs": {
+            "verification_scope": "kdenlive-native-editor",
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "evidence_recipient": {
+              "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
+            },
+            "external_alab_admission": "",
+            "external_alab_admission_sha256": "",
+            "audio_source": "silent",
+            "kdenlive_editor_platform": "both",
+            "kdenlive_accessibility_probe": true,
+            "kdenlive_editor_window_probe": false,
+            "kdenlive_editor_first_save": false
+          },
+          "kind": "CONDITIONAL_ALTERNATIVE",
+          "coverage_basis": "Read-only hosted accessibility probe before editor installation.",
+          "original_attempt": null,
+          "blocking_reason": null,
+          "required_job_instances": [
+            {
+              "job_id": "kdenlive-native-editor",
+              "display_name": "Kdenlive hosted accessibility (windows-2025)",
+              "matrix": {
+                "os": "windows-2025"
+              },
+              "name_binding": "reviewed_literal_matrix_expansion",
+              "required_steps": [
+                3,
+                4,
+                18
+              ]
+            },
+            {
+              "job_id": "kdenlive-native-editor",
+              "display_name": "Kdenlive hosted accessibility (macos-15)",
+              "matrix": {
+                "os": "macos-15"
+              },
+              "name_binding": "reviewed_literal_matrix_expansion",
+              "required_steps": [
+                3,
+                4,
+                18
+              ]
+            }
+          ]
+        },
+        {
+          "id": "kdenlive-macos-window-observation",
+          "inputs": {
+            "verification_scope": "kdenlive-native-editor",
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "evidence_recipient": {
+              "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
+            },
+            "external_alab_admission": "",
+            "external_alab_admission_sha256": "",
+            "audio_source": "silent",
+            "kdenlive_editor_platform": "macos",
+            "kdenlive_accessibility_probe": false,
+            "kdenlive_editor_window_probe": true,
+            "kdenlive_editor_first_save": false
+          },
+          "kind": "CONDITIONAL_ALTERNATIVE",
+          "coverage_basis": "The installed macOS editor exposes its track action in a disposable profile.",
+          "original_attempt": null,
+          "blocking_reason": null,
+          "required_job_instances": [
+            {
+              "job_id": "kdenlive-native-editor",
+              "display_name": "Kdenlive native window observation (macos-15)",
+              "matrix": {
+                "os": "macos-15"
+              },
+              "name_binding": "reviewed_literal_matrix_expansion",
+              "required_steps": [
+                3,
+                11,
+                12,
+                13,
+                18,
+                19
+              ]
+            }
+          ]
+        },
+        {
+          "id": "kdenlive-windows-roundtrip",
+          "inputs": {
+            "verification_scope": "kdenlive-native-editor",
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "evidence_recipient": {
+              "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
+            },
+            "external_alab_admission": "",
+            "external_alab_admission_sha256": "",
+            "audio_source": "silent",
+            "kdenlive_editor_platform": "windows",
+            "kdenlive_accessibility_probe": false,
+            "kdenlive_editor_window_probe": false,
+            "kdenlive_editor_first_save": true
+          },
+          "kind": "CONDITIONAL_ALTERNATIVE",
+          "coverage_basis": "Windows saves and reopens the original Kdenlive project and verifies the edited OTIO return.",
+          "original_attempt": null,
+          "blocking_reason": null,
+          "required_job_instances": [
+            {
+              "job_id": "kdenlive-native-editor",
+              "display_name": "Kdenlive native editor first save (windows-2025)",
+              "matrix": {
+                "os": "windows-2025"
+              },
+              "name_binding": "reviewed_literal_matrix_expansion",
+              "required_steps": [
+                3,
+                6,
+                7,
+                8,
+                10,
+                11,
+                12,
+                14,
+                15,
+                18,
+                20
+              ]
+            }
+          ]
+        },
+        {
+          "id": "kdenlive-macos-roundtrip",
+          "inputs": {
+            "verification_scope": "kdenlive-native-editor",
+            "expected_source_sha": {
+              "binding": "CANDIDATE_SOURCE_SHA"
+            },
+            "evidence_recipient": {
+              "binding": "PUBLIC_RSA3072_RECIPIENT_JSON"
+            },
+            "external_alab_admission": "",
+            "external_alab_admission_sha256": "",
+            "audio_source": "silent",
+            "kdenlive_editor_platform": "macos",
+            "kdenlive_accessibility_probe": false,
+            "kdenlive_editor_window_probe": false,
+            "kdenlive_editor_first_save": true
+          },
+          "kind": "CONDITIONAL_ALTERNATIVE",
+          "coverage_basis": "macOS saves the original project and verifies the edited OTIO return after a cold reopen.",
+          "original_attempt": null,
+          "blocking_reason": null,
+          "required_job_instances": [
+            {
+              "job_id": "kdenlive-native-editor",
+              "display_name": "Kdenlive native editor first save (macos-15)",
+              "matrix": {
+                "os": "macos-15"
+              },
+              "name_binding": "reviewed_literal_matrix_expansion",
+              "required_steps": [
+                3,
+                6,
+                7,
+                9,
+                10,
+                11,
+                12,
+                14,
+                16,
+                17,
+                18,
+                20
+              ]
+            }
+          ]
         }
       ],
       "job_dispositions": [],

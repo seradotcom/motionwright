@@ -635,13 +635,15 @@ jobs:
           python-version: '3.13'
       - name: Verify the native editor admission and installation controls
         working-directory: tooling/otio-media
-        run: python -B -E -s -m unittest -v test_kdenlive_native_distribution test_kdenlive_native_installation test_kdenlive_native_source test_kdenlive_macos_editor test_kdenlive_macos_reopen test_kdenlive_macos_kxmlgui
-      - name: Require the native window probe to be selected on its own
-        if: inputs.kdenlive_editor_window_probe && (inputs.kdenlive_editor_platform != 'macos' || inputs.kdenlive_accessibility_probe || inputs.kdenlive_editor_first_save)
         shell: bash
+        env:
+          MW_INVALID_KDENLIVE_WINDOW_PROBE: ${{ inputs.kdenlive_editor_window_probe && (inputs.kdenlive_editor_platform != 'macos' || inputs.kdenlive_accessibility_probe || inputs.kdenlive_editor_first_save) }}
         run: |
-          echo 'The window probe requires macOS and its own verification scope.' >&2
-          exit 2
+          if [[ "$MW_INVALID_KDENLIVE_WINDOW_PROBE" == 'true' ]]; then
+            echo 'The window probe requires macOS and its own verification scope.' >&2
+            exit 2
+          fi
+          python -B -E -s -m unittest -v test_kdenlive_native_distribution test_kdenlive_native_installation test_kdenlive_native_source test_kdenlive_macos_editor test_kdenlive_macos_reopen test_kdenlive_macos_kxmlgui
       - name: Observe native accessibility without changing its permissions
         if: inputs.kdenlive_accessibility_probe
         run: python -B -E -s tooling/otio-media/kdenlive_native_installation.py --observe-host
