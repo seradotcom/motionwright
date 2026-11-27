@@ -41,11 +41,11 @@ on:
   workflow_dispatch:
     inputs:
       verification_scope:
-        description: Select portability, cache publication, desktop OTIO export, or bounded projection contracts
+        description: Select complete portability, storage and service tests, or a bounded product contract
         required: true
         default: full
         type: choice
-        options: [full, derived_cache, otio_export, project_projection, cas_retention, cas_candidate, gc_proxy_candidate]
+        options: [full, storage_service, derived_cache, otio_export, project_projection, cas_retention, cas_candidate, gc_proxy_candidate]
       os_scope:
         description: Explicit CAS operating systems; all is valid only for reviewed candidate source profiles
         required: true
@@ -168,6 +168,7 @@ jobs:
 
   file-import-platforms:
     needs: g0-source-controls
+    if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'storage_service'
     name: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'project_projection' && 'Bounded project projection' || 'File import authority and CAS' }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'gc_proxy_candidate' && 105 || github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'cas_retention' || inputs.verification_scope == 'cas_candidate' || inputs.verification_scope == 'gc_proxy_candidate') && 60 || 45 }}
@@ -290,6 +291,9 @@ jobs:
                   'file_import::source_budget_tests::bounded_replay_hash_accepts_exact_budget_and_rejects_initial_excess',
                   'file_import::source_budget_tests::bounded_replay_hash_includes_growth_to_exact_budget',
                   'file_import::source_budget_tests::bounded_replay_hash_rejects_growth_after_first_read',
+                  'file_import::source_budget_tests::source_descriptor_counts_growth_observed_by_the_same_retained_reader',
+                  'file_import::source_budget_tests::source_descriptor_measures_count_and_digest_without_staging_or_sqlite',
+                  'file_import::source_budget_tests::source_descriptor_rejects_growth_past_the_existing_budget_without_outputs',
                   'file_import::source_budget_tests::staging_captures_growth_to_exact_budget_then_removes_its_private_file',
                   'file_import::source_budget_tests::staging_rejects_growth_without_touching_sql_cas_or_another_capture',
                   'file_import::source_open_tests::oversized_opened_source_is_rejected_before_staging',
@@ -1398,6 +1402,8 @@ jobs:
                   'export_rejects_peer_revision_committed_after_precheck',
                   'bundle_export_rejects_stale_snapshot_before_creating_destination',
                   'import_rejects_complete_valid_bundle_replaced_after_inspection',
+                  'portable_import_recovery_never_adopts_an_unrelated_manifest_or_project',
+                  'portable_import_recovery_preserves_later_edits_and_original_cas_after_reopen',
                   'service_inspected_bundle_transfers_real_cas_and_reopens_without_operational_receipts',
                   'service_export_preconditions_reject_foreign_scope_before_missing_source_io',
                   'service_exact_inspection_rejects_even_semantically_equal_manifest_reencoding',

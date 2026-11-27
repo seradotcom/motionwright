@@ -33,16 +33,16 @@ class PortabilityContractTests(unittest.TestCase):
     def setUpClass(cls):
         cls.functions = workflow_functions()
 
-    def test_linux_and_macos_include_all_eighteen_cases(self):
+    def test_linux_and_macos_include_all_twenty_one_cases(self):
         linux = self.functions["storage_import_cases"]("Linux")
-        self.assertEqual(len(linux), 18)
+        self.assertEqual(len(linux), 21)
         self.assertEqual(linux, self.functions["storage_import_cases"]("macOS"))
         self.assertEqual(sum("fifo_" in name for name in linux), 1)
         self.assertEqual(sum("symlink" in name for name in linux), 2)
 
-    def test_windows_has_seventeen_actual_cases_not_fifteen_plus_ignored(self):
+    def test_windows_has_twenty_actual_cases_including_the_two_symlink_cases(self):
         windows = self.functions["storage_import_cases"]("Windows")
-        self.assertEqual(len(windows), 17)
+        self.assertEqual(len(windows), 20)
         self.assertEqual(sum("symlink" in name for name in windows), 2)
         self.assertFalse(any("fifo_" in name for name in windows))
         self.assertEqual(self.functions["portability_test_options"]("full", "storage", "Windows"),
@@ -76,7 +76,8 @@ class PortabilityContractTests(unittest.TestCase):
         for name in names:
             if "symlink" in name:
                 text = text.replace(f"test {name} ... ok", f"test {name} ... ignored, privilege required")
-        text = text.replace("17 passed; 0 failed; 0 ignored", "15 passed; 0 failed; 2 ignored")
+        text = text.replace(f"{len(names)} passed; 0 failed; 0 ignored",
+                            f"{len(names) - 2} passed; 0 failed; 2 ignored")
         self.assertFalse(self.functions["verify_test_output"](0, text, names)[0])
 
     def test_missing_duplicate_or_additional_case_is_rejected(self):
@@ -101,7 +102,7 @@ class PortabilityContractTests(unittest.TestCase):
         text = passing_log(names)
         first = sorted(names)[0]
         for changed in (text.replace(f"test {first} ... ok", f"test {first} ... FAILED"),
-                        text.replace("18 passed; 0 failed", "17 passed; 1 failed"),
+                        text.replace(f"{len(names)} passed; 0 failed", f"{len(names) - 1} passed; 1 failed"),
                         text.replace("test result: ok", "test result: FAILED")):
             self.assertFalse(self.functions["verify_test_output"](0, changed, names)[0])
 

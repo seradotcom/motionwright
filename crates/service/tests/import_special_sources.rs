@@ -2,7 +2,7 @@
 //! These cases exercise product APIs; they do not extract archives or admit ZIP support.
 use motionwright_domain::Project;
 use motionwright_service::StudioService;
-use motionwright_storage::StorageError;
+use motionwright_storage::{BundleFingerprint, StorageError};
 use rusqlite::{Connection, OpenFlags, types::Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -121,14 +121,33 @@ fn project_bundle_entry_rejects_real_traversal_zip_without_side_effects() {
     let error = service
         .inspect_project_bundle_with_fingerprint(&archive)
         .unwrap_err();
-    assert!(matches!(error, StorageError::UnsafeSourcePath(ref reason)
-        if reason == "portable bundle must be a real non-symlink directory"));
-    // A real directory inspection does not authorize a different source kind.
+    assert!(
+        matches!(error, StorageError::InvalidBackup(ref reason)
+        if reason == "invalid or unsupported legacy archive v1"),
+        "{error:?}"
+    );
+
+    // An inspection fingerprint for another source cannot authorize this file.
     let error = service
         .import_project_bundle_inspected(&archive, &inspected.fingerprint)
         .unwrap_err();
-    assert!(matches!(error, StorageError::UnsafeSourcePath(ref reason)
-        if reason == "portable bundle must be a real non-symlink directory"));
+    assert!(
+        matches!(error, StorageError::InvalidBackup(ref reason)
+        if reason == "legacy archive changed after inspection"),
+        "{error:?}"
+    );
+
+    // The original digest alone cannot admit a file outside the legacy format.
+    let archive_fingerprint =
+        BundleFingerprint::from_sha256(hex::encode(Sha256::digest(ZIP))).unwrap();
+    let error = service
+        .import_project_bundle_inspected(&archive, &archive_fingerprint)
+        .unwrap_err();
+    assert!(
+        matches!(error, StorageError::InvalidBackup(ref reason)
+        if reason == "invalid or unsupported legacy archive v1"),
+        "{error:?}"
+    );
     assert_eq!(logical_rows(&database), rows);
     assert_eq!(inventory(&blob_root), blobs);
     assert_eq!(inventory(&outside), exterior);
