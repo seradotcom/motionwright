@@ -61,7 +61,7 @@ def run_windows(runner, context, distribution):
                      "-EditorCreationFiletime", str(identity["creation_filetime"]),
                      "-Executable", str(editor), "-OriginalOtio", source["timeline"]["path"],
                      "-OriginalSha256", source["timeline"]["sha256"], "-Evidence", str(directory)],
-                    cwd=directory, stdin=subprocess.DEVNULL, stdout=obs_out, stderr=obs_err, timeout=160,
+                    cwd=directory, stdin=subprocess.DEVNULL, stdout=obs_out, stderr=obs_err, timeout=235,
                 )
             require(result.returncode == 0, f"Kdenlive window observer failed ({result.returncode})")
             terminal["status"] = "UNKNOWN"

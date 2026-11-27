@@ -266,11 +266,12 @@ function Observe-Windows {
         $className = $window.Current.ClassName
         $controls = @()
         $native = @()
-        if ($className -ceq '#32770' -and $name -cin @('OpenTimelineIO Import', 'Save As', 'Save Project')) {
+        if ($name -cin @('OpenTimelineIO Import', 'Save As', 'Save Project', 'Duration')) {
             $native = @([KdenliveWindowsInput]::DialogControls([IntPtr]$window.Current.NativeWindowHandle, [uint32]$EditorPid) |
                 ForEach-Object { @{ id = $_.Id; class_name = $_.ClassName; enabled = $_.Enabled } })
             foreach ($role in @([System.Windows.Automation.ControlType]::Edit,
-                    [System.Windows.Automation.ControlType]::ComboBox, [System.Windows.Automation.ControlType]::Button)) {
+                    [System.Windows.Automation.ControlType]::ComboBox, [System.Windows.Automation.ControlType]::Spinner,
+                    [System.Windows.Automation.ControlType]::Button)) {
                 $filter = [System.Windows.Automation.PropertyCondition]::new(
                     [System.Windows.Automation.AutomationElement]::ControlTypeProperty, $role)
                 $controls += @($window.FindAll($scope, $filter) | Select-Object -First 12 | ForEach-Object {
@@ -337,7 +338,7 @@ function Find-Control($Windows, $Role, [string]$Name, [string]$AutomationId = ''
 }
 
 function Await-Unique([string]$Name, [ScriptBlock]$Select, [int]$Seconds = 20) {
-    $limit = [Math]::Min(140, $deadline.Elapsed.TotalSeconds + $Seconds)
+    $limit = [Math]::Min(210, $deadline.Elapsed.TotalSeconds + $Seconds)
     while ($deadline.Elapsed.TotalSeconds -lt $limit) {
         Assert-Editor
         $rows = @(& $Select)
@@ -401,11 +402,17 @@ function Select-MenuItem($Item, [string]$Name, [string]$Stage) {
     Record "$Stage-acknowledged.json" @{ editor_pid = $EditorPid; control = $Name }
 }
 
-function File-Action([string]$Name, [string]$Stage) {
-    $menu = Await-Unique 'File' {
-        Find-Control @(Owned-Windows) ([System.Windows.Automation.ControlType]::MenuItem) 'File'
+function Select-EditorMenu([string]$Menu, [string]$Name, [string]$Stage, [string]$Submenu = '') {
+    $menuControl = Await-Unique $Menu {
+        Find-Control @(Owned-Windows) ([System.Windows.Automation.ControlType]::MenuItem) $Menu
     }
-    Invoke-Control $menu "$Stage-file-menu" -Expand
+    Invoke-Control $menuControl "$Stage-top-menu" -Expand
+    if ($Submenu) {
+        $childMenu = Await-Unique $Submenu {
+            Find-Control @(Owned-Windows) ([System.Windows.Automation.ControlType]::MenuItem) $Submenu
+        }
+        Invoke-Control $childMenu "$Stage-submenu" -Expand
+    }
     $item = Await-Unique $Name {
         Find-Control @(Owned-Windows) ([System.Windows.Automation.ControlType]::MenuItem) $Name
     }
@@ -487,12 +494,122 @@ function Choose-File([string[]]$Titles, [string]$Path, [string]$Button, [string]
         Assert-OriginalImport $Stage $Path
         Invoke-Control $submit "$Stage-submit" -ConfirmDialogTransition
     }
-    while ($deadline.Elapsed.TotalSeconds -lt 140) {
+    while ($deadline.Elapsed.TotalSeconds -lt 210) {
         Assert-Editor
         if (!@(Find-FileDialog $Titles).Count) { return }
         Start-Sleep -Milliseconds 120
     }
     throw "Original Kdenlive file dialog did not close for $Stage"
+}
+
+function Timecode-Frames([string]$Value) {
+    if ($Value -cnotmatch '^([0-9]{2}):([0-9]{2}):([0-9]{2}):([0-9]{2})$') {
+        throw 'Kdenlive duration field does not contain an exact timecode'
+    }
+    $hours, $minutes, $seconds, $frames = @($Matches[1], $Matches[2], $Matches[3], $Matches[4]) |
+        ForEach-Object { [int]$_ }
+    if ($minutes -ge 60 -or $seconds -ge 60 -or $frames -ge 30) { throw 'Kdenlive timecode is out of range' }
+    return ((60 * (60 * $hours + $minutes) + $seconds) * 30 + $frames)
+}
+
+function Read-DurationFields($Dialog) {
+    foreach ($role in @([System.Windows.Automation.ControlType]::CheckBox,
+            [System.Windows.Automation.ControlType]::Text)) {
+        $flagFilter = [System.Windows.Automation.PropertyCondition]::new(
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty, $role)
+        $flags = $Dialog.FindAll($scope, $flagFilter)
+        if ($flags.Count -gt 40) { throw 'Kdenlive Duration flag limit exceeded' }
+        foreach ($flag in $flags) {
+            if ($flag.Current.ProcessId -ne $EditorPid -or $flag.Current.IsOffscreen) { continue }
+            $name = Control-Name $flag
+            if ($name -ceq 'Apply duration to all items' -or $name -clike '*Resizing in Ripple mode*') {
+                throw 'Kdenlive duration edit must target exactly one clip without ripple'
+            }
+            if ($role -eq [System.Windows.Automation.ControlType]::CheckBox -and $name -ceq 'Ripple resize') {
+                $toggle = $flag.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+                if ($toggle.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::Off) {
+                    throw 'Kdenlive ripple resizing is active'
+                }
+            }
+        }
+    }
+    $condition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Edit
+    )
+    $entries = $Dialog.FindAll($scope, $condition)
+    if ($entries.Count -gt 16) { throw 'Kdenlive Duration field limit exceeded' }
+    $fields = @()
+    foreach ($name in @('m_pos', 'm_cropStart', 'm_dur')) {
+        $pattern = '(^|\.)' + $name + '($|\.)'
+        $matched = @($entries | Where-Object {
+            $_.Current.ProcessId -eq $EditorPid -and
+                !$_.Current.IsOffscreen -and $_.Current.AutomationId -cmatch $pattern
+        })
+        if ($matched.Count -ne 1) { throw "Expected one owned Duration field $name" }
+        $value = $matched[0].GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        $fields += @{ control = $matched[0]; pattern = $value; frames = (Timecode-Frames $value.Current.Value) }
+    }
+    return $fields
+}
+
+function Assert-ClipDuration($Fields, [int]$Expected) {
+    if ($Fields.Count -ne 3 -or $Fields[0].frames -ne 60 -or $Fields[1].frames -ne 60 -or
+        $Fields[2].frames -ne $Expected) {
+        throw 'Kdenlive selection does not match the third clip at the expected duration'
+    }
+}
+
+function Open-ClipDuration([string]$Stage) {
+    Select-EditorMenu 'Sequence' 'Edit Duration' $Stage 'Current Item'
+    return Await-Unique 'single-clip Duration' { Find-FileDialog @('Duration') }
+}
+
+function Await-DurationClosed {
+    while ($deadline.Elapsed.TotalSeconds -lt 210) {
+        Assert-Editor
+        if (!@(Find-FileDialog @('Duration')).Count) { return }
+        Start-Sleep -Milliseconds 120
+    }
+    throw 'Original Kdenlive Duration dialog did not close'
+}
+
+function Verify-ThirdClipPlaylist {
+    # The original cut has three contiguous 30-frame intervals. The final
+    # interior frame selects the third clip without needing the monitor clock.
+    Select-EditorMenu 'Monitor' 'Go to Project End' 'seek-end' 'Go To'
+    Select-EditorMenu 'Monitor' 'Rewind 1 Frame' 'seek-inside-third' 'Seek'
+    Select-EditorMenu 'Sequence' 'Select Clip' 'select-third' 'Selection'
+
+    foreach ($edit in @(
+        @{ stage = 'shorten-third'; before = 30; after = 29; value = '00:00:00:29' },
+        @{ stage = 'restore-third'; before = 29; after = 30; value = '00:00:01:00' }
+    )) {
+        $dialog = Open-ClipDuration $edit.stage
+        $fields = @(Read-DurationFields $dialog)
+        Assert-ClipDuration $fields $edit.before
+        Record "$($edit.stage)-model.json" @{ editor_pid = $EditorPid; position = 60; crop = 60; duration = $edit.before }
+        if ($fields[2].pattern.Current.IsReadOnly -or !$fields[2].control.Current.IsEnabled) {
+            throw 'Kdenlive third clip duration cannot be edited'
+        }
+        Assert-Editor
+        Record "$($edit.stage)-text-intent.json" @{ editor_pid = $EditorPid; duration = $edit.after; automatic_retry = $false }
+        $fields[2].pattern.SetValue($edit.value)
+        Assert-ClipDuration @(Read-DurationFields $dialog) $edit.after
+        $button = Await-Unique 'Duration OK' {
+            Find-Control @($dialog) ([System.Windows.Automation.ControlType]::Button) 'OK'
+        }
+        Invoke-Control $button "$($edit.stage)-accept" -ConfirmDialogTransition
+        Await-DurationClosed
+    }
+    $dialog = Open-ClipDuration 'verify-restoration'
+    Assert-ClipDuration @(Read-DurationFields $dialog) 30
+    Record 'third-clip-restored-model.json' @{ editor_pid = $EditorPid; position = 60; crop = 60; duration = 30 }
+    $cancel = Await-Unique 'Duration Cancel' {
+        Find-Control @($dialog) ([System.Windows.Automation.ControlType]::Button) 'Cancel'
+    }
+    Invoke-Control $cancel 'verify-restoration-close' -ConfirmDialogTransition
+    Await-DurationClosed
 }
 
 if ($OriginalSha256 -cnotmatch '^[a-f0-9]{64}$' -or
@@ -506,9 +623,10 @@ try {
         }
     } 45
     Record 'initial-window.json' @{ editor_pid = $EditorPid; hwnd = $main.Current.NativeWindowHandle; name = (Control-Name $main) }
-    File-Action 'OpenTimelineIO Import...' 'import'
+    Select-EditorMenu 'File' 'OpenTimelineIO Import...' 'import'
     Choose-File @('OpenTimelineIO Import') $OriginalOtio 'Open' 'import'
-    File-Action 'Save As...' 'initial-save'
+    Verify-ThirdClipPlaylist
+    Select-EditorMenu 'File' 'Save As...' 'initial-save'
     Choose-File @('Save As', 'Save Project') $savePath 'Save' 'initial-save'
     if (!(Test-Path -LiteralPath $savePath -PathType Leaf)) { throw 'Kdenlive did not create an initial saved project' }
     if ((Get-FileHash -LiteralPath $OriginalOtio -Algorithm SHA256).Hash.ToLowerInvariant() -cne $OriginalSha256) {
