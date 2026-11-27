@@ -162,6 +162,7 @@ class MacEditorRouteTests(unittest.TestCase):
         ui.await_target = Mock(return_value="Project Monitor radio")
         ui.menu_item = Mock(side_effect=["Sequence effects", "Go to Project End", "Rewind 1 Frame", "Select Clip"])
         ui.project_clock = Mock(side_effect=AssertionError("the Project Monitor clock is hidden"))
+        ui.note_foreground = Mock()
         evidence = Mock()
 
         ui.seek_and_select_third_clip(evidence)
@@ -180,6 +181,19 @@ class MacEditorRouteTests(unittest.TestCase):
             call("select-third", "Select Clip"),
         ])
         evidence.key.assert_called_once_with("select-video-track-one", 18)
+        self.assertEqual(ui.note_foreground.call_args_list, [
+            call(evidence, "before-video-track-one"), call(evidence, "after-video-track-one"),
+        ])
+
+    def test_unconfirmed_foreground_stops_before_opening_the_import_menu(self):
+        ui, evidence = Mock(), Mock()
+        ui.prepare_input.side_effect = TimeoutError("focused window unverifiable")
+
+        with self.assertRaisesRegex(TimeoutError, "focused window unverifiable"):
+            editor.import_and_save(ui, evidence, Path("timeline.otio"), Path("initial.kdenlive"), Mock())
+
+        ui.menu_item.assert_not_called()
+        evidence.press.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

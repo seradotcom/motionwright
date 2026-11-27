@@ -50,10 +50,42 @@ def bind(library, name, result, *arguments):
     return function
 
 
+class RunningApplication:
+    def __init__(self, pid):
+        self.appkit = C.CDLL("/System/Library/Frameworks/AppKit.framework/AppKit")
+        self.objc = C.CDLL("/usr/lib/libobjc.A.dylib")
+        pointer = C.c_void_p
+        self.pid = pid
+        get_class = bind(self.objc, "objc_getClass", pointer, C.c_char_p)
+        self.selector = bind(self.objc, "sel_registerName", pointer, C.c_char_p)
+        self.app_class = get_class(b"NSRunningApplication")
+        self.pool_push = bind(self.objc, "objc_autoreleasePoolPush", pointer)
+        self.pool_pop = bind(self.objc, "objc_autoreleasePoolPop", None, pointer)
+        address = C.cast(self.objc.objc_msgSend, pointer).value
+        self.by_pid = C.CFUNCTYPE(pointer, pointer, pointer, C.c_int)(address)
+        self.query = C.CFUNCTYPE(C.c_bool, pointer, pointer)(address)
+        self.activate_with_options = C.CFUNCTYPE(C.c_bool, pointer, pointer, C.c_ulong)(address)
+
+    def request(self, *, activate=False):
+        pool = self.pool_push()
+        try:
+            app = self.by_pid(self.app_class, self.selector(b"runningApplicationWithProcessIdentifier:"),
+                              self.pid)
+            if not app:
+                return False
+            if activate:
+                return bool(self.activate_with_options(app, self.selector(b"activateWithOptions:"), 0))
+            return bool(self.query(app, self.selector(b"isActive")))
+        finally:
+            self.pool_pop(pool)
+
+
 class Accessibility:
     def __init__(self):
         ax = C.CDLL("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
         cf = C.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        self.graphics = C.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        self.event_access = bind(self.graphics, "CGPreflightPostEventAccess", C.c_bool)
         pointer, integer, index = C.c_void_p, C.c_int, C.c_long
         out_pointer = C.POINTER(pointer)
         self.release = bind(cf, "CFRelease", None, pointer)
@@ -96,6 +128,7 @@ class Accessibility:
     def attach(self, pid):
         self.app = self.create_app(pid)
         self.pid = pid
+        self.running_application = RunningApplication(pid)
         require(self.app is not None and self.owns(self.app), "macOS accessibility PID differs")
 
     def next_snapshot(self):
@@ -244,6 +277,37 @@ class EditorUI:
 
     def top_window(self):
         return self.ax.value(self.ax.app, "AXMainWindow")
+
+    def focused_window(self):
+        ax = self.ax
+        if not ax.running_application.request():
+            return None
+        focused = ax.value(ax.app, "AXFocusedWindow")
+        return focused if ax.owns(focused) and ax.text(focused, "AXRole") == "AXWindow" else None
+
+    def note_foreground(self, evidence, stage):
+        focused = self.await_target(self.focused_window, "active Kdenlive and its owned focused window",
+                                    timeout=14)
+        evidence.write(stage + "-foreground", {
+            "pid": self.ax.pid, "appkit_active": True, "focused_window_owned": True,
+            "window_title": self.ax.text(focused, "AXTitle"),
+        })
+
+    def prepare_input(self, evidence):
+        self.guard()
+        ax = self.ax
+        require(ax.event_access(), "macOS session cannot post keyboard events to the editor")
+        if not ax.running_application.request():
+            evidence.write("activate-editor-intent", {"pid": ax.pid, "api": "NSRunningApplication"})
+            accepted = ax.running_application.request(activate=True)
+            evidence.write("activate-editor-terminal", {"pid": ax.pid, "request_accepted": accepted})
+            require(accepted, "AppKit did not accept activating the owned Kdenlive PID")
+        self.await_target(ax.running_application.request, "AppKit activation of the owned Kdenlive PID",
+                          timeout=14)
+        if not self.focused_window():
+            window = self.await_target(self.top_window, "main Kdenlive window to focus")
+            evidence.press("raise-owned-editor-window", window)
+        self.note_foreground(evidence, "before-import")
 
     def title(self, element):
         return label(self.ax.text(element, "AXTitle"))
@@ -471,7 +535,9 @@ class EditorUI:
         ):
             item = self.menu_item(name, evidence, stage, section="Monitor", submenu=submenu)
             evidence.press(stage, item)
+        self.note_foreground(evidence, "before-video-track-one")
         evidence.key("select-video-track-one", 18)
+        self.note_foreground(evidence, "after-video-track-one")
         item = self.menu_item("Select Clip", evidence, "select-third",
                               section="Sequence", submenu="Selection")
         evidence.press("select-third", item)
@@ -596,6 +662,8 @@ class Evidence:
         ax = self.ax
         role, title = ax.text(target, "AXRole"), ax.text(target, "AXTitle")
         allowed = ("AXPress",)
+        if stage == "raise-owned-editor-window" and role == "AXWindow":
+            allowed = ("AXRaise",)
         if role.startswith("AXMenu"):
             allowed = ("AXPress", "AXPick")
             if opens is None and stage in {"import-file-menu", "save-file-menu"}:
@@ -617,7 +685,8 @@ class Evidence:
 
     def key(self, stage, code):
         self.guard()
-        graphics = C.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        require(self.ax.event_access(), "macOS editor keyboard event admission changed")
+        graphics = self.ax.graphics
         create = bind(graphics, "CGEventCreateKeyboardEvent", C.c_void_p, C.c_void_p, C.c_uint16, C.c_bool)
         post = bind(graphics, "CGEventPostToPid", None, C.c_int, C.c_void_p)
         down, up = create(None, code, True), create(None, code, False)
@@ -676,6 +745,7 @@ def refresh_third_playlist(ui, evidence):
 
 
 def import_and_save(ui, evidence, original, initial, check_source):
+    ui.prepare_input(evidence)
     item = ui.menu_item("OpenTimelineIO Import", evidence, "import")
     evidence.press("open-import", item)
     field, button = ui.file_panel({"opentimelineio import"}, "Open")
