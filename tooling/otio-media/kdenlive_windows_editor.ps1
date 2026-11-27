@@ -133,19 +133,55 @@ function Owned-Windows {
 }
 
 function Observe-Windows {
-    $rows = @(Owned-Windows | ForEach-Object {
-        @{
-            hwnd = $_.Current.NativeWindowHandle
-            name = (Control-Name $_)
-            role = $_.Current.ControlType.ProgrammaticName
-            class_name = $_.Current.ClassName
+    foreach ($window in @(Owned-Windows)) {
+        $name = Control-Name $window
+        $className = $window.Current.ClassName
+        $controls = @()
+        if ($className -ceq '#32770' -and $name -cin @('OpenTimelineIO Import', 'Save As', 'Save Project')) {
+            foreach ($role in @([System.Windows.Automation.ControlType]::Edit,
+                    [System.Windows.Automation.ControlType]::ComboBox, [System.Windows.Automation.ControlType]::Button)) {
+                $filter = [System.Windows.Automation.PropertyCondition]::new(
+                    [System.Windows.Automation.AutomationElement]::ControlTypeProperty, $role)
+                $controls += @($window.FindAll($scope, $filter) | Select-Object -First 12 | ForEach-Object {
+                    @{
+                        name = (Control-Name $_)
+                        automation_id = $_.Current.AutomationId
+                        role = $_.Current.ControlType.ProgrammaticName
+                        enabled = $_.Current.IsEnabled
+                        offscreen = $_.Current.IsOffscreen
+                    }
+                })
+            }
         }
-    })
-    return $rows
+        @{
+            hwnd = $window.Current.NativeWindowHandle
+            name = $name
+            role = $window.Current.ControlType.ProgrammaticName
+            class_name = $className
+            controls = $controls
+        }
+    }
 }
 
 function Control-Name($Item) {
     return (($Item.Current.Name -replace '&', '') -replace '\u2026$', '...').Trim()
+}
+
+function Is-FileNameField($Node) {
+    $fieldId = $Node.Current.AutomationId
+    if ((Control-Name $Node).TrimEnd(':') -ceq 'File name' -or $fieldId -ceq '1148' -or
+        $fieldId -cmatch '(^|\.)fileNameEdit$') { return $true }
+    if ($fieldId -cne '1001') { return $false }
+    $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+    $parent = $walker.GetParent($Node)
+    for ($depth = 0; $null -ne $parent -and $depth -lt 4; $depth++) {
+        if ($parent.Current.ProcessId -ne $EditorPid) { return $false }
+        if ($parent.Current.AutomationId -ceq 'FileNameControlHost' -or
+            ($parent.Current.ControlType -eq [System.Windows.Automation.ControlType]::ComboBox -and
+             (Control-Name $parent).TrimEnd(':') -ceq 'File name')) { return $true }
+        $parent = $walker.GetParent($parent)
+    }
+    return $false
 }
 
 function Find-Control($Windows, $Role, [string]$Name, [string]$AutomationId = '') {
@@ -159,8 +195,7 @@ function Find-Control($Windows, $Role, [string]$Name, [string]$AutomationId = ''
         foreach ($node in $nodes) {
             $matches = (Control-Name $node) -ceq $Name
             if ($AutomationId -eq 'fileNameEdit') {
-                $fieldId = $node.Current.AutomationId
-                $matches = $matches -or $fieldId -ceq '1148' -or $fieldId -cmatch '(^|\.)fileNameEdit$'
+                $matches = Is-FileNameField $node
             }
             if ($matches -and $node.Current.ProcessId -eq $EditorPid -and
                 !$node.Current.IsOffscreen -and $node.Current.IsEnabled -and
