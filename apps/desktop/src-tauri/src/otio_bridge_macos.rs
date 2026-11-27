@@ -155,20 +155,21 @@ mod tests {
         fs::write(&file, b"temporary ACL fixture").unwrap();
         let handle = File::open(&file).unwrap();
         assert!(acl_cannot_grant_access(&handle));
-        for (entry, safe) in [
-            ("everyone deny delete", true),
-            ("everyone allow write", false),
-        ] {
-            let output = std::process::Command::new("/bin/chmod")
-                .args(["+a", entry])
-                .arg(&file)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+        unsafe extern "C" {
+            fn acl_from_text(text: *const libc::c_char) -> *mut libc::c_void;
+            fn acl_set_fd(fd: libc::c_int, acl: *mut libc::c_void) -> libc::c_int;
+            fn acl_free(acl: *mut libc::c_void) -> libc::c_int;
+        }
+        let deny = c"!#acl 1\ngroup::everyone::deny:delete\n";
+        let mixed = c"!#acl 1\ngroup::everyone::deny:delete\ngroup::everyone::allow:write\n";
+        for (text, safe) in [(deny, true), (mixed, false)] {
+            // SAFETY: attach only this fixed ACL to the temporary test file.
+            let acl = unsafe { acl_from_text(text.as_ptr()) };
+            assert!(!acl.is_null(), "{}", io::Error::last_os_error());
+            let status = unsafe { acl_set_fd(handle.as_raw_fd(), acl) };
+            let error = io::Error::last_os_error();
+            assert_eq!(unsafe { acl_free(acl) }, 0);
+            assert_eq!(status, 0, "{error}");
             assert_eq!(acl_cannot_grant_access(&handle), safe);
         }
     }
