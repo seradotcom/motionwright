@@ -1,6 +1,8 @@
 //! Actual source-audible PCM acceptance, not fabricated mix labels or MP4 proof.
 use motionwright_domain::*;
-use motionwright_native::sfx_mix::{VerifiedSfxWav, mix_source_bound_semantic_sfx};
+use motionwright_native::sfx_mix::{
+    SemanticSfxAuditionCache, VerifiedSfxWav, mix_source_bound_semantic_sfx,
+};
 use semwright_native_sdk::ErrorCode;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -401,4 +403,98 @@ fn actual_master_bound_format_and_source_inventory_remain_native_preflight_check
         "SFX only supports 30 fps and 48 kHz without implicit conversion"
     );
     assert_eq!(project, before_format_check);
+}
+
+#[test]
+fn incremental_sfx_rebuild_matches_every_stereo_sample_after_cross_cut_edit() {
+    let (mut project, original) = cross_cut_pcm();
+    let profile = project.deliverables[0].id;
+    let mut edited = project.audio.sfx_cues[0].clone();
+    let mut overlap = edited.clone();
+    overlap.id = Uuid::new_v4();
+    overlap.scene_id = project.scenes[1].id;
+    overlap.offset_frames = 0;
+    overlap.gain_milli_db = -6000;
+    project
+        .apply_change(&Change::UpsertSemanticSfx { cue: overlap })
+        .unwrap();
+    let mut cache = SemanticSfxAuditionCache::default();
+    let check = |cache: &mut SemanticSfxAuditionCache,
+                 project: &Project,
+                 sources: &[VerifiedSfxWav],
+                 rebuilt| {
+        let incremental = cache.mix(project, profile, sources, 90).unwrap();
+        let full = mix_source_bound_semantic_sfx(project, profile, sources, 90).unwrap();
+        assert_eq!(incremental, full);
+        let work = cache.last_work().unwrap();
+        assert_eq!(work.synthesized_sample_frames, rebuilt * 1600);
+        assert_eq!(work.reused_sample_frames, (90 - rebuilt) * 1600);
+        assert_eq!(
+            work.source_bytes_verified,
+            sources
+                .iter()
+                .map(|source| source.bytes.len() as u64)
+                .sum::<u64>()
+        );
+        incremental
+    };
+    let cold = check(&mut cache, &project, std::slice::from_ref(&original), 90);
+    assert_eq!(sample(&cold.wav_bytes, 47_999, 0), 8_000);
+    assert!(sample(&cold.wav_bytes, 48_000, 0).abs() > 4_000);
+    let shorter_bytes = make_wav(20, 5_000);
+    let shorter = VerifiedSfxWav {
+        asset_id: Uuid::new_v4(),
+        source_sha256: hex::encode(Sha256::digest(&shorter_bytes)),
+        bytes: shorter_bytes,
+    };
+    project
+        .apply_change(&Change::AddAsset {
+            asset: Asset {
+                id: shorter.asset_id,
+                name: "Shorter original WAV".into(),
+                media_type: "audio/wav".into(),
+                content_sha256: Some(shorter.source_sha256.clone()),
+                source_revision: None,
+            },
+        })
+        .unwrap();
+    edited.source_asset_id = shorter.asset_id;
+    edited.source_sha256 = shorter.source_sha256.clone();
+    edited.source_frames = 20;
+    project
+        .apply_change(&Change::UpsertSemanticSfx {
+            cue: edited.clone(),
+        })
+        .unwrap();
+    let both = [original.clone(), shorter];
+    check(&mut cache, &project, &both, 30);
+
+    edited.offset_frames = 24;
+    let edited_id = edited.id;
+    project
+        .apply_change(&Change::UpsertSemanticSfx { cue: edited })
+        .unwrap();
+    check(&mut cache, &project, &both, 29);
+    project
+        .apply_change(&Change::RemoveSemanticSfx { cue_id: edited_id })
+        .unwrap();
+    let single = std::slice::from_ref(&original);
+    check(&mut cache, &project, single, 20);
+
+    let mut tampered = original.clone();
+    tampered.bytes[44] ^= 1;
+    assert!(cache.mix(&project, profile, &[tampered], 90).is_err());
+    check(&mut cache, &project, single, 0);
+
+    let mut cut = project.deliverables[0].clone();
+    cut.included_scene_ids = project.scenes[1..].iter().map(|scene| scene.id).collect();
+    project
+        .apply_change(&Change::UpsertDeliverable { profile: cut })
+        .unwrap();
+    let changed_cut = cache.mix(&project, profile, single, 60).unwrap();
+    assert_eq!(
+        changed_cut,
+        mix_source_bound_semantic_sfx(&project, profile, single, 60).unwrap(),
+    );
+    assert_eq!(cache.last_work().unwrap().reused_sample_frames, 0);
 }

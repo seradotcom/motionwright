@@ -131,6 +131,8 @@ struct AppState {
     blender_lit_plans: blender_lit::LitPlans,
     graph_exchange_custody: GraphExchangeJournal,
     development_audition_custody: motionwright_native::original_mix::DevelopmentAuditionCustody,
+    semantic_sfx_audition:
+        std::sync::Arc<std::sync::Mutex<motionwright_native::sfx_mix::SemanticSfxAuditionCache>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -5250,6 +5252,7 @@ fn main() {
                 blender_lit_plans: blender_lit::LitPlans::default(),
                 graph_exchange_custody: GraphExchangeJournal::new(&data_dir, workspace_session)?,
                 development_audition_custody,
+                semantic_sfx_audition: Default::default(),
             });
             desktop_owner::record_windows_startup("application-state-managed");
             desktop_owner::install_owner_window(app, &owner)?;

@@ -2,7 +2,9 @@
 //! Imported-only serialization remains the original PcmStemReceipt map. A derived
 //! receipt has private fields and cannot be reconstructed from caller JSON.
 use super::*;
-use crate::sfx_mix::{VerifiedSfxWav, mix_source_bound_semantic_sfx_with_budget};
+use crate::sfx_mix::{
+    SemanticSfxAuditionCache, VerifiedSfxWav, mix_source_bound_semantic_sfx_with_budget,
+};
 use motionwright_domain::{ScheduledSfx, SemanticSfxCue};
 use std::collections::BTreeSet;
 
@@ -227,6 +229,11 @@ fn add_pcm16_without_clipping(semantic: i16, imported: i16) -> Result<i16> {
     })
 }
 
+pub(super) enum SemanticSfxPreparation<'a> {
+    Uncached(OriginalMixDecodeBudget),
+    CachedAudition(&'a mut SemanticSfxAuditionCache),
+}
+
 /// The optional imported base is already decoded by the existing service under
 /// its explicit budget and full RevisionStamp. Semantic files use the canonical
 /// CAS read API; the same existing mixer schedules and renders them.
@@ -237,7 +244,7 @@ pub(super) fn prepare_sfx_source(
     profile_id: Uuid,
     base: Option<(PcmStemReceipt, Vec<u8>)>,
     sample_frames: u64,
-    budget: OriginalMixDecodeBudget,
+    preparation: SemanticSfxPreparation<'_>,
 ) -> Result<(OriginalSfxSource, Vec<u8>)> {
     let placements = selected_placements(project, profile_id)?;
     if placements.is_empty() {
@@ -245,6 +252,9 @@ pub(super) fn prepare_sfx_source(
             "Saved mix needs an imported SFX base or explicitly authored cues in this cut; no invented silent source",
         ))?;
         check_stem(&receipt, project, sample_frames)?;
+        if let SemanticSfxPreparation::CachedAudition(cache) = preparation {
+            *cache = SemanticSfxAuditionCache::default();
+        }
         return Ok((receipt.into(), pcm));
     }
     let total_frames = project
@@ -276,13 +286,18 @@ pub(super) fn prepare_sfx_source(
             });
         }
     }
-    let mixed = mix_source_bound_semantic_sfx_with_budget(
-        project,
-        profile_id,
-        &verified,
-        total_frames,
-        budget,
-    )
+    let mixed = match preparation {
+        SemanticSfxPreparation::Uncached(budget) => mix_source_bound_semantic_sfx_with_budget(
+            project,
+            profile_id,
+            &verified,
+            total_frames,
+            budget,
+        ),
+        SemanticSfxPreparation::CachedAudition(cache) => {
+            cache.mix(project, profile_id, &verified, total_frames)
+        }
+    }
     .map_err(|error| mix_unsupported(error.to_string()))?;
     // The existing mixer has now checked exact RIFF layout/clock and every
     // source SHA. Its data bytes are authoritative only in this in-process call.
@@ -503,7 +518,7 @@ mod tests {
             profile_id,
             None,
             48_000,
-            OriginalMixDecodeBudget::Audition15Seconds,
+            SemanticSfxPreparation::Uncached(OriginalMixDecodeBudget::Audition15Seconds),
         )
         .unwrap();
         let receipt = source.semantic_bus().unwrap();
@@ -538,7 +553,7 @@ mod tests {
                 profile_id,
                 None,
                 48_000,
-                OriginalMixDecodeBudget::Audition15Seconds
+                SemanticSfxPreparation::Uncached(OriginalMixDecodeBudget::Audition15Seconds),
             ),
             Err(MixError::StaleReference(_))
         ));
