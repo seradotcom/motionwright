@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       verification_scope:
-        description: 'Source, static distribution inventory, accessibility observation, Kdenlive roundtrip, or admitted ALab metadata only'
+        description: 'Source, Desktop platform source checks, distribution inventory, accessibility observation, Kdenlive roundtrip, or admitted ALab metadata'
         type: choice
-        options: [source, kdenlive-distribution, accessibility-only, kdenlive-gui, external-alab-readonly]
+        options: [source, desktop-source, kdenlive-distribution, accessibility-only, kdenlive-gui, external-alab-readonly]
         default: source
         required: true
       audio_source:
@@ -38,6 +38,8 @@ on:
   pull_request:
     paths:
       - 'tooling/otio-media/**'
+      - 'apps/desktop/src-tauri/src/otio_bridge*.rs'
+      - 'apps/desktop/src-tauri/Cargo.toml'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'SOURCE_LOCK.json'
@@ -63,6 +65,8 @@ on:
     branches: ['main']
     paths:
       - 'tooling/otio-media/**'
+      - 'apps/desktop/src-tauri/src/otio_bridge*.rs'
+      - 'apps/desktop/src-tauri/Cargo.toml'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'SOURCE_LOCK.json'
@@ -89,8 +93,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope != 'source' && format('kdenlive-native-exclusive-{0}', github.repository) || format('v05-otio-media-{0}', github.ref) }}
-  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verification_scope != 'source') }}
+  group: ${{ github.event_name == 'workflow_dispatch' && !contains(fromJSON('["source","desktop-source"]'), inputs.verification_scope) && format('kdenlive-native-exclusive-{0}', github.repository) || format('v05-otio-media-{0}', github.ref) }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && !contains(fromJSON('["source","desktop-source"]'), inputs.verification_scope)) }}
 
 jobs:
   verified-native-rust-otio-and-open-timeline-io:
@@ -320,6 +324,8 @@ jobs:
                   "test_authorized_root_junction_is_rejected",
                   "test_authorized_root_ancestor_junction_is_rejected",
                   "test_candidate_junction_cannot_escape_plain_authorized_root",
+                  "test_portable_owner_source_refuses_junctions_before_capture",
+                  "test_portable_owner_source_rejects_drive_qualified_relative_names",
               )
           }
           if (
@@ -329,7 +335,7 @@ jobs:
               or not required_native.issubset(discovered)
               or not required_windows.issubset(discovered)
           ):
-              raise SystemExit("Incomplete OTIO discovery: require existing tests, seven real media cases and three Windows junction cases")
+              raise SystemExit("Incomplete OTIO discovery: require existing tests, seven real media cases and five Windows path cases")
 
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           print(json.dumps({
@@ -394,6 +400,44 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  verified-desktop-bridge-platforms:
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'desktop-source'
+    name: Desktop OTIO source checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: '1.98.1'
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Use a canonical temporary directory for original files and SQLite
+        shell: python
+        run: |
+          import os, tempfile
+          from pathlib import Path
+
+          parent = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          scratch = Path(tempfile.mkdtemp(prefix="motionwright-otio-", dir=parent))
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as env:
+              for variable in ("TMPDIR", "TEMP", "TMP"):
+                  env.write(f"{variable}={scratch}\n")
+      - name: Compile and test the shared Desktop OTIO bridge
+        run: |
+          cargo test --locked --jobs 2 -p motionwright-service --example studio_review_session otio_bridge:: -- --test-threads=1
+
   verified-windows-junction-admission:
     if: github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'source'
     runs-on: windows-2022
@@ -405,7 +449,7 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12'
-      - name: Verify three real Windows junction refusals without skips
+      - name: Verify the Windows OTIO path admission roster
         shell: pwsh
         run: |
           @'
@@ -443,6 +487,8 @@ jobs:
               "test_native_media.WindowsReparsePathTests.test_authorized_root_junction_is_rejected",
               "test_native_media.WindowsReparsePathTests.test_authorized_root_ancestor_junction_is_rejected",
               "test_native_media.WindowsReparsePathTests.test_candidate_junction_cannot_escape_plain_authorized_root",
+              "test_native_media.WindowsReparsePathTests.test_portable_owner_source_refuses_junctions_before_capture",
+              "test_native_media.WindowsReparsePathTests.test_portable_owner_source_rejects_drive_qualified_relative_names",
           }
 
           def source():
@@ -488,7 +534,7 @@ jobs:
               suite = unittest.TestLoader().loadTestsFromTestCase(test_native_media.WindowsReparsePathTests)
               discovered = list(ids(suite))
               receipt["discovered_ids"] = discovered
-              if len(discovered) != 3 or set(discovered) != required:
+              if len(discovered) != len(required) or set(discovered) != required:
                   raise RuntimeError("incomplete_windows_reparse_roster")
               result = unittest.TextTestRunner(verbosity=2).run(suite)
               receipt["test_result"] = {
@@ -499,7 +545,7 @@ jobs:
                   "expected_failures": [test.id() for test, _ in result.expectedFailures],
                   "unexpected_successes": [test.id() for test in result.unexpectedSuccesses],
               }
-              if not result.wasSuccessful() or result.testsRun != 3 or result.skipped or result.expectedFailures or result.unexpectedSuccesses:
+              if not result.wasSuccessful() or result.testsRun != len(required) or result.skipped or result.expectedFailures or result.unexpectedSuccesses:
                   raise RuntimeError("windows_reparse_tests_failed")
               receipt["status"] = "PASS_PATH_ADMISSION_ONLY"
           except Exception as error:

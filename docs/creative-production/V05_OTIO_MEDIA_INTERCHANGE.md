@@ -147,7 +147,27 @@ still `NOT_RUN` until demonstrated on the same source revision.
 
 ## 4. Desktop export, preview and owner-approved save
 
-Open **Deliver → OTIO cut review** in the Linux desktop application.
+Open **Deliver → OTIO cut review** in Desktop. Media verification needs an
+administrator-managed Python 3 and ffprobe installation on the same host.
+
+- **Linux** uses the system Python 3 and ffprobe under `/usr/bin`.
+- **Windows** uses `Motionwright\OTIO Runtime` in the system Program Files
+  directory. Provision the embeddable CPython distribution for the installed
+  architecture and a standalone `ffprobe.exe`. Keep the versioned Python DLL,
+  standard-library ZIP and `._pth` file together. The active `._pth` entries
+  are the versioned ZIP and `.`. Only system or administrator principals may
+  own or modify the installation.
+- **macOS** uses `/Library/Application Support/Motionwright/OTIO Runtime`.
+  Provision a self-contained Python 3 distribution and ffprobe for the
+  installed architecture, with regular executable files at `bin/python3`
+  and `bin/ffprobe`. Keep Python's standard library inside this installation.
+  The runtime and its parent directories must be root-owned and protected
+  against group or world writes and extended ACLs.
+
+Use runtime packages from a trusted distribution channel. Motionwright checks
+the installed paths and permissions before using the one-time local grant. A
+missing or unsafe installation leaves the operation available for a manual
+attempt after the configuration is corrected.
 
 1. Choose a new export folder, bind saved project scenes to their original
    MP4 assets and source frames, and declare the media owner and license.

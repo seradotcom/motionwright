@@ -1,6 +1,5 @@
 //! Source-bound, read-only OTIO cut inspection for the installed desktop.
-//! This embeds the existing first-party bridge source. A fixed root-owned
-//! Linux Python+ffprobe runtime must exist or the operation fails closed.
+//! Desktop runs the embedded OTIO bridge with a protected Python and ffprobe installation.
 //! The bridge does not import project media or approve a cut; only the
 //! ordinary human-reviewed StudioService Change can modify the project.
 use super::effect_grants::{EffectGrantRegistry, EffectKind, EffectScope};
@@ -13,9 +12,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use uuid::Uuid;
 
@@ -30,7 +27,19 @@ const INTAKE: &[u8] = include_bytes!("../../../../tooling/mlt_official_runtime_i
 const READBACK: &[u8] = include_bytes!("../../../../tooling/manim_native_readback.py");
 // -I/-S remove project and site imports. Admit only the two first-party
 // module folders staged and SHA-checked above, never the owner's bundle.
-const RUNNER: &[u8] = b"import os,runpy,sys\nsource=sys.argv.pop(1)\nsource_dir=os.path.dirname(source)\nsys.path.insert(0,os.path.dirname(source_dir))\nsys.path.insert(0,source_dir)\nrunpy.run_path(source,run_name='__main__')\n";
+const RUNNER: &[u8] = br#"import os,runpy,sys
+root=sys.argv.pop(1)
+if root:
+    root=os.path.normcase(os.path.realpath(root))
+    for entry in (sys.executable,*sys.path):
+        if not entry or os.path.commonpath((root,os.path.normcase(os.path.realpath(entry))))!=root:
+            raise RuntimeError('Python runtime search path leaves the protected installation')
+source=sys.argv.pop(1)
+source_dir=os.path.dirname(source)
+sys.path.insert(0,os.path.dirname(source_dir))
+sys.path.insert(0,source_dir)
+runpy.run_path(source,run_name='__main__')
+"#;
 const MAX_PROJECT: u64 = 2 * 1024 * 1024;
 const MAX_PREVIEW: u64 = 128_000;
 const DEADLINE: Duration = Duration::from_secs(70);
@@ -287,8 +296,45 @@ fn write_exact(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> 
     Ok(target)
 }
 
+#[cfg(target_os = "macos")]
+#[path = "otio_bridge_macos.rs"]
+mod macos_runtime;
+#[cfg(windows)]
+#[path = "otio_bridge_windows_process.rs"]
+mod windows_process;
+#[cfg(windows)]
+#[path = "otio_bridge_windows_runtime.rs"]
+mod windows_runtime;
+
+#[derive(Debug)]
+struct BridgeRuntime {
+    python: PathBuf,
+    ffprobe: PathBuf,
+    managed_root: Option<PathBuf>,
+    #[cfg(windows)]
+    system_root: PathBuf,
+    #[cfg(windows)]
+    _windows_admission: windows_runtime::WindowsOtioRuntime,
+}
+
+const RUNTIME_DESCRIPTION: &str = if cfg!(target_os = "linux") {
+    "system-root-owned-linux-python3-ffprobe; original first-party bridge source embedded"
+} else if cfg!(target_os = "macos") {
+    "administrator-managed-macos-python3-ffprobe; original first-party bridge source embedded"
+} else {
+    "administrator-managed-windows-python3-ffprobe; original first-party bridge source embedded"
+};
+
+fn fixed_runtime() -> Result<BridgeRuntime, String> {
+    #[cfg(test)]
+    if tests::RUNTIME_UNAVAILABLE.get() {
+        return Err("The configured OTIO runtime is unavailable.".into());
+    }
+    platform_runtime()
+}
+
 #[cfg(target_os = "linux")]
-fn fixed_runtime() -> Result<(PathBuf, PathBuf), String> {
+fn platform_runtime() -> Result<BridgeRuntime, String> {
     use std::os::unix::fs::MetadataExt;
     fn root_owned(executable: &str) -> Result<PathBuf, String> {
         let path = Path::new(executable);
@@ -321,15 +367,38 @@ fn fixed_runtime() -> Result<(PathBuf, PathBuf), String> {
         }
         Ok(target)
     }
-    Ok((
-        root_owned("/usr/bin/python3")?,
-        root_owned("/usr/bin/ffprobe")?,
-    ))
+    Ok(BridgeRuntime {
+        python: root_owned("/usr/bin/python3")?,
+        ffprobe: root_owned("/usr/bin/ffprobe")?,
+        managed_root: None,
+    })
 }
 
-#[cfg(not(target_os = "linux"))]
-fn fixed_runtime() -> Result<(PathBuf, PathBuf), String> {
-    Err("This installed platform has no admitted OTIO Python+ffprobe bridge runtime. External proposals remain reviewable, but automated media inspection is unavailable.".into())
+#[cfg(target_os = "macos")]
+fn platform_runtime() -> Result<BridgeRuntime, String> {
+    let (python, ffprobe, root) = macos_runtime::admit()?;
+    Ok(BridgeRuntime {
+        python,
+        ffprobe,
+        managed_root: Some(root),
+    })
+}
+
+#[cfg(windows)]
+fn platform_runtime() -> Result<BridgeRuntime, String> {
+    let admitted = windows_runtime::trusted_windows_otio_runtime().map_err(str::to_owned)?;
+    Ok(BridgeRuntime {
+        python: admitted.python.clone(),
+        ffprobe: admitted.ffprobe.clone(),
+        managed_root: Some(admitted.cwd.clone()),
+        system_root: admitted.system_root.clone(),
+        _windows_admission: admitted,
+    })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn platform_runtime() -> Result<BridgeRuntime, String> {
+    Err("This installation has no admitted Python 3 and ffprobe runtime for OTIO media verification.".into())
 }
 
 fn check_runtime_before_dispatch() -> Result<(), String> {
@@ -350,90 +419,147 @@ fn stage_bridge_sources(temp: &Path) -> Result<(PathBuf, PathBuf), String> {
     Ok((source_dir, bridge))
 }
 
-/// Kill the entire dedicated Python+ffprobe group, not just its parent.
-/// The installed runtime on non-Linux platforms is refused before spawning.
-fn stop_bridge_group(child: &mut std::process::Child) -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        let group = i32::try_from(child.id()).ok().filter(|id| *id > 1);
-        let signaled = group.is_some_and(|id| {
-            // SAFETY: Linux kill receives a positive, bounded observed child PID
-            // negated to signal only the fresh process group created below.
-            // No user-supplied PID or group is ever used.
-            unsafe { libc::kill(-id, libc::SIGKILL) == 0 }
-        });
-        let reaped = child.wait().is_ok();
-        signaled && reaped
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let signaled = child.kill().is_ok();
-        let reaped = child.wait().is_ok();
-        signaled && reaped
-    }
-}
+const UNCERTAIN_BRIDGE_EXIT: &str = "The OTIO process-tree cleanup could not be proven. Do not repeat the operation while its outcome is uncertain.";
 
 fn run_bridge(scripts: &Path, bridge: &Path, arguments: &[OsString]) -> Result<(), String> {
-    let (python, ffprobe) = fixed_runtime()?;
-    let stderr_path = scripts.join("original-bridge-stderr.txt");
+    let runtime = fixed_runtime()?;
     let stderr = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&stderr_path)
+        .open(scripts.join("original-bridge-stderr.txt"))
         .map_err(|_| refused())?;
-    let home = scripts.parent().ok_or_else(refused)?;
-    let mut launch = Command::new(python);
-    launch
-        .args(["-I", "-S", "-B"])
-        .arg(scripts.join("run-original-bridge.py"))
-        .arg(bridge)
-        .args(arguments)
+    let workspace = scripts.parent().ok_or_else(refused)?;
+    let runner = scripts.join("run-original-bridge.py");
+    let managed_root = runtime.managed_root.as_deref();
+    let argv: Vec<_> = ["-I", "-S", "-B"]
+        .into_iter()
+        .map(std::ffi::OsStr::new)
+        .chain([
+            runner.as_os_str(),
+            managed_root.unwrap_or_else(|| Path::new("")).as_os_str(),
+            bridge.as_os_str(),
+        ])
+        .chain(arguments.iter().map(OsString::as_os_str))
+        .collect();
+
+    #[cfg(unix)]
+    {
+        run_bridge_unix(&runtime, &argv, workspace, stderr)
+    }
+    #[cfg(windows)]
+    {
+        use windows_process::BridgeProcessError;
+        windows_process::run(
+            &runtime.python,
+            &argv,
+            &runtime.ffprobe,
+            managed_root.ok_or_else(refused)?,
+            workspace,
+            &runtime.system_root,
+            &stderr,
+            DEADLINE,
+        )
+        .map_err(|error| match error {
+            BridgeProcessError::Start(error) => format!(
+                "The protected OTIO bridge process could not start ({}).",
+                error.kind()
+            ),
+            BridgeProcessError::Exit(code) => format!(
+                "The protected OTIO bridge exited with status {code}. {}",
+                refused()
+            ),
+            BridgeProcessError::TimedOut => {
+                "The protected OTIO media inspection timed out and the entire process tree stopped."
+                    .into()
+            }
+            BridgeProcessError::Uncertain => UNCERTAIN_BRIDGE_EXIT.into(),
+        })
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (runtime, argv, workspace, stderr);
+        Err(refused())
+    }
+}
+
+#[cfg(unix)]
+fn run_bridge_unix(
+    runtime: &BridgeRuntime,
+    argv: &[&std::ffi::OsStr],
+    workspace: &Path,
+    stderr: fs::File,
+) -> Result<(), String> {
+    use std::{
+        os::unix::process::CommandExt,
+        process::{Command, Stdio},
+        thread,
+        time::Instant,
+    };
+    let started = Instant::now();
+    let mut child = Command::new(&runtime.python)
+        .args(argv)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
-        .env("MOTIONWRIGHT_OTIO_FFPROBE", ffprobe)
-        .env("HOME", home)
-        .env("TMPDIR", home)
+        .env("MOTIONWRIGHT_OTIO_FFPROBE", &runtime.ffprobe)
+        .env("HOME", workspace)
+        .env("TMPDIR", workspace)
         .env("LANG", "C.UTF-8")
-        .current_dir(home)
+        .current_dir(runtime.managed_root.as_deref().unwrap_or(Path::new("/")))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::from(stderr));
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::process::CommandExt;
-        // Python and every ffprobe descendant share this new group. The
-        // timeout must retire all of them, not merely the Python parent.
-        launch.process_group(0);
-    }
-    let mut child = launch
+        .stderr(Stdio::from(stderr))
+        .process_group(0)
         .spawn()
         .map_err(|_| "The protected OTIO bridge process could not start.".to_string())?;
-    let started = Instant::now();
+    let group = i32::try_from(child.id())
+        .ok()
+        .filter(|id| *id > 1)
+        .ok_or_else(|| UNCERTAIN_BRIDGE_EXIT.to_string())?;
     loop {
         match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(_)) => {
-                // A failed Python bridge cannot be allowed to leave an
-                // ffprobe descendant running. The denied action is never
-                // replayed; consume this invocation's process group once.
-                let _ = stop_bridge_group(&mut child);
-                return Err(refused());
+            Ok(Some(status)) if group_empty(group) => {
+                return if status.success() {
+                    Ok(())
+                } else {
+                    Err(refused())
+                };
             }
             Ok(None) if started.elapsed() < DEADLINE => thread::sleep(Duration::from_millis(40)),
             Ok(None) => {
-                let closed = stop_bridge_group(&mut child);
-                return Err(if closed {
-                    "The protected OTIO media inspection timed out; its entire dedicated process group was terminated. No project change was made.".into()
+                return if stop_bridge_group(&mut child, group) {
+                    Err("The protected OTIO media inspection timed out and the entire process tree stopped.".into())
                 } else {
-                    "The OTIO process-group cleanup could not be proven. Do not retry the uncertain external media operation.".into()
-                });
+                    Err(UNCERTAIN_BRIDGE_EXIT.into())
+                };
             }
-            Err(_) => {
-                let _ = stop_bridge_group(&mut child);
-                return Err("The original OTIO bridge or its process group could not be observed through a clean terminal exit. No automatic retry is permitted.".into());
+            _ => {
+                stop_bridge_group(&mut child, group);
+                return Err(UNCERTAIN_BRIDGE_EXIT.into());
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn group_empty(group: i32) -> bool {
+    // SAFETY: callers supply the positive PID of their newly created group.
+    (unsafe { libc::kill(-group, 0) == -1 })
+        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+#[cfg(unix)]
+fn stop_bridge_group(child: &mut std::process::Child, group: i32) -> bool {
+    use std::{thread, time::Instant};
+    // SAFETY: this is the dedicated group created by the current invocation.
+    unsafe { libc::kill(-group, libc::SIGKILL) };
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(5) {
+        if matches!(child.try_wait(), Ok(Some(_))) && group_empty(group) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    false
 }
 
 fn preview_subject(bundle: &str, edited: &str, received: Option<&str>) -> Result<String, String> {
@@ -714,7 +840,7 @@ pub fn preview(
         received_otio_sha256: received.as_ref().map(|bytes| sha(bytes)),
         edited_otio_sha256: sha(&edited),
         preview,
-        runtime: "system-root-owned-linux-python3-ffprobe; original first-party bridge source embedded",
+        runtime: RUNTIME_DESCRIPTION,
         source_media_relinked: false,
         editor_launched: false,
         project_modified: false,
@@ -727,6 +853,8 @@ mod tests {
 
     type BeforeSourceOpen = Box<dyn FnOnce(&Path)>;
     std::thread_local! {
+        pub(super) static RUNTIME_UNAVAILABLE: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
         static BEFORE_SOURCE_OPEN: std::cell::RefCell<Option<BeforeSourceOpen>> =
             const { std::cell::RefCell::new(None) };
     }
@@ -1212,6 +1340,14 @@ mod tests {
     #[cfg(not(target_os = "linux"))]
     #[test]
     fn unavailable_otio_runtime_preserves_both_grants_and_leaves_the_workspace_untouched() {
+        struct RestoreRuntime;
+        impl Drop for RestoreRuntime {
+            fn drop(&mut self) {
+                RUNTIME_UNAVAILABLE.set(false);
+            }
+        }
+        let _restore_runtime = RestoreRuntime;
+        RUNTIME_UNAVAILABLE.set(true);
         let root = tempfile::tempdir().unwrap();
         let service = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
         let initial = service.create_project("OTIO runtime preflight").unwrap();

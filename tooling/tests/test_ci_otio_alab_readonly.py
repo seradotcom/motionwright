@@ -177,7 +177,11 @@ class DispatchTests(unittest.TestCase):
 
     def test_workflow_reuses_existing_job_and_excludes_gui_effects_for_alab(self):
         text = (ROOT / ".github/workflows/v05-otio-real-media.yml").read_text()
-        self.assertIn("options: [source, kdenlive-distribution, accessibility-only, kdenlive-gui, external-alab-readonly]", text)
+        self.assertIn("options: [source, desktop-source, kdenlive-distribution, accessibility-only, kdenlive-gui, external-alab-readonly]", text)
+        platforms = text.split("  verified-desktop-bridge-platforms:\n", 1)[1].split("\n  verified-windows-junction-admission:", 1)[0]
+        self.assertIn("inputs.verification_scope == 'desktop-source'", platforms)
+        self.assertIn("otio_bridge:: -- --test-threads=1", platforms)
+        self.assertNotIn("kdenlive_gui_e2e", platforms)
         self.assertEqual(text.count("  admitted-native-kdenlive-gui:"), 1)
         self.assertNotIn("  external-alab-readonly:", text)
         for name in ("Install disposable GUI and accessibility observation dependencies",

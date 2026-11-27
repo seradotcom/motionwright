@@ -2165,6 +2165,7 @@ dependencies = [
  "tempfile",
  "uuid",
  "winapi-util",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2303,6 +2304,7 @@ dependencies = [
  "tempfile",
  "uuid",
  "wasmi",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
