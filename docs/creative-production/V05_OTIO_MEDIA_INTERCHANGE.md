@@ -110,9 +110,8 @@ existing `MoveScene` and `SetSceneDuration` Change types.
 The result is an explicit, ordered list of proposed native changes, together
 with an inherited per-property loss report. Nothing is committed: the
 current Motionwright project may have locks, protected branches or creative
-approvals that require owner review and the canonical StudioService CAS
-revision to apply a change. A preview is not permission for an agent to
-rewrite approved content.
+approvals. Applying a preview requires owner review and a change against the
+current saved revision through StudioService.
 
 ## 3. Native CI and receiver limitations
 

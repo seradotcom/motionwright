@@ -447,6 +447,32 @@ class SourcePolicyConsumerTests(GitFixtureTests):
             result.stderr,
         )
 
+    def test_otio_production_process_requires_the_complete_reviewed_sources(self):
+        root = self.policy_repo("otio-process")
+        sources = (
+            "apps/desktop/src-tauri/src/otio_bridge.rs",
+            "apps/desktop/src-tauri/src/otio_bridge_macos.rs",
+            "apps/desktop/src-tauri/src/otio_bridge_windows_process.rs",
+            "apps/desktop/src-tauri/src/otio_bridge_windows_runtime.rs",
+            "tooling/otio-media/bridge.py",
+            "tooling/otio-media/kdenlive_firstparty_audio_track.py",
+            "tooling/manim_native_readback.py",
+            "tooling/mlt_official_runtime_intake.py",
+        )
+        for name in sources:
+            self.write(root, name, (SOURCE_ROOT / name).read_text(encoding="utf-8"))
+        self.git(root, "add", "--", *sources)
+        result = self.run_policy(root)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        script = "tooling/manim_native_readback.py"
+        original = (root / script).read_text(encoding="utf-8")
+        self.write(root, script, original + "\n# Unreviewed modification.\n")
+        self.git(root, "add", "--", script)
+        result = self.run_policy(root)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unreviewed OTIO execution source: " + script, result.stderr)
+
     def test_valid_minimal_consumer_fixture_passes(self):
         result = self.run_policy(self.policy_repo())
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

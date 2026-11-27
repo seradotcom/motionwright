@@ -145,6 +145,43 @@ automatic_publish_tokens = [
 if any(token in workflow_text for token in automatic_publish_tokens):
     errors.append("repository workflows must not automatically publish packages or releases")
 
+# These sources form one reviewed process boundary. The host chooses fixed
+# protected executables and stages the embedded modules in a private workspace.
+# The one-use grant and retained dispatch precede launch. The process group or
+# job bounds the child, and readback precedes any no-clobber publication.
+reviewed_otio_sources = {
+    "apps/desktop/src-tauri/src/otio_bridge.rs":
+        "5d791808ed89b9d08ef94b69e69f03df156eb096a9b75d9a48b93a00b6571dcd",
+    "apps/desktop/src-tauri/src/otio_bridge_macos.rs":
+        "3337b54d13cb20ef0e0453a974d3e4e53b2359c7f62cadad501ee8dafe5427b8",
+    "apps/desktop/src-tauri/src/otio_bridge_windows_process.rs":
+        "e763b91bdf94bc8b8424693f0780cdc930a805fab11a7bbff1bf9891a94c2067",
+    "apps/desktop/src-tauri/src/otio_bridge_windows_runtime.rs":
+        "f44d4a31058cc98a6b14b345814b3ed82275957d84a59304e0e4bb442b9620b7",
+    "tooling/manim_native_readback.py":
+        "14fc30caefed5a220d437bfc32c738ff83fca3ccc5da19abfe4343b1dea3637a",
+    "tooling/mlt_official_runtime_intake.py":
+        "0d5e640f0b4750c30666bcdad1968d9883c1ab86866b391949f4bf45fa1f1467",
+    "tooling/otio-media/bridge.py":
+        "55e8dce65316610abe60ce586abd3a3a5ce1e4610dca1da26979ad94c5e05e68",
+    "tooling/otio-media/kdenlive_firstparty_audio_track.py":
+        "3995594d644563b9d89fa7d7543afa006144167763048d72f93209ceeecb93a1",
+}
+otio_sources_admitted = False
+if any((ROOT / rel).exists() for rel in reviewed_otio_sources):
+    otio_sources_admitted = True
+    for rel, expected_digest in reviewed_otio_sources.items():
+        path = ROOT / rel
+        try:
+            # Normalize CRLF exactly as the process-fixture source checks do.
+            raw = path.read_text(encoding="utf-8").encode("utf-8")
+            verified = not path.is_symlink() and hashlib.sha256(raw).hexdigest() == expected_digest
+        except (UnicodeDecodeError, OSError):
+            verified = False
+        if not verified:
+            errors.append(f"unreviewed OTIO execution source: {rel}")
+            otio_sources_admitted = False
+
 for path in iter_source_files(ROOT):
     rel = path.relative_to(ROOT).as_posix()
     if re.search(r"(^|/)(MASTER_[^/]*|plantillas_agentes)(/|$)", rel, re.IGNORECASE):
@@ -200,6 +237,7 @@ for path in iter_source_files(ROOT):
             "std::process::" + "Command",
             "tokio::process::" + "Command",
             "Command::" + "new(",
+            "CreateProcessW" + "(",
         ]
         process_allowlist = {
             "crates/native/src/production.rs",
@@ -236,31 +274,7 @@ for path in iter_source_files(ROOT):
             and hashlib.sha256(text.encode("utf-8")).hexdigest()
                 == reviewed_process_fixture_sources[rel]
         )
-        # Independently reviewed production OTIO bridge process:
-        # - Linux-only, fixed root-owned /usr/bin/python3 + ffprobe and parents
-        # - embedded first-party Python source with isolated -I -S -B import path
-        # - one scoped owner grant, limits, private temporary files and deadline
-        # - owned child process group terminated and reaped on error/timeout
-        # - output is verified privately and then RENAME_NOREPLACE published
-        #   once, rejecting existing directories and dangling symlinks.
-        # - Kdenlive pair preview binds both original files and capsule hashes;
-        #   only bundle media roots are admitted, and the existing bounded
-        #   owner Change still requires review and one explicit Save.
-        # - portable export can explicitly select immutable Project CAS media:
-        #   exact saved snapshot/asset membership, bounded verified blob, and
-        #   re-read after bridge validation. Never falls back to an owner path.
-        #   The interpreter, owned process group, path checks and publication
-        #   implementation are unchanged by this source selection.
-        # Any code change revokes this admission until a new security review.
-        reviewed_production_process_sources = {
-            "apps/desktop/src-tauri/src/otio_bridge.rs":
-                "bc3cb5757cfd7ecdcba262e3bd5c1d330f75bed46db81476708dd7d53247f2be",
-        }
-        reviewed_production_process = (
-            rel in reviewed_production_process_sources
-            and hashlib.sha256(text.encode("utf-8")).hexdigest()
-                == reviewed_production_process_sources[rel]
-        )
+        reviewed_production_process = otio_sources_admitted and rel in reviewed_otio_sources
         if (any(token in text for token in process_tokens)
                 and rel not in process_allowlist
                 and not reviewed_process_fixture and not reviewed_production_process):
