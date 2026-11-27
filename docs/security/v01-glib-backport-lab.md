@@ -20,7 +20,7 @@ real FFI passes in run `39162970242`, with a separate unoptimized
 fixture lock. Those observations retain their original scope.
 
 The two additional iterator cases and explicit resolver 2 are reused from
-A2's frozen `c44c44796ec99c95cf459c1c7a7be09031639a6d` source.
+the frozen source at `c44c44796ec99c95cf459c1c7a7be09031639a6d`.
 Its original lock is preserved as historical material; the successor seeds
 its isolated fixture from the current product lock. The old four-case result
 does not provide credit for the six optimized cases or the current graph.
@@ -50,7 +50,7 @@ through `cargo test --release --locked`.
 
 The four original Rust tests cover empty and singleton variants, Unicode
 forward/reverse iteration, mixed front/back traversal and lengths zero
-through 64. The two retained A2 cases exercise `last` after partial
+through 64. The two additional cases exercise `last` after partial
 consumption with an empty string, and `nth_back` after forward
 consumption. All six named tests must pass exactly once, without ignored or
 filtered cases.

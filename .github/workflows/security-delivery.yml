@@ -560,7 +560,7 @@ jobs:
           assert "4 passed; 0 failed; 0 ignored" in raw
           print("FIRST_USE_EXAMPLE_SOURCE=PASS; cases=4; SQLite=REAL; MotionCanvas=SOURCE_REALIZATION; HyperFrames=UNSUPPORTED_MOTION_VERIFIED; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           PY_FIRST_USE_SOURCE
-      - name: Grouped A4 source projections for hierarchy, camera, cut continuity and editable Manim
+      - name: Source checks for hierarchy, camera, cut continuity and editable Manim
         if: inputs.first_use_case == 'all' || inputs.first_use_case == ''
         run: |
           set -euo pipefail

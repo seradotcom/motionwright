@@ -80,8 +80,8 @@ source/result documents, two manifests and 120 PNGs. It preserved
 project 01a1e9ca-403c-7791-80a9-c2b67526dca3, generation
 01a1e9ca-403c-7791-80a9-c2b7dc80c0e9 and revision 7. Its original report
 SHA-256 is d3a0a20b05f8aa6e2001e4decb7589c0a46bf2bbbc1bc9df408036ce8091df63,
-retained under knowledge/runtime/A4/20261117-motioncanvas-cubic-xy/
-physical-run-44096761232/independent-mc-original-review.original.json.
+retained with the evidence for run `44096761232` as
+`independent-mc-original-review.original.json`.
 This read performed no Native operation or additional media decode and
 does not grant formal G2/G3, human visual acceptance or release authority.
 The evidence belongs to the exact source above, including after later

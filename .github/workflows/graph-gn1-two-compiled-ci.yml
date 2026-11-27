@@ -1,4 +1,4 @@
-name: A6 GN1 two compiled Native reservation checks
+name: GN1 compiled Native reservation checks
 
 # The development Native owner remains ONLY in graph-native-startup-dev.yml.
 # This push-triggered workflow runs source validation and inert Rust tests only.

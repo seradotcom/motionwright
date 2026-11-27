@@ -785,5 +785,5 @@ complete actual extracted namespaces and joins members to authenticated source,
 Cargo root and notice bytes. It preserves unresolved container, native-origin,
 linker and legal obligations; its v1 output cannot grant full package inventory,
 redistribution permission, G2 or G3. Candidate receipt/attestation shapes remain
-unchanged. A1 must wire each wrapper in place of the existing single extraction
-and retain its original streams before any physical observation can be claimed.
+unchanged. Physical observations require the wrapper to perform the single
+extraction and retain the original process streams.

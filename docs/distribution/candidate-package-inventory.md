@@ -76,8 +76,8 @@ NOT_VERIFIED. A successful detach or a caller's boolean cannot fill this gap.
 
 ## Wiring into the existing workflow
 
-A1 owns package-candidate.yml and release_scope_catalog.json; neither changes
-in this unit. Keep the existing source-admitted scopes and tools. Replace each
+Keep the source-admitted scopes and tools in `package-candidate.yml` and
+`release_scope_catalog.json`. Replace each
 existing extraction with its wrapper; do not leave the old extraction before
 or after it. The output directory must be fresh inside the checkout. The work
 directory must be fresh outside the checkout, with an existing plain parent.

@@ -191,8 +191,8 @@ PowerShell parser validation checks syntax without executing the controller. The
 Schema 6 is a separate source-selected storage family. It keeps project-document
 schema 2 and the six-field receipt representation used by schemas 4 and 5. A
 schema number, a schema-5 pin or a synthetic typed consumer cannot authorize a
-schema-6 installed run. Its physical product/oracle pins remain unset until A1
-composes and reviews the complete source.
+schema-6 installed run. Setting the physical product and oracle pins requires
+review of the complete source.
 
 The canonical read-only layout validator requires the exact two budget tables,
 their four automatic indexes, six budget triggers and all 27 registered-writer
@@ -219,8 +219,8 @@ single native Create attempt. An uncertain Create remains non-replayable.
 
 The isolated source checkpoint has 46 canonical schema-contract methods and 14
 new consumer methods. The selected six-module Python regression has 345 PASS,
-zero failures/errors/skips; three previously failing A6 workflow integration
-controls remain explicitly excluded with their original failures retained.
+zero failures, errors or skips. The run excluded three workflow integration
+controls whose original failures were retained.
 These results cover Python, actual isolated SQLite files and mocked process
 boundaries. They do not execute Rust migration, an installer, native GUI, an
 actual writer with SQLITE_INNOCUOUS or native process termination. The original

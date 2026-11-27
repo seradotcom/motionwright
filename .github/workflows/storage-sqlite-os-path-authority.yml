@@ -19,7 +19,7 @@ on:
         required: true
         type: string
       reviewed_manifest_sha256:
-        description: SHA-256 of the exact tracked A1 reviewed source manifest (proposal is rejected)
+        description: SHA-256 of the exact tracked and reviewed source manifest (proposal is rejected)
         required: true
         type: string
 permissions:
