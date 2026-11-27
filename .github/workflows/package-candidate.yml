@@ -4363,6 +4363,7 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_INCREMENTAL: '0'
       MOTIONWRIGHT_MLT_MODE: hybrid-av
+      PLAYWRIGHT_BROWSERS_PATH: '0'
       SEMWRIGHT_TEST_PYTHON: /usr/bin/python3
       SEMWRIGHT_TEST_FFMPEG: /usr/bin/ffmpeg
       SEMWRIGHT_TEST_FFPROBE: /usr/bin/ffprobe
@@ -4493,6 +4494,18 @@ jobs:
             cd _semwright/integrations/motion-canvas/runtime
             npm ci --ignore-scripts
             npx --no-install playwright install --with-deps firefox
+            node --input-type=commonjs - <<'JS'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const {firefox} = require('playwright');
+          const cache = fs.realpathSync('node_modules/playwright-core/.local-browsers');
+          const program = fs.realpathSync(firefox.executablePath());
+          const relative = path.relative(cache, program);
+          if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+            throw new Error('Firefox is outside the Motion Canvas runtime sandbox mount');
+          }
+          fs.accessSync(program, fs.constants.X_OK);
+          JS
             npm run probe
           )
           umask 077
