@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -20,6 +21,16 @@ from source_checkout_observation import git, regular_file, require
 UTF8 = 0x08000100
 MAX_AX_CHILDREN = 128
 CANNOT_COMPLETE = -25204
+TIMECODE = re.compile(r"[0-9]{2}:[0-9]{2}:[0-9]{2}:[0-9]{2}")
+DURATION_FIELDS = ("m_pos", "m_cropStart", "m_dur")
+
+
+def clock_frames(text):
+    require(TIMECODE.fullmatch(text), "macOS editor clock field is not exact")
+    hours, minutes, seconds, frames = map(int, text.split(":"))
+    require(minutes < 60 and seconds < 60 and frames < 30,
+            "macOS editor clock field differs from the 30 fps source clock")
+    return 30 * (3600 * hours + 60 * minutes + seconds) + frames
 
 
 def bind(library, name, result, *arguments):
@@ -43,6 +54,7 @@ class Accessibility:
         self.array_count = bind(cf, "CFArrayGetCount", index, pointer)
         self.array_item = bind(cf, "CFArrayGetValueAtIndex", pointer, pointer, index)
         self.boolean_value = bind(cf, "CFBooleanGetValue", C.c_ubyte, pointer)
+        self.true = pointer.in_dll(cf, "kCFBooleanTrue").value
         self.make_string = bind(cf, "CFStringCreateWithCString", pointer, pointer, C.c_char_p, C.c_uint32)
         self.string_value = bind(cf, "CFStringGetCString", C.c_ubyte, pointer, pointer, index,
                                  C.c_uint32)
@@ -122,9 +134,18 @@ class Accessibility:
     def text(self, element, name):
         return self.string(self.value(element, name))
 
-    def enabled(self, element):
-        value = self.value(element, "AXEnabled")
+    def flag(self, element, name):
+        value = self.value(element, name)
         return bool(value and self.type_id(value) == self.boolean_type and self.boolean_value(value))
+
+    def enabled(self, element):
+        return self.flag(element, "AXEnabled")
+
+    def focus(self, element):
+        require(self.owns(element) and self.enabled(element)
+                and self.set_value(element, self.name("AXFocused"), self.true) == 0
+                and self.flag(element, "AXFocused"),
+                "macOS editor did not focus the exact clock field")
 
     def actions(self, element):
         output = C.c_void_p()
@@ -155,7 +176,7 @@ class EditorUI:
     def __init__(self, ax, guard):
         self.ax, self.guard = ax, guard
 
-    def descend(self, roots, *, limit=160):
+    def descend(self, roots, *, limit=160, depth_limit=7):
         ax = self.ax
         queue = [(root, 0) for root in roots if root]
         seen, deadline = set(), time.monotonic() + 4
@@ -166,7 +187,7 @@ class EditorUI:
                 continue
             seen.add(element)
             yield element
-            if depth < 7:
+            if depth < depth_limit:
                 queue.extend((child, depth + 1) for child in ax.children(element))
 
     def await_target(self, lookup, description, *, timeout=25):
@@ -187,6 +208,9 @@ class EditorUI:
         return label(self.ax.text(element, "AXTitle"))
 
     def file_menu(self):
+        return self.top_menu("File")
+
+    def top_menu(self, section):
         ax = self.ax
         native_bar = ax.value(ax.app, "AXMenuBar")
         widget_bar = next((node for node in self.descend((self.top_window(),), limit=40)
@@ -194,36 +218,53 @@ class EditorUI:
                            and ax.text(node, "AXIdentifier").endswith(".QMenuBar")), None)
         for bar in (widget_bar, native_bar):
             if bar and ax.owns(bar):
-                files = [node for node in ax.children(bar) if ax.owns(node) and self.title(node) == "file"
+                files = [node for node in ax.children(bar) if ax.owns(node) and self.title(node) == label(section)
                          and ax.text(node, "AXRole") in {"AXMenu", "AXMenuBarItem", "AXMenuItem"}
                          and ax.enabled(node)]
                 if len(files) == 1:
                     return files[0]
         return None
 
-    def menu_item(self, title, evidence, stage):
+    def menu_item(self, title, evidence, stage, *, section="File", submenu=None):
         ax = self.ax
-        target = label(title)
+
+        def menu_node(parent, expected, wanted):
+            if parent:
+                return next((node for node in self.descend(ax.children(parent), limit=100)
+                             if self.title(node) == label(expected)
+                             and ax.text(node, "AXRole") == "AXMenuItem"
+                             and ax.enabled(node) and ax.action(node, wanted)), None)
+            return None
+
+        def nested():
+            return menu_node(self.top_menu(section), submenu, ("AXShowMenu", "AXPress", "AXPick"))
 
         def lookup():
-            menu = self.file_menu()
-            if menu:
-                return next((node for node in self.descend((menu,), limit=100)
-                             if self.title(node) == target
-                             and ax.text(node, "AXRole") == "AXMenuItem"
-                             and ax.enabled(node) and ax.action(node, ("AXPress", "AXPick"))), None)
-            return None
+            parent = nested() if submenu else self.top_menu(section)
+            return menu_node(parent, title, ("AXPress", "AXPick"))
 
         self.ax.next_snapshot()
         item = lookup()
         if item:
             return item
-        menu = self.await_target(self.file_menu, "File menu")
-        evidence.write(stage + "-file-menu-observed", {
-            "pid": ax.pid, "role": ax.text(menu, "AXRole"), "title": ax.text(menu, "AXTitle"),
-            "identifier": ax.text(menu, "AXIdentifier"), "actions": ax.actions(menu),
-        })
-        evidence.press(stage + "-file-menu", menu)
+        if submenu and nested():
+            menu = self.await_target(nested, submenu)
+            evidence.press(stage + "-submenu", menu, opens=submenu)
+        else:
+            menu = self.await_target(lambda: self.top_menu(section), section + " menu")
+            section_stage = stage + "-" + section.casefold() + "-menu"
+            evidence.write(section_stage + "-observed", {
+                "pid": ax.pid, "role": ax.text(menu, "AXRole"), "title": ax.text(menu, "AXTitle"),
+                "identifier": ax.text(menu, "AXIdentifier"), "actions": ax.actions(menu),
+            })
+            evidence.press(section_stage, menu, opens=section)
+            if submenu:
+                self.ax.next_snapshot()
+                item = lookup()
+                if item:
+                    return item
+                submenu_node = self.await_target(nested, submenu)
+                evidence.press(stage + "-submenu", submenu_node, opens=submenu)
         return self.await_target(lookup, title)
 
     def panels(self):
@@ -269,6 +310,106 @@ class EditorUI:
 
         self.await_target(lookup, "editor after importing the original OTIO")
 
+    def seek_and_select_third_clip(self, evidence):
+        ax = self.ax
+
+        def project_clock():
+            candidates = []
+            for node in self.descend((self.top_window(),), limit=320, depth_limit=17):
+                role = ax.text(node, "AXRole")
+                if role not in {"AXTextField", "AXIncrementor"}:
+                    continue
+                identifier = ax.text(node, "AXIdentifier").casefold().split(".")
+                if ("projectmonitor" in identifier and ax.enabled(node)
+                        and TIMECODE.fullmatch(ax.text(node, "AXValue"))):
+                    candidates.append((role, node))
+            fields = [node for role, node in candidates if role == "AXTextField"]
+            choices = fields or [node for _, node in candidates]
+            return choices[0] if len(choices) == 1 else None
+
+        field = self.await_target(project_clock, "unique Project Monitor clock")
+        self.commit_timecode(field, "00:00:02:15", "seek-third", evidence)
+
+        def seek_acknowledged():
+            current = project_clock()
+            return (current and ax.text(current, "AXValue") == "00:00:02:15"
+                    and not ax.flag(current, "AXFocused"))
+
+        self.await_target(seek_acknowledged, "Project Monitor seek acknowledgement")
+        evidence.key("select-video-track-one", 18)
+        item = self.menu_item("Select Clip", evidence, "select-third",
+                              section="Sequence", submenu="Selection")
+        evidence.press("select-third", item)
+
+    def commit_timecode(self, field, value, stage, evidence):
+        self.guard()
+        self.ax.focus(field)
+        self.ax.set_text(field, value)
+        evidence.key(stage + "-commit-clock", 36)
+
+    def duration_controls(self):
+        ax = self.ax
+        panels = [node for node in self.panels() if self.title(node) == "duration"]
+        if len(panels) != 1:
+            return None
+        candidates = {name: [] for name in DURATION_FIELDS}
+        buttons = {"ok": [], "cancel": []}
+        for node in self.descend(panels, limit=100, depth_limit=12):
+            role, title = ax.text(node, "AXRole"), self.title(node)
+            require("resizing in ripple mode" not in title
+                    and title != "apply duration to all items",
+                    "macOS editor duration must apply to exactly one clip without ripple")
+            if role in {"AXTextField", "AXIncrementor"}:
+                components = ax.text(node, "AXIdentifier").split(".")
+                for name in DURATION_FIELDS:
+                    if name in components and TIMECODE.fullmatch(ax.text(node, "AXValue")):
+                        candidates[name].append((role, node))
+            elif role == "AXButton" and title in buttons and ax.enabled(node):
+                buttons[title].append(node)
+        fields = [([node for role, node in records if role == "AXTextField"]
+                   or [node for _, node in records]) for records in candidates.values()]
+        if all(len(matches) == 1 for matches in (*fields, *buttons.values())):
+            position, crop, duration = [matches[0] for matches in fields]
+            values = tuple(clock_frames(ax.text(node, "AXValue")) for node in (position, crop, duration))
+            return duration, buttons["ok"][0], buttons["cancel"][0], values
+        return None
+
+    def duration_dialog(self, stage, evidence):
+        item = self.menu_item("Edit Duration", evidence, stage,
+                              section="Sequence", submenu="Current Item")
+        evidence.press(stage + "-open", item)
+        return self.await_target(self.duration_controls, "single-clip Duration fields")
+
+    def duration_values(self, expected):
+        def lookup():
+            controls = self.duration_controls()
+            return (controls[3], controls[1]) if controls and controls[3] == expected else None
+        return self.await_target(lookup, "exact requested Duration fields")
+
+    def duration_closed(self):
+        self.await_target(lambda: self.top_window() and not any(
+            self.title(panel) == "duration" for panel in self.panels()),
+            "closure of the owned Duration dialog")
+
+    def edit_diagnostic(self):
+        ax = self.ax
+        ax.next_snapshot()
+        rows = []
+        for element in self.descend((*self.panels(), self.top_window()), limit=320, depth_limit=17):
+            role = ax.text(element, "AXRole")
+            if role not in {"AXTextField", "AXIncrementor"}:
+                continue
+            identifier = ax.text(element, "AXIdentifier")
+            parts = identifier.split(".")
+            if "projectmonitor" in parts or any(name in parts for name in DURATION_FIELDS):
+                value = ax.text(element, "AXValue")
+                rows.append({"role": role, "identifier": identifier,
+                             "title": ax.text(element, "AXTitle"),
+                             "clock": value if TIMECODE.fullmatch(value) else None})
+            if len(rows) >= 20:
+                break
+        return rows
+
     def diagnostic(self):
         self.ax.next_snapshot()
         roots = (self.ax.value(self.ax.app, "AXMenuBar"), *self.panels(), self.top_window())
@@ -285,14 +426,16 @@ class Evidence:
     def write(self, name, value):
         publish(self.root / (name + ".json"), value)
 
-    def press(self, stage, target):
+    def press(self, stage, target, *, opens=None):
         self.guard()
         ax = self.ax
         role, title = ax.text(target, "AXRole"), ax.text(target, "AXTitle")
         allowed = ("AXPress",)
         if role.startswith("AXMenu"):
             allowed = ("AXPress", "AXPick")
-            if stage in {"import-file-menu", "save-file-menu"} and label(title) == "file":
+            if opens is None and stage in {"import-file-menu", "save-file-menu"}:
+                opens = "File"
+            if opens is not None and label(title) == label(opens):
                 allowed = ("AXShowMenu", *allowed)
         action = ax.action(target, allowed)
         require(ax.owns(target) and ax.enabled(target) and action,
@@ -307,6 +450,45 @@ class Evidence:
         require(status in (0, CANNOT_COMPLETE), f"macOS {stage} AX action failed ({status})")
 
 
+    def key(self, stage, code):
+        self.guard()
+        graphics = C.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        create = bind(graphics, "CGEventCreateKeyboardEvent", C.c_void_p, C.c_void_p, C.c_uint16, C.c_bool)
+        post = bind(graphics, "CGEventPostToPid", None, C.c_int, C.c_void_p)
+        down, up = create(None, code, True), create(None, code, False)
+        try:
+            require(down and up, "macOS Kdenlive key event creation failed")
+            self.write(stage + "-intent", {"pid": self.ax.pid, "virtual_key": code})
+            post(self.ax.pid, down)
+            post(self.ax.pid, up)
+            self.write(stage + "-terminal", {"pid": self.ax.pid, "delivery_requested_once": True})
+        finally:
+            for event in (down, up):
+                if event:
+                    self.ax.release(event)
+
+
+def refresh_third_playlist(ui, evidence):
+    ui.seek_and_select_third_clip(evidence)
+    for stage, before, after, text in (
+        ("shorten", 30, 29, "00:00:00:29"),
+        ("restore", 29, 30, "00:00:01:00"),
+    ):
+        field, _, _, values = ui.duration_dialog(stage, evidence)
+        evidence.write(stage + "-model", {"position_crop_duration_frames": values})
+        require(values == (60, 60, before), f"macOS {stage} model does not match the original third clip")
+        ui.commit_timecode(field, text, stage, evidence)
+        requested, okay = ui.duration_values((60, 60, after))
+        require(requested == (60, 60, after), f"macOS {stage} requested fields changed before confirmation")
+        evidence.press(stage + "-accept", okay)
+        ui.duration_closed()
+    _, _, cancel, values = ui.duration_dialog("verify-restoration", evidence)
+    evidence.write("restored-model", {"position_crop_duration_frames": values})
+    require(values == (60, 60, 30), "macOS restored third-clip model differs from the imported model")
+    evidence.press("verify-restoration-close", cancel)
+    ui.duration_closed()
+
+
 def import_and_save(ui, evidence, original, initial, check_source):
     item = ui.menu_item("OpenTimelineIO Import", evidence, "import")
     evidence.press("open-import", item)
@@ -315,6 +497,7 @@ def import_and_save(ui, evidence, original, initial, check_source):
     check_source()
     evidence.press("import-otio", button)
     ui.after_import()
+    refresh_third_playlist(ui, evidence)
 
     item = ui.menu_item("Save As", evidence, "save")
     evidence.press("open-save-as", item)
@@ -411,6 +594,7 @@ def run(owner, context, distribution, observe_editor):
                     if process.poll() is None:
                         try:
                             diagnosis["nodes"] = ui.diagnostic()
+                            diagnosis["edit_controls"] = ui.edit_diagnostic()
                         except Exception as diagnostic_error:
                             diagnosis["diagnostic_error"] = str(diagnostic_error)
                     evidence.write("editor-diagnostic", diagnosis)

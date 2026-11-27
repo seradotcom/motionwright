@@ -2,7 +2,7 @@
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock, call
+from unittest.mock import Mock, call, patch
 
 import kdenlive_macos_editor as editor
 
@@ -16,7 +16,9 @@ class MacEditorRouteTests(unittest.TestCase):
         original = Path("original") / "timeline.otio"
         initial = Path("evidence") / "initial.kdenlive"
 
-        editor.import_and_save(ui, evidence, original, initial, lambda: None)
+        with patch.object(editor, "refresh_third_playlist") as refresh:
+            editor.import_and_save(ui, evidence, original, initial, lambda: None)
+        refresh.assert_called_once_with(ui, evidence)
 
         self.assertEqual(ui.set_text.call_args_list, [
             call("input field", str(original)), call("output field", str(initial)),
@@ -76,6 +78,38 @@ class MacEditorRouteTests(unittest.TestCase):
                 evidence.press("open-import", "File")
             ax.perform.assert_called_once()
             self.assertFalse((Path(folder) / "open-import-intent.json").exists())
+
+    def test_playlist_model_is_checked_before_each_change_and_after_restore(self):
+        ui, evidence = Mock(), Mock()
+        ui.duration_dialog.side_effect = [
+            ("field", "OK", "Cancel", (60, 60, 30)),
+            ("field", "OK", "Cancel", (60, 60, 29)),
+            ("field", "OK", "Cancel", (60, 60, 30)),
+        ]
+        ui.duration_values.side_effect = [((60, 60, 29), "OK"), ((60, 60, 30), "OK")]
+
+        editor.refresh_third_playlist(ui, evidence)
+
+        self.assertEqual(ui.duration_dialog.call_args_list, [
+            call("shorten", evidence), call("restore", evidence), call("verify-restoration", evidence),
+        ])
+        self.assertEqual(ui.commit_timecode.call_args_list, [
+            call("field", "00:00:00:29", "shorten", evidence),
+            call("field", "00:00:01:00", "restore", evidence),
+        ])
+        self.assertEqual(evidence.press.call_args_list, [
+            call("shorten-accept", "OK"), call("restore-accept", "OK"),
+            call("verify-restoration-close", "Cancel"),
+        ])
+
+    def test_unknown_or_unapplied_trim_never_restores_or_saves(self):
+        ui, evidence = Mock(), Mock()
+        ui.duration_dialog.side_effect = [("field", "OK", "Cancel", (60, 60, 30))] * 2
+        ui.duration_values.return_value = ((60, 60, 29), "OK")
+        with self.assertRaisesRegex(ValueError, "restore model"):
+            editor.refresh_third_playlist(ui, evidence)
+        evidence.press.assert_called_once_with("shorten-accept", "OK")
+        self.assertEqual(ui.commit_timecode.call_count, 1)
 
 if __name__ == "__main__":
     unittest.main()
