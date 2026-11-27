@@ -357,6 +357,16 @@ pub struct BundleImportPlan {
     pub total_blob_bytes: u64,
 }
 
+#[derive(Debug)]
+pub struct VerifiedProjectBundle {
+    pub project_id: Uuid,
+    pub generation: Uuid,
+    pub revision: u64,
+    pub event_count: usize,
+    pub blob_count: usize,
+    pub total_blob_bytes: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ApplyOutcome {
     pub project: Project,
@@ -1102,6 +1112,17 @@ impl Store {
         manifest: &ProjectBundleManifest,
         admission: &impl BundleAssetAdmission,
     ) -> Result<BundleImportPlan> {
+        Self::validate_bundle_header(manifest)?;
+        let project_plan = self.inspect_import(&manifest.backup)?;
+        let total_blob_bytes = Self::verify_bundle_blob_bytes(source, manifest, admission)?;
+        Ok(BundleImportPlan {
+            project: project_plan,
+            blob_count: manifest.blobs.len(),
+            total_blob_bytes,
+        })
+    }
+
+    fn validate_bundle_header(manifest: &ProjectBundleManifest) -> Result<()> {
         if manifest.format_version != PROJECT_BUNDLE_FORMAT_VERSION {
             return Err(StorageError::InvalidBackup(format!(
                 "unsupported bundle format version {}",
@@ -1115,7 +1136,14 @@ impl Store {
         }
         ensure_backup_secret_free(&manifest.backup, Some(MAX_BUNDLE_MANIFEST_BYTES))?;
         ensure_secret_free_bytes(&serde_json::to_vec(manifest)?, "portable bundle metadata")?;
-        let project_plan = self.inspect_import(&manifest.backup)?;
+        Ok(())
+    }
+
+    fn verify_bundle_blob_bytes(
+        source: &Path,
+        manifest: &ProjectBundleManifest,
+        admission: &impl BundleAssetAdmission,
+    ) -> Result<u64> {
         let mut expected = BTreeSet::new();
         for asset in &manifest.backup.project.assets {
             let digest = asset.content_sha256.as_deref().ok_or_else(|| {
@@ -1177,11 +1205,7 @@ impl Store {
             ));
         }
 
-        Ok(BundleImportPlan {
-            project: project_plan,
-            blob_count: manifest.blobs.len(),
-            total_blob_bytes,
-        })
+        Ok(total_blob_bytes)
     }
 
     fn blob_path(&self, digest: &str) -> Result<PathBuf> {

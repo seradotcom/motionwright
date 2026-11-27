@@ -263,7 +263,7 @@ export function ProjectLibraryDialog({
     if (kind === "import" && (!bundlePlan || !onImportBundle || unresolvedBundle)) return;
     if (kind === "recover" && (!copy?.value || !onRecoverBundle)) return;
     const startedSession = session.current, request = ++operationRequest.current;
-    const titles = { folder: "Choosing a project folder", archive: "Choosing a Sequencewright archive",
+    const titles = { folder: "Choosing a project folder", archive: "Choosing a project archive",
       inspect: "Inspecting the portable project", import: "Importing the portable project",
       recover: "Checking the original import" };
     const operation: Opening = { kind: "bundle", title: titles[kind] };
@@ -416,7 +416,7 @@ export function ProjectLibraryDialog({
             <button type="button" className="project-library-button" disabled={busy}
               onClick={() => void bundleOperation("folder")}>Choose project folder</button>
             <button type="button" className="project-library-button" disabled={busy}
-              onClick={() => void bundleOperation("archive")}>Choose Sequencewright archive</button>
+              onClick={() => void bundleOperation("archive")}>Choose project archive</button>
           </div>}
           <button type="button" className="project-library-button" disabled={busy || !bundlePath.trim() || unresolvedBundle}
             onClick={() => void bundleOperation("inspect")}>Inspect portable project</button>

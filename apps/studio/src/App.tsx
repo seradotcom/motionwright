@@ -87,6 +87,7 @@ import {
   recoverOriginalFileImport,
   chooseBundleExportDestination,
   choosePortableProjectSource,
+  verifyProjectBundleExport,
   inspectProjectBundle,
   type PortableProjectSourceKind,
   renderMotionCanvasWindow,
@@ -951,14 +952,14 @@ function DeliverView({
   } | null>(null);
   const bundlePlan = bundleInspection && bundleInspection.path === importPath.trim()
     ? bundleInspection.plan : null;
-  const [portableBusy, setPortableBusy] = useState<"export" | "inspect" | "import" | "choose" | "choose_export" | null>(null);
+  const [portableBusy, setPortableBusy] = useState<"export" | "inspect" | "import" | "choose" | "choose_export" | "verify_export" | null>(null);
   const [portableStatus, setPortableStatus] = useState<string | null>(null);
   const [portableError, setPortableError] = useState<string | null>(null);
 
   const destinationPickerTurn = useRef(0);
   const destinationScope = JSON.stringify([desktopMode, project.id, project.generation, project.revision]);
   useLayoutEffect(() => {
-    setPortableBusy(current => current === "choose_export" ? null : current);
+    setPortableBusy(current => current === "choose_export" || current === "verify_export" ? null : current);
     return () => { destinationPickerTurn.current++; };
   }, [destinationScope]);
 
@@ -973,6 +974,31 @@ function DeliverView({
         setExportPath(path);
         setPortableStatus(null);
       }
+    } catch (reason) {
+      if (destinationPickerTurn.current === turn) {
+        setPortableError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (destinationPickerTurn.current === turn) setPortableBusy(null);
+    }
+  };
+
+  const verifyExistingExport = async () => {
+    if (!desktopMode || portableBusy !== null) return;
+    const turn = ++destinationPickerTurn.current;
+    setPortableBusy("verify_export");
+    setPortableError(null);
+    try {
+      const path = await choosePortableProjectSource("folder");
+      if (destinationPickerTurn.current !== turn || path === null) return;
+      setPortableStatus(null);
+      const result = await verifyProjectBundleExport(project, path);
+      if (destinationPickerTurn.current !== turn) return;
+      setPortableStatus(
+        "Verified existing bundle against saved r" + project.revision + ". The saved project, journal and " +
+        result.blob_count + " original CAS blobs (" + formatByteCount(result.total_blob_bytes) + ") match at " +
+        result.destination + ".",
+      );
     } catch (reason) {
       if (destinationPickerTurn.current === turn) {
         setPortableError(reason instanceof Error ? reason.message : String(reason));
@@ -1161,6 +1187,12 @@ function DeliverView({
             >
               {portableBusy === "export" ? "Exporting…" : "Export bundle"}
             </button>
+            {desktopMode && (
+              <button type="button" className="button secondary" disabled={portableBusy !== null}
+                onClick={() => void verifyExistingExport()}>
+                {portableBusy === "verify_export" ? "Checking existing bundle…" : "Verify existing export"}
+              </button>
+            )}
           </div>
         </div>
 
@@ -1188,7 +1220,7 @@ function DeliverView({
               <button type="button" className="button" disabled={portableBusy !== null}
                 onClick={() => void chooseImportSource("folder")}>Choose project folder</button>
               <button type="button" className="button" disabled={portableBusy !== null}
-                onClick={() => void chooseImportSource("archive")}>Choose Sequencewright archive</button>
+                onClick={() => void chooseImportSource("archive")}>Choose project archive</button>
             </>}
             <button
               type="button"

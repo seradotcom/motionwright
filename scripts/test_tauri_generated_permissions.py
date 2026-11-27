@@ -108,6 +108,7 @@ REAL_COMMANDS = (
     "waveform_page",
     "choose_bundle_export_destination",
     "export_project_bundle",
+    "verify_project_bundle_export",
     "export_native_capsule_source",
     "native_hyperframes_source",
     "render_hyperframes_source",

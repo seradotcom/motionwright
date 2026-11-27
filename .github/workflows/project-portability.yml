@@ -1402,6 +1402,7 @@ jobs:
                   'service_export_preconditions_reject_foreign_scope_before_missing_source_io',
                   'service_exact_inspection_rejects_even_semantically_equal_manifest_reencoding',
                   'service_rejects_changed_blob_with_unchanged_manifest_and_publishes_no_member',
+                  'existing_export_verifies_the_exact_saved_revision_and_original_media_after_reopen',
               }),
               ('storage-row-authority', ['-p', 'motionwright-storage', '--test', 'project_row_authority'], {
                   'ordinary_project_commits_replay_and_reopen_keep_their_own_identity',

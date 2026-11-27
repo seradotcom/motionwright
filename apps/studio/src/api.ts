@@ -729,6 +729,21 @@ export async function exportProjectBundle(
   });
 }
 
+export async function verifyProjectBundleExport(project: Project, path: string): Promise<PortableBundleExport> {
+  if (!isTauri()) throw new Error("Verifying a portable export requires Motionwright desktop.");
+  const request = { project_id: project.id, generation: project.generation, revision: project.revision, path };
+  const result = await invoke<PortableBundleExport & {
+    project_id: string; generation: string; revision: number;
+  }>("verify_project_bundle_export", { request });
+  if (!result || result.destination !== request.path || result.project_id !== request.project_id
+    || result.generation !== request.generation || result.revision !== request.revision
+    || !Number.isSafeInteger(result.blob_count) || result.blob_count < 0
+    || typeof result.total_blob_bytes !== "string" || !/^(0|[1-9][0-9]*)$/.test(result.total_blob_bytes)) {
+    throw new Error("The bundle verification belongs to another destination or saved project revision.");
+  }
+  return result;
+}
+
 function requireBundleFingerprint(value: unknown): asserts value is string {
   if (typeof value !== "string" || value.length !== 64 || !/^[0-9a-f]{64}$/.test(value)) {
     throw new Error("The bundle inspection is incomplete. Inspect it again before importing.");

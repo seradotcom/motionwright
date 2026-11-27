@@ -78,6 +78,22 @@ impl StudioService {
         )
     }
 
+    pub fn verify_project_bundle_export_at(
+        &self,
+        id: Uuid,
+        expected: &RevisionStamp,
+        source: impl AsRef<Path>,
+    ) -> StorageResult<motionwright_storage::VerifiedProjectBundle> {
+        self.store
+            .lock()
+            .verify_project_bundle_export_at_with_admission(
+                id,
+                expected,
+                source.as_ref(),
+                &SvgBundleAdmission,
+            )
+    }
+
     pub fn inspect_project_bundle_with_fingerprint(
         &self,
         source: impl AsRef<Path>,

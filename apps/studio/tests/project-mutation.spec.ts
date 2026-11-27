@@ -200,7 +200,7 @@ test("a pending portable restore cannot race source edits or publish into anothe
     const host = window as unknown as {
       __RESTORE_FIXTURE__: typeof state;
       __TAURI_INTERNALS__: { invoke: (command: string, args?: {request?: {
-        path?: string; fingerprint?: string;
+        path?: string; fingerprint?: string; project_id?: string; generation?: string;
         revision?: number; change?: { type: string; title?: string };
       }}) => Promise<unknown> };
     };
@@ -222,9 +222,21 @@ test("a pending portable restore cannot race source edits or publish into anothe
       }
       if (command === "choose_portable_project_source") {
         const kind = (args as { kind?: string } | undefined)?.kind;
-        if (kind === "archive") return "/synthetic-fixture/Sequencewright copy.json";
+        if (kind === "archive") return "/synthetic-fixture/Original project archive.json";
         if (kind === "folder") return "/synthetic-fixture/portable.motionwright";
         throw new Error("Unexpected portable source kind");
+      }
+      if (command === "verify_project_bundle_export") {
+        const request = args?.request;
+        if (request?.path !== "/synthetic-fixture/portable.motionwright" ||
+            request.project_id !== current.id || request.generation !== current.generation ||
+            request.revision !== current.revision) {
+          throw new Error("The bundle check did not preserve the current source");
+        }
+        return {
+          destination: request.path, project_id: current.id, generation: current.generation,
+          revision: current.revision, blob_count: 3, total_blob_bytes: "1024",
+        };
       }
       if (command === "inspect_project_bundle") return {
         project_id: "01900000-0000-7000-8000-000000000021",
@@ -254,9 +266,9 @@ test("a pending portable restore cannot race source edits or publish into anothe
   await page.goto("/");
   await page.getByRole("button", { name: "Open project library", exact: true }).click();
   const library = page.getByRole("dialog", { name: /Project library/i });
-  await library.getByRole("button", { name: "Choose Sequencewright archive", exact: true }).click();
+  await library.getByRole("button", { name: "Choose project archive", exact: true }).click();
   await expect(library.getByLabel("Project folder or archive path"))
-    .toHaveValue("/synthetic-fixture/Sequencewright copy.json");
+    .toHaveValue("/synthetic-fixture/Original project archive.json");
   await expect(library.getByRole("button", { name: "Import inspected project" })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(library).toBeHidden();
@@ -267,6 +279,10 @@ test("a pending portable restore cannot race source edits or publish into anothe
   await expect(chooseDestination).toBeEnabled();
   await expect(page.getByLabel("Portable export path")).toHaveValue("/owner/previous.motionwright");
   await chooseDestination.click();
+  await expect(page.getByLabel("Portable export path")).toHaveValue("E:/Original projects/Edición final.motionwright");
+  await page.getByRole("button", { name: "Verify existing export", exact: true }).click();
+  await expect(page.locator(".portable-project .portable-message"))
+    .toContainText("Verified existing bundle against saved r" + initial.project.revision);
   await expect(page.getByLabel("Portable export path")).toHaveValue("E:/Original projects/Edición final.motionwright");
   await page.getByRole("button", { name: "Choose project folder", exact: true }).click();
   await expect(page.getByLabel("Portable import path")).toHaveValue("/synthetic-fixture/portable.motionwright");

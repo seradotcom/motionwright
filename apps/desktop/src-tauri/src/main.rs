@@ -4062,12 +4062,38 @@ async fn choose_bundle_export_destination(
 }
 
 #[tauri::command]
-fn export_project_bundle(
-    _owner: desktop_owner::OwnerInvocation,
+async fn export_project_bundle(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ExportBundleRequest,
 ) -> Result<BundleExportResponse, String> {
-    project_export::export_project_bundle(&state.service, &state.effect_grants, request)
+    let service = state.service.clone();
+    let grants = state.effect_grants.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        project_export::export_project_bundle(&service, &grants, request)
+    })
+    .await
+    .map_err(|_| {
+        "The bundle export outcome is unknown. Verify the original destination.".to_string()
+    })?
+}
+
+#[tauri::command]
+async fn verify_project_bundle_export(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: project_export::VerifyBundleExportRequest,
+) -> Result<project_export::BundleExportVerification, String> {
+    let service = state.service.clone();
+    let scope = (request.project_id, request.generation, request.revision);
+    let result = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        project_export::verify_bundle_export(&service, request)
+    })
+    .await
+    .map_err(|_| "The existing bundle verification did not finish.".to_string())??;
+    owner.begin_phase()?;
+    checked_effect_scope(&state, scope.0, scope.1, scope.2)?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -4264,8 +4290,8 @@ async fn choose_portable_project_source(
                 .set_title("Choose a Motionwright project folder")
                 .blocking_pick_folder(),
             PortableProjectSource::Archive => dialog
-                .set_title("Choose a Sequencewright archive")
-                .add_filter("Sequencewright archives", &["json"])
+                .set_title("Choose a project archive")
+                .add_filter("JSON project archives", &["json"])
                 .blocking_pick_file(),
         }
     })
@@ -5063,6 +5089,7 @@ fn main() {
             waveform_page,
             choose_bundle_export_destination,
             export_project_bundle,
+            verify_project_bundle_export,
             export_native_capsule_source,
             native_hyperframes_source,
             render_hyperframes_source,

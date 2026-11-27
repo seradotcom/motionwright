@@ -69,6 +69,25 @@ pub struct BundleExportResponse {
     pub total_blob_bytes: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VerifyBundleExportRequest {
+    pub project_id: Uuid,
+    pub generation: Uuid,
+    pub revision: u64,
+    pub path: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BundleExportVerification {
+    pub destination: String,
+    pub project_id: Uuid,
+    pub generation: Uuid,
+    pub revision: u64,
+    pub blob_count: usize,
+    pub total_blob_bytes: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct OtioExportResponse {
     pub path: String,
@@ -118,6 +137,34 @@ pub fn export_project_bundle(
 ) -> Result<BundleExportResponse, String> {
     let prepared = prepare_project_export(service, grants, request)?;
     execute_bundle_export(service, prepared)
+}
+
+pub fn verify_bundle_export(
+    service: &StudioService,
+    request: VerifyBundleExportRequest,
+) -> Result<BundleExportVerification, String> {
+    let project = open_project(
+        service,
+        OpenProjectRequest {
+            project_id: request.project_id,
+        },
+    )
+    .map_err(sanitized)?;
+    if project.generation != request.generation || project.revision != request.revision {
+        return Err("The saved project changed. Refresh it before verifying the export.".into());
+    }
+    let source = absolute_bundle_path(&request.path)?;
+    let plan = service
+        .verify_project_bundle_export_at(project.id, &project.stamp(), &source)
+        .map_err(sanitized)?;
+    Ok(BundleExportVerification {
+        destination: source.display().to_string(),
+        project_id: plan.project_id,
+        generation: plan.generation,
+        revision: plan.revision,
+        blob_count: plan.blob_count,
+        total_blob_bytes: plan.total_blob_bytes.to_string(),
+    })
 }
 
 fn execute_bundle_export(

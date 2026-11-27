@@ -1333,6 +1333,76 @@ fn service_rejects_changed_blob_with_unchanged_manifest_and_publishes_no_member(
 }
 
 #[test]
+fn existing_export_verifies_the_exact_saved_revision_and_original_media_after_reopen() {
+    use motionwright_service::StudioService;
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("export-source/state.sqlite3");
+    let mut store = fixture_store(dir.path(), "export-source");
+    let project = Project::new("Portable export after a lost reply").unwrap();
+    store.create_project(&project).unwrap();
+    let media = dir.path().join("original.bin");
+    let original = b"Original project export media";
+    fs::write(&media, original).unwrap();
+    let (project, _) = add_asset(&mut store, &project, &media, "export-original-media");
+    drop(store);
+
+    let bundle = dir.path().join("verified-portable-bundle");
+    let service = StudioService::open(&database).unwrap();
+    let manifest = service
+        .export_project_bundle_at(project.id, &project.stamp(), &bundle)
+        .unwrap();
+    let manifest_path = bundle.join("manifest.json");
+    let manifest_bytes = fs::read(&manifest_path).unwrap();
+    let member = bundle.join(&manifest.blobs[0].relative_path);
+    drop(service);
+
+    let reopened = StudioService::open(&database).unwrap();
+    let checked = reopened
+        .verify_project_bundle_export_at(project.id, &project.stamp(), &bundle)
+        .unwrap();
+    assert_eq!(checked.project_id, project.id);
+    assert_eq!(checked.generation, project.generation);
+    assert_eq!(checked.revision, project.revision);
+    assert_eq!(checked.event_count, 1);
+    assert_eq!(checked.blob_count, 1);
+    assert_eq!(checked.total_blob_bytes, original.len() as u64);
+    assert_eq!(reopened.project(project.id).unwrap(), project);
+    assert_eq!(fs::read(&manifest_path).unwrap(), manifest_bytes);
+    assert_eq!(fs::read(&member).unwrap(), original);
+
+    fs::write(&member, vec![b'x'; original.len()]).unwrap();
+    assert!(
+        reopened
+            .verify_project_bundle_export_at(project.id, &project.stamp(), &bundle)
+            .is_err()
+    );
+    fs::write(&member, original).unwrap();
+    let updated = reopened
+        .apply(
+            project.id,
+            &project.stamp(),
+            "later-export-source-edit",
+            &Change::RenameProject {
+                title: "A later saved revision".into(),
+            },
+        )
+        .unwrap()
+        .project;
+    assert!(
+        reopened
+            .verify_project_bundle_export_at(project.id, &project.stamp(), &bundle)
+            .is_err()
+    );
+    assert!(
+        reopened
+            .verify_project_bundle_export_at(updated.id, &updated.stamp(), &bundle)
+            .is_err()
+    );
+    assert_eq!(reopened.project(updated.id).unwrap(), updated);
+    assert_eq!(fs::read(&manifest_path).unwrap(), manifest_bytes);
+}
+
+#[test]
 fn portable_import_recovery_preserves_later_edits_and_original_cas_after_reopen() {
     use motionwright_service::{BundleImportRecoveryRequest, StudioService};
     let dir = tempfile::tempdir().unwrap();

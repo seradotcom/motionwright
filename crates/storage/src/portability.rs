@@ -319,6 +319,43 @@ impl Store {
         )
     }
 
+    /// Recheck an existing export against the saved project and its journal.
+    /// This reads the selected folder without publishing or importing it.
+    pub fn verify_project_bundle_export_at_with_admission(
+        &mut self,
+        id: Uuid,
+        expected: &RevisionStamp,
+        source: &Path,
+        admission: &impl BundleAssetAdmission,
+    ) -> Result<VerifiedProjectBundle> {
+        let saved_sha = self
+            .export_project_snapshot(id, Some(expected))?
+            .payload_sha256;
+        let bytes = read_bundle_manifest_bytes(source)?;
+        let manifest: ProjectBundleManifest = serde_json::from_slice(&bytes)?;
+        if manifest.backup.payload_sha256 != saved_sha {
+            return Err(StorageError::InvalidBackup(
+                "existing bundle does not match the saved project and journal".into(),
+            ));
+        }
+        Self::validate_bundle_header(&manifest)?;
+        validate_backup(&manifest.backup)?;
+        let total_blob_bytes = Self::verify_bundle_blob_bytes(source, &manifest, admission)?;
+        if read_bundle_manifest_bytes(source)? != bytes {
+            return Err(StorageError::InvalidBackup(
+                "bundle manifest changed during verification".into(),
+            ));
+        }
+        Ok(VerifiedProjectBundle {
+            project_id: manifest.backup.project.id,
+            generation: manifest.backup.project.generation,
+            revision: manifest.backup.project.revision,
+            event_count: manifest.backup.events.len(),
+            blob_count: manifest.blobs.len(),
+            total_blob_bytes,
+        })
+    }
+
     pub fn inspect_project_bundle_with_fingerprint(
         &self,
         source: impl AsRef<Path>,
