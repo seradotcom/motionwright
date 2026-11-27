@@ -87,7 +87,7 @@ on:
         default: contracts
         required: true
       expected_source_sha:
-        description: Exact canonical source SHA required by mux-source and hybrid-owner
+        description: Exact source SHA required for HyperFrames, mux-source and hybrid-owner
         type: string
         required: false
       evidence_recipient_spki:
@@ -107,7 +107,32 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || (inputs.native_scenario != 'mux-source' && inputs.native_scenario != 'hybrid-owner')
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Admit the explicit HyperFrames source before setup
+        if: github.event_name == 'workflow_dispatch' && inputs.native_scenario == 'hyperframes'
+        shell: bash
+        env:
+          MOTIONWRIGHT_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
+          PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_RUN_ATTEMPT" != 1 ||
+                ! "$MOTIONWRIGHT_EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ||
+                "$MOTIONWRIGHT_EXPECTED_SOURCE_SHA" != "$GITHUB_SHA" ||
+                "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]]; then
+            echo 'Explicit first HyperFrames attempt on the selected source required.' >&2
+            exit 2
+          fi
+          if [[ -z "$PRIVATE_EVIDENCE_RECIPIENT_SPKI" ||
+                "${#PRIVATE_EVIDENCE_RECIPIENT_SPKI}" -gt 4096 ||
+                ! "$PRIVATE_EVIDENCE_RECIPIENT_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo 'An admitted public recovery recipient is required for HyperFrames.' >&2
+            exit 2
+          fi
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '22.22.0'
@@ -461,11 +486,11 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
         with:
           toolchain: 1.98.1
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
       - name: Source policy
         run: python3 tooling/source_policy.py
       - name: Production receipt storage
@@ -571,6 +596,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_BUILD_JOBS: '2'
+      MOTIONWRIGHT_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
       PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
       PRIVATE_EVIDENCE_RECIPIENT_SHA256: ${{ inputs.evidence_recipient_sha256 }}
     steps:

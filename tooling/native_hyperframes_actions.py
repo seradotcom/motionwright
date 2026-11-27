@@ -81,10 +81,13 @@ def context():
     run_id = os.environ.get("GITHUB_RUN_ID", "")
     require(sys.platform == "linux" and os.environ.get("RUNNER_OS") == "Linux"
             and os.environ.get("GITHUB_ACTIONS") == "true"
+            and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
             and os.environ.get("GITHUB_RUN_ATTEMPT") == "1"
             and re.fullmatch(r"[0-9a-f]{40}", source)
             and re.fullmatch(r"[1-9][0-9]{0,19}", run_id),
             "original_linux_actions_attempt_required")
+    require(os.environ.get("MOTIONWRIGHT_EXPECTED_SOURCE_SHA") == source,
+            "explicit_hyperframes_source_required")
     semwright_sha = stages.selected_semwright_revision(ROOT)
     return {"source_sha": source, "semwright_sha": semwright_sha,
             "run_id": run_id, "run_attempt": "1", "scenario": SCENARIO}

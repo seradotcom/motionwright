@@ -26,6 +26,8 @@ class SourceAdmissionTests(unittest.TestCase):
         existing.source_lock_fixture(self.root)
         self.environment = {"GITHUB_ACTIONS": "true", "GITHUB_RUN_ATTEMPT": "1",
                             "GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "123",
+                            "GITHUB_EVENT_NAME": "workflow_dispatch",
+                            "MOTIONWRIGHT_EXPECTED_SOURCE_SHA": "a" * 40,
                             "RUNNER_OS": "Linux"}
 
     def test_actions_context_uses_verified_selected_sdk_without_a_historical_pin(self):
@@ -38,6 +40,20 @@ class SourceAdmissionTests(unittest.TestCase):
                     self.assertEqual(actions.context(), {
                         "source_sha": "a" * 40, "semwright_sha": revision,
                         "run_id": "123", "run_attempt": "1", "scenario": actions.SCENARIO})
+
+        for field, value, rejection in (
+            ("MOTIONWRIGHT_EXPECTED_SOURCE_SHA", "", "explicit_hyperframes_source_required"),
+            ("MOTIONWRIGHT_EXPECTED_SOURCE_SHA", "a" * 39, "explicit_hyperframes_source_required"),
+            ("MOTIONWRIGHT_EXPECTED_SOURCE_SHA", "b" * 40, "explicit_hyperframes_source_required"),
+            ("GITHUB_EVENT_NAME", "pull_request", "original_linux_actions_attempt_required"),
+        ):
+            with self.subTest(field=field, value=value), \
+                 patch.object(actions.sys, "platform", "linux"), \
+                 patch.dict(actions.os.environ, {**self.environment, field: value}), \
+                 patch.object(stages, "selected_semwright_revision") as resolve:
+                with self.assertRaisesRegex(HyperframesEvidenceRejected, rejection):
+                    actions.context()
+                resolve.assert_not_called()
 
     def test_changed_source_evidence_stops_actions_before_native_effects(self):
         path = self.root / "evidence/semwright/LICENSE-MIT"
