@@ -254,5 +254,20 @@ class MacEditorRouteTests(unittest.TestCase):
         ui.set_text.assert_not_called()
         ui.invoke_command.assert_not_called()
 
+    def test_hit_probe_observes_the_exact_target_without_confirming_the_command(self):
+        ui, evidence = Mock(), Mock()
+        ui.ax.text.return_value = ""
+        command = {"role": "AXCell", "title": "Select Video Track 1"}
+        ui.await_target.side_effect = ["command filter", command]
+        ui.command_hit_report.return_value = {"pid": 9, "point": [50, 100], "system_hit": {"pid": 9}}
+
+        report = editor.observe_video_track_action(ui, evidence, probe_hit=True)
+
+        ui.command_hit_report.assert_called_once_with(command)
+        evidence.write.assert_any_call("find-action-hit-test", ui.command_hit_report.return_value)
+        ui.invoke_command.assert_not_called()
+        evidence.key.assert_not_called()
+        self.assertEqual(report["timeline_actions"], 0)
+
 if __name__ == "__main__":
     unittest.main()

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import ctypes as C
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -110,6 +111,8 @@ class Accessibility:
         self.copy_value = bind(ax, "AXUIElementCopyAttributeValue", integer, pointer, pointer,
                                out_pointer)
         self.copy_actions = bind(ax, "AXUIElementCopyActionNames", integer, pointer, out_pointer)
+        self.copy_at_position = bind(ax, "AXUIElementCopyElementAtPosition", integer, pointer,
+                                     C.c_float, C.c_float, out_pointer)
         self.set_value = bind(ax, "AXUIElementSetAttributeValue", integer, pointer, pointer, pointer)
         self.settable = bind(ax, "AXUIElementIsAttributeSettable", integer, pointer, pointer,
                              C.POINTER(C.c_ubyte))
@@ -149,10 +152,20 @@ class Accessibility:
             self.names[value] = string
         return self.names[value]
 
-    def owns(self, element):
+    def element_pid(self, element):
         pid = C.c_int()
-        return (element and self.type_id(element) == self.element_type
-                and self.get_pid(element, C.byref(pid)) == 0 and pid.value == self.pid)
+        if (element and self.type_id(element) == self.element_type
+                and self.get_pid(element, C.byref(pid)) == 0):
+            return pid.value
+        return None
+
+    def owns(self, element):
+        return self.pid is not None and self.element_pid(element) == self.pid
+
+    def hit_test(self, root, point):
+        value = C.c_void_p()
+        status = self.copy_at_position(root, *point, C.byref(value))
+        return status, self.capture(status, value)
 
     def capture(self, status, output):
         if output.value:
@@ -244,6 +257,54 @@ class Accessibility:
 
 def label(text):
     return " ".join(text.replace("&", "").removesuffix("…").removesuffix("...").split()).casefold()
+
+
+def cg_windows_at_point(ax, point):
+    cf = C.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    pointer = C.c_void_p
+    key_value = bind(cf, "CFDictionaryGetValue", pointer, pointer, pointer)
+    get_number = bind(cf, "CFNumberGetValue", C.c_ubyte, pointer, C.c_long, pointer)
+    rectangle = bind(ax.graphics, "CGRectMakeWithDictionaryRepresentation", C.c_bool,
+                     pointer, C.POINTER(DisplayBounds))
+    copy = bind(ax.graphics, "CGWindowListCopyWindowInfo", pointer, C.c_uint32, C.c_uint32)
+    raw = copy(17, 0)  # On-screen only, excluding desktop elements, front-to-back.
+    require(raw and ax.type_id(raw) == ax.array_type, "macOS window-server list is unavailable")
+
+    def number(record, key):
+        handle = key_value(record, ax.name(key))
+        value = C.c_longlong()
+        return value.value if handle and get_number(handle, 4, C.byref(value)) else None
+
+    top, owned = None, None
+    try:
+        for index in range(min(ax.array_count(raw), 256)):
+            record = ax.array_item(raw, index)
+            bounds = key_value(record, ax.name("kCGWindowBounds"))
+            geometry = DisplayBounds()
+            if not bounds or not rectangle(bounds, C.byref(geometry)):
+                continue
+            x, y = geometry.position.first, geometry.position.second
+            width, height = geometry.size.first, geometry.size.second
+            if not (x <= point[0] < x + width and y <= point[1] < y + height):
+                continue
+            alpha_value = key_value(record, ax.name("kCGWindowAlpha"))
+            alpha = C.c_double()
+            alpha_known = bool(alpha_value and get_number(alpha_value, 6, C.byref(alpha)))
+            if alpha_known and alpha.value <= 0:
+                continue
+            pid = number(record, "kCGWindowOwnerPID")
+            reflected = {"pid": pid, "window_number": number(record, "kCGWindowNumber"),
+                         "alpha": alpha.value if alpha_known else None,
+                         "layer": number(record, "kCGWindowLayer"),
+                         "position": (x, y), "size": (width, height)}
+            if top is None:
+                top = reflected
+            if pid == ax.pid:
+                owned = reflected
+                break
+        return {"top_window": top, "top_owned_window": owned}
+    finally:
+        ax.release(raw)
 
 
 class EditorUI:
@@ -493,6 +554,44 @@ class EditorUI:
             if rows:
                 return {**rows[0], "title": title} if len(rows) == 1 else None
         return None
+
+    def command_hit_report(self, command):
+        ax = self.ax
+        self.guard()
+        position, size = command["position"], command["size"]
+        require(position and size and all(math.isfinite(number) for number in (*position, *size))
+                and min(size) > 0, "macOS V1 observation has no cell geometry")
+        point = tuple(origin + length / 2 for origin, length in zip(position, size))
+
+        def node(element):
+            return {"pid": ax.pid, "role": ax.text(element, "AXRole"),
+                    "identifier": ax.text(element, "AXIdentifier"),
+                    "title": ax.text(element, "AXTitle"), "position": ax.pair(element, "AXPosition", 1),
+                    "size": ax.pair(element, "AXSize", 2)}
+
+        def hit(root):
+            status, element = ax.hit_test(root, point)
+            pid = ax.element_pid(element)
+            ancestry, seen = [], []
+            while ax.owns(element) and len(ancestry) < 8 and not any(
+                ax.equal(element, other) for other in seen
+            ):
+                seen.append(element)
+                ancestry.append(node(element))
+                element = ax.value(element, "AXParent")
+            return {"ax_error": status, "pid": pid, "owned_ancestry": ancestry}
+
+        focused = self.focused_window()
+        require(focused and self.command_filter(), "macOS V1 observation lost the owned command window")
+        focus = node(focused)
+        system_focused = ax.element_pid(ax.value(ax.system, "AXFocusedApplication"))
+        windows = cg_windows_at_point(ax, point)
+        owned = windows["top_owned_window"]
+        return {"pid": ax.pid, "point": point, "command": command, "focused_window": focus,
+                "system_focused_pid": system_focused, "system_hit": hit(ax.system), "app_hit": hit(ax.app),
+                **windows, "top_owned_bounds_equal_ax_focus": bool(
+                    owned and owned["position"] == focus["position"] and owned["size"] == focus["size"]
+                )}
 
     def invoke_command(self, command, evidence, stage):
         ax = self.ax
@@ -867,9 +966,12 @@ def select_video_track(ui, evidence, stage):
     ui.invoke_command(command, evidence, stage)
 
 
-def observe_video_track_action(ui, evidence, *, activate=False):
+def observe_video_track_action(ui, evidence, *, activate=False, probe_hit=False):
+    require(not (activate and probe_hit), "the macOS hit observation cannot confirm a command")
     ui.prepare_input(evidence, "before-command-search")
     command = find_video_track_action(ui, evidence, "find-action")
+    if probe_hit:
+        evidence.write("find-action-hit-test", ui.command_hit_report(command))
     if activate:
         ui.invoke_command(command, evidence, "probe-select-track")
     report = {"command": command, "timeline_actions": int(activate), "imports": 0, "saves": 0}
@@ -941,7 +1043,7 @@ def wait_project(initial, guard):
 
 
 def run(owner, context, distribution, observe_editor, *, observe_clock=False,
-        observe_actions=False, observe_track=False):
+        observe_actions=False, observe_track=False, observe_hit=False):
     if observe_editor:
         editor, binary = installed_editor(owner, context, distribution)
         source = None
@@ -985,10 +1087,11 @@ def run(owner, context, distribution, observe_editor, *, observe_clock=False,
                     if observe_editor:
                         evidence.write("accessibility-tree", {"pid": process.pid, "nodes": ui.diagnostic()})
                         evidence.write("project-monitor-ax", ui.project_monitor_diagnostic())
-                        if observe_actions or observe_track:
+                        if observe_actions or observe_track or observe_hit:
                             return {"status": "COMMAND_DISPATCHED" if observe_track else "COMMAND_OBSERVED",
                                     "pid": process.pid,
-                                    **observe_video_track_action(ui, evidence, activate=observe_track)}
+                                    **observe_video_track_action(ui, evidence, activate=observe_track,
+                                                                 probe_hit=observe_hit)}
                         if observe_clock:
                             return {"status": "CLOCK_OBSERVED", "pid": process.pid,
                                     **observe_project_clock_layout(ui, evidence)}
@@ -1055,6 +1158,7 @@ def main():
     observation.add_argument("--observe-editor-clock", action="store_true")
     observation.add_argument("--observe-editor-actions", action="store_true")
     observation.add_argument("--observe-editor-select-track", action="store_true")
+    observation.add_argument("--observe-editor-command-hit", action="store_true")
     options = parser.parse_args()
     context, distribution = selection(os.environ, sys.platform, platform.machine())
     require(context["runner_os"] == "macOS", "macOS editor qualification is restricted to macOS")
@@ -1065,10 +1169,12 @@ def main():
             "macOS Kdenlive runner root is not canonical")
     print(json.dumps(run(runner / f"{JOB}-{context['run_id']}-1", context, distribution,
                          any((options.observe_editor, options.observe_editor_clock,
-                              options.observe_editor_actions, options.observe_editor_select_track)),
+                              options.observe_editor_actions, options.observe_editor_select_track,
+                              options.observe_editor_command_hit)),
                          observe_clock=options.observe_editor_clock,
                          observe_actions=options.observe_editor_actions,
-                         observe_track=options.observe_editor_select_track), sort_keys=True))
+                         observe_track=options.observe_editor_select_track,
+                         observe_hit=options.observe_editor_command_hit), sort_keys=True))
 
 
 if __name__ == "__main__":
