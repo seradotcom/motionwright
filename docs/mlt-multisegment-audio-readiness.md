@@ -1,6 +1,6 @@
 # Native multisegment A/V source readiness
 
-Motionwright can already produce verified Motion Canvas frames, prepare per-segment lossless FFV1 sources through Semwright's pinned MLT Driver Host and render a verified **single-segment** H.264/AAC master. The native two-segment video-only timeline is being developed separately. Before that video can be paired with voice audio, the application must prove that the same creative revision, output profile, complete video cut and imported measured audio describe one consistent source.
+The [multi-segment AV master](multi-segment-preflight.md) checks that the saved project revision, output profile, complete Motion Canvas cut and original measured voice all describe the same source. This page describes the audio check after Motion Canvas frames have been encoded as lossless FFV1 sources by the pinned MLT Driver Host.
 
 `motionwright_native::mlt_av_audio::preflight_multi_segment_audio` implements this **read-only, owner-only input gate**. It does not issue a Driver Host command, start a render, mux video with audio, mix music, stretch audio or export an MP4. It is not exposed as a WebView command or a public arbitrary-path operation.
 
@@ -28,7 +28,7 @@ The evidence scope is deliberately:
 
 `verified-owner-audio-ffv1-inputs-not-muxed-mp4`
 
-Passing the gate is **not** proof that the video-only MLT timeline has been rendered or that a real H.264/AAC master exists. The next independent task is to attach this source-bound audio to a *completed, actually verified* MLT video timeline through the pinned Semwright `driver.mlt-video.av.mux` capability, with one-time owner grants, stable mutation IDs and real native E2E verification of decoded audio/video. The video-only timeline PR #61 remains separately gated by its own native runner; this module does not alter or claim that PR.
+A completed master additionally requires verified MLT timeline assembly and `driver.mlt-video.av.mux` through the pinned Semwright Host. The mastering route uses a one-time owner grant and stable request identities and verifies the resulting media.
 
 ## Testing
 

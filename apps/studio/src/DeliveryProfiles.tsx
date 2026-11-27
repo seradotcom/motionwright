@@ -1723,8 +1723,7 @@ export default function DeliveryProfiles({
                       {" "}{currentMultiSource.segments.length} segments,
                       {" "}{currentMultiSource.total_frames} exact frames,
                       {" "}MLT profile {currentMultiSource.mlt_profile}.
-                      This checks source manifests only; a multi-segment master MP4 has
-                      NOT been assembled.
+                      This check covers source manifests. Assemble the master in the audiovisual mastering panel.
                     </div>
                   )}
                 </div>
@@ -1780,7 +1779,7 @@ export default function DeliveryProfiles({
               </div>
               {!mixedRendererCut && !masterPreviewToken && !multiSourceToken && (
                 <div className="delivery-truth-note">
-                  <CircleDashed size={14} /> Complete a real native render of one contiguous Motion Canvas segment in this desktop session first.
+                  <CircleDashed size={14} /> Render the saved Motion Canvas cut or reopen its original saved capture before mastering.
                 </div>
               )}
               {!verifiedWavIntent && (

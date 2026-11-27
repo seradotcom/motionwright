@@ -41,6 +41,7 @@ test("Deliver checks multi-segment source readiness with only an owner preview t
   boot.native_sdk.mode = "tauri";
   const profile = boot.project.deliverables[0];
   const scenes = boot.project.scenes.filter((item) => item.renderer === "motion-canvas");
+  profile.included_scene_ids = scenes.map(scene => scene.id);
   const previewToken = "77777777-7777-4777-8777-777777777777";
   const source = {
     project_resource: "project:" + boot.project.id,
@@ -153,7 +154,7 @@ test("Deliver checks multi-segment source readiness with only an owner preview t
   const report = page.getByLabel("Multi-segment source preflight result");
   await expect(report).toContainText("2 segments");
   await expect(report).toContainText("480 exact frames");
-  await expect(report).toContainText("NOT been assembled");
+  await expect(report).toContainText("This check covers source manifests.");
   const requests = await page.evaluate(() => (
     window as unknown as { __SOURCE_READS__: Array<Record<string, unknown>> }
   ).__SOURCE_READS__);
