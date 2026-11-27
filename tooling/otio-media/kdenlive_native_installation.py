@@ -20,28 +20,37 @@ MAX_PLIST_BYTES = 1024 * 1024
 
 
 def install_windows(archive, owner, original):
-    from windows_installer_lifecycle import observed_terminal
-    from windows_installer_producer import (
-        command_line, launch_once_and_observe, require_original_image,
-    )
+    from windows_installer_lifecycle import custody_error, observed_terminal
+    from windows_updated_application import process_identity
 
     destination = owner / "installed"
     require(not destination.exists() and not destination.is_symlink()
             and not any(character in str(destination) for character in ('"', "\r", "\n", "\0")),
             "Windows editor installation destination is unsafe")
-    # Use the original Windows launcher and leave NSIS's last /D= unquoted,
-    # including a destination with spaces. The archive stays held read-only.
-    line = command_line(archive, ["/S", "/D=" + str(destination)])
+    # NSIS expects the final /D= argument to consume the rest of the command line.
+    line = subprocess.list2cmdline([str(archive), "/S"]) + " /D=" + str(destination)
     environment = {name: os.environ[name] for name in ("SystemRoot", "WINDIR", "PATH", "USERPROFILE",
                    "APPDATA", "LOCALAPPDATA", "ProgramData", "TEMP", "TMP") if name in os.environ}
     with _publication_guard(archive, archive.lstat(), original["sha256"], original["bytes"],
                             "Kdenlive Windows installer") as (_, check):
-        def inspect(process, _identity):
-            require_original_image(process, archive)
-
+        original_terminal, identity, errors = observed_terminal(None), None, []
         with (owner / "installer.stdout").open("xb") as stdout, (owner / "installer.stderr").open("xb") as stderr:
-            outcome = launch_once_and_observe(archive, line, environment, timeout=180,
-                                              live_observer=inspect, stdout=stdout, stderr=stderr)
+            try:
+                process = subprocess.Popen(line, executable=str(archive), cwd=owner, env=environment,
+                                           stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)
+                try:
+                    identity = process_identity(process, archive)
+                except Exception as error:
+                    errors.append(custody_error("process_identity", error))
+                try:
+                    original_terminal = observed_terminal(process.wait(timeout=180))
+                except subprocess.TimeoutExpired:
+                    original_terminal = observed_terminal(None, timed_out=True)
+                except Exception as error:
+                    errors.append(custody_error("installer_wait", error))
+            except OSError as error:
+                errors.append(custody_error("installer_launch", error))
+        outcome = {"original_terminal": original_terminal, "process": identity, "custody_errors": errors}
         publish(owner / "windows-installer-terminal.json", outcome)
         check()
     require(outcome["original_terminal"] == observed_terminal(0)
@@ -65,15 +74,22 @@ def bundle_identity(app):
 
 def install_macos(archive, owner, original):
     from ci_macos_package_metadata import mounted_device, readonly_mount_identity
+    from native_host_installed_shared_state import ci_copy_original
 
     mount = owner / "mount"
     mount.mkdir(mode=0o700)
     destination = owner / "installed"
     destination.mkdir(mode=0o700)
-    command = ["/usr/bin/hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen",
-               "-plist", "-mountpoint", str(mount), str(archive)]
+    image = owner / "mount-input.dmg"
+    # DiskImages can update source file metadata even during a read-only
+    # mount. Bind a separate identical image to the original before attach.
     with _publication_guard(archive, archive.lstat(), original["sha256"], original["bytes"],
                             "Kdenlive macOS image") as (_, check):
+        ci_copy_original(archive, image, MAX_ARCHIVE_BYTES, expected=original)
+        initial_image = image.lstat()
+        command = ["/usr/bin/hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen",
+                   "-plist", "-mountpoint", str(mount), str(image)]
+        check()
         attach = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
                                 check=True, timeout=60)
         require(0 < len(attach.stdout) <= 128 * 1024, "native DMG attach response exceeds bounds")
@@ -90,10 +106,14 @@ def install_macos(archive, owner, original):
             require(installed == source and bundle_identity(app)[1] == source
                     and readonly_mount_identity(mount, device) == mounted,
                     "installed Kdenlive binary or original mount changed")
-            check()
         finally:
             subprocess.run(["/usr/bin/hdiutil", "detach", str(mount)],
                            stdin=subprocess.DEVNULL, check=True, timeout=45)
+        final_image = image.lstat()
+        require((initial_image.st_dev, initial_image.st_ino) == (final_image.st_dev, final_image.st_ino)
+                and regular_file(image, MAX_ARCHIVE_BYTES) == original,
+                "Kdenlive mounting copy changed")
+        check()
     require(not os.path.ismount(mount), "Kdenlive source image did not detach")
     return path
 

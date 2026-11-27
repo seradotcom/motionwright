@@ -52,6 +52,61 @@ class NativeInstallationTests(unittest.TestCase):
                     installation.install(root, context, chosen)
                 launch.assert_called_once()
 
+    def test_windows_launch_uses_the_current_process_identity_reader(self):
+        import windows_updated_application as windows
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            context, chosen, owner = self.fixture(root)
+            archive = owner / chosen.filename
+            original = installation.regular_file(archive, 1024)
+            with patch.object(installation.subprocess, "Popen") as launch, patch.object(
+                windows, "process_identity", return_value={"pid": 42, "creation_filetime": 8},
+            ) as observe:
+                launch.return_value.wait.return_value = 0
+                executable = installation.install_windows(archive, owner, original)
+            observe.assert_called_once_with(launch.return_value, archive)
+            self.assertEqual(executable, owner / "installed/bin/kdenlive.exe")
+            self.assertTrue((owner / "windows-installer-terminal.json").exists())
+            launch.assert_called_once()
+
+    def test_macos_mounts_a_byte_identical_copy_and_preserves_the_archive(self):
+        import ci_macos_package_metadata as mac
+        import native_host_installed_shared_state as host
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            context, chosen, owner = self.fixture(root, "macOS")
+            archive = owner / chosen.filename
+            original = installation.regular_file(archive, 1024)
+            mount = owner / "mount"
+
+            def copy_image(src, copy, maximum, *, expected):
+                self.assertEqual((src, expected), (archive, original))
+                copy.write_bytes(src.read_bytes())
+
+            def run(arguments, **options):
+                if arguments[:2] == ["/usr/bin/hdiutil", "attach"]:
+                    image = Path(arguments[-1])
+                    self.assertNotEqual(image, archive)
+                    self.assertEqual(image.read_bytes(), archive.read_bytes())
+                    (mount / "Kdenlive.app").mkdir()
+                    return SimpleNamespace(stdout=b"metadata")
+                return SimpleNamespace()
+
+            def bundle(root):
+                return root / "Contents/MacOS/kdenlive", {"fixture": "same bundle"}
+
+            with patch.object(host, "ci_copy_original", side_effect=copy_image), patch.object(
+                installation.subprocess, "run", side_effect=run,
+            ), patch.object(mac, "mounted_device", return_value="/dev/disk1"), patch.object(
+                mac, "readonly_mount_identity", return_value={"read_only": True},
+            ), patch.object(installation, "bundle_identity", side_effect=bundle):
+                executable = installation.install_macos(archive, owner, original)
+            self.assertEqual(executable, owner / "installed/Kdenlive.app/Contents/MacOS/kdenlive")
+            self.assertEqual(installation.regular_file(archive, 1024), original)
+
     def test_a_changed_archive_never_reaches_the_installer(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
