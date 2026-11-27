@@ -37,6 +37,7 @@ class ReviewBridge(ui.AtspiBridge):
     def __init__(self, api, *, deadline, glib):
         super().__init__(api, deadline=deadline, glib=glib)
         self.roles[api.Role.TOGGLE_BUTTON] = "button"
+        self.roles[api.Role.LIST_ITEM] = "list item"
 
     def view(self, node):
         original = super().view(node)
@@ -70,9 +71,10 @@ def wait_for(bridge, operation):
     raise ui.ProbeError("AAC31_UI_DEADLINE")
 
 
-def exact(bridge, binding, label, *, button=False, enabled=False):
+def exact(bridge, binding, label, *, button=False, enabled=False, within=None):
+    views = bridge.tree(binding) if within is None else ui.walk(bridge, within)
     found = ui.unique(
-        [view for view in bridge.tree(binding) if view.name == label
+        [view for view in views if view.name == label
          and "visible" in view.states and "defunct" not in view.states
          and (not button or view.role == "button")],
         "EXACT_AAC31_CONTROL",
@@ -130,6 +132,22 @@ def invoke(bridge, binding, view, journal, label):
 def press(bridge, binding, label, journal, stage):
     view = wait_for(bridge, lambda: exact(bridge, binding, label, button=True, enabled=True))
     return invoke(bridge, binding, view, journal, stage)
+
+
+def saved_review_control(bridge, binding, master):
+    label = "Review saved original " + master.id
+    matches = []
+    for row in bridge.tree(binding):
+        if row.role != "list item" or "visible" not in row.states or "defunct" in row.states:
+            continue
+        try:
+            control = exact(bridge, binding, label, button=True, enabled=True, within=row.node)
+        except ui.NotReady:
+            continue
+        matches.append((row, control))
+    row, control = ui.unique(matches, "AAC31_SAVED_RECEIPT_ROW")
+    exact(bridge, binding, master.sha256, within=row.node)
+    return control
 
 
 def player_proof(bridge, binding, player, journal, gdk, evidence):
@@ -239,16 +257,15 @@ def operate_window(request, phase, binding, bridge, journal, gdk, database, outp
             return original_master(database, source, output)
 
         master = wait_for(bridge, original_completed)
-        wait_for(bridge, lambda: exact(bridge, binding, "Completed original hybrid master"))
-        wait_for(bridge, lambda: exact(bridge, binding, master.sha256))
+        completed = wait_for(bridge, lambda: exact(bridge, binding, "Completed original hybrid master"))
+        wait_for(bridge, lambda: exact(bridge, binding, master.sha256, within=completed.node))
     else:
         require(phase == "reopen", "invalid installed AAC31 phase")
         master = original_master(database, source, output)
 
     press(bridge, binding, "Find saved MP4s", journal, "find-saved")
-    wait_for(bridge, lambda: exact(bridge, binding, master.sha256))
-    pressed = "Review saved original " + master.id
-    press(bridge, binding, pressed, journal, "select-original")
+    review = wait_for(bridge, lambda: saved_review_control(bridge, binding, master))
+    invoke(bridge, binding, review, journal, "select-original")
     player = wait_for(bridge, lambda: exact(bridge, binding, PLAYER))
     wait_for(bridge, lambda: exact(bridge, binding, METADATA))
     same_window(bridge, binding, player)

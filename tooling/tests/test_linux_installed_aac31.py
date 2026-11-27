@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import linux_installed_aac31 as installed
-from linux_hybrid_original_receipt import Source, original_master
+from linux_hybrid_original_receipt import Master, Source, original_master
 from linux_hybrid_playback_frames import PlaybackFrame, marker, observe_playback
 
 
@@ -99,6 +99,60 @@ class InstalledAAC31ProofTests(unittest.TestCase):
             for sample in result:
                 self.assertEqual(sha256((evidence / sample["original"]).read_bytes()).hexdigest(),
                                  sample["sha256"])
+
+    def test_selects_digest_in_the_original_receipt_row_even_if_completed_card_repeats_it(self):
+        digest = "a" * 64
+        receipt = "fd12950f-8495-47fa-b6d7-d5698b852366"
+        review = "Review saved original " + receipt
+        master = Master(receipt, receipt, digest, 256, Path("master.mp4"))
+        ready = frozenset({"visible", "showing", "enabled", "sensitive"})
+
+        def item(node, role, name):
+            return installed.ui.View(node, role, name, ready, frozenset())
+
+        views = {
+            "deliver": item("deliver", "button", "Deliver"),
+            "check": item("check", "button", "Check hybrid sources"),
+            "create": item("create", "button", "Create hybrid master"),
+            "find": item("find", "button", "Find saved MP4s"),
+            "complete": item("complete", "status", "Completed original hybrid master"),
+            "completed-digest": item("completed-digest", "text", digest),
+            "saved": item("saved", "section", "Saved original MP4s"),
+            "row": item("row", "list item", ""),
+            "saved-digest": item("saved-digest", "text", digest),
+            "review": item("review", "button", review),
+            "player": item("player", "video", installed.PLAYER),
+            "metadata": item("metadata", "text", installed.METADATA),
+        }
+        children = {"complete": ["completed-digest"], "saved": ["find", "row"],
+                    "row": ["saved-digest", "review"]}
+        initial = ["deliver", "check", "create", "find", "complete", "completed-digest", "saved"]
+        action = []
+
+        def invoke(_, __, target, ___, stage):
+            action.append((target.node, stage))
+
+        def tree(_):
+            known = initial + (["row", "saved-digest", "review"] if ("find", "find-saved") in action else [])
+            return [views[node] for node in known + ["player", "metadata"]]
+
+        bridge = SimpleNamespace(tree=tree, view=views.__getitem__,
+                                 children=lambda node: children.get(node, ()),
+                                 deadline=time.monotonic() + 5)
+        with patch.object(installed, "invoke", side_effect=invoke), patch.object(
+            installed, "rows", side_effect=[[], [object(), object()]],
+        ), patch.object(installed, "original_master", return_value=master), patch.object(
+            installed, "same_window",
+        ), patch.object(installed, "player_proof", return_value=["played"]):
+            result = installed.operate_window(
+                {"evidence": "."}, "render", {}, bridge, Mock(), Mock(), Mock(), Mock(), Mock(),
+            )
+        self.assertEqual(result["master"]["sha256"], digest)
+        self.assertEqual([name for node, name in action if node == "review"], ["select-original"])
+
+        views["saved-digest"] = item("saved-digest", "text", "b" * 64)
+        with self.assertRaisesRegex(installed.ui.NotReady, "MISSING_EXACT_AAC31_CONTROL"):
+            installed.saved_review_control(bridge, {}, master)
 
     def test_recovery_rejects_substituted_bytes_or_a_second_mux_dispatch(self):
         source = Source("735370d7-4c68-4382-b081-ecd3d8687f11",
