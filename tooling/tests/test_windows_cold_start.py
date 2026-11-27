@@ -439,10 +439,11 @@ class WindowsCandidateUnitTests(unittest.TestCase):
             b"WebView2 native startup failed at C:\\Users\\private\\session.json"
         )
         output = self.root / "ci-evidence" / "proof.json"
+        error = windows.ColdStartError("Installed desktop exited (exit_code=2)")
+        self._observe_owned_window_fixture().attach(error)
         with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
             windows.write_sanitized_failure_record(
-                output=output, scratch=scratch, expected_sha="a" * 40,
-                error=windows.ColdStartError("Installed desktop exited (exit_code=2)"),
+                output=output, scratch=scratch, expected_sha="a" * 40, error=error,
             )
         report = output.with_name("windows-nsis-cold-relaunch-diagnostic.json")
         decoded = json.loads(report.read_text())
@@ -451,11 +452,16 @@ class WindowsCandidateUnitTests(unittest.TestCase):
         self.assertTrue(decoded["logs"]["first-launch"]["known_error_signals"]["webview2"])
         self.assertEqual(decoded["logs"]["first-launch"]["native_startup_checkpoints"],
                          ["config-validated", "project-store-opened"])
+        self.assertEqual(decoded["observations"]["last_window_counts"], {
+            "owned_top_level": 2,
+            "visible_owned_top_level": 1,
+            "exact_title_owned_top_level": 1,
+        })
         self.assertNotIn("C:\\Users\\private", report.read_text())
+        self.assertNotIn("Other window", report.read_text())
         self.assertFalse(decoded["raw_application_logs_uploaded"])
 
-    @unittest.skipUnless(os.name == "nt", "Windows HWND callback signatures")
-    def test_hwnd_diagnostics_preserve_exact_title_visibility_and_owner_requirements(self):
+    def _observe_owned_window_fixture(self):
         from types import SimpleNamespace
 
         titles = {1: "Motionwright", 2: "Other window", 3: "Motionwright"}
@@ -484,13 +490,9 @@ class WindowsCandidateUnitTests(unittest.TestCase):
         observations = windows._BootObservations(windows.CURRENT_FIRST_USE_CONTRACT)
         with patch.object(windows.ctypes, "WinDLL", return_value=user32):
             self.assertIsNone(windows.windows_motionwright_window(99, observations))
-            self.assertEqual(observations.snapshot()["last_window_counts"], {
-                "owned_top_level": 2,
-                "visible_owned_top_level": 1,
-                "exact_title_owned_top_level": 1,
-            })
             visible.add(1)
-            self.assertEqual(windows.windows_motionwright_window(99, observations), 1)
+            self.assertEqual(windows.windows_motionwright_window(99), 1)
+        return observations
 
     def test_no_local_machine_or_browser_can_start_installed_smoke(self):
         exe, receipt, sha = candidate_fixture(self.root)
