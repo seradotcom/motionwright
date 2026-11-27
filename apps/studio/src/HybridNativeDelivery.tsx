@@ -30,7 +30,7 @@ export default function HybridNativeDelivery({
     <header><div><strong>Native hybrid master</strong>
       <span>Combine Motion Canvas and Manim with the original voice track in one MP4.</span></div></header>
     <p className="delivery-truth-note">
-      Use one static Manim scene with adjacent Motion Canvas scenes before it, after it, or both.
+      Use one static or editable Manim scene with adjacent Motion Canvas scenes before it, after it, or both.
       Use contiguous, frame-aligned scenes totaling one to six seconds at 1920 × 1080 and 30 fps.
       The original stereo 48 kHz WAV must match the cut length.
       Save the scene intent and output profile before checking sources.

@@ -5,11 +5,14 @@
 //! original evidence, never a coordinator with arbitrary budgeted execution.
 use super::*;
 use motionwright_domain::{Project, RendererKind};
+use motionwright_manim_profile::editable_scene as manim_editable;
 use semwright_video_domain::native_observation;
 use std::{collections::BTreeMap, io::Write, ops::Range, sync::Arc};
 
 const MEDIA_MAX_BYTES: u64 = 256_000_000;
 const MASTER_MAX_BYTES: u64 = 32 * 1024 * 1024;
+const STATIC_MANIM_START: &str = "driver.manim-community.static.render.start";
+const EDITABLE_MANIM_START: &str = "driver.manim-community.editable.render.start";
 const MANIM_OBSERVATION_FRAME_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const MANIM_OBSERVATION_REPORT_MAX_BYTES: u64 = 16 * 1024 * 1024;
 // Selected SDK driver-mlt-video: jobs.rs, runtime.rs and originals.rs. These
@@ -565,6 +568,10 @@ impl HybridNativeSources {
         self.scope.plan.manim_scene_id
     }
 
+    pub(super) fn retains_original_manim_source(&self) -> bool {
+        self.scope.plan.retained_manim_source(&self.manim).is_some()
+    }
+
     pub(super) fn frame_count(&self) -> u64 {
         self.scope.plan.total_frames
     }
@@ -632,6 +639,8 @@ struct HybridBudgetPlan {
     manim_plan_sha256: String,
     manim_profile: Value,
     manim_frames: u64,
+    manim_output_bytes: u64,
+    editable_manim: Option<manim_editable::Package>,
     manim_ordinal: usize,
     segment_ranges: Vec<Range<u64>>,
     total_frames: u64,
@@ -1041,9 +1050,31 @@ fn native_host_custody_bytes() -> NativeResult<u64> {
         bounded_add(native_observation::MAX_JSON as u64, 4_096 + 16_384)?,
     )
 }
-fn manim_output_bytes(frames: u64) -> NativeResult<u64> {
-    let source = u64::try_from(motionwright_manim_profile::MAX_SOURCE_BUNDLE_BYTES_V2)
-        .map_err(|_| invalid("Static Manim source bound is invalid"))?;
+fn manim_output_bytes(
+    frames: u64,
+    editable: Option<&manim_editable::Package>,
+) -> NativeResult<u64> {
+    let (source, staged_fonts) = if let Some(package) = editable {
+        let staged_fonts = package.plan.fonts.iter().try_fold(0, |bytes, font| {
+            let font_bytes = package
+                .entries
+                .get(&font.archive_path())
+                .ok_or_else(|| invalid("Hybrid Manim original font is absent"))?;
+            bounded_add(bytes, font_bytes.len() as u64)
+        })?;
+        // The editable path retains its larger source carrier and native
+        // object readback. Fonts staged by the coordinator are separate.
+        let source = bounded_add(
+            manim_editable::MAX_BUNDLE_BYTES as u64,
+            manim_editable::MAX_NATIVE_READBACK_BYTES as u64,
+        )?;
+        (source, staged_fonts)
+    } else {
+        (
+            motionwright_manim_profile::MAX_SOURCE_BUNDLE_BYTES_V2 as u64,
+            0,
+        )
+    };
     // Original MP4, decoded original frames/report, and bounded source,
     // readback and recovery package. The reservation does not assert outputs.
     let observations = bounded_add(
@@ -1052,16 +1083,42 @@ fn manim_output_bytes(frames: u64) -> NativeResult<u64> {
     )?;
     bounded_add(
         bounded_add(MANIM_VIDEO_MAX_BYTES, observations)?,
-        bounded_mul(source, 4)?,
+        bounded_add(bounded_mul(source, 4)?, staged_fonts)?,
     )
 }
 
 impl HybridBudgetPlan {
+    fn manim_start(&self) -> &'static str {
+        if self.editable_manim.is_some() {
+            EDITABLE_MANIM_START
+        } else {
+            STATIC_MANIM_START
+        }
+    }
+
+    fn retained_manim_source<'a>(&self, evidence: &'a Value) -> Option<&'a Value> {
+        let (source, custody_error) = if self.editable_manim.is_some() {
+            (
+                "/artifact/editable_source",
+                "/artifact/editable_source_custody_error",
+            )
+        } else {
+            (
+                "/artifact/static_source",
+                "/artifact/static_source_custody_error",
+            )
+        };
+        if evidence.pointer(custody_error).is_some() {
+            return None;
+        }
+        evidence.pointer(source).filter(|value| value.is_object())
+    }
+
     fn mlt_boundary_scope(&self) -> Option<Arc<crate::native_scene_boundary::ExecutionScope>> {
         if self.project.production_design.scene_boundaries.is_empty() {
             return None;
         }
-        // Static Manim declarations were refused before reserving this root.
+        // Manim declarations were refused before reserving this root.
         // MLT rechecks the original Motion Canvas declarations on every new effect.
         let scene_ids: Vec<_> = self
             .motion
@@ -1246,30 +1303,60 @@ impl HybridBudgetPlan {
             manim_scene_id,
             deliverable_id,
         )?;
-        // Compile static source BEFORE the first MC effect; unsupported Manim
-        // features cannot be discovered only after paying for native renders.
-        let source = crate::manim_static_projection::prepare_saved_manim_static_source(
+        // Preserve the original Static V2 path for matching sources. The
+        // editable compiler independently admits every field of a V3 source
+        // before any Motion Canvas effect or resource reservation.
+        let static_source = crate::manim_static_projection::prepare_saved_manim_static_source(
             &coordinator.service,
             project_id,
             expected,
             manim_scene_id,
             deliverable_id,
-        )?;
-        let manim_frames = u64::from(source.plan.clock.frame_count);
+        );
+        let (clock, render_profile, manim_plan_sha256, manim_plan, editable_manim) =
+            match static_source {
+                Ok(source) => (
+                    source.plan.clock.clone(),
+                    source.plan.render_profile,
+                    source.closure.plan_sha256,
+                    serde_json::to_value(&source.plan),
+                    None,
+                ),
+                Err(error) if error.code == ErrorCode::Unsupported => {
+                    let source =
+                        crate::manim_editable_projection::prepare_saved_manim_editable_source(
+                            &coordinator.service,
+                            project_id,
+                            expected,
+                            manim_scene_id,
+                            deliverable_id,
+                        )?;
+                    (
+                        source.plan.clock.clone(),
+                        source.plan.render_profile,
+                        source.closure.plan_sha256.clone(),
+                        serde_json::to_value(&source.plan),
+                        Some(source),
+                    )
+                }
+                Err(error) => return Err(error),
+            };
+        let manim_frames = u64::from(clock.frame_count);
         require(
             manim_frames == manim_range.end - manim_range.start
-                && source.plan.clock.project_start_frame == manim_range.start
-                && source.plan.clock.project_end_frame_exclusive == manim_range.end
-                && source.plan.clock.local_start_frame == 0
-                && source.plan.render_profile.width == profile.width
-                && source.plan.render_profile.height == profile.height
-                && source.plan.render_profile.frame_rate == options.frame_rate.num,
-            "Static Manim plan differs from its canonical clock or saved master",
+                && clock.project_start_frame == manim_range.start
+                && clock.project_end_frame_exclusive == manim_range.end
+                && clock.local_start_frame == 0
+                && render_profile.width == profile.width
+                && render_profile.height == profile.height
+                && render_profile.frame_rate == options.frame_rate.num,
+            "Manim plan differs from its canonical clock or saved master",
         )?;
-        let manim_plan = serde_json::to_value(&source.plan)
-            .map_err(|_| invalid("Hybrid Manim source cannot be encoded"))?;
-        let manim_profile = serde_json::to_value(source.plan.render_profile)
+        let manim_plan =
+            manim_plan.map_err(|_| invalid("Hybrid Manim source cannot be encoded"))?;
+        let manim_profile = serde_json::to_value(render_profile)
             .map_err(|_| invalid("Hybrid Manim profile cannot be encoded"))?;
+        let manim_output_bytes = manim_output_bytes(manim_frames, editable_manim.as_ref())?;
 
         let voice_id = profile
             .voice_track_id
@@ -1329,8 +1416,13 @@ impl HybridBudgetPlan {
         let mut mc = motion.iter();
         for (ordinal, range) in segment_ranges.iter().enumerate() {
             if ordinal == manim_ordinal {
-                contributions.push(json!({"renderer":"manim_static","scene_ids":[manim_scene_id],
-                    "plan_sha256":source.closure.plan_sha256,"output_start_frame":range.start,"frame_count":manim_frames}));
+                let renderer = if editable_manim.is_some() {
+                    "manim_editable"
+                } else {
+                    "manim_static"
+                };
+                contributions.push(json!({"renderer":renderer,"scene_ids":[manim_scene_id],
+                    "plan_sha256":manim_plan_sha256,"output_start_frame":range.start,"frame_count":manim_frames}));
             } else {
                 let segment = mc
                     .next()
@@ -1421,7 +1513,7 @@ impl HybridBudgetPlan {
         // Encodes, imports, timeline and master retain owned/raw originals.
         // The same costs are debited before their first actual SDK dispatch.
         let output_bytes = bounded_add(
-            bounded_add(mc_output, manim_output_bytes(manim_frames)?)?,
+            bounded_add(mc_output, manim_output_bytes)?,
             bounded_add(mlt_output, source_audio_bytes)?,
         )?;
         let limits = RootBudgetUnits {
@@ -1456,9 +1548,11 @@ impl HybridBudgetPlan {
             frame_reservation,
             manim_scene_id,
             manim_plan,
-            manim_plan_sha256: source.closure.plan_sha256,
+            manim_plan_sha256,
             manim_profile,
             manim_frames,
+            manim_output_bytes,
+            editable_manim,
             manim_ordinal,
             segment_ranges,
             total_frames: cursor,
@@ -1755,10 +1849,8 @@ impl HybridRootBudgetScope {
                 && original.get("plan_sha256").and_then(Value::as_str)
                     == Some(self.plan.manim_plan_sha256.as_str())
                 && original.get("profile") == Some(&self.plan.manim_profile)
-                && original
-                    .pointer("/artifact/static_source_custody_error")
-                    .is_none(),
-            "Hybrid static Manim output differs from its canonical source",
+                && self.plan.retained_manim_source(original).is_some(),
+            "Hybrid Manim output differs from its canonical source",
         )?;
         let native_artifact = original
             .pointer("/result/result/data/artifact")
@@ -1783,18 +1875,28 @@ impl HybridRootBudgetScope {
             native_artifact.get("bytes").and_then(Value::as_u64) == Some(raw.len() as u64),
             "Hybrid original Manim video byte count changed",
         )?;
-        let plan: motionwright_manim_profile::ManimScenePlanV2 =
-            serde_json::from_value(self.plan.manim_plan.clone())
-                .map_err(|_| invalid("Hybrid original Manim source cannot be reopened"))?;
-        let retained_source = crate::manim_static_projection::verify_rendered_manim_static_source(
-            &coordinator.client.connection().output_root,
-            &path,
-            &plan,
-            native_artifact,
-        )?;
+        let root = &coordinator.client.connection().output_root;
+        let retained_source = if let Some(package) = &self.plan.editable_manim {
+            crate::manim_editable_projection::verify_rendered_manim_editable_source(
+                root,
+                &path,
+                &package.plan,
+                native_artifact,
+            )?
+        } else {
+            let plan: motionwright_manim_profile::ManimScenePlanV2 =
+                serde_json::from_value(self.plan.manim_plan.clone())
+                    .map_err(|_| invalid("Hybrid original Manim source cannot be reopened"))?;
+            crate::manim_static_projection::verify_rendered_manim_static_source(
+                root,
+                &path,
+                &plan,
+                native_artifact,
+            )?
+        };
         require(
-            original.pointer("/artifact/static_source") == Some(&retained_source),
-            "Hybrid original static Manim source was not retained unchanged",
+            self.plan.retained_manim_source(original) == Some(&retained_source),
+            "Hybrid original Manim source was not retained unchanged",
         )
     }
 
@@ -1827,7 +1929,12 @@ impl HybridRootBudgetScope {
         request_id: &str,
         command: &str,
     ) -> NativeResult<()> {
-        if !self.stages_original_audio(request_id, command) {
+        let editable = self.plan.editable_manim.as_ref().filter(|_| {
+            matches!(&self.phase, HybridPhase::Sources)
+                && command == EDITABLE_MANIM_START
+                && request_id == format!("{}-manim:start", self.plan.request_prefix)
+        });
+        if !self.stages_original_audio(request_id, command) && editable.is_none() {
             return Ok(());
         }
         self.recheck(coordinator, &self.plan.project)?;
@@ -1844,6 +1951,12 @@ impl HybridRootBudgetScope {
                 && intent.payload.get("mutation").and_then(Value::as_bool) == Some(true),
             "Hybrid original input cannot be staged outside its charged native start",
         )?;
+        if let Some(package) = editable {
+            return crate::manim_editable_projection::stage_font_inputs(
+                &coordinator.client.connection().output_root,
+                package,
+            );
+        }
         let source_parent = self
             .plan
             .source_audio_path
@@ -1963,16 +2076,16 @@ impl HybridRootBudgetScope {
                 }
                 Ok(units)
             }
-            HybridPhase::Sources if command == "driver.manim-community.static.render.start" => {
+            HybridPhase::Sources if command == self.plan.manim_start() => {
                 require(
                     mutation
                         && args
                             == &json!({"plan":self.plan.manim_plan,"profile":self.plan.manim_profile}),
-                    "Hybrid Manim effect is not its preflighted original static source",
+                    "Hybrid Manim effect is not its preflighted original source",
                 )?;
                 let mut units = one_attempt();
                 units.render_frames = self.plan.manim_frames;
-                units.output_bytes = manim_output_bytes(self.plan.manim_frames)?;
+                units.output_bytes = self.plan.manim_output_bytes;
                 Ok(units)
             }
             HybridPhase::Sources
@@ -2336,6 +2449,54 @@ impl ProductionCoordinator {
         }
     }
 
+    async fn require_editable_manim_runtime(&self, plan: &HybridBudgetPlan) -> NativeResult<()> {
+        let described = self
+            .client
+            .execute_with_authority(
+                "capabilities.describe",
+                json!({"name": EDITABLE_MANIM_START}),
+                false,
+                Some(ExpectedAuthority {
+                    provider: "semwright-core",
+                    source: SourceKind::Builtin,
+                    provider_generation_required: false,
+                }),
+                None,
+            )
+            .await?;
+        let descriptor = described
+            .value
+            .get("data")
+            .ok_or_else(|| invalid("Selected Host did not describe editable Manim"))?;
+        supported(
+            descriptor
+                .pointer("/capability/name")
+                .and_then(Value::as_str)
+                == Some(EDITABLE_MANIM_START)
+                && descriptor
+                    .pointer("/provenance/provider")
+                    .and_then(Value::as_str)
+                    == Some("driver:manim-community")
+                && descriptor.pointer("/provenance/source") == Some(&json!(SourceKind::Driver))
+                && descriptor
+                    .pointer("/policy_preview/preview_only")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                && descriptor
+                    .pointer("/policy_preview/state")
+                    .and_then(Value::as_str)
+                    .is_some_and(|state| state != "deny"),
+            "Selected Host does not admit editable Manim",
+        )?;
+        let runtime = self
+            .observe_manim_runtime_version(plan.project.id, &plan.expected)
+            .await?;
+        supported(
+            runtime.version_compatible() == Some(true),
+            "Editable Manim requires the selected Host's verified 0.21.0 runtime",
+        )
+    }
+
     /// Check the retained owner and any authored Film v2 capability before the
     /// application consumes its original RenderLocal grant. This creates no
     /// accounting root and dispatches no renderer mutation.
@@ -2349,8 +2510,12 @@ impl ProductionCoordinator {
         let plan = HybridBudgetPlan::build(self, project_id, expected, deliverable_id, options)?;
         self.require_hybrid_owner(&plan)?;
         self.require_hybrid_preparation_current(&plan)?;
+        let editable_manim = plan.editable_manim.is_some();
+        if editable_manim {
+            self.require_editable_manim_runtime(&plan).await?;
+        }
         let blend = self.discover_hybrid_blend(&plan).await?;
-        if blend.is_some() {
+        if blend.is_some() || editable_manim {
             self.require_hybrid_owner(&plan)?;
             self.require_hybrid_preparation_current(&plan)?;
         }
@@ -2449,15 +2614,28 @@ impl ProductionCoordinator {
                 options,
             )
             .await?;
-        let manim = scoped
-            .realize_manim_static_scene(
-                project_id,
-                expected,
-                &manim_request,
-                scope.plan.manim_scene_id,
-                deliverable_id,
-            )
-            .await?;
+        let scene_id = scope.plan.manim_scene_id;
+        let manim = if scope.plan.editable_manim.is_some() {
+            scoped
+                .realize_manim_editable_scene(
+                    project_id,
+                    expected,
+                    &manim_request,
+                    scene_id,
+                    deliverable_id,
+                )
+                .await?
+        } else {
+            scoped
+                .realize_manim_static_scene(
+                    project_id,
+                    expected,
+                    &manim_request,
+                    scene_id,
+                    deliverable_id,
+                )
+                .await?
+        };
         scope.verify_motion_output(&scoped, &scope.plan.project, deliverable_id, &motion_canvas)?;
         scope.verify_manim_output(&scoped, &manim)?;
         scope.verify_staged_audio(&scoped)?;
