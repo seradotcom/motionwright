@@ -4357,7 +4357,6 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_INCREMENTAL: '0'
       MOTIONWRIGHT_MLT_MODE: hybrid-av
-      SEMWRIGHT_TEST_MANIM_RUNTIME: ${{ runner.temp }}/aac31-manim-runtime
       SEMWRIGHT_TEST_PYTHON: /usr/bin/python3
       SEMWRIGHT_TEST_FFMPEG: /usr/bin/ffmpeg
       SEMWRIGHT_TEST_FFPROBE: /usr/bin/ffprobe
@@ -4426,6 +4425,8 @@ jobs:
       - name: Provision pinned Motion Canvas and Manim runtimes
         run: |
           set -euo pipefail
+          export SEMWRIGHT_TEST_MANIM_RUNTIME="$RUNNER_TEMP/aac31-manim-runtime"
+          printf 'SEMWRIGHT_TEST_MANIM_RUNTIME=%s\n' "$SEMWRIGHT_TEST_MANIM_RUNTIME" >> "$GITHUB_ENV"
           (
             cd _semwright/integrations/motion-canvas/runtime
             npm ci --ignore-scripts
