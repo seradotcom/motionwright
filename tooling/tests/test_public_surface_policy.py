@@ -4,6 +4,7 @@ Consumer tests isolate glib and Tauri source-substitution admission only.
 They execute the production source policy, source-lock admission and traversal,
 and make no claim about dependency or product acceptance.
 """
+from functools import partial
 from pathlib import Path
 import json
 import hashlib
@@ -211,15 +212,18 @@ class GitFixtureTests(unittest.TestCase):
             "TMP": str(self.scratch),
             "TMPDIR": str(self.scratch),
         })
-        environment = patch.dict(os.environ, env, clear=True)
-        environment.start()
-        self.addCleanup(environment.stop)
+        self.env = env
 
     def git(self, root, *args):
         return subprocess.run(
             ["git", "-C", str(root), *args], check=True, capture_output=True,
-            text=True, encoding="utf-8", timeout=15,
+            text=True, encoding="utf-8", timeout=15, env=self.env,
         ).stdout
+
+    def verify_fixture(self, root):
+        run = partial(subprocess.run, env=self.env)
+        with patch("public_surface_policy.subprocess.run", new=run):
+            return verify_public_surface(root)
 
     def write(self, root, name, value):
         path = root / name
@@ -241,7 +245,7 @@ class PublicSurfaceGitTests(GitFixtureTests):
     def test_effective_ignored_untracked_material_is_not_public(self):
         root = self.repo()
         self.write(root, "knowledge/notes.md", "The next agent should edit this.")
-        self.assertEqual(verify_public_surface(root), [])
+        self.assertEqual(self.verify_fixture(root), [])
 
     def test_git_tracked_private_entries_and_descendants_are_rejected(self):
         for index, name in enumerate(PRIVATE_ROOTS):
@@ -252,7 +256,7 @@ class PublicSurfaceGitTests(GitFixtureTests):
                     self.git(root, "add", "--force", "--", entry)
                     self.assertIn(
                         "local_development_file_tracked:" + entry,
-                        verify_public_surface(root),
+                        self.verify_fixture(root),
                     )
 
     def test_git_tracked_nested_instruction_is_rejected(self):
@@ -261,7 +265,7 @@ class PublicSurfaceGitTests(GitFixtureTests):
         self.git(root, "add", "--", "docs/AGENTS.md")
         self.assertIn(
             "local_instruction_file_tracked:docs/AGENTS.md",
-            verify_public_surface(root),
+            self.verify_fixture(root),
         )
 
     def test_later_negations_cannot_satisfy_effective_ignore(self):
@@ -272,7 +276,7 @@ class PublicSurfaceGitTests(GitFixtureTests):
         )
         self.assertTrue(any(
             issue.startswith("ineffective_local_ignore:knowledge/")
-            for issue in verify_public_surface(root)
+            for issue in self.verify_fixture(root)
         ))
 
     def test_invalid_utf8_and_oversized_public_text_are_rejected(self):
@@ -281,7 +285,7 @@ class PublicSurfaceGitTests(GitFixtureTests):
         bad.write_bytes(b"\xff\xfe")
         self.write(root, "docs/oversized.md", "x" * 2_000_001)
         self.git(root, "add", "--", "docs/invalid.md", "docs/oversized.md")
-        issues = verify_public_surface(root)
+        issues = self.verify_fixture(root)
         for name in ("docs/invalid.md", "docs/oversized.md"):
             self.assertTrue(any(name in issue for issue in issues), name)
 
@@ -294,7 +298,7 @@ class PublicSurfaceGitTests(GitFixtureTests):
         except (OSError, NotImplementedError) as exc:
             self.skipTest("This environment cannot create test symlinks: " + str(exc))
         self.git(root, "add", "--", "docs/linked.md")
-        self.assertIn("public_text_invalid:docs/linked.md", verify_public_surface(root))
+        self.assertIn("public_text_invalid:docs/linked.md", self.verify_fixture(root))
 
     def test_unavailable_git_cannot_report_success(self):
         root = self.repo()
@@ -402,6 +406,7 @@ class SourcePolicyConsumerTests(GitFixtureTests):
         return subprocess.run(
             [sys.executable, "-B", "-c", bootstrap, str(root)],
             cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=30,
+            env=self.env,
         )
 
     def sqlite_process_fixture(self, relative, suffix=""):
@@ -494,7 +499,7 @@ class SourcePolicyConsumerTests(GitFixtureTests):
         self.assertIn("ERROR: Semwright source admission refused:", result.stderr)
         self.assertNotIn("source-policy=ok", result.stdout)
         # Independent source hygiene remains usable; no policy state is rewritten.
-        self.assertEqual(verify_public_surface(root), [])
+        self.assertEqual(self.verify_fixture(root), [])
 
     def test_source_policy_refuses_duplicate_verification_status(self):
         root = self.policy_repo()
