@@ -159,7 +159,8 @@ function Find-Control($Windows, $Role, [string]$Name, [string]$AutomationId = ''
         foreach ($node in $nodes) {
             $matches = (Control-Name $node) -ceq $Name
             if ($AutomationId -eq 'fileNameEdit') {
-                $matches = $matches -or $node.Current.AutomationId -cmatch '(^|\.)fileNameEdit$'
+                $fieldId = $node.Current.AutomationId
+                $matches = $matches -or $fieldId -ceq '1148' -or $fieldId -cmatch '(^|\.)fileNameEdit$'
             }
             if ($matches -and $node.Current.ProcessId -eq $EditorPid -and
                 !$node.Current.IsOffscreen -and $node.Current.IsEnabled -and

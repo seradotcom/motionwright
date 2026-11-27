@@ -218,6 +218,14 @@ foreign media, moved in-points, added tracks or unsupported effects. Only exact
 scene reordering and end trims become a proposal. The initial cut must still
 have the complete original scene order and duration.
 
+Kdenlive 26.08.3 can save a later clip with an earlier source in-point when
+several clips use one media file. Check the saved project's source in-points
+against the original cut before editing. Keep the imported timeline open
+during the check. If its duration dialog shows the intended crop start, shorten its
+end by one frame, reopen the dialog to verify the edit, and restore the exact
+original duration with the same crop start. Save and verify the original cut
+again before making the intended edits.
+
 The review retains the initial and edited file hashes in the same owner Change
 that is saved to the journal. It does not relink assets, authenticate an editor
 process, approve visual fidelity or import external permissions. Review every
@@ -247,7 +255,7 @@ existing directories and dangling symlinks are never replaced. An interrupted
 or unconfirmed export is not retried automatically. Inspect the selected
 folder before deciding what to do next.
 
-An external NLE import/render, installation qualification and real human review
-remain separate acceptance observations. The workflow does not launch an NLE,
-relink media, move external audio tracks, grant publishing rights or infer
-third-party licenses. See [Owner-reviewed OTIO cut commit](V05_OTIO_OWNER_CUT_COMMIT.md).
+The Desktop source checks verify the bridge. The native Kdenlive jobs observe
+the editor and its saved project on the selected platform. Product acceptance
+also tracks installation qualification and human review.
+See [Owner-reviewed OTIO cut commit](V05_OTIO_OWNER_CUT_COMMIT.md).
