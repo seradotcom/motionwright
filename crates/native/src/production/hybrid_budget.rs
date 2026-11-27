@@ -561,6 +561,10 @@ impl HybridNativeSources {
         self.scope.plan.manim_ordinal
     }
 
+    pub(super) fn manim_scene_id(&self) -> Uuid {
+        self.scope.plan.manim_scene_id
+    }
+
     pub(super) fn frame_count(&self) -> u64 {
         self.scope.plan.total_frames
     }
@@ -715,8 +719,8 @@ pub(super) fn authored_hybrid_ranges(
     rate: Rate,
 ) -> NativeResult<Vec<Range<u64>>> {
     supported(
-        (2..=3).contains(&project.scenes.len()),
-        "The admitted hybrid clock requires two or three contributions",
+        (2..=180).contains(&project.scenes.len()),
+        "The admitted hybrid clock requires at least two scenes and at most one scene per frame",
     )?;
     let mut ranges = Vec::with_capacity(project.scenes.len());
     let mut cursor = 0;
@@ -725,7 +729,7 @@ pub(super) fn authored_hybrid_ranges(
         let frames = exact_frames(scene.duration.num, scene.duration.den, rate)?;
         supported(
             start == cursor && frames > 0,
-            "The admitted hybrid cut requires contiguous nonempty contributions",
+            "The admitted hybrid cut requires contiguous nonempty scenes",
         )?;
         cursor = bounded_add(cursor, frames)?;
         ranges.push(start..cursor);
@@ -1036,6 +1040,27 @@ fn manim_output_bytes(frames: u64) -> NativeResult<u64> {
 }
 
 impl HybridBudgetPlan {
+    fn mlt_boundary_scope(&self) -> Option<Arc<crate::native_scene_boundary::ExecutionScope>> {
+        if self.project.production_design.scene_boundaries.is_empty() {
+            return None;
+        }
+        // Static Manim declarations were refused before reserving this root.
+        // MLT rechecks the original Motion Canvas declarations on every new effect.
+        let scene_ids: Vec<_> = self
+            .motion
+            .iter()
+            .flat_map(|segment| segment.scene_ids.iter().copied())
+            .collect();
+        Some(Arc::new(
+            crate::native_scene_boundary::ExecutionScope::mlt_motion(
+                &self.project,
+                self.deliverable_id,
+                &self.options,
+                &scene_ids,
+            ),
+        ))
+    }
+
     fn build(
         coordinator: &ProductionCoordinator,
         project_id: Uuid,
@@ -1059,27 +1084,24 @@ impl HybridBudgetPlan {
             "Hybrid provider connection belongs to another project",
         )?;
         let connection_identity = coordinator.client.connection().identity()?;
-        supported(
-            project.production_design.scene_boundaries.is_empty(),
-            "The mixed native route has no typed lowering for declared SceneBoundaries",
-        )?;
         use RendererKind::{ManimCommunity, MotionCanvas};
-        let layout: Vec<_> = project
+        const HYBRID_LAYOUT: &str =
+            "The admitted hybrid route requires one static Manim scene and Motion Canvas scenes on either or both sides";
+        let manim_scene_index = project
             .scenes
             .iter()
-            .take(4)
-            .map(|scene| &scene.renderer)
-            .collect();
-        let manim_ordinal = match layout.as_slice() {
-            [ManimCommunity, MotionCanvas] => 0,
-            [MotionCanvas, ManimCommunity] | [MotionCanvas, ManimCommunity, MotionCanvas] => 1,
-            _ => {
-                return Err(Error::new(
-                    ErrorCode::Unsupported,
-                    "The admitted hybrid route requires one static Manim scene and one Motion Canvas scene on either or both sides",
-                ));
-            }
-        };
+            .position(|scene| scene.renderer == ManimCommunity)
+            .ok_or_else(|| Error::new(ErrorCode::Unsupported, HYBRID_LAYOUT))?;
+        let (before_manim, manim_and_after) = project.scenes.split_at(manim_scene_index);
+        let after_manim = &manim_and_after[1..];
+        supported(
+            (!before_manim.is_empty() || !after_manim.is_empty())
+                && before_manim
+                    .iter()
+                    .chain(after_manim)
+                    .all(|scene| scene.renderer == MotionCanvas),
+            HYBRID_LAYOUT,
+        )?;
         let profile = project
             .deliverables
             .iter()
@@ -1116,11 +1138,24 @@ impl HybridBudgetPlan {
             "The hybrid native route cannot discard authored mixing, voice-cut conform or captions",
         )?;
 
-        let segment_ranges = authored_hybrid_ranges(&project, options.frame_rate)?;
-        let cursor = segment_ranges
+        let scene_ranges = authored_hybrid_ranges(&project, options.frame_rate)?;
+        let cursor = scene_ranges
             .last()
             .ok_or_else(|| invalid("Hybrid saved cut is empty"))?
             .end;
+        let manim_range = &scene_ranges[manim_scene_index];
+        let mut segment_ranges = Vec::with_capacity(3);
+        let mut motion_runs = Vec::with_capacity(2);
+        if !before_manim.is_empty() {
+            segment_ranges.push(0..manim_range.start);
+            motion_runs.push((0, before_manim));
+        }
+        let manim_ordinal = segment_ranges.len();
+        segment_ranges.push(manim_range.clone());
+        if !after_manim.is_empty() {
+            motion_runs.push((segment_ranges.len(), after_manim));
+            segment_ranges.push(manim_range.end..cursor);
+        }
 
         let segments = plan_motion_canvas_segments(&project, deliverable_id, options)?;
         supported(
@@ -1130,18 +1165,20 @@ impl HybridBudgetPlan {
             "Experimental hybrid root has no Film v2 blend admission",
         )?;
         supported(
-            segments.len() + 1 == segment_ranges.len(),
+            segments.len() == motion_runs.len(),
             "Hybrid MC source partition differs from the saved renderer order",
         )?;
         let mut motion = Vec::with_capacity(segments.len());
         let mut motion_frames = 0;
         let mut frame_reservation = MOTION_ROOT_FRAME_RESERVE_MIN_BYTES;
-        let motion_ordinals = (0..segment_ranges.len()).filter(|&index| index != manim_ordinal);
-        for (ordinal, segment) in motion_ordinals.zip(&segments) {
-            let scene = &project.scenes[ordinal];
+        for ((ordinal, scenes), segment) in motion_runs.into_iter().zip(&segments) {
             let range = &segment_ranges[ordinal];
             require(
-                segment.scene_ids == [scene.id]
+                segment
+                    .scene_ids
+                    .iter()
+                    .copied()
+                    .eq(scenes.iter().map(|scene| scene.id))
                     && segment.frame_count == range.end - range.start
                     && exact_frames(
                         segment.global_start.num,
@@ -1166,7 +1203,19 @@ impl HybridBudgetPlan {
                 output_ordinal: ordinal,
             });
         }
-        let manim_scene_id = project.scenes[manim_ordinal].id;
+        let manim_scene_id = project.scenes[manim_scene_index].id;
+        crate::native_scene_boundary::guard_scene_without_film_options(&project, manim_scene_id)?;
+        let motion_scene_ids: Vec<_> = motion
+            .iter()
+            .flat_map(|segment| segment.scene_ids.iter().copied())
+            .collect();
+        crate::native_scene_boundary::guard_motion_scenes(
+            &project,
+            deliverable_id,
+            options,
+            &motion_scene_ids,
+        )?;
+
         manim_graph::require_non_graph_saved_selection(
             &coordinator.service,
             project_id,
@@ -1184,7 +1233,6 @@ impl HybridBudgetPlan {
             deliverable_id,
         )?;
         let manim_frames = u64::from(source.plan.clock.frame_count);
-        let manim_range = &segment_ranges[manim_ordinal];
         require(
             manim_frames == manim_range.end - manim_range.start
                 && source.plan.clock.project_start_frame == manim_range.start
@@ -2204,7 +2252,7 @@ impl ProductionCoordinator {
             revision: expected.revision,
             deliverable_id,
             project_sha256: plan.project_sha256,
-            source_count: plan.project.scenes.len(),
+            source_count: plan.segment_ranges.len(),
             frame_count: plan.total_frames,
             width: plan.width,
             height: plan.height,
@@ -2400,10 +2448,8 @@ impl ProductionCoordinator {
             source_paths,
         });
         let mut scoped = self.clone();
+        scoped.scene_boundary_scope = scope.plan.mlt_boundary_scope();
         scoped.active_hybrid_budget = Some(scope);
-        // Declared boundaries were refused before first effect. Do not pass an
-        // MC-only typed selection as a purported proof for the Manim clip.
-        scoped.scene_boundary_scope = None;
         Ok(scoped)
     }
 }

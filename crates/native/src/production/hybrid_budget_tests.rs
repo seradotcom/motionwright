@@ -158,7 +158,7 @@ fn fixture_with_layout(layout: &[RendererKind], scene_seconds: i64) -> Fixture {
             change(
                 &service,
                 &mut project,
-                "fixture-static-manim",
+                &format!("fixture-static-manim-{index}"),
                 Change::SetSceneRenderer { scene_id, renderer },
             );
         }
@@ -167,7 +167,7 @@ fn fixture_with_layout(layout: &[RendererKind], scene_seconds: i64) -> Fixture {
             name: format!("Rectangle {index}"),
             kind: "rectangle".into(),
             parent_id: None,
-            x: 400.0 + index as f64 * 350.0,
+            x: 400.0 + (index % 3) as f64 * 350.0,
             y: 420.0,
             width: 180.0,
             height: 140.0,
@@ -177,7 +177,7 @@ fn fixture_with_layout(layout: &[RendererKind], scene_seconds: i64) -> Fixture {
             coordinate_space: CoordinateSpace::ProjectPixels,
             z_index: 0,
             style: NodeStyle {
-                fill: Some(["#FF0000", "#00FF00", "#0000FF"][index].into()),
+                fill: Some(["#FF0000", "#00FF00", "#0000FF"][index % 3].into()),
                 stroke: None,
                 stroke_width: 0.0,
                 font_family: None,
@@ -829,6 +829,69 @@ fn hybrid_two_sources_preserve_renderer_order_and_exact_cut_origin() {
 }
 
 #[test]
+fn hybrid_groups_adjacent_motion_scenes_without_losing_their_order_or_clock() {
+    use RendererKind::{ManimCommunity, MotionCanvas};
+    let f = fixture_with_layout(
+        &[
+            MotionCanvas,
+            MotionCanvas,
+            ManimCommunity,
+            MotionCanvas,
+            MotionCanvas,
+        ],
+        1,
+    );
+    let owner = ProductionCoordinator::new(f.service.clone(), f.connection).unwrap();
+    let report = owner
+        .preflight_native_hybrid_sources(
+            f.project.id,
+            &f.project.stamp(),
+            f.deliverable,
+            &f.options,
+        )
+        .unwrap();
+    assert_eq!(report.source_count, 3);
+    assert_eq!(report.frame_count, 150);
+    assert_eq!(owner.client.execute_calls.load(Ordering::SeqCst), 0);
+
+    let scoped = owner
+        .with_native_hybrid_scope(f.project.id, &f.project.stamp(), f.deliverable, &f.options)
+        .unwrap();
+    let plan = &scoped.active_hybrid_budget.as_ref().unwrap().plan;
+    let scenes = f
+        .project
+        .scenes
+        .iter()
+        .map(|scene| scene.id)
+        .collect::<Vec<_>>();
+    assert_eq!(plan.segment_ranges, [0..60, 60..90, 90..150]);
+    assert_eq!(plan.manim_scene_id, scenes[2]);
+    assert_eq!(plan.manim_ordinal, 1);
+    assert_eq!(plan.motion[0].scene_ids, scenes[..2]);
+    assert_eq!(plan.motion[1].scene_ids, scenes[3..]);
+    assert_eq!(plan.limits.render_frames, 570);
+    assert_eq!(scoped.client.execute_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn hybrid_refuses_a_second_manim_scene_before_native_dispatch() {
+    use RendererKind::{ManimCommunity, MotionCanvas};
+    let f = fixture_with_layout(&[ManimCommunity, MotionCanvas, ManimCommunity], 1);
+    let owner = ProductionCoordinator::new(f.service.clone(), f.connection).unwrap();
+    let error = owner
+        .preflight_native_hybrid_sources(
+            f.project.id,
+            &f.project.stamp(),
+            f.deliverable,
+            &f.options,
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("one static Manim scene"));
+    assert!(owner.active_hybrid_budget.is_none());
+    assert_eq!(owner.client.execute_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn hybrid_shorter_cut_uses_the_exact_saved_wav_and_budget_clock() {
     use RendererKind::{ManimCommunity, MotionCanvas};
     let f = fixture_with_layout(&[ManimCommunity, MotionCanvas], 2);
@@ -850,6 +913,155 @@ fn hybrid_shorter_cut_uses_the_exact_saved_wav_and_budget_clock() {
     assert_eq!(scope.plan.source_audio_bytes, 44 + 192_000 * 4);
     assert_eq!(scope.plan.limits.render_frames, 420);
     assert_eq!(scoped.client.execute_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn hybrid_preserves_exact_motion_boundary_admission_in_its_mlt_continuation() {
+    use motionwright_domain::{
+        SceneBoundary, SceneBoundaryArchetype, SceneBoundaryDefinition, SceneBoundaryEndpoint,
+        SceneBoundaryFilmOptions, SceneBoundaryInput, SceneBoundaryNarrativeRole,
+    };
+
+    let mut f = fixture();
+    let scene = &f.project.scenes[0];
+    let scene_id = scene.id;
+    let endpoint = SceneBoundaryEndpoint {
+        nodes: scene.nodes.clone(),
+        camera: Some(scene.camera.clone()),
+        assets: vec![],
+    };
+    let source = f
+        .project
+        .capture_scene_boundary_source(
+            scene_id,
+            f.deliverable,
+            &SceneBoundaryFilmOptions {
+                frame_rate: f.options.frame_rate,
+                font_family: f.options.font_family.clone(),
+                mono_font_family: f.options.mono_font_family.clone(),
+                role: SceneBoundaryNarrativeRole::Evidence,
+                archetype: SceneBoundaryArchetype::Statement,
+            },
+        )
+        .unwrap();
+    change(
+        &f.service,
+        &mut f.project,
+        "save-explicit-motion-boundary",
+        Change::UpsertSceneBoundary {
+            boundary: Box::new(SceneBoundary {
+                version: 1,
+                id: Uuid::now_v7(),
+                scene_id,
+                input: SceneBoundaryInput::SelfContained,
+                definition: SceneBoundaryDefinition::Explicit {
+                    source,
+                    entry: endpoint.clone(),
+                    exit: endpoint,
+                },
+            }),
+        },
+    );
+
+    let owner = ProductionCoordinator::new(f.service.clone(), f.connection).unwrap();
+    let mut changed_options = f.options.clone();
+    changed_options.scene_intents[0].role = NarrativeRole::Hook;
+    let error = owner
+        .preflight_native_hybrid_sources(
+            f.project.id,
+            &f.project.stamp(),
+            f.deliverable,
+            &changed_options,
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("Native SceneBoundary admission failed"),
+        "{error:?}"
+    );
+    assert!(
+        f.service
+            .production_receipts(f.project.id, 20)
+            .unwrap()
+            .is_empty()
+    );
+
+    let preflight = owner
+        .preflight_native_hybrid_sources(
+            f.project.id,
+            &f.project.stamp(),
+            f.deliverable,
+            &f.options,
+        )
+        .unwrap();
+    assert_eq!(preflight.source_count, 3);
+    let scoped = owner
+        .with_native_hybrid_scope(f.project.id, &f.project.stamp(), f.deliverable, &f.options)
+        .unwrap();
+    let scope = scoped
+        .active_hybrid_budget
+        .as_ref()
+        .unwrap()
+        .plan
+        .mlt_boundary_scope()
+        .unwrap();
+    let command = "driver.mlt-video.frames.encode";
+    assert!(
+        crate::native_scene_boundary::guard_new_effect(&f.project, command, None, None).is_err()
+    );
+    crate::native_scene_boundary::guard_new_effect(&f.project, command, Some(&scope), None)
+        .unwrap();
+    assert_eq!(scoped.client.execute_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn hybrid_refuses_unadmitted_manim_or_incomplete_motion_boundaries_before_a_root() {
+    use motionwright_domain::{SceneBoundary, SceneBoundaryDefinition, SceneBoundaryInput};
+    for (ordinal, reason) in [(0, "unsourced Draft"), (1, "without actual Film options")] {
+        let mut f = fixture();
+        let scene_id = f.project.scenes[ordinal].id;
+        change(
+            &f.service,
+            &mut f.project,
+            "save-unadmitted-boundary",
+            Change::UpsertSceneBoundary {
+                boundary: Box::new(SceneBoundary {
+                    version: 1,
+                    id: Uuid::now_v7(),
+                    scene_id,
+                    input: SceneBoundaryInput::SelfContained,
+                    definition: SceneBoundaryDefinition::DraftIncomplete {
+                        source: None,
+                        entry: None,
+                        exit: None,
+                    },
+                }),
+            },
+        );
+        let owner = ProductionCoordinator::new(f.service.clone(), f.connection).unwrap();
+        let error = owner
+            .with_native_hybrid_scope(f.project.id, &f.project.stamp(), f.deliverable, &f.options)
+            .err()
+            .unwrap();
+        assert!(error.message.contains(reason), "{error:?}");
+        assert_eq!(owner.client.execute_calls.load(Ordering::SeqCst), 0);
+        assert!(
+            f.service
+                .production_receipts(f.project.id, 20)
+                .unwrap()
+                .is_empty()
+        );
+        let db = rusqlite::Connection::open(f.directory.path().join("hybrid.sqlite3")).unwrap();
+        let roots: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM production_operation_roots",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(roots, 0);
+    }
 }
 
 #[test]

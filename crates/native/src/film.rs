@@ -1236,11 +1236,15 @@ fn validate_node_projection(node: &CanvasNode, font_family: &str) -> NativeResul
             node.id
         )));
     }
-    if node.opacity != 1.0
-        || (node.rotation_deg != 0.0 && !motionwright_domain::native_shape_rotation(node))
-    {
+    if node.opacity != 1.0 {
         return Err(unsupported(format!(
-            "Canvas node {} has rotation/opacity state that canonical Film cannot preserve yet",
+            "Canvas node {} has saved static opacity {} that canonical Film cannot preserve",
+            node.id, node.opacity
+        )));
+    }
+    if node.rotation_deg != 0.0 && !motionwright_domain::native_shape_rotation(node) {
+        return Err(unsupported(format!(
+            "Canvas node {} has saved rotation that canonical Film cannot preserve",
             node.id
         )));
     }
