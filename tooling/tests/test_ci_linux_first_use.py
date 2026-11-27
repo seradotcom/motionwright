@@ -659,7 +659,9 @@ class WorkflowContextTests(unittest.TestCase):
         cli_compile = source.split("      - name: Fingerprint the rebuilt Semwright CLI", 1)[1]
         self.assertIn("inputs.check_aac31_cli && inputs.verification_scope == 'linux_first_use_source'", cli_compile)
         self.assertIn("working-directory: _semwright", cli_compile)
-        self.assertIn("cargo build --locked -p semwright-daemon -p semwright-cli --bins", cli_compile)
+        self.assertIn("libpipewire-0.3-dev pkg-config clang", cli_compile)
+        self.assertLess(cli_compile.index("pkg-config --exists libpipewire-0.3"),
+                        cli_compile.index("cargo build --locked -p semwright-daemon -p semwright-cli --bins"))
         self.assertIn("sha256sum target/debug/semwright", cli_compile)
         self.assertNotIn("secrets.", cli_compile)
         self.assertNotIn("linux_installed_aac31_ci.py", cli_compile)
