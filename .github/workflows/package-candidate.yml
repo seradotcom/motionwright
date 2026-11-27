@@ -21,6 +21,11 @@ on:
           - nsis_lifecycle
           - linux_first_use_source
           - linux_first_use
+      check_aac31_cli:
+        description: Rebuild the pinned Semwright CLI within linux_first_use_source and report its digest
+        required: false
+        type: boolean
+        default: false
       installed_aac31:
         description: Verify one installed 31-frame master in the isolated Linux bundle scope
         required: false
@@ -343,8 +348,13 @@ jobs:
         shell: bash
         env:
           MW_SELECTED_SCOPE: ${{ inputs.verification_scope }}
+          MW_CHECK_AAC31_CLI: ${{ inputs.check_aac31_cli }}
         run: |
           set -euo pipefail
+          if [[ "$MW_CHECK_AAC31_CLI" == true && "$MW_SELECTED_SCOPE" != linux_first_use_source ]]; then
+            echo 'The CLI fingerprint requires the linux_first_use_source scope' >&2
+            exit 1
+          fi
           python3 tooling/source_policy.py
           python3 tooling/public_surface_policy.py
           # Narrow development checks admit source and physical installed
@@ -994,11 +1004,13 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'linux_first_use_source' || inputs.verification_scope == 'linux_first_use')
     needs: receipt-policy
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: ${{ inputs.check_aac31_cli && 25 || 10 }}
     env:
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Exact Linux source roster in discovery and dotted module modes
         shell: bash
         env:
@@ -1074,6 +1086,49 @@ jobs:
           path: ${{ runner.temp }}/linux-first-use-source/
           if-no-files-found: error
           retention-days: 30
+      - name: Resolve the pinned CLI source revision
+        id: aac31-cli-source
+        if: inputs.check_aac31_cli && inputs.verification_scope == 'linux_first_use_source'
+        shell: bash
+        run: |
+          /usr/bin/python3 -B -E -s - <<'PY_AAC31_CLI'
+          import json, os, re
+          from pathlib import Path
+          pin = json.loads(Path("SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]["revision"]
+          if not re.fullmatch(r"[0-9a-f]{40}", pin):
+              raise SystemExit("Invalid Semwright source pin")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="ascii") as output:
+              output.write("revision=" + pin + "\n")
+          PY_AAC31_CLI
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: inputs.check_aac31_cli && inputs.verification_scope == 'linux_first_use_source'
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.aac31-cli-source.outputs.revision }}
+          path: _semwright
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        if: inputs.check_aac31_cli && inputs.verification_scope == 'linux_first_use_source'
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy, rust-src
+      - name: Fingerprint the rebuilt Semwright CLI
+        if: inputs.check_aac31_cli && inputs.verification_scope == 'linux_first_use_source'
+        shell: bash
+        working-directory: _semwright
+        env:
+          EXPECTED_SEMWRIGHT_REVISION: ${{ steps.aac31-cli-source.outputs.revision }}
+          RUSTUP_TOOLCHAIN: '1.98.1'
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_PROFILE_TEST_DEBUG: '0'
+          CARGO_INCREMENTAL: '0'
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SEMWRIGHT_REVISION"
+          rustc --version
+          printf 'runner_image=%s\n' "${ImageVersion:-unknown}"
+          cargo build --locked -p semwright-daemon -p semwright-cli --bins
+          sha256sum target/debug/semwright
 
   linux-first-use-installed:
     if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_first_use'

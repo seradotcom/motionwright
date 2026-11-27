@@ -656,6 +656,15 @@ class WorkflowContextTests(unittest.TestCase):
         self.assertIn("tooling/ci_linux_first_use.py source", target)
         self.assertEqual(source.count("MW_CI_JOB_TEST_TMP:"), 1)
 
+        cli_compile = source.split("      - name: Fingerprint the rebuilt Semwright CLI", 1)[1]
+        self.assertIn("inputs.check_aac31_cli && inputs.verification_scope == 'linux_first_use_source'", cli_compile)
+        self.assertIn("working-directory: _semwright", cli_compile)
+        self.assertIn("cargo build --locked -p semwright-daemon -p semwright-cli --bins", cli_compile)
+        self.assertIn("sha256sum target/debug/semwright", cli_compile)
+        self.assertNotIn("secrets.", cli_compile)
+        self.assertNotIn("linux_installed_aac31_ci.py", cli_compile)
+        self.assertIn('if [[ "$MW_CHECK_AAC31_CLI" == true && "$MW_SELECTED_SCOPE" != linux_first_use_source ]]', workflow)
+
 
 class FirstUseG0ClosureTests(unittest.TestCase):
     def setUp(self):
