@@ -117,8 +117,13 @@ impl MltTimelineDispatch<'_> {
         let data = result
             .get("data")
             .ok_or_else(|| unconfirmed_mlt_render(backend("MLT result has no native job")))?;
-        verified_terminal(data, expected)?;
-        Ok(())
+        // A verified failed or cancelled job is a completed result read.
+        // The timeline caller still returns the original known job failure.
+        match verified_terminal(data, expected) {
+            Ok(_) => Ok(()),
+            Err(error) if error.outcome_known => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -1475,6 +1480,16 @@ mod tests {
             "data": render_job_view("succeeded"),
         });
         assert!(result.check_result(&original).is_ok());
+        for state in ["failed", "cancelled"] {
+            let data = render_job_view(state);
+            let terminal = json!({"execution": provenance["execution"], "data": data});
+            assert!(result.check_result(&terminal).is_ok());
+            assert!(
+                verified_terminal(&terminal["data"], result.result.as_ref().unwrap())
+                    .unwrap_err()
+                    .outcome_known
+            );
+        }
         for (field, foreign) in [
             ("/data", render_job_view("running")),
             ("/data/artifact/path", json!("foreign.mkv")),
