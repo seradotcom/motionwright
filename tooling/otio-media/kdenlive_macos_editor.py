@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import ctypes as C
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -110,6 +111,8 @@ class Accessibility:
         self.copy_value = bind(ax, "AXUIElementCopyAttributeValue", integer, pointer, pointer,
                                out_pointer)
         self.copy_actions = bind(ax, "AXUIElementCopyActionNames", integer, pointer, out_pointer)
+        self.copy_at_position = bind(ax, "AXUIElementCopyElementAtPosition", integer, pointer,
+                                     C.c_float, C.c_float, out_pointer)
         self.set_value = bind(ax, "AXUIElementSetAttributeValue", integer, pointer, pointer, pointer)
         self.settable = bind(ax, "AXUIElementIsAttributeSettable", integer, pointer, pointer,
                              C.POINTER(C.c_ubyte))
@@ -170,6 +173,10 @@ class Accessibility:
         if count > MAX_AX_CHILDREN:
             return ()
         return tuple(self.array_item(value, position) for position in range(count))
+
+    def hit_test(self, point):
+        found = C.c_void_p()
+        return self.capture(self.copy_at_position(self.system, *point, C.byref(found)), found)
 
     def children(self, element, name="AXChildren"):
         return tuple(child for child in self.array(self.value(element, name))
@@ -433,10 +440,16 @@ class EditorUI:
             return focused
         return None
 
+    def command_bar_nodes(self):
+        ax = self.ax
+        for node in self.descend((*self.panels(), self.top_window()), limit=150, depth_limit=11):
+            if ".KCommandBar." in ax.text(node, "AXIdentifier"):
+                yield node
+
     def command_outline(self):
         ax = self.ax
         outlines, placeholders = [], []
-        for node in self.descend((*self.panels(), self.top_window()), limit=150, depth_limit=11):
+        for node in self.command_bar_nodes():
             role = ax.text(node, "AXRole")
             identifier = ax.text(node, "AXIdentifier")
             if role == "AXOutline" and identifier.endswith(".KCommandBar.QTreeView"):
@@ -483,6 +496,52 @@ class EditorUI:
             if rows:
                 return {**rows[0], "title": title} if len(rows) == 1 else None
         return None
+
+    def invoke_command(self, command, evidence, stage):
+        ax = self.ax
+        require(command["enabled"] and command["title"] == "Select Video Track 1"
+                and command["parent_role"] == "AXRow", "macOS V1 command is not the owned result cell")
+        position, size = command["position"], command["size"]
+        require(position and size and all(math.isfinite(number) for number in (*position, *size))
+                and min(size) > 4, "macOS V1 command has no usable cell geometry")
+        point = tuple(origin + length / 2 for origin, length in zip(position, size))
+
+        def hit_is_command():
+            if not self.focused_window():
+                return False
+            hit = ax.hit_test(point)
+            if not self.belongs_to_command_bar(hit):
+                return False
+            if ax.text(hit, "AXRole") == "AXRow":
+                candidates = ax.children(hit)
+            else:
+                candidates = (hit,)
+            return any(
+                ax.owns(node) and ax.enabled(node)
+                and command["title"] in (ax.text(node, "AXTitle"), ax.text(node, "AXValue"),
+                                          ax.text(node, "AXDescription"))
+                and ax.pair(node, "AXPosition", 1) == tuple(position)
+                and ax.pair(node, "AXSize", 2) == tuple(size)
+                for node in candidates
+            )
+
+        self.note_foreground(evidence, stage + "-before")
+        same_cell = hit_is_command()
+        evidence.write(stage + "-hit-test", {
+            "pid": ax.pid, "point": point, "exact_command_cell": bool(same_cell), "command": command,
+        })
+        require(same_cell, "macOS V1 command cell failed the system hit-test")
+        evidence.click(stage, point, hit_is_command)
+
+        def closed():
+            focused, main = self.focused_window(), self.top_window()
+            return (focused and ax.owns(main) and ax.equal(focused, main)
+                    and not any(self.command_bar_nodes()))
+
+        self.await_target(closed, "KCommandBar closed after clicking the exact video-track command")
+        self.note_foreground(evidence, stage + "-after")
+        evidence.write(stage + "-acknowledged", {"pid": ax.pid, "command": command["title"],
+                                                "command_bar_closed": True})
 
     def set_text(self, element, value):
         self.guard()
@@ -589,27 +648,28 @@ class EditorUI:
                     tabs.append(node)
         return tabs[0] if len(tabs) == 1 else None
 
-    def seek_and_select_third_clip(self, evidence):
+    def seek_and_select_third_clip(self, evidence, stage=None):
+        def step(name):
+            return f"{stage}-{name}" if stage else name
+
         tab = self.await_target(self.project_monitor_tab, "owned Project Monitor tab")
-        evidence.press("activate-project-monitor", tab)
+        evidence.press(step("activate-project-monitor"), tab)
         self.await_target(self.project_monitor, "selected Project Monitor tab group")
         # The pinned Kdenlive action activates the project monitor itself before
         # opening the inspector. The dock tab alone cannot select the monitor.
-        activate = self.menu_item("Sequence effects", evidence, "focus-project-monitor",
+        activate = self.menu_item("Sequence effects", evidence, step("focus-project-monitor"),
                                   section="Sequence", submenu="Tracks")
-        evidence.press("focus-project-monitor", activate)
-        for name, stage, submenu in (
+        evidence.press(step("focus-project-monitor"), activate)
+        for name, phase, submenu in (
             ("Go to Project End", "project-end", "Go To"),
             ("Rewind 1 Frame", "rewind-one-frame", "Seek"),
         ):
-            item = self.menu_item(name, evidence, stage, section="Monitor", submenu=submenu)
-            evidence.press(stage, item)
-        self.note_foreground(evidence, "before-video-track-one")
-        evidence.key("select-video-track-one", 18)
-        self.note_foreground(evidence, "after-video-track-one")
-        item = self.menu_item("Select Clip", evidence, "select-third",
+            item = self.menu_item(name, evidence, step(phase), section="Monitor", submenu=submenu)
+            evidence.press(step(phase), item)
+        select_video_track(self, evidence, step("select-video-track-one"))
+        item = self.menu_item("Select Clip", evidence, step("select-third"),
                               section="Sequence", submenu="Selection")
-        evidence.press("select-third", item)
+        evidence.press(step("select-third"), item)
 
     def commit_timecode(self, field, value, stage, evidence):
         self.guard()
@@ -752,6 +812,28 @@ class Evidence:
         require(status in (0, CANNOT_COMPLETE), f"macOS {stage} AX action failed ({status})")
 
 
+    def click(self, stage, point, revalidate):
+        self.guard()
+        ax = self.ax
+        require(ax.event_access(), "macOS V1 click admission failed")
+        create = bind(ax.graphics, "CGEventCreateMouseEvent", C.c_void_p, C.c_void_p,
+                      C.c_uint32, Pair, C.c_uint32)
+        post = bind(ax.graphics, "CGEventPost", None, C.c_uint32, C.c_void_p)
+        down = create(None, 1, Pair(*point), 0)
+        up = create(None, 2, Pair(*point), 0)
+        try:
+            require(down and up, "could not create a macOS single left click")
+            self.write(stage + "-intent", {"pid": ax.pid, "point": point, "clicks": 1})
+            self.guard()
+            require(ax.event_access() and revalidate(), "macOS V1 cell changed before click")
+            post(0, down)
+            post(0, up)
+            self.write(stage + "-terminal", {"pid": ax.pid, "delivery_requested_once": True})
+        finally:
+            for event in (down, up):
+                if event:
+                    ax.release(event)
+
     def key(self, stage, code):
         self.guard()
         require(self.ax.event_access(), "macOS editor keyboard event admission changed")
@@ -792,29 +874,40 @@ def observe_project_clock_layout(ui, evidence):
     return report
 
 
-def observe_video_track_action(ui, evidence):
-    ui.prepare_input(evidence, "before-command-search")
+def find_video_track_action(ui, evidence, stage):
     name = "Select Video Track 1"
-    item = ui.menu_item("Find Action", evidence, "find-action", section="Help")
-    evidence.press("open-find-action", item)
+    item = ui.menu_item("Find Action", evidence, stage, section="Help")
+    evidence.press("open-" + stage, item)
     field = ui.await_target(ui.command_filter, "focused KCommandBar filter")
     ui.set_text(field, name)
-    evidence.write("find-action-filter", {"value": name, "editor_pid": ui.ax.pid})
+    evidence.write(stage + "-filter", {"value": name, "editor_pid": ui.ax.pid})
     try:
-        command = ui.await_target(lambda: ui.command_result(name), "exact Select Video Track 1 result")
+        return ui.await_target(lambda: ui.command_result(name), "exact Select Video Track 1 result")
     finally:
-        evidence.write("find-action-outline", ui.command_outline())
-    report = {"command": command, "timeline_actions": 0, "imports": 0, "saves": 0}
+        evidence.write(stage + "-outline", ui.command_outline())
+
+
+def select_video_track(ui, evidence, stage):
+    command = find_video_track_action(ui, evidence, stage + "-find-action")
+    ui.invoke_command(command, evidence, stage)
+
+
+def observe_video_track_action(ui, evidence, *, activate=False):
+    ui.prepare_input(evidence, "before-command-search")
+    command = find_video_track_action(ui, evidence, "find-action")
+    if activate:
+        ui.invoke_command(command, evidence, "probe-select-track")
+    report = {"command": command, "timeline_actions": int(activate), "imports": 0, "saves": 0}
     evidence.write("find-action-result", report)
     return report
 
 
 def refresh_third_playlist(ui, evidence):
-    ui.seek_and_select_third_clip(evidence)
     for stage, before, after, text in (
         ("shorten", 30, 29, "00:00:00:29"),
         ("restore", 29, 30, "00:00:01:00"),
     ):
+        ui.seek_and_select_third_clip(evidence, stage)
         field, _, _, values = ui.duration_dialog(stage, evidence)
         evidence.write(stage + "-model", {"position_crop_duration_frames": values})
         require(values == (60, 60, before), f"macOS {stage} model does not match the original third clip")
@@ -823,6 +916,7 @@ def refresh_third_playlist(ui, evidence):
         require(requested == (60, 60, after), f"macOS {stage} requested fields changed before confirmation")
         evidence.press(stage + "-accept", okay)
         ui.duration_closed()
+    ui.seek_and_select_third_clip(evidence, "verify-restoration")
     _, _, cancel, values = ui.duration_dialog("verify-restoration", evidence)
     evidence.write("restored-model", {"position_crop_duration_frames": values})
     require(values == (60, 60, 30), "macOS restored third-clip model differs from the imported model")
@@ -871,7 +965,8 @@ def wait_project(initial, guard):
     raise TimeoutError("macOS Kdenlive did not produce the initial native project")
 
 
-def run(owner, context, distribution, observe_editor, *, observe_clock=False, observe_actions=False):
+def run(owner, context, distribution, observe_editor, *, observe_clock=False,
+        observe_actions=False, observe_track=False):
     if observe_editor:
         editor, binary = installed_editor(owner, context, distribution)
         source = None
@@ -915,9 +1010,10 @@ def run(owner, context, distribution, observe_editor, *, observe_clock=False, ob
                     if observe_editor:
                         evidence.write("accessibility-tree", {"pid": process.pid, "nodes": ui.diagnostic()})
                         evidence.write("project-monitor-ax", ui.project_monitor_diagnostic())
-                        if observe_actions:
-                            return {"status": "COMMAND_OBSERVED", "pid": process.pid,
-                                    **observe_video_track_action(ui, evidence)}
+                        if observe_actions or observe_track:
+                            return {"status": "COMMAND_DISPATCHED" if observe_track else "COMMAND_OBSERVED",
+                                    "pid": process.pid,
+                                    **observe_video_track_action(ui, evidence, activate=observe_track)}
                         if observe_clock:
                             return {"status": "CLOCK_OBSERVED", "pid": process.pid,
                                     **observe_project_clock_layout(ui, evidence)}
@@ -983,6 +1079,7 @@ def main():
     observation.add_argument("--observe-editor", action="store_true")
     observation.add_argument("--observe-editor-clock", action="store_true")
     observation.add_argument("--observe-editor-actions", action="store_true")
+    observation.add_argument("--observe-editor-select-track", action="store_true")
     options = parser.parse_args()
     context, distribution = selection(os.environ, sys.platform, platform.machine())
     require(context["runner_os"] == "macOS", "macOS editor qualification is restricted to macOS")
@@ -992,9 +1089,11 @@ def main():
     require(runner.is_absolute() and runner.resolve(strict=True) == runner,
             "macOS Kdenlive runner root is not canonical")
     print(json.dumps(run(runner / f"{JOB}-{context['run_id']}-1", context, distribution,
-                         options.observe_editor or options.observe_editor_clock or options.observe_editor_actions,
+                         any((options.observe_editor, options.observe_editor_clock,
+                              options.observe_editor_actions, options.observe_editor_select_track)),
                          observe_clock=options.observe_editor_clock,
-                         observe_actions=options.observe_editor_actions), sort_keys=True))
+                         observe_actions=options.observe_editor_actions,
+                         observe_track=options.observe_editor_select_track), sort_keys=True))
 
 
 if __name__ == "__main__":

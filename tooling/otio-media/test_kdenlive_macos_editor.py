@@ -93,6 +93,9 @@ class MacEditorRouteTests(unittest.TestCase):
         self.assertEqual(ui.duration_dialog.call_args_list, [
             call("shorten", evidence), call("restore", evidence), call("verify-restoration", evidence),
         ])
+        self.assertEqual(ui.seek_and_select_third_clip.call_args_list, [
+            call(evidence, "shorten"), call(evidence, "restore"), call(evidence, "verify-restoration"),
+        ])
         self.assertEqual(ui.commit_timecode.call_args_list, [
             call("field", "00:00:00:29", "shorten", evidence),
             call("field", "00:00:01:00", "restore", evidence),
@@ -162,11 +165,12 @@ class MacEditorRouteTests(unittest.TestCase):
         ui.await_target = Mock(return_value="Project Monitor radio")
         ui.menu_item = Mock(side_effect=["Sequence effects", "Go to Project End", "Rewind 1 Frame", "Select Clip"])
         ui.project_clock = Mock(side_effect=AssertionError("the Project Monitor clock is hidden"))
-        ui.note_foreground = Mock()
         evidence = Mock()
 
-        ui.seek_and_select_third_clip(evidence)
+        with patch.object(editor, "select_video_track") as select_track:
+            ui.seek_and_select_third_clip(evidence)
 
+        select_track.assert_called_once_with(ui, evidence, "select-video-track-one")
         self.assertEqual(ui.menu_item.call_args_list, [
             call("Sequence effects", evidence, "focus-project-monitor", section="Sequence", submenu="Tracks"),
             call("Go to Project End", evidence, "project-end", section="Monitor", submenu="Go To"),
@@ -180,10 +184,7 @@ class MacEditorRouteTests(unittest.TestCase):
             call("rewind-one-frame", "Rewind 1 Frame"),
             call("select-third", "Select Clip"),
         ])
-        evidence.key.assert_called_once_with("select-video-track-one", 18)
-        self.assertEqual(ui.note_foreground.call_args_list, [
-            call(evidence, "before-video-track-one"), call(evidence, "after-video-track-one"),
-        ])
+        evidence.key.assert_not_called()
 
     def test_unconfirmed_foreground_stops_before_opening_the_import_menu(self):
         ui, evidence = Mock(), Mock()
@@ -218,6 +219,25 @@ class MacEditorRouteTests(unittest.TestCase):
 
         evidence.write.assert_any_call("find-action-outline", ui.command_outline.return_value)
         evidence.key.assert_not_called()
+
+    def test_empty_editor_probe_confirms_the_exact_command_once_without_import(self):
+        ui, evidence = Mock(), Mock()
+        command = {"role": "AXCell", "title": "Select Video Track 1"}
+        ui.await_target.side_effect = ["command filter", command]
+        result = editor.observe_video_track_action(ui, evidence, activate=True)
+        ui.invoke_command.assert_called_once_with(command, evidence, "probe-select-track")
+        self.assertEqual(result["timeline_actions"], 1)
+        self.assertEqual(result["imports"], 0)
+        self.assertEqual(result["saves"], 0)
+
+    def test_track_selection_cannot_continue_after_an_unacknowledged_command(self):
+        ui, evidence = Mock(), Mock()
+        command = {"role": "AXCell", "title": "Select Video Track 1"}
+        ui.await_target.side_effect = ["command filter", command]
+        ui.invoke_command.side_effect = TimeoutError("command bar remained open")
+        with self.assertRaisesRegex(TimeoutError, "remained open"):
+            editor.select_video_track(ui, evidence, "track")
+        ui.invoke_command.assert_called_once_with(command, evidence, "track")
 
 if __name__ == "__main__":
     unittest.main()
