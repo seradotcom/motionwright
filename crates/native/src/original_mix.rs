@@ -931,6 +931,46 @@ pub fn prepare_saved_original_mix_with_budget(
     profile_id: Uuid,
     budget: OriginalMixDecodeBudget,
 ) -> Result<PreparedOriginalMix> {
+    prepare_saved_original_mix_inner(
+        service,
+        project_id,
+        expected,
+        profile_id,
+        budget,
+        semantic_bus::SemanticSfxPreparation::Uncached(budget),
+    )
+}
+
+/// The owner-local audition keeps at most one derived semantic SFX bus.
+/// Advance it only after the complete current mix passes its source check.
+pub fn prepare_saved_original_mix_for_audition(
+    service: &StudioService,
+    project_id: Uuid,
+    expected: &RevisionStamp,
+    profile_id: Uuid,
+    cache: &mut crate::sfx_mix::SemanticSfxAuditionCache,
+) -> Result<PreparedOriginalMix> {
+    let mut candidate = cache.clone();
+    let prepared = prepare_saved_original_mix_inner(
+        service,
+        project_id,
+        expected,
+        profile_id,
+        OriginalMixDecodeBudget::Audition15Seconds,
+        semantic_bus::SemanticSfxPreparation::CachedAudition(&mut candidate),
+    )?;
+    *cache = candidate;
+    Ok(prepared)
+}
+
+fn prepare_saved_original_mix_inner(
+    service: &StudioService,
+    project_id: Uuid,
+    expected: &RevisionStamp,
+    profile_id: Uuid,
+    budget: OriginalMixDecodeBudget,
+    semantic_sfx: semantic_bus::SemanticSfxPreparation<'_>,
+) -> Result<PreparedOriginalMix> {
     let project = service
         .project(project_id)
         .map_err(|_| mix_stale("Saved mix source project is unavailable"))?;
@@ -1002,7 +1042,7 @@ pub fn prepare_saved_original_mix_with_budget(
         profile_id,
         base_sfx,
         output_frames,
-        budget,
+        semantic_sfx,
     )?;
     let plan = OriginalMixPlan {
         schema: sfx_source.plan_schema().into(),

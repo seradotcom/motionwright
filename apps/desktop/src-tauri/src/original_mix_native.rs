@@ -4,7 +4,8 @@
 use crate::{AppState, sanitized};
 use motionwright_domain::{Project, RevisionStamp};
 use motionwright_native::original_mix::{
-    PreparedOriginalMix, prepare_saved_original_mix_with_budget,
+    PreparedOriginalMix, prepare_saved_original_mix_for_audition,
+    prepare_saved_original_mix_with_budget,
 };
 use motionwright_service::{OriginalMixDecodeBudget, StudioService};
 use serde::{Deserialize, Deserializer};
@@ -216,15 +217,24 @@ pub async fn native_original_mix_audition(
         request.deliverable_profile_id,
         state.workspace_session,
     )?;
-    let mix = saved_mix_with_budget(
-        owner.worker_owner(),
-        &state.service,
-        &project,
-        request.deliverable_profile_id,
-        OriginalMixDecodeBudget::Audition15Seconds,
-    )
-    .await?
-    .ok_or("Saved mix was disabled during audition preparation.")?;
+    let service = state.service.clone();
+    let audition_cache = state.semantic_sfx_audition.clone();
+    let project_id = project.id;
+    let expected = project.stamp();
+    let profile = request.deliverable_profile_id;
+    let mix = crate::desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        let mut cache = audition_cache
+            .lock()
+            .map_err(|_| "The original mix audition cache is unavailable.".to_owned())?;
+        prepare_saved_original_mix_for_audition(
+            &service, project_id, &expected, profile, &mut cache,
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| {
+        "Saved original mix preparation failed in its bounded native worker.".to_owned()
+    })??;
     if mix.wav_bytes().len() > 3 * 1024 * 1024
         || mix.evidence().owner_release_approved
         || mix.evidence().independently_verified_lufs
@@ -765,6 +775,37 @@ pub(crate) mod tests {
         .unwrap();
         assert!(prepared.plan().original_sfx.semantic_bus().is_some());
         assert!(prepared.plan().original_sfx.imported_asset_id().is_none());
+        let mut cache = motionwright_native::sfx_mix::SemanticSfxAuditionCache::default();
+        let cold = prepare_saved_original_mix_for_audition(
+            &service,
+            project.id,
+            &project.stamp(),
+            profile_id,
+            &mut cache,
+        )
+        .unwrap();
+        assert_eq!(prepared.wav_bytes(), cold.wav_bytes());
+        assert_eq!(cache.last_work().unwrap().synthesized_sample_frames, 96_000);
+        let mut edited_cue = project.audio.sfx_cues[0].clone();
+        edited_cue.gain_milli_db = -14_000;
+        apply_fixture_change(
+            &service,
+            &mut project,
+            "audition-cached-cue-gain",
+            Change::UpsertSemanticSfx { cue: edited_cue },
+        );
+        let changed = prepare_saved_original_mix_for_audition(
+            &service,
+            project.id,
+            &project.stamp(),
+            profile_id,
+            &mut cache,
+        )
+        .unwrap();
+        let full =
+            prepare_saved_original_mix(&service, project.id, &project.stamp(), profile_id).unwrap();
+        assert_eq!(changed.wav_bytes(), full.wav_bytes());
+        assert_ne!(changed.wav_sha256(), cold.wav_sha256());
         assert_eq!(service.project(project.id).unwrap(), project);
     }
 
