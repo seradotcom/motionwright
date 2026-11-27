@@ -111,6 +111,10 @@ def admit_candidate(bundle, retained_package, *, readback_only=False):
             b"tooling/linux_installed_aac31.py", b"tooling/tests/test_linux_installed_aac31.py",
             b"tooling/linux_hybrid_original_receipt.py", b"tooling/linux_installed_aac31_readback.py",
             b".github/workflows/v05-otio-real-media.yml", b"tooling/tests/test_ci_otio_alab_readonly.py",
+            b"tooling/otio-media/kdenlive_native_distribution.py",
+            b"tooling/otio-media/kdenlive_native_installation.py",
+            b"tooling/otio-media/test_kdenlive_native_distribution.py",
+            b"tooling/otio-media/test_kdenlive_native_installation.py",
         }, "AAC31_RETAINED_PRODUCT_SOURCE_CHANGED")
         inputs["candidate_origin"] = retained
     else:

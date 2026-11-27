@@ -6,7 +6,7 @@ on:
       verification_scope:
         description: 'Source, Desktop platform source checks, distribution inventory, accessibility observation, Kdenlive roundtrip, or admitted ALab metadata'
         type: choice
-        options: [source, desktop-source, kdenlive-distribution, accessibility-only, kdenlive-gui, external-alab-readonly]
+        options: [source, desktop-source, kdenlive-distribution, kdenlive-native-editor, accessibility-only, kdenlive-gui, external-alab-readonly]
         default: source
         required: true
       audio_source:
@@ -609,6 +609,44 @@ jobs:
           }
           git diff --exit-code HEAD
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  kdenlive-native-editor:
+    if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'kdenlive-native-editor'
+    name: Kdenlive native editor installation (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 14
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Verify the native editor admission and installation controls
+        working-directory: tooling/otio-media
+        run: python -B -E -s -m unittest -v test_kdenlive_native_distribution test_kdenlive_native_installation
+      - name: Obtain the pinned KDE distribution once
+        run: python -B -E -s tooling/otio-media/kdenlive_native_distribution.py
+      - name: Install the bound editor in the disposable runner
+        run: python -B -E -s tooling/otio-media/kdenlive_native_installation.py
+      - name: Retain archive and installed executable identities
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: kdenlive-native-installation-${{ runner.os }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/download-intent.json
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/distribution.json
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/installation-intent.json
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/installation.json
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/windows-installer-terminal.json
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/macos-readonly-mount.json
+          if-no-files-found: warn
+          retention-days: 7
 
   verified-windows-junction-admission:
     if: github.event_name != 'workflow_dispatch' || inputs.verification_scope == 'source'
