@@ -36,7 +36,22 @@ public static class KdenliveWindowsInput
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct Input { public uint Type; public Mouse Mouse; }
+    private struct Keyboard
+    {
+        public ushort Key, Scan;
+        public uint Flags, Time;
+        public UIntPtr Extra;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct InputData
+    {
+        [FieldOffset(0)] public Mouse Mouse;
+        [FieldOffset(0)] public Keyboard Keyboard;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Input { public uint Type; public InputData Data; }
 
     [DllImport("user32.dll")]
     private static extern IntPtr WindowFromPhysicalPoint(Point point);
@@ -205,6 +220,25 @@ public static class KdenliveWindowsInput
             && found == owner;
     }
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int key);
+
+    public static bool SelectVideoTrackOne(uint owner)
+    {
+        if (!IsOwned(GetForegroundWindow(), owner) ||
+            (GetAsyncKeyState(0x10) & 0x8000) != 0 ||
+            (GetAsyncKeyState(0x11) & 0x8000) != 0 ||
+            (GetAsyncKeyState(0x12) & 0x8000) != 0)
+            return false;
+        var events = new [] {
+            new Input { Type = 1, Data = new InputData { Keyboard = new Keyboard { Key = 0x31 } } },
+            new Input { Type = 1, Data = new InputData { Keyboard = new Keyboard { Key = 0x31, Flags = 0x0002 } } }
+        };
+        return SendInput((uint)events.Length, events, Marshal.SizeOf(typeof(Input))) == events.Length;
+    }
+
     public static bool ClickOwnedPoint(int x, int y, uint owner)
     {
         Point observed;
@@ -214,8 +248,8 @@ public static class KdenliveWindowsInput
             return false;
 
         var events = new [] {
-            new Input { Type = 0, Mouse = new Mouse { Flags = 0x0002 } },
-            new Input { Type = 0, Mouse = new Mouse { Flags = 0x0004 } }
+            new Input { Type = 0, Data = new InputData { Mouse = new Mouse { Flags = 0x0002 } } },
+            new Input { Type = 0, Data = new InputData { Mouse = new Mouse { Flags = 0x0004 } } }
         };
         return SendInput((uint)events.Length, events, Marshal.SizeOf(typeof(Input))) == events.Length;
     }
@@ -284,6 +318,16 @@ function Observe-Windows {
                     }
                 })
             }
+        }
+        if ($className -ceq 'QMenu') {
+            $menuFilter = [System.Windows.Automation.PropertyCondition]::new(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::MenuItem)
+            $controls += @($window.FindAll($scope, $menuFilter) | Where-Object {
+                (Control-Name $_) -cin @('Edit Duration', 'Select Clip', 'Sequence effects')
+            } | Select-Object -First 8 | ForEach-Object {
+                @{ name = (Control-Name $_); enabled = $_.Current.IsEnabled; offscreen = $_.Current.IsOffscreen }
+            })
         }
         @{
             hwnd = $window.Current.NativeWindowHandle
@@ -577,8 +621,16 @@ function Await-DurationClosed {
 function Verify-ThirdClipPlaylist {
     # The original cut has three contiguous 30-frame intervals. The final
     # interior frame selects the third clip without needing the monitor clock.
+    # Sequence effects explicitly activates the project monitor inside Kdenlive.
+    Select-EditorMenu 'Sequence' 'Sequence effects' 'activate-project-monitor' 'Tracks'
     Select-EditorMenu 'Monitor' 'Go to Project End' 'seek-end' 'Go To'
     Select-EditorMenu 'Monitor' 'Rewind 1 Frame' 'seek-inside-third' 'Seek'
+    Assert-Editor
+    Record 'select-video-track-one-intent.json' @{ editor_pid = $EditorPid; automatic_retry = $false }
+    if (![KdenliveWindowsInput]::SelectVideoTrackOne([uint32]$EditorPid)) {
+        throw 'Kdenlive video track shortcut was not confirmed in the original foreground window'
+    }
+    Record 'select-video-track-one-terminal.json' @{ editor_pid = $EditorPid; delivery_requested_once = $true }
     Select-EditorMenu 'Sequence' 'Select Clip' 'select-third' 'Selection'
 
     foreach ($edit in @(
