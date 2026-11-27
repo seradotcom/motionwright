@@ -597,16 +597,15 @@ impl CurrentUserSid {
     }
 }
 
-pub(super) struct WindowsOtioWorkspace {
-    root: PathBuf,
-    root_handle: Option<File>,
+pub(super) struct WindowsOtioWorkspaceParent {
+    path: PathBuf,
     _ancestors: Vec<File>,
     installer: LocalAllocation,
     user: CurrentUserSid,
 }
 
-impl WindowsOtioWorkspace {
-    pub(super) fn create(parent: &Path, name: &str) -> Admission<Self> {
+impl WindowsOtioWorkspaceParent {
+    pub(super) fn admit(parent: &Path) -> Admission<Self> {
         let mut components = parent.components();
         let Some(Component::Prefix(prefix)) = components.next() else {
             return Err(WORKSPACE_REFUSED);
@@ -615,11 +614,6 @@ impl WindowsOtioWorkspace {
             || !matches!(components.next(), Some(Component::RootDir))
             || !components.all(|part| matches!(part, Component::Normal(_)))
             || parent.as_os_str().encode_wide().any(|unit| unit == 0)
-            || name.is_empty()
-            || !name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
-            || matches!(name, "." | "..")
         {
             return Err(WORKSPACE_REFUSED);
         }
@@ -646,8 +640,25 @@ impl WindowsOtioWorkspace {
         if ancestors.is_empty() {
             return Err(WORKSPACE_REFUSED);
         }
-        let root = parent.join(name);
-        let descriptor = user.private_descriptor()?;
+        Ok(Self {
+            path: parent.to_path_buf(),
+            _ancestors: ancestors,
+            installer,
+            user,
+        })
+    }
+
+    pub(super) fn create(self, name: &str) -> Admission<WindowsOtioWorkspace> {
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+            || matches!(name, "." | "..")
+        {
+            return Err(WORKSPACE_REFUSED);
+        }
+        let root = self.path.join(name);
+        let descriptor = self.user.private_descriptor()?;
         let attributes = SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: descriptor.0,
@@ -659,17 +670,23 @@ impl WindowsOtioWorkspace {
         if unsafe { CreateDirectoryW(path.as_ptr(), &attributes) } == 0 {
             return Err(WORKSPACE_REFUSED);
         }
-        let mut workspace = Self {
+        let mut workspace = WindowsOtioWorkspace {
             root,
             root_handle: None,
-            _ancestors: ancestors,
-            installer,
-            user,
+            parent: self,
         };
         workspace.root_handle = Some(workspace.hold(&workspace.root, true)?);
         Ok(workspace)
     }
+}
 
+pub(super) struct WindowsOtioWorkspace {
+    root: PathBuf,
+    root_handle: Option<File>,
+    parent: WindowsOtioWorkspaceParent,
+}
+
+impl WindowsOtioWorkspace {
     pub(super) fn path(&self) -> &Path {
         &self.root
     }
@@ -678,9 +695,9 @@ impl WindowsOtioWorkspace {
         held_entry_for(
             path,
             directory,
-            &self.installer,
+            &self.parent.installer,
             Scope::Runtime,
-            Some(self.user.sid()),
+            Some(self.parent.user.sid()),
         )
         .map_err(|_| WORKSPACE_REFUSED)
     }

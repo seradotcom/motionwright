@@ -492,22 +492,54 @@ struct BridgeTempWorkspace {
 
 const WORKSPACE_REFUSED: &str = "OTIO needs a private workspace under a protected local folder.";
 
-impl BridgeTempWorkspace {
-    fn create(parent: &Path, operation: OtioBridgeOperation) -> Result<Self, String> {
+struct BridgeWorkspaceParent {
+    #[cfg(windows)]
+    windows: windows_runtime::WindowsOtioWorkspaceParent,
+    #[cfg(unix)]
+    path: PathBuf,
+    #[cfg(unix)]
+    ancestors: Vec<fs::File>,
+}
+
+impl BridgeWorkspaceParent {
+    /// Check only directory metadata. Keep the admitted ancestors alive until
+    /// the authorized operation has finished with its private workspace.
+    fn admit(parent: &Path) -> Result<Self, String> {
         if !parent.is_absolute() || parent.ancestors().take(65).count() > 64 {
             return Err(WORKSPACE_REFUSED.into());
         }
         #[cfg(windows)]
         {
-            let name = format!("{}{}", workspace_prefix(operation), Uuid::now_v7().simple());
-            let private = windows_runtime::WindowsOtioWorkspace::create(parent, &name)
+            let windows = windows_runtime::WindowsOtioWorkspaceParent::admit(parent)
                 .map_err(str::to_owned)?;
+            Ok(Self { windows })
+        }
+        #[cfg(unix)]
+        {
+            let mut ancestors = Vec::new();
+            for path in parent.ancestors().collect::<Vec<_>>().into_iter().rev() {
+                ancestors.push(open_private_unix_path(path, UnixWorkspaceEntry::Ancestor)?);
+            }
+            Ok(Self {
+                path: parent.to_path_buf(),
+                ancestors,
+            })
+        }
+        #[cfg(not(any(windows, unix)))]
+        Err(WORKSPACE_REFUSED.into())
+    }
+
+    fn create(self, operation: OtioBridgeOperation) -> Result<BridgeTempWorkspace, String> {
+        #[cfg(windows)]
+        {
+            let name = format!("{}{}", workspace_prefix(operation), Uuid::now_v7().simple());
+            let private = self.windows.create(&name).map_err(str::to_owned)?;
             let temp = tempfile::Builder::new()
                 .prefix("files-")
                 .tempdir_in(private.path())
                 .map_err(|_| WORKSPACE_REFUSED)?;
             let working = private.hold(temp.path(), true).map_err(str::to_owned)?;
-            Ok(Self {
+            Ok(BridgeTempWorkspace {
                 _working: working,
                 temp,
                 private,
@@ -516,30 +548,28 @@ impl BridgeTempWorkspace {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut ancestors = Vec::new();
-            for path in parent.ancestors().collect::<Vec<_>>().into_iter().rev() {
-                ancestors.push(open_private_unix_path(path, UnixWorkspaceEntry::Ancestor)?);
-            }
             let temp = tempfile::Builder::new()
                 .prefix(workspace_prefix(operation))
                 .permissions(fs::Permissions::from_mode(0o700))
-                .tempdir_in(parent)
+                .tempdir_in(&self.path)
                 .map_err(|_| WORKSPACE_REFUSED)?;
             let working =
                 open_private_unix_path(temp.path(), UnixWorkspaceEntry::PrivateDirectory)?;
-            Ok(Self {
+            Ok(BridgeTempWorkspace {
                 _working: working,
                 temp,
-                _ancestors: ancestors,
+                _ancestors: self.ancestors,
             })
         }
         #[cfg(not(any(windows, unix)))]
         {
-            let _ = (parent, operation);
+            let _ = operation;
             Err(WORKSPACE_REFUSED.into())
         }
     }
+}
 
+impl BridgeTempWorkspace {
     fn path(&self) -> &Path {
         self.temp.path()
     }
@@ -1165,14 +1195,14 @@ pub fn preview(
     }
     let operation = OtioBridgeOperation::Preview;
     require_bridge_idle(service, &project, operation)?;
+    let parent = BridgeWorkspaceParent::admit(bundle.parent().ok_or_else(refused)?)?;
     let PreviewDocuments {
         original,
         manifest,
         edited,
         received,
     } = read_authorized_preview_documents(grants, &request, &subject, &bundle, &project)?;
-    let parent = bundle.parent().ok_or_else(refused)?;
-    let mut temp = BridgeTempWorkspace::create(parent, operation)?;
+    let mut temp = parent.create(operation)?;
     let (source_dir, bridge) = stage_bridge_sources(temp.path())?;
     let _original_sources = temp.hold_sources(&source_dir)?;
     let snapshot = write_exact(temp.path(), "current-project.json", &original)?;
@@ -1404,8 +1434,10 @@ mod tests {
     fn isolated_original_bridge_stages_the_real_decoder_supervisor_source() {
         let parent = tempfile::tempdir().unwrap();
         let canonical_parent = parent.path().canonicalize().unwrap();
-        let directory =
-            BridgeTempWorkspace::create(&canonical_parent, OtioBridgeOperation::Preview).unwrap();
+        let directory = BridgeWorkspaceParent::admit(&canonical_parent)
+            .unwrap()
+            .create(OtioBridgeOperation::Preview)
+            .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1561,7 +1593,12 @@ mod tests {
         let preview = OtioBridgeOperation::Preview;
         let export = OtioBridgeOperation::Export;
         let parent = root.path().canonicalize().unwrap();
-        let workspace = |operation| BridgeTempWorkspace::create(&parent, operation).unwrap();
+        let workspace = |operation| {
+            BridgeWorkspaceParent::admit(&parent)
+                .unwrap()
+                .create(operation)
+                .unwrap()
+        };
 
         let mut original = workspace(preview);
         let original_path = original.path().to_owned();
@@ -1954,6 +1991,50 @@ mod tests {
             "missing source cannot become a complete receiver"
         );
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unsafe_otio_folder_preserves_preview_grant_before_opening_documents() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let parent = root.join("shared");
+        let bundle = parent.join("cut");
+        fs::create_dir_all(&bundle).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o777)).unwrap();
+
+        let service = StudioService::open(root.join("studio.sqlite3")).unwrap();
+        let project = service.create_project("Protected OTIO workspace").unwrap();
+        let scope = EffectScope::project(project.id, project.generation, project.revision);
+        let grants = EffectGrantRegistry::default();
+        let bundle_path = bundle.to_str().unwrap();
+        let subject = preview_subject(bundle_path, "edited.otio", None).unwrap();
+        let grant = grants
+            .issue(EffectKind::ImportLocal, scope, &subject)
+            .unwrap();
+        let error = preview(
+            &service,
+            &grants,
+            OtioMediaPreviewRequest {
+                project_id: project.id,
+                generation: project.generation,
+                revision: project.revision,
+                bundle_path: bundle_path.into(),
+                edited_file: "edited.otio".into(),
+                received_file: None,
+                effect_grant: grant.token,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(String::from(error), WORKSPACE_REFUSED);
+        assert!(
+            grants
+                .consume(grant.token, EffectKind::ImportLocal, scope, &subject)
+                .is_ok()
+        );
+        assert_eq!(fs::read_dir(parent).unwrap().count(), 1);
+    }
+
     #[cfg(not(target_os = "linux"))]
     #[test]
     fn unavailable_otio_runtime_preserves_both_grants_and_leaves_the_workspace_untouched() {
@@ -2362,6 +2443,7 @@ pub fn export_portable(
 
     let operation = OtioBridgeOperation::Export;
     require_bridge_idle(service, &project, operation)?;
+    let parent = BridgeWorkspaceParent::admit(destination.parent().ok_or_else(refused)?)?;
     // Consume the exact one-use grant before creating a workspace or reading
     // original media. Runtime qualification is repeated at process launch.
     grants.consume(
@@ -2370,8 +2452,7 @@ pub fn export_portable(
         EffectScope::project(request.project_id, request.generation, request.revision),
         &request.destination,
     )?;
-    let parent = destination.parent().ok_or_else(refused)?;
-    let mut temp = BridgeTempWorkspace::create(parent, operation)?;
+    let mut temp = parent.create(operation)?;
     let (source_dir, bridge) = stage_bridge_sources(temp.path())?;
     let _original_sources = temp.hold_sources(&source_dir)?;
     let raw_root = temp.path().join("owner-originals");

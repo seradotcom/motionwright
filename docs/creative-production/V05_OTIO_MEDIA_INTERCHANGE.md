@@ -172,7 +172,8 @@ ffprobe with the seekable `fd` protocol. Check the installed decoder with
 for one read-only copy of such an original.
 
 Use a local folder whose ancestors are protected against replacement and
-permission changes by other accounts. Desktop creates a private workspace
+permission changes by other accounts. Desktop checks the selected folder
+before consuming the one-use grant. It then creates a private workspace
 beside the selected bundle or destination and holds the verified bridge
 scripts while its process runs.
 
