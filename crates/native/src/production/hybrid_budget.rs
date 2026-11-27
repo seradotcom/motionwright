@@ -624,6 +624,7 @@ struct HybridBudgetPlan {
     request_prefix: String,
     source_plan: Value,
     motion: Vec<MotionContribution>,
+    requires_blend: bool,
     motion_frames: u64,
     frame_reservation: u64,
     manim_scene_id: Uuid,
@@ -654,9 +655,25 @@ enum HybridPhase {
     Mlt(HybridMltBinding),
 }
 
+/// A read-only preparation for one exact local hybrid render.
+pub struct PreparedHybridNativeSources {
+    owner: ProductionCoordinator,
+    plan: HybridBudgetPlan,
+    blend: Option<MotionBlendAdmission>,
+}
+
+impl PreparedHybridNativeSources {
+    pub async fn realize(self) -> NativeResult<HybridNativeSources> {
+        self.owner
+            .realize_prepared_hybrid_sources(self.plan, self.blend)
+            .await
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct HybridRootBudgetScope {
     root: RootOperationBudget,
+    blend: Option<MotionBlendAdmission>,
     plan: Arc<HybridBudgetPlan>,
     phase: HybridPhase,
 }
@@ -1085,8 +1102,7 @@ impl HybridBudgetPlan {
         )?;
         let connection_identity = coordinator.client.connection().identity()?;
         use RendererKind::{ManimCommunity, MotionCanvas};
-        const HYBRID_LAYOUT: &str =
-            "The admitted hybrid route requires one static Manim scene and Motion Canvas scenes on either or both sides";
+        const HYBRID_LAYOUT: &str = "The admitted hybrid route requires one static Manim scene and Motion Canvas scenes on either or both sides";
         let manim_scene_index = project
             .scenes
             .iter()
@@ -1158,12 +1174,19 @@ impl HybridBudgetPlan {
         }
 
         let segments = plan_motion_canvas_segments(&project, deliverable_id, options)?;
+        use semwright_motion_authoring::{AUTHORING_BLEND_VERSION, AUTHORING_VERSION};
         supported(
             segments.iter().all(|segment| {
-                segment.film.version == semwright_motion_authoring::AUTHORING_VERSION
+                matches!(
+                    segment.film.version,
+                    AUTHORING_VERSION | AUTHORING_BLEND_VERSION
+                )
             }),
-            "Experimental hybrid root has no Film v2 blend admission",
+            "The hybrid route cannot preserve this Film authoring version",
         )?;
+        let requires_blend = segments
+            .iter()
+            .any(|segment| segment.film.version == AUTHORING_BLEND_VERSION);
         supported(
             segments.len() == motion_runs.len(),
             "Hybrid MC source partition differs from the saved renderer order",
@@ -1428,6 +1451,7 @@ impl HybridBudgetPlan {
             request_prefix,
             source_plan,
             motion,
+            requires_blend,
             motion_frames,
             frame_reservation,
             manim_scene_id,
@@ -1474,6 +1498,10 @@ fn verify_original_pcm(bytes: &[u8], sample_frames: u64) -> NativeResult<()> {
 }
 
 impl HybridRootBudgetScope {
+    pub(super) fn blend_admission(&self) -> Option<&MotionBlendAdmission> {
+        self.blend.as_ref()
+    }
+
     fn recheck(&self, coordinator: &ProductionCoordinator, project: &Project) -> NativeResult<()> {
         if let Some(grant) = &coordinator.hybrid_project_grant {
             grant.recheck(coordinator)?;
@@ -2235,16 +2263,7 @@ impl ProductionCoordinator {
         options: &FilmBuildOptions,
     ) -> NativeResult<HybridSourcePreflight> {
         let plan = HybridBudgetPlan::build(self, project_id, expected, deliverable_id, options)?;
-        self.require_no_unresolved_scene_requests(
-            project_id,
-            &format!("{}-mc", plan.request_prefix),
-            SceneRequestFamily::Motion,
-        )?;
-        self.require_no_unresolved_scene_requests(
-            project_id,
-            &format!("{}-manim", plan.request_prefix),
-            SceneRequestFamily::Manim,
-        )?;
+        self.require_hybrid_requests_settled(&plan)?;
         Ok(HybridSourcePreflight {
             schema: "motionwright.hybrid-source-preflight/1",
             project_id,
@@ -2262,41 +2281,125 @@ impl ProductionCoordinator {
         })
     }
 
-    pub(super) fn with_native_hybrid_scope(
+    fn require_hybrid_requests_settled(&self, plan: &HybridBudgetPlan) -> NativeResult<()> {
+        self.require_no_unresolved_scene_requests(
+            plan.project.id,
+            &format!("{}-mc", plan.request_prefix),
+            SceneRequestFamily::Motion,
+        )?;
+        self.require_no_unresolved_scene_requests(
+            plan.project.id,
+            &format!("{}-manim", plan.request_prefix),
+            SceneRequestFamily::Manim,
+        )
+    }
+
+    fn require_hybrid_preparation_current(&self, plan: &HybridBudgetPlan) -> NativeResult<()> {
+        require(
+            self.active_motion_budget.is_none() && self.active_hybrid_budget.is_none(),
+            "Hybrid production cannot replace a retained native root",
+        )?;
+        require(
+            self.service
+                .project(plan.project.id)
+                .map_err(storage_error)?
+                == plan.project
+                && self.client.connection().identity()? == plan.connection_identity,
+            "Hybrid native source or original provider connection changed",
+        )?;
+        self.require_hybrid_requests_settled(plan)
+    }
+
+    fn require_hybrid_owner(&self, plan: &HybridBudgetPlan) -> NativeResult<()> {
+        let grant = self.hybrid_project_grant.as_ref().ok_or_else(|| {
+            invalid("Hybrid native sources require a retained observation of the authorized owner")
+        })?;
+        grant.recheck(self)?;
+        require(
+            plan.project_sha256 == grant.project_sha256(),
+            "Hybrid owner project grant belongs to another saved source",
+        )?;
+        grant.require_unused_snapshots(&plan.namespace)
+    }
+
+    async fn discover_hybrid_blend(
+        &self,
+        plan: &HybridBudgetPlan,
+    ) -> NativeResult<Option<MotionBlendAdmission>> {
+        if plan.requires_blend {
+            Ok(Some(
+                self.negotiate_motion_blend(plan.project.id, &plan.expected)
+                    .await?,
+            ))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Check the retained owner and any authored Film v2 capability before the
+    /// application consumes its original RenderLocal grant. This creates no
+    /// accounting root and dispatches no renderer mutation.
+    pub async fn prepare_native_hybrid_sources(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        deliverable_id: Uuid,
+        options: &FilmBuildOptions,
+    ) -> NativeResult<PreparedHybridNativeSources> {
+        let plan = HybridBudgetPlan::build(self, project_id, expected, deliverable_id, options)?;
+        self.require_hybrid_owner(&plan)?;
+        self.require_hybrid_preparation_current(&plan)?;
+        let blend = self.discover_hybrid_blend(&plan).await?;
+        if blend.is_some() {
+            self.require_hybrid_owner(&plan)?;
+            self.require_hybrid_preparation_current(&plan)?;
+        }
+        Ok(PreparedHybridNativeSources {
+            owner: self.clone(),
+            plan,
+            blend,
+        })
+    }
+
+    #[cfg(all(test, unix))]
+    fn with_native_hybrid_scope(
         &self,
         project_id: Uuid,
         expected: &RevisionStamp,
         deliverable_id: Uuid,
         options: &FilmBuildOptions,
     ) -> NativeResult<Self> {
-        require(
-            self.active_motion_budget.is_none() && self.active_hybrid_budget.is_none(),
-            "Hybrid production cannot replace a retained native root",
-        )?;
         let plan = HybridBudgetPlan::build(self, project_id, expected, deliverable_id, options)?;
-        self.require_no_unresolved_scene_requests(
-            project_id,
-            &format!("{}-mc", plan.request_prefix),
-            SceneRequestFamily::Motion,
-        )?;
-        self.require_no_unresolved_scene_requests(
-            project_id,
-            &format!("{}-manim", plan.request_prefix),
-            SceneRequestFamily::Manim,
+        self.activate_hybrid_sources(plan, None)
+    }
+
+    fn activate_hybrid_sources(
+        &self,
+        plan: HybridBudgetPlan,
+        blend: Option<MotionBlendAdmission>,
+    ) -> NativeResult<Self> {
+        self.require_hybrid_preparation_current(&plan)?;
+        require(
+            plan.requires_blend == blend.is_some()
+                && blend.as_ref().is_none_or(|admission| {
+                    admission.connection_identity == plan.connection_identity
+                }),
+            "Hybrid Film v2 requires discovery on the original retained provider",
         )?;
         let root = self
             .service
             .create_root_operation_budget(RootOperationBudgetInput {
-                project_id,
-                generation: expected.generation,
-                revision: expected.revision,
-                operation_key: operation_key(&plan.project, deliverable_id),
+                project_id: plan.project.id,
+                generation: plan.expected.generation,
+                revision: plan.expected.revision,
+                operation_key: operation_key(&plan.project, plan.deliverable_id),
                 limits: plan.limits,
             })
             .map_err(storage_error)?;
         let mut scoped = self.clone();
         scoped.active_hybrid_budget = Some(HybridRootBudgetScope {
             root,
+            blend,
             plan: Arc::new(plan),
             phase: HybridPhase::Sources,
         });
@@ -2313,23 +2416,28 @@ impl ProductionCoordinator {
         deliverable_id: Uuid,
         options: &FilmBuildOptions,
     ) -> NativeResult<HybridNativeSources> {
-        let grant = self.hybrid_project_grant.as_ref().ok_or_else(|| {
-            invalid("Hybrid native sources require a retained observation of the authorized owner")
-        })?;
-        grant.recheck(self)?;
-        let current = self.service.project(project_id).map_err(storage_error)?;
-        require(
-            project_digest(&current)? == grant.project_sha256(),
-            "Hybrid owner project grant belongs to another saved source",
-        )?;
-        grant.require_unused_snapshots(&format!("mw-hybrid-{}", &grant.project_sha256()[..20]))?;
-        let scoped =
-            self.with_native_hybrid_scope(project_id, expected, deliverable_id, options)?;
+        self.prepare_native_hybrid_sources(project_id, expected, deliverable_id, options)
+            .await?
+            .realize()
+            .await
+    }
+
+    async fn realize_prepared_hybrid_sources(
+        &self,
+        plan: HybridBudgetPlan,
+        blend: Option<MotionBlendAdmission>,
+    ) -> NativeResult<HybridNativeSources> {
+        self.require_hybrid_owner(&plan)?;
+        let scoped = self.activate_hybrid_sources(plan, blend)?;
         let scope = scoped
             .active_hybrid_budget
             .as_ref()
             .ok_or_else(|| backend("Hybrid producer lost its original root"))?
             .clone();
+        let project_id = scope.plan.project.id;
+        let expected = &scope.plan.expected;
+        let deliverable_id = scope.plan.deliverable_id;
+        let options = &scope.plan.options;
         let motion_request = format!("{}-mc", scope.plan.request_prefix);
         let manim_request = format!("{}-manim", scope.plan.request_prefix);
         let motion_canvas = scoped

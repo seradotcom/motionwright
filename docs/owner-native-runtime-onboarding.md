@@ -114,6 +114,10 @@ bundled text fonts, with a 32 MiB cap. MLT inserts each source at its saved cut 
 verifying the original contribution's frame count. Motion Canvas declarations
 use the existing Film boundary admission and are rechecked during MLT assembly.
 A declared boundary on the static Manim contribution blocks preflight.
+Saved non-Normal blends in supported Motion Canvas leaves require the same
+verified Film v2 provider as a Motion Canvas-only cut. The hybrid render checks
+that provider before consuming the original RenderLocal grant or creating a root.
+
 
 
 The Output profiles panel now exposes this route for saved mixed-renderer cuts:
