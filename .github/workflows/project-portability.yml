@@ -162,7 +162,7 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Storage and service tests
-        run: cargo test --locked -p motionwright-storage -p motionwright-service --all-targets
+        run: cargo test --locked -p motionwright-storage -p motionwright-service --all-targets --no-fail-fast
       - name: Storage and service clippy
         run: cargo clippy --locked -p motionwright-storage -p motionwright-service --all-targets -- -D warnings
 

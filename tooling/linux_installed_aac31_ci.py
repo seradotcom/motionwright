@@ -104,7 +104,19 @@ def admit_candidate(bundle, retained_package, *, readback_only=False):
         installed.need(re.fullmatch(r"[a-f0-9]{40}", candidate_sha)
                        and retained["render_step"] == "skipped", "AAC31_RETAINED_PACKAGE_IDENTITY")
         changed = source.git(args.repo, "diff", "--name-only", "-z", candidate_sha, source_sha, "--")
-        installed.need(set(changed.split(b"\0")) <= {
+        changed_paths = set(changed.split(b"\0"))
+        projection_test = b"crates/storage/src/project_projection.rs"
+        if projection_test in changed_paths:
+            # Admit only the exact cfg(test) correction. A later source change
+            # must not use the installed bytes of the prior product.
+            path = projection_test.decode("ascii")
+            original = source.git(args.repo, "rev-parse", "--verify", f"{candidate_sha}:{path}").strip()
+            current = source.git(args.repo, "rev-parse", "--verify", f"{source_sha}:{path}").strip()
+            installed.need(original == b"f9feecc36e3688f9923dbec9349e5044ea20987d"
+                           and current == b"253bff33b9bfa4106e63921770cd8a6aa989e032",
+                           "AAC31_RETAINED_PRODUCT_SOURCE_CHANGED")
+            changed_paths.remove(projection_test)
+        installed.need(changed_paths <= {
             b"", b".github/workflows/package-candidate.yml", b"tooling/linux_installed_aac31_ci.py",
             b"tooling/native_host_installed_shared_state.py",
             b"tooling/tests/test_ci_nsis_source_selection.py",

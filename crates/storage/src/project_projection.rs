@@ -1172,6 +1172,13 @@ mod tests {
             store.project_projection_head(project.id).unwrap().identity,
             head.identity
         );
+        assert!(matches!(
+            store.load_project(project.id),
+            Err(StorageError::Serde(error)) if error.is_data()
+        ));
+
+        let valid_document = serde_json::to_string(&project).unwrap();
+        replace_document(&store, project.id, &valid_document);
         assert_eq!(store.load_project(project.id).unwrap(), project);
     }
 
