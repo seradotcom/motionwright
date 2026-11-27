@@ -17,6 +17,62 @@ Import-Module -Name "$PSHOME\Modules\Microsoft.PowerShell.Utility\Microsoft.Powe
 Import-Module -Name "$PSHOME\Modules\Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1"
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName WindowsBase
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class KdenliveMenuInput
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Point { public int X, Y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Mouse
+    {
+        public int X, Y;
+        public uint Wheel, Flags, Time;
+        public UIntPtr Extra;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Input { public uint Type; public Mouse Mouse; }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr WindowFromPhysicalPoint(Point point);
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
+    [DllImport("user32.dll")]
+    private static extern bool SetPhysicalCursorPos(int x, int y);
+    [DllImport("user32.dll")]
+    private static extern bool GetPhysicalCursorPos(out Point point);
+    [DllImport("user32.dll")]
+    private static extern uint SendInput(uint count, Input[] events, int size);
+
+    public static bool OwnedPoint(int x, int y, uint owner)
+    {
+        uint found;
+        IntPtr window = WindowFromPhysicalPoint(new Point { X = x, Y = y });
+        return window != IntPtr.Zero && GetWindowThreadProcessId(window, out found) != 0
+            && found == owner;
+    }
+
+    public static bool ClickOwnedPoint(int x, int y, uint owner)
+    {
+        Point observed;
+        if (!OwnedPoint(x, y, owner) || !SetPhysicalCursorPos(x, y)
+            || !GetPhysicalCursorPos(out observed) || observed.X != x || observed.Y != y
+            || !OwnedPoint(x, y, owner))
+            return false;
+
+        var events = new [] {
+            new Input { Type = 0, Mouse = new Mouse { Flags = 0x0002 } },
+            new Input { Type = 0, Mouse = new Mouse { Flags = 0x0004 } }
+        };
+        return SendInput((uint)events.Length, events, Marshal.SizeOf(typeof(Input))) == events.Length;
+    }
+}
+'@
 $editor = [Diagnostics.Process]::GetProcessById($EditorPid)
 $deadline = [Diagnostics.Stopwatch]::StartNew()
 $scope = [System.Windows.Automation.TreeScope]::Descendants
@@ -106,6 +162,32 @@ function Invoke-Control($Node, [string]$Stage, [switch]$Expand) {
     Record "$Stage-acknowledged.json" @{ editor_pid = $EditorPid; control = $targetName }
 }
 
+function Select-MenuItem($Item, [string]$Name, [string]$Stage) {
+    Assert-Editor
+    $identity = $Item.GetRuntimeId() -join '.'
+    if (!$identity -or $Item.Current.ProcessId -ne $EditorPid -or
+        $Item.Current.ControlType -ne [System.Windows.Automation.ControlType]::MenuItem -or
+        !$Item.Current.IsEnabled -or $Item.Current.IsOffscreen -or
+        (Control-Name $Item) -cne $Name) { throw 'Kdenlive menu item changed before selection' }
+
+    # Locate the visible Qt menu row without invoking its transient UIA provider.
+    $point = $Item.GetClickablePoint()
+    $x = [int][Math]::Floor($point.X)
+    $y = [int][Math]::Floor($point.Y)
+    if (![KdenliveMenuInput]::OwnedPoint($x, $y, [uint32]$EditorPid)) { throw 'Kdenlive menu point is obscured' }
+    $hit = [System.Windows.Automation.AutomationElement]::FromPoint([Windows.Point]::new($x, $y))
+    $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+    for ($depth = 0; $hit -and $depth -lt 3; $depth++) {
+        if (($hit.GetRuntimeId() -join '.') -ceq $identity) { break }
+        $hit = $walker.GetParent($hit)
+    }
+    if (!$hit -or ($hit.GetRuntimeId() -join '.') -cne $identity) { throw 'Kdenlive menu hit target differs' }
+    Assert-Editor
+    Record "$Stage-intent.json" @{ editor_pid = $EditorPid; control = $Name; operation = 'click'; automatic_retry = $false }
+    if (![KdenliveMenuInput]::ClickOwnedPoint($x, $y, [uint32]$EditorPid)) { throw 'Kdenlive menu click unconfirmed' }
+    Record "$Stage-acknowledged.json" @{ editor_pid = $EditorPid; control = $Name }
+}
+
 function File-Action([string]$Name, [string]$Stage) {
     $menu = Await-Unique 'File' {
         Find-Control @(Owned-Windows) ([System.Windows.Automation.ControlType]::MenuItem) 'File'
@@ -114,7 +196,7 @@ function File-Action([string]$Name, [string]$Stage) {
     $item = Await-Unique $Name {
         Find-Control @(Owned-Windows) ([System.Windows.Automation.ControlType]::MenuItem) $Name
     }
-    Invoke-Control $item "$Stage-menu-item"
+    Select-MenuItem $item $Name "$Stage-menu-item"
 }
 
 function Choose-File([string[]]$Titles, [string]$Path, [string]$Button, [string]$Stage) {
