@@ -1311,7 +1311,7 @@ mod graph_backend_tests {
 
     fn failure_sentinel() -> Value {
         // An opaque transport sentinel, not another GraphInvokeFailure schema
-        // or a production error encoder. In production A1's shared codec owns it.
+        // or a production error encoder. The shared codec handles production errors.
         json!({"code":"test_transport_sentinel","outcome_known":false})
     }
 

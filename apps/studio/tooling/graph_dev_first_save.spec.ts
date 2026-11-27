@@ -39,7 +39,7 @@ test("Graph6 dev: original Native Host flow Save and independent same-Store read
   // producer before issuing this owner. An environment marker cannot do so.
   const owner = await acquireGraphDevelopmentOwner();
   const options = owner.writerOptions;
-  // A4's admitted Native/Host callback budget is currently 50 seconds;
+  // The admitted Native/Host callback budget is currently 50 seconds;
   // arbitrary browser-side 30-second waits must not turn a still-pending
   // authentic callback into a false failure or an unconfirmed second intent.
   // These caps are observation deadlines, never a grant or automatic retry.

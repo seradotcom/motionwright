@@ -407,7 +407,7 @@ class CurrencyImpactTests(unittest.TestCase):
         self.assertEqual(self.current(field=absent)[0], "not_evidenced")
 
     def historical_development_source(self):
-        # A4/A5 source rollforward happens once on selected F, not for every
+        # Source evidence is updated once for the selected final candidate, not for every
         # development commit. Until then the strict stale-ledger refusal is
         # the intended contract; no acceptance or current PASS is inferred.
         ledger = json.loads((ROOT / "docs/acceptance/requirements-status.json").read_bytes())

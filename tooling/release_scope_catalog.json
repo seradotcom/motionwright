@@ -15630,7 +15630,7 @@
           ],
           "coverage_basis": "The existing guarded creative-unit-build branch selects Window55 and saved-font195 units, a production build and six synthetic Chromium contracts. Its 75-minute job retains original and incomplete evidence; real-service is explicitly excluded. These declared source counts are not execution observations.",
           "original_attempt": null,
-          "blocking_reason": "The helper retains the exact single-parent Window profile at085d12a947d4b15bd74d131e007fe908e925106f. A1/A6 must reconcile the final composed source, allowed gate delta and product/dependency pins before admission; this catalogue does not open that guard."
+          "blocking_reason": "The helper retains the exact single-parent Window profile at 085d12a947d4b15bd74d131e007fe908e925106f. Admission still requires a review of the final composed source, the allowed gate delta and the product and dependency pins."
         },
         {
           "id": "camera-with-v2",
@@ -15674,7 +15674,7 @@
           ],
           "coverage_basis": "Distinct eight-case Camera selection, with a same-job source/resource binder before dependencies and a 90-minute real-service job. The original seven-case camera selection remains separate; the additional closed-list case is not inferred from a title or credited as executed.",
           "original_attempt": null,
-          "blocking_reason": "CAMERA_EIGHT_REVIEWED_PROFILE is None in the exact integrated helper. A1/A3/A6 must bind a reviewed final eight-case source and inputs before the guard can admit execution."
+          "blocking_reason": "CAMERA_EIGHT_REVIEWED_PROFILE is None in the exact integrated helper. Execution requires a reviewed final eight-case source and its bound inputs."
         },
         {
           "id": "creative-production",

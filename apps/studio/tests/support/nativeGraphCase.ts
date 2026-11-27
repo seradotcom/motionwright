@@ -1,6 +1,6 @@
 /**
  * Six source-authored Native Graph candidate cases. Source-only, always DENY.
- * Independent A1/A6 original producer/build/Host review must bind actual
+ * Independent review of the original producer, build and Host must bind actual
  * callback demand and one SharedPool before initializer/SQLite/new client.
  * No caller-provided cap, posthoc count, pool reset, refund or replay.
  */
