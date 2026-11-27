@@ -1,4 +1,4 @@
-"""Observe the first native Kdenlive save of the hosted synthetic OTIO cut."""
+"""Observe the first native Kdenlive save and cold reopen of the hosted synthetic OTIO cut."""
 from __future__ import annotations
 
 from hashlib import sha256
@@ -15,6 +15,71 @@ from kdenlive_native_source import MAX_METADATA_BYTES, admitted_source, inspect_
 from kdenlive_readback import MAX_XML_BYTES
 from source_checkout_observation import git, regular_file, require
 from windows_updated_application import process_identity
+
+
+def observe_window(powershell, editor, identity, path, digest, directory, *, verify_saved=False):
+    arguments = [
+        str(powershell), "-NoProfile", "-NonInteractive", "-File", str(Path(__file__).with_suffix(".ps1")),
+        "-EditorPid", str(identity["pid"]), "-EditorCreationFiletime", str(identity["creation_filetime"]),
+        "-Executable", str(editor), "-OriginalOtio", str(path), "-OriginalSha256", digest,
+        "-Evidence", str(directory),
+    ]
+    if verify_saved:
+        arguments.append("-VerifySavedProject")
+    with (directory / "observer.stdout.log").open("xb") as stdout, (
+            directory / "observer.stderr.log").open("xb") as stderr:
+        result = subprocess.run(
+            arguments, cwd=directory, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
+            timeout=80 if verify_saved else 235,
+        )
+    require(result.returncode == 0, f"Kdenlive window observer failed ({result.returncode})")
+
+
+def verify_reopen(directory, context, distribution, powershell, environment, original, first, saved):
+    editor, _, source = original
+    owner = directory.parent
+    project = directory / "initial.kdenlive"
+    output = owner / "windows-reopen"
+    require(regular_file(project, MAX_XML_BYTES) == saved
+            and admitted_source(owner, context, distribution) == original,
+            "the saved project or original inputs changed before reopening")
+    output.mkdir()
+    profile = output / "profile"
+    (profile / "roaming").mkdir(parents=True)
+    (profile / "local").mkdir()
+    reopen_environment = {**environment, "APPDATA": str(profile / "roaming"),
+                          "LOCALAPPDATA": str(profile / "local")}
+    publish(output / "reopen-intent.json", {
+        "context": context, "original_project": saved, "source": source["manifest"],
+        "first_process": first, "automatic_retry": False,
+    })
+    with (output / "application.stdout.log").open("xb") as stdout, (
+            output / "application.stderr.log").open("xb") as stderr:
+        process = subprocess.Popen(
+            [str(editor), "--no-welcome", "--config", str(profile / "kdenliverc"), str(project)],
+            cwd=editor.parent, env=reopen_environment, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
+        )
+        try:
+            reopened = process_identity(process, editor)
+            require(reopened["creation_filetime"] > first["creation_filetime"],
+                    "reopened project is not in a new Kdenlive process")
+            observe_window(powershell, editor, reopened, project, saved["sha256"], output, verify_saved=True)
+            window = json.loads((output / "reopen-window.json").read_bytes())
+            require(window["editor_pid"] == reopened["pid"] and window["saved_sha256"] == saved["sha256"]
+                    and window["submit_actions"] == 0 and process.poll() is None
+                    and process_identity(process, editor) == reopened,
+                    "the original Kdenlive project did not reopen in the new process")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=15)
+    require(regular_file(project, MAX_XML_BYTES) == saved
+            and admitted_source(owner, context, distribution) == original,
+            "the saved project or original inputs changed after reopening")
+    publish(output / "reopened-original.json", {
+        "context": context, "original_project": saved, "first_process": first,
+        "reopened_process": reopened, "verified_window": window, "source": source["manifest"],
+    })
 
 
 def run_windows(runner, context, distribution):
@@ -52,18 +117,8 @@ def run_windows(runner, context, distribution):
             )
             identity = process_identity(process, editor)
             terminal["process"] = identity
-            with (directory / "observer.stdout.log").open("xb") as obs_out, (
-                    directory / "observer.stderr.log").open("xb") as obs_err:
-                result = subprocess.run(
-                    [str(powershell), "-NoProfile", "-NonInteractive", "-File",
-                     str(Path(__file__).with_suffix(".ps1")),
-                     "-EditorPid", str(identity["pid"]),
-                     "-EditorCreationFiletime", str(identity["creation_filetime"]),
-                     "-Executable", str(editor), "-OriginalOtio", source["timeline"]["path"],
-                     "-OriginalSha256", source["timeline"]["sha256"], "-Evidence", str(directory)],
-                    cwd=directory, stdin=subprocess.DEVNULL, stdout=obs_out, stderr=obs_err, timeout=235,
-                )
-            require(result.returncode == 0, f"Kdenlive window observer failed ({result.returncode})")
+            observe_window(powershell, editor, identity, source["timeline"]["path"],
+                           source["timeline"]["sha256"], directory)
             terminal["status"] = "UNKNOWN"
             require(process.poll() is None and process_identity(process, editor) == identity
                     and admitted_source(owner, context, distribution) == (editor, binary, source),
@@ -102,7 +157,9 @@ def run_windows(runner, context, distribution):
                 terminal["exit_code"] = process.wait(timeout=15)
         finally:
             publish(directory / "terminal.json", terminal)
-    return terminal
+    verify_reopen(directory, context, distribution, powershell, environment,
+                  (editor, binary, source), identity, observed)
+    return {**terminal, "status": "INITIAL_SAVE_AND_REOPEN_VERIFIED"}
 
 
 def main():
