@@ -1233,6 +1233,16 @@ impl StudioService {
         self.store.lock().root_operation_budget(project_id, root_id)
     }
 
+    pub fn root_operation_budget_for_key(
+        &self,
+        project_id: Uuid,
+        operation_key: &str,
+    ) -> StorageResult<Option<RootOperationBudget>> {
+        self.store
+            .lock()
+            .root_operation_budget_for_key(project_id, operation_key)
+    }
+
     /// Transactionally retain debit and original dispatching intent before effect.
     pub fn admit_root_operation_dispatch(
         &self,

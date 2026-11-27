@@ -78,11 +78,11 @@ use motionwright_native::{
         classify_original_motion_status,
     },
     production::{
-        MltAvMasterEvidence, MltAvMasterRequest, MltMultisegmentAvMasterRequest,
-        MotionCanvasRenderEvidence, MotionCanvasWindowRequest, MotionCanvasWindowSummary,
-        NativeGraphRecipeClient, ProductionClient, ProductionConnection, ProductionCoordinator,
-        ProductionFontInvocationKind, ProductionFontStagingCustody, ProductionFontStagingOwner,
-        ProductionFontStagingScope, ProductionReceiptCustody,
+        MltAvMasterEvidence, MltAvMasterRequest, MltCloseDisposition,
+        MltMultisegmentAvMasterRequest, MotionCanvasRenderEvidence, MotionCanvasWindowRequest,
+        MotionCanvasWindowSummary, NativeGraphRecipeClient, ProductionClient, ProductionConnection,
+        ProductionCoordinator, ProductionFontInvocationKind, ProductionFontStagingCustody,
+        ProductionFontStagingOwner, ProductionFontStagingScope, ProductionReceiptCustody,
     },
 };
 use motionwright_service::{
@@ -1634,6 +1634,64 @@ async fn mlt_cleanup_inventory(
     })
     .await
     .map_err(|_| "Native MLT receipt inventory task could not complete.".to_owned())?
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CloseMltProjectRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    root_request_id: String,
+    effect_grant: Uuid,
+}
+
+#[tauri::command]
+async fn close_original_mlt_project(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: CloseMltProjectRequest,
+) -> Result<MltCloseDisposition, String> {
+    let project_id = request.project_id;
+    let generation = request.generation;
+    let revision = request.revision;
+    let selected = request.root_request_id;
+    let selector = selected.clone();
+    let service = state.service.clone();
+    let path = selected_connection_path(&state, project_id)?
+        .ok_or_else(|| "Select the original Semwright production connection first.".to_owned())?;
+    let original_path = path.clone();
+    let (coordinator, prepared) =
+        desktop_owner::spawn_blocking(owner.worker_owner(), move || -> Result<_, String> {
+            let connection = ProductionConnection::load(&path).map_err(sanitized)?;
+            let coordinator = ProductionCoordinator::new(service, connection).map_err(sanitized)?;
+            let stamp = RevisionStamp {
+                resource: format!("project:{project_id}"),
+                generation,
+                revision,
+            };
+            let prepared = coordinator
+                .prepare_mlt_close(project_id, &stamp, &selector)
+                .map_err(sanitized)?;
+            Ok((coordinator, prepared))
+        })
+        .await
+        .map_err(|_| "The original MLT job could not be read.".to_owned())??;
+
+    owner.begin_phase()?;
+    if selected_connection_path(&state, project_id)?.as_ref() != Some(&original_path) {
+        return Err("The selected production connection changed. Reopen Jobs.".into());
+    }
+    state.effect_grants.consume(
+        request.effect_grant,
+        EffectKind::CloseMltProject,
+        EffectScope::project(project_id, generation, revision),
+        &selected,
+    )?;
+    coordinator
+        .close_prepared_mlt(prepared)
+        .await
+        .map_err(sanitized)
 }
 
 /// A single explicit owner-initiated read-only status observation. The WebView
@@ -5205,6 +5263,7 @@ fn main() {
             production_jobs,
             mlt_cleanup_inventory,
             read_original_native_job_status,
+            close_original_mlt_project,
             production_jobs_history,
             native_blender_product_source,
             prepare_blender_product_cycle,

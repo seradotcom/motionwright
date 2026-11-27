@@ -15,6 +15,7 @@ const EXECUTE: &str = "providers.execute_bound";
 const PROVIDER: &str = "driver:motion-canvas";
 const AUDIO_PROVIDER: &str = "driver:mlt-video";
 const AUDIO_DERIVE: &str = "driver.mlt-video.audio.derive";
+pub(super) const MLT_CLOSE: &str = "driver.mlt-video.project.close";
 
 // Fixed internal specializations. No Deserialize, provider string, extension
 // trait or caller-supplied command set can construct a different profile.
@@ -22,13 +23,21 @@ const AUDIO_DERIVE: &str = "driver.mlt-video.audio.derive";
 enum BindingProfile {
     Fonts,
     AudioDerivative,
+    MltClose,
 }
 
 impl BindingProfile {
+    fn root(self) -> &'static str {
+        match self {
+            Self::MltClose => "output",
+            Self::Fonts | Self::AudioDerivative => "media",
+        }
+    }
+
     fn provider(self) -> &'static str {
         match self {
             Self::Fonts => PROVIDER,
-            Self::AudioDerivative => AUDIO_PROVIDER,
+            Self::AudioDerivative | Self::MltClose => AUDIO_PROVIDER,
         }
     }
 
@@ -42,7 +51,8 @@ impl BindingProfile {
                 Self::Fonts,
                 "driver.motion-canvas.project.create" | "driver.motion-canvas.asset.import",
             )
-            | (Self::AudioDerivative, AUDIO_DERIVE) => Ok(true),
+            | (Self::AudioDerivative, AUDIO_DERIVE)
+            | (Self::MltClose, MLT_CLOSE) => Ok(true),
             _ => Err(Error::new(
                 ErrorCode::Unsupported,
                 "Provider-bound command is outside its closed handoff profile",
@@ -54,6 +64,7 @@ impl BindingProfile {
         match self {
             Self::Fonts => "motionwright.provider-bound-font/1",
             Self::AudioDerivative => "motionwright.provider-bound-audio-derive/1",
+            Self::MltClose => "motionwright.provider-bound-mlt-close/1",
         }
     }
 
@@ -61,6 +72,7 @@ impl BindingProfile {
         match self {
             Self::Fonts => "provider_bound_font",
             Self::AudioDerivative => "provider_bound_audio_derive",
+            Self::MltClose => "provider_bound_mlt_close",
         }
     }
 
@@ -68,13 +80,14 @@ impl BindingProfile {
         match self {
             Self::Fonts => "font_qualification",
             Self::AudioDerivative => "audio_derive_qualification",
+            Self::MltClose => "mlt_close_qualification",
         }
     }
 
     fn transport_budget_secs(self) -> u64 {
         match self {
             Self::Fonts => super::DEFAULT_DEADLINE_SECS,
-            Self::AudioDerivative => super::MLT_DEADLINE_SECS,
+            Self::AudioDerivative | Self::MltClose => super::MLT_DEADLINE_SECS,
         }
     }
 }
@@ -362,7 +375,7 @@ impl BoundMediaContext {
             || mount.provider != profile.provider()
             || mount.provider_generation == 0
             || mount.admission_ttl_ms == 0
-            || mount.mount.root != "media"
+            || mount.mount.root != profile.root()
             || mount.mount.path != owner_root
             || !mount.mount.path.is_absolute()
             || mount.mount.path.as_os_str().len() > 4096
@@ -372,7 +385,7 @@ impl BoundMediaContext {
                 .components()
                 .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
             || !mount.mount.read
-            || mount.mount.write
+            || mount.mount.write != (profile == BindingProfile::MltClose)
             || mount.mount.execute
         {
             return Err(Error::new(
@@ -570,6 +583,18 @@ impl BoundMediaContext {
                     "Bound media Driver result does not match its authenticated execution",
                 ));
             }
+            if self.profile == BindingProfile::MltClose
+                && (nested.execution.policy_decision != "allow_after_confirmation"
+                    || outer
+                        .pointer("/execution/policy_decision")
+                        .and_then(Value::as_str)
+                        != Some("allow_after_confirmation")
+                    || nested.data.as_ref() != Some(&json!({"closed": true})))
+            {
+                return Err(backend(
+                    "MLT closure has no verified foreground confirmation and terminal result",
+                ));
+            }
             Ok((
                 json!({
                     "data": nested.data,
@@ -587,6 +612,7 @@ impl BoundMediaContext {
         })();
         match checked {
             Ok((result, true)) => Ok(result),
+            Ok((result, false)) if self.profile == BindingProfile::MltClose => Ok(result),
             // Core confirmed the same lease and successful effect. Only its
             // current admission expired; do not erase that known completion.
             Ok((_, false)) => Err(Error::new(
@@ -634,6 +660,26 @@ impl BoundMediaContext {
 }
 
 impl ProductionClient {
+    pub(super) async fn bind_mlt_close(&self, generation: u64) -> NativeResult<BoundMediaContext> {
+        let root = &self.connection().output_root;
+        let observed = self
+            .observe_bound_media(root, BindingProfile::MltClose)
+            .await?;
+        let binding = BoundMediaContext::from_observation(
+            BindingProfile::MltClose,
+            self.connection().identity()?,
+            root,
+            observed,
+        )?;
+        if binding.provider_generation != generation {
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "The original MLT provider generation is unavailable",
+            ));
+        }
+        Ok(binding)
+    }
+
     async fn observe_bound_media(
         &self,
         owner_root: &Path,
@@ -642,7 +688,7 @@ impl ProductionClient {
         if !safe_metadata(owner_root)?.is_dir() {
             return Err(invalid("Bound media handoff requires the owner workspace"));
         }
-        let mut args = json!({"provider": profile.provider(), "root": "media"});
+        let mut args = json!({"provider": profile.provider(), "root": profile.root()});
         if profile == BindingProfile::AudioDerivative {
             args["pair"] = json!({"version":1,"name":"media-ro-output-rw"});
         }

@@ -7,12 +7,13 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { inspectMltCleanupInventory, productionJobs, productionJobsHistory, readOriginalNativeJobStatus } from "./api";
+import { closeOriginalMltProject, inspectMltCleanupInventory, productionJobs, productionJobsHistory, readOriginalNativeJobStatus } from "./api";
 import { RECEIPT_RECHECK_MS, shouldAutoRecheckReceipts } from "./jobRefresh";
 import { nativeRecoveryWarning } from "./nativeRecovery";
 import type {
   ProductionJobProjection,
   MltCleanupInventory,
+  MltCloseDisposition,
   OwnerMotionStatusObservation,
   ProductionJobsHistoryCursor,
   ProductionJobsHistoryPage,
@@ -79,14 +80,30 @@ function StateMark({ state }: { state: ProductionJobState }) {
   return <CircleDashed size={14} aria-hidden="true" />;
 }
 
+function canCloseMlt(job: ProductionJobProjection): boolean {
+  return job.provider === "driver:mlt-video" && job.applicability === "current"
+    && job.state === "succeeded" && job.result_available
+    && job.root_request_id.endsWith(":mlt:render-start");
+}
+
+const mltCloseLabels: Record<MltCloseDisposition, string> = {
+  closed: "Native project closed. The rendered media is retained.",
+  confirmation_unavailable: "Broker confirmation was unavailable. Open the original Broker’s approval console before requesting closure.",
+  outcome_unknown: "Closure could not be confirmed. Reconcile the original request with the Broker before any further action.",
+};
+
 function JobRow({
   job, desktopMode, ownerReadBusy, ownerObservation, onReadOriginalStatus,
+  onCloseMlt, closeBusy, closure,
 }: {
   job: ProductionJobProjection;
   desktopMode: boolean;
   ownerReadBusy: boolean;
   ownerObservation: OwnerMotionStatusObservation | undefined;
   onReadOriginalStatus: (job: ProductionJobProjection) => void;
+  onCloseMlt?: (job: ProductionJobProjection) => void;
+  closeBusy: boolean;
+  closure?: MltCloseDisposition;
 }) {
   const progress = job.progress
     ? job.progress.total == null
@@ -125,6 +142,16 @@ function JobRow({
               {ownerReadBusy ? "Reading original status…" : "Check original status"}
             </button>
           )}
+        {desktopMode && onCloseMlt && canCloseMlt(job) && (
+          <>
+            <button type="button" className="button compact"
+              disabled={closeBusy || closure === "closed" || closure === "outcome_unknown"}
+              onClick={() => onCloseMlt(job)}>
+              {closeBusy ? "Waiting for Broker…" : "Request MLT project closure"}
+            </button>
+            {closure && <span role="status" className="job-secondary-state">{mltCloseLabels[closure]}</span>}
+          </>
+        )}
         {ownerObservation && (
           <span role="status" aria-label="Original native job status observation"
             className="job-secondary-state">
@@ -175,6 +202,10 @@ export default function ProductionJobsWorkspace({
   const [mltInventory, setMltInventory] = useState<MltCleanupInventory | null>(null);
   const [mltInventoryBusy, setMltInventoryBusy] = useState(false);
   const [mltInventoryError, setMltInventoryError] = useState<string | null>(null);
+  const activeMltClose = useRef<string | null>(null);
+  const [closeBusy, setCloseBusy] = useState(false);
+  const [closeError, setCloseError] = useState<string | null>(null);
+  const [closures, setClosures] = useState<Record<string, MltCloseDisposition>>({});
   const [ownerReadBusy, setOwnerReadBusy] = useState<string | null>(null);
   const [ownerReadError, setOwnerReadError] = useState<string | null>(null);
   const [ownerStatusByJob, setOwnerStatusByJob] = useState<Record<string, {
@@ -410,6 +441,28 @@ export default function ProductionJobsWorkspace({
     }
   }
 
+  async function requestMltClosure(job: ProductionJobProjection) {
+    if (!desktopMode || historyOpen || !canCloseMlt(job) || activeMltClose.current
+        || job.generation !== project.generation || job.revision !== project.revision) return;
+    const scoped = historyKey;
+    const key = productionJobKey(project.id, job);
+    activeMltClose.current = key;
+    setCloseBusy(true);
+    setCloseError(null);
+    try {
+      const disposition = await closeOriginalMltProject(project, job.root_request_id);
+      if (historyKeyRef.current !== scoped) return;
+      setClosures(prior => ({ ...prior, [key]: disposition }));
+    } catch (error) {
+      if (historyKeyRef.current === scoped) {
+        setCloseError(typeof error === "string" ? error : "Unable to request closure of the original MLT project.");
+      }
+    } finally {
+      activeMltClose.current = null;
+      setCloseBusy(false);
+    }
+  }
+
   async function readMltInventory() {
     if (!desktopMode || mltInventoryBusy) return;
     const scoped = historyKey;
@@ -551,6 +604,7 @@ export default function ProductionJobsWorkspace({
           </div>
         </div>
       )}
+      {closeError && <div className="jobs-inline-error" role="alert">{closeError}</div>}
       {ownerReadError && (
         <div className="jobs-inline-error" role="alert" aria-label="Original native status read not confirmed">
           <TriangleAlert size={15} aria-hidden="true" />
@@ -624,6 +678,9 @@ export default function ProductionJobsWorkspace({
             {visibleJobs.map((job) => <JobRow key={productionJobKey(project.id, job)} job={job}
               desktopMode={desktopMode} ownerReadBusy={ownerReadBusy !== null}
               ownerObservation={originalStatusFor(job)}
+              onCloseMlt={historyOpen ? undefined : (entry) => { void requestMltClosure(entry); }}
+              closeBusy={closeBusy}
+              closure={closures[productionJobKey(project.id, job)]}
               onReadOriginalStatus={(entry) => { void readOwnerOriginal(entry); }}
             />)}
           </div>

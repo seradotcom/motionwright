@@ -688,6 +688,32 @@ impl Store {
         Ok(result)
     }
 
+    pub fn root_operation_budget_for_key(
+        &self,
+        project_id: Uuid,
+        operation_key: &str,
+    ) -> Result<Option<RootOperationBudget>> {
+        bounded_key(operation_key)?;
+        let tx = self.conn.unchecked_transaction()?;
+        validate_schema(&tx, 6)?;
+        let key: Option<String> = tx
+            .query_row(
+                "SELECT root_id FROM production_operation_roots WHERE project_id=?1 AND operation_key=?2",
+                params![project_id.to_string(), operation_key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let result = key
+            .map(|id| {
+                let id =
+                    Uuid::parse_str(&id).map_err(|_| invalid("stored root id is malformed"))?;
+                root(&tx, project_id, id)
+            })
+            .transpose()?;
+        tx.commit()?;
+        Ok(result)
+    }
+
     /// A debit and its dispatching receipt share one IMMEDIATE transaction.
     /// The native effect is allowed only *after* this method returns Admitted.
     /// A timeout must never cause the caller to run the effect again.

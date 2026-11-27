@@ -57,6 +57,8 @@ pub use hyperframes::{
     HyperframesJobObservation, HyperframesJobReadback, HyperframesJobState, HyperframesOriginalJob,
     HyperframesSourceEvidence, read_recorded_hyperframes_job_observation,
 };
+mod mlt_cleanup;
+pub use mlt_cleanup::{MltCloseDisposition, PreparedMltClose};
 mod mlt_mezzanine;
 mod mlt_multisegment_av;
 mod mlt_timeline;
@@ -6701,6 +6703,130 @@ mod tests {
         let service = StudioService::from_store(store);
         let project = service.create_project("Production fixture").unwrap();
         (service, project, temp)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mlt_owner_close_recovers_the_original_and_fences_a_dispatch_after_reopen() {
+        let (service, project, temp) = fixture_service();
+        let connection = fake_connection(&temp, project.resource_key());
+        let original = b"an original MLT fixture";
+        fs::write(connection.output_root.join("original.mkv"), original).unwrap();
+        let identity = connection.identity().unwrap();
+        let project_ref = format!("video:{}", "a".repeat(32));
+        let semantic = "b".repeat(64);
+        let source = json!({
+            "schema":"motionwright.mlt-timeline-source/1", "connection_identity": identity,
+            "project_ref": project_ref, "semantic_revision": semantic, "provider_generation": 7,
+            "job":"render:original", "output":"original.mkv", "profile":"lossless-video-only",
+        });
+        let wrapper = json!({
+            "provenance_checked":true, "execution": {"backend":"driver:mlt-video", "dry_run":false,
+            "provenance":{"provider":"driver:mlt-video", "execution_provider":"driver:mlt-video",
+            "source":SourceKind::Driver,"untrusted_metadata":false,"provider_generation":7,
+            "descriptor_sha256":"c".repeat(64)}},
+            "data":{"job":"render:original", "project_revision":semantic, "output":"original.mkv",
+            "profile":"lossless-video-only", "state":"succeeded", "error":null,
+            "artifact":{"root":"output","path":"original.mkv","sha256":hex::encode(Sha256::digest(original)),
+            "bytes":original.len()}}
+        });
+        let start_request = "take:mlt:render-start";
+        for (request_id, command) in [
+            (start_request, "driver.mlt-video.render.start"),
+            ("take:mlt:render-result", "driver.mlt-video.render.result"),
+        ] {
+            let mut input = ProductionReceiptInput {
+                project_id: project.id,
+                generation: project.generation,
+                revision: project.revision,
+                request_id: request_id.into(),
+                request_sha256: request_digest(command, &json!({"job":"render:original"})).unwrap(),
+                command: command.into(),
+                stage: "dispatching".into(),
+                payload: json!({"connection":identity,"job_ref":"render:original","mlt_timeline_source":source}),
+            };
+            service.append_production_receipt(input.clone()).unwrap();
+            input.stage = "completed".into();
+            input.payload["result"] = wrapper.clone();
+            service.append_production_receipt(input).unwrap();
+        }
+        let coordinator = ProductionCoordinator::new(service.clone(), connection.clone()).unwrap();
+        assert!(
+            coordinator
+                .prepare_mlt_close(project.id, &project.stamp(), "take:mlt:other")
+                .is_err()
+        );
+        fs::write(connection.output_root.join("original.mkv"), b"substituted").unwrap();
+        assert!(
+            coordinator
+                .prepare_mlt_close(project.id, &project.stamp(), start_request)
+                .is_err()
+        );
+        fs::write(connection.output_root.join("original.mkv"), original).unwrap();
+        let prepared = coordinator
+            .prepare_mlt_close(project.id, &project.stamp(), start_request)
+            .unwrap();
+        let close_command = "driver.mlt-video.project.close";
+        let request_id = format!("mlt-owner-close:{}", request_digest(close_command, &json!({
+            "connection_identity":identity, "provider_generation":7, "project_ref":project_ref,
+        })).unwrap());
+        let units = RootBudgetUnits {
+            attempts: 1,
+            ..RootBudgetUnits::default()
+        };
+        let root = service
+            .create_root_operation_budget(RootOperationBudgetInput {
+                project_id: project.id,
+                generation: project.generation,
+                revision: project.revision,
+                operation_key: request_id.clone(),
+                limits: units,
+            })
+            .unwrap();
+        service
+            .admit_root_operation_dispatch(RootDispatchBudgetInput {
+                root_id: root.root_id,
+                units,
+                receipt: ProductionReceiptInput {
+                    project_id: project.id,
+                    generation: project.generation,
+                    revision: project.revision,
+                    request_id: request_id.clone(),
+                    command: close_command.into(),
+                    stage: "dispatching".into(),
+                    request_sha256: request_digest(
+                        close_command,
+                        &json!({
+                            "project": project_ref, "expected_revision": semantic,
+                        }),
+                    )
+                    .unwrap(),
+                    payload: json!({"mutation":true}),
+                },
+            })
+            .unwrap();
+        drop(coordinator);
+        let reopened = StudioService::open(temp.path().join("motionwright.sqlite3")).unwrap();
+        assert_eq!(
+            reopened
+                .root_operation_budget_for_key(project.id, &request_id)
+                .unwrap()
+                .unwrap()
+                .spent,
+            units
+        );
+        let coordinator = ProductionCoordinator::new(reopened, connection).unwrap();
+        assert_eq!(
+            coordinator.close_prepared_mlt(prepared).await.unwrap(),
+            MltCloseDisposition::OutcomeUnknown
+        );
+        assert_eq!(
+            coordinator
+                .client
+                .execute_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
     }
 
     #[cfg(unix)]

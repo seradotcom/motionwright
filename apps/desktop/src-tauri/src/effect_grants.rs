@@ -21,6 +21,7 @@ pub enum EffectKind {
     RenderLocal,
     DeliverLocal,
     WorkflowMutation,
+    CloseMltProject,
     RemoteEgress,
     UploadExternal,
     InstallRuntime,
@@ -38,6 +39,7 @@ impl EffectKind {
                 | Self::DeliverLocal
                 | Self::WorkflowMutation
                 | Self::InstallRuntime
+                | Self::CloseMltProject
         )
     }
 
@@ -49,6 +51,7 @@ impl EffectKind {
                 | Self::DeliverLocal
                 | Self::WorkflowMutation
                 | Self::InstallRuntime
+                | Self::CloseMltProject
         )
     }
 }

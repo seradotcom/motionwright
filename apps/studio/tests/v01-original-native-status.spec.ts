@@ -123,3 +123,42 @@ test("historical, other-provider and browser-only jobs cannot trigger original s
   await page.getByRole("button",{name:"Jobs",exact:true}).click();
   await expect(page.getByRole("button",{name:"Check original native job status"})).toHaveCount(0);
 });
+
+test("MLT closure uses the original saved job and fences an unconfirmed outcome", async ({ page }) => {
+  const boot = structuredClone(fixtureBootstrap);
+  boot.native_sdk.mode = "tauri";
+  const job = {
+    ...jobFixture(boot), provider: "driver:mlt-video", root_request_id: "take:mlt:render-start",
+    state: "succeeded", result_available: true, artifact_available: true, provider_generation: 7,
+  };
+  await page.addInitScript(({ initial, original }) => {
+    const app = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
+      __MLT_CLOSE__: Array<[string, unknown]>;
+    };
+    app.__MLT_CLOSE__ = [];
+    app.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+      if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
+        return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(initial));
+      }
+      if (command === "production_jobs") return [structuredClone(original)];
+      app.__MLT_CLOSE__.push([command, args?.request]);
+      if (command === "issue_effect_grant") return { token: "test-owner-grant" };
+      if (command === "close_original_mlt_project") return "outcome_unknown";
+      throw Error("Unexpected native action");
+    } };
+  }, { initial: boot, original: job });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Jobs", exact: true }).click();
+  const close = page.getByRole("button", { name: "Request MLT project closure" });
+  await expect(close).toBeEnabled();
+  expect(await page.evaluate(() => Reflect.get(window, "__MLT_CLOSE__"))).toEqual([]);
+  await close.click();
+  await expect(page.getByRole("status").filter({ hasText: "Closure could not be confirmed" })).toBeVisible();
+  await expect(close).toBeDisabled();
+  const scope = { project_id: boot.project.id, generation: boot.project.generation, revision: boot.project.revision };
+  expect(await page.evaluate(() => Reflect.get(window, "__MLT_CLOSE__"))).toEqual([
+    ["issue_effect_grant", { ...scope, effect: "close_mlt_project", subject: job.root_request_id }],
+    ["close_original_mlt_project", { ...scope, root_request_id: job.root_request_id, effect_grant: "test-owner-grant" }],
+  ]);
+});

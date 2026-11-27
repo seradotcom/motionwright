@@ -44,6 +44,7 @@
     "allow-production-jobs",
     "allow-mlt-cleanup-inventory",
     "allow-read-original-native-job-status",
+    "allow-close-original-mlt-project",
     "allow-production-jobs-history",
     "allow-native-blender-product-source",
     "allow-prepare-blender-product-cycle",

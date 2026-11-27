@@ -395,6 +395,23 @@ async function issueEffectGrant(
   });
 }
 
+export async function closeOriginalMltProject(
+  project: Project, rootRequestId: string,
+): Promise<import("./types").MltCloseDisposition> {
+  const grant = await issueEffectGrant("close_mlt_project", project, rootRequestId);
+  const disposition = await invoke<unknown>("close_original_mlt_project", { request: {
+    project_id: project.id,
+    generation: project.generation,
+    revision: project.revision,
+    root_request_id: rootRequestId,
+    effect_grant: grant.token,
+  } });
+  if (disposition !== "closed" && disposition !== "confirmation_unavailable" && disposition !== "outcome_unknown") {
+    throw new Error("The original MLT closure result could not be recognized.");
+  }
+  return disposition;
+}
+
 const desktopFileImport: FileImportTransport = {
   prepare: request => request.kind === "native_capsule_source"
     ? invoke("prepare_native_capsule_source_file", { request: {

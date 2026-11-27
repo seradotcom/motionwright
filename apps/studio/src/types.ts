@@ -791,10 +791,13 @@ export type EffectKind =
   | "render_local"
   | "deliver_local"
   | "workflow_mutation"
+  | "close_mlt_project"
   | "remote_egress"
   | "upload_external"
   | "install_runtime"
   | "publish_external";
+
+export type MltCloseDisposition = "closed" | "confirmation_unavailable" | "outcome_unknown";
 
 export interface EffectGrantReceipt {
   token: string;

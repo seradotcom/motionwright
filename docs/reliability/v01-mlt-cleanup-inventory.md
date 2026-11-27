@@ -1,6 +1,6 @@
 # Motionwright v0.1 — MLT native project lifetime inventory
 
-**Status: partial, no native cleanup executed.** Issue #91 requires trusted foreground Broker approval before a destructive MLT project close. The pinned application does not yet have a separately verified authorization and completion contract for that action.
+The MLT lifetime inventory reads the local journal. A successful MLT timeline job in the installed Jobs workspace also offers a separate foreground closure request.
 
 ## What this implements
 
@@ -16,9 +16,13 @@ Every inventory reports, without exceptions: native_provider_liveness_verified=f
 
 The existing pinned native MLT 33-frame CI now additionally compares this read-only inventory against the **actual completed MLT project.create receipts persisted in SQLite** (not fixture objects) in PCM, video-only and final MP4 runs, with independent JSON SHA-256 checks. See [real MLT lifetime evidence](v01-real-mlt-lifetime-evidence.md). Passing proves only source-bound create accounting, not provider liveness or cleanup consent.
 
-## Next authorization gate
+## Close an original MLT project
 
-The application needs a true foreground consent implementation backed by the original authenticated Semwright Broker and an unforgeable one-time destructive effect grant, with specific native project reference, generation and revision, and verified provider completion semantics. Do not substitute a JavaScript confirmation, a CLI-only probe or a Motionwright local receipt for actual Broker authorization. Only after this independent gate may issue #91 be considered for closure.
+Select **Request MLT project closure** on the successful job in Jobs. Use the original production connection with its MLT provider and output workspace still active. The owner’s Broker policy must allow the bound transport command `providers.execute_bound` and read access to the existing output mount. Run the Broker with its foreground approval console and answer its original challenge there.
+
+Motionwright binds the saved job and exact output to the original native project generation and semantic revision. The app records a single-use dispatch in SQLite before requesting closure. A confirmed closure releases the in-memory native project. The rendered media stays available. A request with an uncertain outcome remains fenced across reopening. If the Broker definitively reports that confirmation was unavailable, a new explicit request can use the same original project after the console is available.
+
+Real foreground closure verification remains open in issue #91.
 
 ## Validation
 
