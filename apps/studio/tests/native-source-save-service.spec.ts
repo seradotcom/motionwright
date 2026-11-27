@@ -1,13 +1,15 @@
 /**
  * Actual Studio UI -> shared Desktop native-source commands -> StudioService,
- * SQLite and CAS. Sources are small JSON documents authored by this test.
+ * SQLite and CAS. Sources are owned JSON or opt-in Blender fixtures.
  * Only acknowledgement loss/delay and localStorage faults are injected. Every
  * Project, preparation, grant, receipt and journal comes from the real process.
  * Source retention does not certify native pixels, installed Tauri or a person.
  */
+import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { promisify } from "node:util";
 import { expect, test as base, type Page, type TestInfo } from "@playwright/test";
 import type { NativeCapsule } from "../src/creativeProduction";
 import type { EffectGrantReceipt, Project } from "../src/types";
@@ -24,6 +26,7 @@ import { ScopedChangeService, type StoreFinalization } from "./support/scopedCha
 const PREPARE = "prepare_native_capsule_source_file";
 const IMPORT = "import_native_capsule_source_file";
 const RECOVER = "recover_native_capsule_source_file";
+const blenderBinary = process.env.MOTIONWRIGHT_SOURCE_ROUNDTRIP_BLENDER;
 
 interface SourceCase {
   service: ScopedChangeService;
@@ -77,7 +80,8 @@ const test = base.extend<{ sources: SourceCase }>({
         const path = info.outputPath("native-source-save-service-evidence.json");
         await writeFile(path, JSON.stringify({
           scope: "real_native_source_save_ui_shared_desktop_module_service_sqlite_cas",
-          inputs: "owned_authored_json_sources; explicit_transport_or_storage_faults_only",
+          inputs: blenderBinary ? "owned_sources_with_selected_blender_roundtrip"
+            : "owned_authored_json_sources; explicit_transport_or_storage_faults_only",
           exclusions: ["native_renderer_execution", "native_pixel_or_fidelity_acceptance", "installed_tauri", "human_acceptance"],
           statusAtTeardown: info.status, expectedStatus: info.expectedStatus,
           primaryFailure: info.error?.message ?? null, failures, observations, final,
@@ -142,6 +146,67 @@ async function ownSource(info: TestInfo, filename: string, version: number): Pro
     camera: { focalLength: 35 + version, x: version * 12 }, accent: version === 1 ? "#f0c36a" : "#6ed0dd" }, null, 2) + "\n");
   await writeFile(path, bytes);
   return { path, bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
+}
+/** Opt-in external editor test. Only fixture-owned paths reach Blender and file auto-execution is disabled. */
+async function openBlenderRoundtrip(info: TestInfo, executable: string) {
+  if (!isAbsolute(executable)) throw new Error("Select an absolute Blender executable for the owned-source test.");
+  const invoke = promisify(execFile);
+  const script = info.outputPath("owned-blender-roundtrip.py");
+  await writeFile(script, [
+    "import bpy, sys",
+    "action, target = sys.argv[sys.argv.index('--') + 1:]",
+    "name = 'Motionwright Fixture Camera'",
+    "if action == 'create':",
+    "    camera = bpy.data.cameras.new(name)",
+    "    obj = bpy.data.objects.new(name, camera)",
+    "    bpy.context.scene.collection.objects.link(obj)",
+    "    bpy.context.scene.camera = obj",
+    "    camera.lens = 35",
+    "else:",
+    "    obj = bpy.data.objects[name]",
+    "    assert obj.type == 'CAMERA' and bpy.context.scene.camera == obj",
+    "    if action == 'edit':",
+    "        assert obj.data.lens == 35",
+    "        obj.data.lens = 61",
+    "    else:",
+    "        assert action == 'read' and obj.data.lens == 61",
+    "if action in ('create', 'edit'):",
+    "    bpy.context.preferences.filepaths.save_version = 0",
+    "    assert bpy.ops.wm.save_as_mainfile(filepath=target, check_existing=False) == {'FINISHED'}",
+    "print('MOTIONWRIGHT_OWNED_BLENDER', bpy.app.version_string, action, obj.data.lens)",
+  ].join("\n"), {flag:"wx"});
+  const editorLog: string[] = [];
+  async function run(action:"create"|"edit"|"read", file:string, lens:number) {
+    const { stdout } = await invoke(executable, [
+      "--background", "--factory-startup", "--disable-autoexec",
+      ...(action === "create" ? [] : [file]),
+      "--python-exit-code", "1", "--python", script, "--", action, file,
+    ], {
+      cwd: info.outputPath(),
+      timeout: 45_000,
+      maxBuffer: 512 * 1024,
+      env: {...process.env, BLENDER_USER_CONFIG:info.outputPath("blender-config"),
+        BLENDER_USER_SCRIPTS:info.outputPath("blender-user-scripts")},
+    });
+    const prefix = "MOTIONWRIGHT_OWNED_BLENDER ";
+    const lines = stdout.split(/\r?\n/).filter(line => line.startsWith(prefix));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(new RegExp(" " + action + " " + lens + "\\.0$"));
+    editorLog.push(lines[0].slice(prefix.length));
+  }
+  const path = info.outputPath("original-native-export-input.blend");
+  await run("create",path,35);
+  const bytes = await readFile(path);
+  const original = {path,bytes,sha256:createHash("sha256").update(bytes).digest("hex")};
+  return {
+    original,
+    async revise(file:string) {
+      await run("edit",file,61);
+      await run("read",file,61);
+      return readFile(file);
+    },
+    editorLog,
+  };
 }
 const sourceEvidence = (source: OwnedSource) => ({ path: source.path, sha256: source.sha256,
   sizeBytes: source.bytes.length, ownedUtf8Input: source.bytes.toString("utf8") });
@@ -310,19 +375,35 @@ test("authored native source saves its asset and full capsule in one canonical r
 });
 
 test("the exported original returns to the native source editor as a new version with both CAS revisions durable", async ({ page, sources }, info) => {
-  const { service, project, observations } = sources;
+  const { service, observations } = sources;
+  let project = sources.project;
   const scene = project.scenes[0];
-  const original = await ownSource(info, "original-native-export-input.json", 1);
-  const fields = authoredFields(original);
-  await page.goto("/"); await sourcesUi(page, scene.id); await fillSource(page, fields);
+  const blender = blenderBinary ? await openBlenderRoundtrip(info,blenderBinary) : null;
+  const original = blender?.original ?? await ownSource(info, "original-native-export-input.json", 1);
+  const fields = blender ? {
+    ...authoredFields(original), name:"Owned opening source.blend", mediaType:"application/x-blender",
+    editorHint:"Blender", parameters:'["Motionwright Fixture Camera.lens"]',
+  } : authoredFields(original);
+  await page.goto("/");
+  if (blender && scene.renderer !== "blender") {
+    const inspector = page.locator(".inspector");
+    await expect(inspector.getByText(scene.name, {exact:true})).toBeVisible();
+    await inspector.getByLabel("Renderer", {exact:true}).selectOption("blender");
+    await revision(page, project.revision + 1);
+    project = await service.project(project.id);
+    expect(project.scenes.find(item => item.id === scene.id)?.renderer).toBe("blender");
+  }
+  await sourcesUi(page, scene.id);
+  await fillSource(page, fields);
   const id = (await nativeDraft(page, project, scene.id)).draft.capsuleId;
 
   await button(page, "Save source and capsule").click(); await revision(page, project.revision + 1);
   const first = await service.project(project.id), originalCapsule = capsule(first, id);
   expect(originalCapsule.source_sha256).toBe(original.sha256);
+  if (blender) expect(originalCapsule.native_editor_hint).toBe("Blender");
   await expectCas(service, original);
 
-  const exported = info.outputPath("owned-native-export-recovered.json");
+  const exported = info.outputPath(blender ? "owned-native-export-recovered.blend" : "owned-native-export-recovered.json");
   await field(page, "Native source export destination").fill(exported);
   await button(page, "Export saved original source").click();
   await expect(editor(page).getByRole("status").filter({ hasText: "Original source exported to " + exported })).toBeVisible();
@@ -356,14 +437,12 @@ test("the exported original returns to the native source editor as a new version
   expect(requests(service, IMPORT)).toHaveLength(1);
   expect(await service.project(project.id)).toEqual(first);
 
-  // The native-editor gesture is deliberately test-owned local file editing.
-  // This fixture never launches Blender/Kdenlive or certifies installed Tauri.
-  const revisedBytes = Buffer.from(JSON.stringify({
+  const revisedBytes = blender ? await blender.revise(exported) : Buffer.from(JSON.stringify({
     schema: "motionwright.test.owned-native-source/1",
     author: "Test-authored source", version: 2, title: "Changed local native input",
     camera: { focalLength: 61, x: 24 }, accent: "#6ed0dd",
   }, null, 2) + "\n");
-  await writeFile(exported, revisedBytes);
+  if (!blender) await writeFile(exported, revisedBytes);
   const revisedSha = createHash("sha256").update(revisedBytes).digest("hex");
   expect(await readFile(original.path)).toEqual(original.bytes);
   await page.reload(); await sourcesUi(page, scene.id);
@@ -390,7 +469,9 @@ test("the exported original returns to the native source editor as a new version
   await page.reload(); await sourcesUi(page, scene.id);
   await expect(field(page, "Source file path")).toHaveValue(exported);
   await page.screenshot({ path: info.outputPath("native-source-export-reimport-saved.png"), fullPage: true });
-  observations.original = sourceEvidence(original);
+  observations.original = blender ? {path:original.path,sha256:original.sha256,sizeBytes:original.bytes.length}
+    : sourceEvidence(original);
+  if (blender) observations.externalBlender = blender.editorLog;
   observations.first = first;
   observations.exported = { path: exported, sha256: original.sha256, originalDigestVerified: true };
   observations.handoffDraft = nextInput;
