@@ -7,9 +7,12 @@ import sqlite3
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import linux_installed_aac31 as installed
 from linux_hybrid_original_receipt import Source, original_master
 from linux_hybrid_playback_frames import PlaybackFrame, marker, observe_playback
 
@@ -40,6 +43,62 @@ class InstalledAAC31ProofTests(unittest.TestCase):
         start = time.monotonic_ns()
         with self.assertRaisesRegex(ValueError, "two authored scenes"):
             observe_playback(lambda: red, play_intent_ns=start, deadline_ns=start + 50_000_000)
+
+    def test_viewport_is_measured_after_scrolling_and_before_one_play(self):
+        binding = {"pid": 9001, "window": "0x42", "start_time": "100"}
+        player = installed.ui.View("player", "video", installed.PLAYER, frozenset({"visible"}), frozenset())
+        buttons = frozenset({"visible", "showing", "enabled", "sensitive"})
+        play = installed.ui.View("play", "button", "Play", buttons, frozenset())
+        attempts = []
+
+        def scroll(node, _):
+            self.assertEqual(node, "player")
+            attempts.append("scroll")
+            return True
+
+        def view(node):
+            if node == "play":
+                return play
+            return installed.ui.View("player", "video", installed.PLAYER,
+                                     frozenset({"visible", "showing"}), frozenset())
+
+        def extents(node, _):
+            self.assertEqual(node, "player")
+            self.assertEqual(attempts[0], "scroll")
+            return SimpleNamespace(x=64, y=120, width=160, height=90)
+
+        def start(node, index):
+            self.assertEqual((node, index), ("play", 0))
+            attempts.append("play")
+            return True
+
+        def capture(_, x, y, width, height):
+            self.assertEqual((x, y, width, height), (64, 120, 160, 90))
+            self.assertEqual(attempts, ["scroll", "play"])
+            observed = next(frames)
+            return SimpleNamespace(get_width=lambda:160, get_height=lambda:90,
+                                   get_rowstride=lambda:480, get_n_channels=lambda:3,
+                                   get_pixels=lambda:observed.pixels)
+
+        frames = iter(map(frame, ("motion-canvas", "manim")))
+        api = SimpleNamespace(Component=SimpleNamespace(scroll_to=scroll, get_extents=extents),
+                              ScrollType=SimpleNamespace(ANYWHERE=0), CoordType=SimpleNamespace(SCREEN=0))
+        bridge = SimpleNamespace(api=api, deadline=time.monotonic() + 5, pump=lambda:None,
+                                 owner_pid=lambda _:9001, call=lambda f,*a:f(*a),
+                                 view=view, children=lambda n:["play"] if n=="player" else [],
+                                 actions=lambda _:["click"], invoke=start)
+        panel = SimpleNamespace(get_width=lambda:1440, get_height=lambda:940)
+        gdk = SimpleNamespace(get_default_root_window=lambda:panel, pixbuf_get_from_window=capture)
+        with tempfile.TemporaryDirectory() as scratch, patch.object(
+            installed.ui, "x11_identity", return_value=binding,
+        ):
+            evidence = Path(scratch)
+            result = installed.player_proof(bridge, binding, player, Mock(), gdk, evidence)
+            self.assertEqual(attempts, ["scroll", "play"])
+            self.assertEqual([sample["scene"] for sample in result], ["motion-canvas", "manim"])
+            for sample in result:
+                self.assertEqual(sha256((evidence / sample["original"]).read_bytes()).hexdigest(),
+                                 sample["sha256"])
 
     def test_recovery_rejects_substituted_bytes_or_a_second_mux_dispatch(self):
         source = Source("735370d7-4c68-4382-b081-ecd3d8687f11",

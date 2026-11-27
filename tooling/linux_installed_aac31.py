@@ -88,17 +88,38 @@ def same_window(bridge, binding, view):
             "AAC31 installed window or control owner changed")
 
 
-def invoke(bridge, binding, view, journal, label):
+def bring_into_view(bridge, binding, view):
     same_window(bridge, binding, view)
     if "showing" not in view.states:
         require(bridge.call(bridge.api.Component.scroll_to, view.node,
                             bridge.api.ScrollType.ANYWHERE) is True,
                 "AAC31 control could not be scrolled into its own window")
-    same_window(bridge, binding, view)
+
+        def observed():
+            bridge.pump()
+            current = bridge.view(view.node)
+            require((current.name, current.role) == (view.name, view.role),
+                    "AAC31 control changed while scrolling")
+            if not ui.VISIBLE <= current.states or "defunct" in current.states:
+                raise ui.NotReady("AAC31_CONTROL_NOT_SHOWING")
+            return current
+
+        view = wait_for(bridge, observed)
+        same_window(bridge, binding, view)
+    return view
+
+
+def invoke(bridge, binding, view, journal, label):
+    view = bring_into_view(bridge, binding, view)
     actions = bridge.actions(view.node)
     allowed = [index for index, name in enumerate(actions)
                if name.casefold() in {"click", "press", "activate", "play"}]
     require(len(allowed) == 1, "AAC31 control has no unique standard action")
+    current = bridge.view(view.node)
+    require((current.name, current.role) == (view.name, "button")
+            and ui.VISIBLE | {"enabled", "sensitive"} <= current.states
+            and "defunct" not in current.states, "AAC31 action target changed before dispatch")
+    same_window(bridge, binding, current)
     journal.put(label + "-intent", {"control": view.name, "binding": binding, "automatic_retry": False})
     started = time.monotonic_ns()
     require(bridge.invoke(view.node, allowed[0]) is True, "AAC31 action is unconfirmed")
@@ -112,13 +133,32 @@ def press(bridge, binding, label, journal, stage):
 
 
 def player_proof(bridge, binding, player, journal, gdk, evidence):
-    same_window(bridge, binding, player)
-    extents = bridge.call(bridge.api.Component.get_extents, player.node, bridge.api.CoordType.SCREEN)
+    # The review panel lives below the delivery controls. Resolve the visible
+    # play control first so later scrolling cannot invalidate the capture area.
+    player = bring_into_view(bridge, binding, player)
+
+    def play_control():
+        expected = {"play", "play video"}
+        play = [
+            view for view in ui.walk(bridge, player.node)
+            if view.name.casefold() in expected and view.role == "button"
+            and ui.VISIBLE | {"enabled", "sensitive"} <= view.states
+        ]
+        return ui.unique(play, "AAC31_VIDEO_PLAY")
+
+    play = wait_for(bridge, play_control)
+
+    def screen_bounds():
+        bounds = bridge.call(bridge.api.Component.get_extents, player.node, bridge.api.CoordType.SCREEN)
+        return bounds.x, bounds.y, bounds.width, bounds.height
+
+    initial_bounds = screen_bounds()
+    left, top, width, height = initial_bounds
     panel = gdk.get_default_root_window()
-    w = min(extents.width, extents.height * 16 // 9)
+    w = min(width, height * 16 // 9)
     h = w * 9 // 16
-    x = extents.x + (extents.width - w) // 2
-    y = extents.y + (extents.height - h) // 2
+    x = left + (width - w) // 2
+    y = top + (height - h) // 2
     require(panel is not None and w >= 160 and h >= 90 and x >= 0 and y >= 0
             and x + w <= panel.get_width() and y + h <= panel.get_height(),
             "AAC31 WebView video content is outside the owned X11 display")
@@ -130,22 +170,13 @@ def player_proof(bridge, binding, player, journal, gdk, evidence):
         return PlaybackFrame(w, h, picture.get_rowstride(), picture.get_n_channels(),
                              bytes(picture.get_pixels()))
 
-    def play_control():
-        expected = {"play", "play video"}
-        play = [
-            view for view in ui.walk(bridge, player.node)
-            if view.name.casefold() in expected and view.role == "button"
-            and {"visible", "enabled", "sensitive"} <= view.states
-        ]
-        return ui.unique(play, "AAC31_VIDEO_PLAY")
-
-    play = wait_for(bridge, play_control)
     began = invoke(bridge, binding, play, journal, "play-original")
     observed = observe_playback(
         capture, play_intent_ns=began,
         deadline_ns=min(began + 4_000_000_000, int(bridge.deadline * 1e9)),
     )
     same_window(bridge, binding, player)
+    require(screen_bounds() == initial_bounds, "AAC31 player moved during pixel observation")
     result = []
     for scene, (frame, timestamp) in zip(("motion-canvas", "manim"), observed, strict=True):
         filename = scene + "-viewport.original.rgb"
