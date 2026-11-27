@@ -156,6 +156,7 @@ export default function CanvasStructureEditor({
           Multiply, Screen and Add use the saved composition background in the source study. Native Motion Canvas
           requires a verified Film v2 provider for supported leaf objects. Unsupported group, camera, fixed-text
           or renderer combinations are refused before rendering; the saved blend is never silently replaced with Normal.
+          {node.opacity !== 1 && " Native Film cannot preserve the saved static opacity."}
         </p>}
         {node.kind === "text" && <div className="canvas-style-grid typography-grid">
           {(["font_size","font_weight","line_height"] as const).map(field => {
