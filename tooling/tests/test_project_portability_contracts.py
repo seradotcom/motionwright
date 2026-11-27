@@ -48,6 +48,33 @@ class PortabilityContractTests(unittest.TestCase):
         self.assertEqual(self.functions["portability_test_options"]("full", "storage", "Windows"),
                          ["--test-threads=1", "--include-ignored"])
 
+    def test_desktop_project_io_runs_in_an_admitted_owner_worker(self):
+        source = (ROOT / "apps/desktop/src-tauri/src/main.rs").read_text(encoding="utf-8")
+        calls = {
+            "inspect_project_bundle": ".inspect_project_bundle_with_fingerprint(",
+            "recover_project_bundle_import": ".recover_project_bundle_import(",
+            "import_project_bundle": ".import_project_bundle_inspected(",
+            "list_projects": "project_library::list_projects(",
+            "open_project": "project_library::open_project(",
+            "create_project": "project_library::create_project(",
+            "recover_project_creation": "project_library::recover_project_creation(",
+            "project_history": ".history(",
+            "project_history_recent": ".history_recent(",
+            "issue_effect_grant": "effect_authority::issue_effect_grant(",
+        }
+        for command, service_call in calls.items():
+            with self.subTest(command=command):
+                start = source.index(f"fn {command}(")
+                command_source = source[start - len("async "):].split("#[tauri::command]", 1)[0]
+                self.assertTrue(command_source.startswith(f"async fn {command}("))
+                worker = command_source.index("desktop_owner::spawn_blocking(owner.worker_owner()")
+                self.assertLess(worker, command_source.index(service_call))
+                self.assertIn(".await", command_source)
+                if command == "import_project_bundle":
+                    consume = command_source.index("grants.consume(")
+                    self.assertLess(worker, consume)
+                    self.assertLess(consume, command_source.index(service_call))
+
     def test_unknown_platform_is_rejected(self):
         with self.assertRaises(ValueError):
             self.functions["storage_import_cases"]("unrecognized")

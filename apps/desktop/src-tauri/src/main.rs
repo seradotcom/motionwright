@@ -506,21 +506,31 @@ fn bootstrap(
 }
 
 #[tauri::command]
-fn list_projects(
-    _owner: desktop_owner::OwnerInvocation,
+async fn list_projects(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: project_library::ListProjectsRequest,
 ) -> Result<project_library::ProjectLibraryPage, String> {
-    project_library::list_projects(&state.service, request).map_err(sanitized)
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        project_library::list_projects(&service, request).map_err(sanitized)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn open_project(
-    _owner: desktop_owner::OwnerInvocation,
+async fn open_project(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: project_library::OpenProjectRequest,
 ) -> Result<Project, String> {
-    project_library::open_project(&state.service, request).map_err(sanitized)
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        project_library::open_project(&service, request).map_err(sanitized)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -772,29 +782,41 @@ fn issue_project_creation_grant(
 }
 
 #[tauri::command]
-fn create_project(
-    _owner: desktop_owner::OwnerInvocation,
+async fn create_project(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
     request: project_library::CreateProjectRequest,
 ) -> Result<ProjectCreationOutcome, String> {
-    project_library::create_project(
-        &state.service,
-        &state.effect_grants,
-        state.workspace_session,
-        window.label(),
-        request,
-    )
-    .map_err(sanitized)
+    let service = state.service.clone();
+    let grants = state.effect_grants.clone();
+    let session = state.workspace_session;
+    let window_label = window.label().to_owned();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        project_library::create_project(&service, &grants, session, &window_label, request)
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|error| match error {
+        desktop_owner::OwnerTaskFailure::OwnerUnavailable => error.to_string(),
+        desktop_owner::OwnerTaskFailure::WorkerJoinFailure => {
+            "The project creation outcome is unknown. Check the original creation.".to_string()
+        }
+    })?
 }
 
 #[tauri::command]
-fn recover_project_creation(
-    _owner: desktop_owner::OwnerInvocation,
+async fn recover_project_creation(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ProjectCreationIntent,
 ) -> Result<Option<ProjectCreationOutcome>, String> {
-    project_library::recover_project_creation(&state.service, &request).map_err(sanitized)
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        project_library::recover_project_creation(&service, &request).map_err(sanitized)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn checked_effect_scope(
@@ -807,12 +829,18 @@ fn checked_effect_scope(
 }
 
 #[tauri::command]
-fn issue_effect_grant(
-    _owner: desktop_owner::OwnerInvocation,
+async fn issue_effect_grant(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: IssueEffectGrantRequest,
 ) -> Result<EffectGrantReceipt, String> {
-    effect_authority::issue_effect_grant(&state.service, &state.effect_grants, request)
+    let service = state.service.clone();
+    let grants = state.effect_grants.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        effect_authority::issue_effect_grant(&service, &grants, request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// Explicit, read-only asset SHA-256 audit. No path/digest sources or broad
@@ -858,27 +886,35 @@ async fn asset_integrity_page(
 }
 
 #[tauri::command]
-fn project_history(
-    _owner: desktop_owner::OwnerInvocation,
+async fn project_history(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: HistoryRequest,
 ) -> Result<Vec<ProjectEvent>, String> {
-    state
-        .service
-        .history(request.project_id, request.after_revision, request.limit)
-        .map_err(sanitized)
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        service
+            .history(request.project_id, request.after_revision, request.limit)
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn project_history_recent(
-    _owner: desktop_owner::OwnerInvocation,
+async fn project_history_recent(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: RecentHistoryRequest,
 ) -> Result<Vec<ProjectEvent>, String> {
-    state
-        .service
-        .history_recent(request.project_id, request.through_revision, request.limit)
-        .map_err(sanitized)
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        service
+            .history_recent(request.project_id, request.through_revision, request.limit)
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -4343,60 +4379,78 @@ async fn choose_portable_project_source(
 }
 
 #[tauri::command]
-fn inspect_project_bundle(
-    _owner: desktop_owner::OwnerInvocation,
+async fn inspect_project_bundle(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: BundlePathRequest,
 ) -> Result<BundlePlanResponse, String> {
     let source = absolute_bundle_path(&request.path)?;
-    let inspected = state
-        .service
-        .inspect_project_bundle_with_fingerprint(&source)
-        .map_err(sanitized)?;
-    let plan = inspected.plan;
-    Ok(BundlePlanResponse {
-        project_id: plan.project.project_id,
-        title: plan.project.title,
-        source_generation: plan.project.source_generation,
-        revision: plan.project.revision.to_string(),
-        event_count: plan.project.event_count,
-        blob_count: plan.blob_count,
-        total_blob_bytes: plan.total_blob_bytes.to_string(),
-        rotates_generation: plan.project.rotates_generation,
-        fingerprint: inspected.fingerprint,
-        migration_notes: inspected.migration_notes,
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        let inspected = service
+            .inspect_project_bundle_with_fingerprint(&source)
+            .map_err(sanitized)?;
+        let plan = inspected.plan;
+        Ok(BundlePlanResponse {
+            project_id: plan.project.project_id,
+            title: plan.project.title,
+            source_generation: plan.project.source_generation,
+            revision: plan.project.revision.to_string(),
+            event_count: plan.project.event_count,
+            blob_count: plan.blob_count,
+            total_blob_bytes: plan.total_blob_bytes.to_string(),
+            rotates_generation: plan.project.rotates_generation,
+            fingerprint: inspected.fingerprint,
+            migration_notes: inspected.migration_notes,
+        })
     })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn recover_project_bundle_import(
-    _owner: desktop_owner::OwnerInvocation,
+async fn recover_project_bundle_import(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: motionwright_service::BundleImportRecoveryRequest,
 ) -> Result<Option<motionwright_service::BundleImportCommit>, String> {
-    state
-        .service
-        .recover_project_bundle_import(&request)
-        .map_err(sanitized)
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        service
+            .recover_project_bundle_import(&request)
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn import_project_bundle(
-    _owner: desktop_owner::OwnerInvocation,
+async fn import_project_bundle(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ImportBundleRequest,
 ) -> Result<Project, String> {
-    state.effect_grants.consume(
-        request.effect_grant,
-        EffectKind::ImportLocal,
-        EffectScope::unscoped_import(),
-        request.path.trim(),
-    )?;
-    let source = absolute_bundle_path(&request.path)?;
-    state
-        .service
-        .import_project_bundle_inspected(&source, &request.fingerprint)
-        .map_err(sanitized)
+    let service = state.service.clone();
+    let grants = state.effect_grants.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        grants.consume(
+            request.effect_grant,
+            EffectKind::ImportLocal,
+            EffectScope::unscoped_import(),
+            request.path.trim(),
+        )?;
+        let source = absolute_bundle_path(&request.path)?;
+        service
+            .import_project_bundle_inspected(&source, &request.fingerprint)
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|error| match error {
+        desktop_owner::OwnerTaskFailure::OwnerUnavailable => error.to_string(),
+        desktop_owner::OwnerTaskFailure::WorkerJoinFailure => {
+            "The portable import outcome is unknown. Check the original import.".to_string()
+        }
+    })?
 }
 
 #[tauri::command]
