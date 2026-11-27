@@ -81,6 +81,32 @@ class InternalWindowsCandidateTests(unittest.TestCase):
                       "test_cargo_notice_supplement_integration -v", contracts)
         self.assertIn("throw 'Cargo supplemental notice contracts failed'", contracts)
 
+    def test_public_candidate_checks_distribution_admission_before_compiling(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        windows = workflow.split("  windows:\n", 1)[1].split("  windows-update:\n", 1)[0]
+        gate = "      - name: Require Windows distribution admission before public bundling"
+        self.assertIn(gate, windows)
+        self.assertLess(windows.index(gate), windows.index("      - name: Build unsigned Windows candidate"))
+        step = windows.split(gate, 1)[1].split("      - name: ", 1)[0]
+        self.assertIn("inputs.verification_scope != 'windows_installed'", step)
+        raw = step.split("          @'\n", 1)[1].split("          '@ | python -B -", 1)[0]
+        script = compile(textwrap.dedent(raw), str(WORKFLOW) + ":distribution-preflight", "exec")
+        with mock.patch.dict(os.environ, self.environment, clear=True), \
+             mock.patch.object(sys, "path", list(sys.path)):
+            with self.assertRaisesRegex(ValueError, "distribution_admission_missing"):
+                exec(script, {})
+        public_root = self.root.parent / "public"
+        permitted = write_distribution_fixture(public_root, status="permitted")
+        admitted = {
+            **self.environment,
+            "GITHUB_WORKSPACE": str(public_root),
+            "MW_NSIS_DISTRIBUTION_ADMISSION": permitted["record_path"],
+            "MW_NSIS_DISTRIBUTION_ADMISSION_SHA256": permitted["record_sha256"],
+        }
+        with mock.patch.dict(os.environ, admitted, clear=True), \
+             mock.patch.object(sys, "path", list(sys.path)):
+            exec(script, {})
+
     def test_internal_capture_binds_real_fixture_bytes_and_denies_a_changed_payload(self):
         result = self.execute()
         record = json.loads((self.root / result["record_path"]).read_bytes())
