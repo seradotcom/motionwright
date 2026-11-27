@@ -5595,7 +5595,7 @@
           ],
           "coverage_basis": "An existing explicitly requested Linux-only partial diagnostic alternative runs only with scenario=source-contracts and a genuine closed source/tree/SDK/four-lock binding. The always-on source job is retained; only the closed diagnostic roster and its originals are additional. This is not G0/G1/G2/G3 approval, native E2E selection or automatic retry.",
           "original_attempt": null,
-          "blocking_reason": "A1 must select and retain the authentic final authorized source_sha, tree_sha, sdk_revision and four exact lock digests in affected_rust_source_binding before a separately reserved diagnostic execution. The empty placeholder is rejected. Source historical roster provenance and partial results do not approve G1 or replace the existing native/source gates."
+          "blocking_reason": "Before reserving the diagnostic execution, retain the authorized source_sha, tree_sha, sdk_revision and four exact lock digests in affected_rust_source_binding. The empty placeholder is rejected. Source historical roster provenance and partial results do not approve G1 or replace the existing native/source gates."
         }
       ],
       "job_dispositions": [],
