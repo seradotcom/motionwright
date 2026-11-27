@@ -167,7 +167,7 @@ fn fixture_with_layout(layout: &[RendererKind], scene_seconds: i64) -> Fixture {
             name: format!("Rectangle {index}"),
             kind: "rectangle".into(),
             parent_id: None,
-            x: 400.0 + index as f64 * 350.0,
+            x: 400.0 + (index % 3) as f64 * 350.0,
             y: 420.0,
             width: 180.0,
             height: 140.0,
