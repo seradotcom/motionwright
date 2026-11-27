@@ -143,6 +143,14 @@ public static class KdenliveWindowsInput
         if (GetDlgCtrlID(edit) == 1148)
             return true;
         IntPtr parent = GetParent(edit);
+        // IFileSaveDialog uses its own filename ComboBox (ID 0).
+        if (GetDlgCtrlID(edit) == 1001 && IsOwned(parent, owner) &&
+            ClassOf(parent) == "ComboBox" && GetDlgCtrlID(parent) == 0)
+        {
+            string title = ReadControlText(dialog, 64);
+            if (title == "Save As" || title == "Save Project")
+                return true;
+        }
         for (int depth = 0; parent != IntPtr.Zero && parent != dialog && depth < 5; depth++)
         {
             string name = ClassOf(parent);
