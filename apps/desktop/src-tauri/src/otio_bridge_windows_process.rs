@@ -314,6 +314,12 @@ fn launch(
     }
 }
 
+pub(super) struct BridgeDirectories<'a> {
+    pub(super) cwd: &'a Path,
+    pub(super) temp: &'a Path,
+    pub(super) system_root: &'a Path,
+}
+
 /// Run the already admitted absolute executable. A clean result requires both
 /// a zero root exit code and a quiescent job. The caller supplies a protected
 /// runtime directory and an independent private scratch directory.
@@ -321,9 +327,7 @@ pub(super) fn run(
     executable: &Path,
     args: &[&OsStr],
     decoder: &Path,
-    cwd: &Path,
-    temp_dir: &Path,
-    system_root: &Path,
+    directories: BridgeDirectories<'_>,
     stderr: &File,
     limit: Duration,
 ) -> Result<(), BridgeProcessError> {
@@ -333,9 +337,9 @@ pub(super) fn run(
         executable,
         args,
         decoder,
-        cwd,
-        temp_dir,
-        system_root,
+        directories.cwd,
+        directories.temp,
+        directories.system_root,
         stderr,
     )
     .map_err(Start)?;
@@ -462,9 +466,11 @@ mod tests {
             &executable,
             &args,
             &executable,
-            cwd,
-            scratch.path(),
-            system_root,
+            BridgeDirectories {
+                cwd,
+                temp: scratch.path(),
+                system_root,
+            },
             &stderr,
             Duration::from_secs(2),
         );

@@ -41,8 +41,7 @@ use windows_sys::Win32::{
     UI::Shell::{FOLDERID_ProgramFiles, KF_FLAG_DEFAULT_PATH, SHGetKnownFolderPath},
 };
 
-const REFUSED: &str =
-    "The machine-managed Windows OTIO runtime is missing or could not be verified.";
+const REFUSED: &str = "OTIO needs a protected Python 3 and ffprobe installation under Motionwright\\OTIO Runtime in Program Files.";
 type Admission<T> = Result<T, &'static str>;
 const MAX_PATH: usize = 1024;
 const MAX_DEPTH: usize = 16;
@@ -369,10 +368,9 @@ fn verify_python_embed(
         if let Some(stem) = name
             .strip_suffix(".dll")
             .filter(|stem| python_version(stem))
+            && versioned_dll.replace(stem.to_owned()).is_some()
         {
-            if versioned_dll.replace(stem.to_owned()).is_some() {
-                return Err(REFUSED);
-            }
+            return Err(REFUSED);
         }
         let Some(stem) = name.strip_suffix("._pth") else {
             continue;

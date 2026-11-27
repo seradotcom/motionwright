@@ -155,8 +155,9 @@ administrator-managed Python 3 and ffprobe installation on the same host.
   directory. Provision the embeddable CPython distribution for the installed
   architecture and a standalone `ffprobe.exe`. Keep the versioned Python DLL,
   standard-library ZIP and `._pth` file together. The active `._pth` entries
-  are the versioned ZIP and `.`. Only system or administrator principals may
-  own or modify the installation.
+  are the versioned ZIP and `.`. The trusted owners are LocalSystem,
+  Builtin Administrators and TrustedInstaller. Standard users need read
+  and execute access to the installation.
 - **macOS** uses `/Library/Application Support/Motionwright/OTIO Runtime`.
   Provision a self-contained Python 3 distribution and ffprobe for the
   installed architecture, with regular executable files at `bin/python3`

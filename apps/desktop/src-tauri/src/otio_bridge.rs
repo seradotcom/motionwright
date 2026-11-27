@@ -448,14 +448,16 @@ fn run_bridge(scripts: &Path, bridge: &Path, arguments: &[OsString]) -> Result<(
     }
     #[cfg(windows)]
     {
-        use windows_process::BridgeProcessError;
+        use windows_process::{BridgeDirectories, BridgeProcessError};
         windows_process::run(
             &runtime.python,
             &argv,
             &runtime.ffprobe,
-            managed_root.ok_or_else(refused)?,
-            workspace,
-            &runtime.system_root,
+            BridgeDirectories {
+                cwd: managed_root.ok_or_else(refused)?,
+                temp: workspace,
+                system_root: &runtime.system_root,
+            },
             &stderr,
             DEADLINE,
         )
