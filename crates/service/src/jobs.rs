@@ -645,13 +645,27 @@ mod tests {
             time,
         );
         intent.request_sha256 = canonical.request_sha256;
+        intent.payload["provider_binding"] =
+            json!({"provider_generation":7,"binding_ref":"fixture-binding"});
         let mut done = intent.clone();
         done.id = Uuid::nil(); // The terminal follows the intent only in SQLite order.
         done.stage = "completed".into();
+        let core_exec = json!({"policy_decision":"allow_after_confirmation","dry_run":false});
+        let driver_exec = json!({"policy_decision":"allow_after_confirmation","dry_run":false,
+            "provenance":{"provider":"driver:mlt-video","provider_generation":7}});
+        let outer_id = "a".repeat(32);
+        let inner_id = "b".repeat(32);
+        let core_data = json!({"binding_ref":"fixture-binding","result":{
+            "request_id":inner_id,"ok":true,"command":"driver.mlt-video.project.close",
+            "data":{"closed":true},"execution":driver_exec,
+        }});
         done.payload["result"] = json!({
-            "data":{"closed":true},
-            "execution":{"policy_decision":"allow_after_confirmation","provenance":{"provider_generation":7}},
-            "provider_bound":{"original":{"execution":{"policy_decision":"allow_after_confirmation"}}}
+            "data":{"closed":true},"execution":driver_exec,"provenance_checked":true,
+            "provider_bound":{"outer_request_id":outer_id,"inner_request_id":inner_id,"original":{
+                "data":core_data,"execution":core_exec,"provenance_checked":true,
+                "original_envelope":{"request_id":outer_id,"command":"providers.execute_bound","ok":true,
+                    "data":core_data,"execution":core_exec}
+            }},
         });
 
         let incomplete =
@@ -677,6 +691,19 @@ mod tests {
         assert_eq!(
             status(&[intent.clone(), done.clone()]),
             Some(MltCloseDisposition::Closed)
+        );
+        let mut contradictory = done.clone();
+        contradictory.payload["result"]["provider_bound"]["original"]["data"]["result"]["ok"] =
+            json!(false);
+        assert_eq!(
+            status(&[intent.clone(), contradictory]),
+            Some(MltCloseDisposition::OutcomeUnknown)
+        );
+        let mut duplicate = done.clone();
+        duplicate.id = Uuid::now_v7();
+        assert_eq!(
+            status(&[intent.clone(), done.clone(), duplicate]),
+            Some(MltCloseDisposition::OutcomeUnknown)
         );
         let mut refused = done.clone();
         refused.stage = "failed_known".into();

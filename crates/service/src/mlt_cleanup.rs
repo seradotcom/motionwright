@@ -29,33 +29,58 @@ pub struct MltClosureProjection {
     pub disposition: Option<MltCloseDisposition>,
 }
 
-pub fn mlt_close_receipt_disposition(receipt: &ProductionReceipt) -> MltCloseDisposition {
-    let payload = &receipt.payload;
+fn confirmed_close(payload: &Value) -> bool {
+    let result = &payload["result"];
+    let bound = &result["provider_bound"];
+    let outer = &bound["original"];
+    let original_core = &outer["original_envelope"];
+    let nested = &outer["data"]["result"];
     let generation = payload
         .pointer("/native_source/provider_generation")
         .and_then(Value::as_u64);
+    let inner_id = bound["inner_request_id"].as_str();
+    let outer_id = bound["outer_request_id"].as_str();
+    generation.is_some()
+        && payload
+            .pointer("/provider_binding/provider_generation")
+            .and_then(Value::as_u64)
+            == generation
+        && outer["data"]["binding_ref"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+        && outer["data"]["binding_ref"] == payload["provider_binding"]["binding_ref"]
+        && outer_id.is_some_and(|id| lowercase_hex(id, 16))
+        && inner_id.is_some_and(|id| lowercase_hex(id, 16))
+        && outer_id != inner_id
+        && original_core["request_id"].as_str() == outer_id
+        && nested["request_id"].as_str() == inner_id
+        && original_core["command"] == json!("providers.execute_bound")
+        && nested["command"] == json!(CLOSE_COMMAND)
+        && original_core["ok"] == json!(true)
+        && nested["ok"] == json!(true)
+        && original_core["error"].is_null()
+        && nested["error"].is_null()
+        && original_core["data"] == outer["data"]
+        && original_core["execution"] == outer["execution"]
+        && result["provenance_checked"] == json!(true)
+        && outer["provenance_checked"] == json!(true)
+        && result["data"] == json!({"closed":true})
+        && result["data"] == nested["data"]
+        && result["execution"] == nested["execution"]
+        && [&outer["execution"], &nested["execution"]]
+            .iter()
+            .all(|exec| {
+                exec["policy_decision"] == json!("allow_after_confirmation")
+                    && exec["dry_run"] == json!(false)
+            })
+        && nested["execution"]["provenance"]["provider"] == json!("driver:mlt-video")
+        && nested["execution"]["provenance"]["provider_generation"].as_u64() == generation
+}
+
+pub fn mlt_close_receipt_disposition(receipt: &ProductionReceipt) -> MltCloseDisposition {
+    let payload = &receipt.payload;
     match receipt.stage.as_str() {
-        "completed"
-            if generation.is_some()
-                && payload
-                    .pointer("/result/execution/provenance/provider_generation")
-                    .and_then(Value::as_u64)
-                    == generation
-                && payload
-                    .pointer("/result/data/closed")
-                    .and_then(Value::as_bool)
-                    == Some(true)
-                && payload
-                    .pointer("/result/execution/policy_decision")
-                    .and_then(Value::as_str)
-                    == Some("allow_after_confirmation")
-                && payload
-                    .pointer("/result/provider_bound/original/execution/policy_decision")
-                    .and_then(Value::as_str)
-                    == Some("allow_after_confirmation") =>
-        {
-            MltCloseDisposition::Closed
-        }
+        "completed" if confirmed_close(payload) => MltCloseDisposition::Closed,
         "failed_known"
             if payload.pointer("/error/code").and_then(Value::as_str) == Some("PolicyDenied")
                 && payload
@@ -266,36 +291,48 @@ pub fn retained_mlt_close(
 
 type TimelineKey<'a> = (Uuid, u64, &'a str);
 
-struct CloseAttempt<'a> {
-    intent: &'a ProductionReceipt,
-    terminal: Option<&'a ProductionReceipt>,
-}
+type OrderedReceipt<'a> = (usize, &'a ProductionReceipt);
 
-impl<'a> CloseAttempt<'a> {
-    fn observe(&mut self, original_request: &str, receipt: &'a ProductionReceipt) {
-        if let Some(previous) = self.terminal {
-            if mlt_close_receipt_disposition(previous)
-                == MltCloseDisposition::ConfirmationUnavailable
-                && receipt.stage == "dispatching"
-                && receipt.request_id == format!("{original_request}:after:{}", previous.id)
-            {
-                self.intent = receipt;
-                self.terminal = None;
-            }
-        } else if self.intent.stage == "dispatching"
-            && receipt.stage != "dispatching"
-            && receipt.request_id == self.intent.request_id
+fn retained_disposition(
+    close_rows: &BTreeMap<&str, Vec<OrderedReceipt<'_>>>,
+    source: &RetainedMltClose,
+    start: &ProductionReceipt,
+    result: OrderedReceipt<'_>,
+) -> Option<MltCloseDisposition> {
+    let mut request = source.request_id.clone();
+    let mut prior = None;
+    for _ in 0..32 {
+        let Some(rows) = close_rows.get(request.as_str()) else {
+            return prior;
+        };
+        let [(intent_position, intent), (_, terminal)] = rows.as_slice() else {
+            return Some(MltCloseDisposition::OutcomeUnknown);
+        };
+        if *intent_position <= result.0
+            || intent.stage != "dispatching"
+            || intent.id == terminal.id
+            || [intent, terminal].iter().any(|receipt| {
+                receipt.project_id != result.1.project_id
+                    || receipt.generation != result.1.generation
+                    || receipt.revision != result.1.revision
+                    || receipt.command != CLOSE_COMMAND
+                    || receipt.request_sha256 != source.request_sha256
+                    || receipt.payload["mutation"].as_bool() != Some(true)
+                    || receipt.payload["result_receipt"] != json!(source.result_id)
+                    || receipt.payload["native_source"] != result.1.payload[TIMELINE_SOURCE]
+                    || receipt.payload["start_request"].as_str() != Some(start.request_id.as_str())
+            })
         {
-            self.terminal = Some(receipt);
+            return Some(MltCloseDisposition::OutcomeUnknown);
         }
+        let disposition = mlt_close_receipt_disposition(terminal);
+        if disposition != MltCloseDisposition::ConfirmationUnavailable {
+            return Some(disposition);
+        }
+        prior = Some(disposition);
+        request = format!("{}:after:{}", source.request_id, terminal.id);
     }
-
-    fn disposition(&self) -> MltCloseDisposition {
-        self.terminal.map_or(
-            MltCloseDisposition::OutcomeUnknown,
-            mlt_close_receipt_disposition,
-        )
-    }
+    Some(MltCloseDisposition::OutcomeUnknown)
 }
 
 pub(crate) struct MltClosures<'a> {
@@ -305,29 +342,31 @@ pub(crate) struct MltClosures<'a> {
 
 impl<'a> MltClosures<'a> {
     pub(crate) fn new(receipts: &'a [ProductionReceipt]) -> Self {
-        type TimelineRows<'a> = (
-            Vec<(usize, &'a ProductionReceipt)>,
-            Vec<(usize, &'a ProductionReceipt)>,
-        );
+        type TimelineRows<'a> = (Vec<OrderedReceipt<'a>>, Vec<OrderedReceipt<'a>>);
         let mut rows: BTreeMap<TimelineKey<'a>, TimelineRows<'a>> = BTreeMap::new();
+        let mut close_rows: BTreeMap<&str, Vec<OrderedReceipt<'a>>> = BTreeMap::new();
         for (position, receipt) in receipts.iter().enumerate() {
-            let (root, start) = match receipt.command.as_str() {
-                START_COMMAND => (receipt.request_id.strip_suffix(START_SUFFIX), true),
-                RESULT_COMMAND => (receipt.request_id.strip_suffix(RESULT_SUFFIX), false),
-                _ => continue,
+            let list = if receipt.request_id.starts_with("mlt-owner-close:") {
+                close_rows.entry(&receipt.request_id).or_default()
+            } else {
+                let (root, is_start) = match receipt.command.as_str() {
+                    START_COMMAND => (receipt.request_id.strip_suffix(START_SUFFIX), true),
+                    RESULT_COMMAND => (receipt.request_id.strip_suffix(RESULT_SUFFIX), false),
+                    _ => continue,
+                };
+                let Some(root) = root else { continue };
+                let entry = rows
+                    .entry((receipt.generation, receipt.revision, root))
+                    .or_default();
+                if is_start { &mut entry.0 } else { &mut entry.1 }
             };
-            let Some(root) = root else { continue };
-            let entry = rows
-                .entry((receipt.generation, receipt.revision, root))
-                .or_default();
-            let list = if start { &mut entry.0 } else { &mut entry.1 };
             if list.len() < 3 {
                 list.push((position, receipt));
             }
         }
 
         let mut timelines = BTreeMap::new();
-        let mut result_keys = BTreeMap::new();
+        let mut dispositions = BTreeMap::new();
         for (key, (start, result)) in rows {
             let (
                 [(_, start_intent), (start_position, start_terminal)],
@@ -356,70 +395,19 @@ impl<'a> MltClosures<'a> {
             ) else {
                 continue;
             };
-            result_keys.insert(
-                source.result_id,
-                (key, *terminal_position, *result_terminal, *start_intent),
-            );
+            if let Some(disposition) = retained_disposition(
+                &close_rows,
+                &source,
+                start_intent,
+                (*terminal_position, result_terminal),
+            ) {
+                dispositions.insert(source.result_id, disposition);
+            }
             timelines.insert(key, source);
-        }
-
-        let mut attempts = BTreeMap::<Uuid, CloseAttempt<'a>>::new();
-        let mut unordered = BTreeSet::new();
-        for (position, receipt) in receipts.iter().enumerate() {
-            if receipt.command != CLOSE_COMMAND
-                || receipt.payload["mutation"].as_bool() != Some(true)
-            {
-                continue;
-            }
-            let Some(id) = receipt.payload["result_receipt"]
-                .as_str()
-                .and_then(|value| Uuid::parse_str(value).ok())
-            else {
-                continue;
-            };
-            let Some((key, result_position, terminal, start)) = result_keys.get(&id) else {
-                continue;
-            };
-            let source = &timelines[key];
-            if receipt.project_id != terminal.project_id
-                || receipt.generation != terminal.generation
-                || receipt.revision != terminal.revision
-                || receipt.request_sha256 != source.request_sha256
-                || receipt.payload["native_source"] != terminal.payload[TIMELINE_SOURCE]
-                || receipt.payload["start_request"].as_str() != Some(start.request_id.as_str())
-            {
-                continue;
-            }
-            if position <= *result_position {
-                if receipt.request_id == source.request_id {
-                    unordered.insert(id);
-                }
-                continue;
-            }
-            if let Some(attempt) = attempts.get_mut(&id) {
-                attempt.observe(&source.request_id, receipt);
-            } else if receipt.request_id == source.request_id {
-                // An orphan terminal leaves UNKNOWN until the exact intent can be proven.
-                attempts.insert(
-                    id,
-                    CloseAttempt {
-                        intent: receipt,
-                        terminal: None,
-                    },
-                );
-            }
         }
         Self {
             timelines,
-            dispositions: attempts
-                .into_iter()
-                .map(|(id, attempt)| (id, attempt.disposition()))
-                .chain(
-                    unordered
-                        .into_iter()
-                        .map(|id| (id, MltCloseDisposition::OutcomeUnknown)),
-                )
-                .collect(),
+            dispositions,
         }
     }
 
