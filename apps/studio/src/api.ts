@@ -547,11 +547,68 @@ export class OtioBridgePreflightError extends Error {
   }
 }
 
-function rethrowOtioBridgeError(reason: unknown): never {
+type OtioBridgeOperation = "preview" | "export";
+
+export interface OtioBridgeUnsettled {
+  schema: "motionwright.otio-bridge-unsettled/1";
+  certainty: "outcome_unknown";
+  project_id: string;
+  generation: string;
+  revision: number;
+  operation: OtioBridgeOperation;
+  attempt_id: string;
+  workspace_name: string;
+  message: string;
+}
+
+export class OtioBridgeUnsettledError extends Error {
+  constructor(readonly original: OtioBridgeUnsettled) {
+    super("The original OTIO process closure is unconfirmed.");
+    this.name = "OtioBridgeUnsettledError";
+  }
+}
+
+function parseUnsettledOtioBridge(value: unknown, project: Project): OtioBridgeUnsettled | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as Partial<OtioBridgeUnsettled>;
+  if (Object.keys(item).length !== 9 || item.schema !== "motionwright.otio-bridge-unsettled/1"
+    || item.certainty !== "outcome_unknown" || item.project_id !== project.id
+    || item.generation !== project.generation || typeof item.revision !== "number"
+    || !Number.isSafeInteger(item.revision) || item.revision < 0 || item.revision > project.revision
+    || (item.operation !== "preview" && item.operation !== "export")
+    || typeof item.attempt_id !== "string"
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(item.attempt_id)
+    || typeof item.workspace_name !== "string" || typeof item.message !== "string") return null;
+  const prefix = ".motionwright-otio-" + item.operation + "-";
+  if (!item.workspace_name.startsWith(prefix)
+    || !/^[A-Za-z0-9]{1,32}$/.test(item.workspace_name.slice(prefix.length))) return null;
+  return item as OtioBridgeUnsettled;
+}
+
+function rethrowOtioBridgeError(reason: unknown, project?: Project, operation?: OtioBridgeOperation): never {
   if (typeof reason === "string" && reason.startsWith(OTIO_BRIDGE_PREFLIGHT)) {
     throw new OtioBridgePreflightError(reason.slice(OTIO_BRIDGE_PREFLIGHT.length));
   }
+  const original = project && parseUnsettledOtioBridge(reason, project);
+  if (original && original.operation === operation) throw new OtioBridgeUnsettledError(original);
   throw reason;
+}
+
+export async function readOtioBridgeStatus(project: Project): Promise<OtioBridgeUnsettled[]> {
+  if (!isTauri()) throw new Error("Reading retained OTIO attempts requires Motionwright desktop.");
+  const result = await invoke<unknown>("read_otio_bridge_status", {
+    request: { project_id: project.id, generation: project.generation, revision: project.revision },
+  });
+  if (!Array.isArray(result) || result.length > 2) throw new Error("Retained OTIO status is invalid.");
+  const attempts = result.map(item => {
+    const original = parseUnsettledOtioBridge(item, project);
+    if (!original) throw new Error("Retained OTIO status belongs to a different saved project.");
+    return original;
+  });
+  if (new Set(attempts.map(item => item.operation)).size !== attempts.length) {
+    throw new Error("Retained OTIO status has duplicate attempts.");
+  }
+  return attempts;
 }
 
 /** Produce the real first-party OTIO media capsule with a single locally
@@ -595,7 +652,7 @@ export async function exportPortableOtioMediaBundle(
       authorized: true, redistributable: true, allow_synthetic: input.allow_synthetic,
       bindings, effect_grant: grant.token,
     },
-  }).catch(rethrowOtioBridgeError);
+  }).catch(reason => rethrowOtioBridgeError(reason, project, "export"));
   if (!receipt || receipt.path !== destination
       || !/^[0-9a-f]{64}$/.test(receipt.source_project_sha256)
       || receipt.media_refs_verified !== bindings.length
@@ -675,7 +732,7 @@ export async function previewInstalledOtioMediaCut(
       ...(received === undefined ? {} : { received_file: received }),
       effect_grant: grant.token,
     },
-  }).catch(rethrowOtioBridgeError);
+  }).catch(reason => rethrowOtioBridgeError(reason, project, "preview"));
   if (!response || response.input_profile !== (received === undefined
         ? "metadata-preserving-otio" : "kdenlive-otio-pair")
       || !/^[0-9a-f]{64}$/.test(response.edited_otio_sha256)

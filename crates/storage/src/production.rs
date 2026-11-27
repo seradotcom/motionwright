@@ -42,6 +42,22 @@ pub struct ProductionReceipt {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OtioBridgeOperation {
+    Preview,
+    Export,
+}
+
+impl OtioBridgeOperation {
+    pub fn command(self) -> &'static str {
+        match self {
+            Self::Preview => "motionwright.otio-desktop-preview",
+            Self::Export => "motionwright.otio-desktop-export",
+        }
+    }
+}
+
 fn bounded_token(value: &str, max: usize, label: &str) -> Result<()> {
     if value.is_empty() || value.len() > max || value.chars().any(char::is_control) {
         return Err(StorageError::Domain(DomainError::Invalid(format!(
@@ -165,6 +181,45 @@ fn query_receipts(
         result.push(decode_receipt(row?)?);
     }
     Ok(result)
+}
+
+fn latest_otio_bridge_record(
+    conn: &rusqlite::Connection,
+    project_id: Uuid,
+    generation: Uuid,
+    command: &str,
+) -> Result<Option<ProductionReceipt>> {
+    Ok(query_receipts(
+        conn,
+        "SELECT r.receipt_id,r.project_id,r.generation,r.revision,r.request_id,
+                r.request_sha256,r.command,r.stage,r.payload_json,r.created_at
+         FROM production_receipts AS r
+         JOIN production_receipt_order AS o ON o.receipt_id=r.receipt_id
+         WHERE r.project_id=?1 AND r.generation=?2 AND r.command=?3
+         ORDER BY o.sequence DESC LIMIT 1",
+        params![project_id.to_string(), generation.to_string(), command],
+    )?
+    .pop())
+}
+
+fn validate_otio_bridge_transition(
+    conn: &rusqlite::Connection,
+    input: &ProductionReceiptInput,
+) -> Result<()> {
+    let latest =
+        latest_otio_bridge_record(conn, input.project_id, input.generation, &input.command)?;
+    match (input.stage.as_str(), latest) {
+        ("dispatching", None) => Ok(()),
+        ("dispatching", Some(receipt)) if receipt.stage == "bridge_stopped" => Ok(()),
+        ("bridge_stopped" | "outcome_unknown", Some(receipt))
+            if receipt.request_id == input.request_id
+                && receipt.stage == "dispatching"
+                && receipt.payload == input.payload =>
+        {
+            Ok(())
+        }
+        _ => Err(StorageError::RequestReuse),
+    }
 }
 
 pub(super) fn request_history(
@@ -574,6 +629,12 @@ impl Store {
                 actual: current.revision,
             });
         }
+        if [OtioBridgeOperation::Preview, OtioBridgeOperation::Export]
+            .iter()
+            .any(|operation| operation.command() == input.command)
+        {
+            validate_otio_bridge_transition(&tx, &input)?;
+        }
         if is_recovery_command(&input.command) {
             let history = request_history(&tx, input.project_id, &input.request_id)?;
             let head = recovery_head(&history)?.ok_or(StorageError::RequestReuse)?;
@@ -591,6 +652,25 @@ impl Store {
         let receipt = append_record(&tx, input, &current, None)?;
         tx.commit()?;
         Ok(receipt)
+    }
+
+    /// Observe the existing OTIO process fence for this project generation.
+    pub fn unsettled_otio_bridge(
+        &self,
+        project_id: Uuid,
+        generation: Uuid,
+        operation: OtioBridgeOperation,
+    ) -> Result<Option<ProductionReceipt>> {
+        let tx = self.conn.unchecked_transaction()?;
+        let project = super::load_project_from_row(&tx, project_id)?;
+        if project.generation != generation {
+            return Err(StorageError::GenerationConflict);
+        }
+        super::validate_production_receipt_order_integrity(&tx, Some(project_id))?;
+        let pending = latest_otio_bridge_record(&tx, project_id, generation, operation.command())?
+            .filter(|receipt| receipt.stage != "bridge_stopped");
+        tx.commit()?;
+        Ok(pending)
     }
 
     /// Read only the original dispatch/terminal pair in one SQLite snapshot.

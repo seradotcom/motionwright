@@ -77,7 +77,7 @@ pub fn capture_portable_source(path: &Path, limit: u64) -> Result<Vec<u8>> {
     Ok(data)
 }
 pub use production::{
-    ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark,
+    OtioBridgeOperation, ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark,
     voice_alignment_receipt_sha256_v1,
 };
 pub use project_creation::{ProjectCreationIntent, ProjectCreationOutcome};

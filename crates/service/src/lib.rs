@@ -86,11 +86,11 @@ pub use motionwright_storage::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, BlobDescriptor,
     BundleFingerprint, BundleImportCommit, BundleImportPlan, BundleImportRecoveryRequest,
     DerivedCacheHit, DerivedCacheRecord, FileImportIntent, ImportPlan, InspectedProjectBundle,
-    PortableBlob, ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark,
-    ProjectBackup, ProjectBundleManifest, ProjectCreationIntent, ProjectCreationOutcome,
-    ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary, RenderWindowCacheKey,
-    RenderWindowEvictionDrainReport, RenderWindowPurgeReport, RootBudgetUnits,
-    RootDispatchBudgetInput, RootDispatchBudgetOutcome, RootOperationBudget,
+    OtioBridgeOperation, PortableBlob, ProductionReceipt, ProductionReceiptInput,
+    ProductionReceiptWatermark, ProjectBackup, ProjectBundleManifest, ProjectCreationIntent,
+    ProjectCreationOutcome, ProjectCursor, ProjectEvent, ProjectPage, ProjectSummary,
+    RenderWindowCacheKey, RenderWindowEvictionDrainReport, RenderWindowPurgeReport,
+    RootBudgetUnits, RootDispatchBudgetInput, RootDispatchBudgetOutcome, RootOperationBudget,
     RootOperationBudgetInput,
 };
 use parking_lot::Mutex;
@@ -1246,6 +1246,17 @@ impl StudioService {
         input: ProductionReceiptInput,
     ) -> StorageResult<ProductionReceipt> {
         self.store.lock().append_production_receipt(input)
+    }
+
+    pub fn unsettled_otio_bridge(
+        &self,
+        project_id: Uuid,
+        generation: Uuid,
+        operation: OtioBridgeOperation,
+    ) -> StorageResult<Option<ProductionReceipt>> {
+        self.store
+            .lock()
+            .unsettled_otio_bridge(project_id, generation, operation)
     }
 
     pub fn original_production_receipt_pair(

@@ -100,6 +100,7 @@
     "allow-export-otio-source-snapshot",
     "allow-export-portable-otio-media-bundle",
     "allow-check-otio-media-runtime",
+    "allow-read-otio-bridge-status",
     "allow-choose-otio-media-bundle-folder",
     "allow-preview-otio-media-cut",
     "allow-choose-portable-project-source",

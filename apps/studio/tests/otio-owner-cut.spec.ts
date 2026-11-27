@@ -157,12 +157,25 @@ test("runtime checks and folder choices preserve the scoped OTIO inspection rule
         runtime.__OTIO_PREVIEW_GRANTS__++;
         return {token: "synthetic-grant"};
       }
+      if (name === "read_otio_bridge_status") {
+        const request = args?.request as {project_id: string; generation: string; revision: number};
+        if (request.project_id !== boot.project.id || request.generation !== boot.project.generation ||
+            request.revision !== boot.project.revision) throw new Error("Status read used another saved project");
+        return JSON.parse(sessionStorage.getItem("synthetic-pending-otio") ?? "[]");
+      }
       if (name === "preview_otio_media_cut") {
         runtime.__OTIO_INSPECTIONS__++;
         if (runtime.__OTIO_INSPECTIONS__ === 1) {
           throw "OTIO bridge preflight unavailable: Python 3 or ffprobe is missing.";
         }
-        throw new Error("The original inspection outcome is unknown.");
+        const original = {
+          schema: "motionwright.otio-bridge-unsettled/1", certainty: "outcome_unknown",
+          operation: "preview", project_id: boot.project.id, generation: boot.project.generation,
+          revision: boot.project.revision, attempt_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+          workspace_name: ".motionwright-otio-preview-original", message: "Confirmed only as unsettled.",
+        };
+        sessionStorage.setItem("synthetic-pending-otio", JSON.stringify([original]));
+        throw original;
       }
       throw new Error("Synthetic desktop did not implement " + name);
     }};
@@ -195,7 +208,17 @@ test("runtime checks and folder choices preserve the scoped OTIO inspection rule
   await expect(error).toContainText("Python 3 or ffprobe is missing.");
   await expect(inspect).toBeEnabled();
   await inspect.click();
-  await expect(error).toContainText("The original inspection outcome is unknown.");
+  await expect(error).toContainText(".motionwright-otio-preview-original");
+  await expect(inspect).toBeDisabled();
+  await folder.fill("/owner/another-bundle");
   await expect(inspect).toBeDisabled();
   expect(await page.evaluate(() => Reflect.get(window, "__OTIO_INSPECTIONS__"))).toBe(2);
+
+  await openStation(page);
+  await page.getByRole("button", {name: "Read retained OTIO attempts", exact: true}).click();
+  await expect(error).toContainText("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+  await folder.fill("/owner/another-bundle");
+  await expect(inspect).toBeDisabled();
+  expect(await page.evaluate(() => Reflect.get(window, "__OTIO_PREVIEW_GRANTS__"))).toBe(0);
+  expect(await page.evaluate(() => Reflect.get(window, "__OTIO_INSPECTIONS__"))).toBe(0);
 });

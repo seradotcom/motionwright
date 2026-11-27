@@ -3,8 +3,8 @@ import { ArrowRightLeft, FileCheck2, ShieldAlert } from "lucide-react";
 import type { Change, Project } from "./types";
 import {
   checkOtioMediaRuntime, chooseBundleExportDestination, chooseOtioMediaBundleFolder, exportPortableOtioMediaBundle,
-  OtioBridgePreflightError, previewInstalledOtioMediaCut,
-  type OtioOriginalMediaExportBinding,
+  OtioBridgePreflightError, OtioBridgeUnsettledError, previewInstalledOtioMediaCut, readOtioBridgeStatus,
+  type OtioBridgeUnsettled, type OtioOriginalMediaExportBinding,
 } from "./api";
 import {
   emptyOtioMediaBinding, inspectOtioCutPreview, readOtioCutProposalFile,
@@ -56,13 +56,22 @@ export default function OtioCutReviewWorkbench({
   const [status,setStatus]=useState<string|null>(null);
   const [checkingRuntime,setCheckingRuntime]=useState(false);
   const [runtimeCheck,setRuntimeCheck]=useState<{ok:boolean;message:string}|null>(null);
+  const [checkingBridgeStatus,setCheckingBridgeStatus]=useState(false);
+  const [retainedBridge,setRetainedBridge]=useState<OtioBridgeUnsettled[]>([]);
+  const pendingBridge=retainedBridge.filter(item=>item.project_id===project.id&&item.generation===project.generation);
+  const exportBlocked=pendingBridge.some(item=>item.operation==="export");
+  const previewBlocked=pendingBridge.some(item=>item.operation==="preview");
+  const retainBridge=(original:OtioBridgeUnsettled)=>{
+    setRetainedBridge(current=>[...current.filter(item=>item.project_id===original.project_id
+      &&item.generation===original.generation&&item.operation!==original.operation),original]);
+  };
   const absolute=otioHasAbsoluteAnchors(project);
-  const operationBusy=busy||working||fileLoading||bridgeInspecting||exportingBundle||pickingBundle||checkingRuntime;
+  const operationBusy=busy||working||fileLoading||bridgeInspecting||exportingBundle||pickingBundle||checkingRuntime||checkingBridgeStatus;
   useEffect(()=>{
     fileAttempt.current++;
     setSelected(null);setLosses(false);setAnchors(false);
     setStatus(null);setError(null);setWorking(false);setFileLoading(false);
-    setBridgeInspecting(false);setPickingBundle(false);
+    setBridgeInspecting(false);setPickingBundle(false);setCheckingBridgeStatus(false);
     setExportingBundle(false);
     setExportAttempted(false);setExportRights(false);
   },[scope]);
@@ -78,7 +87,7 @@ export default function OtioCutReviewWorkbench({
   };
   const exportOriginalMediaBundle=async()=>{
     if(!desktopMode||operationBusy
-      ||exportAttempted||!exportDestination.trim()||!exportReviewer.trim()
+      ||exportAttempted||exportBlocked||!exportDestination.trim()||!exportReviewer.trim()
       ||!mediaOwner.trim()||!mediaLicense.trim()||!exportRights
       ||!exportBindings.length)return;
     const selectedScope=scope;
@@ -100,7 +109,9 @@ export default function OtioCutReviewWorkbench({
         ". Open its timeline.otio in your trusted editor, save the edited cut as edited.otio inside that folder, then choose Preview edited OTIO with verified media. MissingReferences remain unbound. No editor was launched or publication approved.");
     }catch(reason){
       if(latest.current===selectedScope&&fileAttempt.current===attempt){
-        if(reason instanceof OtioBridgePreflightError){
+        if(reason instanceof OtioBridgeUnsettledError){
+          retainBridge(reason.original);
+        }else if(reason instanceof OtioBridgePreflightError){
           setExportAttempted(false);
           setError(reason.message);
         }else{
@@ -129,6 +140,23 @@ export default function OtioCutReviewWorkbench({
       setCheckingRuntime(false);
     }
   };
+  const checkRetainedBridge=async()=>{
+    if(!desktopMode||operationBusy)return;
+    const attempt=++fileAttempt.current;
+    const selectedScope=scope;
+    setCheckingBridgeStatus(true);setError(null);setStatus(null);
+    try{
+      const original=await readOtioBridgeStatus(project);
+      if(fileAttempt.current!==attempt||latest.current!==selectedScope)return;
+      setRetainedBridge(original);
+      if(original.length===0)setStatus("There are no unsettled OTIO attempts for this project.");
+    }catch(reason){
+      if(fileAttempt.current===attempt&&latest.current===selectedScope)
+        setError(reason instanceof Error?reason.message:String(reason));
+    }finally{
+      if(fileAttempt.current===attempt&&latest.current===selectedScope)setCheckingBridgeStatus(false);
+    }
+  };
   const changeExportDestination=(path:string)=>{
     setExportDestination(path);setExportAttempted(false);setSelected(null);setStatus(null);setError(null);
   };
@@ -154,7 +182,7 @@ export default function OtioCutReviewWorkbench({
   const previewOwnerMediaCut=async()=>{
     if(!desktopMode||operationBusy
        ||!bundlePath.trim()||!editedCut.trim()
-       ||(cutOrigin==="kdenlive"&&!receivedCut.trim())||inspectionAttempted)return;
+       ||(cutOrigin==="kdenlive"&&!receivedCut.trim())||inspectionAttempted||previewBlocked)return;
     const selectedScope=scope;
     const attempt=++fileAttempt.current;
     setSelected(null);setRaw("");setLosses(false);setAnchors(false);
@@ -174,7 +202,8 @@ export default function OtioCutReviewWorkbench({
     }catch(reason){
       if(latest.current===selectedScope&&fileAttempt.current===attempt){
         if(reason instanceof OtioBridgePreflightError)inspectedSelections.current.delete(inspectionKey);
-        setError(reason instanceof Error?reason.message:String(reason));
+        if(reason instanceof OtioBridgeUnsettledError)retainBridge(reason.original);
+        else setError(reason instanceof Error?reason.message:String(reason));
       }
     }finally{
       if(latest.current===selectedScope&&fileAttempt.current===attempt)setBridgeInspecting(false);
@@ -249,6 +278,15 @@ export default function OtioCutReviewWorkbench({
         onClick={()=>void checkRuntime()}>
         {checkingRuntime?"Checking OTIO runtime files…":"Check OTIO runtime files"}
       </button>
+      <button type="button" className="button" disabled={operationBusy}
+        onClick={()=>void checkRetainedBridge()}>
+        {checkingBridgeStatus?"Reading retained OTIO attempts…":"Read retained OTIO attempts"}
+      </button>
+      {pendingBridge.map(item=><p key={item.attempt_id} role="alert" className="portable-error">
+        {item.operation==="preview"?"OTIO preview":"OTIO export"} is paused. The original process closure is unconfirmed.
+        {" "}Attempt <code>{item.attempt_id}</code> from saved r{item.revision}.
+        {" "}Its diagnostic folder is <code>{item.workspace_name}</code> in the original working location.
+      </p>)}
       {runtimeCheck&&(runtimeCheck.ok
         ? <p role="status">{runtimeCheck.message}</p>
         : <p role="alert" className="portable-error">{runtimeCheck.message}</p>)}
@@ -370,7 +408,7 @@ export default function OtioCutReviewWorkbench({
         Explicitly permit synthetic or test-origin video inputs.
       </label>
       <button type="button" className="button button-primary"
-        disabled={!desktopMode||operationBusy||exportAttempted||!exportRights
+        disabled={!desktopMode||operationBusy||exportAttempted||exportBlocked||!exportRights
           ||!exportDestination.trim()||!exportReviewer.trim()
           ||!mediaOwner.trim()||!mediaLicense.trim()||videoAssets.length===0
           ||exportBindings.length===0||exportBindings.some(binding=>
@@ -454,7 +492,7 @@ export default function OtioCutReviewWorkbench({
       <button type="button" className="button"
         disabled={!desktopMode||operationBusy
           ||!bundlePath.trim()||!editedCut.trim()
-          ||(cutOrigin==="kdenlive"&&!receivedCut.trim())||inspectionAttempted}
+          ||(cutOrigin==="kdenlive"&&!receivedCut.trim())||inspectionAttempted||previewBlocked}
         onClick={()=>void previewOwnerMediaCut()}>
         <FileCheck2 size={14} aria-hidden="true"/>
         {bridgeInspecting?"Verifying original OTIO media…":"Preview edited OTIO with verified media"}

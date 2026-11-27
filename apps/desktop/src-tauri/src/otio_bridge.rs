@@ -4,7 +4,9 @@
 //! ordinary human-reviewed StudioService Change can modify the project.
 use super::effect_grants::{EffectGrantRegistry, EffectKind, EffectScope};
 use motionwright_domain::{OtioEditPreview, Project};
-use motionwright_service::StudioService;
+use motionwright_service::{
+    OtioBridgeOperation, ProductionReceipt, ProductionReceiptInput, StorageError, StudioService,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -423,12 +425,227 @@ fn stage_bridge_sources(temp: &Path) -> Result<(PathBuf, PathBuf), String> {
 
 const UNCERTAIN_BRIDGE_EXIT: &str = "The OTIO process-tree cleanup could not be proven. Do not repeat the operation while its outcome is uncertain.";
 
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum OtioBridgeError {
+    Message(String),
+    Unsettled(OtioBridgeUnsettled),
+}
+
+#[derive(Debug, Serialize)]
+pub struct OtioBridgeUnsettled {
+    schema: &'static str,
+    certainty: &'static str,
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    operation: OtioBridgeOperation,
+    attempt_id: Uuid,
+    workspace_name: String,
+    message: &'static str,
+}
+
+impl From<String> for OtioBridgeError {
+    fn from(message: String) -> Self {
+        Self::Message(message)
+    }
+}
+
+impl From<&str> for OtioBridgeError {
+    fn from(message: &str) -> Self {
+        Self::Message(message.to_owned())
+    }
+}
+
+impl From<OtioBridgeError> for String {
+    fn from(error: OtioBridgeError) -> Self {
+        match error {
+            OtioBridgeError::Message(message) => message,
+            OtioBridgeError::Unsettled(original) => original.message.into(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct BridgeWorkspace {
+    attempt_id: Uuid,
+    workspace_name: String,
+}
+
+fn workspace_prefix(operation: OtioBridgeOperation) -> &'static str {
+    match operation {
+        OtioBridgeOperation::Preview => ".motionwright-otio-preview-",
+        OtioBridgeOperation::Export => ".motionwright-otio-export-",
+    }
+}
+
+fn valid_workspace(operation: OtioBridgeOperation, workspace_name: &str) -> bool {
+    workspace_name
+        .strip_prefix(workspace_prefix(operation))
+        .is_some_and(|suffix| {
+            !suffix.is_empty()
+                && suffix.len() <= 32
+                && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
+}
+
+fn unsettled_bridge_details(
+    receipt: ProductionReceipt,
+    operation: OtioBridgeOperation,
+) -> Result<OtioBridgeUnsettled, String> {
+    let metadata: BridgeWorkspace = serde_json::from_value(receipt.payload)
+        .map_err(|_| "The original OTIO workspace identity could not be read.")?;
+    if receipt.request_id != format!("otio-{}", metadata.attempt_id)
+        || metadata.attempt_id.is_nil()
+        || !valid_workspace(operation, &metadata.workspace_name)
+    {
+        return Err("The original OTIO workspace identity could not be verified.".into());
+    }
+    Ok(OtioBridgeUnsettled {
+        schema: "motionwright.otio-bridge-unsettled/1",
+        certainty: "outcome_unknown",
+        project_id: receipt.project_id,
+        generation: receipt.generation,
+        revision: receipt.revision,
+        operation,
+        attempt_id: metadata.attempt_id,
+        workspace_name: metadata.workspace_name,
+        message: UNCERTAIN_BRIDGE_EXIT,
+    })
+}
+
+pub fn unsettled_bridge_operations(
+    service: &StudioService,
+    project_id: Uuid,
+    generation: Uuid,
+) -> Result<Vec<OtioBridgeUnsettled>, String> {
+    let mut pending = Vec::new();
+    for operation in [OtioBridgeOperation::Preview, OtioBridgeOperation::Export] {
+        if let Some(receipt) = service
+            .unsettled_otio_bridge(project_id, generation, operation)
+            .map_err(|_| "The original OTIO process state could not be checked.")?
+        {
+            pending.push(unsettled_bridge_details(receipt, operation)?);
+        }
+    }
+    Ok(pending)
+}
+
+fn require_bridge_idle(
+    service: &StudioService,
+    project: &Project,
+    operation: OtioBridgeOperation,
+) -> Result<(), OtioBridgeError> {
+    if let Some(receipt) = service
+        .unsettled_otio_bridge(project.id, project.generation, operation)
+        .map_err(|_| "The original OTIO process state could not be checked.")?
+    {
+        return Err(OtioBridgeError::Unsettled(unsettled_bridge_details(
+            receipt, operation,
+        )?));
+    }
+    Ok(())
+}
+
+enum BridgeExecutionFailure {
+    Stopped(String),
+    Unsettled,
+}
+
+impl From<String> for BridgeExecutionFailure {
+    fn from(message: String) -> Self {
+        Self::Stopped(message)
+    }
+}
+
+impl From<&str> for BridgeExecutionFailure {
+    fn from(message: &str) -> Self {
+        Self::Stopped(message.to_owned())
+    }
+}
+
+/// Retain the dispatch before invoking a process, and release the workspace
+/// only after observing that its process tree stopped and committing that fact.
+fn run_tracked_bridge(
+    service: &StudioService,
+    project: &Project,
+    operation: OtioBridgeOperation,
+    temp: &mut tempfile::TempDir,
+    run: impl FnOnce() -> Result<(), BridgeExecutionFailure>,
+) -> Result<(), OtioBridgeError> {
+    let workspace_name = temp
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| valid_workspace(operation, name))
+        .ok_or("The isolated OTIO workspace has an invalid name.")?;
+    let metadata = BridgeWorkspace {
+        attempt_id: Uuid::now_v7(),
+        workspace_name: workspace_name.into(),
+    };
+    let payload = serde_json::to_value(&metadata).map_err(|_| refused())?;
+    let request_sha256 = sha(&serde_json::to_vec(&(
+        project.id,
+        project.generation,
+        project.revision,
+        operation.command(),
+        &metadata,
+    ))
+    .map_err(|_| refused())?);
+    let mut record = ProductionReceiptInput {
+        project_id: project.id,
+        generation: project.generation,
+        revision: project.revision,
+        request_id: format!("otio-{}", metadata.attempt_id),
+        request_sha256,
+        command: operation.command().into(),
+        stage: "dispatching".into(),
+        payload,
+    };
+    let original = match service.append_production_receipt(record.clone()) {
+        Ok(receipt) => receipt,
+        Err(StorageError::RequestReuse) => {
+            require_bridge_idle(service, project, operation)?;
+            return Err("The OTIO process state changed before dispatch.".into());
+        }
+        Err(_) => {
+            return Err(
+                "The OTIO dispatch could not be retained. The bridge did not start.".into(),
+            );
+        }
+    };
+
+    temp.disable_cleanup(true);
+    let outcome = run();
+    let stopped = !matches!(outcome, Err(BridgeExecutionFailure::Unsettled));
+    record.stage = if stopped {
+        "bridge_stopped"
+    } else {
+        "outcome_unknown"
+    }
+    .into();
+    if service.append_production_receipt(record).is_err() || !stopped {
+        return Err(OtioBridgeError::Unsettled(unsettled_bridge_details(
+            original, operation,
+        )?));
+    }
+    temp.disable_cleanup(false);
+    match outcome {
+        Ok(()) => Ok(()),
+        Err(BridgeExecutionFailure::Stopped(message)) => Err(message.into()),
+        Err(BridgeExecutionFailure::Unsettled) => Err(OtioBridgeError::Unsettled(
+            unsettled_bridge_details(original, operation)?,
+        )),
+    }
+}
+
 fn run_bridge(
     runtime: &BridgeRuntime,
     scripts: &Path,
     bridge: &Path,
     arguments: &[OsString],
-) -> Result<(), String> {
+) -> Result<(), BridgeExecutionFailure> {
     #[cfg(unix)]
     {
         // Unix launches by path. Recheck filesystem protection immediately before launch.
@@ -482,22 +699,24 @@ fn run_bridge(
             BridgeProcessError::Start(error) => format!(
                 "The protected OTIO bridge process could not start ({}).",
                 error.kind()
-            ),
+            )
+            .into(),
             BridgeProcessError::Exit(code) => format!(
                 "The protected OTIO bridge exited with status {code}. {}",
                 refused()
-            ),
+            )
+            .into(),
             BridgeProcessError::TimedOut => {
                 "The protected OTIO media inspection timed out and the entire process tree stopped."
                     .into()
             }
-            BridgeProcessError::Uncertain => UNCERTAIN_BRIDGE_EXIT.into(),
+            BridgeProcessError::Uncertain => BridgeExecutionFailure::Unsettled,
         })
     }
     #[cfg(not(any(unix, windows)))]
     {
         let _ = (runtime, argv, workspace, stderr);
-        Err(refused())
+        Err(refused().into())
     }
 }
 
@@ -507,7 +726,7 @@ fn run_bridge_unix(
     argv: &[&std::ffi::OsStr],
     workspace: &Path,
     stderr: fs::File,
-) -> Result<(), String> {
+) -> Result<(), BridgeExecutionFailure> {
     use std::{
         os::unix::process::CommandExt,
         process::{Command, Stdio},
@@ -533,14 +752,14 @@ fn run_bridge_unix(
     let group = i32::try_from(child.id())
         .ok()
         .filter(|id| *id > 1)
-        .ok_or_else(|| UNCERTAIN_BRIDGE_EXIT.to_string())?;
+        .ok_or(BridgeExecutionFailure::Unsettled)?;
     loop {
         match child.try_wait() {
             Ok(Some(status)) if group_empty(group) => {
                 return if status.success() {
                     Ok(())
                 } else {
-                    Err(refused())
+                    Err(refused().into())
                 };
             }
             Ok(None) if started.elapsed() < DEADLINE => thread::sleep(Duration::from_millis(40)),
@@ -548,12 +767,12 @@ fn run_bridge_unix(
                 return if stop_bridge_group(&mut child, group) {
                     Err("The protected OTIO media inspection timed out and the entire process tree stopped.".into())
                 } else {
-                    Err(UNCERTAIN_BRIDGE_EXIT.into())
+                    Err(BridgeExecutionFailure::Unsettled)
                 };
             }
             _ => {
                 stop_bridge_group(&mut child, group);
-                return Err(UNCERTAIN_BRIDGE_EXIT.into());
+                return Err(BridgeExecutionFailure::Unsettled);
             }
         }
     }
@@ -754,7 +973,7 @@ pub fn preview(
     service: &StudioService,
     grants: &EffectGrantRegistry,
     request: OtioMediaPreviewRequest,
-) -> Result<OtioMediaPreviewResponse, String> {
+) -> Result<OtioMediaPreviewResponse, OtioBridgeError> {
     let subject = preview_subject(
         &request.bundle_path,
         &request.edited_file,
@@ -768,6 +987,8 @@ pub fn preview(
             "The OTIO source revision changed. Refresh and export a new source bundle.".into(),
         );
     }
+    let operation = OtioBridgeOperation::Preview;
+    require_bridge_idle(service, &project, operation)?;
     let PreviewDocuments {
         original,
         manifest,
@@ -775,8 +996,8 @@ pub fn preview(
         received,
     } = read_authorized_preview_documents(grants, &request, &subject, &bundle, &project)?;
     let parent = bundle.parent().ok_or_else(refused)?;
-    let temp = tempfile::Builder::new()
-        .prefix(".motionwright-otio-preview-")
+    let mut temp = tempfile::Builder::new()
+        .prefix(workspace_prefix(operation))
         .tempdir_in(parent)
         .map_err(|_| {
             "The original OTIO bundle parent must permit one isolated temporary review workspace."
@@ -826,7 +1047,9 @@ pub fn preview(
         OsString::from("--output"),
         output.as_os_str().to_owned(),
     ]);
-    run_bridge(&runtime, &source_dir, &bridge, &arguments)?;
+    run_tracked_bridge(service, &project, operation, &mut temp, || {
+        run_bridge(&runtime, &source_dir, &bridge, &arguments)
+    })?;
     if read_regular_bounded(&bundle.join("source-project.json"), MAX_PROJECT)? != original
         || read_regular_bounded(&bundle.join("bridge-manifest.json"), MAX_PROJECT)? != manifest
         || read_regular_bounded(&bundle.join(&request.edited_file), MAX_PROJECT)? != edited
@@ -855,7 +1078,7 @@ pub fn preview(
         )?
     } else {
         if raw.len() as u64 > MAX_PREVIEW {
-            return Err(refused());
+            return Err(refused().into());
         }
         serde_json::from_slice(&raw).map_err(|_| refused())?
     };
@@ -868,7 +1091,7 @@ pub fn preview(
         || preview.edit_imported
         || preview.publication_approved
     {
-        return Err(refused());
+        return Err(refused().into());
     }
     preview
         .bounded_native_changes(&project)
@@ -1137,6 +1360,108 @@ mod tests {
                 .is_err()
         );
     }
+    #[test]
+    fn uncertain_otio_process_retains_original_and_blocks_another_dispatch_after_reopen() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("studio.sqlite3");
+        let service = StudioService::open(&path).unwrap();
+        let project = service.create_project("Retained OTIO attempt").unwrap();
+        let peer = StudioService::open(&path).unwrap();
+        let preview = OtioBridgeOperation::Preview;
+        let export = OtioBridgeOperation::Export;
+        let workspace = |operation| {
+            tempfile::Builder::new()
+                .prefix(workspace_prefix(operation))
+                .tempdir_in(root.path())
+                .unwrap()
+        };
+
+        let mut original = workspace(preview);
+        let original_path = original.path().to_owned();
+        fs::write(original_path.join("diagnostic.txt"), b"original diagnostic").unwrap();
+        let outcome = run_tracked_bridge(&service, &project, preview, &mut original, || {
+            let mut competing = workspace(preview);
+            let error = run_tracked_bridge(&peer, &project, preview, &mut competing, || {
+                panic!("a second process cannot dispatch while the original is running")
+            })
+            .unwrap_err();
+            assert!(matches!(error, OtioBridgeError::Unsettled(_)));
+            Err(BridgeExecutionFailure::Unsettled)
+        });
+        let Err(OtioBridgeError::Unsettled(original_result)) = outcome else {
+            panic!("uncertain process did not return its original identity");
+        };
+        drop(original);
+        drop(peer);
+        drop(service);
+        assert_eq!(
+            fs::read(original_path.join("diagnostic.txt")).unwrap(),
+            b"original diagnostic"
+        );
+
+        let reopened = StudioService::open(&path).unwrap();
+        let pending =
+            unsettled_bridge_operations(&reopened, project.id, project.generation).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].attempt_id, original_result.attempt_id);
+        assert_eq!(pending[0].workspace_name, original_result.workspace_name);
+        let receipt = reopened
+            .unsettled_otio_bridge(project.id, project.generation, preview)
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.stage, "outcome_unknown");
+        let false_settlement = ProductionReceiptInput {
+            project_id: receipt.project_id,
+            generation: receipt.generation,
+            revision: receipt.revision,
+            request_id: receipt.request_id,
+            request_sha256: receipt.request_sha256,
+            command: receipt.command,
+            stage: "bridge_stopped".into(),
+            payload: receipt.payload,
+        };
+        assert!(matches!(
+            reopened.append_production_receipt(false_settlement),
+            Err(StorageError::RequestReuse)
+        ));
+
+        let mut competing = workspace(preview);
+        let competing_path = competing.path().to_owned();
+        let error = run_tracked_bridge(&reopened, &project, preview, &mut competing, || {
+            panic!("an uncertain predecessor cannot replay after reopen")
+        })
+        .unwrap_err();
+        assert!(matches!(error, OtioBridgeError::Unsettled(_)));
+        drop(competing);
+        assert!(!competing_path.exists());
+
+        let mut independent = workspace(export);
+        let independent_path = independent.path().to_owned();
+        let early_failure =
+            run_tracked_bridge(&reopened, &project, export, &mut independent, || {
+                Err(BridgeExecutionFailure::Stopped("confirmed stop".into()))
+            })
+            .unwrap_err();
+        assert_eq!(String::from(early_failure), "confirmed stop");
+        drop(independent);
+        assert!(!independent_path.exists());
+        assert!(
+            reopened
+                .unsettled_otio_bridge(project.id, project.generation, export)
+                .unwrap()
+                .is_none()
+        );
+        let mut later = workspace(export);
+        run_tracked_bridge(&reopened, &project, export, &mut later, || Ok(())).unwrap();
+        assert!(
+            reopened
+                .unsettled_otio_bridge(project.id, project.generation, export)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(reopened.project(project.id).unwrap(), project);
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn original_source_identity_rejects_same_size_name_replacement_and_symlink() {
@@ -1516,7 +1841,7 @@ mod tests {
             effect_grant: import.token,
         };
         assert_eq!(
-            preview(&service, &grants, preview_request).unwrap_err(),
+            String::from(preview(&service, &grants, preview_request).unwrap_err()),
             format!(
                 "OTIO bridge preflight unavailable: {}",
                 fixed_runtime().unwrap_err()
@@ -1554,7 +1879,7 @@ mod tests {
             effect_grant: export.token,
         };
         assert_eq!(
-            export_portable(&service, &grants, export_request).unwrap_err(),
+            String::from(export_portable(&service, &grants, export_request).unwrap_err()),
             format!(
                 "OTIO bridge preflight unavailable: {}",
                 fixed_runtime().unwrap_err()
@@ -1789,7 +2114,7 @@ pub fn export_portable(
     service: &StudioService,
     grants: &EffectGrantRegistry,
     request: OtioMediaBundleExportRequest,
-) -> Result<OtioMediaBundleExportResponse, String> {
+) -> Result<OtioMediaBundleExportResponse, OtioBridgeError> {
     if !request.authorized
         || !request.redistributable
         || !owner_declaration(&request.reviewer_declaration, 200)
@@ -1848,6 +2173,8 @@ pub fn export_portable(
         );
     }
 
+    let operation = OtioBridgeOperation::Export;
+    require_bridge_idle(service, &project, operation)?;
     // Consume the exact one-use grant before creating a workspace or reading
     // original media. Runtime qualification is repeated at process launch.
     grants.consume(
@@ -1857,8 +2184,8 @@ pub fn export_portable(
         &request.destination,
     )?;
     let parent = destination.parent().ok_or_else(refused)?;
-    let temp = tempfile::Builder::new()
-        .prefix(".motionwright-otio-export-")
+    let mut temp = tempfile::Builder::new()
+        .prefix(workspace_prefix(operation))
         .tempdir_in(parent)
         .map_err(|_| "Unable to stage an isolated original OTIO export.".to_string())?;
     let (source_dir, bridge) = stage_bridge_sources(temp.path())?;
@@ -1963,7 +2290,9 @@ pub fn export_portable(
         OsString::from("--output"),
         pending.as_os_str().to_owned(),
     ];
-    run_bridge(&runtime, &source_dir, &bridge, &arguments)?;
+    run_tracked_bridge(service, &project, operation, &mut temp, || {
+        run_bridge(&runtime, &source_dir, &bridge, &arguments)
+    })?;
 
     // Check the actual final bundle and original inputs, not just the
     // process exit code. The bridge alone owns real ffprobe frame checks.

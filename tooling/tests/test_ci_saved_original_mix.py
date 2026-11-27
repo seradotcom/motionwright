@@ -679,10 +679,10 @@ commands.deny = ["bootstrap"]
                                          {"test": "original Git inventory; no Native effects"})
 
     def test_source_roster_and_independent_provider_byte_expectations(self):
-        # Exact 108-command local owner surface. The separate
+        # Exact 109-command local owner surface. The separate
         # registration/capability test compares every command identity.
-        self.assertEqual(len(self.policy), 108)
-        self.assertEqual(sum(map(len, self.policy.values())), 48798)
+        self.assertEqual(len(self.policy), 109)
+        self.assertEqual(sum(map(len, self.policy.values())), 49236)
         self.assertEqual(self.policy[gate.GENERATED_PERMISSION_ROOT + "bootstrap.toml"], self.BOOTSTRAP)
         self.assertEqual(hashlib.sha256(self.BOOTSTRAP).hexdigest(),
                          "e249330f5e035d21dbf7ed00caa59fd1795c8f9500d4e5c5da7d8f989eb21c3e")

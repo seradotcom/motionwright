@@ -125,6 +125,7 @@ REAL_COMMANDS = (
     "export_otio_source_snapshot",
     "export_portable_otio_media_bundle",
     "check_otio_media_runtime",
+    "read_otio_bridge_status",
     "choose_otio_media_bundle_folder",
     "preview_otio_media_cut",
     "choose_portable_project_source",

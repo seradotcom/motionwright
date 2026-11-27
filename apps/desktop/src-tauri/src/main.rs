@@ -4192,7 +4192,7 @@ async fn export_portable_otio_media_bundle(
     mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: otio_bridge::OtioMediaBundleExportRequest,
-) -> Result<otio_bridge::OtioMediaBundleExportResponse, String> {
+) -> Result<otio_bridge::OtioMediaBundleExportResponse, otio_bridge::OtioBridgeError> {
     let service = state.service.clone();
     let grants = state.effect_grants.clone();
     desktop_owner::spawn_blocking(owner.worker_owner(), move || {
@@ -4210,6 +4210,36 @@ async fn check_otio_media_runtime(mut owner: desktop_owner::OwnerInvocation) -> 
             .map_err(|_| "The OTIO runtime check did not finish.".to_string())?;
     owner.begin_phase()?;
     result
+}
+
+#[tauri::command]
+async fn read_otio_bridge_status(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: RuntimeConnectionSelectionRequest,
+) -> Result<Vec<otio_bridge::OtioBridgeUnsettled>, String> {
+    checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    let service = state.service.clone();
+    let project_id = request.project_id;
+    let generation = request.generation;
+    let pending = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        otio_bridge::unsettled_bridge_operations(&service, project_id, generation)
+    })
+    .await
+    .map_err(|_| "The retained OTIO status read did not finish.".to_string())??;
+    owner.begin_phase()?;
+    checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    Ok(pending)
 }
 
 #[tauri::command]
@@ -4259,7 +4289,7 @@ async fn preview_otio_media_cut(
     mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: otio_bridge::OtioMediaPreviewRequest,
-) -> Result<otio_bridge::OtioMediaPreviewResponse, String> {
+) -> Result<otio_bridge::OtioMediaPreviewResponse, otio_bridge::OtioBridgeError> {
     // The human-reviewed Change remains a separate, scoped operation.
     let service = state.service.clone();
     let grants = state.effect_grants.clone();
@@ -5106,6 +5136,7 @@ fn main() {
             export_otio_source_snapshot,
             export_portable_otio_media_bundle,
             check_otio_media_runtime,
+            read_otio_bridge_status,
             choose_otio_media_bundle_folder,
             preview_otio_media_cut,
             choose_portable_project_source,
