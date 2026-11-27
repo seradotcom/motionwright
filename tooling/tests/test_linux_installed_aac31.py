@@ -29,6 +29,21 @@ def frame(scene):
 
 
 class InstalledAAC31ProofTests(unittest.TestCase):
+    def test_button_scan_does_not_read_unrelated_document_names(self):
+        bridge = installed.ReviewBridge.__new__(installed.ReviewBridge)
+        bridge.deadline = None
+        bridge.roles = {1: "text", 2: "button"}
+        bridge.states = {"visible": "visible", "enabled": "enabled"}
+        bridge._button_names_only = True
+        state = SimpleNamespace(contains=lambda value: value in {"visible", "enabled"})
+        unrelated = SimpleNamespace(get_role=lambda: 1, get_state_set=lambda: state,
+                                    get_name=Mock(side_effect=AssertionError("unrelated IPC")))
+        control = SimpleNamespace(get_role=lambda: 2, get_state_set=lambda: state,
+                                  get_name=lambda: "Check hybrid sources")
+        self.assertEqual(bridge.view(unrelated).name, "")
+        self.assertEqual(bridge.view(control).name, "Check hybrid sources")
+        unrelated.get_name.assert_not_called()
+
     def test_playback_requires_the_two_observed_scene_markers_in_order(self):
         red, green, blank = map(frame, ("motion-canvas", "manim", None))
         self.assertEqual([marker(value) for value in (red, green, blank)],
@@ -132,7 +147,7 @@ class InstalledAAC31ProofTests(unittest.TestCase):
         def invoke(_, __, target, ___, stage):
             action.append((target.node, stage))
 
-        def tree(_):
+        def tree(_, *, buttons_only=False):
             known = initial + (["row", "saved-digest", "review"] if ("find", "find-saved") in action else [])
             return [views[node] for node in known + ["player", "metadata"]]
 

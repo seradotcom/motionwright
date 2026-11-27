@@ -107,6 +107,7 @@ def admit_candidate(bundle, retained_package):
             b"", b".github/workflows/package-candidate.yml", b"tooling/linux_installed_aac31_ci.py",
             b"tooling/native_host_installed_shared_state.py",
             b"tooling/tests/test_ci_nsis_source_selection.py",
+            b"tooling/linux_installed_aac31.py", b"tooling/tests/test_linux_installed_aac31.py",
         }, "AAC31_RETAINED_PRODUCT_SOURCE_CHANGED")
         inputs["candidate_origin"] = retained
     else:

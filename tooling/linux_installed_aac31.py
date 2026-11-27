@@ -38,13 +38,21 @@ class ReviewBridge(ui.AtspiBridge):
         super().__init__(api, deadline=deadline, glib=glib)
         self.roles[api.Role.TOGGLE_BUTTON] = "button"
         self.roles[api.Role.LIST_ITEM] = "list item"
+        for symbol, kind in (("STATIC", "text"), ("LABEL", "text"), ("HEADING", "heading"),
+                             ("STATUS_BAR", "status"), ("SECTION", "section"), ("LANDMARK", "section"),
+                             ("VIDEO", "video"), ("PANEL", "section"), ("GROUPING", "section")):
+            role = getattr(api.Role, symbol, None)
+            if role is not None:
+                self.roles[role] = kind
+        self._button_names_only = False
 
     def view(self, node):
-        original = super().view(node)
-        if "visible" not in original.states or "defunct" in original.states:
-            return original
-        name = original.name or self.call(node.get_name)
-        return ui.View(node, original.role, name or "", original.states, original.interfaces)
+        role = self.roles.get(self.call(node.get_role), "other")
+        state = self.call(node.get_state_set)
+        states = frozenset(name for name, value in self.states.items() if state.contains(value))
+        named = role == "button" or (not self._button_names_only and role != "other")
+        name = self.call(node.get_name) if named and "visible" in states and "defunct" not in states else ""
+        return ui.View(node, role, name or "", states, frozenset())
 
     def pump(self):
         context = self.glib.MainContext.default()
@@ -53,26 +61,38 @@ class ReviewBridge(ui.AtspiBridge):
                 return
             self.call(context.iteration, False)
 
-    def tree(self, binding):
+    def tree(self, binding, *, buttons_only=False):
         self.pump()
         owner = ui.unique(
             [app for app in self.applications() if self.pid(app) == binding["pid"]],
             "AAC31_APPLICATION",
         )
-        return ui.walk(self, owner)
-
-
-def wait_for(bridge, operation):
-    while time.monotonic() < bridge.deadline:
+        self._button_names_only = buttons_only
         try:
-            return operation()
-        except ui.NotReady:
-            time.sleep(0.15)
-    raise ui.ProbeError("AAC31_UI_DEADLINE")
+            return ui.walk(self, owner)
+        finally:
+            self._button_names_only = False
+
+
+def wait_for(bridge, operation, *, seconds=None):
+    inherited = bridge.deadline
+    if seconds is not None:
+        bridge.deadline = min(inherited, time.monotonic() + seconds)
+    last = None
+    try:
+        while time.monotonic() < bridge.deadline:
+            try:
+                return operation()
+            except ui.NotReady as missing:
+                last = missing
+                time.sleep(0.15)
+        raise ui.ProbeError("AAC31_UI_DEADLINE") from last
+    finally:
+        bridge.deadline = inherited
 
 
 def exact(bridge, binding, label, *, button=False, enabled=False, within=None):
-    views = bridge.tree(binding) if within is None else ui.walk(bridge, within)
+    views = bridge.tree(binding, buttons_only=button) if within is None else ui.walk(bridge, within)
     found = ui.unique(
         [view for view in views if view.name == label
          and "visible" in view.states and "defunct" not in view.states
@@ -129,8 +149,19 @@ def invoke(bridge, binding, view, journal, label):
     return started
 
 
-def press(bridge, binding, label, journal, stage):
-    view = wait_for(bridge, lambda: exact(bridge, binding, label, button=True, enabled=True))
+def press(bridge, binding, label, journal, stage, *, seconds=30):
+    try:
+        view = wait_for(
+            bridge, lambda: exact(bridge, binding, label, button=True, enabled=True), seconds=seconds,
+        )
+    except Exception as error:
+        try:
+            journal.put(stage + "-unavailable", {
+                "control": label, "failure": type(error).__name__, "detail": str(error.__cause__ or error)[:160],
+            })
+        except OSError as custody_error:
+            error.add_note("Could not retain the unavailable-control diagnostic: " + str(custody_error))
+        raise
     return invoke(bridge, binding, view, journal, stage)
 
 
@@ -218,6 +249,9 @@ def worker(request, phase, binding, seconds):
     gi.require_version("Gdk", "3.0")
     from gi.repository import Atspi, Gdk, GLib
 
+    require(Atspi.init() in (0, 1), "AAC31_ATSPI_INIT")
+    Atspi.set_timeout(800, 2500)
+
     database = Path(request["database"])
     output = Path(request["output"])
     source = Source(**request["source"])
@@ -238,7 +272,7 @@ def operate_window(request, phase, binding, bridge, journal, gdk, database, outp
             return exact(bridge, binding, "Open " + request["project_title"],
                          button=True, enabled=True)
 
-    initial = wait_for(bridge, project_or_editor)
+    initial = wait_for(bridge, project_or_editor, seconds=30)
     if initial.name != "Deliver":
         invoke(bridge, binding, initial, journal, "open-saved-project")
     press(bridge, binding, "Deliver", journal, "open-deliver")
@@ -246,7 +280,7 @@ def operate_window(request, phase, binding, bridge, journal, gdk, database, outp
     if phase == "render":
         press(bridge, binding, "Check hybrid sources", journal, "check-source")
         require(not rows(database, source), "AAC31 mux was already attempted for this saved source")
-        press(bridge, binding, "Create hybrid master", journal, "create-one-master")
+        press(bridge, binding, "Create hybrid master", journal, "create-one-master", seconds=90)
 
         def original_completed():
             status = rows(database, source)
