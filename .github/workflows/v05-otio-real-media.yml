@@ -20,6 +20,11 @@ on:
         type: boolean
         default: false
         required: false
+      kdenlive_editor_first_save:
+        description: Import the synthetic OTIO cut in the installed editor and verify its initial save
+        type: boolean
+        default: false
+        required: false
       audio_source:
         description: 'Kdenlive GUI only: silent original or bounded 997 Hz AAC source. No output audio credit.'
         type: choice
@@ -474,21 +479,7 @@ jobs:
       - name: Provision the Windows synthetic-media decoder
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          $archive = Join-Path $env:RUNNER_TEMP 'ffmpeg-9.1-essentials_build.7z'
-          $release = 'https://github.com/GyanD/codexffmpeg/releases/download/9.1'
-          Invoke-WebRequest "$release/ffmpeg-9.1-essentials_build.7z" -OutFile $archive
-          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne '835b9a733445ba7a56a37a26cf7bde84e2f3ce7da2a8ec984276bb2abb1b922c') {
-            throw 'FFmpeg archive checksum mismatch'
-          }
-          $members = @(
-            'ffmpeg-9.1-essentials_build/bin/ffmpeg.exe'
-            'ffmpeg-9.1-essentials_build/bin/ffprobe.exe'
-          )
-          tar.exe -xf $archive -C $env:RUNNER_TEMP -- $members
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          Join-Path $env:RUNNER_TEMP 'ffmpeg-9.1-essentials_build/bin' |
-            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        run: tooling/otio-media/setup_windows_fixture_ffmpeg.ps1
       - name: Provision the macOS synthetic-media decoder
         if: runner.os == 'macOS'
         shell: bash
@@ -623,9 +614,9 @@ jobs:
 
   kdenlive-native-editor:
     if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'kdenlive-native-editor'
-    name: ${{ inputs.kdenlive_accessibility_probe && 'Kdenlive hosted accessibility' || 'Kdenlive native editor installation' }} (${{ matrix.os }})
+    name: ${{ inputs.kdenlive_accessibility_probe && 'Kdenlive hosted accessibility' || (inputs.kdenlive_editor_first_save && 'Kdenlive native editor first save' || 'Kdenlive native editor installation') }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 14
+    timeout-minutes: 32
     strategy:
       fail-fast: false
       matrix:
@@ -639,16 +630,55 @@ jobs:
           python-version: '3.13'
       - name: Verify the native editor admission and installation controls
         working-directory: tooling/otio-media
-        run: python -B -E -s -m unittest -v test_kdenlive_native_distribution test_kdenlive_native_installation
+        run: python -B -E -s -m unittest -v test_kdenlive_native_distribution test_kdenlive_native_installation test_kdenlive_native_source
       - name: Observe native accessibility without changing its permissions
         if: inputs.kdenlive_accessibility_probe
         run: python -B -E -s tooling/otio-media/kdenlive_native_installation.py --observe-host
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        if: inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt, clippy
+      - name: Require a native save observer for the selected platform
+        if: inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Windows) test -f tooling/otio-media/kdenlive_windows_editor.py ;;
+            macOS) test -f tooling/otio-media/kdenlive_macos_editor.py ;;
+            *) exit 1 ;;
+          esac
+      - name: Build the synthetic OTIO source producer before installing the editor
+        if: inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe
+        env:
+          RUSTUP_TOOLCHAIN: '1.98.1'
+          CARGO_PROFILE_DEV_DEBUG: '0'
+        run: cargo build --locked -p motionwright-domain --example otio_real_media_fixture
+      - name: Provision the Windows synthetic-media decoder
+        if: inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe && runner.os == 'Windows'
+        shell: pwsh
+        run: tooling/otio-media/setup_windows_fixture_ffmpeg.ps1
+      - name: Provision the macOS synthetic-media decoder
+        if: inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe && runner.os == 'macOS'
+        shell: bash
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: brew install ffmpeg
+      - name: Verify the hosted fixture encoders
+        if: inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe
+        run: python -B -E -s -c "import subprocess; subprocess.run(['ffmpeg', '-version'], check=True, timeout=15); subprocess.run(['ffprobe', '-version'], check=True, timeout=15)"
       - name: Obtain the pinned KDE distribution once
         if: inputs.kdenlive_accessibility_probe != true
         run: python -B -E -s tooling/otio-media/kdenlive_native_distribution.py
       - name: Install the bound editor in the disposable runner
         if: inputs.kdenlive_accessibility_probe != true
         run: python -B -E -s tooling/otio-media/kdenlive_native_installation.py
+      - name: Produce the first-party OTIO cut and its original media
+        if: inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe
+        run: python -B -E -s tooling/otio-media/kdenlive_native_source.py
+      - name: Observe the Windows native import and initial save
+        if: inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe && runner.os == 'Windows'
+        run: python -B -E -s tooling/otio-media/kdenlive_windows_editor.py
       - name: Retain archive and installed executable identities
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -663,6 +693,19 @@ jobs:
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/windows-installer-terminal.json
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/windows-installed-location.json
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/macos-readonly-mount.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Retain the first-party original and editor results
+        if: always() && inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: kdenlive-native-first-save-${{ runner.os }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/otio-source-ready.json
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/otio-original/
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/windows-editor/*.json
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/windows-editor/*.log
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/windows-editor/initial.kdenlive
           if-no-files-found: warn
           retention-days: 7
 
