@@ -50,6 +50,12 @@ class NativeMediaAdmissionTests(unittest.TestCase):
             raise AssertionError("Original bounded H.264 fixture generation failed")
         cls.original_bytes = original.read_bytes()
         cls.truncated_bytes = cls.original_bytes[:len(cls.original_bytes) * 2 // 3]
+        trailing_index = Path(cls.fixture_temp.name) / "trailing-index.mp4"
+        subprocess.run([
+            "ffmpeg", "-v", "error", "-nostdin", "-i", str(original),
+            "-map", "0:v:0", "-c", "copy", str(trailing_index),
+        ], capture_output=True, timeout=30, check=True)
+        cls.trailing_index_bytes = trailing_index.read_bytes()
         if len(cls.original_bytes) < 1000:
             raise AssertionError("Original H.264 fixture is unexpectedly small")
 
@@ -125,6 +131,18 @@ class NativeMediaAdmissionTests(unittest.TestCase):
         self.assertEqual(imported["media_refs_verified"], 1)
         self.assertFalse(imported["edit_imported"])
         self.assertEqual(imported["native_change_proposals"], [])
+
+    def test_video_with_trailing_index_round_trips_with_original_bytes(self):
+        original = self.trailing_index_bytes
+        self.assertLess(original.index(b"mdat"), original.index(b"moov"))
+        request = self.owner_inputs(original)
+        report = export_portable(self.owner, request, self.output)
+        self.assertEqual(report["verified_media_refs"], 1)
+        digest = source_sha(original)
+        self.assertEqual((self.output / "media" / f"{digest}.mp4").read_bytes(), original)
+        imported = import_preview(self.output, "timeline.otio",
+                                  self.output / "source-project.json")
+        self.assertEqual(imported["media_refs_verified"], 1)
 
     def test_faststart_truncation_is_refused_with_intact_stream_metadata(self):
         self.owner_inputs(self.truncated_bytes)

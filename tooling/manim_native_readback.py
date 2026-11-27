@@ -14,6 +14,8 @@ import hashlib
 import io
 import json
 import math
+import os
+import stat
 import shutil
 import struct
 import subprocess
@@ -272,11 +274,12 @@ def rational(value):
 
 
 def run_bounded(argv, max_stdout, timeout_seconds=120, *, input_bytes=None, capture=None,
-                max_stdin_bytes=32 * 1024 * 1024):
+                max_stdin_bytes=32 * 1024 * 1024, stdin_file=None):
     """Supervise one read-only decoder; default stdin stays bounded at 32 MiB.
 
     A caller may select a narrower or up-to-256-MiB input ceiling for an already
-    captured original. This byte budget grants no source or execution authority.
+    captured original. A caller may provide a prepared read-only copy as a
+    seekable input instead of streaming those same bytes through a pipe.
     """
     require(type(max_stdout) is int and max_stdout > 0, "readonly_decoder_stdout_budget")
     require(type(timeout_seconds) in (int, float)
@@ -290,10 +293,19 @@ def run_bounded(argv, max_stdout, timeout_seconds=120, *, input_bytes=None, capt
             "readonly_decoder_capture_must_be_new")
     started = time.monotonic()
     deadline = started + timeout_seconds
+    stdin = subprocess.DEVNULL if input_bytes is None else subprocess.PIPE
+    if stdin_file is not None:
+        require(input_bytes is not None and stdin_file.mode == "rb",
+                "readonly_decoder_seekable_input")
+        info = os.fstat(stdin_file.fileno())
+        require(stat.S_ISREG(info.st_mode) and info.st_size == len(input_bytes),
+                "readonly_decoder_seekable_size")
+        stdin_file.seek(0)
+        stdin = stdin_file
     outputs = [bytearray(), bytearray()]
     overflow = threading.Event()
     errors = []
-    stdin_complete = input_bytes is None
+    stdin_complete = input_bytes is None or stdin_file is not None
     if capture is not None:
         capture.update({"state": "RESERVED", "stdout": b"", "stderr": b"",
                         "stdin_bytes": 0 if input_bytes is None else len(input_bytes),
@@ -301,7 +313,7 @@ def run_bounded(argv, max_stdout, timeout_seconds=120, *, input_bytes=None, capt
     try:
         process = subprocess.Popen(
             [str(arg) for arg in argv],
-            stdin=subprocess.DEVNULL if input_bytes is None else subprocess.PIPE,
+            stdin=stdin,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
     except BaseException as error:
         if capture is not None:
@@ -364,7 +376,7 @@ def run_bounded(argv, max_stdout, timeout_seconds=120, *, input_bytes=None, capt
 
     threads = [threading.Thread(target=drain, args=(process.stdout, 0, max_stdout), daemon=True),
                threading.Thread(target=drain, args=(process.stderr, 1, 65536), daemon=True)]
-    if input_bytes is not None:
+    if stdin == subprocess.PIPE:
         threads.append(threading.Thread(target=feed, daemon=True))
     active = []
     timed_out = False

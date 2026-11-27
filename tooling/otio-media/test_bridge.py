@@ -262,7 +262,9 @@ class PortableOtioTests(unittest.TestCase):
                 self.skipTest("Windows lacks symlink privileges; Linux CI runs this source boundary")
             raise
         self.request["bindings"][0]["file"]="linked.mp4"
-        with self.assertRaisesRegex(BridgeRefused,"Symlinked"):self.export()
+        with self.assertRaisesRegex(BridgeRefused, "^Missing or unsafe file: linked[.]mp4$"):
+            self.export()
+        self.assertFalse(self.out.exists())
 
     def test_duplicate_scene_binding_refuses_independently(self):
         self.request["bindings"][1]["scene_id"]=self.request["bindings"][0]["scene_id"]
@@ -521,25 +523,30 @@ class BoundedKdenliveCutTests(unittest.TestCase):
             return value
         return patch.object(Path,"lstat",new=observed)
 
-    def assert_reparse_root_rejected(self, flagged):
+    def assert_reparse_root_rejected(self, *, flag_ancestor):
         request=self.raw_request()
+        # Keep the backend media root distinct from both request paths so the
+        # refusal reaches the backend root check.
+        media_root = self.root / "authorized" / "media"
+        media_root.mkdir(parents=True)
+        flagged = media_root.parent if flag_ancestor else media_root
         before={p:p.read_bytes()for p in (*self.raw.glob("*.otio"),
             self.out/"source-project.json",self.out/"timeline.otio",self.out/"bridge-manifest.json")}
         with self.reparse_at(flagged),patch("bridge.file_probe",return_value=VIDEO_INFO)as probe:
             self.assertFalse(flagged.is_symlink())
             with self.assertRaisesRegex(BridgeRefused,"^Invalid backend-authorized media root$"):
                 preview_kdenlive_cut(self.out,self.raw,request,self.out/"source-project.json",
-                    authorized_media_roots=(self.out,self.raw))
+                    authorized_media_roots=(self.out,self.raw,media_root))
             probe.assert_not_called()
         for path,data in before.items():self.assertEqual(path.read_bytes(),data)
 
     def test_path_reparse_authorized_root_is_rejected_before_probe(self):
         self.prepare()
-        self.assert_reparse_root_rejected(self.out)
+        self.assert_reparse_root_rejected(flag_ancestor=False)
 
     def test_path_reparse_ancestor_of_authorized_root_is_rejected_before_probe(self):
         self.prepare()
-        self.assert_reparse_root_rejected(self.root)
+        self.assert_reparse_root_rejected(flag_ancestor=True)
 
     def assert_reparse_candidate_rejected(self, *, ancestor):
         self.prepare()
@@ -2147,13 +2154,13 @@ class ImmutableOwnerCaptureTests(unittest.TestCase):
         return helper,helper.src,helper.out,helper.request,None,None
 
     def test_owner_JSON_and_Project_digest_consume_the_same_immutable_capture(self):
-        import ci_private_evidence as custody
+        import mlt_official_runtime_intake as custody
         helper,root,_,_,_,_=self.fixture()
         path=root/"project.json"
         original=path.read_bytes()
         changed=original.replace(b"Owned video source",b"Other video source")
         self.assertNotEqual(original,changed)
-        real=custody.regular
+        real=custody.capture_regular
         observed=[]
         def replace_after_capture(candidate,limit):
             result=real(candidate,limit)
@@ -2161,7 +2168,7 @@ class ImmutableOwnerCaptureTests(unittest.TestCase):
                 observed.append(result)
                 path.write_bytes(changed)
             return result
-        with patch.object(custody,"regular",side_effect=replace_after_capture), \
+        with patch.object(custody,"capture_regular",side_effect=replace_after_capture), \
              patch.object(Path,"read_bytes",side_effect=AssertionError("consumer reopened pathname")), \
              patch("bridge.subprocess.Popen",side_effect=AssertionError("no native process")):
             project,digest=_retained_bridge.parse_project(root,"project.json")
@@ -2170,7 +2177,7 @@ class ImmutableOwnerCaptureTests(unittest.TestCase):
         self.assertEqual(len(observed),1)
         self.assertEqual(path.read_bytes(),changed)
         path.write_bytes(original)
-        with patch.object(custody,"regular",side_effect=replace_after_capture), \
+        with patch.object(custody,"capture_regular",side_effect=replace_after_capture), \
              patch.object(Path,"read_bytes",side_effect=AssertionError("JSON reopened pathname")):
             self.assertEqual(_retained_bridge.read_json(root,"project.json"),helper.project)
         self.assertEqual(len(observed),2)
@@ -2302,14 +2309,14 @@ class ImmutableOwnerCaptureTests(unittest.TestCase):
             self.assertEqual(media.read_bytes(),replacement)
 
     def test_ALab_notices_validate_captured_bytes_without_a_second_open(self):
-        import ci_private_evidence as custody
+        import mlt_official_runtime_intake as custody
         helper,root,out,request,retained,notices=self.fixture(True)
         export_portable(root,request,out,retained_alab=retained,source_notices=notices)
         manifest=json.loads((out/"bridge-manifest.json").read_bytes())
         role,name,_,_=_retained_bridge._ALAB_SOURCE_NOTICES[0]
         target=out/name
         original=target.read_bytes()
-        real=custody.regular
+        real=custody.capture_regular
         calls=[]
         def replace_after_capture(path,limit):
             result=real(path,limit)
@@ -2321,7 +2328,7 @@ class ImmutableOwnerCaptureTests(unittest.TestCase):
         def no_read_open(path,mode="r",*args,**kwargs):
             if path==target and "r"in mode:raise AssertionError("notice reopened after capture")
             return real_open(path,mode,*args,**kwargs)
-        with patch.object(custody,"regular",side_effect=replace_after_capture), \
+        with patch.object(custody,"capture_regular",side_effect=replace_after_capture), \
              patch.object(Path,"open",no_read_open):
             _retained_bridge._require_alab_source_notices(out,manifest,retained)
         self.assertEqual(calls,[target])
@@ -2447,19 +2454,19 @@ class CapturedMp4ProbeTests(unittest.TestCase):
                 self.assertEqual(result["native_change_proposals"],[])
                 self.assertTrue(all(row[1]==seen[0][1]for row in seen))
         with self.subTest(retained_alab="same_capture_without_new_decoder"):
-            import ci_private_evidence as custody
+            import mlt_official_runtime_intake as custody
             helper=RetainedAlabObservationTests()
             self.addCleanup(helper.doCleanups)
             _,owner,out,_,request,retained,_=helper.portable()
             export_portable(owner,request,out,retained_alab=retained,source_notices=helper.source_notices)
             self.assertIs(json.loads((out/"bridge-manifest.json").read_bytes())["external_program_executed"],False)
-            real=custody.regular
+            real=custody.capture_regular
             captured=[]
             def capture(path,budget):
                 result=real(path,budget)
                 if path.parent==out/"media":captured.append(path)
                 return result
-            with patch.object(custody,"regular",side_effect=capture), \
+            with patch.object(custody,"capture_regular",side_effect=capture), \
                  patch.object(type(retained),"probe",side_effect=AssertionError("retained bytes reopened")), \
                  patch("bridge.subprocess.Popen",side_effect=AssertionError("retained media decoded again")):
                 result=import_preview(out,"timeline.otio",out/"source-project.json",retained_alab=retained)

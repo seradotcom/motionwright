@@ -7,6 +7,8 @@ rights, executes project code, or directly commits editorial changes.
 """
 from __future__ import annotations
 import argparse
+from collections.abc import Iterator
+from contextlib import contextmanager
 from fractions import Fraction
 import hashlib
 import json
@@ -20,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+from typing import BinaryIO
 from urllib.parse import unquote, urlsplit
 import zipfile
 import kdenlive_firstparty_audio_track as firstparty_audio_track
@@ -141,7 +144,8 @@ def trange(start:int,duration:int,rate:int)->dict:
     return {"OTIO_SCHEMA":"TimeRange.1","duration":rtc(duration,rate),
             "start_time":rtc(start,rate)}
 def _probe_output(args:list[str],deadline:float|None=None,*,
-                  input_bytes:bytes|None=None,capture:dict|None=None)->bytes:
+                  input_bytes:bytes|None=None,capture:dict|None=None,
+                  stdin_file:BinaryIO|None=None)->bytes:
     """Use the existing decoder executor for one original readback attempt.
 
     This adapter keeps the bridge's closed public error messages. The identical
@@ -162,7 +166,7 @@ def _probe_output(args:list[str],deadline:float|None=None,*,
     decoded=None
     try:
         decoded,_=run_bounded(args,MAX_JSON,remaining,input_bytes=input_bytes,
-                             capture=original,max_stdin_bytes=MAX_MEDIA)
+                             capture=original,max_stdin_bytes=MAX_MEDIA,stdin_file=stdin_file)
         # Decoder warnings/errors are private originals. An exit zero with a
         # diagnostic cannot establish an admitted clean media observation.
         insist(not original["stderr"].strip(),
@@ -208,22 +212,128 @@ def _ffprobe_program()->str:
     insist(path.is_file(),message)
     return str(path)
 
+def _has_trailing_movie_index(data:bytes)->bool:
+    """Identify a movie index after media by reading only top-level box headers."""
+    offset = 0
+    saw_media = False
+    for _ in range(4096):
+        if len(data) - offset < 8:
+            return False
+        size = int.from_bytes(data[offset:offset + 4], "big")
+        kind = data[offset + 4:offset + 8]
+        header = 8
+        if size == 1:
+            header = 16
+            if len(data) - offset < header:
+                return False
+            size = int.from_bytes(data[offset + 8:offset + header], "big")
+        if size == 0:
+            size = len(data) - offset
+        if not header <= size <= len(data) - offset:
+            return False
+        if kind == b"moov":
+            return saw_media
+        saw_media |= kind == b"mdat"
+        offset += size
+    return False
+
+
+def _open_read_only_staging_file(path:Path)->BinaryIO:
+    if os.name != "nt":
+        return path.open("rb")
+
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    open_file = kernel.CreateFileW
+    open_file.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                          wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+    open_file.restype = wintypes.HANDLE
+    close_handle = kernel.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    generic_read = 0x80000000
+    share_read = 0x00000001
+    open_existing = 3
+    open_reparse_point = 0x00200000
+    handle = open_file(str(path), generic_read, share_read, None, open_existing,
+                       open_reparse_point, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+    except BaseException:
+        close_handle(handle)
+        raise
+    try:
+        return os.fdopen(descriptor, "rb")
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+@contextmanager
+def _seekable_media_input(data:bytes, deadline:float)->Iterator[BinaryIO]:
+    """Hold one private, read-only copy across both decoder invocations."""
+    with tempfile.TemporaryDirectory(prefix="mw-otio-probe-") as scratch:
+        staged = Path(scratch) / "input"
+        view = memoryview(data)
+        chunk_size = 1024 * 1024
+        with staged.open("xb") as output:
+            for start in range(0, len(view), chunk_size):
+                insist(time.monotonic() < deadline,
+                       "Media video readback exceeded its bounded time budget")
+                chunk = view[start:start + chunk_size]
+                insist(output.write(chunk) == len(chunk), "Could not stage the complete media input")
+        with _open_read_only_staging_file(staged) as source:
+            if os.name == "posix":
+                staged.unlink()
+            else:
+                # Windows holds the file with read sharing only. Validate the
+                # snapshot after acquiring that handle, before either probe.
+                info = os.fstat(source.fileno())
+                insist(stat.S_ISREG(info.st_mode) and info.st_size == len(data)
+                       and not info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT,
+                       "The staged media original changed before readback")
+                for start in range(0, len(view), chunk_size):
+                    insist(time.monotonic() < deadline,
+                           "Media video readback exceeded its bounded time budget")
+                    chunk = view[start:start + chunk_size]
+                    insist(source.read(len(chunk)) == chunk,
+                           "The staged media original changed before readback")
+            yield source
+
+
 def file_probe(media:Path,*,original_bytes:bytes|None=None)->dict:
-    # The same immutable original feeds both existing phases. Filesystem
-    # capture has no general wall-time guarantee; no decoder starts after the
-    # existing shared work deadline. A pipe-incompatible MP4 is refused, never
-    # retried through its mutable pathname or transcoded into another source.
     deadline=time.monotonic()+PROBE_TIMEOUT_SECONDS
     if original_bytes is None:original_bytes,_=capture_original(media,MAX_MEDIA)
     insist(type(original_bytes)is bytes and 0<len(original_bytes)<=MAX_MEDIA,
            "Media video stdin exceeds its byte budget")
-    common=[_ffprobe_program(),"-v","error","-protocol_whitelist","pipe",
+    if _has_trailing_movie_index(original_bytes):
+        # Descriptor access adds seeking without granting ffprobe a path or
+        # enabling the file protocol. Both phases consume the same byte copy.
+        try:
+            with _seekable_media_input(original_bytes,deadline) as source:
+                return _probe_video(original_bytes,deadline,stdin_file=source)
+        except OSError as error:
+            raise BridgeRefused("Could not stage a seekable copy of the original media") from error
+    return _probe_video(original_bytes,deadline)
+
+
+def _probe_video(original_bytes:bytes,deadline:float,*,stdin_file:BinaryIO|None=None)->dict:
+    protocol,input_url=("pipe","pipe:0") if stdin_file is None else ("fd","fd:")
+    common=[_ffprobe_program(),"-v","error","-protocol_whitelist",protocol,
             "-threads","1","-max_alloc",str(MAX_MEDIA),"-select_streams","v:0"]
+    input_options={"deadline":deadline,"input_bytes":original_bytes}
+    if stdin_file is not None:
+        input_options["stdin_file"]=stdin_file
     # Packet counting drains the metadata phase without a second full video
     # decode. Packet counts never substitute for the decoded frame count below.
     observed=strict_json(_probe_output(common+[
         "-count_packets","-show_entries","stream=codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames",
-        "-of","json","pipe:0"],deadline=deadline,input_bytes=original_bytes),"ffprobe")
+        "-of","json",input_url],**input_options),"ffprobe")
     streams=observed.get("streams",[])
     insist(isinstance(streams,list) and len(streams)==1 and isinstance(streams[0],dict),
            "Expected exactly one probed video stream")
@@ -247,8 +357,8 @@ def file_probe(media:Path,*,original_bytes:bytes|None=None)->dict:
     # video stream. Container nb_frames is a declaration, not observed media.
     decoded=strict_json(_probe_output(common+[
         "-err_detect","explode","-count_frames","-show_entries",
-        "stream=codec_name,width,height,nb_read_frames","-of","json","pipe:0"],
-        deadline=deadline,input_bytes=original_bytes),
+        "stream=codec_name,width,height,nb_read_frames","-of","json",input_url],
+        **input_options),
         "decoded ffprobe")
     readback=decoded.get("streams",[])
     insist(isinstance(readback,list) and len(readback)==1 and isinstance(readback[0],dict),

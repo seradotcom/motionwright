@@ -165,6 +165,11 @@ administrator-managed Python 3 and ffprobe installation on the same host.
   The runtime and its parent directories must be root-owned and protected
   against group or world writes. Any extended ACL entries must deny access.
 
+MP4 and MOV originals with their index after the media data require a build of
+ffprobe with the seekable `fd` protocol. Check the installed decoder with
+`ffprobe -protocols`. The Desktop bridge uses up to 256 MiB of temporary space
+for one read-only copy of such an original.
+
 Use runtime packages from a trusted distribution channel. Motionwright checks
 the installed paths and permissions before using the one-time local grant. A
 missing or unsafe installation leaves the operation available for a manual
@@ -218,15 +223,16 @@ The DEB declares `python3` and `ffmpeg` as dependencies; ffmpeg supplies ffprobe
 Install the DEB through a dependency-resolving package manager. The AppImage
 also requires these system packages on its Linux host. The application embeds
 its first-party bridge modules and needs no manual Python script setup or
-third-party Python package installation. It runs only protected system tools
-under `/usr/bin`, with isolated imports and bounded execution. Missing tools
-or writable runtime paths refuse export and inspection before execution.
+third-party Python package installation. On Linux it runs the protected system
+tools under `/usr/bin`. On Windows and macOS it uses the protected installations
+listed above. Missing tools or writable runtime paths refuse export and
+inspection before execution.
 
-Automated media inspection currently has no admitted runtime on Windows or
-macOS. Existing bridge-produced JSON files remain available for explicit
-proposal review on those platforms. Select the proposal file or paste its
-contents in **Review an existing bridge proposal**. A proposal declaration
-cannot independently authenticate media or an external editor.
+The Desktop source checks run synthetic H.264 export and import on Windows
+and macOS, including originals whose index follows the media. A previously
+generated JSON proposal can also be opened by selecting the proposal file or
+pasting its contents in **Review an existing bridge proposal**. Reviewing
+the declaration alone does not authenticate the media or external editor.
 
 The export is published once into a previously unused folder after verification;
 existing directories and dangling symlinks are never replaced. An interrupted

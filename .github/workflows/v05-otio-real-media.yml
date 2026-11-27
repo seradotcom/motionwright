@@ -52,6 +52,7 @@ on:
       - 'tooling/ci_test_runner.py'
       - 'tooling/cross_app_public_artifact.py'
       - 'tooling/mlt_official_runtime_intake.py'
+      - 'tooling/manim_native_readback.py'
       - 'tooling/requirements/mlt-g2-custody.txt'
       - 'crates/domain/**'
       - 'crates/storage/**'
@@ -79,6 +80,7 @@ on:
       - 'tooling/ci_test_runner.py'
       - 'tooling/cross_app_public_artifact.py'
       - 'tooling/mlt_official_runtime_intake.py'
+      - 'tooling/manim_native_readback.py'
       - 'tooling/requirements/mlt-g2-custody.txt'
       - 'crates/domain/**'
       - 'crates/storage/**'
@@ -310,6 +312,7 @@ jobs:
               native_prefix + name
               for name in (
                   "test_complete_original_video_exports_and_imports_without_changing_bytes",
+                  "test_video_with_trailing_index_round_trips_with_original_bytes",
                   "test_faststart_truncation_is_refused_with_intact_stream_metadata",
                   "test_corrupt_source_is_refused_before_export_destination_exists",
                   "test_hash_matched_legacy_corrupt_bundle_is_refused_on_import",
@@ -335,7 +338,7 @@ jobs:
               or not required_native.issubset(discovered)
               or not required_windows.issubset(discovered)
           ):
-              raise SystemExit("Incomplete OTIO discovery: require existing tests, seven real media cases and five Windows path cases")
+              raise SystemExit("Incomplete OTIO discovery: require existing tests, eight real media cases and five Windows path cases")
 
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           print(json.dumps({
@@ -434,6 +437,37 @@ jobs:
           with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as env:
               for variable in ("TMPDIR", "TEMP", "TMP"):
                   env.write(f"{variable}={scratch}\n")
+      - name: Provision the Windows synthetic-media decoder
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'ffmpeg-9.1-essentials_build.7z'
+          $release = 'https://github.com/GyanD/codexffmpeg/releases/download/9.1'
+          Invoke-WebRequest "$release/ffmpeg-9.1-essentials_build.7z" -OutFile $archive
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne '835b9a733445ba7a56a37a26cf7bde84e2f3ce7da2a8ec984276bb2abb1b922c') {
+            throw 'FFmpeg archive checksum mismatch'
+          }
+          $members = @(
+            'ffmpeg-9.1-essentials_build/bin/ffmpeg.exe'
+            'ffmpeg-9.1-essentials_build/bin/ffprobe.exe'
+          )
+          tar.exe -xf $archive -C $env:RUNNER_TEMP -- $members
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Join-Path $env:RUNNER_TEMP 'ffmpeg-9.1-essentials_build/bin' |
+            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Provision the macOS synthetic-media decoder
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: brew install ffmpeg
+      - name: Round-trip original synthetic H.264 media
+        shell: bash
+        working-directory: tooling/otio-media
+        run: |
+          ffmpeg -hide_banner -version
+          ffprobe -hide_banner -protocols | grep -E '^[[:space:]]+fd[[:space:]]*$'
+          python -B -m unittest -v test_native_media.NativeMediaAdmissionTests
       - name: Compile and test the shared Desktop OTIO bridge
         run: |
           cargo test --locked --jobs 2 -p motionwright-service --example studio_review_session otio_bridge:: -- --test-threads=1
