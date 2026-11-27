@@ -156,7 +156,9 @@ function JobRow({
             Broker observation: {ownerObservation.provider_state.replaceAll("_", " ")}.
             {ownerObservation.broker_observed
               ? " Original provider generation and job identity matched."
-              : " Original provider state was not confirmed."}
+              : ownerObservation.diagnostic === "original_connection_changed"
+                ? " Select the original Semwright connection to check this job."
+                : " Original provider state was not confirmed."}
             {" "}This is read-only status only; no result, verified pixels,
             mastered audio or automatic retry has been authorized.
           </span>

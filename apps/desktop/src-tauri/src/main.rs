@@ -73,10 +73,7 @@ use motionwright_native::{
     build_application,
     creative_doctor::{CliEvidence, require_doctor_scope},
     film::{FilmBuildOptions, build_motion_canvas_segments},
-    owner_reconciliation::{
-        OwnerMotionStatusObservation, authorize_original_motion_status,
-        classify_original_motion_status,
-    },
+    owner_reconciliation::{OwnerMotionStatusObservation, authorize_original_motion_status},
     production::{
         MltAvMasterEvidence, MltAvMasterRequest, MltCloseDisposition,
         MltMultisegmentAvMasterRequest, MotionCanvasRenderEvidence, MotionCanvasWindowRequest,
@@ -1747,9 +1744,8 @@ async fn read_original_native_job_status(
                     "No acknowledged native render job matches the selection.".to_owned()
                 })?;
             let start = service
-                .latest_production_receipt(project_id, &job.root_request_id)
-                .map_err(sanitized)?
-                .ok_or_else(|| "Original native render start receipt is missing.".to_owned())?;
+                .original_production_receipt_pair(project_id, &job.root_request_id)
+                .map_err(sanitized)?;
             let expected = RevisionStamp {
                 resource: project.resource_key(),
                 generation,
@@ -1789,12 +1785,9 @@ async fn read_original_native_job_status(
     // Exactly ONE read-only status query; never retry render.start, cancel,
     // result, or provider initialization after an unavailable generation.
     let status = client
-        .execute(
-            "driver.motion-canvas.render.status",
-            serde_json::json!({"job_ref": origin.job_ref}),
-            false,
-        )
-        .await;
+        .observe_original_motion_status(&origin)
+        .await
+        .map_err(sanitized)?;
 
     owner.begin_phase()?;
     let current = state.service.project(project_id).map_err(sanitized)?;
@@ -1811,10 +1804,7 @@ async fn read_original_native_job_status(
     // Return sanitized provider state only. The durable Jobs ledger is not
     // rewritten from this read, and a successful status is not an admitted
     // result, digest-verified frame set or finished audiovisual master.
-    Ok(classify_original_motion_status(
-        &origin,
-        status.as_ref().ok().map(|reply| &reply.value),
-    ))
+    Ok(status)
 }
 
 /// Semantic authoring preflight: exactly the same project-owned Film projection

@@ -1,5 +1,6 @@
 //! v0.1 owner-initiated, read-only reconciliation of an *acknowledged* job.
 //! Never dispatch render.start, retry a native job or treat status as media proof.
+use crate::production::ProductionClient;
 use motionwright_domain::{Project, RevisionStamp};
 use motionwright_service::{
     ProductionJobApplicability, ProductionJobProjection, ProductionJobState,
@@ -10,8 +11,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizedMotionStatusOrigin {
-    pub job_ref: String,
-    pub start_provider_generation: u64,
+    job_ref: String,
+    start_provider_generation: u64,
+    resource: String,
+    connection_identity: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -43,8 +46,13 @@ pub fn authorize_original_motion_status(
     expected: &RevisionStamp,
     requested_ref: &str,
     job: &ProductionJobProjection,
-    acknowledged_start: &ProductionReceipt,
+    original_pair: &[ProductionReceipt],
 ) -> NativeResult<AuthorizedMotionStatusOrigin> {
+    let [dispatch, acknowledged_start] = original_pair else {
+        return Err(deny(
+            "Original native render dispatch and acknowledgement are required",
+        ));
+    };
     if expected.resource != project.resource_key()
         || expected.generation != project.generation
         || expected.revision != project.revision
@@ -64,11 +72,31 @@ pub fn authorize_original_motion_status(
             ProductionJobState::OutcomeUnknown | ProductionJobState::CancelRequested
         )
         || job.root_request_id != acknowledged_start.request_id
+        || dispatch.request_id != acknowledged_start.request_id
+        || dispatch.request_sha256 != acknowledged_start.request_sha256
+        || !lowercase_sha256(&dispatch.request_sha256)
+        || dispatch.id == acknowledged_start.id
+        || dispatch.project_id != project.id
+        || dispatch.generation != project.generation
+        || dispatch.revision != project.revision
+        || dispatch.command != acknowledged_start.command
+        || dispatch.stage != "dispatching"
+        || dispatch.payload.get("mutation").and_then(Value::as_bool) != Some(true)
         || acknowledged_start.project_id != project.id
         || acknowledged_start.generation != project.generation
         || acknowledged_start.revision != project.revision
         || acknowledged_start.command != "driver.motion-canvas.render.start"
         || acknowledged_start.stage != "completed"
+        || acknowledged_start
+            .payload
+            .pointer("/result/provenance_checked")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || acknowledged_start
+            .payload
+            .pointer("/result/execution/dry_run")
+            .and_then(Value::as_bool)
+            != Some(false)
         || acknowledged_start
             .payload
             .pointer("/result/data/job_ref")
@@ -79,6 +107,21 @@ pub fn authorize_original_motion_status(
             .pointer("/result/execution/provenance/provider")
             .and_then(Value::as_str)
             != Some("driver:motion-canvas")
+        || acknowledged_start
+            .payload
+            .pointer("/result/execution/provenance/execution_provider")
+            .and_then(Value::as_str)
+            != Some("driver:motion-canvas")
+        || acknowledged_start
+            .payload
+            .pointer("/result/execution/provenance/source")
+            .and_then(Value::as_str)
+            != Some("driver")
+        || !acknowledged_start
+            .payload
+            .pointer("/result/execution/provenance/descriptor_sha256")
+            .and_then(Value::as_str)
+            .is_some_and(lowercase_sha256)
     {
         return Err(deny(
             "The requested native job has no matching acknowledged original start",
@@ -89,10 +132,55 @@ pub fn authorize_original_motion_status(
         .pointer("/result/execution/provenance/provider_generation")
         .and_then(Value::as_u64)
         .ok_or_else(|| deny("Original native render provider generation is not proven"))?;
+    let connection_identity = dispatch
+        .payload
+        .get("connection")
+        .and_then(Value::as_str)
+        .filter(|digest| lowercase_sha256(digest))
+        .ok_or_else(|| deny("Original native render connection is not proven"))?;
     Ok(AuthorizedMotionStatusOrigin {
         job_ref: requested_ref.to_owned(),
         start_provider_generation: original_generation,
+        resource: expected.resource.clone(),
+        connection_identity: connection_identity.to_owned(),
     })
+}
+
+fn lowercase_sha256(digest: &str) -> bool {
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+impl ProductionClient {
+    pub async fn observe_original_motion_status(
+        &self,
+        origin: &AuthorizedMotionStatusOrigin,
+    ) -> NativeResult<OwnerMotionStatusObservation> {
+        if self.connection().resource != origin.resource
+            || self.connection().identity()? != origin.connection_identity
+        {
+            return Ok(response(
+                origin,
+                "unknown",
+                "original_connection_changed",
+                false,
+                false,
+            ));
+        }
+        let reply = self
+            .execute(
+                "driver.motion-canvas.render.status",
+                serde_json::json!({"job_ref": origin.job_ref}),
+                false,
+            )
+            .await;
+        Ok(classify_original_motion_status(
+            origin,
+            reply.as_ref().ok().map(|reply| &reply.value),
+        ))
+    }
 }
 
 fn response(
@@ -120,7 +208,7 @@ fn response(
 /// Classify a single read-only canonical Broker status response. No data
 /// from an unknown generation or job_ref can promote an original job.
 /// Messages are closed, constant labels; private provider text never enters UI.
-pub fn classify_original_motion_status(
+fn classify_original_motion_status(
     origin: &AuthorizedMotionStatusOrigin,
     broker_response: Option<&Value>,
 ) -> OwnerMotionStatusObservation {
@@ -204,8 +292,10 @@ mod tests {
             stage: "completed".into(),
             payload: json!({"result": {
                 "data":{"job_ref": job_ref},
-                "execution":{"provenance":{
-                    "provider":"driver:motion-canvas","provider_generation":7
+                "provenance_checked":true,
+                "execution":{"dry_run":false,"provenance":{
+                    "provider":"driver:motion-canvas","provider_generation":7,
+                    "source":"driver","execution_provider":"driver:motion-canvas","descriptor_sha256":"c".repeat(64)
                 }}
             }}),
             created_at: "2026-10-12T07:00:00Z".into(),
@@ -233,6 +323,14 @@ mod tests {
         (project, job, start)
     }
 
+    fn pair(start: &ProductionReceipt) -> [ProductionReceipt; 2] {
+        let mut original = start.clone();
+        original.id = Uuid::now_v7();
+        original.stage = "dispatching".into();
+        original.payload = json!({"mutation":true,"connection":"b".repeat(64)});
+        [original, start.clone()]
+    }
+
     #[test]
     fn exact_acknowledged_start_authorizes_only_one_read() {
         let (project, job, start) = scenario();
@@ -241,7 +339,7 @@ mod tests {
             &RevisionStamp::from(&project),
             &job.job_ref,
             &job,
-            &start,
+            &pair(&start),
         )
         .unwrap();
         assert_eq!(origin.start_provider_generation, 7);
@@ -258,7 +356,7 @@ mod tests {
                 &RevisionStamp::from(&project),
                 &bad.job_ref,
                 &bad,
-                &start
+                &pair(&start)
             )
             .is_err()
         );
@@ -270,7 +368,7 @@ mod tests {
                 &RevisionStamp::from(&project),
                 &bad.job_ref,
                 &bad,
-                &start
+                &pair(&start)
             )
             .is_err()
         );
@@ -282,7 +380,7 @@ mod tests {
                 &RevisionStamp::from(&project),
                 &job.job_ref,
                 &job,
-                &bad_start
+                &pair(&bad_start)
             )
             .is_err()
         );
@@ -294,7 +392,7 @@ mod tests {
                 &RevisionStamp::from(&project),
                 &job.job_ref,
                 &job,
-                &bad_start
+                &pair(&bad_start)
             )
             .is_err()
         );
@@ -310,7 +408,7 @@ mod tests {
                 &RevisionStamp::from(&project),
                 &job.job_ref,
                 &job,
-                &start
+                &pair(&start)
             )
             .is_err()
         );
@@ -322,7 +420,7 @@ mod tests {
                 &RevisionStamp::from(&project),
                 &job.job_ref,
                 &job,
-                &start
+                &pair(&start)
             )
             .is_err()
         );
@@ -336,7 +434,7 @@ mod tests {
             &RevisionStamp::from(&project),
             &job.job_ref,
             &job,
-            &start,
+            &pair(&start),
         )
         .unwrap();
         let reply = json!({"data":{"job_ref":origin.job_ref,"state":"succeeded","artifact":{"frame_count":60}},
@@ -357,7 +455,7 @@ mod tests {
             &RevisionStamp::from(&project),
             &job.job_ref,
             &job,
-            &start,
+            &pair(&start),
         )
         .unwrap();
         for bad in [

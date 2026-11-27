@@ -2116,6 +2116,10 @@ jobs:
         cargo test --locked -p motionwright-service --lib mlt_closure_restores_only_the_original_attempt_in_commit_order \
           -- --nocapture 2>&1 | tee "$evidence/mlt-closure-projection.log"
         grep -F 'mlt_closure_restores_only_the_original_attempt_in_commit_order ... ok' "$evidence/mlt-closure-projection.log"
+        cargo test --locked -p motionwright-native --lib owner_reconciliation::tests:: -- --nocapture
+        cargo test --locked -p motionwright-native --lib original_motion_status_refuses_foreign_connection_before_native_launch \
+          -- --nocapture 2>&1 | tee "$evidence/motion-original-connection.log"
+        grep -F 'original_motion_status_refuses_foreign_connection_before_native_launch ... ok' "$evidence/motion-original-connection.log"
         cargo test --locked -p motionwright-native --lib mlt_owner_close_ \
           -- --nocapture 2>&1 | tee "$evidence/mlt-owner-close-rust.log"
         grep -F 'mlt_owner_close_recovers_the_original_and_fences_a_dispatch_after_reopen ... ok' "$evidence/mlt-owner-close-rust.log"

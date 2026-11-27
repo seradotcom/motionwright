@@ -6708,6 +6708,87 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn original_motion_status_refuses_foreign_connection_before_native_launch() {
+        use crate::owner_reconciliation::authorize_original_motion_status;
+        use std::sync::atomic::Ordering;
+
+        let (service, project, temp) = fixture_service();
+        let connection = fake_connection(&temp, project.resource_key());
+        let original_identity = connection.identity().unwrap();
+        let start_request = "original-motion-start";
+        let job_ref = "motion-render:original";
+        let mut start = ProductionReceiptInput {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            request_id: start_request.into(),
+            request_sha256: "a".repeat(64),
+            command: "driver.motion-canvas.render.start".into(),
+            stage: "dispatching".into(),
+            payload: json!({"connection": original_identity, "mutation": true}),
+        };
+        service.append_production_receipt(start.clone()).unwrap();
+        start.stage = "completed".into();
+        start.payload = json!({"result": {
+            "data":{"job_ref":job_ref,"state":"rendering"},
+            "provenance_checked":true,
+            "execution":{"dry_run":false,"provenance":{
+                "provider":"driver:motion-canvas","provider_generation":7,
+                "source":"driver","execution_provider":"driver:motion-canvas","descriptor_sha256":"c".repeat(64),
+            }},
+        }});
+        service.append_production_receipt(start.clone()).unwrap();
+        service
+            .append_production_receipt(ProductionReceiptInput {
+                request_id: "original-motion-observation".into(),
+                command: "driver.motion-canvas.render.status".into(),
+                stage: "outcome_unknown".into(),
+                payload: json!({"job_ref":job_ref}),
+                ..start
+            })
+            .unwrap();
+        let jobs = service.production_jobs(project.id, 10).unwrap();
+        let pair = service
+            .original_production_receipt_pair(project.id, start_request)
+            .unwrap();
+        assert!(
+            authorize_original_motion_status(
+                &project,
+                &project.stamp(),
+                job_ref,
+                &jobs[0],
+                &pair[1..],
+            )
+            .is_err()
+        );
+        let origin =
+            authorize_original_motion_status(&project, &project.stamp(), job_ref, &jobs[0], &pair)
+                .unwrap();
+
+        let other_temp = tempfile::tempdir().unwrap();
+        let foreign =
+            ProductionClient::new(fake_connection(&other_temp, project.resource_key())).unwrap();
+        let refused = foreign
+            .observe_original_motion_status(&origin)
+            .await
+            .unwrap();
+        assert_eq!(refused.provider_state, "unknown");
+        assert_eq!(refused.diagnostic, "original_connection_changed");
+        assert!(!refused.broker_observed);
+        assert_eq!(foreign.execute_calls.load(Ordering::SeqCst), 0);
+
+        let original = ProductionClient::new(connection).unwrap();
+        let observed = original
+            .observe_original_motion_status(&origin)
+            .await
+            .unwrap();
+        assert_eq!(original.execute_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(observed.provider_state, "unknown");
+        assert!(!observed.broker_observed);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn mlt_owner_close_recovers_the_original_and_fences_a_dispatch_after_reopen() {
         let (service, project, temp) = fixture_service();
         let connection = fake_connection(&temp, project.resource_key());
