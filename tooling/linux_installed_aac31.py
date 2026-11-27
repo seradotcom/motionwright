@@ -30,6 +30,7 @@ from source_checkout_observation import regular_file
 
 PLAYER = "Verified native MP4 review player"
 METADATA = "1920 × 1080 · 1.03 s decoded metadata"
+RETAINED_PHASES = ("play-retained", "reopen")
 ACTION_READY = frozenset({"visible", "enabled", "sensitive"})
 
 
@@ -288,6 +289,9 @@ def capture_delivery_window(evidence, binding, deadline, gdk, gdk_x11):
 
 
 def worker(request, phase, binding, seconds):
+    if "retained_master" in request:
+        require(any(phase in {step, "open-project-" + step, "navigate-" + step}
+                    for step in RETAINED_PHASES), "retained AAC31 may only read the saved master")
     import gi
     gi.require_version("Atspi", "2.0")
     gi.require_version("Gdk", "3.0")
@@ -364,7 +368,7 @@ def await_original(database, source, output, deadline):
 
 
 def operate_window(request, phase, binding, bridge, journal, gdk, database, output, source):
-    require(phase in {"render", "reopen"}, "invalid installed AAC31 review phase")
+    require(phase in {"render", *RETAINED_PHASES}, "invalid installed AAC31 review phase")
     master = original_master(database, source, output)
     if phase == "render":
         completed = wait_for(bridge, lambda: exact(bridge, binding, "Completed original hybrid master"))
@@ -377,7 +381,7 @@ def operate_window(request, phase, binding, bridge, journal, gdk, database, outp
     wait_for(bridge, lambda: exact(bridge, binding, METADATA))
     same_window(bridge, binding, player)
     played = None
-    if phase == "render":
+    if phase in {"render", "play-retained"}:
         played = player_proof(bridge, binding, player, journal, gdk, Path(request["evidence"]))
     durable = original_master(database, source, output)
     require(durable == master, "AAC31 original changed while the WebView was open")
@@ -454,8 +458,24 @@ def observe_window(request_path, evidence, phase, binding, deadline, database, s
 
 
 
-def run_installed(request_path: Path, *, inspect_delivery=False) -> dict:
-    """One owned AppRun render/play session and one fresh AppRun reopen."""
+def admit_retained_master(retained, database, source, output):
+    require(type(retained) is dict and set(retained) == {"render_run_id", "receipt_id", "sha256", "bytes"}
+            and isinstance(retained["render_run_id"], str)
+            and re.fullmatch(r"[1-9][0-9]*", retained["render_run_id"]) is not None
+            and isinstance(retained["receipt_id"], str)
+            and isinstance(retained["sha256"], str)
+            and re.fullmatch(r"[a-f0-9]{64}", retained["sha256"]) is not None
+            and type(retained["bytes"]) is int and retained["bytes"] > 0,
+            "invalid retained AAC31 evidence identity")
+    master = original_master(database, source, output)
+    require((master.id, master.sha256, master.size)
+            == (retained["receipt_id"], retained["sha256"], retained["bytes"]),
+            "retained AAC31 original differs from the admitted receipt or bytes")
+    return master
+
+
+def run_installed(request_path: Path, *, inspect_delivery=False, verify_retained_original=False) -> dict:
+    """Observe one saved master in two owned AppRun instances."""
     request = json.loads(request_path.read_bytes())
     source = Source(**request["source"])
     evidence = Path(request["evidence"])
@@ -476,14 +496,28 @@ def run_installed(request_path: Path, *, inspect_delivery=False) -> dict:
             and re.fullmatch(r"[a-f0-9]{40}", request["semwright_sha"]) is not None
             and request["semwright_sha"] == semwright["revision"], "AAC31 source or SDK pin differs")
     require(type(seconds) is int and 45 <= seconds <= 600, "invalid AAC31 window deadline")
-    require(evidence == evidence.resolve(strict=True) and not rows(database, source)
+    require(evidence == evidence.resolve(strict=True)
             and profile == profile.resolve(strict=True) and profile.is_dir()
-            and database.is_relative_to(profile / "data"), "expected a new installed AAC31 case")
+            and database.is_relative_to(profile / "data"), "invalid installed AAC31 case paths")
+    require(verify_retained_original == ("retained_master" in request)
+            and not (inspect_delivery and verify_retained_original), "invalid AAC31 observation mode")
+    retained = None
+    if verify_retained_original:
+        retained = request["retained_master"]
+        admitted = admit_retained_master(retained, database, source, output)
+        require(retained["render_run_id"] != os.environ.get("GITHUB_RUN_ID")
+                and admitted_owner_connection(request, source, output) is not None,
+                "AAC31 replay requires the original render and an explicit readback connection")
+        original_rows = [tuple(row) for row in rows(database, source)]
+        phases = RETAINED_PHASES
+    else:
+        require(not rows(database, source), "expected a new installed AAC31 case")
+        phases = ("render",) if inspect_delivery else ("render", "reopen")
     screens = {}
 
-    for phase in (("render",) if inspect_delivery else ("render", "reopen")):
+    for phase in phases:
         started = time.monotonic()
-        deadline = started + (seconds if phase == "render" else 45)
+        deadline = started + (45 if phase == "reopen" else seconds)
         observation = {}
 
         def interaction(_profile):
@@ -525,18 +559,24 @@ def run_installed(request_path: Path, *, inspect_delivery=False) -> dict:
         require(screens[phase]["master"]["id"] == master.id
                 and screens[phase]["master"]["sha256"] == master.sha256,
                 "AAC31 original changed after the installed process closed")
-        if phase == "render":
+        if retained is not None:
+            require(master == admitted and [tuple(row) for row in rows(database, source)] == original_rows,
+                    "AAC31 readback changed the original render history")
+        if phase in {"render", "play-retained"}:
             proof = observe_clock(master, Path(request["wave"]), request["wave_sha256"],
                                   ffprobe=Path(request["ffprobe"]), ffprobe_sha=request["ffprobe_sha256"],
                                   ffmpeg=Path(request["ffmpeg"]), ffmpeg_sha=request["ffmpeg_sha256"])
             publish(evidence / "original-mp4-clock.json", proof)
 
-    require(screens["render"]["master"] == screens["reopen"]["master"]
-            and screens["render"]["binding"] != screens["reopen"]["binding"],
+    playback = screens[phases[0]]
+    require(playback["master"] == screens["reopen"]["master"]
+            and playback["binding"] != screens["reopen"]["binding"],
             "AAC31 cold reopen did not observe the same original in a fresh instance")
     report = {"schema": "motionwright.installed-aac31/1", "source_sha": request["source_sha"],
               "semwright_sha": request["semwright_sha"], "original_sha256": master.sha256,
               "mux_receipt_id": master.id, "screens": screens, "verified_clock": proof}
+    if retained is not None:
+        report.update(retained_render_run_id=retained["render_run_id"], render_dispatch_limit=0)
     publish(evidence / "installed-aac31.json", report)
     return report
 
@@ -544,10 +584,14 @@ def run_installed(request_path: Path, *, inspect_delivery=False) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--request", type=Path, required=True)
-    parser.add_argument("--inspect-delivery", action="store_true")
+    observation = parser.add_mutually_exclusive_group()
+    observation.add_argument("--inspect-delivery", action="store_true")
+    observation.add_argument("--verify-retained-original", action="store_true")
     parser.add_argument("--worker", choices=("open-project-render", "open-project-reopen",
-                                             "navigate-render", "navigate-reopen", "check-source",
-                                             "inspect-delivery", "capture-window", "create", "render", "reopen"))
+                                             "open-project-play-retained",
+                                             "navigate-render", "navigate-reopen", "navigate-play-retained",
+                                             "check-source", "inspect-delivery", "capture-window", "create",
+                                             "render", *RETAINED_PHASES))
     parser.add_argument("--binding")
     parser.add_argument("--seconds", type=int)
     args = parser.parse_args()
@@ -557,7 +601,8 @@ def main() -> None:
         result = worker(json.loads(args.request.read_bytes()), args.worker,
                         json.loads(args.binding), args.seconds)
     else:
-        result = run_installed(args.request, inspect_delivery=args.inspect_delivery)
+        result = run_installed(args.request, inspect_delivery=args.inspect_delivery,
+                               verify_retained_original=args.verify_retained_original)
     print(json.dumps(result, sort_keys=True))
 
 

@@ -68,6 +68,34 @@ class InstalledAAC31ProofTests(unittest.TestCase):
         self.assertEqual([call.args[2] for call in stage.call_args_list],
                          ["open-project-render", "navigate-render", "capture-window"])
 
+    def test_retained_original_navigation_never_checks_or_dispatches_a_render(self):
+        binding = {"pid": 9001, "window": "0x42", "start_time": "100"}
+        with patch.object(installed, "observe_stage", return_value={"playback": ["played"]}) as stage, patch.object(
+            installed, "await_original",
+        ) as await_render:
+            playback, reopened = installed.RETAINED_PHASES
+            self.assertEqual((playback, reopened), ("play-retained", "reopen"))
+            report = installed.observe_window(
+                Path("request"), Path("evidence"), playback, binding, time.monotonic() + 90,
+                Mock(), Mock(), Mock(),
+            )
+        self.assertEqual(report["playback"], ["played"])
+        self.assertEqual([call.args[2] for call in stage.call_args_list],
+                         ["open-project-play-retained", "navigate-play-retained", "play-retained"])
+        await_render.assert_not_called()
+
+    def test_retained_original_requires_the_exact_terminal_receipt_and_bytes(self):
+        receipt = "fd12950f-8495-47fa-b6d7-d5698b852366"
+        original = Master(receipt, receipt, "a" * 64, 256, Path("original.mp4"))
+        retained = {"render_run_id": "45979215157", "receipt_id": receipt,
+                    "sha256": original.sha256, "bytes": original.size}
+        with patch.object(installed, "original_master", return_value=original):
+            self.assertEqual(installed.admit_retained_master(retained, Mock(), Mock(), Mock()), original)
+            with self.assertRaisesRegex(ValueError, "retained AAC31 original differs"):
+                installed.admit_retained_master({**retained, "sha256": "b" * 64}, Mock(), Mock(), Mock())
+            with self.assertRaisesRegex(ValueError, "invalid retained AAC31"):
+                installed.admit_retained_master({**retained, "bytes": True}, Mock(), Mock(), Mock())
+
     def test_button_scan_does_not_read_unrelated_document_names(self):
         bridge = installed.ReviewBridge.__new__(installed.ReviewBridge)
         bridge.deadline = None
