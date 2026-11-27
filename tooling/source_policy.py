@@ -151,7 +151,7 @@ if any(token in workflow_text for token in automatic_publish_tokens):
 # job bounds the child, and readback precedes any no-clobber publication.
 reviewed_otio_sources = {
     "apps/desktop/src-tauri/src/otio_bridge.rs":
-        "2a22966a5e893eccc0aa93cd12099bda35bcdadcc0e8b136f1d344f8abf76ac2",
+        "9ed7530b3487fa865367e11568ff6eb95eeaa9e79e0748bb2efd2fb93962cee9",
     "apps/desktop/src-tauri/src/otio_bridge_macos.rs":
         "3337b54d13cb20ef0e0453a974d3e4e53b2359c7f62cadad501ee8dafe5427b8",
     "apps/desktop/src-tauri/src/otio_bridge_windows_process.rs":

@@ -1185,7 +1185,6 @@ pub fn preview(
         &request.edited_file,
         request.received_file.as_deref(),
     )?;
-    let runtime = admit_runtime_before_dispatch()?;
     let bundle = canonical_owner_directory(&request.bundle_path)?;
     let project = service.project(request.project_id).map_err(|_| refused())?;
     if project.generation != request.generation || project.revision != request.revision {
@@ -1196,6 +1195,7 @@ pub fn preview(
     let operation = OtioBridgeOperation::Preview;
     require_bridge_idle(service, &project, operation)?;
     let parent = BridgeWorkspaceParent::admit(bundle.parent().ok_or_else(refused)?)?;
+    let runtime = admit_runtime_before_dispatch()?;
     let PreviewDocuments {
         original,
         manifest,
@@ -2393,7 +2393,6 @@ pub fn export_portable(
     {
         return Err("Portable OTIO media export requires explicit original ownership, media redistribution permission and one bounded scene binding.".into());
     }
-    let runtime = admit_runtime_before_dispatch()?;
     let destination = new_owner_bundle_destination(&request.destination)?;
     let project = service.project(request.project_id).map_err(|_| refused())?;
     if project.generation != request.generation
@@ -2444,6 +2443,7 @@ pub fn export_portable(
     let operation = OtioBridgeOperation::Export;
     require_bridge_idle(service, &project, operation)?;
     let parent = BridgeWorkspaceParent::admit(destination.parent().ok_or_else(refused)?)?;
+    let runtime = admit_runtime_before_dispatch()?;
     // Consume the exact one-use grant before creating a workspace or reading
     // original media. Runtime qualification is repeated at process launch.
     grants.consume(

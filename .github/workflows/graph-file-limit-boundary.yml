@@ -128,11 +128,12 @@ jobs:
               "original_source_open_rejects_racing_fifo_without_waiting_for_a_writer",
               "otio_original_source_choice_is_closed_and_has_no_implicit_fallback",
               "imported_otio_source_survives_original_path_move_and_store_reopen",
+              "unsafe_otio_folder_preserves_preview_grant_before_opening_documents",
           }
           passed = re.findall(r"(?m)^test otio_bridge::tests::([A-Za-z0-9_]+) \.\.\. ok$", raw)
           assert set(passed) == required and len(passed) == len(required), passed
-          assert re.search(r"(?m)^test result: ok\. 11 passed; 0 failed; 0 ignored;", raw)
-          print("OTIO_ORIGINAL_FILE_INTAKE=PASS; source_tests=11; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+          assert re.search(r"(?m)^test result: ok\. 12 passed; 0 failed; 0 ignored;", raw)
+          print("OTIO_ORIGINAL_FILE_INTAKE=PASS; source_tests=12; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           PY
       - name: Run all 23 actual Graph Service admission and SQLite lease tests
         run: |
