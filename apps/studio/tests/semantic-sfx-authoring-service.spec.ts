@@ -459,10 +459,15 @@ test("an explicit cross-cut SFX tail survives UI save, reload and editing with t
       scope: "Authored placement and persistence only; no native PCM render or readback.",
     };
     await page.reload(); await revision(page, arranged.revision);
-    const editor = await openSound(page, "new");
+    await button(page, "Production").click();
+    await button(page, "Craft library").click();
+    const library = page.getByRole("region", { name: "Craft component library", exact: true });
+    await library.getByRole("button", { name: /Transition tail/ }).click();
+    await button(library, "Open authoring editor").click();
+    const editor = page.getByRole("region", { name: "Sound events", exact: true });
+    await expect(editor.getByRole("heading", { name: "Sound events", exact: true })).toBeFocused();
     const attestation = "Synthetic stereo PCM imported by this test; explicit tail persistence coverage only.";
     await field(editor, "SFX source scene").selectOption(sourceScene.id);
-    await field(editor, "SFX semantic event").selectOption("transition");
     await field(editor, "SFX event anchor").selectOption("scene_start");
     await field(editor, "SFX imported WAV").selectOption(assetA.id);
     await field(editor, "SFX Offset frames").fill(String(onsetInCut));
@@ -476,7 +481,11 @@ test("an explicit cross-cut SFX tail survives UI save, reload and editing with t
     await expect(button(editor, "Add sound event")).toBeDisabled();
     expect(mutationCounts(service)).toEqual(counts);
     expect(await observe("default scene-local policy did not admit the cross-cut tail")).toEqual(arranged);
-    await field(editor, "SFX Tail policy").selectOption("continue_across_cuts");
+    await button(editor, "Apply Transition tail to draft").click();
+    await expect(field(editor, "SFX semantic event")).toHaveValue("transition");
+    await expect(field(editor, "SFX Tail policy")).toHaveValue("continue_across_cuts");
+    await expect(field(editor, "SFX imported WAV")).toHaveValue(assetA.id);
+    expect(mutationCounts(service)).toEqual(counts);
     await expect(button(editor, "Add sound event"), requiredComposition).toBeEnabled();
     const rawBeforeAdd = await ownCopy(page, arranged, "new");
     expect(rawBeforeAdd.value.draft.raw.tailPolicy).toBe("continue_across_cuts");
