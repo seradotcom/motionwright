@@ -268,13 +268,20 @@ class EditorUI:
 
     def menu_item(self, title, evidence, stage, *, section="File", submenu=None):
         ax = self.ax
+        unavailable = {}
 
         def menu_node(parent, expected, wanted):
             if parent:
-                return next((node for node in self.descend(ax.children(parent), limit=100)
-                             if self.title(node) == label(expected)
-                             and ax.text(node, "AXRole") == "AXMenuItem"
-                             and ax.enabled(node) and ax.action(node, wanted)), None)
+                for node in self.descend(ax.children(parent), limit=100):
+                    if self.title(node) != label(expected) or ax.text(node, "AXRole") != "AXMenuItem":
+                        continue
+                    enabled, actions = ax.enabled(node), ax.actions(node)
+                    if enabled and any(action in actions for action in wanted):
+                        return node
+                    unavailable[expected] = {
+                        "identifier": ax.text(node, "AXIdentifier"),
+                        "enabled": enabled, "actions": actions,
+                    }
             return None
 
         def nested():
@@ -306,7 +313,14 @@ class EditorUI:
                     return item
                 submenu_node = self.await_target(nested, submenu)
                 evidence.press(stage + "-submenu", submenu_node, opens=submenu)
-        return self.await_target(lookup, title)
+        try:
+            return self.await_target(lookup, title)
+        except TimeoutError:
+            evidence.write(stage + "-unavailable", {
+                "pid": ax.pid, "section": section, "submenu": submenu,
+                "title": title, "observed_unavailable_items": unavailable,
+            })
+            raise
 
     def panels(self):
         ax = self.ax
@@ -446,6 +460,11 @@ class EditorUI:
         tab = self.await_target(self.project_monitor_tab, "owned Project Monitor tab")
         evidence.press("activate-project-monitor", tab)
         self.await_target(self.project_monitor, "selected Project Monitor tab group")
+        # The pinned Kdenlive action activates the project monitor itself before
+        # opening the inspector. The dock tab alone cannot select the monitor.
+        activate = self.menu_item("Sequence effects", evidence, "focus-project-monitor",
+                                  section="Sequence", submenu="Tracks")
+        evidence.press("focus-project-monitor", activate)
         for name, stage, submenu in (
             ("Go to Project End", "project-end", "Go To"),
             ("Rewind 1 Frame", "rewind-one-frame", "Seek"),

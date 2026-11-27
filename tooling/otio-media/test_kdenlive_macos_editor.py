@@ -160,19 +160,21 @@ class MacEditorRouteTests(unittest.TestCase):
     def test_third_clip_selection_uses_native_project_navigation_without_a_clock(self):
         ui = editor.EditorUI(Mock(), lambda: None)
         ui.await_target = Mock(return_value="Project Monitor radio")
-        ui.menu_item = Mock(side_effect=["Go to Project End", "Rewind 1 Frame", "Select Clip"])
+        ui.menu_item = Mock(side_effect=["Sequence effects", "Go to Project End", "Rewind 1 Frame", "Select Clip"])
         ui.project_clock = Mock(side_effect=AssertionError("the Project Monitor clock is hidden"))
         evidence = Mock()
 
         ui.seek_and_select_third_clip(evidence)
 
         self.assertEqual(ui.menu_item.call_args_list, [
+            call("Sequence effects", evidence, "focus-project-monitor", section="Sequence", submenu="Tracks"),
             call("Go to Project End", evidence, "project-end", section="Monitor", submenu="Go To"),
             call("Rewind 1 Frame", evidence, "rewind-one-frame", section="Monitor", submenu="Seek"),
             call("Select Clip", evidence, "select-third", section="Sequence", submenu="Selection"),
         ])
         self.assertEqual(evidence.press.call_args_list, [
             call("activate-project-monitor", "Project Monitor radio"),
+            call("focus-project-monitor", "Sequence effects"),
             call("project-end", "Go to Project End"),
             call("rewind-one-frame", "Rewind 1 Frame"),
             call("select-third", "Select Clip"),
