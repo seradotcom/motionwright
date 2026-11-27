@@ -28,7 +28,7 @@ class MacEditorRouteTests(unittest.TestCase):
             call("open-import", "import item"),
             call("import-otio", "Open"),
             call("open-save-as", "save item"),
-            call("save-initial", "Save"),
+            call("save-project", "Save"),
         ])
 
     def test_uncertain_import_cannot_trigger_a_second_import_or_a_save(self):
@@ -117,29 +117,39 @@ class MacEditorRouteTests(unittest.TestCase):
         ax.create_ax_value.assert_not_called()
         ax.copy_parameterized_value.assert_not_called()
 
-    def test_playlist_model_is_checked_before_each_change_and_after_restore(self):
+    def test_playlist_model_is_checked_before_each_resize(self):
         ui, evidence = Mock(), Mock()
         evidence.press.return_value = 0
         ui.menu_item.return_value = "Selection Tool"
         ui.duration_dialog.side_effect = [
-            ("Cancel", (60, 60, 30)), ("Cancel", (60, 60, 29)), ("Cancel", (60, 60, 30)),
+            ("Cancel", (60, 60, 30)), ("Cancel", (60, 60, 29)),
         ]
 
         editor.refresh_third_playlist(ui, evidence)
 
         self.assertEqual(ui.duration_dialog.call_args_list, [
-            call("shorten", evidence), call("restore", evidence), call("verify-restoration", evidence),
+            call("shorten", evidence), call("restore", evidence),
         ])
         self.assertEqual(ui.seek_and_select_third_clip.call_args_list, [
-            call(evidence, "shorten"), call(evidence, "restore"), call(evidence, "verify-restoration"),
+            call(evidence, "shorten"), call(evidence, "restore"),
         ])
         self.assertEqual(ui.resize_selected_end.call_args_list, [
             call("shorten", 0, evidence), call("restore", 2, evidence),
         ])
         self.assertEqual(evidence.press.call_args_list, [
             call("selection-tool", "Selection Tool"), call("shorten-close", "Cancel"),
-            call("restore-close", "Cancel"), call("verify-restoration-close", "Cancel"),
+            call("restore-close", "Cancel"),
         ])
+
+    def test_missing_crop_stops_before_dispatching_a_resize(self):
+        ui, evidence = Mock(), Mock()
+        evidence.press.return_value = 0
+        ui.duration_dialog.return_value = ("Cancel", (60, None, 30))
+
+        with self.assertRaisesRegex(ValueError, "shorten model"):
+            editor.refresh_third_playlist(ui, evidence)
+
+        ui.resize_selected_end.assert_not_called()
 
     def test_unapplied_trim_never_restores_the_clip(self):
         ui, evidence = Mock(), Mock()

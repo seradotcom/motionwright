@@ -1,6 +1,7 @@
-"""Cold reopen the verified macOS project and original media in its own job."""
+"""Cold reopen and optionally return one verified synthetic cut in installed Kdenlive."""
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -12,8 +13,12 @@ import subprocess
 import sys
 
 from kdenlive_native_distribution import JOB, ROOT, publish, selection
-from kdenlive_macos_editor import Accessibility, EditorUI, editor_pid_executable
-from kdenlive_native_source import MAX_METADATA_BYTES, installed_editor
+from kdenlive_macos_editor import (
+    Accessibility, EditorUI, Evidence, editor_pid_executable, expect_third_clip,
+    save_project_as, select_normal_tool, wait_project,
+)
+from kdenlive_macos_kxmlgui import prepare_profile
+from kdenlive_native_source import MAX_METADATA_BYTES, admitted_source, inspect_native_return, installed_editor
 from kdenlive_readback import MAX_MEDIA, MAX_XML_BYTES
 from source_checkout_observation import git, regular_file, require
 
@@ -86,7 +91,31 @@ def admit_original(owner, context, distribution):
     return original
 
 
-def run(owner, context, distribution):
+def export_otio(ui, evidence, path, stage, check_source):
+    item = ui.menu_item("OpenTimelineIO Export", evidence, stage)
+    evidence.press("open-" + stage, item)
+    field, button = ui.file_panel({"opentimelineio export"}, "Save")
+    ui.set_text(field, str(path))
+    require(not path.exists() and not path.is_symlink(), "macOS OTIO export destination already exists")
+    check_source()
+    evidence.press(stage + "-confirm", button)
+    wait_project(path, ui.guard, MAX_METADATA_BYTES)
+
+
+def produce_native_return(ui, evidence, output, check_source):
+    export_otio(ui, evidence, output / "received.otio", "original-export", check_source)
+    select_normal_tool(ui, evidence)
+    expect_third_clip(ui, evidence, "edit-return", 30)
+    check_source()
+    ui.resize_selected_end("edit-return", 0, evidence)
+    expect_third_clip(ui, evidence, "verify-return", 29)
+    edited = output / "edited.kdenlive"
+    save_project_as(ui, evidence, edited, check_source, "edited-save")
+    wait_project(edited, ui.guard)
+    export_otio(ui, evidence, output / "edited.otio", "edited-export", check_source)
+
+
+def run(owner, context, distribution, *, verify_return=False):
     original = admit_original(owner, context, distribution)
     output = owner / "macos-reopen"
     output.mkdir(mode=0o700)
@@ -95,13 +124,26 @@ def run(owner, context, distribution):
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith(("DYLD_", "QT_", "QML", "MLT_"))}
     environment.update({"LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8", "QT_ACCESSIBILITY": "1"})
+    if verify_return:
+        source = admitted_source(owner, context, distribution)
+        require(source[:2] == (original.executable, original.binary),
+                "original Kdenlive installation changed before the synthetic return")
+        environment, profile = prepare_profile(output, environment)
+
+    def check_source():
+        original.verify_files()
+        if verify_return:
+            require(admitted_source(owner, context, distribution) == source
+                    and regular_file(Path(profile["path"]), 64 * 1024) == profile["override"],
+                    "original editor, profile or source changed during the synthetic return")
+
     ax = Accessibility()
     try:
         publish(output / "reopen-intent.json", {
             "context": context, "argv": command, "first_pid": original.first_pid,
             "save": original.saved, "media": original.media_identity,
         })
-        original.verify_files()
+        check_source()
         with (output / "editor.stdout").open("xb") as stdout, (output / "editor.stderr").open("xb") as stderr:
             try:
                 process = subprocess.Popen(command, cwd=output, env=environment, stdin=subprocess.DEVNULL,
@@ -134,7 +176,10 @@ def run(owner, context, distribution):
                 observation = {"pid": process.pid, "window_title": ax.text(window, "AXTitle"),
                                "project_sha256": original.saved["sha256"]}
                 publish(output / "reopen-window.json", observation)
-                original.verify_files()
+                check_source()
+                if verify_return:
+                    produce_native_return(ui, Evidence(output, ax, guard), output, check_source)
+                    check_source()
             except Exception as error:
                 publish(output / "reopen-error.json", {"type": type(error).__name__, "message": str(error)})
                 raise
@@ -149,13 +194,19 @@ def run(owner, context, distribution):
                             process.wait(timeout=5)
                 finally:
                     publish(output / "editor-terminal.json", {"pid": process.pid, "exit_code": process.poll()})
-        original.verify_files()
+        check_source()
         require(installed_editor(owner, context, distribution) == (original.executable, original.binary),
                 "original Kdenlive executable changed during the reopen")
         report = {"schema": "motionwright.kdenlive-macos-original-reopened/1", "context": context,
                   "first_pid": original.first_pid, "reopened_process": observation,
                   "save": original.saved, "media": original.media_identity,
-                  "import_confirmations": 0, "save_confirmations": 0, "render_dispatches": 0}
+                  "import_confirmations": 0, "save_confirmations": int(verify_return), "render_dispatches": 0}
+        if verify_return:
+            report["native_return"] = inspect_native_return(
+                owner, source[2]["manifest"]["sha256"],
+                read_receipt(owner / "macos-initial" / "initial-readback.json"),
+                output / "received.otio", output / "edited.otio", output / "edited.kdenlive",
+            )
         publish(output / "reopened-original.json", report)
         return report
     finally:
@@ -163,6 +214,9 @@ def run(owner, context, distribution):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--verify-return", action="store_true")
+    options = parser.parse_args()
     context, distribution = selection(os.environ, sys.platform, platform.machine())
     require(context["runner_os"] == "macOS", "macOS original reopen is restricted to macOS")
     require(git(ROOT, "rev-parse", "HEAD").decode("ascii").strip() == context["source_sha"],
@@ -170,7 +224,8 @@ def main():
     runner = Path(os.environ["RUNNER_TEMP"])
     require(runner.is_absolute() and runner.resolve(strict=True) == runner,
             "macOS Kdenlive reopen runner root is not canonical")
-    print(json.dumps(run(runner / f"{JOB}-{context['run_id']}-1", context, distribution),
+    print(json.dumps(run(runner / f"{JOB}-{context['run_id']}-1", context, distribution,
+                         verify_return=options.verify_return),
                      sort_keys=True))
 
 

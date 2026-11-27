@@ -3,7 +3,7 @@ from hashlib import sha256
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 import kdenlive_macos_reopen as reopen
 from kdenlive_native_distribution import publish
@@ -73,6 +73,40 @@ class MacColdReopenTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "original"):
                         reopen.run(owner, context, "distribution")
                 launch.assert_not_called()
+
+    def test_native_return_exports_the_unchanged_cut_then_saves_under_a_new_name(self):
+        ui, evidence, check = Mock(), Mock(), Mock()
+        output = Path("macos-reopen")
+        with patch.object(reopen, "export_otio") as export, patch.object(
+            reopen, "select_normal_tool",
+        ), patch.object(reopen, "expect_third_clip") as expect, patch.object(
+            reopen, "save_project_as",
+        ) as save, patch.object(reopen, "wait_project"):
+            reopen.produce_native_return(ui, evidence, output, check)
+
+        self.assertEqual(export.call_args_list, [
+            call(ui, evidence, output / "received.otio", "original-export", check),
+            call(ui, evidence, output / "edited.otio", "edited-export", check),
+        ])
+        self.assertEqual(expect.call_args_list, [
+            call(ui, evidence, "edit-return", 30), call(ui, evidence, "verify-return", 29),
+        ])
+        ui.resize_selected_end.assert_called_once_with("edit-return", 0, evidence)
+        save.assert_called_once_with(ui, evidence, output / "edited.kdenlive", check, "edited-save")
+
+    def test_failed_trim_readback_keeps_the_original_export_and_stops_before_edited_save(self):
+        ui, evidence, check = Mock(), Mock(), Mock()
+        output = Path("macos-reopen")
+        with patch.object(reopen, "export_otio") as export, patch.object(
+            reopen, "select_normal_tool",
+        ), patch.object(reopen, "expect_third_clip", side_effect=[None, ValueError("wrong duration")]), patch.object(
+            reopen, "save_project_as",
+        ) as save:
+            with self.assertRaisesRegex(ValueError, "wrong duration"):
+                reopen.produce_native_return(ui, evidence, output, check)
+        export.assert_called_once_with(ui, evidence, output / "received.otio", "original-export", check)
+        ui.resize_selected_end.assert_called_once_with("edit-return", 0, evidence)
+        save.assert_not_called()
 
 
 if __name__ == "__main__":

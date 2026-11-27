@@ -582,20 +582,38 @@ class Evidence:
         return status
 
 
-def refresh_third_playlist(ui, evidence):
+def select_normal_tool(ui, evidence):
     tool = ui.menu_item("Selection Tool", evidence, "selection-tool", section="Tool")
     require(evidence.press("selection-tool", tool) == 0, "the non-ripple selection tool was not acknowledged")
-    for stage, expected in (("shorten", 30), ("restore", 29), ("verify-restoration", 30)):
-        ui.seek_and_select_third_clip(evidence, stage)
-        cancel, values = ui.duration_dialog(stage, evidence)
-        evidence.write(stage + "-model", {"position_crop_duration_frames": values})
-        require(values == (60, 60, expected), f"macOS {stage} model does not match the original third clip")
-        evidence.press(stage + "-close", cancel)
-        ui.duration_closed()
-        if stage != "verify-restoration":
-            # The original end is frame 89. The shortened clip ends at 88;
-            # seeking two frames past 88 restores its exclusive end at 90.
-            ui.resize_selected_end(stage, 0 if stage == "shorten" else 2, evidence)
+
+
+def expect_third_clip(ui, evidence, stage, duration):
+    ui.seek_and_select_third_clip(evidence, stage)
+    cancel, values = ui.duration_dialog(stage, evidence)
+    evidence.write(stage + "-model", {"position_crop_duration_frames": values})
+    require(values == (60, 60, duration), f"macOS {stage} model does not match the original third clip")
+    evidence.press(stage + "-close", cancel)
+    ui.duration_closed()
+
+
+def refresh_third_playlist(ui, evidence):
+    select_normal_tool(ui, evidence)
+    for stage, expected, forward in (("shorten", 30, 0), ("restore", 29, 2)):
+        expect_third_clip(ui, evidence, stage, expected)
+        # The original end is frame 89. The shortened clip ends at 88;
+        # seeking two frames past 88 restores its exclusive end at 90.
+        ui.resize_selected_end(stage, forward, evidence)
+
+
+def save_project_as(ui, evidence, path, check_source, stage):
+    item = ui.menu_item("Save As", evidence, stage)
+    evidence.press("open-" + stage + "-as", item)
+    field, button = ui.file_panel({"save as", "save project", "save file", "save", ""}, "Save")
+    ui.set_text(field, str(path))
+    require(not path.exists() and not path.is_symlink(),
+            "macOS project destination was occupied before Save")
+    check_source()
+    evidence.press(stage + "-project", button)
 
 
 def import_and_save(ui, evidence, original, initial, check_source):
@@ -609,14 +627,7 @@ def import_and_save(ui, evidence, original, initial, check_source):
     ui.after_import()
     refresh_third_playlist(ui, evidence)
 
-    item = ui.menu_item("Save As", evidence, "save")
-    evidence.press("open-save-as", item)
-    field, button = ui.file_panel({"save as", "save file", "save", ""}, "Save")
-    ui.set_text(field, str(initial))
-    require(not initial.exists() and not initial.is_symlink(),
-            "macOS initial project path was occupied before Save")
-    check_source()
-    evidence.press("save-initial", button)
+    save_project_as(ui, evidence, initial, check_source, "save")
 
 
 def editor_pid_executable(pid):
@@ -627,14 +638,14 @@ def editor_pid_executable(pid):
     return Path(os.fsdecode(buffer.value))
 
 
-def wait_project(initial, guard):
+def wait_project(initial, guard, limit=MAX_XML_BYTES):
     deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
         guard()
         if initial.exists():
-            record = regular_file(initial, MAX_XML_BYTES)
+            record = regular_file(initial, limit)
             time.sleep(0.2)
-            if record["bytes"] > 0 and regular_file(initial, MAX_XML_BYTES) == record:
+            if record["bytes"] > 0 and regular_file(initial, limit) == record:
                 return record
         time.sleep(0.2)
     raise TimeoutError("macOS Kdenlive did not produce the initial native project")
