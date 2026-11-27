@@ -257,6 +257,8 @@ fn production_cursor(
     })
 }
 
+mod signed_observer;
+
 const NATIVE_CAPSULE_SOURCE_SCOPE_PREFIX: &str = "native-capsule-source-inspection:";
 
 fn native_capsule_source_selection(query: &Query) -> NativeResult<Option<Uuid>> {
@@ -409,6 +411,16 @@ impl ObservationProvider for MotionwrightObserver {
     async fn observe(&self, query: &Query, context: &CallContext) -> NativeResult<ObservationPage> {
         context.check_cancelled()?;
         query.validate()?;
+        if let Some(asset_id) = signed_observer::selection(query)? {
+            return signed_observer::observe(
+                &self.service,
+                self.mounted_graph_store.as_ref(),
+                query,
+                context,
+                asset_id,
+            )
+            .await;
+        }
         let native_capsule_source = native_capsule_source_selection(query)?;
         if native_capsule_source.is_some() {
             // The Application descriptor requires resource-read admission in
@@ -4108,6 +4120,14 @@ mod graph_store_provider {
 
     const DATA_MOUNT: &str = "motionwright-data";
     const DATABASE_NAME: &str = "motionwright.sqlite3";
+
+    pub(super) fn signed_observer_directories(asset_id: Uuid) -> NativeResult<(PathBuf, PathBuf)> {
+        let root = workspace_mount(DATA_MOUNT)?;
+        Ok((
+            root.join("observer-policy"),
+            root.join("observer-evidence").join(asset_id.to_string()),
+        ))
+    }
     #[cfg(test)]
     const GRAPH_COMMAND: &str = "driver.motionwright.graph.upsert";
 

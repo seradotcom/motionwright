@@ -139,6 +139,20 @@ decodes the original PNG. It checks both the saved project and the current
 owner policy before returning the review. The result is a technical
 observation. Creative and release approvals remain separate.
 
+## Review through Native SDK
+
+For a saved PNG asset, place its signed evidence bundle under
+`observer-evidence/<asset-uuid>/` on the owner's `motionwright-data` mount.
+Provision `observer-policy/` on the same mount using the files listed above.
+
+Observe the saved Project resource with scope `signed-frame-inspection:<asset-uuid>`,
+a limit of one and no cursor. Native requires Host resource-read admission and
+the retained mounted Store. It verifies the PNG in the project's CAS, compares
+its SHA-256 with the signed frame and returns one observation for the exact
+saved revision. A revoked verifier yields `gate_eligible=false`. The observation
+carries the method, units, coverage, verifier version and measurement limits.
+Production effects and creative or release approval keep their existing authorization.
+
 ## Negative tests and limits
 
 `test_observer.py` covers distinct owner/observer identities, forged
@@ -155,8 +169,8 @@ demonstrating successful technical admission and subsequent policy
 revocation. The artifact explicitly contains **no private keys**,
 no real owner authentication and **no production gate acceptance**.
 
-**Still NOT implemented:** use of these technical results as Native SDK
-production gates, independently provisioned production
+**Production qualification remains pending.** The read scope now supplies
+technical eligibility to Native SDK callers. Remaining gates include independently provisioned production
 public keys/rights, semantically richer observation methods,
 separate real renderer-host conformance, optional paid/source-code
 verifier installation, multi-machine revocation propagation, and human

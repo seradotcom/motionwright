@@ -26,6 +26,10 @@ const METHOD: &str = "png_dimensions_v1";
 pub struct ObserverReview {
     pub owner_generation: u64,
     pub verifier_id: String,
+    pub verifier_version: String,
+    pub method: String,
+    pub units: String,
+    pub coverage: String,
     pub producer_sha256: String,
     pub source_frame_sha256: String,
     pub frame_index: u32,
@@ -389,6 +393,10 @@ fn review(config: &Path, evidence: &Path) -> Result<ObserverReview> {
     Ok(ObserverReview {
         owner_generation: current.payload.owner_generation,
         verifier_id: frame.verifier_id,
+        verifier_version: frame.verifier_version,
+        method: frame.method,
+        units: frame.units,
+        coverage: frame.coverage,
         producer_sha256: frame.producer_sha256,
         source_frame_sha256: frame.source_frame_sha256,
         frame_index: frame.frame_index,
