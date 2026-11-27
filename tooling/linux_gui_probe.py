@@ -163,6 +163,7 @@ def run_probe(
     ready_check: Callable[[Path], bool] | None = None,
     window_interaction: Callable[[Path], bool] | None = None,
     loader_observer: Callable[[int, Path], dict] | None = None,
+    owner_connection: Path | None = None,
 ) -> dict:
     app_dir = app_run.parent.resolve(strict=True)
     resolved = app_run.resolve(strict=True)
@@ -183,6 +184,14 @@ def run_probe(
     # No owner-provisioned Semwright runtime or connection can leak into the
     # disposable GUI smoke process, even if the runner inherited one.
     env.pop("MOTIONWRIGHT_SEMWRIGHT_CONNECTION", None)
+    if owner_connection is not None:
+        if (os.environ.get("GITHUB_ACTIONS") != "true"
+                or os.environ.get("GITHUB_RUN_ATTEMPT") != "1"
+                or not owner_connection.is_absolute()
+                or owner_connection != owner_connection.resolve(strict=True)
+                or not owner_connection.is_file()):
+            raise RuntimeError("Expected the explicit original CI owner connection")
+        env["MOTIONWRIGHT_SEMWRIGHT_CONNECTION"] = str(owner_connection)
     env["APPDIR"] = str(app_dir)
     env["GDK_BACKEND"] = "x11"
     log_file = scratch / "app-run.log"

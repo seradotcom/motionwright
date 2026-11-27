@@ -232,6 +232,29 @@ def operate_window(request, phase, binding, bridge, journal, gdk, database, outp
             "decoded_metadata": METADATA, "playback": played}
 
 
+def admitted_owner_connection(request, source, output):
+    path, digest = request.get("connection"), request.get("connection_sha256")
+    if path is None and digest is None:
+        return None
+    require(isinstance(path, str) and isinstance(digest, str)
+            and re.fullmatch(r"[a-f0-9]{64}", digest) is not None,
+            "incomplete explicit AAC31 owner connection identity")
+    connection = Path(path)
+    require(connection == output.parent / "config" / "motionwright-connection.json"
+            and connection == connection.resolve(strict=True),
+            "AAC31 connection is not in the canonical broker layout")
+    observed = regular_file(connection, 64 * 1024)
+    require(observed["sha256"] == digest, "AAC31 original owner connection changed")
+    document = json.loads(connection.read_bytes())
+    require(document.get("schema") == "motionwright-semwright-connection/1"
+            and document.get("resource") == "project:" + source.project
+            and document.get("output_root") == str(output)
+            and document.get("socket") == str(output.parent / "runtime" / "broker.sock")
+            and regular_file(connection, 64 * 1024) == observed,
+            "AAC31 original owner connection does not bind this source")
+    return connection
+
+
 def run_installed(request_path: Path) -> dict:
     """One owned AppRun render/play session and one fresh AppRun reopen."""
     request = json.loads(request_path.read_bytes())
@@ -298,11 +321,12 @@ def run_installed(request_path: Path) -> dict:
             screens[phase] = result
             return True
 
+        owner_connection = admitted_owner_connection(request, source, output)
         try:
             with supervise_own_processes(), owned_process_scope(
                     evidence / (phase + "-process-closure.json")):
                 run_probe(app_run, profile, seconds=int(deadline - started),
-                          window_interaction=interaction)
+                          window_interaction=interaction, owner_connection=owner_connection)
         finally:
             if (profile / "app-run.log").is_file():
                 log = profile / "app-run.log"
@@ -310,6 +334,8 @@ def run_installed(request_path: Path) -> dict:
                 with (evidence / (phase + "-app-run.log")).open("xb") as retained:
                     retained.write(log.read_bytes())
 
+        require(admitted_owner_connection(request, source, output) == owner_connection,
+                "AAC31 owner connection changed after AppRun")
         master = original_master(database, source, output)
         require(screens[phase]["master"]["id"] == master.id
                 and screens[phase]["master"]["sha256"] == master.sha256,

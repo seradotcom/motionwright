@@ -152,6 +152,26 @@ class NativeWindowAndBootstrapTests(unittest.TestCase):
         sleeper.assert_not_called()
 
 
+    def test_only_explicit_ci_owner_connection_reaches_the_app(self):
+        connection = self.root / "motionwright-connection.json"
+        connection.write_text("{}", encoding="utf-8")
+        window = '0x00400004 "Motionwright": ("motionwright")'
+        for enabled in (False, True):
+            with self.subTest(explicit_connection=enabled):
+                env, popen, xwin, clock, sleep, kill, _ = self.mock_launch(
+                    clock=[0.0, 0.1, 0.2], stdout=window)
+                with env, patch.dict(os.environ, {
+                    "GITHUB_ACTIONS": "true", "GITHUB_RUN_ATTEMPT": "1",
+                    "MOTIONWRIGHT_SEMWRIGHT_CONNECTION": "/unrelated/inherited.json",
+                }), popen as launch, xwin, clock, sleep, kill:
+                    gui.run_probe(self.app, self.root / "isolated", seconds=2,
+                                  owner_connection=connection if enabled else None)
+                forwarded = launch.call_args.kwargs["env"]
+                self.assertEqual(
+                    forwarded.get("MOTIONWRIGHT_SEMWRIGHT_CONNECTION"),
+                    str(connection) if enabled else None,
+                )
+
     def test_loader_observation_is_sampled_once_at_window_readiness(self):
         contexts = self.mock_launch(
             clock=[0.0, 0.1, 0.2],
