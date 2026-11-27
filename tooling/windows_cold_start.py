@@ -162,6 +162,7 @@ class _BootObservations:
         self.samples = deque(maxlen=16)
         self.sample_count = 0
         self.visible_hwnd_seen = False
+        self.last_window_counts: dict[str, int] | None = None
         self.database_seen = False
         self.project_snapshot_seen = False
         self.ui_creation_reserved = False
@@ -195,6 +196,7 @@ class _BootObservations:
             "sample_count": self.sample_count,
             "samples": [dict(row) for row in self.samples],
             "visible_hwnd_seen": self.visible_hwnd_seen,
+            "last_window_counts": self.last_window_counts,
             "database_seen": self.database_seen,
             "project_snapshot_seen": self.project_snapshot_seen,
             "ui_creation_reserved": self.ui_creation_reserved,
@@ -388,12 +390,15 @@ def _create_first_project_in_native_window(hwnd: int) -> None:
         )
 
 
-def windows_motionwright_window(process_id: int) -> int | None:
+def windows_motionwright_window(
+    process_id: int, observations: _BootObservations | None = None,
+) -> int | None:
     """Find an actually visible title-owned HWND, never match diagnostic logs."""
     if os.name != "nt":
         return None
     from ctypes import wintypes
     windows: list[int] = []
+    owned = visible_owned = exact_title_owned = 0
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
@@ -407,14 +412,21 @@ def windows_motionwright_window(process_id: int) -> int | None:
 
     @callback_type
     def callback(hwnd: int, _: int) -> int:
+        nonlocal owned, visible_owned, exact_title_owned
         owner = wintypes.DWORD(0)
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
-        if owner.value == process_id and user32.IsWindowVisible(hwnd):
-            length = user32.GetWindowTextLengthW(hwnd)
-            if 0 < length <= 200:
-                name = ctypes.create_unicode_buffer(length + 1)
-                copied = user32.GetWindowTextW(hwnd, name, length + 1)
-                if copied == len("Motionwright") and name.value == "Motionwright":
+        if owner.value != process_id:
+            return 1
+        owned += 1
+        visible = bool(user32.IsWindowVisible(hwnd))
+        visible_owned += int(visible)
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length == len("Motionwright"):
+            name = ctypes.create_unicode_buffer(length + 1)
+            copied = user32.GetWindowTextW(hwnd, name, length + 1)
+            if copied == length and name.value == "Motionwright":
+                exact_title_owned += 1
+                if visible:
                     windows.append(int(hwnd))
         return 1
 
@@ -422,6 +434,12 @@ def windows_motionwright_window(process_id: int) -> int | None:
     user32.EnumWindows.restype = wintypes.BOOL
     if not user32.EnumWindows(callback, 0):
         raise ColdStartError("Windows could not enumerate candidate application windows")
+    if observations is not None:
+        observations.last_window_counts = {
+            "owned_top_level": min(owned, 16),
+            "visible_owned_top_level": min(visible_owned, 16),
+            "exact_title_owned_top_level": min(exact_title_owned, 16),
+        }
     return windows[0] if windows else None
 
 
@@ -478,7 +496,7 @@ def boot_once(
                 if len(observed) > 1:
                     observations.sample(time.monotonic() - started, None, len(observed), "NOT_ATTEMPTED")
                     raise ColdStartError("Installed desktop created multiple candidate project stores")
-                hwnd = windows_motionwright_window(process.pid)
+                hwnd = windows_motionwright_window(process.pid, observations)
                 observations.sample(time.monotonic() - started, hwnd is not None,
                                     len(observed), "NOT_ATTEMPTED")
                 if hwnd is not None and observed:
@@ -579,6 +597,7 @@ def run_installed_relaunch(
     # Known Folders, COM activation and user-data storage are not modeled by
     # merely replacing APPDATA and USERPROFILE environment strings.
     environment = native_windows_launch_environment(os.environ)
+    environment["MOTIONWRIGHT_WINDOWS_STARTUP_DIAGNOSTICS"] = "1"
     require("APPDATA" in environment and "LOCALAPPDATA" in environment,
             "Windows hosted runner does not expose native application-data directories")
     roots = [Path(environment["APPDATA"]), Path(environment["LOCALAPPDATA"])]
@@ -630,6 +649,27 @@ def run_installed_relaunch(
     return result
 
 
+def registered_webview2_versions() -> dict[str, str | None]:
+    import winreg
+
+    key = r"Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+    versions = {}
+    for scope, hive, access in (
+        ("machine", winreg.HKEY_LOCAL_MACHINE, winreg.KEY_WOW64_32KEY),
+        ("user", winreg.HKEY_CURRENT_USER, 0),
+    ):
+        try:
+            with winreg.OpenKey(hive, key, 0, winreg.KEY_QUERY_VALUE | access) as handle:
+                value, kind = winreg.QueryValueEx(handle, "pv")
+        except OSError:
+            versions[scope] = None
+            continue
+        versions[scope] = value if (kind == winreg.REG_SZ and isinstance(value, str)
+                                    and re.fullmatch(r"[0-9]{1,6}(?:\.[0-9]{1,6}){3}", value)
+                                    and value != "0.0.0.0") else None
+    return versions
+
+
 def write_sanitized_failure_record(
     *, output: Path, scratch: Path, expected_sha: str, error: BaseException,
 ) -> None:
@@ -649,17 +689,31 @@ def write_sanitized_failure_record(
         "win32": b"win32",
         "dll": b"missing dll",
     }
+    checkpoint_lines = {
+        b"motionwright-windows-startup " + name.encode("ascii"): name
+        for name in (
+            "config-validated", "project-store-opened", "native-sdk-contract-built",
+            "application-state-managed", "owner-window-create-entered", "native-window-created",
+            "owner-bound", "document-navigation-requested", "window-show-returned",
+            "bootstrap-request-received", "bootstrap-store-read-complete",
+        )
+    }
     logs = {}
     for label in ("first-launch", "relaunch"):
         source = scratch / (label + ".log")
         if source.is_file() and not source.is_symlink():
             with source.open("rb") as stream:
-                excerpt = stream.read(65536).lower()
+                excerpt = stream.read(65536)
+            folded = excerpt.lower()
             logs[label] = {
                 "file_bytes": source.stat().st_size,
                 "known_error_signals": {
-                    key: needle in excerpt for key, needle in categories.items()
+                    key: needle in folded for key, needle in categories.items()
                 },
+                "native_startup_checkpoints": list(dict.fromkeys(
+                    checkpoint_lines[line] for line in excerpt.splitlines()
+                    if line in checkpoint_lines
+                )),
             }
     description = (
         str(error)[:220] if isinstance(error, ColdStartError)
@@ -672,6 +726,7 @@ def write_sanitized_failure_record(
         "stage": "installed_process_cold_boot_or_relaunch",
         "reason": description,
         "logs": logs,
+        "registered_webview2_versions": registered_webview2_versions(),
         "raw_application_logs_uploaded": False,
         "native_provider_authority": "NOT_CONFIGURED",
         "human_install_acceptance": "NOT_RUN",

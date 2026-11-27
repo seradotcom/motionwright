@@ -486,6 +486,7 @@ async fn bootstrap(
     state: State<'_, AppState>,
     request: Option<BootstrapRequest>,
 ) -> Result<BootstrapResponse, String> {
+    desktop_owner::record_windows_startup("bootstrap-request-received");
     let service = state.service.clone();
     // The saved selection only identifies the project to read.
     let (project, mut project_selection) =
@@ -494,6 +495,7 @@ async fn bootstrap(
         })
         .await
         .map_err(|error| error.to_string())?;
+    desktop_owner::record_windows_startup("bootstrap-store-read-complete");
     if let BootstrapProjectSelection::Unavailable { message, .. } = &mut project_selection {
         *message = sanitized(&*message);
     }
@@ -5111,6 +5113,7 @@ fn main() {
             let owner = desktop_owner::DesktopOwner::new();
             app.manage(owner.clone());
             desktop_owner::validate_configuration(app)?;
+            desktop_owner::record_windows_startup("config-validated");
             let data_dir = app
                 .path()
                 .app_data_dir()
@@ -5118,6 +5121,7 @@ fn main() {
             std::fs::create_dir_all(&data_dir)?;
             let service = StudioService::open(data_dir.join("motionwright.sqlite3"))
                 .map_err(|error| format!("local project store unavailable: {error}"))?;
+            desktop_owner::record_windows_startup("project-store-opened");
             // Register the existing store even when no project is selected or
             // its latest document is unreadable. The library reads its index;
             // opening or creating a project is a separate explicit operation.
@@ -5126,6 +5130,7 @@ fn main() {
             // Driver Host runs the same surface through the standalone provider executable.
             build_application(service.clone())
                 .map_err(|error| format!("Native SDK contract invalid: {error}"))?;
+            desktop_owner::record_windows_startup("native-sdk-contract-built");
 
             let workspace_session = Uuid::now_v7();
             // A diagnostic build marker alone grants nothing. The optional
@@ -5157,6 +5162,7 @@ fn main() {
                 graph_exchange_custody: GraphExchangeJournal::new(&data_dir, workspace_session)?,
                 development_audition_custody,
             });
+            desktop_owner::record_windows_startup("application-state-managed");
             desktop_owner::install_owner_window(app, &owner)?;
             Ok(())
         })

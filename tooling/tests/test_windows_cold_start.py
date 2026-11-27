@@ -16,7 +16,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -432,6 +432,10 @@ class WindowsCandidateUnitTests(unittest.TestCase):
         scratch = self.root / "runner-scratch"
         scratch.mkdir()
         (scratch / "first-launch.log").write_bytes(
+            b"motionwright-windows-startup config-validated\n"
+            b"motionwright-windows-startup project-store-opened\r\n"
+            b"motionwright-windows-startup C:\\Users\\private\\unknown-checkpoint\n"
+            b"motionwright-windows-startup project-store-opened\n"
             b"WebView2 native startup failed at C:\\Users\\private\\session.json"
         )
         output = self.root / "ci-evidence" / "proof.json"
@@ -445,8 +449,48 @@ class WindowsCandidateUnitTests(unittest.TestCase):
         self.assertEqual(decoded["result"], "FAIL")
         self.assertEqual(decoded["human_install_acceptance"], "NOT_RUN")
         self.assertTrue(decoded["logs"]["first-launch"]["known_error_signals"]["webview2"])
+        self.assertEqual(decoded["logs"]["first-launch"]["native_startup_checkpoints"],
+                         ["config-validated", "project-store-opened"])
         self.assertNotIn("C:\\Users\\private", report.read_text())
         self.assertFalse(decoded["raw_application_logs_uploaded"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows HWND callback signatures")
+    def test_hwnd_diagnostics_preserve_exact_title_visibility_and_owner_requirements(self):
+        from types import SimpleNamespace
+
+        titles = {1: "Motionwright", 2: "Other window", 3: "Motionwright"}
+        visible = {2, 3}
+
+        def owner(hwnd, result):
+            result._obj.value = 99 if hwnd != 3 else 100
+            return 1
+
+        def copy_title(hwnd, buffer, _size):
+            buffer.value = titles[hwnd]
+            return len(titles[hwnd])
+
+        def enumerate_windows(callback, context):
+            for hwnd in titles:
+                callback(hwnd, context)
+            return True
+
+        user32 = SimpleNamespace(
+            GetWindowThreadProcessId=Mock(side_effect=owner),
+            IsWindowVisible=Mock(side_effect=visible.__contains__),
+            GetWindowTextLengthW=Mock(side_effect=lambda hwnd: len(titles[hwnd])),
+            GetWindowTextW=Mock(side_effect=copy_title),
+            EnumWindows=Mock(side_effect=enumerate_windows),
+        )
+        observations = windows._BootObservations(windows.CURRENT_FIRST_USE_CONTRACT)
+        with patch.object(windows.ctypes, "WinDLL", return_value=user32):
+            self.assertIsNone(windows.windows_motionwright_window(99, observations))
+            self.assertEqual(observations.snapshot()["last_window_counts"], {
+                "owned_top_level": 2,
+                "visible_owned_top_level": 1,
+                "exact_title_owned_top_level": 1,
+            })
+            visible.add(1)
+            self.assertEqual(windows.windows_motionwright_window(99, observations), 1)
 
     def test_no_local_machine_or_browser_can_start_installed_smoke(self):
         exe, receipt, sha = candidate_fixture(self.root)

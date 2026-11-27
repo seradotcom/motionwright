@@ -504,6 +504,20 @@ pub(crate) fn validate_configuration(app: &tauri::App<Wry>) -> Result<(), String
     trusted_configuration(app).map(|_| ())
 }
 
+/// Emits static milestones to a caller that captured Windows startup stderr.
+pub(crate) fn record_windows_startup(checkpoint: &str) {
+    if cfg!(windows)
+        && std::env::var_os("MOTIONWRIGHT_WINDOWS_STARTUP_DIAGNOSTICS")
+            .is_some_and(|value| value == "1")
+    {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "motionwright-windows-startup {checkpoint}"
+        );
+    }
+}
+
 /// Called only from the trusted setup closure after managing DesktopOwner and
 /// AppState. Config uses create:false, so no unguarded automatic window exists.
 pub(crate) fn install_owner_window(
@@ -525,10 +539,12 @@ pub(crate) fn install_owner_window(
         config.url = WebviewUrl::App(BOOTSTRAP_ASSET.into());
         config.visible = false;
         let navigation_owner = owner.clone();
+        record_windows_startup("owner-window-create-entered");
         let window = WebviewWindowBuilder::from_config(app, &config)?
             .on_navigation(move |target| navigation_owner.allows_navigation(target))
             .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
             .build()?;
+        record_windows_startup("native-window-created");
         let closing_owner = owner.clone();
         window.on_window_event(move |event| {
             if matches!(
@@ -540,9 +556,12 @@ pub(crate) fn install_owner_window(
         });
         let finish = (|| -> Result<(), Box<dyn Error>> {
             owner.bind(window.as_ref())?;
+            record_windows_startup("owner-bound");
             window.navigate(document.entry)?;
+            record_windows_startup("document-navigation-requested");
             if should_show {
                 window.show()?;
+                record_windows_startup("window-show-returned");
             }
             Ok(())
         })();
