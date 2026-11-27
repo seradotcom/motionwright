@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import base64
 from contextlib import ExitStack
 from hashlib import sha256
+import io
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
+import tarfile
 import tempfile
 import time
 from types import SimpleNamespace
@@ -14,6 +18,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import linux_installed_aac31 as installed
+import linux_installed_aac31_readback as readback
 from linux_hybrid_original_receipt import Master, Source, original_master
 from linux_hybrid_playback_frames import PlaybackFrame, marker, observe_playback
 
@@ -83,6 +88,44 @@ class InstalledAAC31ProofTests(unittest.TestCase):
         self.assertEqual([call.args[2] for call in stage.call_args_list],
                          ["open-project-play-retained", "navigate-play-retained", "play-retained"])
         await_render.assert_not_called()
+
+    def test_retained_archive_checks_the_last_member_before_creating_the_namespace(self):
+        stem = "mw-hybrid-" + "a" * 20
+        cas = "fd12950f-8495-47fa-b6d7-d5698b852366"
+        files = {name: name.encode() for name in sorted(readback.original_members(stem, cas))}
+        manifest = {
+            "schema": "motionwright.aac31.retained-original/1",
+            "render_run_id": "123",
+            "render_source_sha": "a" * 40,
+            "render_seal_sha256": "b" * 64,
+            "source": {},
+            "project_title": "Phase 1 AAC 31-frame qualification fixture",
+            "stem": stem,
+            "cas": cas,
+            "master": {},
+            "files": {
+                name: {"bytes": len(data), "sha256": sha256(data).hexdigest()}
+                for name, data in files.items()
+            },
+        }
+        last = next(reversed(files))
+        files[last] = b"!" + files[last][1:]
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:xz") as archive:
+            for name, data in {"original.json": json.dumps(manifest).encode(), **files}.items():
+                member = tarfile.TarInfo(name)
+                member.size = len(data)
+                archive.addfile(member, io.BytesIO(data))
+        packed = buffer.getvalue()
+        environment = {"GITHUB_RUN_ID": "124", "AAC31_ORIGINAL_0": base64.b64encode(packed).decode()}
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, environment, clear=True), patch.object(
+            readback, "original_master",
+        ) as original:
+            runner = Path(folder)
+            with self.assertRaisesRegex(readback.installed.ScenarioError, "retained original member was replaced"):
+                readback.recover_inputs(runner, "123", sha256(packed).hexdigest())
+            self.assertEqual(list(runner.iterdir()), [])
+            original.assert_not_called()
 
     def test_retained_original_requires_the_exact_terminal_receipt_and_bytes(self):
         receipt = "fd12950f-8495-47fa-b6d7-d5698b852366"

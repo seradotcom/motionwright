@@ -66,7 +66,8 @@ def recover_inputs(runner, run, expected_sha):
         members = archive.getmembers()
         by_name = {member.name: member for member in members}
         installed.need(len(members) == len(by_name) == 14
-                       and all(member.isfile() for member in members),
+                       and all(member.isfile() and member.sparse is None for member in members)
+                       and sum(member.size for member in members) <= MAX_EXPANDED,
                        "unexpected retained original member set")
         index = by_name.pop("original.json")
         installed.need(index.size <= 8192, "retained original manifest exceeds its budget")
@@ -81,16 +82,19 @@ def recover_inputs(runner, run, expected_sha):
                        "invalid retained original identity")
         expected = original_members(meta["stem"], meta["cas"])
         installed.need(set(by_name) == set(meta["files"]) == expected, "unexpected retained original roster")
-        # Every pathname comes from the closed roster above. The namespace
-        # is recreated once and has no provider state or old session ticket.
-        root.mkdir(mode=0o700)
+        verified = {}
         for name, member in by_name.items():
-            data = archive.extractfile(member).read()
+            with archive.extractfile(member) as original:
+                data = original.read()
             installed.need(meta["files"][name] == {"bytes": len(data), "sha256": seal.sha(data)},
                            "retained original member was replaced")
-            target = root / name
-            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            seal.new_bytes(target, data)
+            verified[name] = data
+    # Materialize the namespace only after authenticating the complete roster.
+    root.mkdir(mode=0o700)
+    for name, data in verified.items():
+        target = root / name
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        seal.new_bytes(target, data)
     database = root / APP_DATA / "motionwright.sqlite3"
     output = root / "o/output"
     master = original_master(database, Source(**meta["source"]), output)
