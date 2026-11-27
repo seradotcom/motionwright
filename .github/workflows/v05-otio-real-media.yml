@@ -686,7 +686,7 @@ jobs:
         run: python -B -E -s tooling/otio-media/kdenlive_native_installation.py
       - name: Read the installed Kdenlive window without editing
         if: inputs.kdenlive_editor_window_probe && runner.os == 'macOS'
-        run: python -B -E -s tooling/otio-media/kdenlive_macos_editor.py --observe-editor-select-track
+        run: python -B -E -s tooling/otio-media/kdenlive_macos_editor.py --observe-editor-command-hit
       - name: Produce the first-party OTIO cut and its original media
         if: inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe
         run: python -B -E -s tooling/otio-media/kdenlive_native_source.py
