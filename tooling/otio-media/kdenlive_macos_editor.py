@@ -15,6 +15,7 @@ import time
 
 from kdenlive_native_distribution import JOB, ROOT, publish, selection
 from kdenlive_native_source import admitted_source, inspect_initial_save, installed_editor
+from kdenlive_macos_kxmlgui import prepare_profile
 from kdenlive_readback import MAX_XML_BYTES
 from source_checkout_observation import git, regular_file, require
 
@@ -1383,7 +1384,7 @@ def wait_project(initial, guard):
 
 def run(owner, context, distribution, observe_editor, *, observe_clock=False,
         observe_actions=False, observe_track=False, observe_hit=False,
-        observe_toolbars=False, configure_toolbars=False):
+        observe_toolbars=False, configure_toolbars=False, observe_toolbar_override=False):
     if observe_editor:
         editor, binary = installed_editor(owner, context, distribution)
         source = None
@@ -1400,6 +1401,9 @@ def run(owner, context, distribution, observe_editor, *, observe_clock=False,
         environment = {key: value for key, value in os.environ.items()
                        if not key.startswith(("DYLD_", "QT_", "QML", "MLT_"))}
         environment.update({"LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8", "QT_ACCESSIBILITY": "1"})
+        override = None
+        if observe_toolbar_override:
+            environment, override = prepare_profile(output, environment)
         publish(output / "launch-intent.json", {
             "context": context, "argv": command, "original_executable": binary,
             "source": source, "observe_editor": observe_editor,
@@ -1425,6 +1429,20 @@ def run(owner, context, distribution, observe_editor, *, observe_clock=False,
                 try:
                     ui.await_target(ui.file_menu, "owned Kdenlive File menu", timeout=45)
                     if observe_editor:
+                        if observe_toolbar_override:
+                            button = ui.await_target(ui.video_track_toolbar_button,
+                                                     "V1 button from the isolated KXMLGUI override")
+                            evidence.write("toolbar-v1-button", {
+                                "pid": process.pid, "title": ax.text(button, "AXTitle"),
+                                "identifier": ax.text(button, "AXIdentifier"),
+                                "actions": ax.actions(button),
+                            })
+                            require(evidence.press("empty-editor-v1-toolbar", button) == 0,
+                                    "isolated V1 toolbar did not return an acknowledged AX action")
+                            require(regular_file(Path(override["path"]), 64 * 1024) == override["override"],
+                                    "isolated KXMLGUI override changed after native use")
+                            return {"status": "KXMLGUI_TOOLBAR_VERIFIED", "pid": process.pid,
+                                    "imports": 0, "saves": 0, "timeline_actions": 1}
                         evidence.write("accessibility-tree", {"pid": process.pid, "nodes": ui.diagnostic()})
                         evidence.write("project-monitor-ax", ui.project_monitor_diagnostic())
                         if observe_toolbars or configure_toolbars:
@@ -1505,6 +1523,7 @@ def main():
     observation.add_argument("--observe-editor-command-hit", action="store_true")
     observation.add_argument("--observe-editor-toolbars", action="store_true")
     observation.add_argument("--observe-editor-configure-v1-toolbar", action="store_true")
+    observation.add_argument("--observe-editor-kxmlgui-v1", action="store_true")
     options = parser.parse_args()
     context, distribution = selection(os.environ, sys.platform, platform.machine())
     require(context["runner_os"] == "macOS", "macOS editor qualification is restricted to macOS")
@@ -1517,13 +1536,15 @@ def main():
                          any((options.observe_editor, options.observe_editor_clock,
                               options.observe_editor_actions, options.observe_editor_select_track,
                               options.observe_editor_command_hit, options.observe_editor_toolbars,
-                              options.observe_editor_configure_v1_toolbar)),
+                              options.observe_editor_configure_v1_toolbar,
+                              options.observe_editor_kxmlgui_v1)),
                          observe_clock=options.observe_editor_clock,
                          observe_actions=options.observe_editor_actions,
                          observe_track=options.observe_editor_select_track,
                          observe_hit=options.observe_editor_command_hit,
                          observe_toolbars=options.observe_editor_toolbars,
-                         configure_toolbars=options.observe_editor_configure_v1_toolbar), sort_keys=True))
+                         configure_toolbars=options.observe_editor_configure_v1_toolbar,
+                         observe_toolbar_override=options.observe_editor_kxmlgui_v1), sort_keys=True))
 
 
 if __name__ == "__main__":

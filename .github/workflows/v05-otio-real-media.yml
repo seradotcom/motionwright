@@ -635,7 +635,7 @@ jobs:
           python-version: '3.13'
       - name: Verify the native editor admission and installation controls
         working-directory: tooling/otio-media
-        run: python -B -E -s -m unittest -v test_kdenlive_native_distribution test_kdenlive_native_installation test_kdenlive_native_source test_kdenlive_macos_editor test_kdenlive_macos_reopen
+        run: python -B -E -s -m unittest -v test_kdenlive_native_distribution test_kdenlive_native_installation test_kdenlive_native_source test_kdenlive_macos_editor test_kdenlive_macos_reopen test_kdenlive_macos_kxmlgui
       - name: Require the native window probe to be selected on its own
         if: inputs.kdenlive_editor_window_probe && (inputs.kdenlive_editor_platform != 'macos' || inputs.kdenlive_accessibility_probe || inputs.kdenlive_editor_first_save)
         shell: bash
@@ -686,7 +686,7 @@ jobs:
         run: python -B -E -s tooling/otio-media/kdenlive_native_installation.py
       - name: Verify the Kdenlive track action in the disposable profile
         if: inputs.kdenlive_editor_window_probe && runner.os == 'macOS'
-        run: python -B -E -s tooling/otio-media/kdenlive_macos_editor.py --observe-editor-configure-v1-toolbar
+        run: python -B -E -s tooling/otio-media/kdenlive_macos_editor.py --observe-editor-kxmlgui-v1
       - name: Produce the first-party OTIO cut and its original media
         if: inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe
         run: python -B -E -s tooling/otio-media/kdenlive_native_source.py
