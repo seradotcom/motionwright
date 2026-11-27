@@ -46,6 +46,32 @@ test("lost render acknowledgement survives reload and reads original PNGs withou
     .map(item => item.request.request_id)).toEqual([original]);
   expect(calls.some(item => item.command === "preview_native_frame" && item.request.frame_index === 59)).toBe(true);
 });
+test("lost browser selectors can reopen a completed HyperFrames original from saved history", async ({ page }) => {
+  await page.goto("/tests/fixtures/hyperframes-render.html");
+  const panel = page.getByRole("region", { name:"HyperFrames native PNG rendering" });
+  await page.getByRole("button", { name:"Inspect saved HyperFrames source" }).click();
+  await panel.getByRole("button", { name:"Read installed HyperFrames profiles", exact:true }).click();
+  await panel.getByRole("button", { name:"Use selected HyperFrames profile", exact:true }).click();
+  await panel.getByRole("button", { name:"Render saved HyperFrames source" }).click();
+  await expect(panel.getByText("The provider completed the original 60-frame PNG sequence.", { exact:false })).toBeVisible();
+  await page.evaluate(() => {
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith("motionwright:hyperframes-render:v1:")) localStorage.removeItem(key);
+    }
+  });
+  await page.reload();
+  await expect(panel.getByRole("button", { name:"Read original HyperFrames result" })).toHaveCount(0);
+  await panel.getByRole("button", { name:"Find saved HyperFrames renders" }).click();
+  await panel.getByRole("button", { name:"Read original HyperFrames result" }).click();
+  await expect(panel.getByText("The provider completed the original 60-frame PNG sequence.", { exact:false })).toBeVisible();
+  const calls = await page.evaluate(() => window.__hyperframesRenderFixture.records());
+  expect(calls.filter(item => item.command === "hyperframes_render_history")).toHaveLength(1);
+  expect(calls.filter(item => item.command === "issue_effect_grant")).toHaveLength(1);
+  expect(calls.filter(item => item.command === "render_hyperframes_source")).toHaveLength(1);
+  expect(calls.find(item => item.command === "read_original_hyperframes_render")!.request.request_id)
+    .toBe(calls.find(item => item.command === "render_hyperframes_source")!.request.request_id);
+});
+
 test("a retired source cannot dispatch when an old grant returns after revision ABA", async ({ page }) => {
   await page.goto("/tests/fixtures/hyperframes-render.html");
   await page.getByRole("button", { name:"Inspect saved HyperFrames source" }).click();

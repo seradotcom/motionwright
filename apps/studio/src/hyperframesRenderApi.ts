@@ -111,6 +111,31 @@ export function prepareHyperframesRender(project: Project, snapshot: Hyperframes
 function desktop() {
   if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) throw new Error("Native HyperFrames rendering requires Motionwright Desktop.");
 }
+export interface HyperframesRenderHistory {
+  items: HyperframesRenderIntent[];
+  next: string | null;
+}
+
+export async function readHyperframesRenderHistory(project: Project, before: string | null = null): Promise<HyperframesRenderHistory> {
+  desktop();
+  if (before !== null && !uuid(before)) throw new Error("The saved HyperFrames history cursor is invalid.");
+  const request = {project_id: project.id, generation: project.generation, revision: project.revision, before};
+  const value = object(await invoke<unknown>("hyperframes_render_history", { request }),
+    ["schema", "project_id", "generation", "revision", "items", "next"]);
+  if (value.schema !== "motionwright.hyperframes-render-history/1"
+    || value.project_id !== request.project_id || value.generation !== request.generation
+    || value.revision !== request.revision || !Array.isArray(value.items) || value.items.length > 32
+    || (value.next !== null && (!uuid(value.next) || value.next === before))) {
+    throw new Error("Saved HyperFrames history does not match the selected project.");
+  }
+  const items = value.items.map(item => parseIntent(item, {id: request.project_id, generation: request.generation}));
+  if (items.some(item => item.retention !== "dispatched" || item.source.revision > request.revision)
+    || new Set(items.map(item => item.request_id)).size !== items.length) {
+    throw new Error("Saved HyperFrames history contains invalid original requests.");
+  }
+  return {items, next: value.next as string | null};
+}
+
 export function parseHyperframesRenderResponse(value: unknown, project: Project, intent: HyperframesRenderIntent): HyperframesRenderResponse {
   parseIntent(intent, project);
   const result = object(value, ["attempt", "preview", "preview_problem"]);
@@ -195,13 +220,14 @@ export async function dispatchHyperframesRender(project: Project, snapshot: Hype
     throw error;
   }
 }
-export async function readOriginalHyperframesRender(project: Project, intent: HyperframesRenderIntent): Promise<HyperframesRenderResponse> {
+export async function readOriginalHyperframesRender(project: Project, intent: HyperframesRenderIntent,
+  retainedLocally = true): Promise<HyperframesRenderResponse> {
   desktop();
   const original = structuredClone(project), request = parseIntent(intent, original);
   const response = parseHyperframesRenderResponse(await invoke<unknown>("read_original_hyperframes_render", { request: {
     project_id: original.id, generation: original.generation, request_id: request.request_id,
   } }), original, request);
-  retainKnownOutcome(original, request, response);
+  if (retainedLocally) retainKnownOutcome(original, request, response);
   return response;
 }
 
@@ -209,13 +235,13 @@ export async function readOriginalHyperframesRender(project: Project, intent: Hy
 /** One explicit Native status/result observation of the acknowledged original job.
  * Stored readback remains a different, provider-free operation. */
 export async function observeOriginalHyperframesJob(project: Project, intent: HyperframesRenderIntent,
-  beforeDispatch: () => void): Promise<HyperframesRenderResponse> {
+  beforeDispatch: () => void, retainedLocally = true): Promise<HyperframesRenderResponse> {
   desktop();
   const original = structuredClone(project), request = parseIntent(intent, original);
   beforeDispatch();
   const response = parseHyperframesRenderResponse(await invoke<unknown>("observe_original_hyperframes_job", { request: {
     project_id: original.id, generation: original.generation, request_id: request.request_id,
   } }), original, request);
-  retainKnownOutcome(original, request, response);
+  if (retainedLocally) retainKnownOutcome(original, request, response);
   return response;
 }

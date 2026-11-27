@@ -4580,6 +4580,22 @@ async fn render_hyperframes_source(
 }
 
 #[tauri::command]
+async fn hyperframes_render_history(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: hyperframes_render::HistoryRequest,
+) -> Result<hyperframes_render::RenderHistory, String> {
+    let service = state.service.clone();
+    let history = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        hyperframes_render::read_render_history(&service, &request)
+    })
+    .await
+    .map_err(|_| "Saved HyperFrames history could not be read.".to_string())??;
+    owner.begin_phase()?;
+    Ok(history)
+}
+
+#[tauri::command]
 async fn read_original_hyperframes_render(
     mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
@@ -4959,6 +4975,7 @@ fn main() {
             export_native_capsule_source,
             native_hyperframes_source,
             render_hyperframes_source,
+            hyperframes_render_history,
             read_original_hyperframes_render,
             observe_original_hyperframes_job,
             export_hyperframes_source_file,

@@ -303,6 +303,47 @@ mod desktop_render_tests {
     }
 
     #[test]
+    fn saved_hyperframes_history_reopens_original_identity_without_dispatch() {
+        let (dir, service, project) = fixture();
+        let grants = EffectGrantRegistry::default();
+        let original = request(&project, &grants);
+        let intent = begin(&service, &grants, &original, &"2".repeat(64)).unwrap();
+        let original_request = read(&project, &original);
+        let watermark = service.production_receipt_watermark(project.id).unwrap();
+        drop(service);
+
+        let reopened = StudioService::open(dir.path().join("original.sqlite3")).unwrap();
+        let mut range = HistoryRequest {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            before: None,
+        };
+        let history =
+            serde_json::to_value(read_render_history(&reopened, &range).unwrap()).unwrap();
+        assert_eq!(history["items"].as_array().unwrap().len(), 1);
+        assert_eq!(history["items"][0]["request_id"], intent.request_id);
+        assert_eq!(history["items"][0]["fingerprint"], intent.fingerprint);
+        assert_eq!(
+            history["items"][0]["source"]["generation"],
+            project.generation.to_string()
+        );
+        assert!(history["next"].is_null());
+        let attempt = read_attempt(&reopened, &original_request).unwrap();
+        assert_eq!(attempt.view.state, "outcome_unknown");
+        range.before = Some(Uuid::new_v4());
+        assert!(read_render_history(&reopened, &range).is_err());
+        range.before = None;
+        range.generation = Uuid::new_v4();
+        assert!(read_render_history(&reopened, &range).is_err());
+        assert_eq!(
+            reopened.production_receipt_watermark(project.id).unwrap(),
+            watermark
+        );
+        assert_eq!(reopened.project(project.id).unwrap(), project);
+    }
+
+    #[test]
     fn altered_source_runtime_and_grant_reject_before_native_intent() {
         for changed in [
             "runtime",

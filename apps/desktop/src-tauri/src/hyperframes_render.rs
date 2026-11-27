@@ -52,6 +52,34 @@ pub struct ReadRequest {
     pub generation: Uuid,
     pub request_id: String,
 }
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryRequest {
+    pub project_id: Uuid,
+    pub generation: Uuid,
+    pub revision: u64,
+    pub before: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HistoryItem {
+    request_id: String,
+    source: SourceRequest,
+    fingerprint: String,
+    runtime_lock_sha256: String,
+    retention: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RenderHistory {
+    schema: &'static str,
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    items: Vec<HistoryItem>,
+    next: Option<Uuid>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct AttemptView {
     pub schema: &'static str,
@@ -486,6 +514,69 @@ pub fn finish(
         ),
     }
 }
+/// List bounded original request identities without reading or starting provider jobs.
+pub fn read_render_history(
+    service: &StudioService,
+    request: &HistoryRequest,
+) -> Result<RenderHistory, String> {
+    const PAGE_SIZE: usize = 32;
+    let current = service
+        .project(request.project_id)
+        .map_err(|_| UNCONFIRMED)?;
+    if current.generation != request.generation || current.revision != request.revision {
+        return Err("The saved HyperFrames project changed. Refresh its history.".into());
+    }
+    let watermark = service
+        .production_receipt_watermark(request.project_id)
+        .map_err(|_| UNCONFIRMED)?;
+    let page = service
+        .production_receipts_snapshot_page(
+            request.project_id,
+            &watermark,
+            request.before,
+            PAGE_SIZE + 1,
+        )
+        .map_err(|_| UNCONFIRMED)?;
+    let next = if page.len() > PAGE_SIZE {
+        Some(page[PAGE_SIZE - 1].id)
+    } else {
+        None
+    };
+    let mut items = Vec::new();
+    for receipt in page.into_iter().take(PAGE_SIZE) {
+        if receipt.command != COMMAND
+            || receipt.stage != "dispatching"
+            || receipt.generation != request.generation
+        {
+            continue;
+        }
+        let original = original_from_receipt(&receipt)?;
+        items.push(HistoryItem {
+            request_id: original.request_id,
+            source: original.source,
+            fingerprint: original.fingerprint,
+            runtime_lock_sha256: original.runtime_lock_sha256,
+            retention: "dispatched",
+        });
+    }
+    if service.project(current.id).map_err(|_| UNCONFIRMED)? != current
+        || service
+            .production_receipt_watermark(request.project_id)
+            .map_err(|_| UNCONFIRMED)?
+            != watermark
+    {
+        return Err("Saved source or operation history changed. Read it again.".into());
+    }
+    Ok(RenderHistory {
+        schema: "motionwright.hyperframes-render-history/1",
+        project_id: request.project_id,
+        generation: request.generation,
+        revision: request.revision,
+        items,
+        next,
+    })
+}
+
 pub fn read_attempt(service: &StudioService, request: &ReadRequest) -> Result<Recovery, String> {
     request_identity(&request.request_id)?;
     let current = service

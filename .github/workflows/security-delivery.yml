@@ -416,6 +416,7 @@ jobs:
               "altered_source_runtime_and_grant_reject_before_native_intent",
               "completed_original_reopens_sqlite_and_verifies_each_png_without_native_execution",
               "lost_desktop_ack_recovers_original_result_without_appending_or_dispatching",
+              "saved_hyperframes_history_reopens_original_identity_without_dispatch",
               "foreign_provider_connection_job_or_source_never_recovers_a_success",
               "unknown_original_blocks_new_request_ids_after_reopen_and_keeps_project_editable",
               "png_reads_reject_drift_and_cannot_supply_motion_canvas_master_authority",
@@ -428,8 +429,8 @@ jobs:
           }
           observed = re.findall(r"^test desktop_render_tests::([a-z0-9_]+) \.\.\. ok$", raw, re.M)
           assert len(observed) == len(expected) and set(observed) == expected
-          assert "13 passed; 0 failed; 0 ignored" in raw
-          print("HYPERFRAMES_DESKTOP_ORIGINAL_RECOVERY=PASS; cases=13; SQLite=REAL; provider_transport=SYNTHETIC; NativeHost=NOT_RUN; G2=NOT_GRANTED")
+          assert "14 passed; 0 failed; 0 ignored" in raw
+          print("HYPERFRAMES_DESKTOP_ORIGINAL_RECOVERY=PASS; cases=14; SQLite=REAL; provider_transport=SYNTHETIC; NativeHost=NOT_RUN; G2=NOT_GRANTED")
           PY_HF_RENDER
           cargo test --locked --jobs 2 -p motionwright-service --lib jobs::tests:: -- --test-threads=1
       - name: Native PNG preview security regressions

@@ -79,6 +79,15 @@ function result(request: Request, state: ObservedState = "completed") {
       if (loseNext) { loseNext = false; throw new Error("Synthetic original acknowledgement lost after completion."); }
       return result(args.request);
     }
+    if (command === "hyperframes_render_history") {
+      const original = JSON.parse(sessionStorage.getItem("hf-fixture-original") ?? "null") as Request | null;
+      return { schema:"motionwright.hyperframes-render-history/1", project_id:project.id,
+        generation:project.generation, revision:project.revision, next:null, items:original ? [{
+          request_id:original.request_id, source:original.source,
+          fingerprint:original.expected_fingerprint, runtime_lock_sha256:original.runtime_lock_sha256,
+          retention:"dispatched",
+        }] : [] };
+    }
     if (command === "read_original_hyperframes_render") {
       const original = JSON.parse(sessionStorage.getItem("hf-fixture-original") ?? "null") as Request | null;
       if (original?.request_id === args.request.request_id) return result(original, (sessionStorage.getItem("hf-fixture-retained-state") ?? "completed") as ObservedState);
