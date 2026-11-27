@@ -701,8 +701,54 @@ fn kdenlive_owner_preview(
     serde_json::from_value(value).map_err(|_| refused())
 }
 
+struct PreviewDocuments {
+    original: Vec<u8>,
+    manifest: Vec<u8>,
+    edited: Vec<u8>,
+    received: Option<Vec<u8>>,
+}
+
+fn read_authorized_preview_documents(
+    grants: &EffectGrantRegistry,
+    request: &OtioMediaPreviewRequest,
+    subject: &str,
+    bundle: &Path,
+    project: &Project,
+) -> Result<PreviewDocuments, String> {
+    grants.consume(
+        request.effect_grant,
+        EffectKind::ImportLocal,
+        EffectScope::project(request.project_id, request.generation, request.revision),
+        subject,
+    )?;
+    let original = read_regular_bounded(&bundle.join("source-project.json"), MAX_PROJECT)?;
+    let source_project: Project = serde_json::from_slice(&original).map_err(|_| {
+        "OTIO source-project.json must contain one complete original Motionwright Project."
+            .to_string()
+    })?;
+    if source_project != *project {
+        return Err("The original OTIO media bundle does not belong to the currently saved project revision.".into());
+    }
+    let manifest = read_regular_bounded(&bundle.join("bridge-manifest.json"), MAX_PROJECT)?;
+    let edited = read_regular_bounded(&bundle.join(&request.edited_file), MAX_PROJECT)?;
+    let received = request
+        .received_file
+        .as_ref()
+        .map(|name| read_regular_bounded(&bundle.join(name), MAX_PROJECT))
+        .transpose()?;
+    if edited.len() < 16 || received.as_ref().is_some_and(|bytes| bytes.len() < 16) {
+        return Err(refused());
+    }
+    Ok(PreviewDocuments {
+        original,
+        manifest,
+        edited,
+        received,
+    })
+}
+
 /// Every input is source-scoped and the one-use local-import grant is consumed
-/// before Python/ffprobe starts. A complete original media bundle is required:
+/// before opening the original documents or starting Python/ffprobe. A complete original media bundle is required:
 /// an arbitrary .otio file, pasted claim or unverified JSON is insufficient.
 pub fn preview(
     service: &StudioService,
@@ -722,30 +768,12 @@ pub fn preview(
             "The OTIO source revision changed. Refresh and export a new source bundle.".into(),
         );
     }
-    let original = read_regular_bounded(&bundle.join("source-project.json"), MAX_PROJECT)?;
-    let source_project: Project = serde_json::from_slice(&original).map_err(|_| {
-        "OTIO source-project.json must contain one complete original Motionwright Project."
-            .to_string()
-    })?;
-    if source_project != project {
-        return Err("The original OTIO media bundle does not belong to the currently saved project revision.".into());
-    }
-    let manifest = read_regular_bounded(&bundle.join("bridge-manifest.json"), MAX_PROJECT)?;
-    let edited = read_regular_bounded(&bundle.join(&request.edited_file), MAX_PROJECT)?;
-    let received = request
-        .received_file
-        .as_ref()
-        .map(|name| read_regular_bounded(&bundle.join(name), MAX_PROJECT))
-        .transpose()?;
-    if edited.len() < 16 || received.as_ref().is_some_and(|bytes| bytes.len() < 16) {
-        return Err(refused());
-    }
-    grants.consume(
-        request.effect_grant,
-        EffectKind::ImportLocal,
-        EffectScope::project(request.project_id, request.generation, request.revision),
-        &subject,
-    )?;
+    let PreviewDocuments {
+        original,
+        manifest,
+        edited,
+        received,
+    } = read_authorized_preview_documents(grants, &request, &subject, &bundle, &project)?;
     let parent = bundle.parent().ok_or_else(refused)?;
     let temp = tempfile::Builder::new()
         .prefix(".motionwright-otio-preview-")
@@ -1050,6 +1078,64 @@ mod tests {
             assert!(preview_subject("/owner", "edited.otio", Some(name)).is_err());
         }
         assert!(preview_subject("/owner", "timeline.otio", Some("received.otio")).is_err());
+
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("source-project.json"),
+            b"not an original project",
+        )
+        .unwrap();
+        let project = Project::new("Protected OTIO input").unwrap();
+        let scope = EffectScope::project(project.id, project.generation, project.revision);
+        let grants = EffectGrantRegistry::default();
+        let bundle = directory.path().to_str().unwrap();
+        let subject = preview_subject(bundle, "edited.otio", None).unwrap();
+        let mut request = OtioMediaPreviewRequest {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            bundle_path: bundle.into(),
+            edited_file: "edited.otio".into(),
+            received_file: None,
+            effect_grant: Uuid::now_v7(),
+        };
+        let error = read_authorized_preview_documents(
+            &grants,
+            &request,
+            &subject,
+            directory.path(),
+            &project,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(
+            error,
+            "Effect grant is missing, expired, or outside its exact scope."
+        );
+        request.effect_grant = grants
+            .issue(EffectKind::ImportLocal, scope, &subject)
+            .unwrap()
+            .token;
+        let error = read_authorized_preview_documents(
+            &grants,
+            &request,
+            &subject,
+            directory.path(),
+            &project,
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("must contain one complete original Motionwright Project"));
+        assert!(
+            grants
+                .consume(
+                    request.effect_grant,
+                    EffectKind::ImportLocal,
+                    scope,
+                    &subject
+                )
+                .is_err()
+        );
     }
     #[cfg(target_os = "linux")]
     #[test]
