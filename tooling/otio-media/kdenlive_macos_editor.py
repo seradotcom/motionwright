@@ -611,7 +611,7 @@ class EditorUI:
             report["page_status"] = status
             if status or len(page) != limit:
                 return report
-            for row in page:
+            for offset, row in enumerate(page):
                 if time.monotonic() >= deadline:
                     return report
                 report["rows_examined"] += 1
@@ -630,6 +630,7 @@ class EditorUI:
                         continue
                     item = {
                         "names": text, "role": ax.text(node, "AXRole"),
+                        "row_index": start + offset, "attribute": attribute,
                         "identifier": ax.text(node, "AXIdentifier"), "actions": ax.actions(node),
                         "focused": ax.flag(node, "AXFocused") or bool(focus and ax.equal(node, focus)),
                         "selected": ax.flag(node, "AXSelected")
@@ -645,6 +646,109 @@ class EditorUI:
         if len(matches) == 1:
             report["matching_track"] = matches[0]
         return report
+
+    def toolbar_available_list(self):
+        dialog = self.toolbar_dialog()
+        available = self.toolbar_list(dialog, "available actions") if dialog else None
+        return available if available and self.ax.action(available, ("AXRaise",)) else None
+
+    def toolbar_available_action(self, track):
+        ax = self.ax
+        available = self.toolbar_available_list()
+        if not available:
+            return None
+        status, page = ax.array_page(available, track["attribute"], track["row_index"], 1)
+        if status or len(page) != 1:
+            return None
+        row = page[0]
+        matches = [node for node in self.descend((row,), limit=8, depth_limit=2)
+                   if ax.text(node, "AXRole") == track["role"]
+                   and ax.text(node, "AXIdentifier") == track["identifier"]
+                   and "Select Video Track 1" in (
+                       ax.text(node, "AXTitle"), ax.text(node, "AXValue"), ax.text(node, "AXDescription"))
+                   and ax.enabled(node) and ax.action(node, ("AXPress",))]
+        if len(matches) != 1:
+            return None
+        node = matches[0]
+        focus = ax.value(ax.app, "AXFocusedUIElement")
+        current = (ax.flag(node, "AXFocused") or ax.flag(row, "AXFocused")
+                   or bool(focus and (ax.equal(node, focus) or ax.equal(row, focus))))
+        selections = (*ax.children(available, "AXSelectedRows"), *ax.children(available, "AXSelectedChildren"))
+        selected = ax.flag(node, "AXSelected") or any(
+            ax.equal(node, entry) or ax.equal(row, entry) for entry in selections
+        )
+        return node, current, selected
+
+    def current_toolbar_actions(self):
+        ax = self.ax
+        dialog = self.toolbar_dialog()
+        require(dialog, "macOS toolbar configuration dialog no longer exists")
+        combo = [node for node in self.descend((dialog,), limit=90, depth_limit=6)
+                 if ax.text(node, "AXRole") == "AXMenuButton"
+                 and ax.text(node, "AXIdentifier").endswith("KEditToolBarWidget.QComboBox")]
+        require(len(combo) == 1 and self.title(combo[0]) == "timeline toolbar <kdenlive>",
+                "macOS profile changes require the exact Kdenlive Timeline Toolbar")
+        current = self.toolbar_list(dialog, "current actions")
+        require(current, "current Timeline Toolbar actions are unavailable")
+        count = ax.array_item_count(current, "AXRows")
+        require(count is not None and 0 < count <= 64, "current Timeline Toolbar action count is unbound")
+        status, rows = ax.array_page(current, "AXRows", 0, count)
+        require(status == 0 and len(rows) == count, "current Timeline Toolbar actions were not read in full")
+        return [tuple(dict.fromkeys(text for node in self.descend((row,), limit=8, depth_limit=2)
+                                    for attribute in ("AXTitle", "AXValue")
+                                    if (text := ax.text(node, attribute)))) for row in rows]
+
+    def toolbar_transfer_arrows(self):
+        ax, dialog = self.ax, self.toolbar_dialog()
+        buttons = {}
+        if not dialog:
+            return buttons
+        for node in self.descend((dialog,), limit=100, depth_limit=8):
+            if (ax.text(node, "AXRole") != "AXButton"
+                    or not ax.text(node, "AXIdentifier").endswith("KEditToolBarWidget.QToolButton")
+                    or self.title(node)):
+                continue
+            point, size = ax.pair(node, "AXPosition", 1), ax.pair(node, "AXSize", 2)
+            if point and size and min(size) > 0:
+                bounds = (*point, *size)
+                buttons[bounds] = (node, ax.enabled(node), ax.actions(node))
+        return buttons
+
+    def toolbar_arrow_state(self):
+        return [{"bounds": key, "enabled": enabled, "actions": actions}
+                for key, (_, enabled, actions) in sorted(self.toolbar_transfer_arrows().items())]
+
+    def toolbar_insert_arrow(self, baseline):
+        current = self.toolbar_transfer_arrows()
+        original = {tuple(item["bounds"]): item["enabled"] for item in baseline}
+        if len(original) != 4 or set(current) != set(original) or any(original.values()):
+            return None
+        transfer_left, *_, transfer_right = sorted(current)
+        if (transfer_left[0] >= transfer_right[0] or transfer_left[1:] != transfer_right[1:]
+                or sum(enabled for _, enabled, _ in current.values()) != 1):
+            return None
+        node, enabled, actions = current[transfer_right]
+        return node if enabled and "AXPress" in actions else None
+
+    def toolbar_ok_button(self):
+        ax, dialog = self.ax, self.toolbar_dialog()
+        if dialog:
+            buttons = [node for node in self.descend((dialog,), limit=100, depth_limit=7)
+                       if ax.text(node, "AXRole") == "AXButton" and self.title(node) == "ok"
+                       and "KEditToolBar.QDialogButtonBox." in ax.text(node, "AXIdentifier")
+                       and ax.enabled(node) and ax.action(node, ("AXPress",))]
+            if len(buttons) == 1:
+                return buttons[0]
+        return None
+
+    def video_track_toolbar_button(self):
+        ax = self.ax
+        matches = [node for node in self.descend((self.top_window(),), limit=200, depth_limit=10)
+                   if ax.text(node, "AXRole") == "AXButton"
+                   and self.title(node) == "select video track 1"
+                   and ".timelineToolBar." in ax.text(node, "AXIdentifier")
+                   and ax.enabled(node) and ax.action(node, ("AXPress",))]
+        return matches[0] if len(matches) == 1 else None
 
     def belongs_to_command_bar(self, node):
         ax = self.ax
@@ -1046,6 +1150,8 @@ class Evidence:
         allowed = ("AXPress",)
         if stage == "raise-owned-editor-window" and role == "AXWindow":
             allowed = ("AXRaise",)
+        if stage == "focus-available-toolbar-actions" and role == "AXList" and label(title).rstrip(":") == "available actions":
+            allowed = ("AXRaise",)
         if role.startswith("AXMenu"):
             allowed = ("AXPress", "AXPick")
             if opens is None and stage in {"import-file-menu", "save-file-menu"}:
@@ -1063,6 +1169,7 @@ class Evidence:
         # A modal callback may leave AX's response uncertain. Only the following
         # dialog/project can acknowledge it. Never send the action again.
         require(status in (0, CANNOT_COMPLETE), f"macOS {stage} AX action failed ({status})")
+        return status
 
 
     def key(self, stage, code, *, session=False, revalidate=None):
@@ -1149,7 +1256,48 @@ def observe_video_track_action(ui, evidence, *, activate=False, probe_hit=False)
     return report
 
 
-def observe_video_track_toolbar(ui, evidence):
+def only_video_track_added(before, after):
+    name = "Select Video Track 1"
+    return (not any(name in row for row in before) and sum(name in row for row in after) == 1
+            and [row for row in after if name not in row] == before)
+
+
+def configure_video_track_toolbar(ui, evidence, track):
+    before = ui.current_toolbar_actions()
+    baseline = ui.toolbar_arrow_state()
+    evidence.write("toolbar-config-before", {"current_actions": before, "arrows": baseline})
+    available = ui.await_target(ui.toolbar_available_list, "owned Available actions list")
+    evidence.press("focus-available-toolbar-actions", available)
+    node, current, selected = ui.await_target(lambda: ui.toolbar_available_action(track), "original visible V1")
+    evidence.write("toolbar-v1-current", {"current_item_observed": current, "selected_observed": selected})
+    require(current, "macOS toolbar V1 current item was not established")
+    if not selected and not ui.toolbar_insert_arrow(baseline):
+        evidence.press("select-available-toolbar-v1", node)
+
+    def insert_target():
+        action = ui.toolbar_available_action(track)
+        return ui.toolbar_insert_arrow(baseline) if action and action[1] else None
+
+    try:
+        insert = ui.await_target(insert_target, "only the right Insert arrow enabled by the exact V1 item")
+    finally:
+        evidence.write("toolbar-arrows-after-selection", {"arrows": ui.toolbar_arrow_state()})
+    evidence.press("insert-v1-into-timeline-toolbar", insert)
+    after = ui.current_toolbar_actions()
+    evidence.write("toolbar-config-after-insert", {"current_actions": after})
+    require(only_video_track_added(before, after), "macOS native toolbar proposal changes more than V1")
+    button = ui.await_target(ui.toolbar_ok_button, "owned Configure Toolbars OK")
+    evidence.press("commit-isolated-toolbar-profile", button)
+    ui.await_target(lambda: not ui.toolbar_dialog(), "Configure Toolbars closed after commit")
+    button = ui.await_target(ui.video_track_toolbar_button, "exact V1 button in Kdenlive's Timeline Toolbar")
+    evidence.write("toolbar-v1-button", {"pid": ui.ax.pid, "title": ui.ax.text(button, "AXTitle"),
+                                         "identifier": ui.ax.text(button, "AXIdentifier"),
+                                         "actions": ui.ax.actions(button)})
+    status = evidence.press("empty-editor-v1-toolbar", button)
+    require(status == 0, "native V1 toolbar action did not return an acknowledgement")
+
+
+def observe_video_track_toolbar(ui, evidence, *, configure=False):
     action = ui.menu_item("Configure Toolbars", evidence, "configure-toolbars", section="Settings")
     evidence.press("open-configure-toolbars", action)
     ui.await_target(ui.toolbar_dialog, "owned Configure Toolbars dialog")
@@ -1162,7 +1310,10 @@ def observe_video_track_toolbar(ui, evidence):
     evidence.write("toolbar-available-rows", scan)
     track = scan["matching_track"]
     require(track, "macOS toolbar did not expose a unique visible Select Video Track 1")
-    report = {"track": track, "profile_commits": 0, "timeline_actions": 0, "imports": 0, "saves": 0}
+    if configure:
+        configure_video_track_toolbar(ui, evidence, track)
+    report = {"track": track, "profile_commits": int(configure), "timeline_actions": int(configure),
+              "imports": 0, "saves": 0}
     evidence.write("toolbar-action-observed", report)
     return report
 
@@ -1231,7 +1382,8 @@ def wait_project(initial, guard):
 
 
 def run(owner, context, distribution, observe_editor, *, observe_clock=False,
-        observe_actions=False, observe_track=False, observe_hit=False, observe_toolbars=False):
+        observe_actions=False, observe_track=False, observe_hit=False,
+        observe_toolbars=False, configure_toolbars=False):
     if observe_editor:
         editor, binary = installed_editor(owner, context, distribution)
         source = None
@@ -1275,9 +1427,10 @@ def run(owner, context, distribution, observe_editor, *, observe_clock=False,
                     if observe_editor:
                         evidence.write("accessibility-tree", {"pid": process.pid, "nodes": ui.diagnostic()})
                         evidence.write("project-monitor-ax", ui.project_monitor_diagnostic())
-                        if observe_toolbars:
-                            return {"status": "TOOLBAR_ACTION_OBSERVED", "pid": process.pid,
-                                    **observe_video_track_toolbar(ui, evidence)}
+                        if observe_toolbars or configure_toolbars:
+                            mode = "TOOLBAR_PROFILE_VERIFIED" if configure_toolbars else "TOOLBAR_ACTION_OBSERVED"
+                            return {"status": mode, "pid": process.pid,
+                                    **observe_video_track_toolbar(ui, evidence, configure=configure_toolbars)}
                         if observe_actions or observe_track or observe_hit:
                             return {"status": "COMMAND_DISPATCHED" if observe_track else "COMMAND_OBSERVED",
                                     "pid": process.pid,
@@ -1351,6 +1504,7 @@ def main():
     observation.add_argument("--observe-editor-select-track", action="store_true")
     observation.add_argument("--observe-editor-command-hit", action="store_true")
     observation.add_argument("--observe-editor-toolbars", action="store_true")
+    observation.add_argument("--observe-editor-configure-v1-toolbar", action="store_true")
     options = parser.parse_args()
     context, distribution = selection(os.environ, sys.platform, platform.machine())
     require(context["runner_os"] == "macOS", "macOS editor qualification is restricted to macOS")
@@ -1362,12 +1516,14 @@ def main():
     print(json.dumps(run(runner / f"{JOB}-{context['run_id']}-1", context, distribution,
                          any((options.observe_editor, options.observe_editor_clock,
                               options.observe_editor_actions, options.observe_editor_select_track,
-                              options.observe_editor_command_hit, options.observe_editor_toolbars)),
+                              options.observe_editor_command_hit, options.observe_editor_toolbars,
+                              options.observe_editor_configure_v1_toolbar)),
                          observe_clock=options.observe_editor_clock,
                          observe_actions=options.observe_editor_actions,
                          observe_track=options.observe_editor_select_track,
                          observe_hit=options.observe_editor_command_hit,
-                         observe_toolbars=options.observe_editor_toolbars), sort_keys=True))
+                         observe_toolbars=options.observe_editor_toolbars,
+                         configure_toolbars=options.observe_editor_configure_v1_toolbar), sort_keys=True))
 
 
 if __name__ == "__main__":

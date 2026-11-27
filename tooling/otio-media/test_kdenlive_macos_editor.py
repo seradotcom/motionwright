@@ -297,5 +297,24 @@ class MacEditorRouteTests(unittest.TestCase):
         evidence.write.assert_any_call("toolbar-available-rows", ui.available_toolbar_track.return_value)
         evidence.press.assert_called_once()
 
+    def test_toolbar_profile_rejects_reorder_or_extra_changes(self):
+        before = [("First",), ("Second",)]
+        v1 = ("Select Video Track 1",)
+        self.assertTrue(editor.only_video_track_added(before, [before[0], v1, before[1]]))
+        self.assertFalse(editor.only_video_track_added(before, [before[1], v1, before[0]]))
+        self.assertFalse(editor.only_video_track_added(before, [*before, v1, v1]))
+
+    def test_toolbar_insert_needs_native_current_item_proof(self):
+        ui, evidence = Mock(), Mock()
+        ui.current_toolbar_actions.return_value = [("First",)]
+        ui.toolbar_transfer_arrows.return_value = {"identity": "four arrows"}
+        ui.await_target.side_effect = ["available list", ("available V1", False, False)]
+
+        with self.assertRaisesRegex(ValueError, "current item"):
+            editor.configure_video_track_toolbar(ui, evidence, {"row_index": 734})
+
+        evidence.press.assert_called_once_with("focus-available-toolbar-actions", "available list")
+        ui.toolbar_insert_arrow.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()
