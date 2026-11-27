@@ -277,11 +277,13 @@ def worker(request, phase, binding, seconds):
     from gi.repository import Atspi, Gdk, GLib
 
     deadline = time.monotonic() + seconds
-    if phase == "inspect-delivery":
+    if phase in {"inspect-delivery", "capture-window"}:
         gi.require_version("GdkX11", "3.0")
         from gi.repository import GdkX11
 
         capture_delivery_window(Path(request["evidence"]), binding, deadline, Gdk, GdkX11)
+        if phase == "capture-window":
+            return {"phase": phase, "binding": binding}
         faulthandler.dump_traceback_later(10, file=sys.stderr)
     require(Atspi.init() in (0, 1), "AAC31_ATSPI_INIT")
     Atspi.set_timeout(800, 2500)
@@ -292,8 +294,10 @@ def worker(request, phase, binding, seconds):
     bridge = ReviewBridge(Atspi, deadline=deadline, glib=GLib)
     journal = ui.DiskJournal(Path(request["evidence"]) / (phase + "-ui"))
     try:
-        if phase.startswith("navigate-"):
-            navigate_window(request, binding, bridge, journal)
+        if phase.startswith("open-project-"):
+            open_project_window(request, binding, bridge, journal)
+        elif phase.startswith("navigate-"):
+            press(bridge, binding, "Deliver", journal, "open-deliver")
         elif phase == "check-source":
             journal.put("before-check-source", {"binding": binding})
             press(bridge, binding, "Check hybrid sources", journal, "check-source")
@@ -315,7 +319,7 @@ def worker(request, phase, binding, seconds):
         journal.close()
 
 
-def navigate_window(request, binding, bridge, journal):
+def open_project_window(request, binding, bridge, journal):
     def project_or_editor():
         try:
             return exact(bridge, binding, "Deliver", button=True, enabled=True)
@@ -326,7 +330,6 @@ def navigate_window(request, binding, bridge, journal):
     initial = wait_for(bridge, project_or_editor, seconds=30)
     if initial.name != "Deliver":
         invoke(bridge, binding, initial, journal, "open-saved-project")
-    press(bridge, binding, "Deliver", journal, "open-deliver")
 
 
 def await_original(database, source, output, deadline):
@@ -410,9 +413,18 @@ def observe_stage(request_path, evidence, phase, binding, deadline, *, limit=Non
 
 def observe_window(request_path, evidence, phase, binding, deadline, database, source, output,
                    *, inspect_delivery=False):
-    observe_stage(request_path, evidence, "navigate-" + phase, binding, deadline, limit=35)
-    if inspect_delivery:
-        return observe_stage(request_path, evidence, "inspect-delivery", binding, deadline, limit=25)
+    try:
+        observe_stage(request_path, evidence, "open-project-" + phase, binding, deadline, limit=25)
+        observe_stage(request_path, evidence, "navigate-" + phase, binding, deadline, limit=25)
+        if inspect_delivery:
+            return observe_stage(request_path, evidence, "inspect-delivery", binding, deadline, limit=25)
+    except Exception as error:
+        if inspect_delivery and not (evidence / "delivery-window.original.rgb").exists():
+            try:
+                observe_stage(request_path, evidence, "capture-window", binding, deadline, limit=10)
+            except Exception as capture_error:
+                error.add_note("AAC31 diagnostic capture failed: " + str(capture_error))
+        raise
     if phase == "render":
         observe_stage(request_path, evidence, "check-source", binding, deadline, limit=30)
         observe_stage(request_path, evidence, "create", binding, deadline, limit=90)
@@ -512,8 +524,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--inspect-delivery", action="store_true")
-    parser.add_argument("--worker", choices=("navigate-render", "navigate-reopen", "check-source", "inspect-delivery",
-                                             "create", "render", "reopen"))
+    parser.add_argument("--worker", choices=("open-project-render", "open-project-reopen",
+                                             "navigate-render", "navigate-reopen", "check-source",
+                                             "inspect-delivery", "capture-window", "create", "render", "reopen"))
     parser.add_argument("--binding")
     parser.add_argument("--seconds", type=int)
     args = parser.parse_args()

@@ -32,30 +32,40 @@ class InstalledAAC31ProofTests(unittest.TestCase):
     def test_navigation_and_source_check_close_before_the_only_create_worker(self):
         binding = {"pid": 9001, "window": "0x42", "start_time": "100"}
         report = {"phase": "render", "binding": binding}
-        with patch.object(installed, "observe_stage", side_effect=[{}, {}, {}, report]) as stage, patch.object(
+        with patch.object(installed, "observe_stage", side_effect=[{}, {}, {}, {}, report]) as stage, patch.object(
             installed, "await_original", return_value=Mock(),
         ) as original:
             result = installed.observe_window(Path("request.json"), Path("evidence"), "render", binding,
                                              time.monotonic() + 300, Mock(), Mock(), Mock())
         self.assertEqual(result, report)
         self.assertEqual([call.args[2] for call in stage.call_args_list],
-                         ["navigate-render", "check-source", "create", "render"])
+                         ["open-project-render", "navigate-render", "check-source", "create", "render"])
         self.assertEqual([call.kwargs.get("limit") for call in stage.call_args_list],
-                         [35, 30, 90, None])
+                         [25, 25, 30, 90, None])
         original.assert_called_once()
 
-        with patch.object(installed, "observe_stage", side_effect=[{}, TimeoutError("source observer hung")]) as stage:
+        with patch.object(installed, "observe_stage", side_effect=[{}, {}, TimeoutError("source observer hung")]) as stage:
             with self.assertRaises(TimeoutError):
                 installed.observe_window(Path("request.json"), Path("evidence"), "render", binding,
                                          time.monotonic() + 300, Mock(), Mock(), Mock())
-        self.assertEqual([call.args[2] for call in stage.call_args_list], ["navigate-render", "check-source"])
+        self.assertEqual([call.args[2] for call in stage.call_args_list], ["open-project-render", "navigate-render", "check-source"])
 
-        with patch.object(installed, "observe_stage", side_effect=[{}, report]) as stage:
+        with patch.object(installed, "observe_stage", side_effect=[{}, {}, report]) as stage:
             result = installed.observe_window(Path("request.json"), Path("evidence"), "render", binding,
                                              time.monotonic() + 75, Mock(), Mock(), Mock(),
                                              inspect_delivery=True)
         self.assertEqual(result, report)
-        self.assertEqual([call.args[2] for call in stage.call_args_list], ["navigate-render", "inspect-delivery"])
+        self.assertEqual([call.args[2] for call in stage.call_args_list], ["open-project-render", "navigate-render", "inspect-delivery"])
+
+        with tempfile.TemporaryDirectory() as folder, patch.object(
+            installed, "observe_stage", side_effect=[{}, TimeoutError("transition stalled"), {}],
+        ) as stage:
+            with self.assertRaises(TimeoutError):
+                installed.observe_window(Path("request.json"), Path(folder), "render", binding,
+                                         time.monotonic() + 75, Mock(), Mock(), Mock(),
+                                         inspect_delivery=True)
+        self.assertEqual([call.args[2] for call in stage.call_args_list],
+                         ["open-project-render", "navigate-render", "capture-window"])
 
     def test_button_scan_does_not_read_unrelated_document_names(self):
         bridge = installed.ReviewBridge.__new__(installed.ReviewBridge)
