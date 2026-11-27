@@ -227,14 +227,24 @@ public static class KdenliveWindowsInput
 
     public static bool SelectVideoTrackOne(uint owner)
     {
+        return PressUnmodifiedKey(owner, 0x31);
+    }
+
+    public static bool CommitTimecodeField(uint owner)
+    {
+        return PressUnmodifiedKey(owner, 0x09);
+    }
+
+    private static bool PressUnmodifiedKey(uint owner, ushort key)
+    {
         if (!IsOwned(GetForegroundWindow(), owner) ||
             (GetAsyncKeyState(0x10) & 0x8000) != 0 ||
             (GetAsyncKeyState(0x11) & 0x8000) != 0 ||
             (GetAsyncKeyState(0x12) & 0x8000) != 0)
             return false;
         var events = new [] {
-            new Input { Type = 1, Data = new InputData { Keyboard = new Keyboard { Key = 0x31 } } },
-            new Input { Type = 1, Data = new InputData { Keyboard = new Keyboard { Key = 0x31, Flags = 0x0002 } } }
+            new Input { Type = 1, Data = new InputData { Keyboard = new Keyboard { Key = key } } },
+            new Input { Type = 1, Data = new InputData { Keyboard = new Keyboard { Key = key, Flags = 0x0002 } } }
         };
         return SendInput((uint)events.Length, events, Marshal.SizeOf(typeof(Input))) == events.Length;
     }
@@ -580,12 +590,12 @@ function Read-DurationFields($Dialog) {
     }
     $condition = [System.Windows.Automation.PropertyCondition]::new(
         [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-        [System.Windows.Automation.ControlType]::Edit
+        [System.Windows.Automation.ControlType]::Spinner
     )
     $entries = $Dialog.FindAll($scope, $condition)
     if ($entries.Count -gt 16) { throw 'Kdenlive Duration field limit exceeded' }
     $fields = @()
-    foreach ($name in @('m_pos', 'm_cropStart', 'm_dur')) {
+    foreach ($name in @('m_pos', 'm_cropStart', 'm_dur', 'm_cropEnd')) {
         $pattern = '(^|\.)' + $name + '($|\.)'
         $matched = @($entries | Where-Object {
             $_.Current.ProcessId -eq $EditorPid -and
@@ -593,13 +603,13 @@ function Read-DurationFields($Dialog) {
         })
         if ($matched.Count -ne 1) { throw "Expected one owned Duration field $name" }
         $value = $matched[0].GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-        $fields += @{ control = $matched[0]; pattern = $value; frames = (Timecode-Frames $value.Current.Value) }
+        $fields += @{ control = $matched[0]; pattern = $value; frames = (Timecode-Frames $value.Current.Value.Trim()) }
     }
     return $fields
 }
 
 function Assert-ClipDuration($Fields, [int]$Expected) {
-    if ($Fields.Count -ne 3 -or $Fields[0].frames -ne 60 -or $Fields[1].frames -ne 60 -or
+    if ($Fields.Count -ne 4 -or $Fields[0].frames -ne 60 -or $Fields[1].frames -ne 60 -or
         $Fields[2].frames -ne $Expected) {
         throw 'Kdenlive selection does not match the third clip at the expected duration'
     }
@@ -642,15 +652,37 @@ function Verify-ThirdClipPlaylist {
     )) {
         $dialog = Open-ClipDuration $edit.stage
         $fields = @(Read-DurationFields $dialog)
+        Record "$($edit.stage)-model.json" @{
+            editor_pid = $EditorPid; position = $fields[0].frames; crop = $fields[1].frames; duration = $fields[2].frames
+        }
         Assert-ClipDuration $fields $edit.before
-        Record "$($edit.stage)-model.json" @{ editor_pid = $EditorPid; position = 60; crop = 60; duration = $edit.before }
         if ($fields[2].pattern.Current.IsReadOnly -or !$fields[2].control.Current.IsEnabled) {
             throw 'Kdenlive third clip duration cannot be edited'
         }
         Assert-Editor
         Record "$($edit.stage)-text-intent.json" @{ editor_pid = $EditorPid; duration = $edit.after; automatic_retry = $false }
+        $fields[2].control.SetFocus()
+        $focus = [System.Windows.Automation.AutomationElement]::FocusedElement
+        if ($null -eq $focus -or $focus.Current.ProcessId -ne $EditorPid -or
+            $focus.Current.AutomationId -cnotmatch '^QApplication\.ClipDurationDialog_UI\.m_dur($|\.)') {
+            throw 'Kdenlive Duration field did not receive focus'
+        }
         $fields[2].pattern.SetValue($edit.value)
         Assert-ClipDuration @(Read-DurationFields $dialog) $edit.after
+        # TimecodeDisplay keeps a numeric model and updates it on editingFinished.
+        # Move focus once, then require its dependent out-point field to change.
+        Assert-Editor
+        Record "$($edit.stage)-commit-field-intent.json" @{ editor_pid = $EditorPid; automatic_retry = $false }
+        if (![KdenliveWindowsInput]::CommitTimecodeField([uint32]$EditorPid)) {
+            throw 'Kdenlive duration field focus change was not confirmed'
+        }
+        $expectedEnd = $fields[3].frames + $edit.before - $edit.after
+        $commit = Await-Unique 'applied timecode and dependent crop end' {
+            $model = @(Read-DurationFields $dialog)
+            Assert-ClipDuration $model $edit.after
+            if ($model[3].frames -eq $expectedEnd) { @{ crop_end = $expectedEnd } }
+        }
+        Record "$($edit.stage)-field-committed.json" $commit
         $button = Await-Unique 'Duration OK' {
             Find-Control @($dialog) ([System.Windows.Automation.ControlType]::Button) 'OK'
         }
