@@ -126,6 +126,20 @@ class AacPresentationClockTests(unittest.TestCase):
         result = inspect(data, source_frames=52800, decoded_frames=53248)
         self.assertEqual(result["unpresented_final_access_unit_samples"], 448)
 
+    def test_fractional_millisecond_30fps_cut_requires_exact_movie_clock(self):
+        # 31 authored frames contain 49,600 samples at 48 kHz. The decoded
+        # AAC packets are identical in both variants, while their edit clocks differ.
+        packet_tables = dict(media_duration=50_624, counts=((49, 1024), (1, 448)),
+                             packet_count=50)
+        rounded = fixture(segment=1033, movie_duration=1034, **packet_tables)
+        with self.assertRaisesRegex(clock.PresentationClockError, "presentation_differs"):
+            inspect(rounded, source_frames=49_600, decoded_frames=50_176)
+        exact = fixture(movie_scale=48_000, segment=49_600, movie_duration=49_600,
+                        **packet_tables)
+        result = inspect(exact, source_frames=49_600, decoded_frames=50_176)
+        self.assertEqual(result["presentation_end_sample"], 49_600)
+        self.assertEqual(result["unpresented_final_access_unit_samples"], 576)
+
     def test_rate_changes_and_empty_edits_are_rejected(self):
         for change, error in (({"rate": 0x8000}, "rate_not_unit"),
                               ({"priming": -1}, "empty_or_unbounded"),
