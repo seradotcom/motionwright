@@ -432,7 +432,12 @@ jobs:
           import os, tempfile
           from pathlib import Path
 
-          parent = Path(os.environ["LOCALAPPDATA"]) / "Temp" if os.name == "nt" else Path(os.environ["RUNNER_TEMP"])
+          # A shared Windows Temp pool can have extra effective write ACEs.
+          # Keep the fixture below the user profile and exercise real NTFS admission.
+          if os.name == "nt":
+              parent = Path(os.environ["LOCALAPPDATA"])
+          else:
+              parent = Path(os.environ["RUNNER_TEMP"])
           scratch = Path(tempfile.mkdtemp(prefix="motionwright-otio-", dir=parent.resolve(strict=True)))
           with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as env:
               for variable in ("TMPDIR", "TEMP", "TMP"):
