@@ -2113,9 +2113,10 @@ jobs:
       run: |
         set -euo pipefail
         evidence="$RUNNER_TEMP/mw-mlt-g2-contracts-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-        cargo test --locked -p motionwright-native --lib mlt_owner_close_recovers_the_original_and_fences_a_dispatch_after_reopen \
+        cargo test --locked -p motionwright-native --lib mlt_owner_close_ \
           -- --nocapture 2>&1 | tee "$evidence/mlt-owner-close-rust.log"
         grep -F 'mlt_owner_close_recovers_the_original_and_fences_a_dispatch_after_reopen ... ok' "$evidence/mlt-owner-close-rust.log"
+        grep -F 'mlt_owner_close_requires_foreground_confirmation_on_both_broker_envelopes ... ok' "$evidence/mlt-owner-close-rust.log"
         cargo test --locked -p motionwright-native --lib production::mlt_timeline::tests:: -- --nocapture \
           2>&1 | tee "$evidence/mlt-timeline-rust.log"
         grep -F 'mlt_job_observations_require_the_project_creation_generation ... ok' "$evidence/mlt-timeline-rust.log"

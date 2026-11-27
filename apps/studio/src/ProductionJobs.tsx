@@ -89,6 +89,7 @@ function canCloseMlt(job: ProductionJobProjection): boolean {
 const mltCloseLabels: Record<MltCloseDisposition, string> = {
   closed: "Native project closed. The rendered media is retained.",
   confirmation_unavailable: "Broker confirmation was unavailable. Open the original Broker’s approval console before requesting closure.",
+  refused: "The Broker declined the closure or the approval expired. The request is closed.",
   outcome_unknown: "Closure could not be confirmed. Reconcile the original request with the Broker before any further action.",
 };
 
@@ -145,7 +146,7 @@ function JobRow({
         {desktopMode && onCloseMlt && canCloseMlt(job) && (
           <>
             <button type="button" className="button compact"
-              disabled={closeBusy || closure === "closed" || closure === "outcome_unknown"}
+              disabled={closeBusy || (closure !== undefined && closure !== "confirmation_unavailable")}
               onClick={() => onCloseMlt(job)}>
               {closeBusy ? "Waiting for Broker…" : "Request MLT project closure"}
             </button>

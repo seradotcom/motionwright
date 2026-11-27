@@ -406,7 +406,8 @@ export async function closeOriginalMltProject(
     root_request_id: rootRequestId,
     effect_grant: grant.token,
   } });
-  if (disposition !== "closed" && disposition !== "confirmation_unavailable" && disposition !== "outcome_unknown") {
+  if (disposition !== "closed" && disposition !== "confirmation_unavailable"
+      && disposition !== "refused" && disposition !== "outcome_unknown") {
     throw new Error("The original MLT closure result could not be recognized.");
   }
   return disposition;

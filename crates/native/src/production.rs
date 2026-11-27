@@ -6723,7 +6723,7 @@ mod tests {
         let wrapper = json!({
             "provenance_checked":true, "execution": {"backend":"driver:mlt-video", "dry_run":false,
             "provenance":{"provider":"driver:mlt-video", "execution_provider":"driver:mlt-video",
-            "source":SourceKind::Driver,"untrusted_metadata":false,"provider_generation":7,
+            "source":SourceKind::Driver,"untrusted_metadata":true,"provider_generation":7,
             "descriptor_sha256":"c".repeat(64)}},
             "data":{"job":"render:original", "project_revision":semantic, "output":"original.mkv",
             "profile":"lossless-video-only", "state":"succeeded", "error":null,
@@ -6783,26 +6783,33 @@ mod tests {
                 limits: units,
             })
             .unwrap();
+        let result_receipt = service
+            .latest_production_receipt(project.id, "take:mlt:render-result")
+            .unwrap()
+            .unwrap()
+            .id;
+        let mut close_receipt = ProductionReceiptInput {
+            project_id: project.id,
+            generation: project.generation,
+            revision: project.revision,
+            request_id: request_id.clone(),
+            command: close_command.into(),
+            stage: "dispatching".into(),
+            request_sha256: request_digest(
+                close_command,
+                &json!({
+                    "project": project_ref, "expected_revision": semantic,
+                }),
+            )
+            .unwrap(),
+            payload: json!({"mutation":true, "start_request":start_request,
+                "result_receipt":result_receipt, "native_source":source}),
+        };
         service
             .admit_root_operation_dispatch(RootDispatchBudgetInput {
                 root_id: root.root_id,
                 units,
-                receipt: ProductionReceiptInput {
-                    project_id: project.id,
-                    generation: project.generation,
-                    revision: project.revision,
-                    request_id: request_id.clone(),
-                    command: close_command.into(),
-                    stage: "dispatching".into(),
-                    request_sha256: request_digest(
-                        close_command,
-                        &json!({
-                            "project": project_ref, "expected_revision": semantic,
-                        }),
-                    )
-                    .unwrap(),
-                    payload: json!({"mutation":true}),
-                },
+                receipt: close_receipt.clone(),
             })
             .unwrap();
         drop(coordinator);
@@ -6819,6 +6826,20 @@ mod tests {
         assert_eq!(
             coordinator.close_prepared_mlt(prepared).await.unwrap(),
             MltCloseDisposition::OutcomeUnknown
+        );
+        close_receipt.stage = "failed_known".into();
+        close_receipt.payload["error"] =
+            json!({"code":ErrorCode::PolicyDenied, "operator_refused":true});
+        coordinator
+            .service
+            .append_production_receipt(close_receipt)
+            .unwrap();
+        let prepared = coordinator
+            .prepare_mlt_close(project.id, &project.stamp(), start_request)
+            .unwrap();
+        assert_eq!(
+            coordinator.close_prepared_mlt(prepared).await.unwrap(),
+            MltCloseDisposition::Refused
         );
         assert_eq!(
             coordinator

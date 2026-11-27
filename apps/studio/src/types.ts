@@ -797,7 +797,7 @@ export type EffectKind =
   | "install_runtime"
   | "publish_external";
 
-export type MltCloseDisposition = "closed" | "confirmation_unavailable" | "outcome_unknown";
+export type MltCloseDisposition = "closed" | "confirmation_unavailable" | "refused" | "outcome_unknown";
 
 export interface EffectGrantReceipt {
   token: string;

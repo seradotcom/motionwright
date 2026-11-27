@@ -1575,3 +1575,50 @@ async fn audio_pair_completed_readback_slot_cannot_overwrite_or_repeat_observati
     assert!(readbacks.after_capture.is_none());
     assert_eq!(coordinator.client.execute_calls.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn mlt_owner_close_requires_foreground_confirmation_on_both_broker_envelopes() {
+    let mut mount = observation();
+    mount.value["data"]["provider"] = json!(AUDIO_PROVIDER);
+    mount.value["data"]["mount"]["root"] = json!("output");
+    mount.value["data"]["mount"]["write"] = json!(true);
+    sync_original(&mut mount.value);
+    let binding = BoundMediaContext::from_observation(
+        BindingProfile::MltClose,
+        "b".repeat(64),
+        &root(),
+        mount,
+    )
+    .unwrap();
+    let mut value = completed(MLT_CLOSE)["result"].clone();
+    value["data"]["result"]["data"] = json!({"closed":true});
+    value["data"]["result"]["execution"] = execution(AUDIO_PROVIDER, SourceKind::Driver, Some(9));
+    value["data"]["result"]["execution"]["policy_decision"] = json!("allow_after_confirmation");
+    value["execution"]["policy_decision"] = json!("allow_after_confirmation");
+    sync_original(&mut value);
+    let verify = |value| {
+        binding.qualify_result(
+            &BrokerResult {
+                value,
+                request_id: OUTER.into(),
+            },
+            MLT_CLOSE,
+            true,
+        )
+    };
+    assert!(verify(value.clone()).is_ok());
+    for (pointer, replacement) in [
+        ("/execution/policy_decision", json!("allow")),
+        ("/data/result/execution/policy_decision", json!("allow")),
+        (
+            "/data/result/execution/provenance/provider_generation",
+            json!(10),
+        ),
+        ("/data/result/data/closed", json!(false)),
+    ] {
+        let mut altered = value.clone();
+        *altered.pointer_mut(pointer).unwrap() = replacement;
+        sync_original(&mut altered);
+        assert!(!verify(altered).unwrap_err().outcome_known);
+    }
+}

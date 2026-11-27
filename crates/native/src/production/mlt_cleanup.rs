@@ -13,6 +13,7 @@ const MAX_CONFIRMATION_HISTORY: usize = 32;
 pub enum MltCloseDisposition {
     Closed,
     ConfirmationUnavailable,
+    Refused,
     OutcomeUnknown,
 }
 
@@ -75,7 +76,7 @@ fn provider_result(receipt: &ProductionReceipt, generation: u64) -> NativeResult
     if original["provenance_checked"] != json!(true)
         || exec["dry_run"] != json!(false)
         || exec["backend"] != json!("driver:mlt-video")
-        || provenance["untrusted_metadata"] != json!(false)
+        || !provenance["untrusted_metadata"].is_boolean()
         || provenance["provider"] != json!("driver:mlt-video")
         || provenance["execution_provider"] != json!("driver:mlt-video")
         || provenance["source"] != json!("driver")
@@ -342,6 +343,15 @@ impl ProductionCoordinator {
                     MltCloseDisposition::OutcomeUnknown
                 }
             },
+            Err(error)
+                if error.outcome_known
+                    && error.code == ErrorCode::PolicyDenied
+                    && error.message == "Operator declined or approval expired" =>
+            {
+                receipt.stage = "failed_known".into();
+                receipt.payload["error"] = json!({"code": error.code, "operator_refused": true});
+                MltCloseDisposition::Refused
+            }
             Err(error) if error.outcome_known && error.code == ErrorCode::ConsentRequired => {
                 receipt.stage = "failed_known".into();
                 receipt.payload["error"] = json!({"code": error.code});
@@ -390,6 +400,12 @@ fn close_disposition(
                     == Some(&json!(prepared.source.provider_generation)) =>
         {
             MltCloseDisposition::Closed
+        }
+        "failed_known"
+            if prior.payload.pointer("/error/code") == Some(&json!(ErrorCode::PolicyDenied))
+                && prior.payload.pointer("/error/operator_refused") == Some(&json!(true)) =>
+        {
+            MltCloseDisposition::Refused
         }
         "failed_known"
             if prior.payload.pointer("/error/code") == Some(&json!(ErrorCode::ConsentRequired)) =>
