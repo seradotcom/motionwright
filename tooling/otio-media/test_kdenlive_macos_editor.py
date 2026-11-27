@@ -195,5 +195,18 @@ class MacEditorRouteTests(unittest.TestCase):
         ui.menu_item.assert_not_called()
         evidence.press.assert_not_called()
 
+    def test_command_probe_filters_the_real_action_without_invoking_it(self):
+        ui, evidence = Mock(), Mock()
+        ui.menu_item.return_value = "Find Action"
+        ui.await_target.side_effect = ["command filter", {"role": "AXCell", "title": "Select Video Track 1"}]
+
+        report = editor.observe_video_track_action(ui, evidence)
+
+        evidence.press.assert_called_once_with("open-find-action", "Find Action")
+        evidence.key.assert_not_called()
+        ui.set_text.assert_called_once_with("command filter", "Select Video Track 1")
+        self.assertEqual(report["command"]["title"], "Select Video Track 1")
+        self.assertEqual(report["timeline_actions"], 0)
+
 if __name__ == "__main__":
     unittest.main()

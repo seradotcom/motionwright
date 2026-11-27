@@ -293,7 +293,7 @@ class EditorUI:
             "window_title": self.ax.text(focused, "AXTitle"),
         })
 
-    def prepare_input(self, evidence):
+    def prepare_input(self, evidence, stage="before-import"):
         self.guard()
         ax = self.ax
         require(ax.event_access(), "macOS session cannot post keyboard events to the editor")
@@ -307,7 +307,7 @@ class EditorUI:
         if not self.focused_window():
             window = self.await_target(self.top_window, "main Kdenlive window to focus")
             evidence.press("raise-owned-editor-window", window)
-        self.note_foreground(evidence, "before-import")
+        self.note_foreground(evidence, stage)
 
     def title(self, element):
         return label(self.ax.text(element, "AXTitle"))
@@ -414,6 +414,45 @@ class EditorUI:
             return None
 
         return self.await_target(lookup, f"{confirm} file dialog and its file name field")
+
+    def belongs_to_command_bar(self, node):
+        ax = self.ax
+        for _ in range(6):
+            if not ax.owns(node):
+                return False
+            if "KCommandBar" in ax.text(node, "AXIdentifier").split("."):
+                return True
+            node = ax.value(node, "AXParent")
+        return False
+
+    def command_filter(self):
+        ax = self.ax
+        focused = ax.value(ax.app, "AXFocusedUIElement")
+        if (self.belongs_to_command_bar(focused) and ax.text(focused, "AXRole") == "AXTextField"
+                and ax.enabled(focused)):
+            return focused
+        return None
+
+    def command_result(self, title):
+        ax = self.ax
+        matches = {role: [] for role in ("AXCell", "AXStaticText", "AXRow")}
+        for node in self.descend((*self.panels(), self.top_window()), limit=220, depth_limit=13):
+            role = ax.text(node, "AXRole")
+            if (role in matches and (ax.text(node, "AXTitle") == title or ax.text(node, "AXValue") == title)
+                    and self.belongs_to_command_bar(node)
+                    and not any(ax.equal(node, item) for item in matches[role])):
+                matches[role].append(node)
+        for role, rows in matches.items():
+            if rows:
+                if len(rows) != 1:
+                    return None
+                node = rows[0]
+                parent = ax.value(node, "AXParent")
+                return {"role": role, "title": title, "identifier": ax.text(node, "AXIdentifier"),
+                        "parent_role": ax.text(parent, "AXRole") if ax.owns(parent) else None,
+                        "enabled": ax.enabled(node), "actions": ax.actions(node),
+                        "position": ax.pair(node, "AXPosition", 1), "size": ax.pair(node, "AXSize", 2)}
+        return None
 
     def set_text(self, element, value):
         self.guard()
@@ -723,6 +762,19 @@ def observe_project_clock_layout(ui, evidence):
     return report
 
 
+def observe_video_track_action(ui, evidence):
+    ui.prepare_input(evidence, "before-command-search")
+    name = "Select Video Track 1"
+    item = ui.menu_item("Find Action", evidence, "find-action", section="Help")
+    evidence.press("open-find-action", item)
+    field = ui.await_target(ui.command_filter, "focused KCommandBar filter")
+    ui.set_text(field, name)
+    command = ui.await_target(lambda: ui.command_result(name), "exact Select Video Track 1 result")
+    report = {"command": command, "timeline_actions": 0, "imports": 0, "saves": 0}
+    evidence.write("find-action-result", report)
+    return report
+
+
 def refresh_third_playlist(ui, evidence):
     ui.seek_and_select_third_clip(evidence)
     for stage, before, after, text in (
@@ -785,7 +837,7 @@ def wait_project(initial, guard):
     raise TimeoutError("macOS Kdenlive did not produce the initial native project")
 
 
-def run(owner, context, distribution, observe_editor, *, observe_clock=False):
+def run(owner, context, distribution, observe_editor, *, observe_clock=False, observe_actions=False):
     if observe_editor:
         editor, binary = installed_editor(owner, context, distribution)
         source = None
@@ -829,6 +881,9 @@ def run(owner, context, distribution, observe_editor, *, observe_clock=False):
                     if observe_editor:
                         evidence.write("accessibility-tree", {"pid": process.pid, "nodes": ui.diagnostic()})
                         evidence.write("project-monitor-ax", ui.project_monitor_diagnostic())
+                        if observe_actions:
+                            return {"status": "COMMAND_OBSERVED", "pid": process.pid,
+                                    **observe_video_track_action(ui, evidence)}
                         if observe_clock:
                             return {"status": "CLOCK_OBSERVED", "pid": process.pid,
                                     **observe_project_clock_layout(ui, evidence)}
@@ -893,6 +948,7 @@ def main():
     observation = parser.add_mutually_exclusive_group()
     observation.add_argument("--observe-editor", action="store_true")
     observation.add_argument("--observe-editor-clock", action="store_true")
+    observation.add_argument("--observe-editor-actions", action="store_true")
     options = parser.parse_args()
     context, distribution = selection(os.environ, sys.platform, platform.machine())
     require(context["runner_os"] == "macOS", "macOS editor qualification is restricted to macOS")
@@ -902,8 +958,9 @@ def main():
     require(runner.is_absolute() and runner.resolve(strict=True) == runner,
             "macOS Kdenlive runner root is not canonical")
     print(json.dumps(run(runner / f"{JOB}-{context['run_id']}-1", context, distribution,
-                         options.observe_editor or options.observe_editor_clock,
-                         observe_clock=options.observe_editor_clock), sort_keys=True))
+                         options.observe_editor or options.observe_editor_clock or options.observe_editor_actions,
+                         observe_clock=options.observe_editor_clock,
+                         observe_actions=options.observe_editor_actions), sort_keys=True))
 
 
 if __name__ == "__main__":
