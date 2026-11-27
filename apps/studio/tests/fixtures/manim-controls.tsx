@@ -14,6 +14,7 @@ initial.assets=[
   {id:original,name:"original.mwedit.zip",media_type:MANIM_EDITABLE_MIME,content_sha256:"a".repeat(64),source_revision:null},
   {id:edited,name:"edited.mwedit.zip",media_type:MANIM_EDITABLE_MIME,content_sha256:"b".repeat(64),source_revision:null},
 ];
+initial.assets.push({id:"50000000-0000-4000-8000-000000000003",name:"returned-plan.json",media_type:"application/json",content_sha256:"f".repeat(64),source_revision:null});
 const before=structuredClone(initial.scenes[0].nodes[0]);
 let live=initial,applies=0,altered=false,dropReply=false;
 const runtime=window as unknown as {

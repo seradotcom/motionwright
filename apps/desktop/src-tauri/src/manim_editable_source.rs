@@ -4,8 +4,9 @@ use super::effect_grants::{EffectGrantRegistry, EffectKind, EffectScope};
 use super::project_export::absolute_bundle_path;
 use motionwright_domain::{Project, RevisionStamp};
 use motionwright_native::manim_editable_projection::{
-    EditableProperty, PreviewedEditableEdit, export_saved_manim_editable_source_bundle,
-    inspect_saved_manim_editable_source, preview_saved_manim_editable_edit,
+    EditableProperty, PreviewedEditableEdit, RETURNED_MANIM_PLAN_MIME,
+    export_saved_manim_editable_source_bundle, inspect_saved_manim_editable_source,
+    preview_saved_manim_editable_edit,
 };
 use motionwright_service::StudioService;
 use serde::{Deserialize, Serialize};
@@ -148,16 +149,17 @@ fn valid_sha(value: &str) -> bool {
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 
-fn verify_asset(project: &Project, id: Uuid, digest: &str) -> Result<(), String> {
+fn verify_asset(project: &Project, id: Uuid, digest: &str, allow_plan: bool) -> Result<(), String> {
     if id.is_nil()
         || !valid_sha(digest)
         || !project.assets.iter().any(|asset| {
             asset.id == id
-                && asset.media_type == MIME
+                && (asset.media_type == MIME
+                    || (allow_plan && asset.media_type == RETURNED_MANIM_PLAN_MIME))
                 && asset.content_sha256.as_deref() == Some(digest)
         })
     {
-        return Err("Choose the exact attached Manim editable package and digest.".into());
+        return Err("Choose the exact attached Manim source and digest.".into());
     }
     Ok(())
 }
@@ -286,7 +288,7 @@ pub fn inspect_attached(
     request: AttachedRequest,
 ) -> Result<AttachedResponse, String> {
     let project = saved_project(service, &request.source)?;
-    verify_asset(&project, request.asset_id, &request.expected_sha256)?;
+    verify_asset(&project, request.asset_id, &request.expected_sha256, false)?;
     let read = inspect_saved_manim_editable_source(
         service,
         project.id,
@@ -335,8 +337,14 @@ pub fn preview_edit(service: &StudioService, request: EditRequest) -> Result<Edi
         &project,
         request.original_asset_id,
         &request.original_sha256,
+        false,
     )?;
-    verify_asset(&project, request.edited_asset_id, &request.edited_sha256)?;
+    verify_asset(
+        &project,
+        request.edited_asset_id,
+        &request.edited_sha256,
+        true,
+    )?;
     if request.original_asset_id == request.edited_asset_id || request.node_id.is_nil() {
         return Err("Choose a separate edited package and an original node.".into());
     }
@@ -527,6 +535,11 @@ mod tests {
             FileImportDispatchRequest, FileImportKind, FileImportPrepareRequest, import_asset_file,
             prepare_file_import,
         };
+        let expected_mime = if name.ends_with(".json") {
+            RETURNED_MANIM_PLAN_MIME
+        } else {
+            MIME
+        };
         // Follow the same metadata-only preparation and one-time grant used
         // by Assets. The user need not supply an implementation MIME string.
         let prepared = prepare_file_import(
@@ -547,7 +560,7 @@ mod tests {
             prepared.intent,
             motionwright_service::FileImportIntent::Asset {
                 name: name.into(),
-                media_type: MIME.into(),
+                media_type: expected_mime.into(),
             }
         );
         let grants = EffectGrantRegistry::default();
@@ -575,9 +588,92 @@ mod tests {
         assert!(!receipt.replayed);
         let next = receipt.project;
         let asset = next.assets.iter().find(|a| a.name == name).unwrap();
-        assert_eq!(asset.media_type, MIME);
+        assert_eq!(asset.media_type, expected_mime);
         let id = asset.id;
         (next, id)
+    }
+
+    #[test]
+    fn manim_source_exchange_returned_plan_through_asset_import_and_reopen() {
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("source.sqlite3");
+        let service = StudioService::open(&db).unwrap();
+        let (project, scene_id, node_id) = fixture(&service);
+        let original_path = root.path().join("original.mwedit.zip");
+        let original = export_original(&service, &project, scene_id, &original_path);
+        let (project, original_id) =
+            import(&service, &project, &original_path, "original.mwedit.zip");
+        let inspected = inspect_saved_manim_editable_source(
+            &service,
+            project.id,
+            &project.stamp(),
+            original_id,
+        )
+        .unwrap();
+        let mut returned = inspected.current_plan;
+        returned.binding = inspected.origin_binding;
+        let changed = returned
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == node_id)
+            .unwrap();
+        changed.x_px += 40.0;
+        changed.opacity = 0.5;
+        let original_json = serde_json::to_vec_pretty(&returned).unwrap();
+        let path = root.path().join("returned-plan.json");
+        std::fs::write(&path, &original_json).unwrap();
+        let (project, edited_id) = import(&service, &project, &path, "returned-plan.json");
+        let edited_sha256 = sha(&original_json);
+        let source = selection(&project, scene_id);
+        assert!(
+            inspect_attached(
+                &service,
+                AttachedRequest {
+                    source: source.clone(),
+                    asset_id: edited_id,
+                    expected_sha256: edited_sha256.clone(),
+                }
+            )
+            .is_err()
+        );
+        let preview = preview_edit(
+            &service,
+            EditRequest {
+                source,
+                original_asset_id: original_id,
+                original_sha256: original.bundle_sha256,
+                edited_asset_id: edited_id,
+                edited_sha256: edited_sha256.clone(),
+                node_id,
+                property: EditableProperty::Transform,
+            },
+        )
+        .unwrap();
+        assert_eq!(service.project(project.id).unwrap(), project);
+        let saved = apply(&service, &project, preview.preview.change);
+        assert_eq!(saved.revision, project.revision + 1);
+        assert_eq!(saved.assets, project.assets);
+        let node = saved
+            .scenes
+            .iter()
+            .find(|scene| scene.id == scene_id)
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|node| node.id == node_id)
+            .unwrap();
+        assert_eq!((node.x, node.opacity), (640.0, 0.5));
+        drop(service);
+        let reopened = StudioService::open(db).unwrap();
+        assert_eq!(reopened.project(saved.id).unwrap(), saved);
+        assert_eq!(
+            reopened
+                .store()
+                .lock()
+                .read_blob(&edited_sha256, 256 * 1024)
+                .unwrap(),
+            original_json
+        );
     }
 
     #[test]

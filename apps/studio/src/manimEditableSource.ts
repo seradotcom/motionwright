@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CanvasNode, CanvasTransform, Change, NodeStyle, Project, ProjectEvent } from "./types";
+import type { Asset, CanvasNode, CanvasTransform, Change, NodeStyle, Project, ProjectEvent } from "./types";
 import { sameValue } from "./creativeProduction";
 
 export const MANIM_EDITABLE_MIME = "application/vnd.motionwright.manim-source+zip";
@@ -48,6 +48,17 @@ export function scopeCurrent(project: Project, scope: ManimScope): boolean {
 export function manimAsset(project: Project, id: string) {
   const asset = project.assets.find(item => item.id === id && item.media_type === MANIM_EDITABLE_MIME && sha(item.content_sha256));
   if (!asset) throw new Error("Choose an attached Manim editable ZIP with its saved digest.");
+  return asset;
+}
+
+export function isManimEditedAsset(asset: Asset) {
+  return (asset.media_type === MANIM_EDITABLE_MIME || asset.media_type === "application/json")
+    && sha(asset.content_sha256);
+}
+
+export function manimEditedAsset(project: Project, id: string) {
+  const asset = project.assets.find(item => item.id === id && isManimEditedAsset(item));
+  if (!asset) throw new Error("Choose an attached Manim ZIP or edited plan JSON with its saved digest.");
   return asset;
 }
 
@@ -182,7 +193,7 @@ export function previewCurrent(project: Project, result: ManimPreview): boolean 
   if (!scopeCurrent(project,result.request.source)) return false;
   try {
     return manimAsset(project,result.request.original_asset_id).content_sha256 === result.request.original_sha256 &&
-      manimAsset(project,result.request.edited_asset_id).content_sha256 === result.request.edited_sha256 &&
+      manimEditedAsset(project,result.request.edited_asset_id).content_sha256 === result.request.edited_sha256 &&
       project.scenes.find(scene=>scene.id===result.request.source.scene_id)?.nodes.some(node=>node.id===result.request.node_id) === true;
   } catch { return false; }
 }

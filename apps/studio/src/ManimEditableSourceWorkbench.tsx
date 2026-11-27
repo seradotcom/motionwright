@@ -4,7 +4,7 @@ import type { Change, DeliverableProfile, Project, Scene, ProjectEvent } from ".
 import { bootstrap, projectHistory } from "./api";
 import { sameValue } from "./creativeProduction";
 import { MANIM_EDITABLE_MIME, acknowledgeManimPending, confirmManimEdit, exportManimSource,
-  inspectAttachedManim, inspectManimSource, manimAsset, manimExportSubject, manimScope,
+  inspectAttachedManim, inspectManimSource, isManimEditedAsset, manimAsset, manimEditedAsset, manimExportSubject, manimScope,
   matchingManimHistory, manimControlRows, pendingScopeKey, previewCurrent, previewManimEdit, proposedNode,
   readManimPending, retainManimPending, type ManimAttached, type ManimEditRequest,
   type ManimPending, type ManimPreview, type ManimProperty, type ManimScope, type ManimSnapshot,
@@ -46,12 +46,13 @@ export default function ManimEditableSourceWorkbench({project,scene,profile,busy
   const installed = "__TAURI_INTERNALS__" in window;
   const blocked = busy || reading || active.current || !installed || !!retained.error || !!retained.value;
   const assets = project.assets.filter(asset=>asset.media_type===MANIM_EDITABLE_MIME && /^[0-9a-f]{64}$/.test(asset.content_sha256 ?? ""));
+  const editedAssets = project.assets.filter(isManimEditedAsset);
   const sourceCurrent = snapshot && sameValue(snapshot.source,source) ? snapshot : null;
   const attachedCurrent = attached && sameValue(attached.source,source) && attached.asset_id===originalId &&
     assets.some(asset=>asset.id===originalId && asset.content_sha256===attached.source_sha256) ? attached : null;
   const makeRequest = (): ManimEditRequest => {
-    const original=manimAsset(project,originalId), edited=manimAsset(project,editedId);
-    if (!attachedCurrent || !attachedCurrent.node_ids.includes(nodeId) || originalId===editedId) throw new Error("Read one original package and choose a separate edited package and node.");
+    const original=manimAsset(project,originalId), edited=manimEditedAsset(project,editedId);
+    if (!attachedCurrent || !attachedCurrent.node_ids.includes(nodeId) || originalId===editedId) throw new Error("Read the original package and choose a separate edited source and node.");
     if (property==="controls" && !attachedCurrent.editable_parameters.includes("one_node.controls"))
       throw new Error("This source inspector does not admit a complete object-controls patch.");
     return {source,original_asset_id:originalId,original_sha256:original.content_sha256!,
@@ -171,11 +172,11 @@ export default function ManimEditableSourceWorkbench({project,scene,profile,busy
       <label className="production-field"><span>New package destination</span><input aria-label="Manim source export destination" value={destination} onChange={event=>setDestination(event.target.value)} disabled={blocked} maxLength={1600} autoComplete="off" spellCheck={false}/></label>
       <button type="button" className="secondary-button" disabled={blocked || !destination.trim()} onClick={publish}><Download size={14} aria-hidden="true"/> Export inspected Manim package</button>
     </div>}
-    <h4>Review a returned editable package</h4>
-    <p className="production-help">Import the original and a separate edited .mwedit.zip from Assets. These files appear in the package selectors automatically. Comparing a package verifies its contents against the trusted compiler before any project edit.</p>
+    <h4>Review returned Manim edits</h4>
+    <p className="production-help">Attach the original .mwedit.zip in Assets. To edit outside Studio, extract plan.json, change one object’s controls, and attach the edited JSON. You can also attach a separate compiler-produced .mwedit.zip.</p>
     <div className="production-plan-grid">
       <label className="production-field"><span>Original package</span><select disabled={blocked} value={originalId} onChange={event=>{setOriginalId(event.target.value);setAttached(null);setPreview(null);setNodeId("");}}><option value="">Choose original attached package</option>{assets.map(asset=><option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
-      <label className="production-field"><span>Edited package</span><select disabled={blocked} value={editedId} onChange={event=>{setEditedId(event.target.value);setPreview(null);}}><option value="">Choose separately attached package</option>{assets.filter(asset=>asset.id!==originalId).map(asset=><option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
+      <label className="production-field"><span>Edited source</span><select disabled={blocked} value={editedId} onChange={event=>{setEditedId(event.target.value);setPreview(null);}}><option value="">Choose attached ZIP or plan JSON</option>{editedAssets.filter(asset=>asset.id!==originalId).map(asset=><option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
     </div>
     <button type="button" className="secondary-button" disabled={blocked || !originalId} onClick={inspectOriginal}>Read original attached Manim package</button>
     {attachedCurrent && <div className="production-notice">
@@ -184,7 +185,7 @@ export default function ManimEditableSourceWorkbench({project,scene,profile,busy
       <label className="production-field"><span>Controls to reintegrate</span><select disabled={blocked} value={property} onChange={event=>{setProperty(event.target.value as ManimProperty);setPreview(null);}}>
         {attachedCurrent.editable_parameters.includes("one_node.controls")&&<option value="controls">All changed controls of this object</option>}
         <option value="transform">Transform only</option><option value="text">Text only</option><option value="style">Style only</option></select></label>
-      <button className="secondary-button" type="button" disabled={blocked || !editedId || editedId===originalId || !nodeId} onClick={review}>Compare returned package</button>
+      <button className="secondary-button" type="button" disabled={blocked || !editedId || editedId===originalId || !nodeId} onClick={review}>Compare returned source</button>
     </div>}
     {reviewed && before && after && <section className="production-notice" aria-label="Reviewed Manim source edit">
       <strong>{before.name}: {property==="controls"?"complete object controls":property}</strong>
@@ -194,8 +195,7 @@ export default function ManimEditableSourceWorkbench({project,scene,profile,busy
           <td style={{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>{row.before}</td>
           <td style={{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>{row.after}</td></tr>)}</tbody>
       </table>
-      <p className="production-help">The compiler confirmed the complete package differs only in these controls of this object.
-        They save together in one revision; both source assets remain. {property==="controls"&&"The saved patch can be reviewed or undone in Revisions."}</p>
+      <p className="production-help">The compiler confirmed that only these controls changed. Saving applies them in one revision and retains both source assets. {property==="controls"&&"The saved patch can be reviewed or undone in Revisions."}</p>
       <button type="button" className="primary-button" disabled={blocked} onClick={apply}><Save size={14} aria-hidden="true"/> Save reviewed Manim edit</button>
     </section>}
     {retained.error && <p role="alert" className="production-error">Retained Manim attempt could not be read. No new operation is allowed: {retained.error}</p>}
