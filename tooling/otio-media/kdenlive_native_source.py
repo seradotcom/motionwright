@@ -9,10 +9,12 @@ import platform
 import shutil
 import sys
 
+from bridge import KDENLIVE_REQUEST_SCHEMA, preview_kdenlive_cut
 from kdenlive_native_distribution import JOB, ROOT, publish, selection
 from kdenlive_complete_g2_fixture import EXPECTED_SOURCE_INTERVALS, produce_original
 from kdenlive_native_installation import MAX_EDITOR_BYTES, windows_user_installation_root
-from kdenlive_readback import inspect_saved_kdenlive, read_capsule
+from kdenlive_readback import (MAX_XML_BYTES, compare_two_native_custody_snapshots,
+                               inspect_saved_kdenlive, read_capsule)
 from source_checkout_observation import git, regular_file, require
 
 
@@ -82,6 +84,38 @@ def inspect_initial_save(saved: Path, saved_sha: str, manifest_sha: str, capsule
             == EXPECTED_SOURCE_INTERVALS,
             "saved Kdenlive project does not preserve the three complete input intervals")
     return original
+
+
+def inspect_native_return(owner: Path, manifest_sha: str, first_readback: dict,
+                          received: Path, returned: Path, edited: Path) -> dict:
+    capsule = owner / "otio-original"
+    received_identity = regular_file(received, MAX_METADATA_BYTES)
+    returned_identity = regular_file(returned, MAX_METADATA_BYTES)
+    edited_identity = regular_file(edited, MAX_XML_BYTES)
+    edited_readback = inspect_saved_kdenlive(edited, edited_identity["sha256"], capsule, manifest_sha)
+    comparison = compare_two_native_custody_snapshots(first_readback, edited_readback)
+    target = first_readback["observed_bound_editorial_clip_semantics"][2]["scene_id"]
+    require(comparison["bounded_native_end_trims_observed"] == [{
+        "scene_id": target, "initial_duration_frames": 30, "reopened_duration_frames": 29,
+    }], "saved Kdenlive return differs from the single planned end trim")
+    preview = preview_kdenlive_cut(capsule, owner, {
+        "schema": KDENLIVE_REQUEST_SCHEMA, "capsule_manifest_sha256": manifest_sha,
+        "received_otio": received.relative_to(owner).as_posix(), "received_sha256": received_identity["sha256"],
+        "edited_otio": returned.relative_to(owner).as_posix(), "edited_sha256": returned_identity["sha256"],
+    }, capsule / "source-project.json", authorized_media_roots=(capsule,))
+    require(preview["status"] == "BOUNDED_PROPOSAL_RECEIVER_NOT_VERIFIED"
+            and preview["edit_imported"] is False and preview["publication_approved"] is False
+            and preview["native_change_proposals"] == [{
+                "type": "set_scene_duration", "scene_id": target, "duration": {"num": "29", "den": "30"},
+            }], "Motionwright preview did not preserve the native one-frame end trim")
+    require(regular_file(edited, MAX_XML_BYTES) == edited_identity
+            and regular_file(received, MAX_METADATA_BYTES) == received_identity
+            and regular_file(returned, MAX_METADATA_BYTES) == returned_identity,
+            "native Kdenlive return changed during readback")
+    return {
+        "edited_project": edited_identity, "initial_export": received_identity,
+        "edited_export": returned_identity, "native_comparison": comparison, "review_preview": preview,
+    }
 
 
 def fixture_executable(context: dict) -> Path:

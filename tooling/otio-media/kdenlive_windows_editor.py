@@ -9,11 +9,10 @@ import platform
 import subprocess
 import sys
 
-from bridge import KDENLIVE_REQUEST_SCHEMA, preview_kdenlive_cut
 from kdenlive_native_distribution import JOB, ROOT, publish, selection
 from kdenlive_native_installation import windows_accessibility_context
-from kdenlive_native_source import MAX_METADATA_BYTES, admitted_source, inspect_initial_save
-from kdenlive_readback import MAX_XML_BYTES, compare_two_native_custody_snapshots, inspect_saved_kdenlive
+from kdenlive_native_source import MAX_METADATA_BYTES, admitted_source, inspect_initial_save, inspect_native_return
+from kdenlive_readback import MAX_XML_BYTES
 from source_checkout_observation import git, regular_file, require
 from windows_updated_application import process_identity
 
@@ -77,38 +76,14 @@ def verify_reopen(directory, context, distribution, powershell, environment, ori
     require(regular_file(project, MAX_XML_BYTES) == saved
             and admitted_source(owner, context, distribution) == original,
             "the saved project or original inputs changed after reopening")
-    capsule = owner / "otio-original"
-    received, returned = directory / "received.otio", output / "edited.otio"
-    received_identity = regular_file(received, MAX_METADATA_BYTES)
-    returned_identity = regular_file(returned, MAX_METADATA_BYTES)
-    edited = output / "edited.kdenlive"
-    edited_identity = regular_file(edited, MAX_XML_BYTES)
-    manifest_sha = source["manifest"]["sha256"]
-    edited_readback = inspect_saved_kdenlive(edited, edited_identity["sha256"], capsule, manifest_sha)
-    comparison = compare_two_native_custody_snapshots(first_readback, edited_readback)
-    target = first_readback["observed_bound_editorial_clip_semantics"][2]["scene_id"]
-    require(comparison["bounded_native_end_trims_observed"] == [{
-        "scene_id": target, "initial_duration_frames": 30, "reopened_duration_frames": 29,
-    }], "saved Kdenlive return differs from the single planned end trim")
-    preview = preview_kdenlive_cut(capsule, owner, {
-        "schema": KDENLIVE_REQUEST_SCHEMA, "capsule_manifest_sha256": manifest_sha,
-        "received_otio": received.relative_to(owner).as_posix(), "received_sha256": received_identity["sha256"],
-        "edited_otio": returned.relative_to(owner).as_posix(), "edited_sha256": returned_identity["sha256"],
-    }, capsule / "source-project.json", authorized_media_roots=(capsule,))
-    require(preview["status"] == "BOUNDED_PROPOSAL_RECEIVER_NOT_VERIFIED"
-            and preview["edit_imported"] is False and preview["publication_approved"] is False
-            and preview["native_change_proposals"] == [{
-                "type": "set_scene_duration", "scene_id": target, "duration": {"num": "29", "den": "30"},
-            }], "Motionwright preview did not preserve the native one-frame end trim")
-    require(regular_file(edited, MAX_XML_BYTES) == edited_identity
-            and regular_file(received, MAX_METADATA_BYTES) == received_identity
-            and regular_file(returned, MAX_METADATA_BYTES) == returned_identity,
-            "native Kdenlive return changed during readback")
+    returned = inspect_native_return(
+        owner, source["manifest"]["sha256"], first_readback, directory / "received.otio",
+        output / "edited.otio", output / "edited.kdenlive",
+    )
     publish(output / "reopened-original.json", {
         "context": context, "original_project": saved, "first_process": first,
         "reopened_process": reopened, "verified_window": window, "source": source["manifest"],
-        "edited_project": edited_identity, "initial_export": received_identity,
-        "edited_export": returned_identity, "native_comparison": comparison, "review_preview": preview,
+        **returned,
     })
 
 
