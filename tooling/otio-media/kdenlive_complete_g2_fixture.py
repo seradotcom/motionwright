@@ -358,7 +358,13 @@ def firstparty_workspace(temp: Path, evidence_root: Path | None = None):
 def prepare_original(destination: Path, *, evidence_root: Path | None = None,
                      source_database: Path | None = None) -> dict:
     temp = require_ephemeral_approved_source(destination)
-    audio_source = selected_audio_source_mode()
+    return produce_original(destination, temp=temp, exporter=ORIGINAL_RUST_FIXTURE,
+                            audio_source=selected_audio_source_mode(),
+                            evidence_root=evidence_root, source_database=source_database)
+
+
+def produce_original(destination: Path, *, temp: Path, exporter: Path, audio_source: bool,
+                     evidence_root: Path | None = None, source_database: Path | None = None) -> dict:
     if source_database is not None:
         require(evidence_root is not None
                 and source_database.is_absolute()
@@ -390,7 +396,8 @@ def prepare_original(destination: Path, *, evidence_root: Path | None = None,
                     evidence_prefix=None if evidence_root is None
                     else root / "ffprobe-audio-source"))
         media_sha = sha(original)
-        exporter = ORIGINAL_RUST_FIXTURE if source_database is None else OWNER_RUST_FIXTURE
+        if source_database is not None:
+            exporter = OWNER_RUST_FIXTURE
         command = ([str(exporter), media_sha] if source_database is None else
                    [str(exporter), "seed", str(source_database), str(original), media_sha])
         generated = json.loads(

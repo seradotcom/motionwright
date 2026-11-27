@@ -1,0 +1,127 @@
+"""Prepare the existing synthetic OTIO cut in its installed-editor job."""
+from __future__ import annotations
+
+from hashlib import sha256
+import json
+import os
+from pathlib import Path
+import platform
+import shutil
+import sys
+
+from kdenlive_native_distribution import JOB, ROOT, publish, selection
+from kdenlive_complete_g2_fixture import produce_original
+from kdenlive_native_installation import MAX_EDITOR_BYTES, windows_user_installation_root
+from source_checkout_observation import git, regular_file, require
+
+
+MAX_METADATA_BYTES = 2 * 1024 * 1024
+
+
+def installed_editor(owner: Path, context: dict, distribution) -> tuple[Path, dict]:
+    record = owner / "installation.json"
+    receipt = regular_file(record, MAX_METADATA_BYTES)
+    record_raw = record.read_bytes()
+    observed = json.loads(record_raw)
+    require(sha256(record_raw).hexdigest() == receipt["sha256"]
+            and observed.get("schema") == "motionwright.kdenlive-native-installation/1"
+            and observed.get("context") == context
+            and observed.get("archive", {}).get("sha256") == distribution.sha256,
+            "installed Kdenlive receipt is not from this hosted job")
+    relative = observed.get("relative_executable", "")
+    if context["runner_os"] == "Windows":
+        installation_root = windows_user_installation_root()
+        require(relative == "bin/kdenlive.exe", "installed Kdenlive Windows path differs")
+        binary_format = "PE64_x86_64"
+    else:
+        installation_root = owner
+        parts = relative.split("/")
+        require(len(parts) == 5 and parts[0] == "installed"
+                and parts[1].casefold() == "kdenlive.app"
+                and parts[2:] == ["Contents", "MacOS", "kdenlive"],
+                "installed Kdenlive macOS bundle path differs")
+        binary_format = "MACHO64_arm64"
+    require(observed.get("installation_root") == str(installation_root),
+            "installed Kdenlive root differs")
+    executable = installation_root / relative
+    binary = regular_file(executable, MAX_EDITOR_BYTES)
+    require(binary["bytes"] > 0 and observed.get("original_executable") == {
+        **binary, "format": binary_format,
+    }, "installed Kdenlive executable differs from the original receipt")
+    return executable, binary
+
+
+def fixture_executable(context: dict) -> Path:
+    name = "otio_real_media_fixture"
+    if context["runner_os"] == "Windows":
+        name += ".exe"
+    return ROOT / "target" / "debug" / "examples" / name
+
+
+def video_tools() -> dict:
+    observed = {}
+    for name in ("ffmpeg", "ffprobe"):
+        match = shutil.which(name)
+        require(match is not None and Path(match).is_absolute(),
+                f"{name} is missing from the hosted job")
+        executable = Path(match).resolve(strict=True)
+        measured = regular_file(executable, 256 * 1024 * 1024)
+        require(measured["bytes"] > 0, f"{name} is empty")
+        observed[name] = {"path": str(executable), **measured}
+    return observed
+
+
+def prepare_native_source(runner: Path, context: dict, distribution) -> dict:
+    require(runner.is_absolute() and runner.resolve(strict=True) == runner,
+            "native editor source runner root is not canonical")
+    owner = runner / f"{JOB}-{context['run_id']}-1"
+    editor, editor_original = installed_editor(owner, context, distribution)
+    exporter = fixture_executable(context)
+    original_exporter = regular_file(exporter, MAX_EDITOR_BYTES)
+    tools = video_tools()
+    destination = owner / "otio-original"
+    evidence = owner / "otio-source-evidence"
+    publish(owner / "otio-source-intent.json", {
+        "context": context, "editor_sha256": editor_original["sha256"],
+        "exporter": original_exporter, "tools": tools,
+    })
+    require(not destination.exists() and not destination.is_symlink(),
+            "native editor OTIO source directory is already present")
+    original = produce_original(destination, temp=runner, exporter=exporter, audio_source=False,
+                                evidence_root=evidence)
+    require(installed_editor(owner, context, distribution) == (editor, editor_original)
+            and regular_file(exporter, MAX_EDITOR_BYTES) == original_exporter
+            and original.get("GitHub_original_source_sha") == context["source_sha"]
+            and original.get("compiled_original_Rust_OTIO_exporter_sha256")
+            == original_exporter["sha256"]
+            and video_tools() == tools,
+            "native editor source tooling or installed Kdenlive changed during preparation")
+    timeline = destination / "timeline.otio"
+    manifest = destination / "bridge-manifest.json"
+    timeline_identity = regular_file(timeline, MAX_METADATA_BYTES)
+    manifest_identity = regular_file(manifest, MAX_METADATA_BYTES)
+    manifest_raw = manifest.read_bytes()
+    require(sha256(manifest_raw).hexdigest() == manifest_identity["sha256"]
+            == original.get("original_portable_manifest_sha256")
+            and json.loads(manifest_raw).get("otio_sha256") == timeline_identity["sha256"],
+            "native OTIO manifest does not bind the prepared timeline")
+    report = {
+        "schema": "motionwright.kdenlive-native-source/1", "context": context,
+        "editor_path": str(editor), "editor_sha256": editor_original["sha256"],
+        "timeline": {"path": str(timeline), **timeline_identity},
+        "manifest": {"path": str(manifest), **manifest_identity},
+    }
+    publish(owner / "otio-source-ready.json", report)
+    return report
+
+
+def main():
+    context, distribution = selection(os.environ, sys.platform, platform.machine())
+    require(git(ROOT, "rev-parse", "HEAD").decode("ascii").strip() == context["source_sha"],
+            "native Kdenlive source checkout differs from the workflow")
+    print(json.dumps(prepare_native_source(Path(os.environ["RUNNER_TEMP"]), context, distribution),
+                     sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
