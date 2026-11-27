@@ -155,7 +155,7 @@ fn windows_plain_components(path: &Path) -> bool {
     })
 }
 
-fn canonical_owner_directory(path: &str) -> Result<PathBuf, String> {
+pub(super) fn canonical_owner_directory(path: &str) -> Result<PathBuf, String> {
     if path.trim() != path
         || path.is_empty()
         || path.len() > 1800

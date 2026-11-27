@@ -78,7 +78,10 @@ test("owner reviews explicit native changes and accepts one project transaction"
   await expect(change).toBeDisabled();
   await page.getByLabel("OTIO reviewer declaration").fill("Owner test-only identity");
   await page.getByLabel("OTIO review rationale").fill("Accept original reordering and tail trim, never NLE media or effects");
-  await page.getByLabel(/I reviewed and accept the listed property losses/).check();
+  const acceptedLosses = page.getByLabel(/I reviewed and accept the listed property losses/);
+  await expect(acceptedLosses).toBeVisible();
+  expect((await acceptedLosses.boundingBox())?.width).toBeLessThanOrEqual(44);
+  await acceptedLosses.check();
   await expect(change).toBeDisabled(); // Existing absolute markers and voice are still present.
   await page.getByLabel(/I acknowledge existing audio, transcript or marker timestamps/).check();
   await expect(change).toBeEnabled();
@@ -107,20 +110,36 @@ test("explicit loss confirmation does not permit a tampered OTIO scene extension
   await expect(page.getByRole("button",{name:/Commit reviewed OTIO cut/})).toHaveCount(0);
 });
 
-test("only a confirmed OTIO preflight refusal allows a new manual inspection", async ({page}) => {
+test("a native folder choice preserves the scoped OTIO inspection rules", async ({page}) => {
   const boot = {...structuredClone(fixtureBootstrap), project: structuredClone(project)};
   boot.native_sdk.mode = "tauri";
   await page.addInitScript(({boot}) => {
     const runtime = window as unknown as {
       __TAURI_INTERNALS__: {invoke: (name: string, args?: Record<string, unknown>) => Promise<unknown>};
       __OTIO_INSPECTIONS__: number;
+      __OTIO_FOLDER_CHOICES__: number;
+      __OTIO_PREVIEW_GRANTS__: number;
     };
     runtime.__OTIO_INSPECTIONS__ = 0;
+    runtime.__OTIO_FOLDER_CHOICES__ = 0;
+    runtime.__OTIO_PREVIEW_GRANTS__ = 0;
     runtime.__TAURI_INTERNALS__ = {invoke: async (name, args) => {
       if (name === "bootstrap" || name === "project_projection_head" || name === "open_project") {
         return window.__SYNTHETIC_PROJECT_READ__(name, args, boot);
       }
-      if (name === "issue_effect_grant") return {token: "synthetic-grant"};
+      if (name === "choose_otio_media_bundle_folder") {
+        const request = args?.request as {project_id: string; generation: string; revision: number};
+        if (request.project_id !== boot.project.id || request.generation !== boot.project.generation
+            || request.revision !== boot.project.revision) {
+          throw new Error("Folder choice used a different project revision");
+        }
+        runtime.__OTIO_FOLDER_CHOICES__++;
+        return runtime.__OTIO_FOLDER_CHOICES__ === 1 ? null : "E:/Original cuts/Edición final";
+      }
+      if (name === "issue_effect_grant") {
+        runtime.__OTIO_PREVIEW_GRANTS__++;
+        return {token: "synthetic-grant"};
+      }
       if (name === "preview_otio_media_cut") {
         runtime.__OTIO_INSPECTIONS__++;
         if (runtime.__OTIO_INSPECTIONS__ === 1) {
@@ -132,7 +151,15 @@ test("only a confirmed OTIO preflight refusal allows a new manual inspection", a
     }};
   }, {boot});
   await openStation(page);
-  await page.getByLabel("Original OTIO media bundle folder").fill("/owner/original-bundle");
+  const folder = page.getByLabel("Original OTIO media bundle folder");
+  await folder.fill("/owner/original-bundle");
+  const chooser = page.getByRole("button", {name: "Choose OTIO bundle folder"});
+  await chooser.click();
+  await expect(chooser).toBeEnabled();
+  await expect(folder).toHaveValue("/owner/original-bundle");
+  await chooser.click();
+  await expect(folder).toHaveValue("E:/Original cuts/Edición final");
+  expect(await page.evaluate(() => Reflect.get(window, "__OTIO_PREVIEW_GRANTS__"))).toBe(0);
   const inspect = page.getByRole("button", {name: "Preview edited OTIO with verified media"});
   const error = page.locator(".otio-cut-review [role=alert]");
   await inspect.click();

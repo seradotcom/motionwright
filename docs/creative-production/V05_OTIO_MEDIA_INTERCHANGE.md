@@ -180,8 +180,9 @@ attempt after the configuration is corrected.
    Confirm permission to copy and redistribute the selected media, then use
    **Export original media-bound OTIO bundle**. The desktop exports the actual
    saved Project and verifies original media through its embedded bridge.
-2. Save the bounded edited `.otio` inside that exported folder. Enter the
-   original bundle folder and edited filename, then use **Preview edited OTIO
+2. Save the bounded edited `.otio` inside that exported folder. Use
+   **Choose OTIO bundle folder** or enter its absolute path. Enter the edited
+   filename, then use **Preview edited OTIO
    with verified media**. This rechecks the source Project, revision, media
    hashes and supported edits. Preview does not modify the project.
 3. Review the proposed scene order, end trims and twelve property-loss

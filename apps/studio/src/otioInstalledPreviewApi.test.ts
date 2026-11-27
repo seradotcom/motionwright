@@ -1,6 +1,6 @@
 /** Source transport tests, not actual media, Tauri, NLE or Store acceptance. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { exportPortableOtioMediaBundle, previewInstalledOtioMediaCut, type OtioOriginalMediaExportBinding } from "./api";
+import { chooseOtioMediaBundleFolder, exportPortableOtioMediaBundle, previewInstalledOtioMediaCut, type OtioOriginalMediaExportBinding } from "./api";
 import { reviewableOtioProject, sampleOtioPreview } from "./otioCutReviewTestFixtures";
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
@@ -25,6 +25,32 @@ beforeEach(() => {
   vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+describe("native OTIO bundle folder selection", () => {
+  it("returns the chosen local path without issuing a permission or preview", async () => {
+    const project = reviewableOtioProject();
+    const path = "E:/Original cuts/Edición final";
+    invokeMock.mockResolvedValueOnce(path);
+    await expect(chooseOtioMediaBundleFolder(project)).resolves.toBe(path);
+    expect(invokeMock.mock.calls).toEqual([["choose_otio_media_bundle_folder", {
+      request: { project_id: project.id, generation: project.generation, revision: project.revision },
+    }]]);
+  });
+
+  it("keeps cancellation separate from invalid native responses", async () => {
+    const project = reviewableOtioProject();
+    invokeMock.mockResolvedValueOnce(null).mockResolvedValueOnce({ path: bundle });
+    await expect(chooseOtioMediaBundleFolder(project)).resolves.toBeNull();
+    await expect(chooseOtioMediaBundleFolder(project)).rejects.toThrow("folder path");
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("requires desktop before opening a native dialog", async () => {
+    vi.stubGlobal("window", {});
+    await expect(chooseOtioMediaBundleFolder(reviewableOtioProject())).rejects.toThrow("requires Motionwright desktop");
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+});
 
 describe("original Kdenlive export pair", () => {
   it("binds both original filenames and the current revision into one owner grant", async () => {

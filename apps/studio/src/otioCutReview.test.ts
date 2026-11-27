@@ -8,6 +8,14 @@ import {
 } from "./otioCutReview";
 import {reviewableOtioProject,sampleOtioPreview} from "./otioCutReviewTestFixtures";
 
+it("offers the native bundle folder picker only in Desktop", () => {
+  const props = {project: reviewableOtioProject(), commit: async () => {}, busy: false};
+  expect(renderToStaticMarkup(createElement(OtioCutReviewWorkbench, {...props, desktopMode: true})))
+    .toContain("Choose OTIO bundle folder");
+  expect(renderToStaticMarkup(createElement(OtioCutReviewWorkbench, {...props, desktopMode: false})))
+    .not.toContain("Choose OTIO bundle folder");
+});
+
 describe("OTIO original media selection follows the saved project", () => {
   it("keeps valid bindings and clears the source of an asset removed from the project", () => {
     const {scenes} = reviewableOtioProject();

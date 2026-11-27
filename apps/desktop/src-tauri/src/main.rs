@@ -4097,6 +4097,48 @@ async fn export_portable_otio_media_bundle(
 }
 
 #[tauri::command]
+async fn choose_otio_media_bundle_folder(
+    mut owner: desktop_owner::OwnerInvocation,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: RuntimeConnectionSelectionRequest,
+) -> Result<Option<String>, String> {
+    checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    let selected = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        app.dialog()
+            .file()
+            .set_title("Choose the original OTIO media bundle folder")
+            .blocking_pick_folder()
+    })
+    .await
+    .map_err(|_| "The native OTIO bundle folder picker failed.".to_string())?;
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    owner.begin_phase()?;
+    checked_effect_scope(
+        &state,
+        request.project_id,
+        request.generation,
+        request.revision,
+    )?;
+    let path = selected
+        .into_path()
+        .map_err(|_| "Choose a local OTIO media bundle folder.".to_string())?;
+    let path = path
+        .to_str()
+        .ok_or("The OTIO bundle folder path cannot be represented as text.")?;
+    otio_bridge::canonical_owner_directory(path)?;
+    // Preserve the selected spelling for the existing preview grant subject.
+    Ok(Some(path.to_owned()))
+}
+
+#[tauri::command]
 async fn preview_otio_media_cut(
     mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
@@ -4886,6 +4928,7 @@ fn main() {
             export_otio,
             export_otio_source_snapshot,
             export_portable_otio_media_bundle,
+            choose_otio_media_bundle_folder,
             preview_otio_media_cut,
             inspect_project_bundle,
             recover_project_bundle_import,

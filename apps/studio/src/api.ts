@@ -620,6 +620,21 @@ export interface InstalledOtioCutPreview {
   project_modified: false;
 }
 
+/** Choose a local folder without opening the bundle or requesting an effect grant. */
+export async function chooseOtioMediaBundleFolder(project: Project): Promise<string | null> {
+  if (!isTauri()) throw new Error("Choosing an OTIO bundle folder requires Motionwright desktop.");
+  const selected = await invoke<unknown>("choose_otio_media_bundle_folder", {
+    request: { project_id: project.id, generation: project.generation, revision: project.revision },
+  });
+  if (selected === null) return null;
+  if (typeof selected !== "string" || !selected || selected !== selected.trim()
+      || new TextEncoder().encode(selected).length > 1800
+      || /[\u0000-\u001f\u007f-\u009f]/.test(selected)) {
+    throw new Error("The native picker returned an invalid OTIO bundle folder path.");
+  }
+  return selected;
+}
+
 /** Read a complete existing original media bundle through the compiled
  * first-party bridge, only after one scoped import-local owner grant.
  * This previews a cut. It never applies or relinks foreign media. */

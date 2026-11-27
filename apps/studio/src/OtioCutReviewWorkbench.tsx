@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRightLeft, FileCheck2, ShieldAlert } from "lucide-react";
 import type { Change, Project } from "./types";
 import {
-  exportPortableOtioMediaBundle, OtioBridgePreflightError, previewInstalledOtioMediaCut,
+  chooseOtioMediaBundleFolder, exportPortableOtioMediaBundle, OtioBridgePreflightError, previewInstalledOtioMediaCut,
   type OtioOriginalMediaExportBinding,
 } from "./api";
 import {
@@ -31,6 +31,7 @@ export default function OtioCutReviewWorkbench({
   const [fileLoading,setFileLoading]=useState(false);
   const [bridgeInspecting,setBridgeInspecting]=useState(false);
   const [bundlePath,setBundlePath]=useState("");
+  const [pickingBundle,setPickingBundle]=useState(false);
   const [editedCut,setEditedCut]=useState("edited.otio");
   const [cutOrigin,setCutOrigin]=useState<"motionwright"|"kdenlive">("motionwright");
   const [receivedCut,setReceivedCut]=useState("received.otio");
@@ -53,11 +54,12 @@ export default function OtioCutReviewWorkbench({
   const [error,setError]=useState<string|null>(null);
   const [status,setStatus]=useState<string|null>(null);
   const absolute=otioHasAbsoluteAnchors(project);
+  const operationBusy=busy||working||fileLoading||bridgeInspecting||exportingBundle||pickingBundle;
   useEffect(()=>{
     fileAttempt.current++;
     setSelected(null);setLosses(false);setAnchors(false);
     setStatus(null);setError(null);setWorking(false);setFileLoading(false);
-    setBridgeInspecting(false);
+    setBridgeInspecting(false);setPickingBundle(false);
     setExportingBundle(false);
     setExportAttempted(false);setExportRights(false);
   },[scope]);
@@ -72,7 +74,7 @@ export default function OtioCutReviewWorkbench({
       position===index?{...binding,...change}:binding));
   };
   const exportOriginalMediaBundle=async()=>{
-    if(!desktopMode||busy||working||fileLoading||bridgeInspecting||exportingBundle
+    if(!desktopMode||operationBusy
       ||exportAttempted||!exportDestination.trim()||!exportReviewer.trim()
       ||!mediaOwner.trim()||!mediaLicense.trim()||!exportRights
       ||!exportBindings.length)return;
@@ -108,8 +110,28 @@ export default function OtioCutReviewWorkbench({
         setExportingBundle(false);
     }
   };
+  const changeBundlePath=(path:string)=>{
+    setBundlePath(path);setRaw("");setSelected(null);
+    setLosses(false);setAnchors(false);setError(null);setStatus(null);
+  };
+  const chooseBundleFolder=async()=>{
+    if(!desktopMode||operationBusy)return;
+    const selectedScope=scope;
+    const attempt=++fileAttempt.current;
+    setPickingBundle(true);
+    try{
+      const path=await chooseOtioMediaBundleFolder(project);
+      if(latest.current===selectedScope&&fileAttempt.current===attempt&&path!==null&&path!==bundlePath)
+        changeBundlePath(path);
+    }catch(reason){
+      if(latest.current===selectedScope&&fileAttempt.current===attempt)
+        setError(reason instanceof Error?reason.message:String(reason));
+    }finally{
+      if(latest.current===selectedScope&&fileAttempt.current===attempt)setPickingBundle(false);
+    }
+  };
   const previewOwnerMediaCut=async()=>{
-    if(!desktopMode||busy||working||fileLoading||bridgeInspecting||exportingBundle
+    if(!desktopMode||operationBusy
        ||!bundlePath.trim()||!editedCut.trim()
        ||(cutOrigin==="kdenlive"&&!receivedCut.trim())||inspectionAttempted)return;
     const selectedScope=scope;
@@ -138,7 +160,7 @@ export default function OtioCutReviewWorkbench({
     }
   };
   const loadProposalFile=async(file:File)=>{
-    if(busy||working||fileLoading||bridgeInspecting||exportingBundle)return;
+    if(operationBusy)return;
     const selectedScope=scope;
     const attempt=++fileAttempt.current;
     setRaw("");setSelected(null);setLosses(false);setAnchors(false);
@@ -157,7 +179,7 @@ export default function OtioCutReviewWorkbench({
     }
   };
   const inspect=()=>{
-    if(bridgeInspecting||exportingBundle)return;
+    if(operationBusy)return;
     fileAttempt.current++;
     setError(null);setStatus(null);setSelected(null);
     try {
@@ -168,8 +190,7 @@ export default function OtioCutReviewWorkbench({
   };
   const current=selected?.scope===scope;
   const approved=!!(current&&losses&&(!absolute||anchors)&&
-    reviewer.trim()&&rationale.trim()&&desktopMode&&!busy&&!working
-    &&!fileLoading&&!bridgeInspecting&&!exportingBundle);
+    reviewer.trim()&&rationale.trim()&&desktopMode&&!operationBusy);
   const apply=async()=>{
     if(!approved || !selected || latest.current!==scope)return;
     if(!desktopMode){setError("The browser demo cannot commit external cut proposals.");return;}
@@ -318,8 +339,7 @@ export default function OtioCutReviewWorkbench({
         Explicitly permit synthetic or test-origin video inputs.
       </label>
       <button type="button" className="button button-primary"
-        disabled={!desktopMode||busy||working||fileLoading||bridgeInspecting
-          ||exportingBundle||exportAttempted||!exportRights
+        disabled={!desktopMode||operationBusy||exportAttempted||!exportRights
           ||!exportDestination.trim()||!exportReviewer.trim()
           ||!mediaOwner.trim()||!mediaLicense.trim()||videoAssets.length===0
           ||exportBindings.length===0||exportBindings.some(binding=>
@@ -343,21 +363,24 @@ export default function OtioCutReviewWorkbench({
           protected Python or ffprobe runtimes refuse inspection. Nothing is saved by Preview.
         </span>
       </div>
-      <label>
-        <span className="field-label">Original portable OTIO media bundle folder</span>
-        <input type="text" aria-label="Original OTIO media bundle folder"
-          value={bundlePath} maxLength={1700} autoComplete="off" spellCheck={false}
-          placeholder="Absolute path to the first-party exported media bundle"
-          disabled={busy||working||fileLoading||bridgeInspecting||exportingBundle}
-          onChange={event=>{
-            fileAttempt.current++;setBundlePath(event.target.value);setSelected(null);
-            setLosses(false);setAnchors(false);setError(null);setStatus(null);
-          }}/>
-      </label>
+      <div className="otio-bundle-folder">
+        <label>
+          <span className="field-label">Original portable OTIO media bundle folder</span>
+          <input type="text" aria-label="Original OTIO media bundle folder"
+            value={bundlePath} maxLength={1800} autoComplete="off" spellCheck={false}
+            placeholder="Absolute path to the first-party exported media bundle"
+            disabled={operationBusy}
+            onChange={event=>{fileAttempt.current++;changeBundlePath(event.target.value);}}/>
+        </label>
+        {desktopMode&&<button type="button" className="button" disabled={operationBusy}
+          onClick={()=>void chooseBundleFolder()}>
+          Choose OTIO bundle folder
+        </button>}
+      </div>
       <label>
         <span className="field-label">How the cut was exported</span>
         <select aria-label="OTIO cut origin" value={cutOrigin}
-          disabled={busy||working||fileLoading||bridgeInspecting||exportingBundle}
+          disabled={operationBusy}
           onChange={event=>{
             fileAttempt.current++;
             setCutOrigin(event.target.value==="kdenlive"?"kdenlive":"motionwright");
@@ -380,7 +403,7 @@ export default function OtioCutReviewWorkbench({
           <input type="text" aria-label="Initial Kdenlive OTIO filename in bundle"
             value={receivedCut} maxLength={160} autoComplete="off" spellCheck={false}
             placeholder="received.otio"
-            disabled={busy||working||fileLoading||bridgeInspecting||exportingBundle}
+            disabled={operationBusy}
             onChange={event=>{
               fileAttempt.current++;setReceivedCut(event.target.value);setRaw("");setSelected(null);
               setLosses(false);setAnchors(false);setError(null);setStatus(null);
@@ -391,14 +414,14 @@ export default function OtioCutReviewWorkbench({
         <span className="field-label">Edited OTIO file inside that bundle</span>
         <input type="text" aria-label="Edited OTIO filename in bundle" value={editedCut}
           maxLength={160} autoComplete="off" spellCheck={false}
-          placeholder="edited.otio" disabled={busy||working||fileLoading||bridgeInspecting}
+          placeholder="edited.otio" disabled={operationBusy}
           onChange={event=>{
             fileAttempt.current++;setEditedCut(event.target.value);setSelected(null);
             setLosses(false);setAnchors(false);setError(null);setStatus(null);
           }}/>
       </label>
       <button type="button" className="button"
-        disabled={!desktopMode||busy||working||fileLoading||bridgeInspecting||exportingBundle
+        disabled={!desktopMode||operationBusy
           ||!bundlePath.trim()||!editedCut.trim()
           ||(cutOrigin==="kdenlive"&&!receivedCut.trim())||inspectionAttempted}
         onClick={()=>void previewOwnerMediaCut()}>
@@ -419,7 +442,7 @@ export default function OtioCutReviewWorkbench({
         <span className="field-label">Select the generated OTIO bridge proposal</span>
         <input type="file" accept=".json,application/json"
           aria-label="OTIO bridge proposal JSON file"
-          disabled={working||busy||fileLoading||bridgeInspecting||exportingBundle}
+          disabled={operationBusy}
           onChange={event=>{
             const file=event.currentTarget.files?.[0];
             event.currentTarget.value="";
@@ -431,13 +454,13 @@ export default function OtioCutReviewWorkbench({
         <textarea aria-label="OTIO imported cut preview JSON" rows={5} spellCheck={false}
           className="mono" value={raw} maxLength={128_000}
           placeholder='{"schema":"motionwright.otio-edit-preview/1", ...}'
-          disabled={working||busy||fileLoading||bridgeInspecting} onChange={event=>{
+          disabled={operationBusy} onChange={event=>{
             fileAttempt.current++;
             setRaw(event.target.value);setSelected(null);
             setLosses(false);setAnchors(false);setError(null);setStatus(null);
           }}/>
       </label>
-      <button type="button" className="button" disabled={!raw.trim()||busy||working||fileLoading||bridgeInspecting}
+      <button type="button" className="button" disabled={!raw.trim()||operationBusy}
         onClick={inspect}><FileCheck2 size={14} aria-hidden="true"/> {fileLoading?"Reading original proposal…":"Review bounded changes"}</button>
     </div>
     {!desktopMode&&<p className="portable-runtime-note" role="status">
