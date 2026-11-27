@@ -110,6 +110,10 @@ class Accessibility:
         self.get_pid = bind(ax, "AXUIElementGetPid", integer, pointer, C.POINTER(integer))
         self.copy_value = bind(ax, "AXUIElementCopyAttributeValue", integer, pointer, pointer,
                                out_pointer)
+        self.copy_values = bind(ax, "AXUIElementCopyAttributeValues", integer, pointer, pointer,
+                                index, index, out_pointer)
+        self.value_count = bind(ax, "AXUIElementGetAttributeValueCount", integer, pointer, pointer,
+                                C.POINTER(index))
         self.copy_actions = bind(ax, "AXUIElementCopyActionNames", integer, pointer, out_pointer)
         self.copy_at_position = bind(ax, "AXUIElementCopyElementAtPosition", integer, pointer,
                                      C.c_float, C.c_float, out_pointer)
@@ -183,6 +187,17 @@ class Accessibility:
         if count > MAX_AX_CHILDREN:
             return ()
         return tuple(self.array_item(value, position) for position in range(count))
+
+    def array_item_count(self, element, attribute):
+        count = C.c_long()
+        status = self.value_count(element, self.name(attribute), C.byref(count))
+        return count.value if status == 0 else None
+
+    def array_page(self, element, attribute, start, limit):
+        output = C.c_void_p()
+        status = self.copy_values(element, self.name(attribute), start, limit, C.byref(output))
+        array = self.capture(status, output)
+        return status, self.array(array)
 
     def children(self, element, name="AXChildren"):
         return tuple(child for child in self.array(self.value(element, name))
@@ -563,23 +578,73 @@ class EditorUI:
 
     def available_toolbar_track(self):
         ax = self.ax
+        self.guard()
+        self.ax.next_snapshot()
         dialog = self.toolbar_dialog()
         available = self.toolbar_list(dialog, "available actions") if dialog else None
         if not available:
-            return None
+            return {"error": "owned Available actions list unavailable", "matching_track": None}
+        origin, extent = ax.pair(available, "AXPosition", 1), ax.pair(available, "AXSize", 2)
+        if not origin or not extent:
+            return {"error": "Available actions list geometry unavailable", "matching_track": None}
+        visible_count = ax.array_item_count(available, "AXVisibleRows")
+        attribute = "AXVisibleRows" if visible_count is not None and visible_count > 0 else "AXRows"
+        count = visible_count if attribute == "AXVisibleRows" else ax.array_item_count(available, attribute)
+        report = {"attribute": attribute, "row_count": count, "visible_row_count": visible_count,
+                  "visible_rows": [], "matching_track": None, "rows_examined": 0,
+                  "scan_complete": False, "page_status": None}
+        if count is None or not 0 < count <= 1024:
+            return report
+
+        focus = ax.value(ax.app, "AXFocusedUIElement")
+        selected = (*ax.children(available, "AXSelectedRows"), *ax.children(available, "AXSelectedChildren"))
+        report["selected_references"] = len(selected)
+        report["focused_control"] = {
+            "role": ax.text(focus, "AXRole"), "identifier": ax.text(focus, "AXIdentifier"),
+        } if ax.owns(focus) else None
         matches = []
-        roots = (*ax.children(available, "AXRows"), *ax.children(available))
-        for node in self.descend(roots, limit=50, depth_limit=4):
-            if ("Select Video Track 1" in (ax.text(node, "AXTitle"), ax.text(node, "AXValue"),
-                                          ax.text(node, "AXDescription"))
-                    and ax.enabled(node) and not any(ax.equal(node, known) for known in matches)):
-                matches.append(node)
+        deadline = time.monotonic() + 18
+        for start in range(0, count, 32):
+            self.guard()
+            limit = min(32, count - start)
+            status, page = ax.array_page(available, attribute, start, limit)
+            report["page_status"] = status
+            if status or len(page) != limit:
+                return report
+            for row in page:
+                if time.monotonic() >= deadline:
+                    return report
+                report["rows_examined"] += 1
+                if not ax.owns(row):
+                    continue
+                size = ax.pair(row, "AXSize", 2)
+                pos = ax.pair(row, "AXPosition", 1) if size and min(size) > 0 else None
+                if not pos or not all(pos[axis] + size[axis] > origin[axis]
+                                      and pos[axis] < origin[axis] + extent[axis] for axis in (0, 1)):
+                    continue
+                row_info = {"position": pos, "size": size, "role": ax.text(row, "AXRole"), "nodes": []}
+                for node in self.descend((row,), limit=8, depth_limit=2):
+                    names = [ax.text(node, prop) for prop in ("AXTitle", "AXValue", "AXDescription")]
+                    text = [name for name in names if name]
+                    if not text:
+                        continue
+                    item = {
+                        "names": text, "role": ax.text(node, "AXRole"),
+                        "identifier": ax.text(node, "AXIdentifier"), "actions": ax.actions(node),
+                        "focused": ax.flag(node, "AXFocused") or bool(focus and ax.equal(node, focus)),
+                        "selected": ax.flag(node, "AXSelected")
+                        or any(ax.equal(node, ref) or ax.equal(row, ref) for ref in selected),
+                        "enabled": ax.enabled(node),
+                    }
+                    row_info["nodes"].append(item)
+                    if "Select Video Track 1" in text and item["enabled"]:
+                        matches.append(item)
+                if len(report["visible_rows"]) < 24:
+                    report["visible_rows"].append(row_info)
+        report["scan_complete"] = True
         if len(matches) == 1:
-            node = matches[0]
-            return {"title": "Select Video Track 1", "role": ax.text(node, "AXRole"),
-                    "identifier": ax.text(node, "AXIdentifier"), "actions": ax.actions(node),
-                    "focused": ax.flag(node, "AXFocused"), "selected": ax.flag(node, "AXSelected")}
-        return None
+            report["matching_track"] = matches[0]
+        return report
 
     def belongs_to_command_bar(self, node):
         ax = self.ax
@@ -1091,10 +1156,12 @@ def observe_video_track_toolbar(ui, evidence):
     evidence.write("toolbar-dialog-initial", ui.toolbar_controls())
     field = ui.await_target(ui.toolbar_filter, "filter for the uniquely identified Available actions list")
     ui.set_text(field, "Select Video Track 1")
-    try:
-        track = ui.await_target(ui.available_toolbar_track, "exact available Select Video Track 1 action")
-    finally:
-        evidence.write("toolbar-dialog-filtered", ui.toolbar_controls())
+    time.sleep(0.35)
+    evidence.write("toolbar-dialog-filtered", ui.toolbar_controls())
+    scan = ui.available_toolbar_track()
+    evidence.write("toolbar-available-rows", scan)
+    track = scan["matching_track"]
+    require(track, "macOS toolbar did not expose a unique visible Select Video Track 1")
     report = {"track": track, "profile_commits": 0, "timeline_actions": 0, "imports": 0, "saves": 0}
     evidence.write("toolbar-action-observed", report)
     return report

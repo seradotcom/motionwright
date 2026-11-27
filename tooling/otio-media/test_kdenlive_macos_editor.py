@@ -283,5 +283,19 @@ class MacEditorRouteTests(unittest.TestCase):
         ui.set_text.assert_not_called()
         evidence.key.assert_not_called()
 
+    def test_toolbar_observer_retains_the_paged_list_before_failing_an_ambiguous_action(self):
+        ui, evidence = Mock(), Mock()
+        ui.await_target.side_effect = ["dialog", "left filter"]
+        ui.available_toolbar_track.return_value = {
+            "attribute": "AXRows", "row_count": 800, "scan_complete": True,
+            "visible_rows": [{"title": "Some other action"}], "matching_track": None,
+        }
+
+        with patch.object(editor.time, "sleep"), self.assertRaisesRegex(ValueError, "unique visible"):
+            editor.observe_video_track_toolbar(ui, evidence)
+
+        evidence.write.assert_any_call("toolbar-available-rows", ui.available_toolbar_track.return_value)
+        evidence.press.assert_called_once()
+
 if __name__ == "__main__":
     unittest.main()
