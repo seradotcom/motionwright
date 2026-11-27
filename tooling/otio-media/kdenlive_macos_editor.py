@@ -23,6 +23,17 @@ MAX_AX_CHILDREN = 128
 CANNOT_COMPLETE = -25204
 TIMECODE = re.compile(r"[0-9]{2}:[0-9]{2}:[0-9]{2}:[0-9]{2}")
 DURATION_FIELDS = ("m_pos", "m_cropStart", "m_dur")
+CLOCK_ROLES = frozenset({"AXTextField", "AXIncrementor", "AXSpinButton"})
+MONITOR_TOOLBAR = ".projectmonitor.Monitor.QToolBar"
+MONITOR_OVERFLOW = MONITOR_TOOLBAR + ".qt_toolbar_ext_button"
+
+
+class Pair(C.Structure):
+    _fields_ = [("first", C.c_double), ("second", C.c_double)]
+
+
+class DisplayBounds(C.Structure):
+    _fields_ = [("position", Pair), ("size", Pair)]
 
 
 def clock_frames(text):
@@ -68,6 +79,11 @@ class Accessibility:
                                out_pointer)
         self.copy_actions = bind(ax, "AXUIElementCopyActionNames", integer, pointer, out_pointer)
         self.set_value = bind(ax, "AXUIElementSetAttributeValue", integer, pointer, pointer, pointer)
+        self.settable = bind(ax, "AXUIElementIsAttributeSettable", integer, pointer, pointer,
+                             C.POINTER(C.c_ubyte))
+        self.ax_value_type = bind(ax, "AXValueGetTypeID", C.c_ulong)()
+        self.ax_value = bind(ax, "AXValueGetValue", C.c_ubyte, pointer, integer, pointer)
+        self.ax_create = bind(ax, "AXValueCreate", pointer, integer, pointer)
         self.perform = bind(ax, "AXUIElementPerformAction", integer, pointer, pointer)
         self.names, self.values = {}, []
         require(self.trusted(), "macOS editor requires an already trusted accessibility session")
@@ -147,6 +163,30 @@ class Accessibility:
                 and self.set_value(element, self.name("AXFocused"), self.true) == 0
                 and self.flag(element, "AXFocused"),
                 "macOS editor did not focus the exact clock field")
+
+    def is_settable(self, element, attribute):
+        available = C.c_ubyte()
+        return (self.settable(element, self.name(attribute), C.byref(available)) == 0
+                and bool(available.value))
+
+    def pair(self, element, attribute, kind):
+        raw = self.value(element, attribute)
+        if raw and self.type_id(raw) == self.ax_value_type:
+            point = Pair()
+            if self.ax_value(raw, kind, C.byref(point)):
+                return (point.first, point.second)
+        return None
+
+    def resize_window(self, window, width, height):
+        require(self.owns(window) and self.text(window, "AXRole") == "AXWindow",
+                "macOS layout change target is outside the owned editor")
+        size = Pair(width, height)
+        original = self.ax_create(2, C.byref(size))  # kAXValueCGSizeType
+        require(original, "could not create exact macOS window size")
+        try:
+            return self.set_value(window, self.name("AXSize"), original)
+        finally:
+            self.release(original)
 
     def actions(self, element):
         output = C.c_void_p()
@@ -311,28 +351,80 @@ class EditorUI:
 
         self.await_target(lookup, "editor after importing the original OTIO")
 
+    def project_clock(self):
+        ax = self.ax
+        candidates = []
+        for node in self.descend((self.top_window(),), limit=320, depth_limit=17):
+            role = ax.text(node, "AXRole")
+            if role not in CLOCK_ROLES:
+                continue
+            identifier = ax.text(node, "AXIdentifier")
+            if (MONITOR_TOOLBAR + "." in identifier and ax.enabled(node)
+                    and TIMECODE.fullmatch(ax.text(node, "AXValue"))
+                    and not any(ax.equal(node, known) for _, known in candidates)):
+                candidates.append((role, node))
+        fields = [node for role, node in candidates if role == "AXTextField"]
+        choices = fields or [node for _, node in candidates]
+        return choices[0] if len(choices) == 1 else None
+
+    def monitor_layout(self):
+        self.ax.next_snapshot()
+        ax, window = self.ax, self.top_window()
+        require(ax.owns(window), "macOS Project Monitor has no owned editor window")
+        controls = []
+        for node in self.descend((window,), limit=240, depth_limit=13):
+            identifier = ax.text(node, "AXIdentifier")
+            if MONITOR_TOOLBAR in identifier:
+                controls.append({
+                    "identifier": identifier, "role": ax.text(node, "AXRole"),
+                    "position": ax.pair(node, "AXPosition", 1), "size": ax.pair(node, "AXSize", 2),
+                })
+            if len(controls) >= 32:
+                break
+        return {"window_size": ax.pair(window, "AXSize", 2), "monitor_toolbar_controls": controls}
+
+    def reveal_project_clock(self, evidence):
+        self.guard()
+        self.ax.next_snapshot()
+        ax, window = self.ax, self.top_window()
+        require(ax.owns(window), "macOS Project Monitor layout has no owned main window")
+        before = ax.pair(window, "AXSize", 2)
+        graphics = C.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        main = bind(graphics, "CGMainDisplayID", C.c_uint32)()
+        screen = bind(graphics, "CGDisplayBounds", DisplayBounds, C.c_uint32)(main).size
+        if (before and 640 <= screen.first <= 8192 and 480 <= screen.second <= 8192
+                and screen.first - before[0] >= 24):
+            if ax.is_settable(window, "AXSize"):
+                desired = (screen.first, min(screen.second, max(before[1], screen.second - 60)))
+                evidence.write("project-clock-resize-intent", {
+                    "pid": ax.pid, "window_before": before, "requested": desired,
+                    "display_size": (screen.first, screen.second),
+                })
+                status = ax.resize_window(window, *desired)
+                evidence.write("project-clock-resize-terminal", {"pid": ax.pid, "ax_error": status})
+                require(status in (0, CANNOT_COMPLETE), "macOS owned window could not resize")
+                return "resize-owned-window"
+            zoom = ax.value(window, "AXZoomButton")
+            if (ax.owns(zoom) and ax.text(zoom, "AXRole") == "AXButton"
+                    and ax.enabled(zoom) and ax.action(zoom, ("AXPress",))):
+                evidence.press("project-clock-zoom", zoom)
+                return "zoom-owned-window"
+        overflow = [node for node in self.descend((window,), limit=240, depth_limit=13)
+                    if ax.text(node, "AXIdentifier").endswith(MONITOR_OVERFLOW)
+                    and ax.text(node, "AXRole") == "AXMenuButton"
+                    and ax.enabled(node) and ax.action(node, ("AXShowMenu",))]
+        require(len(overflow) == 1, "macOS Project Monitor overflow is unavailable or ambiguous")
+        control = overflow[0]
+        evidence.press("project-clock-overflow", control, opens=ax.text(control, "AXTitle"))
+        return "open-project-monitor-overflow"
+
     def seek_and_select_third_clip(self, evidence):
         ax = self.ax
-
-        def project_clock():
-            candidates = []
-            for node in self.descend((self.top_window(),), limit=320, depth_limit=17):
-                role = ax.text(node, "AXRole")
-                if role not in {"AXTextField", "AXIncrementor"}:
-                    continue
-                identifier = ax.text(node, "AXIdentifier").casefold().split(".")
-                if ("projectmonitor" in identifier and ax.enabled(node)
-                        and TIMECODE.fullmatch(ax.text(node, "AXValue"))):
-                    candidates.append((role, node))
-            fields = [node for role, node in candidates if role == "AXTextField"]
-            choices = fields or [node for _, node in candidates]
-            return choices[0] if len(choices) == 1 else None
-
-        field = self.await_target(project_clock, "unique Project Monitor clock")
+        field = self.await_target(self.project_clock, "unique Project Monitor clock")
         self.commit_timecode(field, "00:00:02:15", "seek-third", evidence)
 
         def seek_acknowledged():
-            current = project_clock()
+            current = self.project_clock()
             return (current and ax.text(current, "AXValue") == "00:00:02:15"
                     and not ax.flag(current, "AXFocused"))
 
@@ -360,7 +452,7 @@ class EditorUI:
             require("resizing in ripple mode" not in title
                     and title != "apply duration to all items",
                     "macOS editor duration must apply to exactly one clip without ripple")
-            if role in {"AXTextField", "AXIncrementor"}:
+            if role in CLOCK_ROLES:
                 components = ax.text(node, "AXIdentifier").split(".")
                 for name in DURATION_FIELDS:
                     if name in components and TIMECODE.fullmatch(ax.text(node, "AXValue")):
@@ -398,7 +490,7 @@ class EditorUI:
         rows = []
         for element in self.descend((*self.panels(), self.top_window()), limit=320, depth_limit=17):
             role = ax.text(element, "AXRole")
-            if role not in {"AXTextField", "AXIncrementor"}:
+            if role not in CLOCK_ROLES:
                 continue
             identifier = ax.text(element, "AXIdentifier")
             parts = identifier.split(".")
@@ -508,6 +600,27 @@ class Evidence:
                     self.ax.release(event)
 
 
+def observe_project_clock_layout(ui, evidence):
+    evidence.write("project-clock-before", ui.monitor_layout())
+    field, layout = ui.project_clock(), None
+    if not field:
+        layout = ui.reveal_project_clock(evidence)
+        try:
+            field = ui.await_target(ui.project_clock, "clock after the owned layout action")
+        except TimeoutError:
+            evidence.write("project-clock-after", ui.monitor_layout())
+            raise
+    ax = ui.ax
+    clock = ax.text(field, "AXValue")
+    require(TIMECODE.fullmatch(clock), "layout observer did not read a complete monitor clock")
+    report = {"editor_actions": int(layout is not None), "layout_change": layout,
+              "clock": clock, "role": ax.text(field, "AXRole"),
+              "identifier": ax.text(field, "AXIdentifier")}
+    evidence.write("project-clock-field", report)
+    evidence.write("project-clock-after", ui.monitor_layout())
+    return report
+
+
 def refresh_third_playlist(ui, evidence):
     ui.seek_and_select_third_clip(evidence)
     for stage, before, after, text in (
@@ -569,7 +682,7 @@ def wait_project(initial, guard):
     raise TimeoutError("macOS Kdenlive did not produce the initial native project")
 
 
-def run(owner, context, distribution, observe_editor):
+def run(owner, context, distribution, observe_editor, *, observe_clock=False):
     if observe_editor:
         editor, binary = installed_editor(owner, context, distribution)
         source = None
@@ -613,6 +726,9 @@ def run(owner, context, distribution, observe_editor):
                     if observe_editor:
                         evidence.write("accessibility-tree", {"pid": process.pid, "nodes": ui.diagnostic()})
                         evidence.write("project-monitor-ax", ui.project_monitor_diagnostic())
+                        if observe_clock:
+                            return {"status": "CLOCK_OBSERVED", "pid": process.pid,
+                                    **observe_project_clock_layout(ui, evidence)}
                         return {"status": "EDITOR_OBSERVED", "pid": process.pid, "editor_actions": 0}
 
                     def check_source():
@@ -671,7 +787,9 @@ def run(owner, context, distribution, observe_editor):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--observe-editor", action="store_true")
+    observation = parser.add_mutually_exclusive_group()
+    observation.add_argument("--observe-editor", action="store_true")
+    observation.add_argument("--observe-editor-clock", action="store_true")
     options = parser.parse_args()
     context, distribution = selection(os.environ, sys.platform, platform.machine())
     require(context["runner_os"] == "macOS", "macOS editor qualification is restricted to macOS")
@@ -681,7 +799,8 @@ def main():
     require(runner.is_absolute() and runner.resolve(strict=True) == runner,
             "macOS Kdenlive runner root is not canonical")
     print(json.dumps(run(runner / f"{JOB}-{context['run_id']}-1", context, distribution,
-                         options.observe_editor), sort_keys=True))
+                         options.observe_editor or options.observe_editor_clock,
+                         observe_clock=options.observe_editor_clock), sort_keys=True))
 
 
 if __name__ == "__main__":

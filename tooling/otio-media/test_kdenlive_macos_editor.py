@@ -135,5 +135,27 @@ class MacEditorRouteTests(unittest.TestCase):
             self.assertTrue((owner / "macos-initial-observe" / "project-monitor-ax.json").exists())
             self.assertFalse((owner / "otio-source-ready.json").exists())
 
+    def test_visible_clock_needs_no_window_or_toolbar_action(self):
+        ui, evidence = Mock(), Mock()
+        ax = ui.ax
+        ax.text.return_value = "00:00:00:00"
+        ui.project_clock.return_value = "clock"
+        result = editor.observe_project_clock_layout(ui, evidence)
+        self.assertEqual(result["editor_actions"], 0)
+        ui.reveal_project_clock.assert_not_called()
+
+    def test_hidden_clock_only_gets_one_scoped_layout_action(self):
+        ui, evidence = Mock(), Mock()
+        ui.project_clock.return_value = None
+        ui.reveal_project_clock.return_value = "resize-owned-window"
+        ui.await_target.return_value = "clock"
+        ui.ax.text.return_value = "00:00:00:00"
+
+        result = editor.observe_project_clock_layout(ui, evidence)
+
+        ui.reveal_project_clock.assert_called_once_with(evidence)
+        self.assertEqual(result["editor_actions"], 1)
+        self.assertEqual(result["layout_change"], "resize-owned-window")
+
 if __name__ == "__main__":
     unittest.main()
