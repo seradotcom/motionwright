@@ -30,6 +30,11 @@ on:
         description: Reuse the successful Linux bundle from a run whose installed render never started
         required: false
         type: string
+      installed_aac31_observe_delivery:
+        description: Inspect the installed Delivery controls without starting the Native providers
+        required: false
+        type: boolean
+        default: false
       evidence_recipient_spki:
         description: Approved RSA-3072 public SPKI DER in base64 for installed Native originals
         required: false
@@ -4364,6 +4369,7 @@ jobs:
       CARGO_INCREMENTAL: '0'
       MOTIONWRIGHT_MLT_MODE: hybrid-av
       PLAYWRIGHT_BROWSERS_PATH: '0'
+      AAC31_DELIVERY_OBSERVATION: ${{ inputs.installed_aac31_observe_delivery }}
       SEMWRIGHT_TEST_PYTHON: /usr/bin/python3
       SEMWRIGHT_TEST_FFMPEG: /usr/bin/ffmpeg
       SEMWRIGHT_TEST_FFPROBE: /usr/bin/ffprobe
@@ -4454,6 +4460,7 @@ jobs:
           toolchain: 1.98.1
           components: rustfmt, clippy, rust-src
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        if: inputs.installed_aac31_observe_delivery == false
         with:
           node-version: '22.22.0'
           cache: npm
@@ -4486,6 +4493,7 @@ jobs:
           verify_recipient()
           PY
       - name: Provision pinned Motion Canvas and Manim runtimes
+        if: inputs.installed_aac31_observe_delivery == false
         run: |
           set -euo pipefail
           export SEMWRIGHT_TEST_MANIM_RUNTIME="$RUNNER_TEMP/aac31-manim-runtime"
@@ -4545,6 +4553,10 @@ jobs:
           RUSTUP_TOOLCHAIN: '1.98.1'
         run: |
           set -euo pipefail
+          if [[ "$AAC31_DELIVERY_OBSERVATION" == true ]]; then
+            cargo build --locked -p motionwright-native --example native-mlt-sequence-e2e
+            exit 0
+          fi
           cargo test --locked -p motionwright-native --example native-mlt-sequence-e2e \
             installed_aac31_seed_reopens_exact_cut_and_voice -- --test-threads=1
           (
@@ -4558,7 +4570,7 @@ jobs:
           )
           cargo build --locked -p motionwright-native --example native-mlt-sequence-e2e
           cargo build --locked -p motionwright-manim-community-driver --bins
-      - name: Render once and verify playback and cold reopen of the same MP4
+      - name: ${{ inputs.installed_aac31_observe_delivery && 'Observe installed Delivery controls' || 'Render once and verify playback and cold reopen of the same MP4' }}
         timeout-minutes: 16
         env:
           PRIVATE_EVIDENCE_RECIPIENT_SPKI: ${{ inputs.evidence_recipient_spki }}
@@ -4568,6 +4580,10 @@ jobs:
           umask 077
           chmod -R go-rwx "$RUNNER_TEMP/aac31-candidate"
           find "$RUNNER_TEMP/aac31-candidate" -type f -name '*.AppImage' -exec chmod u+x {} +
+          observation=(--manim-inventory "$RUNNER_TEMP/aac31-manim-provision/runtime-inventory.json")
+          if [[ "$AAC31_DELIVERY_OBSERVATION" == true ]]; then
+            observation=(--inspect-delivery)
+          fi
           retained=()
           if [[ -f "$RUNNER_TEMP/aac31-retained-package.json" ]]; then
             retained=(--retained-package "$RUNNER_TEMP/aac31-retained-package.json")
@@ -4575,7 +4591,7 @@ jobs:
           xvfb-run -a -s "-screen 0 1440x940x24" dbus-run-session -- \
             "$RUNNER_TEMP/aac31-venv/bin/python" -B -E -s tooling/linux_installed_aac31_ci.py \
             --bundle "$RUNNER_TEMP/aac31-candidate" --sandbox-profile "$RUNNER_TEMP/aac31-sandbox-profile" \
-            --manim-inventory "$RUNNER_TEMP/aac31-manim-provision/runtime-inventory.json" "${retained[@]}"
+            "${observation[@]}" "${retained[@]}"
       - name: Retain only the bounded status and encrypted originals
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

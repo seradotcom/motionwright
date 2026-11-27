@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
+import faulthandler
 from hashlib import sha256
 import json
 import os
@@ -243,19 +244,52 @@ def player_proof(bridge, binding, player, journal, gdk, evidence):
     return result
 
 
+def capture_delivery_window(evidence, binding, deadline, gdk, gdk_x11):
+    require(ui.x11_identity(deadline=deadline) == binding, "AAC31 diagnostic window changed")
+    display = gdk.Display.open(os.environ["DISPLAY"])
+    require(display is not None, "AAC31 diagnostic display is unavailable")
+    window = gdk_x11.X11Window.foreign_new_for_display(display, int(binding["window"], 16))
+    require(window is not None, "AAC31 diagnostic window is unavailable")
+    width, height = window.get_width(), window.get_height()
+    require(320 <= width <= 1920 and 180 <= height <= 1080, "AAC31 diagnostic window is outside bounds")
+    image = gdk.pixbuf_get_from_window(window, 0, 0, width, height)
+    require(image is not None and ui.x11_identity(deadline=deadline) == binding,
+            "AAC31 diagnostic capture lost its window")
+    channels, stride = image.get_n_channels(), image.get_rowstride()
+    pixels = bytes(image.get_pixels())
+    require(channels in {3, 4} and width * channels <= stride <= width * channels + 64
+            and stride * (height - 1) + width * channels <= len(pixels) <= stride * height,
+            "AAC31 diagnostic pixel layout is invalid")
+    with (evidence / "delivery-window.original.rgb").open("xb") as stream:
+        stream.write(pixels)
+        stream.flush()
+        os.fsync(stream.fileno())
+    publish(evidence / "delivery-window.json", {"binding": binding, "width": width, "height": height,
+                                               "channels": channels, "row_stride": stride,
+                                               "sha256": sha256(pixels).hexdigest()})
+
+
+
 def worker(request, phase, binding, seconds):
     import gi
     gi.require_version("Atspi", "2.0")
     gi.require_version("Gdk", "3.0")
     from gi.repository import Atspi, Gdk, GLib
 
+    deadline = time.monotonic() + seconds
+    if phase == "inspect-delivery":
+        gi.require_version("GdkX11", "3.0")
+        from gi.repository import GdkX11
+
+        capture_delivery_window(Path(request["evidence"]), binding, deadline, Gdk, GdkX11)
+        faulthandler.dump_traceback_later(10, file=sys.stderr)
     require(Atspi.init() in (0, 1), "AAC31_ATSPI_INIT")
     Atspi.set_timeout(800, 2500)
 
     database = Path(request["database"])
     output = Path(request["output"])
     source = Source(**request["source"])
-    bridge = ReviewBridge(Atspi, deadline=time.monotonic() + seconds, glib=GLib)
+    bridge = ReviewBridge(Atspi, deadline=deadline, glib=GLib)
     journal = ui.DiskJournal(Path(request["evidence"]) / (phase + "-ui"))
     try:
         if phase.startswith("navigate-"):
@@ -263,6 +297,13 @@ def worker(request, phase, binding, seconds):
         elif phase == "check-source":
             journal.put("before-check-source", {"binding": binding})
             press(bridge, binding, "Check hybrid sources", journal, "check-source")
+        elif phase == "inspect-delivery":
+            view = wait_for(bridge, lambda: exact(bridge, binding, "Check hybrid sources", button=True))
+            state = {"phase": phase, "binding": binding,
+                     "source_check_enabled": {"enabled", "sensitive"} <= view.states}
+            journal.put("delivery-controls", state)
+            faulthandler.cancel_dump_traceback_later()
+            return state
         elif phase == "create":
             require(not rows(database, source), "AAC31 mux was already attempted for this saved source")
             press(bridge, binding, "Create hybrid master", journal, "create-one-master", seconds=90)
@@ -367,8 +408,11 @@ def observe_stage(request_path, evidence, phase, binding, deadline, *, limit=Non
     return result
 
 
-def observe_window(request_path, evidence, phase, binding, deadline, database, source, output):
+def observe_window(request_path, evidence, phase, binding, deadline, database, source, output,
+                   *, inspect_delivery=False):
     observe_stage(request_path, evidence, "navigate-" + phase, binding, deadline, limit=35)
+    if inspect_delivery:
+        return observe_stage(request_path, evidence, "inspect-delivery", binding, deadline, limit=25)
     if phase == "render":
         observe_stage(request_path, evidence, "check-source", binding, deadline, limit=30)
         observe_stage(request_path, evidence, "create", binding, deadline, limit=90)
@@ -377,7 +421,7 @@ def observe_window(request_path, evidence, phase, binding, deadline, database, s
 
 
 
-def run_installed(request_path: Path) -> dict:
+def run_installed(request_path: Path, *, inspect_delivery=False) -> dict:
     """One owned AppRun render/play session and one fresh AppRun reopen."""
     request = json.loads(request_path.read_bytes())
     source = Source(**request["source"])
@@ -404,7 +448,7 @@ def run_installed(request_path: Path) -> dict:
             and database.is_relative_to(profile / "data"), "expected a new installed AAC31 case")
     screens = {}
 
-    for phase in ("render", "reopen"):
+    for phase in (("render",) if inspect_delivery else ("render", "reopen")):
         started = time.monotonic()
         deadline = started + (seconds if phase == "render" else 45)
         observation = {}
@@ -422,7 +466,7 @@ def run_installed(request_path: Path) -> dict:
             observation["executing_binary"] = observed
             publish(evidence / (phase + "-window-intent.json"), observation)
             screens[phase] = observe_window(request_path, evidence, phase, binding, deadline,
-                                            database, source, output)
+                                            database, source, output, inspect_delivery=inspect_delivery)
             return True
 
         owner_connection = admitted_owner_connection(request, source, output)
@@ -440,6 +484,10 @@ def run_installed(request_path: Path) -> dict:
 
         require(admitted_owner_connection(request, source, output) == owner_connection,
                 "AAC31 owner connection changed after AppRun")
+        if inspect_delivery:
+            require(not rows(database, source), "AAC31 diagnostic must precede any original dispatch")
+            publish(evidence / "delivery-observation.json", screens[phase])
+            return screens[phase]
         master = original_master(database, source, output)
         require(screens[phase]["master"]["id"] == master.id
                 and screens[phase]["master"]["sha256"] == master.sha256,
@@ -463,7 +511,8 @@ def run_installed(request_path: Path) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--request", type=Path, required=True)
-    parser.add_argument("--worker", choices=("navigate-render", "navigate-reopen", "check-source",
+    parser.add_argument("--inspect-delivery", action="store_true")
+    parser.add_argument("--worker", choices=("navigate-render", "navigate-reopen", "check-source", "inspect-delivery",
                                              "create", "render", "reopen"))
     parser.add_argument("--binding")
     parser.add_argument("--seconds", type=int)
@@ -474,7 +523,7 @@ def main() -> None:
         result = worker(json.loads(args.request.read_bytes()), args.worker,
                         json.loads(args.binding), args.seconds)
     else:
-        result = run_installed(args.request)
+        result = run_installed(args.request, inspect_delivery=args.inspect_delivery)
     print(json.dumps(result, sort_keys=True))
 
 

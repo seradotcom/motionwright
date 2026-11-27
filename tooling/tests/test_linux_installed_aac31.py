@@ -50,6 +50,13 @@ class InstalledAAC31ProofTests(unittest.TestCase):
                                          time.monotonic() + 300, Mock(), Mock(), Mock())
         self.assertEqual([call.args[2] for call in stage.call_args_list], ["navigate-render", "check-source"])
 
+        with patch.object(installed, "observe_stage", side_effect=[{}, report]) as stage:
+            result = installed.observe_window(Path("request.json"), Path("evidence"), "render", binding,
+                                             time.monotonic() + 75, Mock(), Mock(), Mock(),
+                                             inspect_delivery=True)
+        self.assertEqual(result, report)
+        self.assertEqual([call.args[2] for call in stage.call_args_list], ["navigate-render", "inspect-delivery"])
+
     def test_button_scan_does_not_read_unrelated_document_names(self):
         bridge = installed.ReviewBridge.__new__(installed.ReviewBridge)
         bridge.deadline = None

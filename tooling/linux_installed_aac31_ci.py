@@ -63,7 +63,7 @@ def verify_recipient():
     return recipient
 
 
-def admit_candidate(bundle, retained_package):
+def admit_candidate(bundle, retained_package, *, inspect_delivery):
     env = os.environ
     source_sha = env["GITHUB_SHA"]
     run_id = env["GITHUB_RUN_ID"]
@@ -112,12 +112,16 @@ def admit_candidate(bundle, retained_package):
         inputs["candidate_origin"] = retained
     else:
         inputs["candidate_origin"] = {"source_sha": source_sha, "run_id": run_id}
-    native.exact_inputs()
+    if inspect_delivery:
+        installed.need(native.MW_BIN.is_file(), "AAC31_STUDIO_SEED_BINARY_REQUIRED")
+    else:
+        native.exact_inputs()
     inputs["source"] = installed.source_inputs(args)
     return args, inputs
 
 
-def observe(args, inputs, evidence, owner, profile, database, apparmor, manim_inventory):
+def observe(args, inputs, evidence, owner, profile, database, apparmor, manim_inventory,
+            *, inspect_delivery):
     installed.publish(evidence / "candidate-inputs.json", inputs)
     installed.publish(evidence / "sandbox-profile.json", installed.ci_verify_sdk_profile_sidecar(apparmor))
     with installed.supervise_own_processes():
@@ -132,37 +136,49 @@ def observe(args, inputs, evidence, owner, profile, database, apparmor, manim_in
         run_original([str(native.MW_BIN), "seed-installed-aac31", str(database),
                       str(wave_path), audio["sha256"]], evidence, "studio-seed", env=owner_env, seconds=60)
         seeded = installed.read_json(evidence / "studio-seed.stdout", 64 * 1024)
-        resource_key = "project:" + seeded["project"]
-        with native.native_owner_broker(owner_paths, owner_env, resource_key, evidence,
-                                       hybrid=True, manim_inventory=manim_inventory) as (_, connection, ffmpeg, ffprobe, tools):
-            installed.publish(evidence / "provider-bindings.json",
-                              {key: native.digest(path) for key, path in tools.items()})
-            request = evidence / "desktop-request.json"
-            desktop = evidence / "desktop"
-            desktop.mkdir(mode=0o700)
-            installed.publish(request, {
-                "source_sha": args.source_sha, "semwright_sha": args.semwright_sha,
-                "app_run": str(args.app_run), "binary": str(args.installed_binary),
-                "profile": str(profile), "database": str(database), "output": str(owner_paths["output"]),
-                "evidence": str(desktop), "connection": str(connection),
-                "connection_sha256": native.digest(connection),
-                "project_title": seeded["project_title"],
-                "source": {key: seeded[key] for key in ("project", "generation", "revision", "deliverable")},
-                "wave": str(wave_path), "wave_sha256": audio["sha256"],
-                "ffmpeg": str(ffmpeg), "ffmpeg_sha256": native.digest(ffmpeg),
-                "ffprobe": str(ffprobe), "ffprobe_sha256": native.digest(ffprobe),
-                "seconds": 540,
-            })
+        request = evidence / "desktop-request.json"
+        desktop = evidence / "desktop"
+        desktop.mkdir(mode=0o700)
+        primary = {
+            "source_sha": args.source_sha, "semwright_sha": args.semwright_sha,
+            "app_run": str(args.app_run), "binary": str(args.installed_binary),
+            "profile": str(profile), "database": str(database), "output": str(owner_paths["output"]),
+            "evidence": str(desktop), "project_title": seeded["project_title"],
+            "source": {key: seeded[key] for key in ("project", "generation", "revision", "deliverable")},
+        }
+
+        def run_desktop(fields, flags, timeout):
+            installed.publish(request, {**primary, **fields})
             run_original(["/usr/bin/python3", "-B", "-E", "-s",
                           str(installed.ROOT / "tooling/linux_installed_aac31.py"),
-                          "--request", str(request)], evidence, "installed-desktop", env=env, seconds=630)
+                          "--request", str(request), *flags], evidence, "installed-desktop",
+                         env=env, seconds=timeout)
+
+        if inspect_delivery:
+            run_desktop({"seconds": 75}, ["--inspect-delivery"], 90)
+        else:
+            resource_key = "project:" + seeded["project"]
+            with native.native_owner_broker(owner_paths, owner_env, resource_key, evidence,
+                                           hybrid=True, manim_inventory=manim_inventory) as (
+                _, connection, ffmpeg, ffprobe, tools,
+            ):
+                installed.publish(evidence / "provider-bindings.json",
+                                  {key: native.digest(path) for key, path in tools.items()})
+                run_desktop({
+                    "connection": str(connection), "connection_sha256": native.digest(connection),
+                    "wave": str(wave_path), "wave_sha256": audio["sha256"],
+                    "ffmpeg": str(ffmpeg), "ffmpeg_sha256": native.digest(ffmpeg),
+                    "ffprobe": str(ffprobe), "ffprobe_sha256": native.digest(ffprobe),
+                    "seconds": 540,
+                }, [], 630)
     installed.need(inputs["artifact"] == source.regular_file(args.artifact, BUNDLE_LIMIT)
                    and inputs["receipt"] == source.regular_file(args.candidate_receipt, 4 * 1024 * 1024)
                    and original["extracted_tree"] == installed.installed_bundle_inventory(args.app_run.parent)
                    and inputs["source"] == installed.source_inputs(args)
                    and audio == source.regular_file(wave_path, 44 + 4 * SAMPLES),
                    "AAC31_ORIGINAL_INPUT_CHANGED")
-    return installed.read_json(evidence / "desktop/installed-aac31.json")
+    name = "delivery-observation.json" if inspect_delivery else "installed-aac31.json"
+    return installed.read_json(evidence / "desktop" / name)
 
 
 def main():
@@ -170,11 +186,15 @@ def main():
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--retained-package", type=Path)
     parser.add_argument("--sandbox-profile", type=Path, required=True)
-    parser.add_argument("--manim-inventory", type=Path, required=True)
+    parser.add_argument("--manim-inventory", type=Path)
+    parser.add_argument("--inspect-delivery", action="store_true")
     arguments = parser.parse_args()
     os.umask(0o077)
     recipient = verify_recipient()
-    args, inputs = admit_candidate(arguments.bundle, arguments.retained_package)
+    installed.need(arguments.inspect_delivery or arguments.manim_inventory is not None,
+                   "AAC31_MANIM_INVENTORY_REQUIRED")
+    args, inputs = admit_candidate(arguments.bundle, arguments.retained_package,
+                                   inspect_delivery=arguments.inspect_delivery)
     root = args.namespace
     root.mkdir(mode=0o700)
     evidence, owner, profile = root / "evidence", root / "o", root / "gui"
@@ -188,10 +208,12 @@ def main():
                "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": "1"}
     terminal = {**context, "schema": "motionwright.ci.installed-aac31-custody/1",
                 "observation": "UNKNOWN", "automatic_retry": False, "product_acceptance": False,
+                "observation_scope": "delivery-controls" if arguments.inspect_delivery else "aac31-original",
                 "candidate_source_sha": inputs["candidate_origin"]["source_sha"],
                 "candidate_run_id": inputs["candidate_origin"]["run_id"]}
     installed.publish(evidence / "intent.json",
-                      {**context, "render_dispatch_limit": 1, "automatic_retry": False,
+                      {**context, "render_dispatch_limit": 0 if arguments.inspect_delivery else 1,
+                       "automatic_retry": False,
                        "candidate_sha256": inputs["artifact"]["sha256"]})
     report = None
     try:
@@ -200,7 +222,8 @@ def main():
         resource.setrlimit(resource.RLIMIT_FSIZE, (effective_limit, original_limit[1]))
         try:
             report = observe(args, inputs, evidence, owner, profile, database,
-                             arguments.sandbox_profile, arguments.manim_inventory)
+                             arguments.sandbox_profile, arguments.manim_inventory,
+                             inspect_delivery=arguments.inspect_delivery)
         finally:
             resource.setrlimit(resource.RLIMIT_FSIZE, original_limit)
     except Exception as error:
@@ -215,12 +238,15 @@ def main():
         seal.new_bytes(sealed, encoded)
         terminal.update(sealed_sha256=seal.sha(encoded), complete_private_custody=complete)
         if report is not None and complete:
-            terminal.update(observation="PASS", original_mp4_sha256=report["original_sha256"],
-                            presentation_samples=SAMPLES, video_frames=31)
+            if arguments.inspect_delivery:
+                terminal.update(observation="PROBE_PASS", source_check_enabled=report["source_check_enabled"])
+            else:
+                terminal.update(observation="PASS", original_mp4_sha256=report["original_sha256"],
+                                presentation_samples=SAMPLES, video_frames=31)
     finally:
         installed.publish(transport / "status.json", terminal)
         print("Installed AAC31 observation " + terminal["observation"])
-    return 0 if terminal["observation"] == "PASS" else 1
+    return 0 if terminal["observation"] in {"PASS", "PROBE_PASS"} else 1
 
 
 if __name__ == "__main__":
