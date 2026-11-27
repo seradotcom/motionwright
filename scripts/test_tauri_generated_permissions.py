@@ -69,6 +69,7 @@ REAL_COMMANDS = (
     "production_jobs",
     "mlt_cleanup_inventory",
     "read_original_native_job_status",
+    "close_original_mlt_project",
     "production_jobs_history",
     "native_blender_product_source",
     "prepare_blender_product_cycle",
