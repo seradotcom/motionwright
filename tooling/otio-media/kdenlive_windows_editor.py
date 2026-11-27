@@ -46,7 +46,8 @@ def run_windows(runner, context, distribution):
         with (directory / "application.stdout.log").open("xb") as app_out, (
                 directory / "application.stderr.log").open("xb") as app_err:
             process = subprocess.Popen(
-                [str(editor), "--no-welcome", "--config", str(profile / "kdenliverc")],
+                [str(editor), "--no-welcome", "--config", str(profile / "kdenliverc"),
+                 "-platformtheme", "generic"],
                 cwd=editor.parent, env=environment, stdin=subprocess.DEVNULL,
                 stdout=app_out, stderr=app_err,
             )
