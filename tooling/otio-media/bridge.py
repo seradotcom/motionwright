@@ -72,19 +72,17 @@ def capture_original(path:Path,budget:int)->tuple[bytes,dict]:
     contract. Only the shared regular/capture_regular result supplies content
     and identity; consumers never reopen this pathname to parse or copy it.
     """
-    insist(path.is_file() and not path.is_symlink(),f"Missing or unsafe file: {path.name}")
-    size=path.stat().st_size
-    insist(0<size<=budget,f"File exceeds byte budget: {path.name}")
+    absolute=path.absolute()
+    canonical=_resolve_plain_path(absolute,f"Missing or unsafe file: {path.name}")
+    insist(canonical==absolute,"Original media path or parent directory is not canonical")
+    insist(absolute.is_file(),f"Missing or unsafe file: {path.name}")
+    insist(0<absolute.stat().st_size<=budget,f"File exceeds byte budget: {path.name}")
     # Reuse the original held-FD intake directly, without loading the
     # unrelated encrypted CI evidence exporter (and its crypto dependencies)
     # into the installed OTIO media reader. Preserve that exporter's exact
     # canonical-path/parent-symlink and stable namespace checks.
     from mlt_official_runtime_intake import IntakeError, capture_regular
     try:
-        absolute=path.absolute()
-        insist(absolute.resolve(strict=True)==absolute
-               and not any(parent.is_symlink()for parent in absolute.parents),
-               "Original media path or parent directory is not canonical")
         raw,observed=capture_regular(absolute,budget)
     except (OSError,IntakeError) as error:
         raise BridgeRefused(f"File changed or became unsafe during retained capture: {path.name}") from error
@@ -98,16 +96,13 @@ def owner_file(root:Path,name:str,budget:int,extension:set[str]|None=None)->Path
     insist(isinstance(name,str) and 1<=len(name)<=250,
            "Owner file requires a bounded relative path")
     rel=Path(name)
-    insist(not rel.is_absolute() and all(part not in ("..",".")for part in rel.parts),
-           "Owner file path may not escape source root")
+    insist(not rel.anchor and bool(rel.parts) and all(part not in ("..",".") for part in rel.parts)
+           and (os.name!="nt" or ":" not in name),"Owner file path may not escape source root")
     if extension:insist(rel.suffix.lower() in extension,"Owner file type is unsupported")
-    path=root
-    for component in rel.parts:
-        path=path/component
-        insist(not path.is_symlink(),"Symlinked source paths are never admitted")
-    # This is a pathname locator, not an observation or content receipt.
-    # Reading consumers must use capture_original and keep its immutable bytes.
-    insist(path.is_file() and not path.is_symlink(),f"Missing or unsafe file: {path.name}")
+    root=_resolve_plain_path(root.absolute(),"Owner source root is unsafe",directory=True)
+    path=_resolve_plain_path(root/rel,f"Missing or unsafe file: {rel.name}")
+    # Reading consumers capture and retain the bytes on a held handle.
+    insist(path.is_relative_to(root) and path.is_file(),f"Missing or unsafe file: {path.name}")
     insist(0<path.stat().st_size<=budget,f"File exceeds byte budget: {path.name}")
     return path
 
@@ -201,6 +196,18 @@ def _probe_output(args:list[str],deadline:float|None=None,*,
         raise primary
     return decoded
 
+def _ffprobe_program()->str:
+    # Desktop binds this variable to the admitted executable in a cleared
+    # process environment. Standalone tooling keeps its normal CLI lookup.
+    configured=os.environ.get("MOTIONWRIGHT_OTIO_FFPROBE")
+    if configured is None:return "ffprobe"
+    path=Path(configured)
+    message="The admitted OTIO decoder is unavailable"
+    insist(path.is_absolute(),message)
+    path=_resolve_plain_path(path,message)
+    insist(path.is_file(),message)
+    return str(path)
+
 def file_probe(media:Path,*,original_bytes:bytes|None=None)->dict:
     # The same immutable original feeds both existing phases. Filesystem
     # capture has no general wall-time guarantee; no decoder starts after the
@@ -210,7 +217,7 @@ def file_probe(media:Path,*,original_bytes:bytes|None=None)->dict:
     if original_bytes is None:original_bytes,_=capture_original(media,MAX_MEDIA)
     insist(type(original_bytes)is bytes and 0<len(original_bytes)<=MAX_MEDIA,
            "Media video stdin exceeds its byte budget")
-    common=["ffprobe","-v","error","-protocol_whitelist","pipe",
+    common=[_ffprobe_program(),"-v","error","-protocol_whitelist","pipe",
             "-threads","1","-max_alloc",str(MAX_MEDIA),"-select_streams","v:0"]
     # Packet counting drains the metadata phase without a second full video
     # decode. Packet counts never substitute for the decoded frame count below.
@@ -319,9 +326,9 @@ def export_portable(root:Path,request:dict,output:Path,
                     *,retained_alab:_RetainedAlabObservation|None=None,
                     source_notices:dict|None=None,
                     firstparty_audio:dict|None=None)->dict:
-    root=root.resolve(strict=True)
-    insist(root.is_dir() and not output.exists() and output.parent.is_dir() and
-           not output.parent.is_symlink(),"Export requires an existing owner root and a new destination")
+    root=_resolve_plain_path(root.absolute(),"Owner export root is unsafe",directory=True)
+    _resolve_plain_path(output.parent.absolute(),"Owner export destination is unsafe",directory=True)
+    insist(not output.exists() and not output.is_symlink(),"Export requires a new destination")
     notice_bytes=_validate_alab_source_notices(source_notices,retained_alab)
     insist(firstparty_audio is None or retained_alab is None,
            "First-party source audio cannot select the retained ALab profile")
@@ -661,9 +668,8 @@ def import_preview(bundle:Path,edit_name:str,current_project:Path,
                    *,retained_alab:_RetainedAlabObservation|None=None)->dict:
     insist(current_project.is_file() and not current_project.is_symlink(),
            "A live current Project snapshot is required for a bounded edit proposal")
-    insist(bundle.is_dir() and not bundle.is_symlink(),
-           "A portable media bundle must be an extracted owner-controlled directory")
-    root=bundle.resolve(strict=True)
+    root=_resolve_plain_path(bundle.absolute(),
+        "A portable media bundle must be an extracted owner-controlled directory",directory=True)
     manifest=read_json(root,"bridge-manifest.json")
     insist(manifest.get("schema")==SCHEMA and
            manifest.get("output_profile")==_retained_output_profile(retained_alab) and
@@ -978,7 +984,7 @@ def _nle_audio_video_clips(timeline:dict)->list[dict]:
     return video
 
 
-def _nle_resolve_plain_path(path:Path,message:str,*,directory:bool=False)->Path:
+def _resolve_plain_path(path:Path,message:str,*,directory:bool=False)->Path:
     try:
         # Inspect from the filesystem root down before resolve can erase a
         # junction. Windows reparse points need not use symlink mode.
@@ -1019,7 +1025,7 @@ def _nle_local_media(raw_parent:Path,target:object,roots:tuple[Path,...],
     _nle_require(any(path.is_relative_to(root)for root in roots),"unauthorized_media_root",
                  "Native media target lies outside the backend-authorized roots")
     try:
-        path=_nle_resolve_plain_path(path,"Native media target cannot be resolved safely")
+        path=_resolve_plain_path(path,"Native media target cannot be resolved safely")
     except BridgeRefused:
         raise _NleCutLoss("unsafe_media_target",
             "Native media target contains a link, reparse point or unavailable path")from None
@@ -1045,17 +1051,16 @@ def preview_kdenlive_cut(bundle:Path,raw_root:Path,request:dict,current_project:
                            "received_sha256","edited_otio","edited_sha256"},
                   "Kdenlive bounded cut request")
     insist(request["schema"]==KDENLIVE_REQUEST_SCHEMA,"Unknown bounded NLE cut request")
-    insist(bundle.is_dir() and not bundle.is_symlink() and raw_root.is_dir()
-           and not raw_root.is_symlink(),"Source capsule and RAW roots must be owner-controlled directories")
-    bundle=bundle.resolve(strict=True)
-    raw_root=raw_root.resolve(strict=True)
+    root_error="Source capsule and RAW roots must be owner-controlled directories"
+    bundle=_resolve_plain_path(bundle.absolute(),root_error,directory=True)
+    raw_root=_resolve_plain_path(raw_root.absolute(),root_error,directory=True)
     insist(isinstance(authorized_media_roots,tuple) and 1<=len(authorized_media_roots)<=8,
            "Backend must supply one to eight authorized local media roots")
     roots=[]
     for root in authorized_media_roots:
         insist(isinstance(root,Path) and root.is_absolute(),
                "Invalid backend-authorized media root")
-        roots.append(_nle_resolve_plain_path(root,
+        roots.append(_resolve_plain_path(root,
             "Invalid backend-authorized media root",directory=True))
     roots=tuple(roots)
     snapshots={}

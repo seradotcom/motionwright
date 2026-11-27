@@ -1007,7 +1007,7 @@ impl Store {
 
 /// Publish the complete sibling directory only if its destination is still free.
 /// Unsupported filesystem operations are errors; there is no replacing fallback.
-pub(super) fn publish_bundle_directory(staging: &Path, destination: &Path) -> Result<()> {
+pub fn publish_bundle_directory(staging: &Path, destination: &Path) -> Result<()> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     let result = {
         use rustix::fs::{CWD, RenameFlags, renameat_with};

@@ -53,8 +53,15 @@ pub use integrity::{
 };
 pub use portability::{
     BundleAssetAdmission, BundleFingerprint, BundleImportCommit, BundleImportRecoveryRequest,
-    InspectedProjectBundle,
+    InspectedProjectBundle, publish_bundle_directory,
 };
+#[cfg(windows)]
+/// Admit a bounded, regular local source and return its held file identity.
+pub fn open_portable_source(path: &Path, limit: u64) -> Result<(File, String)> {
+    let file = file_import::open_regular_import_source(path, limit)?;
+    let identity = cas_retention::file_identity(&file)?;
+    Ok((file, identity))
+}
 pub use production::{
     ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark,
     voice_alignment_receipt_sha256_v1,

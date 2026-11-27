@@ -18,7 +18,7 @@ import unittest
 from unittest.mock import patch
 
 from bridge import (
-    BridgeRefused, SCHEMA, export_portable, file_probe, import_preview, trange,
+    BridgeRefused, SCHEMA, capture_original, export_portable, file_probe, import_preview, owner_file, trange,
     preview_kdenlive_cut, KDENLIVE_REQUEST_SCHEMA, _nle_local_media,
 )
 
@@ -56,7 +56,7 @@ class NativeMediaAdmissionTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="mw-otio-native-admission-")
         self.addCleanup(temp.cleanup)
-        self.root = Path(temp.name)
+        self.root = Path(temp.name).resolve(strict=True)
         self.owner = self.root / "owner"
         self.owner.mkdir()
         self.output = self.root / "portable"
@@ -311,6 +311,27 @@ class NativeMediaAdmissionTests(unittest.TestCase):
         self.assertEqual((self.output / "media" / original_name).read_bytes(), self.original_bytes)
 
 
+class DecoderSelectionTests(unittest.TestCase):
+    def test_bound_ffprobe_is_the_only_decoder_program_selected(self):
+        with tempfile.TemporaryDirectory(prefix="mw-otio-decoder-") as scratch:
+            decoder = Path(scratch).resolve(strict=True) / "protected decoder"
+            decoder.write_bytes(b"argument routing fixture")
+            with patch.dict(os.environ, {"MOTIONWRIGHT_OTIO_FFPROBE": str(decoder)}), \
+                 patch("bridge._probe_output", side_effect=BridgeRefused("stop before launch")) as probe:
+                with self.assertRaisesRegex(BridgeRefused, "stop before launch"):
+                    file_probe(Path("original.mp4"), original_bytes=b"test media")
+            self.assertEqual(probe.call_args.args[0][0], str(decoder))
+
+    def test_bound_ffprobe_is_rejected_if_the_original_disappears(self):
+        with tempfile.TemporaryDirectory(prefix="mw-otio-decoder-") as scratch:
+            lost = Path(scratch).resolve(strict=True) / "missing ffprobe"
+            with patch.dict(os.environ, {"MOTIONWRIGHT_OTIO_FFPROBE": str(lost)}), \
+                 patch("bridge._probe_output", side_effect=AssertionError("No decoder fallback")) as probe:
+                with self.assertRaises(BridgeRefused):
+                    file_probe(Path("original.mp4"), original_bytes=b"test media")
+            probe.assert_not_called()
+
+
 @unittest.skipUnless(os.name == "nt", "Real junction admission requires Windows")
 class WindowsReparsePathTests(unittest.TestCase):
     """Real filesystem junctions only; no FFmpeg fixture, NLE or media decode."""
@@ -364,6 +385,27 @@ class WindowsReparsePathTests(unittest.TestCase):
         link = self.root / "linked-parent"
         self.junction(link, self.external)
         self.assert_root_rejected_before_data_read(link / "nested")
+
+    def test_portable_owner_source_refuses_junctions_before_capture(self):
+        link = self.raw / "linked-media"
+        self.junction(link, self.external)
+        with patch("mlt_official_runtime_intake.capture_regular",
+                   side_effect=AssertionError("Path admission must precede capture")) as capture:
+            with self.assertRaises(BridgeRefused):
+                owner_file(self.raw, "linked-media/source.mp4", 4096)
+            with self.assertRaises(BridgeRefused):
+                capture_original(link / "source.mp4", 4096)
+            with self.assertRaises(BridgeRefused):
+                export_portable(link, {}, self.root / "output")
+            capture.assert_not_called()
+        self.assertFalse((self.root / "output").exists())
+
+    def test_portable_owner_source_rejects_drive_qualified_relative_names(self):
+        original = self.raw / "original.mp4"
+        original.write_bytes(b"portable path fixture")
+        with self.assertRaises(BridgeRefused):
+            owner_file(self.raw, f"{self.raw.drive}original.mp4", 4096)
+        self.assertEqual(owner_file(self.raw, "original.mp4", 4096), original)
 
     def test_candidate_junction_cannot_escape_plain_authorized_root(self):
         link = self.raw / "linked-media"

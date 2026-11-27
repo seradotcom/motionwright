@@ -73,7 +73,11 @@ pub struct VerifiedMasterVoice {
 }
 
 use motionwright_domain::{Change, DomainError, Project, RenderTailInspectRequest, RevisionStamp};
-pub use motionwright_storage::{ASSET_MEDIA_RANGE_BYTES, VerifiedAssetMedia};
+#[cfg(windows)]
+pub use motionwright_storage::open_portable_source;
+pub use motionwright_storage::{
+    ASSET_MEDIA_RANGE_BYTES, VerifiedAssetMedia, publish_bundle_directory,
+};
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, StorageError, Store};
 pub use motionwright_storage::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, BlobDescriptor,

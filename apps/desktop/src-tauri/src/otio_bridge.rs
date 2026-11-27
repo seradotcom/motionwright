@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     ffi::OsString,
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -83,6 +83,69 @@ fn valid_edited_name(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
+fn link_or_reparse(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return true;
+        }
+    }
+    metadata.file_type().is_symlink()
+}
+
+#[cfg(windows)]
+fn same_local_windows_path(input: &Path, canonical: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    fn drive(component: Option<Component<'_>>) -> Option<u8> {
+        match component {
+            Some(Component::Prefix(prefix)) => match prefix.kind() {
+                Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => Some(drive),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    let mut input = input.components();
+    let mut canonical = canonical.components();
+    matches!((drive(input.next()), drive(canonical.next())),
+        (Some(a), Some(b)) if a.eq_ignore_ascii_case(&b))
+        && input.eq(canonical)
+}
+
+fn canonical_plain_path(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err(refused());
+    }
+    let ancestors: Vec<_> = path.ancestors().collect();
+    for ancestor in ancestors.into_iter().rev() {
+        if link_or_reparse(&ancestor.symlink_metadata().map_err(|_| refused())?) {
+            return Err(refused());
+        }
+    }
+    let canonical = fs::canonicalize(path).map_err(|_| refused())?;
+    #[cfg(windows)]
+    let same_path = same_local_windows_path(path, &canonical) && windows_plain_components(path);
+    #[cfg(not(windows))]
+    let same_path = canonical == path;
+    if !same_path {
+        return Err(refused());
+    }
+    Ok(canonical)
+}
+
+#[cfg(windows)]
+fn windows_plain_components(path: &Path) -> bool {
+    use std::path::Component;
+    path.components().all(|component| match component {
+        Component::Normal(name) => name
+            .to_str()
+            .is_some_and(|name| !name.contains(':') && !name.ends_with(['.', ' '])),
+        Component::ParentDir | Component::CurDir => false,
+        _ => true,
+    })
+}
+
 fn canonical_owner_directory(path: &str) -> Result<PathBuf, String> {
     if path.trim() != path
         || path.is_empty()
@@ -92,37 +155,24 @@ fn canonical_owner_directory(path: &str) -> Result<PathBuf, String> {
         return Err("Choose one absolute, bounded original OTIO bundle folder.".into());
     }
     let input = PathBuf::from(path);
-    if !input.is_absolute()
-        || !input.is_dir()
-        || input
-            .symlink_metadata()
-            .map_err(|_| refused())?
-            .file_type()
-            .is_symlink()
-    {
+    let canonical = canonical_plain_path(&input)?;
+    if !canonical.is_dir() {
         return Err("Choose an existing, non-symlink original OTIO bundle.".into());
     }
-    if fs::canonicalize(&input).map_err(|_| refused())? != input
-        || input.ancestors().any(|ancestor| {
-            ancestor
-                .symlink_metadata()
-                .is_ok_and(|meta| meta.file_type().is_symlink())
-        })
-    {
-        return Err("An original OTIO bundle cannot contain symlinked parent paths.".into());
-    }
-    Ok(input)
+    Ok(canonical)
 }
 
 fn same_regular_source(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     if !before.is_file()
         || !after.is_file()
+        || link_or_reparse(before)
+        || link_or_reparse(after)
         || before.len() != after.len()
         || before.modified().ok() != after.modified().ok()
     {
         return false;
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         if before.dev() != after.dev()
@@ -133,16 +183,24 @@ fn same_regular_source(before: &fs::Metadata, after: &fs::Metadata) -> bool {
             return false;
         }
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if before.creation_time() != after.creation_time()
+            || before.file_attributes() != after.file_attributes()
+        {
+            return false;
+        }
+    }
     true
 }
 
 /// Open the admitted leaf without following links or waiting for a FIFO writer.
-/// The automated bridge is admitted only on Linux. Keep the same kernel flags
-/// as Foundation's regular-file import boundary on that supported platform.
-fn open_bridge_source(path: &Path) -> std::io::Result<File> {
+#[cfg(not(windows))]
+fn open_bridge_source(path: &Path) -> std::io::Result<fs::File> {
     let mut options = OpenOptions::new();
     options.read(true);
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
@@ -152,15 +210,34 @@ fn open_bridge_source(path: &Path) -> std::io::Result<File> {
 
 fn read_regular_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let before_name = path.symlink_metadata().map_err(|_| refused())?;
-    if !before_name.file_type().is_file() || before_name.len() == 0 || before_name.len() > limit {
+    if !before_name.is_file()
+        || link_or_reparse(&before_name)
+        || before_name.len() == 0
+        || before_name.len() > limit
+    {
         return Err(refused());
     }
+    #[cfg(windows)]
+    let (initial, identity) =
+        motionwright_service::open_portable_source(path, limit).map_err(|_| refused())?;
     // Read the same held regular handle, bounded even if a source file grows.
     // Re-observe the descriptor and original pathname after the read so a
     // same-sized replacement is not mistaken for the original file.
     #[cfg(test)]
     tests::before_source_open(path);
+    #[cfg(not(windows))]
     let mut file = open_bridge_source(path).map_err(|_| refused())?;
+    #[cfg(windows)]
+    let mut file = {
+        let (current, current_identity) =
+            motionwright_service::open_portable_source(path, limit).map_err(|_| refused())?;
+        if identity != current_identity
+            || !same_regular_source(&before_name, &initial.metadata().map_err(|_| refused())?)
+        {
+            return Err(refused());
+        }
+        current
+    };
     let before_fd = file.metadata().map_err(|_| refused())?;
     if !same_regular_source(&before_name, &before_fd) {
         return Err(refused());
@@ -172,6 +249,16 @@ fn read_regular_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
         .map_err(|_| refused())?;
     let after_fd = file.metadata().map_err(|_| refused())?;
     let after_name = path.symlink_metadata().map_err(|_| refused())?;
+    #[cfg(windows)]
+    {
+        let (current, current_identity) =
+            motionwright_service::open_portable_source(path, limit).map_err(|_| refused())?;
+        if current_identity != identity
+            || !same_regular_source(&after_fd, &current.metadata().map_err(|_| refused())?)
+        {
+            return Err(refused());
+        }
+    }
     if bytes.is_empty()
         || bytes.len() as u64 != before_name.len()
         || bytes.len() as u64 > limit
@@ -287,7 +374,7 @@ fn stop_bridge_group(child: &mut std::process::Child) -> bool {
 }
 
 fn run_bridge(scripts: &Path, bridge: &Path, arguments: &[OsString]) -> Result<(), String> {
-    let (python, _ffprobe) = fixed_runtime()?;
+    let (python, ffprobe) = fixed_runtime()?;
     let stderr_path = scripts.join("original-bridge-stderr.txt");
     let stderr = OpenOptions::new()
         .write(true)
@@ -303,6 +390,7 @@ fn run_bridge(scripts: &Path, bridge: &Path, arguments: &[OsString]) -> Result<(
         .args(arguments)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
+        .env("MOTIONWRIGHT_OTIO_FFPROBE", ffprobe)
         .env("HOME", home)
         .env("TMPDIR", home)
         .env("LANG", "C.UTF-8")
@@ -845,6 +933,36 @@ mod tests {
         assert!(read_regular_bounded(&alias, 64).is_err());
     }
 
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn portable_otio_uses_owner_paths_and_publishes_exclusively() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        #[cfg(windows)]
+        let root = PathBuf::from(root.to_str().unwrap().strip_prefix(r"\\?\").unwrap());
+        fs::create_dir(root.join("Source Folder")).unwrap();
+        let media = root.join("original.mp4");
+        fs::write(&media, b"original media fixture").unwrap();
+        let stage = root.join("prepared bundle");
+        fs::create_dir(&stage).unwrap();
+        fs::write(stage.join("timeline.otio"), b"prepared timeline").unwrap();
+        let occupied = root.join("occupied bundle");
+        fs::create_dir(&occupied).unwrap();
+        let destination = root.join("new bundle");
+
+        assert!(canonical_owner_directory(root.join("Source Folder").to_str().unwrap()).is_ok());
+        assert!(selected_owner_file(media.to_str().unwrap()).is_ok());
+        assert!(new_owner_bundle_destination(destination.to_str().unwrap()).is_ok());
+        assert!(publish_owner_bundle_no_clobber(&stage, &occupied).is_err());
+        assert!(fs::read_dir(&occupied).unwrap().next().is_none());
+        publish_owner_bundle_no_clobber(&stage, &destination).unwrap();
+        assert!(!stage.exists());
+        assert_eq!(
+            fs::read(destination.join("timeline.otio")).unwrap(),
+            b"prepared timeline"
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn portable_otio_publication_never_clobbers_a_racing_directory_or_dangling_symlink() {
@@ -1357,27 +1475,18 @@ fn selected_owner_file(input: &str) -> Result<PathBuf, String> {
         return Err("Choose one absolute, unchanged owner media filename.".into());
     }
     let path = PathBuf::from(input);
-    if !path.is_absolute()
-        || !path.is_file()
-        || path
+    let canonical = canonical_plain_path(&path)?;
+    if !canonical.is_file()
+        || canonical
             .extension()
             .and_then(|ext| ext.to_str())
             .is_none_or(|ext| !ext.eq_ignore_ascii_case("mp4"))
-        || path
-            .symlink_metadata()
-            .map_or(true, |meta| !meta.file_type().is_file())
-        || fs::canonicalize(&path).map_err(|_| refused())? != path
-        || path.ancestors().any(|parent| {
-            parent
-                .symlink_metadata()
-                .is_ok_and(|meta| meta.file_type().is_symlink())
-        })
     {
         return Err(
             "Owner media must be an original, regular, non-symlink absolute MP4 file.".into(),
         );
     }
-    Ok(path)
+    Ok(canonical)
 }
 
 /// The destination must not exist, including a dangling symlink.
@@ -1399,15 +1508,12 @@ fn new_owner_bundle_destination(value: &str) -> Result<PathBuf, String> {
     }
     let path = PathBuf::from(value);
     let parent = path.parent().ok_or_else(refused)?;
-    if !path.is_absolute()
-        || !destination_unclaimed(&path)?
-        || !parent.is_dir()
-        || fs::canonicalize(parent).map_err(|_| refused())? != parent
-        || parent.ancestors().any(|part| {
-            part.symlink_metadata()
-                .is_ok_and(|meta| meta.file_type().is_symlink())
-        })
-    {
+    let canonical_parent = canonical_plain_path(parent)?;
+    #[cfg(windows)]
+    if !windows_plain_components(&path) {
+        return Err(refused());
+    }
+    if path.file_name().is_none() || !canonical_parent.is_dir() || !destination_unclaimed(&path)? {
         return Err(
             "The portable OTIO destination must be a new directory under a canonical owner folder."
                 .into(),
@@ -1416,37 +1522,19 @@ fn new_owner_bundle_destination(value: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Publish only after source, rights, media and live Project revalidation.
-/// RENAME_NOREPLACE is mandatory: checking `exists()` then renaming can
-/// overwrite a foreign empty directory or a symlink during an owner race.
-#[cfg(target_os = "linux")]
+/// Publish the complete verified directory through the storage layer's
+/// exclusive rename, with the Windows canonical spelling at the OS boundary.
 fn publish_owner_bundle_no_clobber(staged: &Path, destination: &Path) -> Result<(), String> {
-    use std::os::unix::ffi::OsStrExt;
-    let from = std::ffi::CString::new(staged.as_os_str().as_bytes()).map_err(|_| refused())?;
-    let to = std::ffi::CString::new(destination.as_os_str().as_bytes()).map_err(|_| refused())?;
-    // SAFETY: NUL-free local paths and the fixed RENAME_NOREPLACE Linux flag.
-    // The kernel performs one atomic no-overwrite rename, including symlinks.
-    let result = unsafe {
-        libc::renameat2(
-            libc::AT_FDCWD,
-            from.as_ptr(),
-            libc::AT_FDCWD,
-            to.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    if result == 0 {
-        Ok(())
-    } else if std::io::Error::last_os_error().kind() == std::io::ErrorKind::AlreadyExists {
-        Err("The OTIO destination was claimed; no original files were replaced.".into())
-    } else {
-        Err("The original OTIO bundle could not be published atomically without overwrite.".into())
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn publish_owner_bundle_no_clobber(_staged: &Path, _destination: &Path) -> Result<(), String> {
-    Err("This installed platform has no approved no-clobber OTIO media exporter.".into())
+    let staged = canonical_plain_path(staged)?;
+    let parent = canonical_plain_path(destination.parent().ok_or_else(refused)?)?;
+    let destination = parent.join(destination.file_name().ok_or_else(refused)?);
+    motionwright_service::publish_bundle_directory(&staged, &destination).map_err(|_| {
+        if matches!(destination_unclaimed(&destination), Ok(false)) {
+            "The OTIO destination was claimed; no original files were replaced.".into()
+        } else {
+            "The original OTIO bundle could not be published atomically without overwrite.".into()
+        }
+    })
 }
 
 /// A first-party, bounded media bundle with real ExternalReference clips.
@@ -1693,7 +1781,7 @@ pub fn export_portable(
     // checks complete. Never replace a racing directory or symlink.
     publish_owner_bundle_no_clobber(&pending, &destination)?;
     Ok(OtioMediaBundleExportResponse {
-        path: destination.display().to_string(),
+        path: request.destination,
         source_project_sha256: sha(&project_bytes),
         media_refs_verified: request.bindings.len(),
         missing_references: project.scenes.len() - request.bindings.len(),
