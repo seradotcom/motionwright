@@ -38,6 +38,7 @@ import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { invoke } from "@tauri-apps/api/core";
 import { assertWorkflowResponse, readWorkflowPayload, workflowCommand, workflowDiagnostic, workflowGrantToken, WorkflowNotDispatchedError } from "./workflowActionDraft";
 import { openProjectFromLibrary } from "./projectLibrary";
+import { checkedBundlePlan } from "./projectBundleImport";
 import { graphUuid } from "./semanticGraph";
 import {
   importFileWithRetention, recoverFileImportWithRetention,
@@ -711,15 +712,24 @@ function requireBundleFingerprint(value: unknown): asserts value is string {
   }
 }
 
+export type PortableProjectSourceKind = "folder" | "archive";
+
+export async function choosePortableProjectSource(kind: PortableProjectSourceKind): Promise<string | null> {
+  if (!isTauri()) throw new Error("Choosing a portable project requires Motionwright desktop.");
+  const path = await invoke<unknown>("choose_portable_project_source", { kind });
+  if (path === null) return null;
+  if (typeof path !== "string" || !path || path !== path.trim()
+      || /[\u0000-\u001f\u007f-\u009f]/.test(path)) {
+    throw new Error("The native picker returned an invalid portable project path.");
+  }
+  return path;
+}
+
 export async function inspectProjectBundle(path: string): Promise<PortableBundlePlan> {
   if (!isTauri()) {
     throw new Error("Portable project bundles require the Motionwright desktop runtime.");
   }
-  const plan = await invoke<PortableBundlePlan>("inspect_project_bundle", {
-    request: { path },
-  });
-  requireBundleFingerprint(plan?.fingerprint);
-  return plan;
+  return checkedBundlePlan(await invoke<unknown>("inspect_project_bundle", { request: { path } }));
 }
 
 export async function importProjectBundle(path: string, fingerprint: string): Promise<Project> {

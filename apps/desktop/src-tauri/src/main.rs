@@ -4154,6 +4154,48 @@ async fn preview_otio_media_cut(
     .map_err(|_| "The original OTIO inspection worker did not finish cleanly.".to_string())?
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PortableProjectSource {
+    Folder,
+    Archive,
+}
+
+#[tauri::command]
+async fn choose_portable_project_source(
+    mut owner: desktop_owner::OwnerInvocation,
+    app: tauri::AppHandle,
+    kind: PortableProjectSource,
+) -> Result<Option<String>, String> {
+    let selected = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        let dialog = app.dialog().file();
+        match kind {
+            PortableProjectSource::Folder => dialog
+                .set_title("Choose a Motionwright project folder")
+                .blocking_pick_folder(),
+            PortableProjectSource::Archive => dialog
+                .set_title("Choose a Sequencewright archive")
+                .add_filter("Sequencewright archives", &["json"])
+                .blocking_pick_file(),
+        }
+    })
+    .await
+    .map_err(|_| "The native portable project picker failed.".to_string())?;
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    owner.begin_phase()?;
+    let path = selected
+        .into_path()
+        .map_err(|_| "Choose a local portable project source.".to_string())?;
+    let path = path
+        .to_str()
+        .filter(|path| path.trim() == *path && !path.chars().any(char::is_control))
+        .ok_or("The selected portable project path cannot be represented safely.")?;
+    absolute_bundle_path(path)?;
+    Ok(Some(path.to_owned()))
+}
+
 #[tauri::command]
 fn inspect_project_bundle(
     _owner: desktop_owner::OwnerInvocation,
@@ -4930,6 +4972,7 @@ fn main() {
             export_portable_otio_media_bundle,
             choose_otio_media_bundle_folder,
             preview_otio_media_cut,
+            choose_portable_project_source,
             inspect_project_bundle,
             recover_project_bundle_import,
             import_project_bundle,

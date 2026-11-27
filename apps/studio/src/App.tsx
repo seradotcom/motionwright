@@ -85,7 +85,9 @@ import {
   importProjectBundle,
   importVoiceFile,
   recoverOriginalFileImport,
+  choosePortableProjectSource,
   inspectProjectBundle,
+  type PortableProjectSourceKind,
   renderMotionCanvasWindow,
   savedNativeWindowFilmOptions,
 } from "./api";
@@ -944,9 +946,27 @@ function DeliverView({
   } | null>(null);
   const bundlePlan = bundleInspection && bundleInspection.path === importPath.trim()
     ? bundleInspection.plan : null;
-  const [portableBusy, setPortableBusy] = useState<"export" | "inspect" | "import" | null>(null);
+  const [portableBusy, setPortableBusy] = useState<"export" | "inspect" | "import" | "choose" | null>(null);
   const [portableStatus, setPortableStatus] = useState<string | null>(null);
   const [portableError, setPortableError] = useState<string | null>(null);
+
+  const chooseImportSource = async (kind: PortableProjectSourceKind) => {
+    if (!desktopMode || portableBusy !== null) return;
+    setPortableBusy("choose");
+    setPortableError(null);
+    try {
+      const path = await choosePortableProjectSource(kind);
+      if (path !== null && path !== importPath.trim()) {
+        setImportPath(path);
+        setBundleInspection(null);
+        setPortableStatus(null);
+      }
+    } catch (reason) {
+      setPortableError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setPortableBusy(null);
+    }
+  };
 
   const inspectBundle = async () => {
     const path = importPath.trim();
@@ -1125,7 +1145,13 @@ function DeliverView({
               }}
             />
           </label>
-          <div className="portable-actions">
+          <div className="portable-actions portable-source-actions">
+            {desktopMode && <>
+              <button type="button" className="button" disabled={portableBusy !== null}
+                onClick={() => void chooseImportSource("folder")}>Choose project folder</button>
+              <button type="button" className="button" disabled={portableBusy !== null}
+                onClick={() => void chooseImportSource("archive")}>Choose Sequencewright archive</button>
+            </>}
             <button
               type="button"
               className="button"
@@ -2064,6 +2090,7 @@ export default function App() {
       creationLimited={creationLimited} creationError={creationError}
       onRecoverCreation={recoverLibraryCreation} onDiscardCreation={discardLibraryCreation}
       onRefreshCreations={refreshCreations}
+      onChooseBundleSource={choosePortableProjectSource}
       onInspectBundle={inspectProjectBundle} onImportBundle={importPortableBundle}
       bundleCopies={bundleCopies} bundleLimited={bundleLimited} bundleError={bundleError}
       onRecoverBundle={recoverLibraryBundle} onDiscardBundle={discardLibraryBundle}

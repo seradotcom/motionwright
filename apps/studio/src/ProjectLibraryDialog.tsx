@@ -11,6 +11,7 @@ import {
   type ProjectTemplate,
 } from "./projectLibrary";
 import type { Project, PortableBundlePlan } from "./types";
+import type { PortableProjectSourceKind } from "./api";
 import "./project-library.css";
 
 export interface ProjectLibraryDialogProps {
@@ -30,6 +31,7 @@ export interface ProjectLibraryDialogProps {
   onDiscardCreation?: (copy: ProjectCreationCopy) => void;
   onRefreshCreations?: () => void;
   notice?: string | null;
+  onChooseBundleSource?: (kind: PortableProjectSourceKind) => Promise<string | null>;
   onInspectBundle?: (path: string) => Promise<PortableBundlePlan>;
   onImportBundle?: (path: string, plan: PortableBundlePlan) => Promise<Pick<Project, "id">>;
   bundleCopies?: BundleImportCopy[];
@@ -63,7 +65,7 @@ export function ProjectLibraryDialog({
   open, currentProjectId, onClose, onList, onOpen, onBrowse, onCreate, notice,
   creationCopies = [], creationLimited = false, creationError = null,
   onRecoverCreation, onDiscardCreation, onRefreshCreations,
-  onInspectBundle, onImportBundle, bundleCopies = [], bundleLimited = false, bundleError = null,
+  onChooseBundleSource, onInspectBundle, onImportBundle, bundleCopies = [], bundleLimited = false, bundleError = null,
   onRecoverBundle, onDiscardBundle, onRefreshBundles,
 }: ProjectLibraryDialogProps) {
   const titleId = useId();
@@ -246,20 +248,30 @@ export function ProjectLibraryDialog({
     if (accepted && current()) callbacks.current.onClose();
   }
 
-  async function bundleOperation(kind: "inspect" | "import" | "recover", copy?: BundleImportCopy) {
+  async function bundleOperation(kind: "inspect" | "import" | "recover" | PortableProjectSourceKind, copy?: BundleImportCopy) {
     if (operationRef.current) return;
     const path = bundlePath.trim();
+    const choosing = kind === "folder" || kind === "archive";
+    if (choosing && !onChooseBundleSource) return;
     if (kind === "inspect" && (!path || !onInspectBundle)) return;
     if (kind === "import" && (!bundlePlan || !onImportBundle || unresolvedBundle)) return;
     if (kind === "recover" && (!copy?.value || !onRecoverBundle)) return;
     const startedSession = session.current, request = ++operationRequest.current;
-    const operation: Opening = { kind: "bundle", title: kind === "inspect" ? "Inspecting the portable project"
-      : kind === "import" ? "Importing the portable project" : "Checking the original import" };
+    const titles = { folder: "Choosing a project folder", archive: "Choosing a Sequencewright archive",
+      inspect: "Inspecting the portable project", import: "Importing the portable project",
+      recover: "Checking the original import" };
+    const operation: Opening = { kind: "bundle", title: titles[kind] };
     operationRef.current = operation; setOpening(operation); setOperationError(null); setCloseNotice(null);
     const current = () => visibleRef.current && session.current === startedSession && operationRequest.current === request;
     let accepted = false;
     try {
-      if (kind === "inspect") {
+      if (choosing) {
+        const selected = await onChooseBundleSource!(kind);
+        if (current() && selected !== null && selected !== path) {
+          setBundlePath(selected);
+          setInspectedBundle(null);
+        }
+      } else if (kind === "inspect") {
         setInspectedBundle(null);
         const plan = checkedBundlePlan(await onInspectBundle!(path));
         if (current()) setInspectedBundle({ path, plan });
@@ -394,6 +406,12 @@ export function ProjectLibraryDialog({
           <label htmlFor={createId + "-bundle"}>Project folder or archive path</label>
           <input id={createId + "-bundle"} value={bundlePath} autoComplete="off"
             disabled={busy} onChange={event => { setBundlePath(event.target.value); setInspectedBundle(null); }} />
+          {onChooseBundleSource && <div className="portable-actions">
+            <button type="button" className="project-library-button" disabled={busy}
+              onClick={() => void bundleOperation("folder")}>Choose project folder</button>
+            <button type="button" className="project-library-button" disabled={busy}
+              onClick={() => void bundleOperation("archive")}>Choose Sequencewright archive</button>
+          </div>}
           <button type="button" className="project-library-button" disabled={busy || !bundlePath.trim() || unresolvedBundle}
             onClick={() => void bundleOperation("inspect")}>Inspect portable project</button>
           {bundlePlan && <div role="status" aria-label="Portable project inspection">

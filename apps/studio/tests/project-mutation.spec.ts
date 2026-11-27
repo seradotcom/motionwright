@@ -207,12 +207,18 @@ test("a pending portable restore cannot race source edits or publish into anothe
     host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
       state.calls.push(command);
       if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
-        return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(boot));
+        return window.__SYNTHETIC_PROJECT_READ__(command, args, {...boot, project: structuredClone(current)});
+      }
+      if (command === "choose_portable_project_source") {
+        const kind = (args as { kind?: string } | undefined)?.kind;
+        if (kind === "archive") return "/synthetic-fixture/Sequencewright copy.json";
+        if (kind === "folder") return "/synthetic-fixture/portable.motionwright";
+        throw new Error("Unexpected portable source kind");
       }
       if (command === "inspect_project_bundle") return {
         project_id: "01900000-0000-7000-8000-000000000021",
-        title: "Portable restored project", source_generation: "old-import-generation",
-        revision: "9", event_count: 9, blob_count: 1,
+        title: "Portable restored project", source_generation: "01900000-0000-7000-8000-000000000023",
+        revision: "0", event_count: 9, blob_count: 1,
         total_blob_bytes: "1024", rotates_generation: true, fingerprint: "a".repeat(64),
       };
       if (command === "issue_effect_grant") return { token: "synthetic-no-native-authority" };
@@ -235,8 +241,21 @@ test("a pending portable restore cannot race source edits or publish into anothe
   }, initial);
 
   await page.goto("/");
+  await page.getByRole("button", { name: "Open project library", exact: true }).click();
+  const library = page.getByRole("dialog", { name: /Project library/i });
+  await library.getByRole("button", { name: "Choose Sequencewright archive", exact: true }).click();
+  await expect(library.getByLabel("Project folder or archive path"))
+    .toHaveValue("/synthetic-fixture/Sequencewright copy.json");
+  await expect(library.getByRole("button", { name: "Import inspected project" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(library).toBeHidden();
   await page.getByRole("button", { name: "Deliver", exact: true }).click();
-  await page.getByLabel("Portable import path").fill("/synthetic-fixture/portable.motionwright");
+  await page.getByRole("button", { name: "Choose project folder", exact: true }).click();
+  await expect(page.getByLabel("Portable import path")).toHaveValue("/synthetic-fixture/portable.motionwright");
+  expect(await page.evaluate(() => (window as unknown as {
+    __RESTORE_FIXTURE__: {calls: string[]};
+  }).__RESTORE_FIXTURE__.calls.filter(call => /^(inspect_project_bundle|issue_effect_grant|import_project_bundle)$/.test(call))))
+    .toEqual([]);
   await page.getByRole("button", { name: "Inspect bundle", exact: true }).click();
   await expect(page.getByLabel("Portable bundle preflight")).toContainText("Portable restored project");
   await page.getByRole("button", { name: "Import verified bundle", exact: true }).click();
@@ -831,14 +850,15 @@ test("a delayed initial project read cannot roll back a project already publishe
 // These cases exercise the UI contract only. They do not certify files,
 // Store admission, native rendering, installed Tauri or a real effect grant.
 for (const invalid of [
-  { label: "missing", fingerprint: null },
-  { label: "uppercase", fingerprint: "A".repeat(64) },
-  { label: "line-terminated", fingerprint: "a".repeat(64) + "\n" },
+  { label: "missing fingerprint", fingerprint: null },
+  { label: "uppercase fingerprint", fingerprint: "A".repeat(64) },
+  { label: "line-terminated fingerprint", fingerprint: "a".repeat(64) + "\n" },
+  { label: "invalid source generation", fingerprint: "a".repeat(64), invalidGeneration: true },
 ] as const) {
-  test("portable inspection rejects " + invalid.label + " fingerprints before any import grant", async ({ page }) => {
+  test("portable inspection rejects " + invalid.label + " before any import grant", async ({ page }) => {
     const initial = { ...fixtureBootstrap, native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" as const } };
     await seedSyntheticProjectSelection(page, initial.project.id);
-    await page.addInitScript(({ boot, fingerprint }) => {
+    await page.addInitScript(({ boot, fingerprint, invalidGeneration }) => {
       const state = { evidenceScope: "synthetic_ui_contract_only", calls: [] as string[] };
       const host = window as unknown as {
         __BUNDLE_INVALID_INSPECTION__: typeof state;
@@ -852,13 +872,13 @@ for (const invalid of [
         }
         if (command === "inspect_project_bundle") return {
           project_id: "01900000-0000-7000-8000-000000000051",
-          title: "Synthetic incomplete inspection", source_generation: "synthetic-old-generation",
+          title: "Synthetic incomplete inspection", source_generation: invalidGeneration ? "wrong-generation" : "01900000-0000-7000-8000-000000000052",
           revision: "0", event_count: 0, blob_count: 0, total_blob_bytes: "0", rotates_generation: true,
           ...(fingerprint === null ? {} : { fingerprint }),
         };
         throw new Error("Unexpected synthetic inspection command: " + command);
       } };
-    }, { boot: initial, fingerprint: invalid.fingerprint });
+    }, { boot: initial, fingerprint: invalid.fingerprint, invalidGeneration: "invalidGeneration" in invalid });
     await page.goto("/");
     await page.getByRole("button", { name: "Deliver", exact: true }).click();
     await page.getByLabel("Portable import path").fill("/synthetic-fixture/incomplete.motionwright");
@@ -882,10 +902,11 @@ test("a late portable inspection cannot replace the new view's inspected path an
     const pathA = "/synthetic-fixture/first.motionwright";
     const pathB = "/synthetic-fixture/second.motionwright";
     const fingerprintA = "a".repeat(64), fingerprintB = "b".repeat(64);
+    let current = structuredClone(boot.project);
     let completeFirst: ((value: unknown) => void) | null = null;
     const plan = (title: string, fingerprint: string) => ({
       project_id: "01900000-0000-7000-8000-000000000061", title,
-      source_generation: "synthetic-original-generation", revision: "0",
+      source_generation: "01900000-0000-7000-8000-000000000063", revision: "0",
       event_count: 0, blob_count: 0, total_blob_bytes: "0", rotates_generation: true, fingerprint,
     });
     const state = {
@@ -909,7 +930,7 @@ test("a late portable inspection cannot replace the new view's inspected path an
     host.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
       state.calls.push(command);
       if (command === "bootstrap" || command === "project_projection_head" || command === "open_project") {
-        return window.__SYNTHETIC_PROJECT_READ__(command, args, structuredClone(boot));
+        return window.__SYNTHETIC_PROJECT_READ__(command, args, {...boot, project: structuredClone(current)});
       }
       if (command === "inspect_project_bundle") {
         if (args?.request?.path === pathA) return new Promise(resolve => { completeFirst = resolve; });
@@ -922,10 +943,11 @@ test("a late portable inspection cannot replace the new view's inspected path an
           throw new Error("The second view lost its own inspected input");
         }
         state.imports.push({ path: args.request.path, fingerprint: args.request.fingerprint });
-        return { ...structuredClone(boot.project),
+        current = { ...current,
           id: "01900000-0000-7000-8000-000000000061",
           generation: "01900000-0000-7000-8000-000000000062", revision: 0,
           title: "Second inspected bundle" };
+        return structuredClone(current);
       }
       throw new Error("Unexpected synthetic inspection command: " + command);
     } };
