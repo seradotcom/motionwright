@@ -54,6 +54,7 @@ class PortabilityContractTests(unittest.TestCase):
             "inspect_project_bundle": ".inspect_project_bundle_with_fingerprint(",
             "recover_project_bundle_import": ".recover_project_bundle_import(",
             "import_project_bundle": ".import_project_bundle_inspected(",
+            "bootstrap": "project_library::bootstrap_project(",
             "list_projects": "project_library::list_projects(",
             "open_project": "project_library::open_project(",
             "create_project": "project_library::create_project(",

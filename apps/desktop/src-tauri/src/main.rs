@@ -481,15 +481,19 @@ struct BundlePlanResponse {
 }
 
 #[tauri::command]
-fn bootstrap(
-    _owner: desktop_owner::OwnerInvocation,
+async fn bootstrap(
+    mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: Option<BootstrapRequest>,
 ) -> Result<BootstrapResponse, String> {
-    // The saved UI selection is a read hint, never a grant or permission to
-    // create/replace a document. An unavailable id must not choose a fallback.
+    let service = state.service.clone();
+    // The saved selection only identifies the project to read.
     let (project, mut project_selection) =
-        project_library::bootstrap_project(&state.service, request.unwrap_or_default());
+        desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+            project_library::bootstrap_project(&service, request.unwrap_or_default())
+        })
+        .await
+        .map_err(|error| error.to_string())?;
     if let BootstrapProjectSelection::Unavailable { message, .. } = &mut project_selection {
         *message = sanitized(&*message);
     }
