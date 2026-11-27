@@ -63,7 +63,7 @@ def verify_recipient():
     return recipient
 
 
-def admit_candidate(bundle):
+def admit_candidate(bundle, retained_package):
     env = os.environ
     source_sha = env["GITHUB_SHA"]
     run_id = env["GITHUB_RUN_ID"]
@@ -95,6 +95,21 @@ def admit_candidate(bundle):
     args = SimpleNamespace(repo=installed.ROOT, semwright_checkout=native.SEMWRIGHT,
                            source_sha=source_sha, semwright_sha=native.PIN, namespace=namespace,
                            artifact=artifact, candidate_receipt=receipt)
+    if retained_package is not None:
+        installed.need(retained_package == runner / "aac31-retained-package.json",
+                       "AAC31_RETAINED_PACKAGE_PATH")
+        retained = installed.read_json(retained_package, 4096)
+        candidate_sha = retained["source_sha"]
+        installed.need(re.fullmatch(r"[a-f0-9]{40}", candidate_sha)
+                       and retained["render_step"] == "skipped", "AAC31_RETAINED_PACKAGE_IDENTITY")
+        changed = source.git(args.repo, "diff", "--name-only", "-z", candidate_sha, source_sha, "--")
+        installed.need(set(changed.split(b"\0")) <= {
+            b"", b".github/workflows/package-candidate.yml", b"tooling/linux_installed_aac31_ci.py",
+            b"tooling/native_host_installed_shared_state.py",
+        }, "AAC31_RETAINED_PRODUCT_SOURCE_CHANGED")
+        inputs["candidate_origin"] = retained
+    else:
+        inputs["candidate_origin"] = {"source_sha": source_sha, "run_id": run_id}
     native.exact_inputs()
     inputs["source"] = installed.source_inputs(args)
     return args, inputs
@@ -104,7 +119,9 @@ def observe(args, inputs, evidence, owner, profile, database, apparmor, manim_in
     installed.publish(evidence / "candidate-inputs.json", inputs)
     installed.publish(evidence / "sandbox-profile.json", installed.ci_verify_sdk_profile_sidecar(apparmor))
     with installed.supervise_own_processes():
-        original = installed.extract_installed_bundle(args, evidence=evidence)
+        original = installed.extract_installed_bundle(
+            args, evidence=evidence, candidate_source_sha=inputs["candidate_origin"]["source_sha"],
+        )
     env = dict(os.environ)
     owner_paths, owner_env = native.native_owner_layout(owner, hybrid=True)
     wave_path = evidence / "aac31-stereo.wav"
@@ -149,12 +166,13 @@ def observe(args, inputs, evidence, owner, profile, database, apparmor, manim_in
 def main():
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--bundle", type=Path, required=True)
+    parser.add_argument("--retained-package", type=Path)
     parser.add_argument("--sandbox-profile", type=Path, required=True)
     parser.add_argument("--manim-inventory", type=Path, required=True)
     arguments = parser.parse_args()
     os.umask(0o077)
     recipient = verify_recipient()
-    args, inputs = admit_candidate(arguments.bundle)
+    args, inputs = admit_candidate(arguments.bundle, arguments.retained_package)
     root = args.namespace
     root.mkdir(mode=0o700)
     evidence, owner, profile = root / "evidence", root / "o", root / "gui"
@@ -167,7 +185,9 @@ def main():
     context = {"source_sha": args.source_sha, "semwright_sha": args.semwright_sha,
                "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": "1"}
     terminal = {**context, "schema": "motionwright.ci.installed-aac31-custody/1",
-                "observation": "UNKNOWN", "automatic_retry": False, "product_acceptance": False}
+                "observation": "UNKNOWN", "automatic_retry": False, "product_acceptance": False,
+                "candidate_source_sha": inputs["candidate_origin"]["source_sha"],
+                "candidate_run_id": inputs["candidate_origin"]["run_id"]}
     installed.publish(evidence / "intent.json",
                       {**context, "render_dispatch_limit": 1, "automatic_retry": False,
                        "candidate_sha256": inputs["artifact"]["sha256"]})

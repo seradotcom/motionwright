@@ -26,6 +26,10 @@ on:
         required: false
         type: boolean
         default: false
+      installed_aac31_bundle_run:
+        description: Reuse the successful Linux bundle from a run whose installed render never started
+        required: false
+        type: string
       evidence_recipient_spki:
         description: Approved RSA-3072 public SPKI DER in base64 for installed Native originals
         required: false
@@ -1538,7 +1542,7 @@ jobs:
           retention-days: 30
 
   linux:
-    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use' && inputs.verification_scope != 'macos_bundle')
+    if: github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'windows_contracts' && inputs.verification_scope != 'windows_installed' && inputs.verification_scope != 'nsis_source' && inputs.verification_scope != 'distribution_source' && inputs.verification_scope != 'nsis_compile' && inputs.verification_scope != 'nsis_lifecycle' && inputs.verification_scope != 'linux_first_use_source' && inputs.verification_scope != 'linux_first_use' && inputs.verification_scope != 'macos_bundle' && (!inputs.installed_aac31 || inputs.installed_aac31_bundle_run == ''))
     needs: receipt-policy
     runs-on: ubuntu-24.04
     env:
@@ -4341,11 +4345,13 @@ jobs:
 
   linux-installed-aac31:
     if: >-
-      github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle'
+      !cancelled() && github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'linux_bundle'
+      && needs.receipt-policy.result == 'success'
+      && (needs.linux.result == 'success' || (inputs.installed_aac31_bundle_run != '' && needs.linux.result == 'skipped'))
       && inputs.installed_aac31 && github.run_attempt == 1
       && github.repository == 'seradotcom/motionwright'
       && github.ref == 'refs/heads/integrate/phase1-final-composition-20261027'
-    needs: linux
+    needs: [receipt-policy, linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     permissions:
@@ -4383,13 +4389,69 @@ jobs:
           ref: ${{ steps.aac31-sdk.outputs.revision }}
           path: _semwright
           persist-credentials: false
+      - name: Admit a retained candidate whose installed render never started
+        if: inputs.installed_aac31_bundle_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIOR_RUN: ${{ inputs.installed_aac31_bundle_run }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$PRIOR_RUN" =~ ^[1-9][0-9]*$ ]]
+          /usr/bin/python3 -B -E -s - <<'PY'
+          import hashlib, io, json, os, re, shutil, subprocess, zipfile
+          from pathlib import Path, PurePosixPath
+          run_id = os.environ["PRIOR_RUN"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          origin = f"repos/{repo}/actions/runs/{run_id}"
+          def read(path):
+              return json.loads(subprocess.check_output(["gh", "api", path], timeout=30))
+          run = read(origin)
+          assert str(run["id"]) == run_id and run["head_repository"]["full_name"] == repo
+          assert run["event"] == "workflow_dispatch" and run["path"] == ".github/workflows/package-candidate.yml"
+          assert run["head_branch"] == os.environ["GITHUB_REF_NAME"]
+          assert run["status"] == "completed" and run["run_attempt"] == 1 and run["conclusion"] == "failure"
+          jobs = read(origin + "/attempts/1/jobs?per_page=100")["jobs"]
+          [linux] = [job for job in jobs if job["name"] == "linux"]
+          [installed] = [job for job in jobs if job["name"] == "linux-installed-aac31"]
+          [render] = [step for step in installed["steps"]
+                      if step["name"] == "Render once and verify playback and cold reopen of the same MP4"]
+          assert linux["conclusion"] == "success" and render["conclusion"] == "skipped"
+          [artifact] = [item for item in read(origin + "/artifacts")["artifacts"]
+                        if item["name"] == "motionwright-linux-candidate"]
+          assert not artifact["expired"] and re.fullmatch("sha256:[a-f0-9]{64}", artifact["digest"])
+          sha = run["head_sha"]
+          assert re.fullmatch("[a-f0-9]{40}", sha)
+          subprocess.run(["git", "fetch", "--no-tags", "--depth=1", "origin", sha], check=True, timeout=120)
+          size = artifact["size_in_bytes"]
+          assert 0 < size <= 512 * 1024**2 and int(artifact["id"]) > 0
+          raw = subprocess.check_output(
+              ["gh", "api", f"repos/{repo}/actions/artifacts/{artifact['id']}/zip"], timeout=300,
+          )
+          assert len(raw) == size and "sha256:" + hashlib.sha256(raw).hexdigest() == artifact["digest"]
+          target = Path(os.environ["RUNNER_TEMP"]) / "aac31-candidate"
+          target.mkdir(mode=0o700)
+          with zipfile.ZipFile(io.BytesIO(raw)) as original:
+              for pattern, bound in ((r"Motionwright[-_. A-Za-z0-9]+[.]AppImage", 512 * 1024**2),
+                                     (r"linux-candidate[.]json", 4 * 1024**2)):
+                  [member] = [entry for entry in original.infolist()
+                              if re.fullmatch(pattern, PurePosixPath(entry.filename).name)]
+                  assert not member.is_dir() and 0 < member.file_size <= bound
+                  with original.open(member) as body, (target / PurePosixPath(member.filename).name).open("xb") as destination:
+                      shutil.copyfileobj(body, destination)
+          with (Path(os.environ["RUNNER_TEMP"]) / "aac31-retained-package.json").open("x", encoding="ascii") as stream:
+              json.dump({"run_id": run_id, "source_sha": sha, "artifact_id": str(artifact["id"]),
+                         "artifact_zip_digest": artifact["digest"], "render_step": "skipped"}, stream)
+          PY
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: inputs.installed_aac31_bundle_run == ''
         with:
           name: motionwright-linux-candidate
           path: ${{ runner.temp }}/aac31-candidate
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
         with:
           toolchain: 1.98.1
+          components: rustfmt, clippy, rust-src
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '22.22.0'
@@ -4466,6 +4528,8 @@ jobs:
             /usr/bin/python3 -B tooling/native_manim_runtime_inventory.py \
               --provision "$provision" --output "$provision/runtime-inventory.json"
       - name: Build the locked Native providers and StudioService source fixture
+        env:
+          RUSTUP_TOOLCHAIN: '1.98.1'
         run: |
           set -euo pipefail
           cargo test --locked -p motionwright-native --example native-mlt-sequence-e2e \
@@ -4491,10 +4555,14 @@ jobs:
           umask 077
           chmod -R go-rwx "$RUNNER_TEMP/aac31-candidate"
           find "$RUNNER_TEMP/aac31-candidate" -type f -name '*.AppImage' -exec chmod u+x {} +
+          retained=()
+          if [[ -f "$RUNNER_TEMP/aac31-retained-package.json" ]]; then
+            retained=(--retained-package "$RUNNER_TEMP/aac31-retained-package.json")
+          fi
           xvfb-run -a -s "-screen 0 1440x940x24" dbus-run-session -- \
             "$RUNNER_TEMP/aac31-venv/bin/python" -B -E -s tooling/linux_installed_aac31_ci.py \
             --bundle "$RUNNER_TEMP/aac31-candidate" --sandbox-profile "$RUNNER_TEMP/aac31-sandbox-profile" \
-            --manim-inventory "$RUNNER_TEMP/aac31-manim-provision/runtime-inventory.json"
+            --manim-inventory "$RUNNER_TEMP/aac31-manim-provision/runtime-inventory.json" "${retained[@]}"
       - name: Retain only the bounded status and encrypted originals
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

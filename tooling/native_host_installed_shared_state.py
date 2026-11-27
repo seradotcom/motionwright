@@ -202,14 +202,15 @@ def source_inputs(args):
     return {"motionwright": own, "semwright": sdk, "storage_cohort": cohort}
 
 
-def extract_installed_bundle(args, *, evidence=None):
+def extract_installed_bundle(args, *, evidence=None, candidate_source_sha=None):
     """Observe the canonical AppImage extraction once in a fresh private directory."""
     need(args.artifact.is_absolute() and args.candidate_receipt.is_absolute(),
          "ABSOLUTE_CANDIDATE_INPUTS_REQUIRED")
     artifact_before = source.regular_file(args.artifact, MAX_INPUT_BYTES)
     receipt_before = source.regular_file(args.candidate_receipt, 4 * 1024 * 1024)
     verified = candidate.verify_installer(read_json(args.candidate_receipt), "appimage", args.artifact)
-    need(verified["candidate"]["source_revision"] == args.source_sha
+    expected_source = args.source_sha if candidate_source_sha is None else candidate_source_sha
+    need(verified["candidate"]["source_revision"] == expected_source
          and verified["candidate"]["semwright_revision"] == args.semwright_sha,
          "CANDIDATE_RECEIPT_SOURCE")
     need(os.access(args.artifact, os.X_OK), "APPIMAGE_NOT_EXECUTABLE")
