@@ -1,6 +1,7 @@
 /** Source-bound, non-executable OTIO review contract. The Python bridge
  * verifies external media separately; JSON in Studio is only a proposal. */
-import type { Project, RationalTime } from "./types";
+import type { OtioOriginalMediaExportBinding } from "./api";
+import type { Asset, Project, RationalTime, Scene } from "./types";
 
 export type OtioNativeCut =
   | { type: "move_scene"; scene_id: string; to_index: number }
@@ -27,6 +28,25 @@ export interface OtioOwnerCutReview {
   acknowledges_absolute_audio_marker_positions: boolean;
   confirms_single_revision_change: true;
 }
+export function emptyOtioMediaBinding(sceneId: string): OtioOriginalMediaExportBinding {
+  return {scene_id: sceneId, asset_id: "", source_kind: "project_cas", source_start_frame: 0};
+}
+
+export function reconcileOtioMediaBindings(
+  scenes: readonly Pick<Scene, "id">[],
+  videoAssets: readonly Pick<Asset, "id">[],
+  previous: readonly OtioOriginalMediaExportBinding[],
+): OtioOriginalMediaExportBinding[] {
+  const available = previous
+    .filter(binding => scenes.some(scene => scene.id === binding.scene_id))
+    .map(binding => {
+      if (!binding.asset_id || videoAssets.some(asset => asset.id === binding.asset_id)) return binding;
+      return {...emptyOtioMediaBinding(binding.scene_id), source_kind: binding.source_kind};
+    });
+  if (available.length || !scenes[0]) return available;
+  return [emptyOtioMediaBinding(scenes[0].id)];
+}
+
 const FIDELITY: ReadonlyArray<readonly [string, string, string]> = [
   ["scene_order","editable_otio","bounded_proposal_only"],
   ["scene_duration","editable_otio","bounded_frame_exact_end_trim_only"],

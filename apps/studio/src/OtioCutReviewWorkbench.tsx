@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRightLeft, FileCheck2, ShieldAlert } from "lucide-react";
 import type { Change, Project } from "./types";
 import {
@@ -6,7 +6,8 @@ import {
   type OtioOriginalMediaExportBinding,
 } from "./api";
 import {
-  inspectOtioCutPreview, readOtioCutProposalFile, otioHasAbsoluteAnchors,
+  emptyOtioMediaBinding, inspectOtioCutPreview, readOtioCutProposalFile,
+  otioHasAbsoluteAnchors, reconcileOtioMediaBindings,
   type OtioEditPreview, type OtioOwnerCutReview,
 } from "./otioCutReview";
 
@@ -42,7 +43,7 @@ export default function OtioCutReviewWorkbench({
   const [exportingBundle,setExportingBundle]=useState(false);
   const [exportAttempted,setExportAttempted]=useState(false);
   const [exportBindings,setExportBindings]=useState<OtioOriginalMediaExportBinding[]>(()=>project.scenes.length
-    ?[{scene_id:project.scenes[0].id,asset_id:"",source_kind:"project_cas",source_start_frame:0}]
+    ?[emptyOtioMediaBinding(project.scenes[0].id)]
     :[]);
   const fileAttempt=useRef(0);
   const inspectedSelections=useRef(new Set<string>());
@@ -60,8 +61,11 @@ export default function OtioCutReviewWorkbench({
     setExportingBundle(false);
     setExportAttempted(false);setExportRights(false);
   },[scope]);
-  const videoAssets=project.assets.filter(asset=>
-    asset.media_type==="video/mp4"&&/^[0-9a-f]{64}$/.test(asset.content_sha256??""));
+  const videoAssets=useMemo(()=>project.assets.filter(asset=>
+    asset.media_type==="video/mp4"&&/^[0-9a-f]{64}$/.test(asset.content_sha256??"")),[project.assets]);
+  useEffect(()=>{
+    setExportBindings(previous=>reconcileOtioMediaBindings(project.scenes,videoAssets,previous));
+  },[project.scenes,videoAssets]);
   const updateExportBinding=(index:number,change:Partial<OtioOriginalMediaExportBinding>)=>{
     setExportRights(false);
     setExportBindings(previous=>previous.map((binding,position)=>
@@ -295,9 +299,10 @@ export default function OtioCutReviewWorkbench({
         className="button" disabled={busy||exportingBundle||bridgeInspecting}
         onClick={()=>{
           const next=project.scenes.find(scene=>!exportBindings.some(binding=>binding.scene_id===scene.id));
-          if(next){setExportRights(false);setExportBindings(current=>[...current,{
-            scene_id:next.id,asset_id:"",source_kind:"project_cas",source_start_frame:0,
-          }]);}
+          if(next){
+            setExportRights(false);
+            setExportBindings(current=>[...current,emptyOtioMediaBinding(next.id)]);
+          }
         }}>Bind another original scene</button>}
       <label className="otio-cut-check">
         <input type="checkbox" checked={exportRights}
@@ -318,7 +323,8 @@ export default function OtioCutReviewWorkbench({
           ||!exportDestination.trim()||!exportReviewer.trim()
           ||!mediaOwner.trim()||!mediaLicense.trim()||videoAssets.length===0
           ||exportBindings.length===0||exportBindings.some(binding=>
-            !binding.scene_id||!binding.asset_id
+            !project.scenes.some(scene=>scene.id===binding.scene_id)
+            ||!videoAssets.some(asset=>asset.id===binding.asset_id)
             ||(binding.source_kind==="project_cas" ? binding.source_path!==undefined : !binding.source_path?.trim()))}
         onClick={()=>void exportOriginalMediaBundle()}>
         {exportingBundle?"Verifying and exporting original media…":"Export original media-bound OTIO bundle"}

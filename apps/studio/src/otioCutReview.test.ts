@@ -2,8 +2,31 @@ import {describe,expect,it} from "vitest";
 import {createElement} from "react";
 import {renderToStaticMarkup} from "react-dom/server";
 import OtioCutReviewWorkbench from "./OtioCutReviewWorkbench";
-import {inspectOtioCutPreview,otioHasAbsoluteAnchors,readOtioCutProposalFile} from "./otioCutReview";
+import {
+  inspectOtioCutPreview, otioHasAbsoluteAnchors, readOtioCutProposalFile,
+  reconcileOtioMediaBindings,
+} from "./otioCutReview";
 import {reviewableOtioProject,sampleOtioPreview} from "./otioCutReviewTestFixtures";
+
+describe("OTIO original media selection follows the saved project", () => {
+  it("keeps valid bindings and clears the source of an asset removed from the project", () => {
+    const {scenes} = reviewableOtioProject();
+    const [first, second, removed] = scenes;
+    const available = {id: "saved-mp4"};
+    const retained = {scene_id: first.id, asset_id: available.id, source_kind: "project_cas" as const,
+      source_start_frame: 24};
+    const unavailable = {scene_id: second.id, asset_id: "removed-mp4", source_kind: "owner_file" as const,
+      source_path: "/owner/removed.mp4", source_start_frame: 48};
+    const oldScene = {...retained, scene_id: removed.id};
+    expect(reconcileOtioMediaBindings([first, second], [available], [retained, unavailable, oldScene]))
+      .toEqual([retained, {scene_id: second.id, asset_id: "", source_kind: "owner_file",
+        source_start_frame: 0}]);
+    expect(reconcileOtioMediaBindings([second], [available], [oldScene])).toEqual([
+      {scene_id: second.id, asset_id: "", source_kind: "project_cas", source_start_frame: 0},
+    ]);
+    expect(reconcileOtioMediaBindings([], [available], [retained])).toEqual([]);
+  });
+});
 
 describe("source-bound OTIO cut review is a non-executable proposal",()=>{
   it("admits only an exact reviewed reordering and end trim, never marks imported",()=>{

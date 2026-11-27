@@ -1028,8 +1028,8 @@ function DeliverView({
         multiAvEvidence={multiAvEvidence} onMultiAvEvidence={onMultiAvEvidence}
         exportEvidence={exportEvidence} onExportEvidence={onExportEvidence} />
 
-      <OtioCutReviewWorkbench project={project} commit={commit} desktopMode={desktopMode}
-        busy={portableBusy !== null}/>
+      <OtioCutReviewWorkbench key={[project.id, project.generation, project.active_branch].join(":")}
+        project={project} commit={commit} desktopMode={desktopMode} busy={portableBusy !== null}/>
 
       <HyperframesSourceWorkbench key={[project.id, project.generation, project.active_branch].join(":")}
         project={project} desktopMode={desktopMode}/>
