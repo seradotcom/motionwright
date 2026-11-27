@@ -13,7 +13,7 @@ import sys
 import time
 
 from kdenlive_native_distribution import JOB, ROOT, publish, selection
-from kdenlive_native_source import admitted_source, inspect_initial_save
+from kdenlive_native_source import admitted_source, inspect_initial_save, installed_editor
 from kdenlive_readback import MAX_XML_BYTES
 from source_checkout_observation import git, regular_file, require
 
@@ -46,6 +46,7 @@ class Accessibility:
         pointer, integer, index = C.c_void_p, C.c_int, C.c_long
         out_pointer = C.POINTER(pointer)
         self.release = bind(cf, "CFRelease", None, pointer)
+        self.equal = bind(cf, "CFEqual", C.c_ubyte, pointer, pointer)
         self.type_id = bind(cf, "CFGetTypeID", C.c_ulong, pointer)
         self.array_type = bind(cf, "CFArrayGetTypeID", C.c_ulong)()
         self.boolean_type = bind(cf, "CFBooleanGetTypeID", C.c_ulong)()
@@ -410,6 +411,45 @@ class EditorUI:
                 break
         return rows
 
+    def project_monitor_diagnostic(self):
+        ax = self.ax
+
+        def monitor():
+            groups = []
+            for node in self.descend((self.top_window(),), limit=160, depth_limit=12):
+                if (self.title(node) == "project monitor"
+                        and ax.text(node, "AXRole") == "AXTabGroup"
+                        and not any(ax.equal(node, known) for known in groups)):
+                    groups.append(node)
+            return groups[0] if len(groups) == 1 else None
+
+        def row(node):
+            if not ax.owns(node):
+                return None
+            role = ax.text(node, "AXRole")
+            raw = ax.value(node, "AXValue")
+            value = ax.string(raw)
+            return {
+                "role": role, "id": ax.text(node, "AXIdentifier"),
+                "title": ax.text(node, "AXTitle"), "clock": value if TIMECODE.fullmatch(value) else None,
+                "value_type": ax.type_id(raw) if raw else None, "focused": ax.flag(node, "AXFocused"),
+                "enabled": ax.enabled(node), "actions": ax.actions(node),
+            }
+
+        tab = self.await_target(monitor, "empty project's Project Monitor tab group")
+        parent = ax.value(tab, "AXParent")
+        require(ax.owns(parent), "observed Project Monitor has no parent in the editor PID")
+        focused = ax.value(ax.app, "AXFocusedUIElement")
+        observed = []
+        for element in self.descend((parent,), limit=90, depth_limit=9):
+            data = row(element)
+            if data:
+                origin = ax.value(element, "AXParent")
+                data["parent_id"] = ax.text(origin, "AXIdentifier") if ax.owns(origin) else None
+                observed.append(data)
+        return {"tab_group": row(tab), "parent": row(parent), "focused_element": row(focused),
+                "rows": observed, "editor_actions": 0}
+
     def diagnostic(self):
         self.ax.next_snapshot()
         roots = (self.ax.value(self.ax.app, "AXMenuBar"), *self.panels(), self.top_window())
@@ -530,7 +570,11 @@ def wait_project(initial, guard):
 
 
 def run(owner, context, distribution, observe_editor):
-    editor, binary, source = admitted_source(owner, context, distribution)
+    if observe_editor:
+        editor, binary = installed_editor(owner, context, distribution)
+        source = None
+    else:
+        editor, binary, source = admitted_source(owner, context, distribution)
     ax = Accessibility()
     try:
         output = owner / ("macos-initial-observe" if observe_editor else "macos-initial")
@@ -568,6 +612,7 @@ def run(owner, context, distribution, observe_editor):
                     ui.await_target(ui.file_menu, "owned Kdenlive File menu", timeout=45)
                     if observe_editor:
                         evidence.write("accessibility-tree", {"pid": process.pid, "nodes": ui.diagnostic()})
+                        evidence.write("project-monitor-ax", ui.project_monitor_diagnostic())
                         return {"status": "EDITOR_OBSERVED", "pid": process.pid, "editor_actions": 0}
 
                     def check_source():

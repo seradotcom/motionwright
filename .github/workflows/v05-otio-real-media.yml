@@ -20,6 +20,11 @@ on:
         type: boolean
         default: false
         required: false
+      kdenlive_editor_window_probe:
+        description: Read the installed macOS editor window and accessibility controls
+        type: boolean
+        default: false
+        required: false
       kdenlive_editor_first_save:
         description: Import the synthetic OTIO cut in the installed editor and verify its initial save
         type: boolean
@@ -614,7 +619,7 @@ jobs:
 
   kdenlive-native-editor:
     if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'kdenlive-native-editor'
-    name: ${{ inputs.kdenlive_accessibility_probe && 'Kdenlive hosted accessibility' || (inputs.kdenlive_editor_first_save && 'Kdenlive native editor first save' || 'Kdenlive native editor installation') }} (${{ matrix.os }})
+    name: ${{ inputs.kdenlive_accessibility_probe && 'Kdenlive hosted accessibility' || inputs.kdenlive_editor_window_probe && 'Kdenlive native window observation' || (inputs.kdenlive_editor_first_save && 'Kdenlive native editor first save' || 'Kdenlive native editor installation') }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 32
     strategy:
@@ -631,6 +636,12 @@ jobs:
       - name: Verify the native editor admission and installation controls
         working-directory: tooling/otio-media
         run: python -B -E -s -m unittest -v test_kdenlive_native_distribution test_kdenlive_native_installation test_kdenlive_native_source test_kdenlive_macos_editor
+      - name: Require the native window probe to be selected on its own
+        if: inputs.kdenlive_editor_window_probe && (inputs.kdenlive_editor_platform != 'macos' || inputs.kdenlive_accessibility_probe || inputs.kdenlive_editor_first_save)
+        shell: bash
+        run: |
+          echo 'The window probe requires macOS and its own verification scope.' >&2
+          exit 2
       - name: Observe native accessibility without changing its permissions
         if: inputs.kdenlive_accessibility_probe
         run: python -B -E -s tooling/otio-media/kdenlive_native_installation.py --observe-host
@@ -673,6 +684,9 @@ jobs:
       - name: Install the bound editor in the disposable runner
         if: inputs.kdenlive_accessibility_probe != true
         run: python -B -E -s tooling/otio-media/kdenlive_native_installation.py
+      - name: Read the installed Kdenlive window without editing
+        if: inputs.kdenlive_editor_window_probe && runner.os == 'macOS'
+        run: python -B -E -s tooling/otio-media/kdenlive_macos_editor.py --observe-editor
       - name: Produce the first-party OTIO cut and its original media
         if: inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe
         run: python -B -E -s tooling/otio-media/kdenlive_native_source.py
@@ -696,6 +710,16 @@ jobs:
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/windows-installer-terminal.json
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/windows-installed-location.json
             ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/macos-readonly-mount.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Retain the macOS editor window observation
+        if: always() && inputs.kdenlive_editor_window_probe && runner.os == 'macOS'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: kdenlive-native-window-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/macos-initial-observe/*.json
+            ${{ runner.temp }}/kdenlive-native-editor-${{ github.run_id }}-1/macos-initial-observe/editor.stderr
           if-no-files-found: warn
           retention-days: 7
       - name: Retain native save and readback results

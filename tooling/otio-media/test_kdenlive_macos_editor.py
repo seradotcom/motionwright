@@ -111,5 +111,29 @@ class MacEditorRouteTests(unittest.TestCase):
         evidence.press.assert_called_once_with("shorten-accept", "OK")
         self.assertEqual(ui.commit_timecode.call_count, 1)
 
+    def test_observer_uses_the_exact_installation_without_a_source_capsule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            owner = Path(directory)
+            binary = owner / "kdenlive"
+            initial = {"sha256": "a" * 64, "bytes": 123}
+            process = Mock(pid=29)
+            process.poll.return_value = None
+            process.terminate.side_effect = lambda: setattr(process.poll, "return_value", -15)
+            context = {"runner_os": "macOS", "run_id": "213", "source_sha": "b" * 40}
+            with patch.object(editor, "installed_editor", return_value=(binary, initial)) as install, patch.object(
+                editor, "admitted_source", side_effect=AssertionError("observer attempted to open a capsule"),
+            ), patch.object(editor, "Accessibility"), patch.object(editor, "EditorUI") as ui_type, patch.object(
+                editor, "editor_pid_executable", return_value=binary,
+            ), patch.object(editor.subprocess, "Popen", return_value=process):
+                ui_type.return_value.diagnostic.return_value = []
+                ui_type.return_value.project_monitor_diagnostic.return_value = {"rows": []}
+                report = editor.run(owner, context, "distribution", True)
+
+            install.assert_called_once_with(owner, context, "distribution")
+            ui_type.return_value.project_monitor_diagnostic.assert_called_once()
+            self.assertEqual(report, {"status": "EDITOR_OBSERVED", "pid": 29, "editor_actions": 0})
+            self.assertTrue((owner / "macos-initial-observe" / "project-monitor-ax.json").exists())
+            self.assertFalse((owner / "otio-source-ready.json").exists())
+
 if __name__ == "__main__":
     unittest.main()
