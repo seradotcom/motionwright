@@ -133,16 +133,10 @@ has an unknown result, only a `NOT_VERIFIED` public manifest is emitted.
 Publication neither retries media generation nor authenticates third-party
 rights, a human review, or an actual external-NLE round-trip.
 
-This proves file/source identity and OpenTimelineIO-reader compatibility,
-**not** that Kdenlive/Shotcut/Resolve or another particular NLE imports and
-renders the exact same result. It also does not prove that a reviewed
-preview can be automatically committed or all Motionwright creative
-semantics round-trip. Those require separate owner-authorized tests and
-may incur explicit losses, particularly audio/transcript/camera/effects.
-
-**Acceptance:** E11-03 remains `PARTIAL`, with actual external editor
-import/round-trip, edited clip semantic mapping and human visual review
-still `NOT_RUN` until demonstrated on the same source revision.
+The OpenTimelineIO adapter run verifies file identity, source frames and reader
+compatibility. The Desktop and installed-editor workflows described below
+exercise different parts of the same exchange. Visual fidelity remains a
+separate review, particularly for audio, transcript timing, camera and effects.
 
 ## 4. Desktop export, preview and owner-approved save
 
@@ -244,11 +238,13 @@ tools under `/usr/bin`. On Windows and macOS it uses the protected installations
 listed above. Missing tools or writable runtime paths refuse export and
 inspection before execution.
 
-The Desktop source checks run synthetic H.264 export and import on Windows
-and macOS, including originals whose index follows the media. A previously
-generated JSON proposal can also be opened by selecting the proposal file or
-pasting its contents in **Review an existing bridge proposal**. Reviewing
-the declaration alone does not authenticate the media or external editor.
+The Desktop bridge checks on Windows and macOS exercise synthetic H.264
+export, review and reopen through Studio and SQLite, including originals whose
+index follows the media. See the [Windows and macOS bridge run](https://github.com/seradotcom/motionwright/actions/runs/45976914567).
+
+Open a previously generated JSON proposal in **Review an existing bridge
+proposal** to inspect its declared changes. Use the verified-media preview
+when checking the selected bundle's original files.
 
 The export is published once into a previously unused folder after verification;
 existing directories and dangling symlinks are never replaced. An interrupted

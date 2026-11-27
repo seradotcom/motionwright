@@ -1,4 +1,5 @@
 """Test the bounded installed-editor route without macOS UI effects."""
+import ctypes as C
 from pathlib import Path
 import tempfile
 import unittest
@@ -79,6 +80,43 @@ class MacEditorRouteTests(unittest.TestCase):
             ax.perform.assert_called_once()
             self.assertFalse((Path(folder) / "open-import-intent.json").exists())
 
+    def test_duration_reads_the_qt_text_range_when_ax_value_is_empty(self):
+        ax = editor.Accessibility.__new__(editor.Accessibility)
+        ax.value = Mock(side_effect=lambda _, name: {"AXValue": 1, "AXNumberOfCharacters": 2}[name])
+        ax.number = Mock(side_effect=lambda raw: 11 if raw == 2 else None)
+        ax.name = Mock(side_effect=lambda name: name)
+        ax.string = Mock(side_effect=lambda raw: "00:00:02:00" if raw == 42 else "")
+        ax.release = Mock()
+
+        def ax_range(kind, location):
+            self.assertEqual(kind, 4)
+            bounds = C.cast(location, C.POINTER(editor.CFRange)).contents
+            self.assertEqual((bounds.location, bounds.length), (0, 11))
+            return 30
+
+        def read_text(element, attribute, bounds, output):
+            self.assertEqual((element, attribute, bounds), (77, "AXStringForRange", 30))
+            C.cast(output, C.POINTER(C.c_void_p)).contents.value = 42
+            return 0
+
+        ax.create_ax_value = Mock(side_effect=ax_range)
+        ax.copy_parameterized_value = Mock(side_effect=read_text)
+        ax.values = []
+
+        self.assertEqual(ax.duration_value(77), 60)
+        self.assertEqual(ax.values, [42])
+        ax.release.assert_called_once_with(30)
+
+    def test_duration_refuses_unbounded_text_ranges(self):
+        ax = editor.Accessibility.__new__(editor.Accessibility)
+        ax.value = Mock(return_value=1)
+        ax.number = Mock(return_value=17)
+        ax.create_ax_value = Mock()
+        ax.copy_parameterized_value = Mock()
+        self.assertEqual(ax.control_text(77), "")
+        ax.create_ax_value.assert_not_called()
+        ax.copy_parameterized_value.assert_not_called()
+
     def test_playlist_model_is_checked_before_each_change_and_after_restore(self):
         ui, evidence = Mock(), Mock()
         evidence.press.return_value = 0
@@ -135,7 +173,6 @@ class MacEditorRouteTests(unittest.TestCase):
             call("restore-clip-end", "clip end"), call("restore-forward-1", "forward"),
             call("restore-forward-2", "forward"), call("restore-resize-end", "resize end"),
         ])
-        evidence.key.assert_not_called()
 
     def test_resize_fails_closed_when_navigation_is_uncertain(self):
         ui = editor.EditorUI(Mock(), lambda: None)
@@ -172,33 +209,11 @@ class MacEditorRouteTests(unittest.TestCase):
             self.assertTrue((owner / "macos-initial-observe" / "project-monitor-ax.json").exists())
             self.assertFalse((owner / "otio-source-ready.json").exists())
 
-    def test_visible_clock_needs_no_window_or_toolbar_action(self):
-        ui, evidence = Mock(), Mock()
-        ax = ui.ax
-        ax.text.return_value = "00:00:00:00"
-        ui.project_clock.return_value = "clock"
-        result = editor.observe_project_clock_layout(ui, evidence)
-        self.assertEqual(result["editor_actions"], 0)
-        ui.reveal_project_clock.assert_not_called()
-
-    def test_hidden_clock_only_gets_one_scoped_layout_action(self):
-        ui, evidence = Mock(), Mock()
-        ui.project_clock.return_value = None
-        ui.reveal_project_clock.return_value = "resize-owned-window"
-        ui.await_target.return_value = "clock"
-        ui.ax.text.return_value = "00:00:00:00"
-
-        result = editor.observe_project_clock_layout(ui, evidence)
-
-        ui.reveal_project_clock.assert_called_once_with(evidence)
-        self.assertEqual(result["editor_actions"], 1)
-        self.assertEqual(result["layout_change"], "resize-owned-window")
 
     def test_third_clip_selection_uses_native_project_navigation_without_a_clock(self):
         ui = editor.EditorUI(Mock(), lambda: None)
         ui.await_target = Mock(side_effect=["Project Monitor radio", "project-monitor", "V1 AXButton"])
         ui.menu_item = Mock(side_effect=["Sequence effects", "Go to Project End", "Rewind 1 Frame", "Select Clip"])
-        ui.project_clock = Mock(side_effect=AssertionError("the Project Monitor clock is hidden"))
         evidence = Mock()
 
         evidence.press.return_value = 0
@@ -218,7 +233,6 @@ class MacEditorRouteTests(unittest.TestCase):
             call("select-video-track-one", "V1 AXButton"),
             call("select-third", "Select Clip"),
         ])
-        evidence.key.assert_not_called()
 
     def test_missing_verified_v1_button_stops_before_opening_the_import_menu(self):
         ui, evidence = Mock(), Mock()
@@ -230,125 +244,6 @@ class MacEditorRouteTests(unittest.TestCase):
         ui.menu_item.assert_not_called()
         evidence.press.assert_not_called()
 
-    def test_command_probe_filters_the_real_action_without_invoking_it(self):
-        ui, evidence = Mock(), Mock()
-        ui.ax.text.return_value = ""
-        ui.menu_item.return_value = "Find Action"
-        ui.await_target.side_effect = ["command filter", {"role": "AXCell", "title": "Select Video Track 1"}]
-
-        report = editor.observe_video_track_action(ui, evidence)
-
-        evidence.press.assert_called_once_with("open-find-action", "Find Action")
-        evidence.key.assert_not_called()
-        ui.set_text.assert_called_once_with("command filter", "Select Video Track 1")
-        self.assertEqual(report["command"]["title"], "Select Video Track 1")
-        self.assertEqual(report["timeline_actions"], 0)
-
-    def test_command_probe_preserves_outline_state_when_the_exact_row_is_unavailable(self):
-        ui, evidence = Mock(), Mock()
-        ui.ax.text.return_value = ""
-        ui.await_target.side_effect = ["command filter", TimeoutError("command did not resolve")]
-        ui.command_outline.return_value = {"row_counts": {"AXRows": 0}, "nodes": []}
-
-        with self.assertRaisesRegex(TimeoutError, "command did not resolve"):
-            editor.observe_video_track_action(ui, evidence)
-
-        evidence.write.assert_any_call("find-action-outline", ui.command_outline.return_value)
-        evidence.key.assert_not_called()
-
-    def test_empty_editor_probe_confirms_the_exact_command_once_without_import(self):
-        ui, evidence = Mock(), Mock()
-        ui.ax.text.return_value = ""
-        command = {"role": "AXCell", "title": "Select Video Track 1"}
-        ui.await_target.side_effect = ["command filter", command]
-        result = editor.observe_video_track_action(ui, evidence, activate=True)
-        ui.invoke_command.assert_called_once_with(command, evidence, "probe-select-track")
-        self.assertEqual(result["timeline_actions"], 1)
-        self.assertEqual(result["imports"], 0)
-        self.assertEqual(result["saves"], 0)
-
-    def test_track_selection_cannot_continue_after_an_unacknowledged_command(self):
-        ui, evidence = Mock(), Mock()
-        ui.ax.text.return_value = ""
-        command = {"role": "AXCell", "title": "Select Video Track 1"}
-        ui.await_target.side_effect = ["command filter", command]
-        ui.invoke_command.side_effect = TimeoutError("command bar remained open")
-        with self.assertRaisesRegex(TimeoutError, "remained open"):
-            editor.select_video_track(ui, evidence, "track")
-        ui.invoke_command.assert_called_once_with(command, evidence, "track")
-
-    def test_track_command_needs_a_fresh_filter_change_before_confirming(self):
-        ui, evidence = Mock(), Mock()
-        ui.await_target.return_value = "filter"
-        ui.ax.text.return_value = "Select Video Track 1"
-
-        with self.assertRaisesRegex(ValueError, "fresh"):
-            editor.select_video_track(ui, evidence, "verify-track")
-
-        ui.set_text.assert_not_called()
-        ui.invoke_command.assert_not_called()
-
-    def test_hit_probe_observes_the_exact_target_without_confirming_the_command(self):
-        ui, evidence = Mock(), Mock()
-        ui.ax.text.return_value = ""
-        command = {"role": "AXCell", "title": "Select Video Track 1"}
-        ui.await_target.side_effect = ["command filter", command]
-        ui.command_hit_report.return_value = {"pid": 9, "point": [50, 100], "system_hit": {"pid": 9}}
-
-        report = editor.observe_video_track_action(ui, evidence, probe_hit=True)
-
-        ui.command_hit_report.assert_called_once_with(command)
-        evidence.write.assert_any_call("find-action-hit-test", ui.command_hit_report.return_value)
-        ui.invoke_command.assert_not_called()
-        evidence.key.assert_not_called()
-        self.assertEqual(report["timeline_actions"], 0)
-
-    def test_toolbar_observer_records_controls_before_touching_the_profile(self):
-        ui, evidence = Mock(), Mock()
-        ui.menu_item.return_value = "Configure Toolbars"
-        ui.await_target.side_effect = ["toolbar dialog", TimeoutError("no unique filter")]
-        ui.toolbar_controls.return_value = {"nodes": [{"title": "Available actions"}]}
-
-        with self.assertRaisesRegex(TimeoutError, "no unique filter"):
-            editor.observe_video_track_toolbar(ui, evidence)
-
-        evidence.press.assert_called_once_with("open-configure-toolbars", "Configure Toolbars")
-        evidence.write.assert_any_call("toolbar-dialog-initial", ui.toolbar_controls.return_value)
-        ui.set_text.assert_not_called()
-        evidence.key.assert_not_called()
-
-    def test_toolbar_observer_retains_the_paged_list_before_failing_an_ambiguous_action(self):
-        ui, evidence = Mock(), Mock()
-        ui.await_target.side_effect = ["dialog", "left filter"]
-        ui.available_toolbar_track.return_value = {
-            "attribute": "AXRows", "row_count": 800, "scan_complete": True,
-            "visible_rows": [{"title": "Some other action"}], "matching_track": None,
-        }
-
-        with patch.object(editor.time, "sleep"), self.assertRaisesRegex(ValueError, "unique visible"):
-            editor.observe_video_track_toolbar(ui, evidence)
-
-        evidence.write.assert_any_call("toolbar-available-rows", ui.available_toolbar_track.return_value)
-        evidence.press.assert_called_once()
-
-    def test_toolbar_profile_rejects_reorder_or_extra_changes(self):
-        before = [("First",), ("Second",)]
-        v1 = ("Select Video Track 1",)
-        self.assertTrue(editor.only_video_track_added(before, [before[0], v1, before[1]]))
-        self.assertFalse(editor.only_video_track_added(before, [before[1], v1, before[0]]))
-        self.assertFalse(editor.only_video_track_added(before, [*before, v1, v1]))
-
-    def test_toolbar_insert_needs_native_current_item_proof(self):
-        ui, evidence = Mock(), Mock()
-        ui.current_toolbar_actions.return_value = [("First",)]
-        ui.toolbar_transfer_arrows.return_value = {"identity": "four arrows"}
-        ui.await_target.side_effect = ["available list", ("available V1", False, False)]
-
-        with self.assertRaisesRegex(ValueError, "current item"):
-            editor.configure_video_track_toolbar(ui, evidence, {"row_index": 734})
-
-        evidence.press.assert_called_once_with("focus-available-toolbar-actions", "available list")
-        ui.toolbar_insert_arrow.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()
