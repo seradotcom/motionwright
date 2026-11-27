@@ -756,6 +756,48 @@ fn saved_hybrid_master_keeps_closed_budget_clock_source_and_original_history() {
 }
 
 #[test]
+fn saved_hybrid_master_requires_its_retained_clock_report_only_for_delivery() {
+    let fixture = Fixture::hybrid();
+    let output = &fixture.coordinator.client.connection().output_root;
+    let report_path = "original.mp4.color-observation.json";
+    let report = br#"{"exact_clock":true}"#;
+    fs::write(output.join(report_path), report).unwrap();
+    let selected = fixture.seed(|_, result| {
+        result["result"]["data"]["color_observation"] = json!({
+            "root": "output", "path": report_path,
+            "sha256": hex::encode(Sha256::digest(report)), "bytes": report.len(),
+        });
+    });
+    let before = fixture
+        .service
+        .production_receipts(fixture.project.id, 256)
+        .unwrap();
+
+    assert!(fixture.recover(selected.id).is_ok());
+    let error = fixture.qualify(selected.id).err().unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("pinned canonical observation parser")
+    );
+    assert_eq!(
+        fixture
+            .service
+            .production_receipts(fixture.project.id, 256)
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        fixture
+            .coordinator
+            .client
+            .execute_calls
+            .load(Ordering::SeqCst),
+        0
+    );
+}
+
+#[test]
 fn saved_hybrid_master_checks_actual_file_sizes_and_preserves_read_only_review() {
     let f = Fixture::hybrid();
     let selected = f.seed(|_, _| {});

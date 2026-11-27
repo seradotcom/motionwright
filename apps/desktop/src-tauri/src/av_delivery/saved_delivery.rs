@@ -53,7 +53,7 @@ pub(crate) fn prepare_saved_delivery(
     let qualified = coordinator.qualify_saved_master_delivery(
         project.id, &project.stamp(), request.mux_receipt_id, request.deliverable_id,
         &request.expected_master_sha256,
-    ).map_err(|_| "This saved MP4 is not eligible for a new local delivery. Keep the original source and decoded audio available; burned-in captions require local decoded-pixel verification, and saved audio targets require their original complete passing measurement.")?;
+    ).map_err(|_| "This saved MP4 cannot be delivered. Check that it matches the authored timing and that the original source and decoded audio are available. Captions and saved audio targets require their original verification.")?;
     let source = source_from_qualified(&qualified);
     let current = ProductionConnection::load(connection_path).map_err(
         |_| "The original owner connection changed during saved delivery qualification.",

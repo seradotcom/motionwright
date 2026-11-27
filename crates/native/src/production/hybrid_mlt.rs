@@ -12,7 +12,7 @@ use super::mlt_multisegment_av::{
 use super::*;
 use semwright_audio_domain::wav::WaveReader;
 use semwright_video_domain::native_observation::{
-    ObservationProfile, PNG_LIMIT, REPORT_LIMIT, parse_complete_observation,
+    CompleteObservation, ObservationProfile, PNG_LIMIT, REPORT_LIMIT, parse_complete_observation,
 };
 use std::io::Cursor;
 use std::ops::Range;
@@ -25,6 +25,8 @@ const NATIVE_INPUT_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const DECODED_WAVE_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const SEQUENCE_NAME: &str = "Original Motionwright MC-Manim-MC cut";
 const TRACK_NAME: &str = "Original native hybrid contributions";
+const MLT_XML_SOURCE_KIND: &str = "mlt_render_project_bytes";
+const DIRECT_AV_SOURCE_KIND: &str = "verified_ffv1_video_source_bytes";
 
 /// Created only after the original native timeline and its files are checked.
 /// JSON can be inspected, but cannot reconstruct this retained continuation.
@@ -490,19 +492,18 @@ fn verify_authored_cut_input(
     )
 }
 
-fn complete_video_observation(
+fn read_bound_video_observation<'a>(
     root: &Path,
-    media: &Artifact,
-    original_result: &Value,
+    media: &Value,
+    original_result: &'a Value,
     expected_profile: ObservationProfile,
-    sources: &[Artifact],
     frame_count: u64,
-    authored_cuts: Option<&[Range<u64>]>,
-) -> NativeResult<Value> {
+) -> NativeResult<(&'a Value, CompleteObservation)> {
+    let media_path = text_at(media, "/path")?;
     let original_receipt = original_result.get("color_observation").ok_or_else(|| {
         backend("Original hybrid native return omitted its color observation descriptor")
     })?;
-    let path = format!("{}.color-observation.json", media.path);
+    let path = format!("{}.color-observation.json", media_path);
     let report_sha = text_at(original_receipt, "/sha256")?;
     let report_bytes = original_receipt
         .get("bytes")
@@ -527,22 +528,67 @@ fn complete_video_observation(
         parsed.profile() == expected_profile,
         "Original hybrid native report belongs to another observation profile",
     )?;
-    let document = parsed.document().clone();
+    let document = parsed.document();
     require(
-        document.get("artifact") == Some(&media.descriptor())
+        document.get("artifact") == Some(media)
             && document.get("frame_count").and_then(Value::as_u64) == Some(frame_count)
             && document.get("canonical_fps_num").and_then(Value::as_u64) == Some(30)
             && document.get("canonical_fps_den").and_then(Value::as_u64) == Some(1)
             && document.pointer("/stream/width").and_then(Value::as_u64) == Some(1920)
             && document.pointer("/stream/height").and_then(Value::as_u64) == Some(1080)
             && document.get("frame_path_prefix").and_then(Value::as_str)
-                == Some(format!("{}.", media.path).as_str())
+                == Some(format!("{}.", media_path).as_str())
             && document
                 .get("exact_clock")
                 .and_then(Value::as_bool)
                 .is_some(),
         "Original hybrid native color observation has a different artifact or frame clock",
     )?;
+    Ok((original_receipt, parsed))
+}
+
+fn verify_original_observation_source(
+    document: &Value,
+    profile: ObservationProfile,
+    editable_xml: &Artifact,
+    authored_sources: &[Artifact],
+) -> NativeResult<()> {
+    // Render.start executes the staged MLT document. The closed AV mux
+    // retains that XML beside its actual FFV1/WAV inputs for inspection.
+    let (kind, source) = match (profile, authored_sources) {
+        (ObservationProfile::MltH264AacMaster, [video, _audio]) => (DIRECT_AV_SOURCE_KIND, video),
+        (ObservationProfile::MltVisualFfv1, _) => (MLT_XML_SOURCE_KIND, editable_xml),
+        _ => {
+            return Err(backend(
+                "Original hybrid observation source profile is invalid",
+            ));
+        }
+    };
+    let binding = json!({"source_kind":kind,"root":"output",
+        "path":source.path,"sha256":source.sha256,"bytes":source.bytes,"source_first_frame":0});
+    require(
+        document.get("source_binding") == Some(&binding),
+        "Original hybrid native report refers to different consumed media or editable input",
+    )
+}
+
+fn complete_video_observation(
+    root: &Path,
+    media: &Artifact,
+    original_result: &Value,
+    expected_profile: ObservationProfile,
+    sources: &[Artifact],
+    frame_count: u64,
+    authored_cuts: Option<&[Range<u64>]>,
+) -> NativeResult<Value> {
+    let (original_receipt, parsed) = read_bound_video_observation(
+        root,
+        &media.descriptor(),
+        original_result,
+        expected_profile,
+        frame_count,
+    )?;
+    let document = parsed.document();
     // Host render.start stages imported paths. Bind that actual staging to the
     // previously admitted originals; matching output/report hashes alone would
     // permit a changed input at the same path to qualify as the original cut.
@@ -555,12 +601,7 @@ fn complete_video_observation(
         &format!("{}.native-input.mlt", media.path),
         NATIVE_INPUT_MAX_BYTES,
     )?;
-    let binding = json!({"source_kind":"mlt_render_project_bytes","root":"output",
-        "path":xml.path,"sha256":xml.sha256,"bytes":xml.bytes,"source_first_frame":0});
-    require(
-        document.get("source_binding") == Some(&binding),
-        "Original hybrid native report refers to a different editable MLT input",
-    )?;
+    verify_original_observation_source(document, expected_profile, &xml, sources)?;
     let native_sources = original_result
         .get("native_input_sources")
         .ok_or_else(|| backend("Original hybrid native return omitted its staged source roster"))?;
@@ -612,6 +653,89 @@ fn complete_video_observation(
         )?;
     }
     Ok(json!({"original_receipt":original_receipt,"document":document}))
+}
+
+/// These clocks are measured by the original Host from the final MP4. The
+/// emitted WAV can contain enough decoded samples when the MP4 edit is short.
+#[derive(serde::Serialize)]
+struct HybridMasterStreamClock {
+    exact_video_clock: bool,
+    audio_start_sample: Option<i64>,
+    presented_audio_samples: Option<u64>,
+    authored_audio_samples: u64,
+}
+
+impl HybridMasterStreamClock {
+    fn exact_audio_presentation(&self) -> bool {
+        self.audio_start_sample == Some(0)
+            && self.presented_audio_samples == Some(self.authored_audio_samples)
+    }
+}
+
+fn observed_hybrid_master_stream_clock(
+    document: &Value,
+    authored_audio_samples: u64,
+) -> HybridMasterStreamClock {
+    // The pinned complete-observation parser binds AAC to a 1/48000 time
+    // base. Use its original stream interval, rather than decoded PCM size.
+    HybridMasterStreamClock {
+        exact_video_clock: document.get("exact_clock").and_then(Value::as_bool) == Some(true),
+        audio_start_sample: document
+            .pointer("/audio_stream/start_pts")
+            .and_then(Value::as_i64),
+        presented_audio_samples: document
+            .pointer("/audio_stream/duration_ts")
+            .and_then(Value::as_u64),
+        authored_audio_samples,
+    }
+}
+
+/// Delivery of a persisted hybrid master reopens its original bounded report
+/// even after the renderer and original Studio process have closed.
+pub(super) fn verify_saved_hybrid_master_stream_clock(
+    root: &Path,
+    original_result: &Value,
+    original_video_path: &str,
+    authored_video_frames: u64,
+    authored_audio_samples: u64,
+) -> NativeResult<()> {
+    let media = original_result
+        .get("artifact")
+        .ok_or_else(|| backend("Saved hybrid master has no MP4 identity"))?;
+    let (_, parsed) = read_bound_video_observation(
+        root,
+        media,
+        original_result,
+        ObservationProfile::MltH264AacMaster,
+        authored_video_frames,
+    )?;
+    let document = parsed.document();
+    let binding = &document["source_binding"];
+    let consumed = match binding["source_kind"].as_str() {
+        Some(DIRECT_AV_SOURCE_KIND) => {
+            binding["path"].as_str() == Some(original_video_path)
+                && binding.get("sha256") == original_result.get("video_sha256")
+        }
+        // Older completed provider renders actually executed this XML.
+        Some(MLT_XML_SOURCE_KIND) => original_result.get("native_input").is_some_and(|xml| {
+            ["root", "path", "bytes", "sha256"]
+                .iter()
+                .all(|key| binding.get(key) == xml.get(key))
+        }),
+        _ => false,
+    };
+    require(
+        consumed
+            && document.get("native_input_sources") == original_result.get("native_input_sources"),
+        "Saved hybrid clock report does not identify its original input and media roster",
+    )?;
+    let clock = observed_hybrid_master_stream_clock(document, authored_audio_samples);
+    require(
+        authored_video_frames.checked_mul(1_600) == Some(authored_audio_samples)
+            && clock.exact_video_clock
+            && clock.exact_audio_presentation(),
+        "Original hybrid MP4 stream presentation differs from the authored video or audio clock",
+    )
 }
 
 /// Read the pinned Host's decoded WAV and run the same terminal stereo check
@@ -1257,6 +1381,9 @@ impl ProductionCoordinator {
                 == sources.project,
             "Hybrid editable source changed during native mastering",
         )?;
+        let observed_stream_clock =
+            observed_hybrid_master_stream_clock(&color["document"], measured_source_frames);
+        let exact_audio_presentation = observed_stream_clock.exact_audio_presentation();
         let master_sha256 = text_at(master, "/artifact/sha256")?;
         Ok(HybridNativeMaster {
             master_sha256,
@@ -1264,7 +1391,8 @@ impl ProductionCoordinator {
             "project_sha256":sources.project_sha256,"frame_count":frame_count,
             "original_native_return":original,"master":master,"complete_video_observation":color,
             "original_audio_sha256":audio.sha256,"measured_original_audio_frames":measured_source_frames,
-            "decoded_wav_stereo_tail_verified":true,
+            "decoded_wav_stereo_tail_verified":true,"observed_stream_clock":observed_stream_clock,
+            "native_audio_presentation_matches_authored":exact_audio_presentation,
             "automatic_retry":false,"packet_PTS_and_AAC_priming_verified":false,
             "physical_acceptance":false,"human_approval":false}),
         })
@@ -1280,6 +1408,82 @@ fn unconfirmed_render(error: Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hybrid_native_master_binds_consumed_ffv1_and_keeps_visual_xml_binding() {
+        let xml = Artifact {
+            path: "master.mp4.native-input.mlt".into(),
+            sha256: "1".repeat(64),
+            bytes: 10,
+        };
+        let sources = [
+            Artifact {
+                path: "visual.mkv".into(),
+                sha256: "2".repeat(64),
+                bytes: 100,
+            },
+            Artifact {
+                path: "mix.wav".into(),
+                sha256: "3".repeat(64),
+                bytes: 1_000,
+            },
+        ];
+        let document = |kind, source: &Artifact| {
+            json!({"source_binding":{
+                "source_kind":kind,"root":"output","path":source.path,"sha256":source.sha256,
+                "bytes":source.bytes,"source_first_frame":0,
+            }})
+        };
+        let observed_master = document(DIRECT_AV_SOURCE_KIND, &sources[0]);
+        let observed_xml = document("mlt_render_project_bytes", &xml);
+        let master = ObservationProfile::MltH264AacMaster;
+        let visual = ObservationProfile::MltVisualFfv1;
+        assert!(
+            verify_original_observation_source(&observed_master, master, &xml, &sources).is_ok()
+        );
+        assert!(verify_original_observation_source(&observed_xml, visual, &xml, &sources).is_ok());
+        assert!(verify_original_observation_source(&observed_xml, master, &xml, &sources).is_err());
+        assert!(
+            verify_original_observation_source(&observed_master, visual, &xml, &sources).is_err()
+        );
+        assert!(
+            verify_original_observation_source(
+                &document(DIRECT_AV_SOURCE_KIND, &sources[1]),
+                master,
+                &xml,
+                &sources,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn hybrid_native_master_clock_checks_presentation_instead_of_decoded_sample_count() {
+        let report = json!({"exact_clock":true,"audio_stream":{
+            "start_pts":0,"duration_ts":49_600,"decoded_sample_count":50_176
+        }});
+        let exact = observed_hybrid_master_stream_clock(&report, 49_600);
+        assert!(exact.exact_video_clock && exact.exact_audio_presentation());
+
+        let mut shortened = report.clone();
+        shortened["audio_stream"]["duration_ts"] = json!(49_584);
+        let clock = observed_hybrid_master_stream_clock(&shortened, 49_600);
+        assert!(!clock.exact_audio_presentation());
+        assert_eq!(clock.presented_audio_samples, Some(49_584));
+
+        let mut shifted = report.clone();
+        shifted["audio_stream"]["start_pts"] = json!(16);
+        assert!(!observed_hybrid_master_stream_clock(&shifted, 49_600).exact_audio_presentation());
+
+        let mut unknown = report.clone();
+        unknown["audio_stream"]["duration_ts"] = Value::Null;
+        assert!(!observed_hybrid_master_stream_clock(&unknown, 49_600).exact_audio_presentation());
+
+        let mut video = report;
+        video["exact_clock"] = json!(false);
+        let clock = observed_hybrid_master_stream_clock(&video, 49_600);
+        assert!(!clock.exact_video_clock && clock.exact_audio_presentation());
+    }
+
     #[test]
     fn hybrid_native_master_audio_binds_the_exact_decode_and_both_source_channels() {
         let directory = tempfile::tempdir().unwrap();
