@@ -684,9 +684,9 @@ jobs:
       - name: Install the bound editor in the disposable runner
         if: inputs.kdenlive_accessibility_probe != true
         run: python -B -E -s tooling/otio-media/kdenlive_native_installation.py
-      - name: Read the installed Kdenlive window without editing
+      - name: Verify the Kdenlive track action in the disposable profile
         if: inputs.kdenlive_editor_window_probe && runner.os == 'macOS'
-        run: python -B -E -s tooling/otio-media/kdenlive_macos_editor.py --observe-editor-toolbars
+        run: python -B -E -s tooling/otio-media/kdenlive_macos_editor.py --observe-editor-configure-v1-toolbar
       - name: Produce the first-party OTIO cut and its original media
         if: inputs.kdenlive_editor_first_save && !inputs.kdenlive_accessibility_probe
         run: python -B -E -s tooling/otio-media/kdenlive_native_source.py
