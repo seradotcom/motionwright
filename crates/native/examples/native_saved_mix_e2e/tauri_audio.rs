@@ -719,10 +719,17 @@ pub(super) fn readback(database: &Path, root: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use motionwright_service::StudioService;
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    fn private_test_root() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap()
+    }
 
     fn inputs() -> (tempfile::TempDir, PathBuf) {
-        let root = tempfile::tempdir().unwrap();
+        let root = private_test_root();
         new_private_directory(&root.path().join("sources")).unwrap();
         for (bus, left, right) in [
             ("voice", 1_000, 2_000),
@@ -904,7 +911,7 @@ mod tests {
 
     #[test]
     fn namespace_allows_ancestor_content_change_and_rejects_replacement() {
-        let root = tempfile::tempdir().unwrap();
+        let root = private_test_root();
         let parent = root.path().join("parent");
         new_private_directory(&parent).unwrap();
         let file = parent.join("original.json");
