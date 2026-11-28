@@ -11411,7 +11411,12 @@ os._exit(0)
                     project.id,
                     &project.stamp(),
                     "boundary-typed-fixture-renderer",
-                    &Change::SetSceneRenderer { scene_id, renderer },
+                    &Change::SetReviewedSceneRenderer {
+                        scene_id,
+                        renderer,
+                        previous_renderer: project.scenes[0].renderer.clone(),
+                        expected: project.stamp(),
+                    },
                 )
                 .unwrap()
                 .project;
@@ -11892,9 +11897,11 @@ os._exit(0)
                         project.id,
                         &project.stamp(),
                         "late-fixture-manim-renderer",
-                        &Change::SetSceneRenderer {
+                        &Change::SetReviewedSceneRenderer {
                             scene_id: selected_scene,
                             renderer: RendererKind::ManimCommunity,
+                            previous_renderer: project.scenes[0].renderer.clone(),
+                            expected: project.stamp(),
                         },
                     )
                     .unwrap()

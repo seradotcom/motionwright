@@ -4,6 +4,7 @@ import {parseSavedMasterInventory, parseSavedMasterExportReceipt,type SavedMaste
 import { parseNativeAvPlayback, verifiedNativeReviewBytes, type NativeAvPlayback } from "./nativeAvMedia";
 import { applyDeliverySettingPropagation } from "./deliveryFamily";
 import { deliveryTextSourceConflict } from "./deliveryTextSources";
+import { requiresRendererFidelityReview } from "./rendererFidelityReview";
 import type { NativeAudioQcReceiptHint, NativeAudioQcReceiptInventoryResponse } from "./types";
 import { validateTranscriptEmphasis } from "./transcriptEmphasis";
 import type { OtioEditPreview } from "./otioCutReview";
@@ -1987,13 +1988,23 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       if (scene) scene.objective = change.objective;
       break;
     }
-    case "set_scene_renderer": {
+    case "set_scene_renderer":
+    case "set_reviewed_scene_renderer": {
       assertUnlocked(next, sceneResource(change.scene_id), ["renderer"]);
       if (!rendererEnabled(next, change.renderer)) {
         throw new Error("renderer requires an explicitly enabled project extension");
       }
       const scene = next.scenes.find((entry) => entry.id === change.scene_id);
-      if (scene) scene.renderer = change.renderer;
+      if (!scene) throw new Error("Scene is unavailable.");
+      if (change.type === "set_reviewed_scene_renderer") {
+        if (change.expected.resource !== "project:" + project.id || change.expected.generation !== project.generation
+          || change.expected.revision !== project.revision || change.previous_renderer !== scene.renderer) {
+          throw new Error("Renderer fidelity review is stale.");
+        }
+      } else if (requiresRendererFidelityReview(next, scene, change.renderer)) {
+        throw new Error("Review the scene renderer fidelity before changing it.");
+      }
+      scene.renderer = change.renderer;
       break;
     }
     case "set_scene_status": {

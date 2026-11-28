@@ -1,5 +1,7 @@
 import { CircleDashed, Clock3, LockKeyhole, Settings2, Unlock } from "lucide-react";
+import { useState } from "react";
 import SceneBeatEditor from "./SceneBeatEditor";
+import { requiresRendererFidelityReview, sceneHasAttachedNativeCapsule } from "./rendererFidelityReview";
 import type { Change, Project, RationalTime, RendererKind, Scene } from "./types";
 import type { TimecodeMode } from "./timecode";
 import { inspectorChange, useInspectorDraft, type InspectorChange, type InspectorField } from "./sceneInspectorDraft";
@@ -29,6 +31,46 @@ export default function SceneInspector(props: SceneInspectorProps) {
   </aside>;
   return <SelectedSceneInspector {...props} scene={props.scene} />;
 }
+function SceneRendererField({ project, scene, commit, rendererLabels }:
+  Pick<SceneInspectorProps, "project" | "commit" | "rendererLabels"> & { scene: Scene }) {
+  const [proposed, setProposed] = useState<RendererKind | null>(null);
+  const locked = project.locks.some(lock => lock.resource === "scene:" + scene.id && lock.kind === "renderer");
+  return <>
+    <label className="field-label" htmlFor="renderer">Renderer</label>
+    <select id="renderer" value={scene.renderer} disabled={locked} onChange={event => {
+      const renderer = event.target.value as RendererKind;
+      if (requiresRendererFidelityReview(project, scene, renderer)) setProposed(renderer);
+      else {
+        setProposed(null);
+        if (renderer !== scene.renderer) void commit({ type: "set_scene_renderer", scene_id: scene.id, renderer });
+      }
+    }}>
+      {Object.entries(rendererLabels).map(([value, label]) => {
+        const available = rendererAvailable(project, value as RendererKind);
+        return <option key={value} value={value} disabled={!available}>{label}{available ? "" : " · opt-in required"}</option>;
+      })}
+    </select>
+    {proposed && !locked && <fieldset>
+      <legend>Renderer fidelity review</legend>
+      <p>{rendererLabels[scene.renderer]} → {rendererLabels[proposed]}</p>
+      <ul>
+        <li><strong>Transforms.</strong> Position, scale, rotation and camera framing use each renderer's supported profile.</li>
+        <li><strong>Timing.</strong> Scene and cue times stay saved. Frame sampling and motion can differ between renderers.</li>
+        <li><strong>Text.</strong> Fonts, layout and glyph rendering can differ. The saved text remains editable.</li>
+        {sceneHasAttachedNativeCapsule(project, scene.id) && <li><strong>Attached native source.</strong> The source stays linked in the project. Its editable parameters may require the original native editor.</li>}
+      </ul>
+      <p>Unsupported content still requires a compatible profile before rendering.</p>
+      <button type="button" onClick={() => {
+        setProposed(null);
+        void commit({ type: "set_reviewed_scene_renderer", scene_id: scene.id, renderer: proposed,
+          previous_renderer: scene.renderer,
+          expected: { resource: "project:" + project.id, generation: project.generation, revision: project.revision } });
+      }}>Approve renderer change</button>
+      <button type="button" onClick={() => setProposed(null)}>Cancel renderer change</button>
+    </fieldset>}
+  </>;
+}
+
 function SelectedSceneInspector({ project, scene, commit, commitScene, commitBeat, rate, mode, rendererLabels }:
   SceneInspectorProps & { scene: Scene }) {
   const editor = useInspectorDraft(project, scene.id, commitScene);
@@ -54,26 +96,10 @@ function SelectedSceneInspector({ project, scene, commit, commitScene, commitBea
         <div className="inspector-section-title">Scene</div>
         <label className="field-label">Name</label>
         <div className="read-field">{scene.name}</div>
-        <label className="field-label" htmlFor="renderer">Renderer</label>
-        <select
-          id="renderer"
-          value={scene.renderer}
-          onChange={(event) => commit({
-            type: "set_scene_renderer",
-            scene_id: scene.id,
-            renderer: event.target.value as RendererKind,
-          })}
-        >
-          {Object.entries(rendererLabels).map(([value, label]) => {
-            const renderer = value as RendererKind;
-            const available = rendererAvailable(project, renderer);
-            return (
-              <option key={value} value={value} disabled={!available}>
-                {label}{available ? "" : " · opt-in required"}
-              </option>
-            );
-          })}
-        </select>
+        <SceneRendererField
+          key={[project.id, project.generation, project.active_branch, project.revision, scene.id].join("/")}
+          project={project} scene={scene} commit={commit} rendererLabels={rendererLabels}
+        />
         <label className="field-label" htmlFor="scene-status">Review state</label>
         <select
           id="scene-status"

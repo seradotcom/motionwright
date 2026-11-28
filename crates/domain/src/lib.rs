@@ -314,6 +314,21 @@ pub struct Scene {
 }
 
 impl Scene {
+    /// A populated scene can look different when another engine realizes the same authored values.
+    fn requires_renderer_fidelity_review(
+        &self,
+        renderer: &RendererKind,
+        capsules: &[NativeCapsule],
+    ) -> bool {
+        self.renderer != *renderer
+            && (self.renderer == RendererKind::ManimCommunity
+                || *renderer == RendererKind::ManimCommunity)
+            && (!self.nodes.is_empty()
+                || !self.beats.is_empty()
+                || self.camera != CameraState::default()
+                || capsules.iter().any(|capsule| capsule.scene_id == self.id))
+    }
+
     fn validate(&self) -> Result<()> {
         if self.name.trim().is_empty() || self.name.len() > 160 {
             return Err(DomainError::Invalid("scene name is out of bounds".into()));
@@ -1804,7 +1819,10 @@ impl Project {
                 }
                 scene.objective = objective.clone();
             }
-            Change::SetSceneRenderer { scene_id, renderer } => {
+            Change::SetSceneRenderer { scene_id, renderer }
+            | Change::SetReviewedSceneRenderer {
+                scene_id, renderer, ..
+            } => {
                 let resource = format!("scene:{scene_id}");
                 self.ensure_unlocked(&resource, &[LockKind::Renderer])?;
                 if !renderer_extension_enabled(renderer, &self.extensions) {
@@ -1812,11 +1830,34 @@ impl Project {
                         "renderer requires an explicitly enabled project extension".into(),
                     ));
                 }
+                let stamp = RevisionStamp::from(&*self);
                 let scene = self
                     .scenes
                     .iter_mut()
                     .find(|s| s.id == *scene_id)
                     .ok_or(DomainError::NotFound(resource))?;
+                match change {
+                    Change::SetReviewedSceneRenderer {
+                        expected,
+                        previous_renderer,
+                        ..
+                    } if *expected != stamp || *previous_renderer != scene.renderer => {
+                        return Err(DomainError::Invalid(
+                            "renderer fidelity review is stale".into(),
+                        ));
+                    }
+                    Change::SetSceneRenderer { .. }
+                        if scene.requires_renderer_fidelity_review(
+                            renderer,
+                            &self.production_design.capsules,
+                        ) =>
+                    {
+                        return Err(DomainError::Invalid(
+                            "review the scene renderer fidelity before changing it".into(),
+                        ));
+                    }
+                    _ => {}
+                }
                 scene.renderer = renderer.clone();
             }
             Change::SetSceneStatus { scene_id, status } => {
@@ -3244,6 +3285,13 @@ pub enum Change {
     SetSceneRenderer {
         scene_id: Uuid,
         renderer: RendererKind,
+    },
+    /// Explicit approval of the proposed realization for one observed scene revision.
+    SetReviewedSceneRenderer {
+        scene_id: Uuid,
+        renderer: RendererKind,
+        previous_renderer: RendererKind,
+        expected: RevisionStamp,
     },
     SetSceneStatus {
         scene_id: Uuid,

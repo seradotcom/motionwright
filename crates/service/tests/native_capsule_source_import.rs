@@ -710,3 +710,75 @@ fn authored_digest_refuses_substituted_source_before_publication() {
     );
     unchanged(&f, &after);
 }
+
+#[test]
+fn attached_editable_source_requires_a_renderer_review_in_an_otherwise_empty_scene() {
+    let f = fixture();
+    let scene = &f.project.scenes[0];
+    let scene_id = scene.id;
+    let choose_manim = Change::SetSceneRenderer {
+        scene_id,
+        renderer: motionwright_domain::RendererKind::ManimCommunity,
+    };
+    let mut empty_scene = f.project.clone();
+    empty_scene.apply_change(&choose_manim).unwrap();
+
+    let spec = spec(&f.project);
+    let project = save(&f, &f.project, "attach-editable-source", &spec)
+        .unwrap()
+        .project;
+    assert_eq!(&project.scenes[0], scene);
+    assert!(
+        !project.production_design.capsules[0]
+            .editable_parameters
+            .is_empty()
+    );
+    let before = snapshot(&f);
+    let rejected = f
+        .service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "direct-renderer-change",
+            &choose_manim,
+        )
+        .unwrap_err();
+    assert!(
+        rejected
+            .to_string()
+            .contains("review the scene renderer fidelity")
+    );
+    unchanged(&f, &before);
+
+    let approved = Change::SetReviewedSceneRenderer {
+        scene_id,
+        renderer: motionwright_domain::RendererKind::ManimCommunity,
+        previous_renderer: scene.renderer.clone(),
+        expected: project.stamp(),
+    };
+    let changed = f
+        .service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "approved-renderer-change",
+            &approved,
+        )
+        .unwrap()
+        .project;
+    let reopened = StudioService::open(&f.database).unwrap();
+    assert_eq!(reopened.project(project.id).unwrap(), changed);
+    assert_eq!(changed.assets, project.assets);
+    assert_eq!(
+        changed.production_design.capsules,
+        project.production_design.capsules
+    );
+    let original = reopened
+        .verified_native_capsule_source(changed.id, &changed.stamp(), spec.capsule_id)
+        .unwrap();
+    assert_eq!(
+        original.source_sha256,
+        changed.production_design.capsules[0].source_sha256
+    );
+    assert_eq!(original.bytes(), fs::read(&f.source).unwrap());
+}

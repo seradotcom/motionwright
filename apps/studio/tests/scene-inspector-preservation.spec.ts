@@ -264,3 +264,71 @@ test("content and timing locks disable only their existing author fields", async
   await page.evaluate(id => window.__INSPECTOR_AUTHORITY__.externalChange({ type: "set_lock", resource: "scene:" + id, kind: "timing", note: "Keep timing" }), id);
   await expect(duration(page)).toBeDisabled(); await expect(button(page, "Ripple")).toBeDisabled();
 });
+
+test("an authored scene switches to Manim only after a revision-bound fidelity review", async ({ page }) => {
+  const renderer = page.getByLabel("Renderer", { exact: true });
+  const prior = await page.evaluate(() => window.__INSPECTOR_AUTHORITY__.project());
+  const scene = prior.scenes[0];
+  expect(scene.renderer).toBe("motion-canvas");
+  expect(scene.nodes.length).toBeGreaterThan(0);
+
+  await renderer.selectOption("manim-community");
+  expect(await requests(page)).toHaveLength(0);
+  await expect(renderer).toHaveValue("motion-canvas");
+  const review = page.getByRole("group", { name: "Renderer fidelity review" });
+  await expect(review).toContainText("Transforms");
+  await expect(review).toContainText("Timing");
+  await expect(review).toContainText("Text");
+  await button(page, "Cancel renderer change").click();
+  expect(await requests(page)).toHaveLength(0);
+
+  await renderer.selectOption("manim-community");
+  await page.evaluate(() => window.__INSPECTOR_AUTHORITY__.externalChange({ type: "rename_project", title: "A different revision" }));
+  await expect(review).toHaveCount(0);
+  expect(await requests(page)).toHaveLength(0);
+
+  await renderer.selectOption("manim-community");
+  const request = await submit(page, "Approve renderer change");
+  expect(request.source.revision).toBe(prior.revision + 1);
+  await page.evaluate(id => window.__INSPECTOR_AUTHORITY__.resolve(id), request.id);
+  await expect(renderer).toHaveValue("manim-community");
+  const saved = await page.evaluate(() => window.__INSPECTOR_AUTHORITY__.project());
+  expect(saved.scenes[0]).toEqual({ ...scene, renderer: "manim-community" });
+  await page.reload();
+  await expect(renderer).toHaveValue("manim-community");
+  await renderer.selectOption("motion-canvas");
+  await expect(review).toBeVisible();
+  expect(await requests(page)).toHaveLength(0);
+});
+
+test("an editable native capsule requires a Manim review even without Canvas objects", async ({ page }) => {
+  const scene = await page.evaluate(async () => {
+    const harness = window.__INSPECTOR_AUTHORITY__;
+    await harness.externalChange({ type: "add_scene", name: "Attached editable source", objective: "Retain source", duration_seconds: 3 });
+    const project = harness.project();
+    const scene = project.scenes.at(-1)!;
+    const asset = project.assets[0];
+    await harness.externalChange({ type: "upsert_native_capsule", capsule: {
+      id: "c0000000-0000-4000-8000-000000000001", scene_id: scene.id, source_asset_id: asset.id,
+      source_sha256: asset.content_sha256!, label: "Synthetic editable source",
+      editable_parameters: ["shape.position"], native_editor_hint: "Native editor",
+      fidelity: { renderer: "opaque", renderer_version: "unverified",
+        visual: "unavailable", temporal: "unavailable", structural: "unavailable", editable: "unavailable",
+        evidence_sha256: null, losses: ["Source realization is unverified."] },
+    } });
+    await harness.selectScene(scene.id);
+    return scene;
+  });
+  expect(scene.nodes).toHaveLength(0);
+  expect(scene.beats).toHaveLength(0);
+  const renderer = page.getByLabel("Renderer", { exact: true });
+  await renderer.selectOption("manim-community");
+  expect(await requests(page)).toHaveLength(0);
+  await expect(renderer).toHaveValue("motion-canvas");
+  await expect(page.getByRole("group", { name: "Renderer fidelity review" })).toContainText("Attached native source");
+  const request = await submit(page, "Approve renderer change");
+  await page.evaluate(id => window.__INSPECTOR_AUTHORITY__.resolve(id), request.id);
+  await expect(renderer).toHaveValue("manim-community");
+  const saved = await page.evaluate(() => window.__INSPECTOR_AUTHORITY__.project());
+  expect(saved.production_design?.capsules).toEqual(request.source.production_design?.capsules);
+});

@@ -914,6 +914,8 @@ export type Change =
   | { type: "move_scene"; scene_id: string; to_index: number }
   | { type: "update_scene_objective"; scene_id: string; objective: string }
   | { type: "set_scene_renderer"; scene_id: string; renderer: RendererKind }
+  | { type: "set_reviewed_scene_renderer"; scene_id: string; renderer: RendererKind;
+      previous_renderer: RendererKind; expected: { resource: string; generation: string; revision: number } }
   | { type: "set_scene_status"; scene_id: string; status: SceneStatus }
   | { type: "set_scene_duration"; scene_id: string; duration: RationalTime }
   | { type: "snap_scene_cut_to_music"; scene_id: string; beat_index: number; source_sha256: string; base_revision: number; acknowledge_absolute_anchors: boolean }
