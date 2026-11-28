@@ -5046,6 +5046,81 @@ mod tests {
         }
     }
 
+    #[test]
+    fn staggered_procedural_entries_respect_the_actual_span_budget() {
+        for (second_count, expected_segments) in [(59, 1), (60, 2)] {
+            let mut project = Project::new("Procedural entrance budget").unwrap();
+            let counts = [motionwright_domain::PROCEDURAL_MAX_ITEMS, second_count];
+            for (index, count) in counts.into_iter().enumerate() {
+                project
+                    .apply_change(&Change::AddScene {
+                        name: format!("Field {}", index + 1),
+                        objective: "Preserve each editable entrance".into(),
+                        duration_seconds: 3,
+                    })
+                    .unwrap();
+                let scene_id = project.scenes[index].id;
+                project
+                    .apply_change(&Change::UpsertProceduralField {
+                        instance_id: Uuid::now_v7(),
+                        scene_id,
+                        config: motionwright_domain::ProceduralConfig {
+                            count,
+                            columns: 16,
+                            distribution: motionwright_domain::FieldDistribution::Grid,
+                            reveal_step_frames: 1,
+                            ..Default::default()
+                        },
+                    })
+                    .unwrap();
+            }
+            let original = project.clone();
+            let segments = build_motion_canvas_segments(
+                &project,
+                project.deliverables[0].id,
+                &fixture_options(&project),
+            )
+            .unwrap();
+            assert_eq!(segments.len(), expected_segments);
+            assert_eq!(
+                segments
+                    .iter()
+                    .map(|segment| segment.frame_count)
+                    .sum::<u64>(),
+                180
+            );
+            for segment in &segments {
+                assert!(segment.film.timing.spans.len() <= MAX_TEMPORAL_SPANS);
+                realize(&segment.film).unwrap();
+            }
+            let shots = segments
+                .iter()
+                .flat_map(|segment| &segment.film.sequences)
+                .flat_map(|sequence| &sequence.beats)
+                .flat_map(|beat| &beat.shots)
+                .collect::<Vec<_>>();
+            assert_eq!(shots.len(), counts.len());
+            for (shot, count) in shots.into_iter().zip(counts) {
+                assert_eq!(shot.subjects.len(), usize::from(count));
+                assert_eq!(shot.motion.len(), usize::from(count));
+                assert!(
+                    shot.motion.iter().all(|invocation| matches!(
+                        invocation.primitive,
+                        Primitive::SlideIn { .. }
+                    ))
+                );
+            }
+            if expected_segments == 1 {
+                assert_eq!(segments[0].film.timing.spans.len(), MAX_TEMPORAL_SPANS);
+            } else {
+                assert_eq!(segments[0].frame_count, 90);
+                assert_eq!(segments[1].frame_count, 90);
+                assert_eq!(segments[1].global_start, Rational::new(3, 1).unwrap());
+            }
+            assert_eq!(project, original);
+        }
+    }
+
     fn fixed_position(segment: &MotionCanvasSegment, scene_index: usize) -> Point {
         let subject = &segment.film.sequences[0].beats[scene_index].shots[0].subjects[0];
         match &subject.layout {
