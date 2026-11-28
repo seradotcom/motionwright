@@ -169,6 +169,10 @@ test("assistant reviews only current scoped edits and keeps draft replacement ex
   await preview.click();
   await expect(review.getByRole("img", { name: "Before scoped changes", exact: true })).toContainText(target.text.split("\n")[0]);
   await expect(review.getByRole("img", { name: "After scoped changes", exact: true })).toContainText("An approved assistant edit.");
+  const comparison = review.getByRole("region", { name: "Scoped comparison", exact: true });
+  await expect(comparison).toBeFocused();
+  await expect(review.getByRole("img", { name: "Before scoped changes", exact: true })).toBeInViewport({ ratio: 0.65 });
+  await expect(review.getByRole("img", { name: "After scoped changes", exact: true })).toBeInViewport({ ratio: 0.65 });
   await review.getByText("Exact changed object values", { exact: true }).click();
   const diff = JSON.parse((await review.locator("details pre").last().innerText()));
   expect(diff[0].before.text).toBe(target.text);

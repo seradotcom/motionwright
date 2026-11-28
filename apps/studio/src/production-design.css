@@ -75,6 +75,7 @@
 .production-transform-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .production-patch-queue > div:not(.production-patch-receipt) { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid var(--border-soft); font-size: 11px; }
 .production-patch-receipt { border: 1px solid var(--border-soft); padding: 15px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.production-patch-comparison { display: grid; gap: 12px; min-width: 0; }
 .production-compare-grid figure { min-width: 0; padding: 0; margin: 0; border: 1px solid var(--border-soft); }
 .production-compare-grid figcaption { padding: 12px; background: var(--surface-2); font-size: 10px; color: var(--muted); letter-spacing: .04em; }
 .production-diff-details summary { font-size: 11px; cursor: pointer; color: var(--muted); }

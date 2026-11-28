@@ -111,6 +111,13 @@ function ScopedEditor({ project, scene, commit, refreshProject, busy, playhead, 
   latest.current = key;
   const activeReview = review?.key === key && (undoTarget !== null || !draftStale) ? review : null;
   const preview = activeReview?.preview ?? null;
+  const comparisonRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const comparison = comparisonRef.current;
+    if (!activeReview || !comparison) return;
+    comparison.focus({ preventScroll: true });
+    comparison.scrollIntoView({ block: "start" });
+  }, [activeReview]);
   const node = scene?.nodes.find(item => item.id === draft.editor.nodeId);
   const lockedUi = busy || submitting || needsRecovery;
   const hasObjectSource = Boolean(node && draft.editor.source?.id === node.id);
@@ -386,6 +393,54 @@ function ScopedEditor({ project, scene, commit, refreshProject, busy, playhead, 
   };
   const editSummary = (edit: { node_id: string; kind: string }) => `${scene?.nodes.find(item => item.id === edit.node_id)?.name ?? edit.node_id} / ${edit.kind}`;
 
+  const comparison = scene && (
+    <section ref={comparisonRef} tabIndex={-1} className="production-patch-comparison" aria-label="Scoped comparison">
+      <div className="production-compare-grid">
+        <figure>
+          <figcaption>BEFORE · current project</figcaption>
+          <SceneCompositionStudy scene={scene} frameRate={displayProfile?.frame_rate}
+            cameraReframes={project.production_design?.camera_reframes} time={time} background={background}
+            ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
+            label="Before scoped changes"/>
+        </figure>
+        <figure>
+          <figcaption>AFTER · {undoTarget ? "uncommitted undo" : "uncommitted proposal"}</figcaption>
+          <SceneCompositionStudy scene={scene} frameRate={displayProfile?.frame_rate} nodes={resultNodes}
+            cameraReframes={project.production_design?.camera_reframes} time={time} background={background}
+            ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
+            label="After scoped changes"/>
+        </figure>
+      </div>
+      <div className="production-transport">
+        <span className="mono">{time.toFixed(3)} s</span>
+        <input aria-label="Comparison playhead" type="range" min={0} max={seconds(scene.duration)}
+          step={displayProfile ? 1 / seconds(displayProfile.frame_rate) : 1 / 30} value={time}
+          onChange={event => onSeek(seconds(scene.start) + Number(event.target.value))}/>
+      </div>
+      {displayProfile && Object.keys(displayProfile.text_overrides).length > 0 &&
+        <p className="production-help" role="status">Editorial text is shown for selected output profile {displayProfile.name}.
+          Profile text overrides take precedence over the original Canvas node text. Revise the variant in Deliver to change this displayed copy.</p>}
+      <p className="production-help">Both sides share the application playhead, scene camera and saved object relationships. Imported media and advanced paint effects require review in native frames.</p>
+      {preview && <details className="production-diff-details">
+        <summary>Exact changed object values</summary>
+        <pre>{JSON.stringify(preview.after.map((after, index) => ({
+          object: after.name, before: preview.before[index] as CanvasNode, after,
+        })), null, 2)}</pre>
+      </details>}
+    </section>
+  );
+  const reviewActions = (
+    <div className="production-button-row">
+      <button className="primary-button" disabled={!activeReview || lockedUi || pending} onClick={applyReviewed}>
+        <Check size={14}/> {undoTarget ? "Apply undo as new revision" : "Apply as one revision"}
+      </button>
+      {undoTarget && <button className="secondary-button" disabled={lockedUi} onClick={() => { invalidate(); setUndoTarget(null); }}>Back to proposal</button>}
+      {activeReview && onOpenReview && <button type="button" className="secondary-button" disabled={lockedUi || pending}
+        onClick={() => onOpenReview(activeReview.preview.after.length === 1 ? activeReview.preview.after[0].id : null)}>Review saved source</button>}
+      <button className="secondary-button" disabled={lockedUi} onClick={reset}>Discard proposal</button>
+    </div>
+  );
+
   return <div className="production-patch">
     <div className="production-section-title"><Eye size={18}/><div><h2>Scoped changes</h2><p>Stage a bounded proposal, inspect the difference and commit once.</p></div></div>
     {needsRecovery && <section className="production-notice" aria-label="Original proposal save">
@@ -443,6 +498,7 @@ function ScopedEditor({ project, scene, commit, refreshProject, busy, playhead, 
         <details className="production-diff-details"><summary>Compare original, current and proposed values</summary><pre>{JSON.stringify({ original: conflict.before, current: conflict.current, proposed: conflict.proposed }, null, 2)}</pre></details>
         <button className="secondary-button" disabled={lockedUi} onClick={() => update(keepCurrentDraftValue(draft, conflict, scene))}>Keep current {conflict.kind} for {conflict.label}</button>
       </article>)}</section>}
+    {activeReview && <>{comparison}{reviewActions}</>}
     <CanvasArrangementControls draft={draft} project={project} scene={scene} disabled={lockedUi || !scene || nativeSource !== null}
       stale={draftStale} initiallyOpen={arrangementOpen} onChange={update}/>
     <FocusTransferControls key={"focus:"+scope} project={project} scene={scene} profile={displayProfile} draft={draft}
@@ -493,21 +549,7 @@ function ScopedEditor({ project, scene, commit, refreshProject, busy, playhead, 
           <p>Prepared for revision {activeReview!.revision}. Changing the proposal requires a new preview.</p></div>}
       </section>
     </div>
-    {scene && <><div className="production-compare-grid"><figure><figcaption>BEFORE · current project</figcaption><SceneCompositionStudy scene={scene} frameRate={displayProfile?.frame_rate} cameraReframes={project.production_design?.camera_reframes} time={time} background={background} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
-        label="Before scoped changes"/></figure>
-      <figure><figcaption>AFTER · {undoTarget ? "uncommitted undo" : "uncommitted proposal"}</figcaption><SceneCompositionStudy scene={scene} frameRate={displayProfile?.frame_rate} nodes={resultNodes} cameraReframes={project.production_design?.camera_reframes} time={time} background={background} ink={inheritedTextInk(project.visual_language.palette)} textOverrides={displayProfile?.text_overrides}
-        label="After scoped changes"/></figure></div>
-      <div className="production-transport"><span className="mono">{time.toFixed(3)} s</span><input aria-label="Comparison playhead" type="range" min={0} max={seconds(scene.duration)} step={displayProfile ? 1 / seconds(displayProfile.frame_rate) : 1 / 30} value={time}
-        onChange={event => onSeek(seconds(scene.start) + Number(event.target.value))}/></div>
-      {displayProfile && Object.keys(displayProfile.text_overrides).length > 0 &&
-        <p className="production-help" role="status">Editorial text is shown for selected output profile {displayProfile.name}.
-          Profile text overrides take precedence over the original Canvas node text. Revise the variant in Deliver to change this displayed copy.</p>}
-      <p className="production-help">Both sides share the application playhead, scene camera and saved object relationships. Imported media and advanced paint effects require review in native frames.</p></>}
-    <div className="production-button-row"><button className="primary-button" disabled={!activeReview || lockedUi || pending} onClick={applyReviewed}><Check size={14}/> {undoTarget ? "Apply undo as new revision" : "Apply as one revision"}</button>
-      {undoTarget && <button className="secondary-button" disabled={lockedUi} onClick={() => { invalidate(); setUndoTarget(null); }}>Back to proposal</button>}
-      {activeReview && onOpenReview && <button type="button" className="secondary-button" disabled={lockedUi || pending}
-        onClick={() => onOpenReview(activeReview.preview.after.length === 1 ? activeReview.preview.after[0].id : null)}>Review saved source</button>}
-      <button className="secondary-button" disabled={lockedUi} onClick={reset}>Discard proposal</button></div>
+    {!activeReview && <>{comparison}{reviewActions}</>}
     <section className="production-undo-history" aria-label="Reversible scoped changes"><h3>Reversible scoped changes</h3>
       <p className="production-help">Undo and redo create new revisions and preserve unrelated edits. Inspecting an undo keeps your uncommitted proposal. The latest 64 changes are available within a four-megabyte window.</p>
       {records.length === 0 ? <p className="production-help">No applied scoped changes in this scene yet.</p> : [...records].reverse().map(record => {
@@ -516,6 +558,5 @@ function ScopedEditor({ project, scene, commit, refreshProject, busy, playhead, 
           <button className="secondary-button" disabled={lockedUi || pending || reverted} onClick={() => inspectUndo(record.id)}>{record.reverts ? "Preview redo" : "Preview undo"}</button></article>;
       })}
     </section>
-    {preview && <details className="production-diff-details"><summary>Exact changed object values</summary><pre>{JSON.stringify(preview.after.map((after, index) => ({ object: after.name, before: preview.before[index] as CanvasNode, after })), null, 2)}</pre></details>}
   </div>;
 }
