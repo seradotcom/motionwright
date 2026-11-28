@@ -5,7 +5,7 @@ import type { MeasuredTable, MeasuredView } from "./measuredData";
 import type { ProceduralConfig } from "./proceduralField";
 import type { BrandProfile, BrandException, TasteProfile, CreativeDecision } from "./brandGovernance";
 import type { SemanticSfxCue } from "./semanticSfx";
-import type { ComponentDistillationInput, DistillationReview } from "./componentDistillation";
+import type { ComponentDistillationInput, DistillationReview, DistilledComponentInstance } from "./componentDistillation";
 import type { ProductStageConfig } from "./productStage";
 import type { CameraReframe } from "./cameraReframe";
 import type { StageCaptureCard } from "./stageCapture";
@@ -874,6 +874,7 @@ export type Change =
   | { type: "detach_product_hero"; instance_id: string }
   | { type: "propose_component_distillation"; input: ComponentDistillationInput }
   | { type: "review_component_distillation"; id: string; review: DistillationReview }
+  | { type: "instantiate_component_distillation"; instance: DistilledComponentInstance }
   | { type: "upsert_product_stage"; instance_id: string; scene_id: string; config: ProductStageConfig }
   | { type: "detach_product_stage"; instance_id: string }
   | { type: "upsert_camera_reframe"; reframe: CameraReframe }

@@ -1238,6 +1238,7 @@ impl Project {
                 | Change::ReparentCanvasNode { .. }
                 | Change::UpsertSceneBoundary { .. }
                 | Change::RemoveSceneBoundary { .. }
+                | Change::InstantiateComponentDistillation { .. }
         ) || self.has_scene_boundary_state()
             || !self.production_design.semantic_graphs.is_empty()
             || self.branch_workspaces.iter().any(|workspace| {
@@ -1485,6 +1486,9 @@ impl Project {
             }
             Change::ReviewComponentDistillation { id, review } => {
                 self.review_component_distillation(*id, review)?;
+            }
+            Change::InstantiateComponentDistillation { instance } => {
+                self.instantiate_component_distillation(instance)?;
             }
             Change::SetProductionPlan { plan } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
@@ -3073,6 +3077,9 @@ pub enum Change {
     ReviewComponentDistillation {
         id: Uuid,
         review: DistillationReview,
+    },
+    InstantiateComponentDistillation {
+        instance: DistilledComponentInstance,
     },
     BindStageCapture {
         stage_id: Uuid,

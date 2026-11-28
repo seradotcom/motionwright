@@ -475,3 +475,34 @@ describe("Distillation verified durable custody and current unknown-outcome revi
     expect(pointers.getItem(distillationPointerKey(next.scope))).toBe(fork);
   });
 });
+
+describe("Reviewed Distillation instances", () => {
+  it("retains a lost request and requires both the exact provenance and materialized Canvas nodes in the reply", async () => {
+    const { project, prepared } = await armed("review");
+    const reviewed = await applyChange(project, prepared.change);
+    const proposal = reviewed.production_design!.distillations![0];
+    const sample = proposal.samples[1];
+    const destination = reviewed.scenes.find(scene => scene.renderer === "motion-canvas")!;
+    const raw = { sampleSceneId: sample.scene_id, destinationSceneId: destination.id, overrides: {} };
+    let draft = createDistillationDraft(reviewed, { kind: "instantiate", proposalId: proposal.input.id });
+    draft = editDistillationDraft(draft, raw);
+    const submission = prepareDistillationSubmission(draft, reviewed, requestId);
+    const { storage, key } = recoverySource(submission.draft);
+    const bytes = storage.getItem(key)!;
+    expect(decodeDistillationCopy(bytes, draft.scope, writer).draft).toEqual(submission.draft);
+    expect(() => prepareDistillationSubmission(submission.draft, reviewed, fork)).toThrow(/uncertain/);
+
+    const saved = await applyChange(reviewed, submission.change);
+    expect(saved.production_design!.distillations).toEqual(reviewed.production_design!.distillations);
+    expect(saved.production_design!.distillation_instances).toHaveLength(1);
+    const incomplete = structuredClone(saved);
+    incomplete.scenes.find(scene => scene.id === destination.id)!.nodes.pop();
+    expect(() => acknowledgeDistillationDraft(submission.draft, requestId, incomplete)).toThrow(/editable Canvas objects/);
+    expect(acknowledgeDistillationDraft(submission.draft, requestId, saved).pending).toBeNull();
+    const observation = await inspectDistillationOutcome(submission.draft, saved, {
+      readProject: async () => saved,
+      readHistory: async () => journal(saved, submission.change),
+    });
+    expect(observation.matchingValueRevisions).toEqual([saved.revision]);
+  });
+});

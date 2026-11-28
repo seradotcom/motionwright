@@ -1,7 +1,7 @@
 import { FileCheck2, RefreshCw, Save } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Change, Project } from "./types";
-import type { DistillationVerdict } from "./componentDistillation";
+import type { ComponentDistillationProposal, DistillationVerdict } from "./componentDistillation";
 import { sameProjectRevision } from "./projectMutation";
 import { sameValue } from "./creativeProduction";
 import { bootstrap, projectHistory } from "./api";
@@ -13,10 +13,11 @@ import {
   distillationHasWork, distillationLabel, distillationNegativeCase, distillationOutcomeMatches, distillationPointerKey, distillationCopyKey,
   distillationScope, distillationUnconfirmed, DISTILLATION_RECOVERY_PREFIX,
 } from "./componentDistillationDraft";
-import type { DistillationAuthorRaw, DistillationCustody, DistillationDraft, DistillationOutcomeReview, DistillationRaw,
+import type { DistillationAuthorRaw, DistillationCustody, DistillationDraft, DistillationInstanceRaw, DistillationOutcomeReview, DistillationRaw,
   DistillationRecoveryEntry, DistillationRecoveryPointer, DistillationReviewRaw, DistillationTarget } from "./componentDistillationDraft";
 
-type Props = { project: Project; busy: boolean; commit: (change: Change) => Promise<Project> };
+type Props = { project: Project; busy: boolean; commit: (change: Change) => Promise<Project>;
+  onSelectScene?: (id: string) => void; onOpenCanvas?: () => void };
 type Session = { draft: DistillationDraft; custody: DistillationCustody; recoveryObservation: DistillationRecoveryPointer; inFlight: boolean;
   error: string | null; backupError: string | null; recoveryProblem: string | null; notice: string | null;
   copies: DistillationRecoveryEntry[]; limited: boolean; notify?: () => void };
@@ -275,7 +276,7 @@ function DraftFeedback({ editor }: { editor: ReturnType<typeof useDraft> }) {
 export default function ComponentDistillationWorkbench(props: Props) {
   return <DistillationOwner key={JSON.stringify([props.project.id, props.project.generation, props.project.active_branch])} {...props}/>;
 }
-function DistillationOwner({ project, busy, commit }: Props) {
+function DistillationOwner({ project, busy, commit, onSelectScene, onOpenCanvas }: Props) {
   const editor = useDraft(project, { kind: "author" }, commit, busy), raw = editor.draft.raw as DistillationAuthorRaw;
   const proposals = project.production_design?.distillations ?? [];
   const sourceScenes = project.scenes.filter(scene => scene.renderer === "motion-canvas" && distillationCompatibleNodes(scene).length >= 2);
@@ -296,6 +297,7 @@ function DistillationOwner({ project, busy, commit }: Props) {
     {sourceScenes.map(scene => <option value={scene.id} key={scene.id}>{scene.name}</option>)}
   </select>;
   const reviewId = editor.draft.selection;
+  const reviewed = proposals.find(candidate => candidate.input.id === reviewId && candidate.review?.verdict === "compatible_proposal");
   return <div className="production-split">
     <section className="production-inspector" aria-label="Component distillation proposal controls">
       <div className="production-section-title"><div><h2>Component distillation</h2><p>Evidence-bound proposals Â· no code installation</p></div></div>
@@ -329,6 +331,8 @@ function DistillationOwner({ project, busy, commit }: Props) {
         {proposals.map(candidate => <option key={candidate.input.id} value={candidate.input.id}>{candidate.input.label} Â· revision {candidate.input.source_revision}{candidate.review ? " · immutable review recorded" : ""}</option>)}
       </select></label>
       <ReviewControls key={distillationScope(project, { kind: "review", proposalId: reviewId || null })} project={project} busy={busy} commit={commit} proposalId={reviewId || null}/>
+      {reviewed && <InstanceControls key={reviewed.input.id} project={project} busy={busy} commit={commit}
+        candidate={reviewed} onSelectScene={onSelectScene} onOpenCanvas={onOpenCanvas}/>}
     </section>
     <section className="production-viewer" aria-label="Distillation source evidence">
       <div className="production-viewer-toolbar"><div>
@@ -376,5 +380,59 @@ function ReviewControls({ project, busy, commit, proposalId }: Props & { proposa
     {candidate?.review && <p className="production-help" role="status">This source proposal already has an immutable review. Later notes stay editable here and can be downloaded; they do not replace the recorded review.</p>}
     <button type="button" className="secondary-button" disabled={!canReview} onClick={() => void editor.send()}><FileCheck2 size={14}/> Record review only</button>
     <DraftFeedback editor={editor}/>
+  </section>;
+}
+
+function InstanceControls({ project, busy, commit, candidate, onSelectScene, onOpenCanvas }: Props & { candidate: ComponentDistillationProposal }) {
+  const editor = useDraft(project, { kind: "instantiate", proposalId: candidate.input.id }, commit, busy);
+  const raw = editor.draft.raw as DistillationInstanceRaw;
+  const projectLocked = project.locks.some(lock => lock.resource === "project:" + project.id && lock.kind === "content");
+  const destinations = project.scenes.filter(scene => scene.renderer === "motion-canvas"
+    && !project.locks.some(lock => lock.resource === "scene:" + scene.id));
+  const sample = candidate.samples.find(value => value.scene_id === raw.sampleSceneId);
+  const instances = (project.production_design?.distillation_instances ?? []).filter(value => value.proposal_id === candidate.input.id);
+  const canCreate = !!sample && destinations.some(scene => scene.id === raw.destinationSceneId)
+    && editor.draft.intent && !projectLocked && !editor.busy && !editor.conflict
+    && !editor.session.backupError && !distillationUnconfirmed(editor.draft);
+  return <section aria-label="Use reviewed component">
+    <h3>Use reviewed component</h3>
+    <p className="production-help">Create editable Canvas objects from the frozen variant at source revision {candidate.input.source_revision}.</p>
+    <label className="production-field"><span>Frozen variant</span><select value={raw.sampleSceneId}
+      onChange={event => editor.edit({ ...raw, sampleSceneId: event.target.value })}>
+      <option value="">Choose a source variation</option>
+      {candidate.samples.map((value, index) => <option value={value.scene_id} key={value.scene_id}>
+        {project.scenes.find(scene => scene.id === value.scene_id)?.name ?? "Frozen variant " + (index + 1)}
+      </option>)}
+    </select></label>
+    <label className="production-field"><span>Destination Canvas scene</span><select value={raw.destinationSceneId}
+      onChange={event => editor.edit({ ...raw, destinationSceneId: event.target.value })}>
+      <option value="">Choose an unlocked Canvas scene</option>
+      {raw.destinationSceneId && !destinations.some(scene => scene.id === raw.destinationSceneId)
+        && <option value={raw.destinationSceneId}>Earlier destination is unavailable</option>}
+      {destinations.map(scene => <option value={scene.id} key={scene.id}>{scene.name}</option>)}
+    </select></label>
+    {sample && candidate.input.roles.map((role, index) => role.kind === "text" &&
+      <label className="production-field" key={role.key}><span>Text for {sample.nodes[index].name} ({role.key})</span>
+        <input maxLength={1024} value={raw.overrides[role.key] ?? ""} placeholder={sample.nodes[index].text ?? ""}
+          onChange={event => editor.edit({ ...raw, overrides: { ...raw.overrides, [role.key]: event.target.value } })}/>
+      </label>)}
+    {sample && candidate.input.roles.some(role => role.kind === "text") &&
+      <p className="production-help">Leave a text field empty to keep the original wording.</p>}
+    <button type="button" className="primary-button" disabled={!canCreate} onClick={() => void editor.send()}>
+      <Save size={14}/> Create editable instance
+    </button>
+    <DraftFeedback editor={editor}/>
+    {instances.length > 0 && <ul aria-label="Saved editable instances">
+      {instances.map(instance => {
+        const scene = project.scenes.find(value => value.id === instance.scene_id);
+        const index = candidate.samples.findIndex(value => value.scene_id === instance.sample_scene_id);
+        const objects = scene?.nodes.filter(node => instance.node_ids.includes(node.id)).length ?? 0;
+        return <li key={instance.id}>Variant {index + 1} · {scene?.name ?? "Removed scene"} · {objects} of {instance.node_ids.length} Canvas objects
+          {scene && onSelectScene && onOpenCanvas && <button type="button" className="secondary-button" onClick={() => {
+            onSelectScene(scene.id); onOpenCanvas();
+          }}>Open {scene.name} in Canvas</button>}
+        </li>;
+      })}
+    </ul>}
   </section>;
 }

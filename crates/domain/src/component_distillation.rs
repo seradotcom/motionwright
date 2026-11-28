@@ -6,7 +6,7 @@
 //! admission decision; it is not by itself permission or creative approval.
 use crate::*;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 pub const DISTILLATION_SCHEMA: &str = "motionwright.component-distillation/1";
@@ -99,6 +99,68 @@ pub struct ComponentDistillationProposal {
     pub samples: Vec<DistillationSample>,
     pub review: Option<DistillationReview>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DistilledComponentInstance {
+    pub id: Uuid,
+    pub proposal_id: Uuid,
+    pub sample_scene_id: Uuid,
+    pub scene_id: Uuid,
+    /// Editable Canvas node identities in the order of the frozen role roster.
+    pub node_ids: Vec<Uuid>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub text_overrides: BTreeMap<String, String>,
+}
+impl DistilledComponentInstance {
+    fn identities(&self) -> impl Iterator<Item = Uuid> + '_ {
+        std::iter::once(self.id).chain(self.node_ids.iter().copied())
+    }
+
+    fn sample<'a>(
+        &self,
+        proposal: &'a ComponentDistillationProposal,
+    ) -> Result<&'a DistillationSample> {
+        if !proposal
+            .review
+            .as_ref()
+            .is_some_and(|review| review.verdict == DistillationVerdict::CompatibleProposal)
+        {
+            return Err(DomainError::Invalid(
+                "distillation requires a compatible review".into(),
+            ));
+        }
+        let sample = proposal
+            .samples
+            .iter()
+            .find(|sample| sample.scene_id == self.sample_scene_id)
+            .ok_or_else(|| {
+                DomainError::NotFound(format!(
+                    "frozen distillation variant:{}",
+                    self.sample_scene_id
+                ))
+            })?;
+        if self.scene_id.is_nil()
+            || self.node_ids.len() != sample.nodes.len()
+            || self.identities().any(|id| id.is_nil())
+            || self.identities().collect::<BTreeSet<_>>().len() != self.node_ids.len() + 1
+            || self.text_overrides.iter().any(|(key, value)| {
+                !bounded(value, 1024)
+                    || !proposal
+                        .input
+                        .roles
+                        .iter()
+                        .any(|role| role.key == *key && role.kind == "text")
+            })
+        {
+            return Err(DomainError::Invalid(
+                "invalid distillation instance identities or typed text overrides".into(),
+            ));
+        }
+        Ok(sample)
+    }
+}
+
 impl ComponentDistillationProposal {
     pub fn validate(&self) -> Result<()> {
         let input = &self.input;
@@ -333,8 +395,90 @@ impl Project {
         existing.validate()?;
         Ok(())
     }
+
+    pub(crate) fn instantiate_component_distillation(
+        &mut self,
+        instance: &DistilledComponentInstance,
+    ) -> Result<()> {
+        self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+        let resource = format!("scene:{}", instance.scene_id);
+        self.ensure_unlocked(
+            &resource,
+            &[
+                LockKind::Content,
+                LockKind::Position,
+                LockKind::Style,
+                LockKind::Timing,
+                LockKind::Renderer,
+            ],
+        )?;
+        let proposal = self
+            .production_design
+            .distillation_proposal(instance.proposal_id)?;
+        let sample = instance.sample(proposal)?;
+        let retained = &self.production_design.distillation_instances;
+        let ids = instance.identities().collect::<BTreeSet<_>>();
+        if retained.len() >= 64
+            || retained
+                .iter()
+                .flat_map(DistilledComponentInstance::identities)
+                .any(|id| ids.contains(&id))
+            || self
+                .scenes
+                .iter()
+                .flat_map(|scene| &scene.nodes)
+                .any(|node| ids.contains(&node.id))
+        {
+            return Err(DomainError::Invalid(
+                "distillation instance capacity exceeded or an instance/node identity already exists".into(),
+            ));
+        }
+        let scene = self
+            .scenes
+            .iter_mut()
+            .find(|scene| scene.id == instance.scene_id)
+            .ok_or(DomainError::NotFound(resource))?;
+        if scene.renderer != RendererKind::MotionCanvas
+            || sample
+                .nodes
+                .iter()
+                .flat_map(|node| &node.keyframes)
+                .any(|key| key.at >= scene.duration)
+        {
+            return Err(DomainError::Invalid(
+                "the frozen variation requires a Motion Canvas scene that contains its motion"
+                    .into(),
+            ));
+        }
+        for ((original, role), id) in sample
+            .nodes
+            .iter()
+            .zip(&proposal.input.roles)
+            .zip(&instance.node_ids)
+        {
+            let mut node = original.clone();
+            node.id = *id;
+            if let Some(text) = instance.text_overrides.get(&role.key) {
+                node.text = Some(text.clone());
+            }
+            node.validate()?;
+            scene.nodes.push(node);
+        }
+        scene.status = SceneStatus::Draft;
+        self.production_design
+            .distillation_instances
+            .push(instance.clone());
+        Ok(())
+    }
 }
 impl ProductionDesign {
+    fn distillation_proposal(&self, id: Uuid) -> Result<&ComponentDistillationProposal> {
+        self.distillations
+            .iter()
+            .find(|proposal| proposal.input.id == id)
+            .ok_or_else(|| DomainError::NotFound(format!("distillation proposal:{id}")))
+    }
+
     pub(crate) fn validate_distillations(&self, project: &Project) -> Result<()> {
         if self.distillations.len() > 32 {
             return Err(DomainError::Invalid(
@@ -350,6 +494,22 @@ impl ProductionDesign {
             {
                 return Err(DomainError::Invalid(
                     "component distillation project source or identity is not valid".into(),
+                ));
+            }
+        }
+        if self.distillation_instances.len() > 64 {
+            return Err(DomainError::Invalid(
+                "too many distillation instances".into(),
+            ));
+        }
+        // The record describes the original instantiation. Canvas nodes and
+        // destination scenes remain editable and may be removed later.
+        let mut emitted = BTreeSet::new();
+        for instance in &self.distillation_instances {
+            instance.sample(self.distillation_proposal(instance.proposal_id)?)?;
+            if instance.identities().any(|id| !emitted.insert(id)) {
+                return Err(DomainError::Invalid(
+                    "repeated distillation instance or node identity".into(),
                 ));
             }
         }

@@ -1871,6 +1871,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       break;
     case "propose_component_distillation":
     case "review_component_distillation":
+    case "instantiate_component_distillation":
       applyDistillationChange(next,change);
       break;
     case "record_narration_take":

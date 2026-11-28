@@ -86,6 +86,9 @@ pub struct ProductionDesign {
     /// Source-bound, non-executable semantic component candidates.
     #[serde(default)]
     pub distillations: Vec<ComponentDistillationProposal>,
+    /// Provenance of editable Canvas objects created from reviewed variants.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub distillation_instances: Vec<DistilledComponentInstance>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
