@@ -513,7 +513,7 @@ class SelectedServiceScopeTests(unittest.TestCase):
         self.assertEqual(len(plan["required"]), 1)
         self.assertEqual(plan["required"][0]["file"], "narrative-service.spec.ts")
         self.assertEqual(plan["required"][0]["titles"], list(gate.NARRATIVE_TITLES))
-        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 200)
+        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 205)
         self.assertEqual({row["label"] for row in plan["not_selected"]},
                          {row[0] for row in gate.SELECTIONS if row[0] != "narrative"})
         self.assertTrue(all(row["status"] == "NOT_SELECTED" and row["technical_credit"] == "NONE"
@@ -582,7 +582,7 @@ class AuthoringServiceScopeTests(unittest.TestCase):
         ])
         self.assertEqual(plan["required_tests"], 43)
         self.assertEqual(plan["full_default_tests"], 213)
-        self.assertEqual(sum(len(x["titles"]) for x in plan["not_selected"]), 165)
+        self.assertEqual(sum(len(x["titles"]) for x in plan["not_selected"]), 170)
         self.assertEqual({x["label"] for x in plan["not_selected"]},
                          {row[0] for row in gate.SELECTIONS[:10] + gate.SELECTIONS[15:]})
         self.assertTrue(all(x["status"] == "NOT_SELECTED" and x["technical_credit"] == "NONE"
@@ -694,7 +694,7 @@ class CompleteAuthoringScopeTests(unittest.TestCase):
         ])
         self.assertEqual(plan["required_tests"], 69)
         self.assertEqual(plan["full_default_tests"], 213)
-        self.assertEqual(sum(len(x["titles"]) for x in plan["not_selected"]), 139)
+        self.assertEqual(sum(len(x["titles"]) for x in plan["not_selected"]), 144)
         self.assertEqual({x["label"] for x in plan["not_selected"]},
                          {row[0] for row in gate.SELECTIONS[:10] + gate.SELECTIONS[18:]})
         self.assertTrue(all(x["status"] == "NOT_SELECTED" and x["technical_credit"] == "NONE"
@@ -859,8 +859,8 @@ class ProjectionNavigationScopeTests(unittest.TestCase):
         self.assertEqual(plan["full_default_tests"], 213)
         self.assertEqual(plan["required"], [{"label": label, "file": filename, "titles": list(declared)}])
         omitted = [(row["file"], title) for row in plan["not_selected"] for title in row["titles"]]
-        self.assertEqual(len(omitted), 202)
-        self.assertEqual(len(set(omitted)), 202)
+        self.assertEqual(len(omitted), 207)
+        self.assertEqual(len(set(omitted)), 207)
         self.assertTrue(all(row["status"] == "NOT_SELECTED" and row["technical_credit"] == "NONE"
                             for row in plan["not_selected"]))
         self.assertFalse(plan["formal_acceptance"])
@@ -2483,16 +2483,16 @@ class CreativeProductionStoreTests(unittest.TestCase):
                 )
             self.assertTrue((root / "retained/closed-evidence.tar").is_file())
 
-    def test_reporter_copies_bind_to_all_seventeen_original_stores(self):
+    def test_reporter_copies_bind_to_all_original_creative_stores(self):
         with tempfile.TemporaryDirectory() as directory:
             root, source = self.reporter_fixture(directory)
             result = ClosedStudioArchiveTests().retained(root, source)
             self.assertEqual(result["status"], "PASS", result)
             self.assertEqual(result["custody"], "VERIFIED_ORIGINAL_TREE_COPY")
             cases = result["bindings"]["creative_production_cases"]
-            self.assertEqual(len(cases), 30)
-            self.assertEqual(len({row["manifest"] for row in cases}), 30)
-            self.assertEqual(sum(row["services"] for row in cases), 34)
+            self.assertEqual(len(cases), 35)
+            self.assertEqual(len({row["manifest"] for row in cases}), 35)
+            self.assertEqual(sum(row["services"] for row in cases), 39)
             for row in cases:
                 folder = row["manifest"].rsplit("/closed-store/", 1)[0]
                 self.assertEqual(row["outcomes"], folder + "/closed-store-outcomes.json")
@@ -2583,15 +2583,15 @@ class CreativeProductionStoreTests(unittest.TestCase):
                 self.assertEqual(result["error"], "original JSON replaced before parse")
                 self.assertFalse((root / "retained/closed-evidence.tar").exists())
 
-    def test_all_seventeen_cases_require_distinct_original_store_and_oracle_bindings(self):
+    def test_creative_cases_require_distinct_original_store_and_oracle_bindings(self):
         with tempfile.TemporaryDirectory() as directory:
             root, source = self.fixture(directory)
             result = ClosedStudioArchiveTests().retained(root, source)
             self.assertEqual(result["status"], "PASS", result)
             cases = result["bindings"]["creative_production_cases"]
-            self.assertEqual(len(cases), 30)
-            self.assertEqual(len({row["manifest"] for row in cases}), 30)
-            self.assertEqual(sum(row["services"] for row in cases), 34)
+            self.assertEqual(len(cases), 35)
+            self.assertEqual(len({row["manifest"] for row in cases}), 35)
+            self.assertEqual(sum(row["services"] for row in cases), 39)
             self.assertTrue(all(row["database_path"] == str(Path(row["source_directory"]) / "studio.sqlite3")
                                 for row in cases))
             self.assertEqual([(row["file"], row["title"]) for row in cases],
@@ -3267,7 +3267,7 @@ class BranchClaimScopeTests(unittest.TestCase):
         self.assertEqual(gate.selection_plan("review")["required_tests"], 11)
         plan = gate.selection_plan("branch-claim")
         self.assertEqual(plan["required_tests"], 35)
-        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 173)
+        self.assertEqual(sum(len(row["titles"]) for row in plan["not_selected"]), 178)
         self.assertTrue(all(row["status"] == "NOT_SELECTED" and row["technical_credit"] == "NONE"
                             for row in plan["not_selected"]))
         for selection in ("branch", "branch-claim ", "branch-claim,review", "claim-source-browser"):
@@ -4114,7 +4114,8 @@ class Studio68SourceContracts(unittest.TestCase):
                 gate.studio68_readback_journal(altered, report)
 
     def test_new_manual_profile_keeps_old_defaults_matrix_and_distinct_G_F_checkouts(self):
-        workflow = closeout_previous_workflow((PATH.parents[1] / gate.STUDIO68_WORKFLOW).read_bytes()).decode("utf-8")
+        workflow = closeout_previous_workflow(workflow_before_creative_catalogue(
+            (PATH.parents[1] / gate.STUDIO68_WORKFLOW).read_bytes())).decode("utf-8")
         legacy, selected = workflow.split("  studio-service-68:\n", 1)
         self.assertIn("default: authoring-drafts", legacy)
         self.assertIn("inputs.selection == 'all' && '[\"project-authoring\",\"creative-production\",\"branch-claim\"]'", legacy)
@@ -6957,7 +6958,7 @@ def gn1_previous_workflow(raw):
 
 class GraphDevelopmentWorkflowSourceDeltaTests(unittest.TestCase):
     def test_integrated_development_and_consent_delta_restores_exact_historical_workflow(self):
-        raw = (PATH.parents[1] / gate.STUDIO68_WORKFLOW).read_bytes()
+        raw = workflow_before_creative_catalogue((PATH.parents[1] / gate.STUDIO68_WORKFLOW).read_bytes())
         self.assertEqual(gate.hashlib.sha256(raw).hexdigest(), GN1_DEV_WORKFLOW_POST_SHA256)
         restored = gn1_previous_workflow(raw)
         self.assertEqual(gate.hashlib.sha256(restored).hexdigest(), A6_DEV_G0_POST_SHA256)
@@ -6965,7 +6966,7 @@ class GraphDevelopmentWorkflowSourceDeltaTests(unittest.TestCase):
         self.assertNotIn(b"gn1_one_original_save", restored)
 
     def test_partial_composition_or_new_consent_drift_still_fails_closed(self):
-        raw = (PATH.parents[1] / gate.STUDIO68_WORKFLOW).read_bytes()
+        raw = workflow_before_creative_catalogue((PATH.parents[1] / gate.STUDIO68_WORKFLOW).read_bytes())
         for start, end, added, previous in GN1_COMPOSED_WORKFLOW_REVERT:
             lines = raw.splitlines(keepends=True)
             self.assertEqual(b"".join(lines[start:end]), added)
