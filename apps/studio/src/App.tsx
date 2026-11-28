@@ -591,7 +591,7 @@ export function PreviewSurface({
               </div>
               </>}
               {hasProgramDesign && !showingNative && !showingWindow && !showingAv && !showingHistorical &&
-                <ProgramDesignStudy project={project} scene={scene} time={relative} profile={profile}/>}
+                <ProgramDesignStudy project={project} scene={scene} playhead={playhead} profile={profile}/>}
               <div className="preview-progress" aria-hidden="true">
                 <span
                   style={{

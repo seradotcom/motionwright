@@ -11,7 +11,7 @@ test("caption word selection follows editing, shared playback and explicit forma
         sample_rate_hz: 48000, channels: 1, measured_duration: { num: "2", den: "1" },
         source_sha256: "5f".repeat(32), loudness_lufs: null, true_peak_dbfs: null }],
       active_voice_track_id: voiceId,
-      transcript: [{ id: segmentId, voice_track_id: voiceId, start: { num: "1", den: "3" }, end: { num: "5", den: "3" },
+      transcript: [{ id: segmentId, voice_track_id: voiceId, start: { num: "11", den: "30" }, end: { num: "5", den: "3" },
         text: "Una decisión clara", speaker: "Authored fixture", alignment: { kind: "manual" } }],
       cues: [],
     };
@@ -19,6 +19,7 @@ test("caption word selection follows editing, shared playback and explicit forma
       + "\nfixtureProject.audio.voice_tracks[0].asset_id=fixtureProject.assets[0].id;"
       + "\nfixtureProject.locks=[];fixtureProject.branch_workspaces=[];"
       + "\nfixtureProject.deliverables[0].voice_track_id=" + JSON.stringify(voiceId) + ";"
+      + "\nfixtureProject.scenes[0].start={num:'1',den:'10'};fixtureProject.scenes[0].duration={num:'69',den:'10'};"
       + "\nfixtureBootstrap.project=structuredClone(fixtureProject);\n" });
   });
   await page.goto("/");
@@ -42,6 +43,10 @@ test("caption word selection follows editing, shared playback and explicit forma
   const program = page.getByLabel("Program caption source study", { exact: true });
   await expect(program).toHaveAttribute("data-caption-id", segmentId);
   await expect(program.locator("strong")).toHaveText("decisión");
+  await page.getByRole("button", { name: "Step back one frame", exact: true }).click();
+  await expect(program).toHaveAttribute("data-caption-id", "");
+  await page.getByRole("button", { name: "Step forward one frame", exact: true }).click();
+  await expect(program).toHaveAttribute("data-caption-id", segmentId);
   await expect(revision).toHaveText("r" + (initialRevision + 1));
   await page.getByRole("button", { name: "Audio", exact: true }).click();
   await input.fill("Otra decisión clara");

@@ -91,7 +91,7 @@ describe("one saved camera across scene-relative authoring and review", () => {
     const p = structuredClone(fixtureProject), scene = shot();
     scene.nodes = [box()]; p.scenes = [scene];
     p.production_design = { ...emptyProductionDesign(), camera_reframes: [move()] };
-    const markup = renderToStaticMarkup(<ProgramDesignStudy project={p} scene={scene} time={1} profile={p.deliverables[0]}/>);
+    const markup = renderToStaticMarkup(<ProgramDesignStudy project={p} scene={scene} playhead={9} profile={p.deliverables[0]}/>);
     expect(markup).toContain('data-camera-center-x="940"');
     expect(markup).toContain('data-source-revision="' + p.revision + '"');
     expect(markup).toContain("Saved scene camera sampled at 1.000 s");

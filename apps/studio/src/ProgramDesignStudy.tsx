@@ -3,7 +3,7 @@ import { sampleProgramCaption } from "./programCaption";
 import "./program-caption.css";
 import { canvasBackground, inheritedTextInk } from "./canvasInheritedInk";
 import { deliveryTextSourceConflict } from "./deliveryTextSources";
-import type { DeliverableProfile, Project, Scene } from "./types";
+import { seconds, type DeliverableProfile, type Project, type Scene } from "./types";
 
 /** This is a bounded source-Canvas representation, never a substitute for
  * the separately verified native PNG or AV review stages. */
@@ -24,14 +24,15 @@ export function programSceneCutScope(
 }
 
 export default function ProgramDesignStudy({
-  project, scene, time, profile,
+  project, scene, playhead, profile,
 }: {
-  project: Project; scene: Scene; time: number; profile: DeliverableProfile | null;
+  project: Project; scene: Scene; playhead: number; profile: DeliverableProfile | null;
 }) {
   const surface = canvasBackground(project.visual_language.palette);
   const ink = inheritedTextInk(project.visual_language.palette);
   const cutScope = programSceneCutScope(scene, profile);
-  const caption = sampleProgramCaption(project, scene, time, profile);
+  const time = Math.max(0, Math.min(seconds(scene.duration), playhead - seconds(scene.start)));
+  const caption = sampleProgramCaption(project, scene, playhead, profile);
   const sourceConflict = profile && cutScope!=="excluded" ? deliveryTextSourceConflict(project,profile,scene) : null;
   return <div className="program-design-study" aria-label="Saved Canvas editorial design monitor"
     data-source-revision={project.revision} data-selected-profile-id={profile?.id ?? ""}

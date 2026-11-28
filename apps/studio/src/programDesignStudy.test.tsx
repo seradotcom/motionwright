@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { fixtureProject } from "./fixture";
-import type { DeliverableProfile } from "./types";
+import { seconds, type DeliverableProfile } from "./types";
 import ProgramDesignStudy, { hasEditableProgramDesign } from "./ProgramDesignStudy";
 
 function source() {
@@ -13,7 +13,7 @@ function source() {
   return { project, scene, text };
 }
 const render = (p: ReturnType<typeof source>, profile: DeliverableProfile | null = p.project.deliverables[0]) =>
-  renderToStaticMarkup(<ProgramDesignStudy project={p.project} scene={p.scene} time={0} profile={profile}/>);
+  renderToStaticMarkup(<ProgramDesignStudy project={p.project} scene={p.scene} playhead={seconds(p.scene.start)} profile={profile}/>);
 
 describe("saved source Canvas is the Timeline Program editorial representation", () => {
   it("shows actual authored object identity, text and source revision, not a generic diagram", () => {
