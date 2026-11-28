@@ -343,6 +343,14 @@ fn scene_span_cost(scene: &Scene, camera_reframe: bool) -> usize {
                     .iter()
                     .filter(|key| key.property == MotionProperty::Opacity)
                     .count();
+                // A synchronized entrance has a single shared interval for
+                // its translation, opacity and any rotation.
+                if opacity_keys > 0
+                    && opacity_keys < node.keyframes.len()
+                    && matches!(entry_motion(node), Ok(Some(_)))
+                {
+                    return 1;
+                }
                 // Equal-value holds emit no span; this is a conservative upper
                 // bound before negotiation, including malformed source keys.
                 let opacity_span = if composed_shape_motion(node).is_some() {
@@ -3900,6 +3908,7 @@ mod tests {
         use motionwright_domain::{
             CAMERA_REFRAME_VERSION, CameraReframe, NodeRelation, RelationKind,
         };
+        use semwright_motion_authoring::NativeOp;
         for camera in [false, true] {
             let mut project = fixture_project();
             let mut root = node("rectangle", None);
@@ -4055,8 +4064,46 @@ mod tests {
                         _ => {}
                     }
                 }
-                assert_eq!((tweens, sets, fades), (2, 1, 2));
-                realize(film).unwrap();
+                assert_eq!((tweens, sets, fades), (0, 46, 2));
+                let realized = realize(film).unwrap();
+                let positions = |id: &str| {
+                    realized
+                        .instructions
+                        .iter()
+                        .filter_map(|instruction| match &instruction.operation {
+                            NativeOp::Set {
+                                target,
+                                channel: Channel::Position,
+                                value: Operand::Vector(position),
+                            } if target == id => Some((instruction.start, position)),
+                            _ => None,
+                        })
+                        .collect::<BTreeMap<_, _>>()
+                };
+                let leader = positions(&subject_id(root.id, None));
+                let follower = positions(&target);
+                let last = RationalTime::new(91, 60).unwrap();
+                assert_eq!((leader.len(), follower.len()), (46, 46));
+                for frame in 0..=45 {
+                    let at = RationalTime::new(2 * frame + 1, 60).unwrap();
+                    let x = leader[&at].x - leader[&last].x;
+                    let y = leader[&at].y - leader[&last].y;
+                    assert!((follower[&at].x - follower[&last].x - x).abs() < 1e-9);
+                    assert!((follower[&at].y - follower[&last].y - y).abs() < 1e-9);
+                    if (width, height) == (1920, 1080) {
+                        let (source_x, source_y) = if frame < 15 {
+                            let t = 1.0 - (1.0 - frame as f64 / 15.0).powi(3);
+                            (520.0 + 100.0 * t, 380.0 + 40.0 * t)
+                        } else if frame < 30 {
+                            (620.0, 420.0)
+                        } else {
+                            let t = (frame - 30) as f64 / 15.0;
+                            (580.0 + 140.0 * t, 390.0 + 10.0 * t)
+                        };
+                        assert!((x - (source_x - root.x)).abs() < 1e-9);
+                        assert!((y - (source_y - root.y)).abs() < 1e-9);
+                    }
+                }
                 assert_eq!(project, before);
                 assert_eq!(project.scenes[0].nodes[1], label);
             }
@@ -5043,6 +5090,81 @@ mod tests {
                     archetype: Archetype::Statement,
                 })
                 .collect(),
+        }
+    }
+
+    #[test]
+    fn staggered_procedural_entries_respect_the_actual_span_budget() {
+        for (second_count, expected_segments) in [(59, 1), (60, 2)] {
+            let mut project = Project::new("Procedural entrance budget").unwrap();
+            let counts = [motionwright_domain::PROCEDURAL_MAX_ITEMS, second_count];
+            for (index, count) in counts.into_iter().enumerate() {
+                project
+                    .apply_change(&Change::AddScene {
+                        name: format!("Field {}", index + 1),
+                        objective: "Preserve each editable entrance".into(),
+                        duration_seconds: 3,
+                    })
+                    .unwrap();
+                let scene_id = project.scenes[index].id;
+                project
+                    .apply_change(&Change::UpsertProceduralField {
+                        instance_id: Uuid::now_v7(),
+                        scene_id,
+                        config: motionwright_domain::ProceduralConfig {
+                            count,
+                            columns: 16,
+                            distribution: motionwright_domain::FieldDistribution::Grid,
+                            reveal_step_frames: 1,
+                            ..Default::default()
+                        },
+                    })
+                    .unwrap();
+            }
+            let original = project.clone();
+            let segments = build_motion_canvas_segments(
+                &project,
+                project.deliverables[0].id,
+                &fixture_options(&project),
+            )
+            .unwrap();
+            assert_eq!(segments.len(), expected_segments);
+            assert_eq!(
+                segments
+                    .iter()
+                    .map(|segment| segment.frame_count)
+                    .sum::<u64>(),
+                180
+            );
+            for segment in &segments {
+                assert!(segment.film.timing.spans.len() <= MAX_TEMPORAL_SPANS);
+                realize(&segment.film).unwrap();
+            }
+            let shots = segments
+                .iter()
+                .flat_map(|segment| &segment.film.sequences)
+                .flat_map(|sequence| &sequence.beats)
+                .flat_map(|beat| &beat.shots)
+                .collect::<Vec<_>>();
+            assert_eq!(shots.len(), counts.len());
+            for (shot, count) in shots.into_iter().zip(counts) {
+                assert_eq!(shot.subjects.len(), usize::from(count));
+                assert_eq!(shot.motion.len(), usize::from(count));
+                assert!(
+                    shot.motion.iter().all(|invocation| matches!(
+                        invocation.primitive,
+                        Primitive::SlideIn { .. }
+                    ))
+                );
+            }
+            if expected_segments == 1 {
+                assert_eq!(segments[0].film.timing.spans.len(), MAX_TEMPORAL_SPANS);
+            } else {
+                assert_eq!(segments[0].frame_count, 90);
+                assert_eq!(segments[1].frame_count, 90);
+                assert_eq!(segments[1].global_start, Rational::new(3, 1).unwrap());
+            }
+            assert_eq!(project, original);
         }
     }
 
@@ -6575,8 +6697,9 @@ mod tests {
             match invalid {
                 0 => child.keyframes.last_mut().unwrap().value = 0.25,
                 1 => {
-                    child.keyframes.last_mut().unwrap().interpolation =
-                        MotionInterpolation::EaseInOut
+                    let fade_end = child.keyframes.last_mut().unwrap();
+                    fade_end.interpolation = MotionInterpolation::EaseInOut;
+                    fade_end.at = RationalTime::new(19, 37).unwrap();
                 }
                 2 => child.keyframes[1].at = RationalTime::new(1, 37).unwrap(),
                 3 => {
@@ -6772,15 +6895,16 @@ mod tests {
             .unwrap()
             .parent_id = Some(top_id);
         cases.push(nested_parent);
-        let mut bad_curve = baseline.clone();
-        bad_curve.scenes[0]
+        let mut off_frame_curve = baseline.clone();
+        let fade_end = &mut off_frame_curve.scenes[0]
             .nodes
             .iter_mut()
             .find(|node| node.id == child_id)
             .unwrap()
-            .keyframes[1]
-            .interpolation = MotionInterpolation::EaseInOut;
-        cases.push(bad_curve);
+            .keyframes[1];
+        fade_end.interpolation = MotionInterpolation::EaseInOut;
+        fade_end.at = RationalTime::new(19, 37).unwrap();
+        cases.push(off_frame_curve);
         let mut mixed_keys = baseline.clone();
         mixed_keys.scenes[0]
             .nodes
@@ -6828,8 +6952,10 @@ mod tests {
         held_exit.scenes[0].nodes[0].keyframes[1].interpolation = MotionInterpolation::Hold;
         let mut wrong_target = baseline.clone();
         wrong_target.scenes[0].nodes[0].keyframes[1].value = 0.8;
-        let mut wrong_curve = baseline.clone();
-        wrong_curve.scenes[0].nodes[0].keyframes[1].interpolation = MotionInterpolation::EaseInOut;
+        let mut off_frame_curve = baseline.clone();
+        let fade_end = &mut off_frame_curve.scenes[0].nodes[0].keyframes[1];
+        fade_end.interpolation = MotionInterpolation::EaseInOut;
+        fade_end.at = RationalTime::new(19, 37).unwrap();
         let mut mixed = baseline.clone();
         mixed.scenes[0].nodes[0].keyframes.push(CanvasKeyframe {
             at: RationalTime::ZERO,
@@ -6857,7 +6983,7 @@ mod tests {
             partial_exit,
             held_exit,
             wrong_target,
-            wrong_curve,
+            off_frame_curve,
             mixed,
             extra_key,
             incompatible_persisted_opacity,

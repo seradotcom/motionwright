@@ -86,7 +86,7 @@ fn unsupported_partial_final_alpha_is_explicitly_rejected_not_baked() {
         ..Default::default()
     });
     let err = build_motion_canvas_segments(&p, p.deliverables[0].id, &options).unwrap_err();
-    assert!(err.message.contains("rotation/opacity state"));
+    assert!(err.message.contains("saved static opacity"));
 }
 
 #[test]
