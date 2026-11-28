@@ -5,9 +5,9 @@ import { nativeOriginalMixAudition, readOriginalVoiceCutAudition } from "./api";
 import { audioReviewScope, buildAudioReviewClock, type AudioReviewActions } from "./audioReviewClock";
 import { useLocalAudioElement } from "./audioReviewPlayback";
 import { useVoiceCutReview } from "./useVoiceCutReview";
-import { originalMixEnvelopeKeys, requireOriginalMixSfx, selectedOriginalMixCues } from "./audioRecipeContract";
+import { originalMixDependencyComparison, originalMixEnvelopeKeys, requireOriginalMixSfx, selectedOriginalMixCues } from "./audioRecipeContract";
 import { RecipeDraftReview, containRecipeKeyboard } from "./DeliveryProfiles";
-import { savedDeliveryRecipe, useDeliveryRecipeDraft, validateDeliveryRecipe } from "./deliveryRecipe";
+import { savedDeliveryRecipe, useDeliveryRecipeDraft, validateDeliveryRecipe, type DeliveryRecipe } from "./deliveryRecipe";
 import { ORIGINAL_MIX_SAMPLE_PEAK_GUARD_DBFS, type OriginalMixPreviewOptions } from "./nativeMixTypes";
 import type { Change, Project, VoiceTrack } from "./types";
 
@@ -366,6 +366,8 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
       {" "}{recipe.audio_targets.target_true_peak_dbtp === null ? "true-peak target unset" : recipe.audio_targets.target_true_peak_dbtp + " dBTP"}.
       These targets are retained when editing this recipe; audition does not certify them.
     </p>}
+    {selectedProfile && mixDraft.proposedRecipe && <OriginalMixDependencyReview project={project}
+      profileId={selectedProfile.id} saved={recipe} draft={mixDraft.proposedRecipe}/>}
     <RecipeDraftReview controller={mixDraft} title="Original mix" revision={project.revision} fields={fields}
       saveLabel="Save original mix recipe" clearLabel="Clear saved original mix recipe" hasSavedGroup={savedMix !== null || voiceOnly}
       blockedReason={!selectedProfile ? "Create a delivery profile before saving these inputs."
@@ -425,4 +427,41 @@ export default function NativeOriginalMixReview({ project, desktopMode, commit, 
     </div>}
     </div>
   </section>;
+}
+
+function OriginalMixDependencyReview({ project, profileId, saved, draft }: {
+  project: Project; profileId: string; saved: DeliveryRecipe | null; draft: DeliveryRecipe;
+}) {
+  try {
+    const { source, before, after } = originalMixDependencyComparison(project, profileId, saved, draft);
+    type Side = typeof before;
+    const assetLabel = (asset: NonNullable<Side["sfxBase"]>) => <>{asset.name} <code title={asset.id} style={{ overflowWrap: "anywhere" }}>{asset.sha256 ?? "Digest unavailable"}</code></>;
+    const rows = [
+      { label: "Audio route", value: (side: Side) => ({ disabled: "Disabled", voice_only: "Original narration cut", mix: "Original three-bus mix" })[side.mode] },
+      { label: "Original voice", value: (side: Side) => side.voice && <>{side.voice.asset ? assetLabel(side.voice.asset) : "Asset unavailable"}
+        <br/>Track <code>{side.voice.trackId}</code>{side.voice.cutSha256 && <><br/>Cut <code>{side.voice.cutSha256}</code></>}</> },
+      { label: "Original music", value: (side: Side) => side.music && <>{assetLabel(side.music.asset)}<br/>
+        {side.music.sourceSamples ? `Source [${side.music.sourceSamples.start}, ${side.music.sourceSamples.endExclusive})` : "Whole original source"}</> },
+      { label: "Original SFX base", value: (side: Side) => side.sfxBase && assetLabel(side.sfxBase) },
+      { label: "Selected SFX cues", value: (side: Side) => side.sfxCues.length ? <ul>{side.sfxCues.map(cue => <li key={cue.id}>
+        {cue.event} · {project.scenes.find(scene => scene.id === cue.sceneId)?.name ?? cue.sceneId}
+        <details><summary>Source and cue identity</summary><code>{cue.sourceSha256}</code>
+          <div>Asset <code>{cue.assetId}</code></div><div>Cue <code>{cue.id}</code></div>
+        </details>
+      </li>)}</ul> : null },
+      { label: "Output silence release", value: (side: Side) => side.silenceRelease &&
+        `Fade [${side.silenceRelease.fadeStart}, ${side.silenceRelease.silenceStart}), silence [${side.silenceRelease.silenceStart}, ${side.silenceRelease.endExclusive})` },
+    ];
+    return <section aria-label="Original mix dependency comparison">
+      <h3>Compare audio dependencies</h3>
+      <p className="production-help">Saved revision {source.revision} · {source.sceneIds.length} selected scenes · output [0, {source.outputSamples}) at 48 kHz.
+        Ends are exclusive. Native audition verifies the actual source bytes.</p>
+      <table>
+        <thead><tr><th scope="col">Dependency</th><th scope="col">Saved</th><th scope="col">Proposed</th></tr></thead>
+        <tbody>{rows.map(row => <tr key={row.label}><th scope="row">{row.label}</th><td>{row.value(before) ?? "None"}</td><td>{row.value(after) ?? "None"}</td></tr>)}</tbody>
+      </table>
+    </section>;
+  } catch (reason) {
+    return <p role="status" className="production-help">{explain(reason)}</p>;
+  }
 }

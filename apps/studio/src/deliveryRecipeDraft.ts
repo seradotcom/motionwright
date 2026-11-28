@@ -572,13 +572,13 @@ export function useDeliveryRecipeDraft(project: Project, profileId: string, grou
   const locked = project.locks.some(lock => lock.kind === "content" && lock.resource === "project:" + project.id);
   const busy = projectBusy(project), unconfirmed = recipeUnconfirmed(visible);
   const dirty = Object.keys(visible.input.edits).length > 0;
-  let validationError: string | null = null, different = false;
+  let validationError: string | null = null, changedRecipe: DeliveryRecipe | null = null;
   try {
     const proposed = proposedDeliveryRecipe(canonical, visible.input);
     validateDeliveryRecipe(project, profileId, proposed);
-    different = recipeFingerprint(proposed) !== recipeFingerprint(canonical);
+    if (recipeFingerprint(proposed) !== recipeFingerprint(canonical)) changedRecipe = proposed;
   } catch (failure) { validationError = explain(failure); }
-  const canSave = dirty && different && !busy && !locked && !sourceBehind && !unconfirmed
+  const canSave = dirty && changedRecipe !== null && !busy && !locked && !sourceBehind && !unconfirmed
     && !session.backupError && !session.readBlocked && !session.unreadableOwn && !validationError && conflicts.length === 0;
   const currentSession = () => mounted.current && live.current.session === session;
 
@@ -772,6 +772,7 @@ export function useDeliveryRecipeDraft(project: Project, profileId: string, grou
   return {
     values, savedValues: current, edits: visible.input.edits, conflicts, dirty, awaiting: visible.pending !== null,
     pending: busy, locked, sourceBehind, error, message: session.message, canSave,
+    proposedRecipe: canSave ? changedRecipe : null,
     recoveryBlocked: session.backupError !== null || session.readBlocked || session.unreadableOwn !== null,
     unreadableCopy: session.unreadableOwn !== null,
     unconfirmed, notSent: visible.pending?.outcome === "NOT_SENT", reviewing: session.reviewing,

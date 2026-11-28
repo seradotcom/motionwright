@@ -237,6 +237,56 @@ export function requireOriginalMixSfx(project: Project, profileId: string, mix: 
     throw new Error("Save an imported SFX base or authored SFX cues in this delivery cut; an empty bus is not invented.");
   }
 }
+
+/** Projected source dependencies for one saved cut and one validated recipe draft. */
+export function originalMixDependencyComparison(project: Project, profileId: string, before: DeliveryRecipe | null, after: DeliveryRecipe | null) {
+  const profile = project.deliverables.find(value => value.id === profileId);
+  if (profile?.audio_sample_rate_hz !== 48000) throw new Error("The source comparison requires a saved 48-kHz delivery cut.");
+  const scenes = selectedAudioScenes(project, profileId);
+  const frames = exactOutputSamples(scenes);
+  if (frames === 0n) throw new Error("The delivery cut has no audio sample interval.");
+  const trackId = profile.voice_track_id;
+  const track = project.audio.voice_tracks.find(value => value.id === trackId);
+  const cues = selectedOriginalMixCues(project, profileId);
+  const asset = (assetId: string | null | undefined) => {
+    if (!assetId) return null;
+    const match = project.assets.find(value => value.id === assetId);
+    return { id: assetId, name: match?.name ?? assetId, sha256: match?.content_sha256 ?? null };
+  };
+  function side(recipe: DeliveryRecipe | null) {
+    const mix = recipe?.original_mix ?? null;
+    const voiceBinding = mix?.voice_cut_sha256 ?? recipe?.voice_only_cut_sha256 ?? null;
+    const mode = mix ? "mix" as const : voiceBinding ? "voice_only" as const : "disabled" as const;
+    const musicAsset = asset(mix?.music_asset_id);
+    const musicStart = mix?.music_source_start_sample === undefined ? null : BigInt(mix.music_source_start_sample);
+    const release = mix?.silence_release;
+    return {
+      mode,
+      voice: mode !== "disabled" && trackId ? {
+        trackId, asset: asset(track?.asset_id), cutSha256: voiceBinding,
+      } : null,
+      music: musicAsset ? { asset: musicAsset, sourceSamples: musicStart === null ? null
+        : { start: String(musicStart), endExclusive: String(musicStart + frames) } } : null,
+      sfxBase: asset(mix?.sfx_asset_id),
+      sfxCues: mix ? cues.map(cue => ({
+        id: cue.id, sceneId: cue.scene_id, assetId: cue.source_asset_id,
+        sourceSha256: cue.source_sha256, event: cue.event,
+      })) : [],
+      silenceRelease: release ? {
+        fadeStart: String(frames - BigInt(release.fade_samples) - BigInt(release.silence_samples)),
+        silenceStart: String(frames - BigInt(release.silence_samples)), endExclusive: String(frames),
+      } : null,
+    };
+  }
+  return {
+    source: {
+      projectId: project.id, generation: project.generation, branchId: project.active_branch, revision: project.revision,
+      profileId, sceneIds: scenes.map(scene => scene.id), outputSamples: String(frames),
+    },
+    before: side(before), after: side(after),
+  };
+}
+
 /** Closed Desktop request: envelopes/targets are read from the same saved revision. */
 export function savedOriginalMixAuditionRequest(project: Project, options: OriginalMixPreviewOptions, saved: OriginalMixRecipe) {
   if (!options.owner_attests_preview_rights) throw new Error("Confirm permission for these exact sources before auditioning.");

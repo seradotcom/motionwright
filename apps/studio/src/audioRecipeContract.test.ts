@@ -81,7 +81,7 @@ describe("audio recipe consumer regressions", () => {
 
 import {
   assertDeliveryAudioTargets, assertOriginalMixBusEnvelope, assertOriginalMixSilenceRelease, canonicalOriginalMix,
-  requireOriginalMixSfx, savedOriginalMixAuditionRequest, selectedOriginalMixCues,
+  originalMixDependencyComparison, requireOriginalMixSfx, savedOriginalMixAuditionRequest, selectedOriginalMixCues,
 } from "./audioRecipeContract";
 import type { OriginalMixPreviewOptions } from "./nativeMixTypes";
 import type { SemanticSfxCue } from "./semanticSfx";
@@ -278,5 +278,41 @@ describe("original mix silence release authoring and closed wire",()=>{
     project.audio.transcript[0].alignment={kind:"manual"};
     project.deliverables[0].voice_track_id=null;
     expect(()=>validateDeliveryRecipe(project,profileId,recipe)).toThrow(/bound original stereo/);
+  });
+});
+
+describe("before/after dependencies for a staged original mix", () => {
+  it("binds both original music windows, selected cue identities and release to the exact saved profile", () => {
+    const { project, profileId, recipe } = auditionSample();
+    const selectedScene = project.scenes[0];
+    selectedScene.duration = { num: "2", den: "1" };
+    const profile = project.deliverables[0];
+    profile.audio_sample_rate_hz = 48000;
+    const original = id(201), replacement = id(203);
+    for (const [assetId, sha] of [[original, "a"], [replacement, "c"], [id(301), "b"]]) {
+      project.assets.push({ id: assetId, name: assetId, media_type: "audio/wav", content_sha256: sha.repeat(64), source_revision: null });
+    }
+    project.audio.sfx_cues!.push({ ...cue(project.scenes[1].id), id: id(302) });
+    recipe.original_mix!.music_source_start_sample = 24000;
+    const draft = structuredClone(recipe);
+    draft.original_mix!.music_asset_id = replacement;
+    draft.original_mix!.music_source_start_sample = 48000;
+    draft.original_mix!.silence_release = { fade_samples: 2000, silence_samples: 4000 };
+
+    const snapshot = structuredClone(project);
+    const result = originalMixDependencyComparison(project, profileId, recipe, draft);
+    expect(result.source).toMatchObject({ projectId: project.id, generation: project.generation, branchId: project.active_branch,
+      revision: project.revision, profileId, sceneIds: [selectedScene.id], outputSamples: "96000" });
+    expect(result.before.music).toEqual({ asset: { id: original, name: original, sha256: "a".repeat(64) },
+      sourceSamples: { start: "24000", endExclusive: "120000" } });
+    expect(result.after.music).toEqual({ asset: { id: replacement, name: replacement, sha256: "c".repeat(64) },
+      sourceSamples: { start: "48000", endExclusive: "144000" } });
+    expect(result.after.sfxCues.map(cue => cue.id)).toEqual([id(300)]);
+    expect(result.after.silenceRelease).toEqual({ fadeStart: "90000", silenceStart: "92000", endExclusive: "96000" });
+    expect(originalMixDependencyComparison(project, profileId, recipe, null).after.mode).toBe("disabled");
+    expect(project).toEqual(snapshot);
+
+    selectedScene.duration = { num: "1", den: "7" };
+    expect(() => originalMixDependencyComparison(project, profileId, recipe, draft)).toThrow(/exact 48-kHz/);
   });
 });
