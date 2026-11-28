@@ -5,6 +5,9 @@
 #[path = "../../../apps/desktop/src-tauri/src/effect_grants.rs"]
 mod effect_grants;
 #[allow(dead_code)]
+#[path = "../../../apps/desktop/src-tauri/src/local_error.rs"]
+mod local_error;
+#[allow(dead_code)]
 #[path = "../../../apps/desktop/src-tauri/src/project_library.rs"]
 mod project_library;
 
