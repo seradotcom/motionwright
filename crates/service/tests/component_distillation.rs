@@ -205,3 +205,127 @@ fn sqlite_source_variations_replay_review_and_reopen_preserve_exact_originals() 
     assert_eq!(imported.scenes, reviewed.scenes);
     imported.validate().unwrap();
 }
+
+#[test]
+fn reviewed_variant_creates_editable_instances_with_durable_lineage() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("instances.sqlite3");
+    let service = StudioService::open(&db).unwrap();
+    let (base, input) = seed(&service);
+    let project = apply(
+        &service,
+        &base,
+        "propose",
+        Change::ProposeComponentDistillation {
+            input: input.clone(),
+        },
+    );
+    let destination = project.scenes[2].id;
+    let id = Uuid::new_v4();
+    let panel = Uuid::new_v4();
+    let headline = Uuid::new_v4();
+    let data = serde_json::json!({
+        "type": "instantiate_component_distillation",
+        "instance": {
+            "id": id,
+            "proposal_id": input.id,
+            "sample_scene_id": input.positives[1].scene_id,
+            "scene_id": destination,
+            "node_ids": [panel, headline],
+            "text_overrides": {"headline": "From the retained second variant"}
+        }
+    });
+    let change: Change = serde_json::from_value(data.clone()).unwrap();
+    assert!(
+        service
+            .apply(project.id, &project.stamp(), "unreviewed", &change)
+            .is_err()
+    );
+    let reviewed = apply(
+        &service,
+        &project,
+        "review",
+        Change::ReviewComponentDistillation {
+            id: input.id,
+            review: DistillationReview {
+                reviewer: "Independent creative reviewer".into(),
+                rationale: "Both originals preserve the panel and editable headline.".into(),
+                verdict: DistillationVerdict::CompatibleProposal,
+                source_revision: input.source_revision,
+                compatibility: DISTILLATION_RENDERER.into(),
+            },
+        },
+    );
+    let mut invalid = data.clone();
+    invalid["instance"]["text_overrides"] = serde_json::json!({"panel": "Not a text role"});
+    let invalid: Change = serde_json::from_value(invalid).unwrap();
+    assert!(
+        service
+            .apply(reviewed.id, &reviewed.stamp(), "invalid-role", &invalid)
+            .is_err()
+    );
+    assert_eq!(service.project(project.id).unwrap(), reviewed);
+
+    let result = service
+        .apply(reviewed.id, &reviewed.stamp(), "first-instance", &change)
+        .unwrap();
+    let saved = result.project;
+    assert_eq!(
+        saved.production_design.distillations,
+        reviewed.production_design.distillations
+    );
+    let expected = &reviewed.production_design.distillations[0].samples[1].nodes;
+    let mut wanted = expected.clone();
+    wanted[0].id = panel;
+    wanted[1].id = headline;
+    wanted[1].text = Some("From the retained second variant".into());
+    assert_eq!(&saved.scenes[2].nodes[1..], wanted.as_slice());
+    assert!(
+        service
+            .apply(saved.id, &reviewed.stamp(), "first-instance", &change)
+            .unwrap()
+            .replayed
+    );
+    assert!(
+        service
+            .apply(saved.id, &saved.stamp(), "duplicate-instance", &change)
+            .is_err()
+    );
+
+    let mut second = data.clone();
+    second["instance"]["id"] = serde_json::json!(Uuid::new_v4());
+    second["instance"]["node_ids"] = serde_json::json!([Uuid::new_v4(), Uuid::new_v4()]);
+    second["instance"]
+        .as_object_mut()
+        .unwrap()
+        .remove("text_overrides");
+    let second: Change = serde_json::from_value(second).unwrap();
+    let saved = apply(&service, &saved, "second-instance", second);
+    assert_eq!(saved.scenes[2].nodes[4].text.as_deref(), Some("Continue"));
+    let record = serde_json::to_value(&saved.production_design).unwrap();
+    assert_eq!(record["distillation_instances"][0], data["instance"]);
+    let edited = apply(
+        &service,
+        &saved,
+        "remove-instantiated-node",
+        Change::RemoveCanvasNode {
+            scene_id: destination,
+            node_id: headline,
+        },
+    );
+    assert_eq!(
+        serde_json::to_value(&edited.production_design).unwrap()["distillation_instances"],
+        record["distillation_instances"],
+    );
+    drop(service);
+    let reopened = StudioService::open(&db).unwrap();
+    assert_eq!(reopened.project(saved.id).unwrap(), edited);
+    let bundle = tmp.path().join("distilled-instances.motionwright");
+    reopened.export_project_bundle(edited.id, &bundle).unwrap();
+    let restored = StudioService::open(tmp.path().join("restored.sqlite3"))
+        .unwrap()
+        .import_project_bundle(&bundle)
+        .unwrap();
+    assert_eq!(restored.production_design, edited.production_design);
+    assert_eq!(restored.scenes, edited.scenes);
+}

@@ -3,13 +3,14 @@
 import type { CanvasNode, Project, ProjectEvent, Scene } from "./types";
 import { sameProjectRevision } from "./projectMutation";
 import { sameValue } from "./creativeProduction";
-import { applyDistillationChange, DISTILLATION_RENDERER, validateDistillationProposal } from "./componentDistillation";
-import type { ComponentDistillationProposal, DistillationChange, DistillationNegative, DistillationVerdict } from "./componentDistillation";
+import { applyDistillationChange, distilledInstanceNodes, DISTILLATION_RENDERER, validateDistillationProposal } from "./componentDistillation";
+import type { ComponentDistillationProposal, DistillationChange, DistillationNegative, DistillationVerdict, DistilledComponentInstance } from "./componentDistillation";
 
-export type DistillationTarget = { kind: "author" } | { kind: "review"; proposalId: string | null };
+export type DistillationTarget = { kind: "author" } | { kind: "review"; proposalId: string | null } | { kind: "instantiate"; proposalId: string };
 export interface DistillationAuthorRaw { aId: string; bId: string; negativeId: string; rolesCount: string; label: string; author: string; rights: string; requirements: string }
 export interface DistillationReviewRaw { reviewer: string; note: string; verdict: DistillationVerdict }
-export type DistillationRaw = DistillationAuthorRaw | DistillationReviewRaw;
+export interface DistillationInstanceRaw { sampleSceneId: string; destinationSceneId: string; overrides: Record<string, string> }
+export type DistillationRaw = DistillationAuthorRaw | DistillationReviewRaw | DistillationInstanceRaw;
 export interface DistillationPending {
   /** Comparison data only; never a service request, grant or replay token. */
   id: string; revision: number; sequence: number; raw: DistillationRaw;
@@ -34,7 +35,7 @@ const integer = (value: unknown): value is number => typeof value === "number" &
 const uuid = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
 const bytes = (value: string) => new TextEncoder().encode(value).length;
 const originalKinds = new Set(["text", "rectangle", "circle"]);
-export const distillationScope = (project: Project, target: DistillationTarget) => JSON.stringify([project.id, project.generation, project.active_branch, target.kind, target.kind === "review" ? target.proposalId : null]);
+export const distillationScope = (project: Project, target: DistillationTarget) => JSON.stringify([project.id, project.generation, project.active_branch, target.kind, target.kind === "author" ? null : target.proposalId]);
 export const distillationCopyKey = (scope: string, writer: string) => DISTILLATION_RECOVERY_PREFIX + encodeURIComponent(scope) + ":" + writer;
 export const distillationPointerKey = (scope: string) => DISTILLATION_POINTER_PREFIX + encodeURIComponent(scope);
 export const distillationLabel = (target: DistillationTarget) => "Distillation " + target.kind;
@@ -63,16 +64,17 @@ function rawReview(saved: ComponentDistillationProposal | null): DistillationRev
 }
 function savedRaw(target: DistillationTarget, saved: ComponentDistillationProposal | null): DistillationRaw {
   if (target.kind === "review") return rawReview(saved);
+  if (target.kind === "instantiate") return { sampleSceneId: "", destinationSceneId: "", overrides: {} };
   if (!saved) return blankAuthor();
   const input = saved.input;
   return { aId: input.positives[0]?.scene_id ?? "", bId: input.positives[1]?.scene_id ?? "", negativeId: input.negatives[0]?.scene_id ?? "",
     rolesCount: String(input.roles.length), label: input.label, author: input.author, rights: input.original_rights_attestation, requirements: input.requirements.join("\n") };
 }
 function currentBase(draft: DistillationDraft, project: Project) {
-  return proposal(project, draft.target.kind === "review" ? draft.target.proposalId : draft.baseProposal?.input.id ?? null);
+  return proposal(project, draft.target.kind === "author" ? draft.baseProposal?.input.id ?? null : draft.target.proposalId);
 }
 export function createDistillationDraft(project: Project, target: DistillationTarget): DistillationDraft {
-  const baseProposal = target.kind === "review" ? proposal(project, target.proposalId) : null;
+  const baseProposal = target.kind === "author" ? null : proposal(project, target.proposalId);
   return { schema: "motionwright.component-distillation-draft/1", scope: distillationScope(project, target), target: clone(target), baseRevision: project.revision,
     baseProposal: clone(baseProposal), raw: savedRaw(target, baseProposal), sequence: 0, intent: false, pending: null, selection: "" };
 }
@@ -166,15 +168,28 @@ export function prepareDistillationSubmission(draft: DistillationDraft, project:
       roles: selected.map((node, index) => ({ key: "slot_" + String(index + 1).padStart(2, "0"), kind: node.kind })),
       positives: [{ scene_id: a.id, node_ids: selected.map(node => node.id) }, { scene_id: b.id, node_ids: matches.map(node => node!.id) }],
       negatives: [negative], requirements: raw.requirements.split("\n").map(value => value.trim()).filter(Boolean) } };
-  } else {
+  } else if (draft.target.kind === "review") {
     const candidate = proposal(project, draft.target.proposalId), raw = draft.raw as DistillationReviewRaw;
     if (!candidate) throw new Error("Choose an existing source proposal before reviewing.");
     if (candidate.review) throw new Error("The recorded review is immutable. Your later rationale remains a separate editable draft.");
     change = { type: "review_component_distillation", id: candidate.input.id, review: { reviewer: raw.reviewer.trim(), rationale: raw.note.trim(), verdict: raw.verdict,
       source_revision: candidate.input.source_revision, compatibility: DISTILLATION_RENDERER } };
+  } else {
+    const candidate = proposal(project, draft.target.proposalId);
+    if (!candidate) throw new Error("Choose a reviewed source proposal.");
+    const raw = draft.raw as DistillationInstanceRaw;
+    const instance: DistilledComponentInstance = {
+      id, proposal_id: candidate.input.id, sample_scene_id: raw.sampleSceneId, scene_id: raw.destinationSceneId,
+      node_ids: candidate.input.roles.map(() => crypto.randomUUID()),
+    };
+    const overrides = explicitTextOverrides(raw);
+    if (Object.keys(overrides).length) instance.text_overrides = overrides;
+    change = { type: "instantiate_component_distillation", instance };
   }
   const checked = clone(project); applyDistillationChange(checked, change);
-  const expected = proposal(checked, change.type === "propose_component_distillation" ? change.input.id : change.id);
+  const expectedId = change.type === "propose_component_distillation" ? change.input.id
+    : change.type === "review_component_distillation" ? change.id : change.instance.proposal_id;
+  const expected = proposal(checked, expectedId);
   if (!expected) throw new Error("The source validator did not produce the expected immutable proposal.");
   return { change, draft: { ...draft, intent: true, pending: { id, revision: project.revision, sequence: draft.sequence, raw: clone(draft.raw),
     submitted: clone(change), expected: clone(expected), outcome: "UNKNOWN" } } };
@@ -187,6 +202,14 @@ export function acknowledgeDistillationDraft(draft: DistillationDraft, id: strin
   checkScope(draft, receipt);
   if (receipt.revision !== pending.revision + 1 || !sameValue(proposal(receipt, pending.expected.input.id), pending.expected))
     throw new Error("The original reply does not confirm the exact submitted Distillation input, frozen samples and review.");
+  if (pending.submitted.type === "instantiate_component_distillation") {
+    const { instance } = pending.submitted;
+    const provenance = receipt.production_design?.distillation_instances?.find(value => value.id === instance.id);
+    const nodes = receipt.scenes.find(scene => scene.id === instance.scene_id)?.nodes;
+    const expected = distilledInstanceNodes(instance, pending.expected);
+    if (!sameValue(provenance, instance) || !nodes || !sameValue(nodes.slice(-expected.length), expected))
+      throw new Error("The original reply does not confirm both the instance provenance and the exact editable Canvas objects.");
+  }
   return { ...draft, baseRevision: receipt.revision, baseProposal: clone(pending.expected), pending: null,
     intent: draft.sequence !== pending.sequence || !sameValue(draft.raw, pending.raw) };
 }
@@ -226,9 +249,19 @@ export interface DistillationCustody { writerId: string; expectedRaw: string | n
 export interface DistillationCopy { schema: "motionwright.component-distillation-recovery/1"; scope: string; writerId: string; updatedAt: number; draft: DistillationDraft }
 export interface DistillationRecoveryEntry { key: string; writerId: string; raw: string; value: DistillationCopy | null }
 const allStrings = (value: Record<string, unknown>, keys: readonly string[]) => keys.every(key => typeof value[key] === "string");
+function explicitTextOverrides(raw: DistillationInstanceRaw): Record<string, string> {
+  return Object.fromEntries(Object.entries(raw.overrides).filter(([, text]) => text.trim().length > 0));
+}
+
 function rawShape(value: unknown, kind: DistillationTarget["kind"]): value is DistillationRaw {
   if (!record(value)) return false;
   if (kind === "author") { const keys = ["aId", "bId", "negativeId", "rolesCount", "label", "author", "rights", "requirements"]; return exact(value, keys) && allStrings(value, keys); }
+  if (kind === "instantiate") {
+    return exact(value, ["sampleSceneId", "destinationSceneId", "overrides"])
+      && [value.sampleSceneId, value.destinationSceneId].every(id => id === "" || uuid(id))
+      && record(value.overrides) && Object.entries(value.overrides).length <= 12
+      && Object.entries(value.overrides).every(([key, text]) => /^[a-z][a-z0-9_]{1,31}$/.test(key) && typeof text === "string" && text.length <= 1024);
+  }
   return exact(value, ["reviewer", "note", "verdict"]) && allStrings(value, ["reviewer", "note"]) && ["compatible_proposal", "rejected"].includes(String(value.verdict));
 }
 
@@ -261,10 +294,19 @@ function proposalShape(value: unknown, projectId: unknown): value is ComponentDi
     || !allStrings(value.review, ["reviewer", "rationale", "verdict", "compatibility"]) || !integer(value.review.source_revision))) return false;
   try { validateDistillationProposal(value as unknown as ComponentDistillationProposal); return true; } catch { return false; }
 }
-function changeShape(value: unknown, expected: ComponentDistillationProposal, target: DistillationTarget, revision: number, generation: unknown): value is DistillationChange {
+function changeShape(value: unknown, expected: ComponentDistillationProposal, target: DistillationTarget, revision: number, generation: unknown,
+  raw: DistillationRaw, attemptId: string): value is DistillationChange {
   if (!record(value)) return false;
   if (target.kind === "author") return exact(value, ["type", "input"]) && value.type === "propose_component_distillation" && sameValue(value.input, expected.input)
     && expected.review === null && expected.input.source_revision === revision && expected.input.source_generation === generation;
+  if (target.kind === "instantiate") {
+    if (!exact(value, ["type", "instance"]) || value.type !== "instantiate_component_distillation" || !record(value.instance)) return false;
+    const instance = value.instance as unknown as DistilledComponentInstance;
+    const input = raw as DistillationInstanceRaw;
+    if (instance.id !== attemptId || instance.proposal_id !== target.proposalId || instance.scene_id !== input.destinationSceneId
+      || instance.sample_scene_id !== input.sampleSceneId || !sameValue(instance.text_overrides ?? {}, explicitTextOverrides(input))) return false;
+    try { distilledInstanceNodes(instance, expected); return true; } catch { return false; }
+  }
   return exact(value, ["type", "id", "review"]) && value.type === "review_component_distillation" && value.id === target.proposalId
     && expected.input.id === target.proposalId && expected.review !== null && sameValue(value.review, expected.review);
 }
@@ -273,23 +315,25 @@ function cleanDraft(value: unknown, scope: string): DistillationDraft {
     || value.schema !== "motionwright.component-distillation-draft/1" || value.scope !== scope || !record(value.target)
     || !integer(value.baseRevision) || !integer(value.sequence) || typeof value.intent !== "boolean" || typeof value.selection !== "string") throw new Error("Unsupported Distillation recovery shape. Earlier bytes were retained.");
   const target = value.target, identity: unknown = JSON.parse(scope);
-  if ((target.kind !== "author" && target.kind !== "review") || (target.kind === "author" ? !exact(target, ["kind"])
-    : !exact(target, ["kind", "proposalId"]) || (target.proposalId !== null && !uuid(target.proposalId)))
+  if ((target.kind !== "author" && target.kind !== "review" && target.kind !== "instantiate") || (target.kind === "author" ? !exact(target, ["kind"])
+    : !exact(target, ["kind", "proposalId"]) || (!uuid(target.proposalId) && !(target.kind === "review" && target.proposalId === null)))
     || !Array.isArray(identity) || identity.length !== 5 || identity.slice(0, 3).some(item => typeof item !== "string" || !item)
-    || identity[3] !== target.kind || identity[4] !== (target.kind === "review" ? target.proposalId : null)
+    || identity[3] !== target.kind || identity[4] !== (target.kind === "author" ? null : target.proposalId)
     || !rawShape(value.raw, target.kind) || (value.selection !== "" && (!uuid(value.selection) || target.kind !== "author"))) throw new Error("This Distillation copy belongs to another editor scope.");
   if (value.baseProposal !== null && (!proposalShape(value.baseProposal, identity[0]) || value.baseProposal.input.source_revision > value.baseRevision
-    || (target.kind === "review" && value.baseProposal.input.id !== target.proposalId))) throw new Error("The saved immutable comparison is unreadable or foreign.");
+    || (target.kind !== "author" && value.baseProposal.input.id !== target.proposalId))) throw new Error("The saved immutable comparison is unreadable or foreign.");
   let pending: DistillationPending | null = null;
   if (value.pending !== null) {
     const sent = value.pending;
     if (!record(sent) || !exact(sent, ["id", "revision", "sequence", "raw", "submitted", "expected", "outcome"], ["diagnostic"])
       || !uuid(sent.id) || !integer(sent.revision) || sent.revision !== value.baseRevision || !integer(sent.sequence) || sent.sequence > value.sequence
       || !rawShape(sent.raw, target.kind) || !proposalShape(sent.expected, identity[0]) || sent.expected.input.source_revision > sent.revision
-      || !changeShape(sent.submitted, sent.expected, target as DistillationTarget, sent.revision, identity[1])
+      || !changeShape(sent.submitted, sent.expected, target as DistillationTarget, sent.revision, identity[1], sent.raw, sent.id)
       || !["UNKNOWN", "NOT_SENT"].includes(String(sent.outcome)) || (sent.diagnostic !== undefined && typeof sent.diagnostic !== "string")) throw new Error("Unreadable Distillation comparison snapshot.");
     if (target.kind === "review" && (value.baseProposal === null || value.baseProposal.review !== null
       || !sameValue({ ...sent.expected, review: null }, value.baseProposal))) throw new Error("The pending review does not preserve its frozen original source.");
+    if (target.kind === "instantiate" && !sameValue(sent.expected, value.baseProposal))
+      throw new Error("The pending instance does not preserve its reviewed source proposal.");
     // A recovered NOT_SENT record is conservative UNKNOWN, never replay permission.
     pending = { ...clone(sent), outcome: "UNKNOWN" } as unknown as DistillationPending;
   }

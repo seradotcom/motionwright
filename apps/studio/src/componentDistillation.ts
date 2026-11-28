@@ -1,5 +1,6 @@
 import type { CanvasNode, Change, Project, Scene } from "./types";
 import { emptyProductionDesign } from "./creativeProduction";
+import { compareBeatTimelineTime } from "./sceneBeatTimeline";
 
 /** A source-backed proposal is not executable code or a component admission. */
 export const DISTILLATION_SCHEMA="motionwright.component-distillation/1";
@@ -26,8 +27,16 @@ export interface ComponentDistillationProposal {
   schema:string;input:ComponentDistillationInput;
   samples:DistillationSample[];review:DistillationReview|null;
 }
+export interface DistilledComponentInstance {
+  id: string;
+  proposal_id: string;
+  sample_scene_id: string;
+  scene_id: string;
+  node_ids: string[];
+  text_overrides?: Record<string, string>;
+}
 export type DistillationChange=Extract<Change,{
-  type:"propose_component_distillation"|"review_component_distillation"
+  type:"propose_component_distillation"|"review_component_distillation"|"instantiate_component_distillation"
 }>;
 const validKey=/^[a-z][a-z0-9_]{1,31}$/u;
 const allowedKinds=new Set(["text","rectangle","circle"]);
@@ -118,6 +127,34 @@ export function validateDistillationProposal(value:ComponentDistillationProposal
     !["compatible_proposal","rejected"].includes(review.verdict)))
     reject("review must be authored independently and bound to frozen source revision");
 }
+const instanceUuid = (value: unknown): value is string =>
+  typeof value === "string" && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(value)
+  && value !== "00000000-0000-0000-0000-000000000000";
+const identities = (instance: DistilledComponentInstance) => [instance.id, ...instance.node_ids];
+
+export function distilledInstanceNodes(instance: DistilledComponentInstance, proposal: ComponentDistillationProposal): CanvasNode[] {
+  exact(instance, ["id", "proposal_id", "sample_scene_id", "scene_id", "node_ids",
+    ...(Object.hasOwn(instance, "text_overrides") ? ["text_overrides"] : [])]);
+  const sample = proposal.samples.find(value => value.scene_id === instance.sample_scene_id);
+  if (instance.proposal_id !== proposal.input.id || proposal.review?.verdict !== "compatible_proposal" || !sample)
+    reject("an exact frozen variant with a compatible review is required");
+  if (!instanceUuid(instance.scene_id) || !Array.isArray(instance.node_ids) || instance.node_ids.length !== sample.nodes.length
+    || !identities(instance).every(instanceUuid) || new Set(identities(instance)).size !== instance.node_ids.length + 1)
+    reject("invalid distillation instance or node identities");
+  const overrides = instance.text_overrides;
+  if (Object.hasOwn(instance, "text_overrides") && (!overrides || typeof overrides !== "object" || Array.isArray(overrides)
+    || Object.entries(overrides).some(([key, value]) => !bounded(value, 1024)
+      || !proposal.input.roles.some(role => role.key === key && role.kind === "text"))))
+    reject("only declared text roles accept a bounded text override");
+  return sample.nodes.map((original, index) => {
+    const node = structuredClone(original);
+    const key = proposal.input.roles[index].key;
+    node.id = instance.node_ids[index];
+    if (overrides && Object.hasOwn(overrides, key)) node.text = overrides[key];
+    return node;
+  });
+}
+
 export function validateDistillations(project:Project):void{
   const proposals=project.production_design?.distillations??[];
   if(proposals.length>32)reject("proposal collection budget exceeded");
@@ -129,6 +166,18 @@ export function validateDistillations(project:Project):void{
       proposal.input.source_revision>project.revision)
       reject("candidate identity or project source mismatch");
     ids.add(proposal.input.id);
+  }
+  const instances = project.production_design?.distillation_instances ?? [];
+  if (instances.length > 64) reject("instance collection budget exceeded");
+  const emitted = new Set<string>();
+  for (const instance of instances) {
+    const proposal = proposals.find(candidate => candidate.input.id === instance.proposal_id);
+    if (!proposal) reject("the frozen source proposal is unavailable");
+    distilledInstanceNodes(instance, proposal);
+    for (const id of identities(instance)) {
+      if (emitted.has(id)) reject("repeated distillation instance or node identity");
+      emitted.add(id);
+    }
   }
 }
 function assertContentUnlocked(project:Project,sceneId?:string):void{
@@ -180,6 +229,24 @@ export function applyDistillationChange(project:Project,change:DistillationChang
     };
     validateDistillationProposal(proposal);
     project.production_design.distillations=[...proposals,proposal];
+  } else if (change.type === "instantiate_component_distillation") {
+    const instance = change.instance;
+    const proposal = proposals.find(candidate => candidate.input.id === instance.proposal_id);
+    if (!proposal) reject("the frozen source proposal is unavailable");
+    const scene = project.scenes.find(value => value.id === instance.scene_id);
+    if (!compatibleScene(scene) || project.locks.some(lock => lock.resource === "scene:" + scene.id))
+      reject("an unlocked Motion Canvas destination is required");
+    const nodes = distilledInstanceNodes(instance, proposal);
+    if (nodes.some(node => node.keyframes.some(key => compareBeatTimelineTime(key.at, scene.duration) >= 0)))
+      reject("the destination must contain the frozen variation's motion");
+    const retained = project.production_design.distillation_instances ?? [];
+    const ids = new Set(identities(instance));
+    if (retained.length >= 64 || retained.some(value => identities(value).some(id => ids.has(id)))
+      || project.scenes.some(value => value.nodes.some(node => ids.has(node.id))))
+      reject("instance capacity exceeded or a node or instance identity already exists");
+    scene.nodes.push(...nodes);
+    scene.status = "draft";
+    project.production_design.distillation_instances = [...retained, structuredClone(instance)];
   }else{
     const candidate=proposals.find(item=>item.input.id===change.id);
     if(!candidate)reject("unknown source candidate");
