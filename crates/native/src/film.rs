@@ -220,7 +220,7 @@ fn project_scene_span_cost(
         });
     Ok(scene_span_cost(scene, has_camera_reframe(project, scene))
         + usize::from(extra)
-        + smoothstep_extra_spans(scene, fps)?)
+        + sampled_motion_extra_spans(scene, fps)?)
 }
 
 fn easing_interval_frames(
@@ -242,60 +242,58 @@ fn easing_interval_frames(
         .ok_or_else(|| unsupported("Sampled easing exceeds the canonical Film span budget"))
 }
 
-// The ordinary estimate counts authored intervals. A track with smoothstep
-// also samples its other intervals, so they share one frame-clock convention.
-fn smoothstep_extra_spans(scene: &Scene, fps: RationalTime) -> NativeResult<usize> {
+// The ordinary estimate counts authored intervals. Some geometry tracks
+// and smoothstep opacity additionally need an exact write at each output tick.
+fn sampled_motion_extra_spans(scene: &Scene, fps: RationalTime) -> NativeResult<usize> {
     let mut extra = 0;
     for node in &scene.nodes {
-        for opacity in [false, true] {
-            let in_track = |key: &&motionwright_domain::CanvasKeyframe| {
-                (key.property == MotionProperty::Opacity) == opacity
-            };
-            if !node
-                .keyframes
+        if node.keyframes.iter().any(|key| {
+            key.property == MotionProperty::Opacity
+                && key.interpolation == MotionInterpolation::EaseInOut
+        }) {
+            let intervals = motionwright_domain::exact_canvas_opacity_spans(node, scene, fps)
+                .map_err(|error| unsupported(error.to_string()))?
+                .unwrap_or_default();
+            if intervals
                 .iter()
-                .filter(in_track)
-                .any(|key| key.interpolation == MotionInterpolation::EaseInOut)
+                .any(|span| span.curve == MotionInterpolation::EaseInOut)
             {
-                continue;
-            }
-            if opacity {
-                let intervals = motionwright_domain::exact_canvas_opacity_spans(node, scene, fps)
-                    .map_err(|error| unsupported(error.to_string()))?
-                    .unwrap_or_default();
-                if !intervals
-                    .iter()
-                    .any(|span| span.curve == MotionInterpolation::EaseInOut)
-                {
-                    continue;
-                }
                 let frames = intervals.iter().try_fold(0, |total, span| {
                     easing_interval_frames(span.start, span.end, fps).map(|frames| total + frames)
                 })?;
-                let prior = node
+                let keys = node
                     .keyframes
                     .iter()
-                    .filter(in_track)
-                    .count()
-                    .saturating_sub(1);
-                extra += frames.saturating_sub(prior);
-            } else {
-                let times = node
-                    .keyframes
-                    .iter()
-                    .filter(in_track)
-                    .map(|key| key.at)
-                    .collect::<BTreeSet<_>>();
-                let end = *times.last().expect("smoothstep geometry track is nonempty");
-                let last_is_hold = node
-                    .keyframes
-                    .iter()
-                    .filter(in_track)
-                    .any(|key| key.at == end && key.interpolation == MotionInterpolation::Hold);
-                let frames = easing_interval_frames(RationalTime::ZERO, end, fps)?;
-                extra += (frames + 1)
-                    .saturating_sub(times.len().saturating_sub(1) + usize::from(last_is_hold));
+                    .filter(|key| key.property == MotionProperty::Opacity)
+                    .count();
+                extra += frames.saturating_sub(keys.saturating_sub(1));
             }
+        }
+
+        let times = node
+            .keyframes
+            .iter()
+            .filter(|key| key.property != MotionProperty::Opacity)
+            .map(|key| key.at)
+            .collect::<BTreeSet<_>>();
+        if times.len() < 3
+            && !node.keyframes.iter().any(|key| {
+                key.property != MotionProperty::Opacity
+                    && key.interpolation == MotionInterpolation::EaseInOut
+            })
+        {
+            continue;
+        }
+        let composed = composed_shape_motion(node);
+        let geometry = composed.as_ref().map_or(node, |(geometry, _)| geometry);
+        if let Some(points) = native_pose_waypoints(geometry, scene, fps)?
+            && pose_track_needs_frame_samples(&points)
+        {
+            let last = points.last().expect("admitted geometry track is nonempty");
+            let frames = easing_interval_frames(RationalTime::ZERO, last.at, fps)?;
+            let original_spans =
+                points.len() - 1 + usize::from(last.curve == MotionInterpolation::Hold);
+            extra += (frames + 1).saturating_sub(original_spans);
         }
     }
     Ok(extra)
@@ -1116,13 +1114,11 @@ fn validate_native_geometry_safety(
 fn native_pose_waypoints(
     node: &CanvasNode,
     scene: &Scene,
-    rate: Rate,
+    fps: RationalTime,
 ) -> NativeResult<Option<Vec<motionwright_domain::CanvasPosePoint>>> {
     if matches!(entry_motion(node), Ok(Some(_))) {
         return Ok(None);
     }
-    let fps = RationalTime::new(i64::from(rate.num), i64::from(rate.den))
-        .map_err(|error| contract("Native waypoint frame rate", error))?;
     motionwright_domain::exact_canvas_pose_waypoints(node, scene, fps)
         .map_err(|error| unsupported(error.to_string()))
 }
@@ -1190,10 +1186,20 @@ fn validate_pose_track_safety(
     Ok(())
 }
 
+fn pose_track_needs_frame_samples(points: &[motionwright_domain::CanvasPosePoint]) -> bool {
+    points
+        .iter()
+        .any(|point| point.curve == MotionInterpolation::EaseInOut)
+        || points.windows(3).any(|joint| {
+            // A tween writes its initial value as soon as its delay wakes.
+            // The previous frame is only safe if that value already held.
+            joint[2].curve != MotionInterpolation::Hold && joint[0].pose != joint[1].pose
+        })
+}
+
 /// Sample each authored curve at the exact output frames. All intervals of
-/// the track use the same literal Set schedule to avoid early tween writes
-/// at the edge of a sampled interval.
-fn sample_smoothstep_geometry(
+/// the track use the same literal Set schedule to protect the tick before a joint.
+fn sample_geometry_at_output_frames(
     points: &[motionwright_domain::CanvasPosePoint],
     frame: RationalTime,
 ) -> NativeResult<Vec<motionwright_domain::CanvasPosePoint>> {
@@ -1205,7 +1211,7 @@ fn sample_smoothstep_geometry(
         let frames = easing_interval_frames(from.at, to.at, fps)?;
         if sampled.len() + frames > MAX_TEMPORAL_SPANS {
             return Err(unsupported(
-                "Smoothstep geometry exceeds the canonical Film span budget",
+                "Frame-sampled geometry exceeds the canonical Film span budget",
             ));
         }
         for index in 1..frames {
@@ -1220,7 +1226,7 @@ fn sample_smoothstep_geometry(
             pose.rotation_deg = value(from.pose.rotation_deg, to.pose.rotation_deg);
             let offset = output_frame_offset(frame, index)?;
             sampled.push(motionwright_domain::CanvasPosePoint {
-                at: add(from.at, offset, "Native smoothstep time overflow")?,
+                at: add(from.at, offset, "Native geometry sample time overflow")?,
                 pose,
                 curve: MotionInterpolation::Hold,
             });
@@ -1257,11 +1263,8 @@ fn append_native_pose_track(
     .map_err(|error| contract("Native waypoint frame duration", error))?;
     let half = native_geometry_set_phase(frame)?;
     let sampled;
-    let points = if points
-        .iter()
-        .any(|point| point.curve == MotionInterpolation::EaseInOut)
-    {
-        sampled = sample_smoothstep_geometry(points, frame)?;
+    let points = if pose_track_needs_frame_samples(points) {
+        sampled = sample_geometry_at_output_frames(points, frame)?;
         sampled.as_slice()
     } else {
         points
@@ -2333,13 +2336,14 @@ fn attach_camera_reframe(
     initial.camera.center_y = reframe.start_center_y;
     let first_projection = scene_layout_projection(&initial, context.projection);
     let last_projection = scene_layout_projection(scene, context.projection);
+    let fps = RationalTime::new(30, 1).expect("30 fps camera rate");
     for node in &scene.nodes {
         // The original and terminal layouts must be independently valid for
         // this exact output profile. A linear camera translation is a convex
         // path between safe endpoints and thus cannot crop in between.
         let composed = composed_shape_motion(node);
         let geometry = composed.as_ref().map_or(node, |(geometry, _)| geometry);
-        if let Some(points) = native_pose_waypoints(geometry, scene, context.frame_rate)? {
+        if let Some(points) = native_pose_waypoints(geometry, scene, fps)? {
             validate_pose_track_safety(geometry, &points, first_projection, context.output)?;
             validate_pose_track_safety(geometry, &points, last_projection, context.output)?;
         } else if let Some(motion) =
@@ -2811,7 +2815,7 @@ fn build_segment(
                 let node = composed
                     .as_ref()
                     .map_or(source_node, |(geometry, _)| geometry);
-                if let Some(points) = native_pose_waypoints(node, scene, options.frame_rate)? {
+                if let Some(points) = native_pose_waypoints(node, scene, profile.frame_rate)? {
                     let context = CameraFilmContext {
                         scene_start: local_start,
                         shot_span: &shot_span,
@@ -6157,7 +6161,7 @@ mod tests {
                     if curve == MotionInterpolation::Hold {
                         if waypoint { 3 } else { 2 }
                     } else if waypoint {
-                        2
+                        31
                     } else {
                         1
                     }
@@ -6168,7 +6172,7 @@ mod tests {
                         || matches!(&rotations.last().unwrap().operation,
                     NativeOp::Tween { to: Operand::Number(value), .. } if *value == 27.0)
                 );
-                if curve == MotionInterpolation::Hold {
+                if curve == MotionInterpolation::Hold || waypoint {
                     assert!(
                         rotations
                             .iter()
@@ -6465,7 +6469,8 @@ mod tests {
             Some(subject_id(parent_id, None))
         );
         let realized = realize(&segments[0].film).unwrap();
-        let mut counts = BTreeMap::<Channel, usize>::new();
+        let mut geometry = BTreeMap::<Channel, BTreeSet<RationalTime>>::new();
+        let mut alpha = 0;
         for instruction in &realized.instructions {
             match &instruction.operation {
                 NativeOp::Set {
@@ -6474,38 +6479,42 @@ mod tests {
                     ..
                 } if actual == &target => {
                     assert_ne!(*channel, Channel::Opacity);
-                    assert_eq!(instruction.start, RationalTime::ZERO);
                     assert_eq!(instruction.duration, RationalTime::ZERO);
-                    *counts.entry(*channel).or_default() += 1;
+                    assert!(
+                        geometry
+                            .entry(*channel)
+                            .or_default()
+                            .insert(instruction.start)
+                    );
                 }
                 NativeOp::Tween {
                     target: actual,
-                    channel,
+                    channel: Channel::Opacity,
                     ..
                 } if actual == &target => {
-                    if *channel == Channel::Opacity {
-                        assert_eq!(instruction.start, RationalTime::ZERO);
-                        assert_eq!(instruction.duration, RationalTime::new(4, 15).unwrap());
-                    } else {
-                        assert_eq!(instruction.start, half);
-                        assert_eq!(instruction.duration, half);
-                        assert_eq!(instruction.easing, MotionEasing::OutCubic);
-                    }
-                    *counts.entry(*channel).or_default() += 1;
+                    assert_eq!(instruction.start, RationalTime::ZERO);
+                    assert_eq!(instruction.duration, RationalTime::new(4, 15).unwrap());
+                    alpha += 1;
+                }
+                NativeOp::Tween { target: actual, .. } if actual == &target => {
+                    panic!("a geometry tween would alter the frame before the held-to-tween joint");
                 }
                 _ => {}
             }
         }
-        assert_eq!(
-            counts,
-            BTreeMap::from([
-                (Channel::Position, 2),
-                (Channel::Width, 2),
-                (Channel::Height, 2),
-                (Channel::Rotation, 2),
-                (Channel::Opacity, 1)
-            ])
-        );
+        assert_eq!(alpha, 1);
+        assert_eq!(geometry.len(), 4);
+        let expected = (0..=30)
+            .map(|frame| RationalTime::new(2 * frame + 1, 60).unwrap())
+            .collect::<BTreeSet<_>>();
+        for channel in [
+            Channel::Position,
+            Channel::Width,
+            Channel::Height,
+            Channel::Rotation,
+        ] {
+            assert_eq!(geometry[&channel], expected);
+        }
         assert_eq!(project, source);
         let invalid = project.scenes[0]
             .nodes
@@ -7777,6 +7786,77 @@ mod tests {
         assert_eq!(sets[0].1, &first);
         assert_eq!(sets[1].1, &second);
         assert_eq!(project.scenes[0].nodes[0], circle);
+    }
+
+    #[test]
+    fn joined_geometry_preserves_the_frame_before_the_next_tween() {
+        use semwright_motion_authoring::NativeOp;
+
+        for first_curve in [MotionInterpolation::Hold, MotionInterpolation::Linear] {
+            let mut project = fixture_project();
+            let mut shape = node("shape", None);
+            shape.x = 720.0;
+            shape.y = 460.0;
+            shape.width = 480.0;
+            shape.height = 160.0;
+            shape.keyframes = [
+                (RationalTime::ZERO, 700.0, MotionInterpolation::Linear),
+                (RationalTime::new(1, 30).unwrap(), 710.0, first_curve),
+                (
+                    RationalTime::new(24, 30).unwrap(),
+                    720.0,
+                    MotionInterpolation::EaseOutCubic,
+                ),
+            ]
+            .into_iter()
+            .map(|(at, value, interpolation)| CanvasKeyframe {
+                at,
+                property: MotionProperty::X,
+                value,
+                interpolation,
+            })
+            .collect();
+            let target = subject_id(shape.id, None);
+            project.scenes[0].nodes[0] = shape;
+            let original = project.clone();
+            let segments = build_motion_canvas_segments(
+                &project,
+                project.deliverables[0].id,
+                &fixture_options(&project),
+            )
+            .unwrap();
+            let realized = realize(&segments[0].film).unwrap();
+            let mut values = BTreeMap::new();
+            for instruction in realized.instructions {
+                match instruction.operation {
+                    NativeOp::Set {
+                        target: actual,
+                        channel: Channel::Position,
+                        value: Operand::Vector(value),
+                    } if actual == target => {
+                        assert_eq!(instruction.duration, RationalTime::ZERO);
+                        assert!(values.insert(instruction.start, value).is_none());
+                    }
+                    NativeOp::Tween { target: actual, .. } if actual == target => {
+                        panic!("a tween at the joint can write the next pose a frame early");
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(values.len(), 25, "{first_curve:?}");
+            for frame in 0..=24 {
+                let at = RationalTime::new(2 * frame + 1, 60).unwrap();
+                let expected = if frame == 0 {
+                    -20.0
+                } else {
+                    let t = (frame - 1) as f64 / 23.0;
+                    -10.0 * (1.0 - t).powi(3)
+                };
+                assert!((values[&at].x - expected).abs() < 1e-9);
+                assert_eq!(values[&at].y, 0.0);
+            }
+            assert_eq!(project, original);
+        }
     }
 
     #[test]
