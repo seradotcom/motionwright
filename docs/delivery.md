@@ -29,7 +29,7 @@ Timing can be deliberately unlocked for a derivative that will be re-timed in pr
 
 A profile may select an ordered subset of project scenes. Selected scenes must preserve the approved project order. Profiles can additionally mark scenes as protected; a custom cut that omits a protected scene is invalid.
 
-Canonical Film reflows a valid selected cut onto a zero-based output timeline without changing the source project sequence. Caption sidecars use the same cut: transcript segments from omitted scenes are removed and retained cues are rebased to the cut timeline. A transcript segment that crosses a selected scene boundary blocks export until it is re-aligned, rather than being clipped silently. The source scenes remain available in the parent/original project state.
+Canonical Film reflows a valid selected cut onto a zero-based output timeline without changing the source project sequence. Caption sidecars use the same cut. The export omits cues in removed source intervals and rebases retained cues to the cut timeline, including when the full sequence contains gaps in its authored clock. A transcript segment that crosses a selected scene boundary blocks export until it is re-aligned, rather than being clipped silently. The source scenes remain available in the parent/original project state.
 
 ## Captions
 

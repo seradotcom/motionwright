@@ -297,20 +297,6 @@ fn exact_cut_frames<'a>(scenes: impl IntoIterator<Item = &'a Scene>) -> Result<u
     Ok(total)
 }
 
-fn editorial_matches_full_cut(scenes: &[Scene]) -> bool {
-    let mut cursor = RationalTime::ZERO;
-    for scene in scenes {
-        if scene.start != cursor {
-            return false;
-        }
-        let Ok(end) = cursor.checked_add(scene.duration) else {
-            return false;
-        };
-        cursor = end;
-    }
-    true
-}
-
 fn checked_schedule(mut schedule: Vec<ScheduledSfx>) -> Result<Vec<ScheduledSfx>> {
     schedule.sort_by_key(|record| (record.absolute_start_frame, record.cue_id));
     let mut ending: Vec<u64> = Vec::new();
@@ -349,7 +335,9 @@ impl Project {
         source: &[ScheduledSfx],
     ) -> Result<Vec<ScheduledSfx>> {
         // The implicit full cut uses source positions only when both clocks coincide.
-        if profile.included_scene_ids.is_empty() && editorial_matches_full_cut(&self.scenes) {
+        if profile.included_scene_ids.is_empty()
+            && crate::delivery::editorial_matches_full_cut(&self.scenes)
+        {
             return Ok(source.to_vec());
         }
         let selected = crate::delivery::scenes_for_profile(&self.scenes, profile)?;

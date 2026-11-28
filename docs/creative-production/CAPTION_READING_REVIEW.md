@@ -13,7 +13,7 @@ caption editing backend, media generation or independent renderer is added.
   bounded BigInt arithmetic. Non-increasing, negative, malformed or
   oversized clocks are rejected rather than converted to arbitrary float
   milliseconds.
-- For explicit scene cuts, the preflight preserves canonical source order,
+- For explicit scene cuts and full sequences with source gaps, the preflight preserves canonical source order,
   refuses missing, repeated or reordered scene references, and rebases
   wholly contained segments to their retained cut time. Captions crossing
   cut boundaries are structural errors and require human realignment.

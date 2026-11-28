@@ -171,6 +171,7 @@ export function inspectCaptionReadability(
     accumulated=add(accumulated,duration);
   }
 
+  const reflow=requested.length>0 || windows.some(window=>compare(window.start,window.offset)!==0);
   const timed:Timed[]=[];
   let omitted=0,inspected=0;
   for(const segment of matching) {
@@ -184,7 +185,7 @@ export function inspectCaptionReadability(
       continue;
     }
     let retainedStart=from,retainedEnd=to;
-    if(requested.length>0) {
+    if(reflow) {
       const intersecting=windows.filter(window=>
         compare(from,window.end)<0 && compare(to,window.start)>0);
       if(intersecting.length===0) {omitted++;continue;}

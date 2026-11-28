@@ -59,6 +59,21 @@ describe("source-bound caption legibility preflight",()=>{
     expect(result.guidance).toContain("No source speech match");
     expect(project).toEqual(before);
   });
+  it("reviews the same delivered cues for an implicit and explicit full cut with source gaps", () => {
+    const { project, profile, segment } = fixture();
+    project.scenes = project.scenes.slice(0, 2);
+    project.scenes[1].start = { num: "8", den: "1" };
+    project.audio.transcript = [
+      segment("gap", 7, 8, "A source cue in the gap"),
+      segment("retained", 8, 9, "Kept in the output"),
+    ];
+    const full = inspectCaptionReadability(project, profile);
+    expect(full).toMatchObject({ inspectedSegments: 1, omittedSegments: 1 });
+    profile.included_scene_ids = project.scenes.map(scene => scene.id);
+    expect(inspectCaptionReadability(project, profile)).toEqual(full);
+    expect(project.audio.transcript[1].start).toEqual({ num: "8", den: "1" });
+  });
+
   it("flags high reading density without blocking trusted source export",()=>{
     const {project,profile,segment}=fixture();
     project.audio.transcript.push(segment("fast",1,2,"Long captions can exceed the chosen rate, and must be checked by an editor."));

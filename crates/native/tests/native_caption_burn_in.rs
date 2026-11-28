@@ -224,6 +224,43 @@ fn sidecar_only_preserves_exact_legacy_native_film_semantics() {
 }
 
 #[test]
+fn full_gapped_source_uses_the_same_caption_cut_as_the_explicit_scene_roster() {
+    let mut project = fixture();
+    project.scenes[1].start = RationalTime::new(3, 1).unwrap();
+    project.audio.voice_tracks[0].measured_duration = RationalTime::new(5, 1).unwrap();
+    let second = &mut project.audio.transcript[1];
+    second.start = RationalTime::new(7, 2).unwrap();
+    second.end = RationalTime::new(9, 2).unwrap();
+
+    let id = project.deliverables[0].id;
+    let full = caption_sidecar(&project, id).unwrap();
+    assert_eq!(full.cue_count, 2);
+    assert!(full.body.contains("00:00:02.500 --> 00:00:03.500"));
+    let segments = output(&project).unwrap();
+    assert_eq!(
+        segments
+            .iter()
+            .map(|segment| segment.frame_count)
+            .sum::<u64>(),
+        120
+    );
+    let cues = segments[0].film.cues.resolve().unwrap();
+    assert!(
+        cues.values()
+            .any(|cue| matches!(cue, ResolvedCue::Resolved { start, end }
+        if *start == RationalTime::new(5, 2).unwrap() && *end == RationalTime::new(7, 2).unwrap()))
+    );
+
+    project.deliverables[0].included_scene_ids =
+        project.scenes.iter().map(|scene| scene.id).collect();
+    assert_eq!(caption_sidecar(&project, id).unwrap().body, full.body);
+    assert_eq!(
+        project.audio.transcript[1].start,
+        RationalTime::new(7, 2).unwrap()
+    );
+}
+
+#[test]
 fn explicitly_cut_second_scene_rebases_both_native_caption_and_sidecar() {
     let mut p = fixture();
     p.deliverables[0].included_scene_ids = vec![p.scenes[1].id];

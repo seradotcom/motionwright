@@ -660,6 +660,20 @@ pub(crate) fn scenes_for_profile<'a>(
         .collect()
 }
 
+pub(crate) fn editorial_matches_full_cut(scenes: &[crate::Scene]) -> bool {
+    let mut cursor = RationalTime::ZERO;
+    for scene in scenes {
+        if scene.start != cursor {
+            return false;
+        }
+        let Ok(end) = cursor.checked_add(scene.duration) else {
+            return false;
+        };
+        cursor = end;
+    }
+    true
+}
+
 pub fn transcript_for_profile(
     project: &Project,
     profile: &DeliverableProfile,
@@ -722,7 +736,11 @@ pub fn transcript_for_profile(
             .iter()
             .copied()
             .eq(project.scenes.iter().map(|scene| scene.id));
-    if profile.included_scene_ids.is_empty() || unchanged_full_cut {
+    // Caption delivery follows the same compacted clock as Film. A continuous
+    // implicit full cut still keeps its original authored cue timings.
+    let keep_implicit_clock = profile.included_scene_ids.is_empty()
+        && (!profile.captions || editorial_matches_full_cut(&project.scenes));
+    if keep_implicit_clock || unchanged_full_cut {
         return Ok(segments);
     }
 
