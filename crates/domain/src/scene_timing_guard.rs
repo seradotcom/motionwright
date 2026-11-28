@@ -20,6 +20,11 @@ impl Project {
         // Existing target content/timing locks, containment, rational overflow,
         // and all final project validation remain authoritative.
         candidate.apply_change_in_place(change)?;
+        let protected_delivery_operation = match change {
+            Change::MoveScene { .. } => Some("Scene reorder"),
+            Change::TrimSceneEnd { .. } | Change::ReverseSceneTrim { .. } => Some("Scene trim"),
+            _ => None,
+        };
         let proposed: BTreeMap<_, _> = candidate
             .scenes
             .iter()
@@ -34,21 +39,22 @@ impl Project {
                 if matches!(
                     change,
                     Change::TrimSceneEnd { .. } | Change::ReverseSceneTrim { .. }
-                ) {
-                    if original.status == SceneStatus::Approved {
-                        return Err(DomainError::Invalid(
-                            "Scene trim would change approved scene timing.".into(),
-                        ));
-                    }
+                ) && original.status == SceneStatus::Approved
+                {
+                    return Err(DomainError::Invalid(
+                        "Scene trim would change approved scene timing.".into(),
+                    ));
+                }
+                if let Some(operation) = protected_delivery_operation {
                     if self.deliverables.iter().any(|profile| {
                         profile.protected_scene_ids.contains(&original.id)
                             || (profile.timing_locked
                                 && (profile.included_scene_ids.is_empty()
                                     || profile.included_scene_ids.contains(&original.id)))
                     }) {
-                        return Err(DomainError::Invalid(
-                            "Scene trim would change protected delivery timing.".into(),
-                        ));
+                        return Err(DomainError::Invalid(format!(
+                            "{operation} would change protected delivery timing."
+                        )));
                     }
                 }
             }

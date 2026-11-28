@@ -169,6 +169,25 @@ fn unrelated_locked_timing_and_exact_rational_changes_survive_reopen() {
     let service = StudioService::open(&path).unwrap();
     let mut project = project(&service);
     let suffix = project.scenes[2].clone();
+    let first = project.scenes[0].id;
+    let second = project.scenes[1].id;
+    let mut full = project.deliverables[0].clone();
+    full.included_scene_ids = vec![first, second, suffix.id];
+    full.protected_scene_ids = vec![suffix.id];
+    let mut subset = project.deliverables[1].clone();
+    subset.included_scene_ids = vec![first, suffix.id];
+    for (request, profile) in [
+        ("explicit-full-cut", full.clone()),
+        ("subset-cut", subset.clone()),
+    ] {
+        project = apply(
+            &service,
+            &project,
+            request,
+            Change::UpsertDeliverable { profile },
+        );
+    }
+    let implicit = project.deliverables[2].clone();
     project = apply(
         &service,
         &project,
@@ -189,12 +208,35 @@ fn unrelated_locked_timing_and_exact_rational_changes_survive_reopen() {
         },
     );
     assert_eq!(project.scenes[2], suffix);
+    full.included_scene_ids = vec![second, first, suffix.id];
+    assert_eq!(project.deliverables, [full, subset, implicit]);
     let lock_id = project.locks[0].id;
     project = apply(
         &service,
         &project,
         "explicit-unlock",
         Change::RemoveLock { lock_id },
+    );
+    let protected_history = service.history(project.id, 0, 256).unwrap();
+    let refused = service.apply(
+        project.id,
+        &project.stamp(),
+        "protected-cut-reorder",
+        &Change::MoveScene {
+            scene_id: suffix.id,
+            to_index: 0,
+        },
+    );
+    assert!(
+        refused
+            .unwrap_err()
+            .to_string()
+            .contains("protected delivery timing")
+    );
+    assert_eq!(service.project(project.id).unwrap(), project);
+    assert_eq!(
+        service.history(project.id, 0, 256).unwrap(),
+        protected_history
     );
     let prefix = project.scenes[0].clone();
     project = apply(

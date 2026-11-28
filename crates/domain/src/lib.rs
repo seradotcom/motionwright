@@ -1807,6 +1807,18 @@ impl Project {
                 let scene = self.scenes.remove(from);
                 self.scenes.insert(*to_index, scene);
                 self.reflow_scene_starts()?;
+                // Explicit cuts select members. Their order follows the project's saved sequence.
+                let positions: BTreeMap<_, _> = self
+                    .scenes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, scene)| (scene.id, index))
+                    .collect();
+                for profile in &mut self.deliverables {
+                    profile
+                        .included_scene_ids
+                        .sort_by_key(|scene_id| positions.get(scene_id).copied());
+                }
             }
             Change::UpdateSceneObjective {
                 scene_id,

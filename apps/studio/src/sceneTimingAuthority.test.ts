@@ -42,14 +42,28 @@ describe("general scene timing respects affected resource authority", () => {
     expect(locked).toEqual(before);
   });
 
-  it("a lock on an unchanged suffix does not prohibit reordering earlier scenes", async () => {
+  it("reorders explicit cuts by scene membership and preserves protected delivery timing", async () => {
     const source = original();
-    const locked = await applyChange(source, { type: "set_lock", resource: "scene:" + source.scenes[2].id, kind: "timing", note: "Suffix" });
+    const [first, second, suffix] = source.scenes;
+    source.deliverables[0].included_scene_ids = [first.id, second.id, suffix.id];
+    source.deliverables[0].protected_scene_ids = [suffix.id];
+    source.deliverables[1].included_scene_ids = [first.id, suffix.id];
+    const locked = await applyChange(source, { type: "set_lock", resource: "scene:" + suffix.id, kind: "timing", note: "Suffix" });
     const before = structuredClone(locked);
     const saved = await applyChange(locked, timingChange(locked, "reorder"));
-    expect(saved.scenes.map(scene => scene.id)).toEqual([before.scenes[1].id, before.scenes[0].id, ...before.scenes.slice(2).map(scene => scene.id)]);
+    expect(saved.scenes.map(scene => scene.id)).toEqual([second.id, first.id, ...before.scenes.slice(2).map(scene => scene.id)]);
+    expect(saved.deliverables).toEqual([
+      { ...before.deliverables[0], included_scene_ids: [second.id, first.id, suffix.id] },
+      ...before.deliverables.slice(1),
+    ]);
     expect(saved.scenes[2]).toEqual(before.scenes[2]);
     expect(locked).toEqual(before);
+
+    const unlocked = await applyChange(saved, { type: "remove_lock", lock_id: saved.locks[0].id });
+    await expect(applyChange(unlocked, { type: "move_scene", scene_id: suffix.id, to_index: 0 }))
+      .rejects.toThrow("protected delivery timing");
+    expect(unlocked.scenes).toEqual(saved.scenes);
+    expect(unlocked.deliverables).toEqual(saved.deliverables);
   });
 
   it("fractional duration and reorder keep reduced rational starts exact", async () => {

@@ -52,9 +52,22 @@ export function applyGeneralSceneTiming(project: Project, change: TimingChange):
     const start = cursor;
     cursor = add(cursor, scene.duration);
     const original = originals.get(scene.id)!;
-    if (compare(start, original.start) !== 0 || compare(scene.duration, original.duration) !== 0)
+    if (compare(start, original.start) !== 0 || compare(scene.duration, original.duration) !== 0) {
       unlocked(project, "scene:" + scene.id, ["timing"]);
+      if (change.type === "move_scene" && project.deliverables.some(profile =>
+        profile.protected_scene_ids.includes(scene.id) ||
+        (profile.timing_locked && (profile.included_scene_ids.length === 0 || profile.included_scene_ids.includes(scene.id)))
+      )) throw new Error("Scene reorder would change protected delivery timing.");
+    }
     return { ...scene, start };
   });
+  if (change.type === "move_scene") {
+    const positions = new Map(proposed.map((scene, index) => [scene.id, index]));
+    project.deliverables = project.deliverables.map(profile => ({
+      ...profile,
+      included_scene_ids: [...profile.included_scene_ids].sort((left, right) =>
+        (positions.get(left) ?? -1) - (positions.get(right) ?? -1)),
+    }));
+  }
   project.scenes = proposed;
 }
