@@ -15,6 +15,7 @@ import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { isDeepStrictEqual } from "node:util";
 import type { Page } from "@playwright/test";
+import { isPortableImportSourceRefusal, type PortableImportSourceRefusal } from "../../src/projectBundleImport.ts";
 import { decodeGraphMutationError, type GraphMutationError } from "../../src/semanticGraphMutationError.ts";
 import { decodeGraphContextFailure, type GraphContextFailure } from "../../src/semanticGraphContextFailure.ts";
 import type { FileImportInput, FileImportReceipt, PreparedFileImport } from "../../src/fileImport";
@@ -104,7 +105,7 @@ function projectionFailure(command: string, value: unknown): value is ServicePro
 
 export type ServiceRpcResponse<T = unknown> =
   | { id: RpcId; ok: true; result: T }
-  | { id: RpcId; ok: false; error: string | ServiceProjectionFailure | GraphMutationError | GraphContextFailure };
+  | { id: RpcId; ok: false; error: string | ServiceProjectionFailure | GraphMutationError | GraphContextFailure | PortableImportSourceRefusal };
 
 export interface ServiceStartup extends StudioBootstrap {
   test_transport: "service-test-jsonl";
@@ -243,6 +244,7 @@ function serializedGraphMutation(request: ServiceRpcRequest): Readonly<PendingGr
 interface PendingRequest {
   command: string;
   graphMutation: Readonly<PendingGraphMutation> | null;
+  portableImportFingerprint?: unknown;
   resolve: (response: ServiceRpcResponse) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -601,6 +603,8 @@ export class ScopedChangeService {
       if (response.ok ? !("result" in response)
         : !(typeof response.error === "string" || (pending && projectionFailure(pending.command, response.error))
           || (pending?.command === "semantic_graph_authoring_context" && decodeGraphContextFailure(response.error))
+          || (pending?.command === "import_project_bundle"
+            && isPortableImportSourceRefusal(response.error, pending.portableImportFingerprint))
           || (pending?.command === "apply_change" && pending.graphMutation
             && decodeGraphMutationError(response.error, pending.graphMutation.requestId)))) {
         throw new Error("Response lacks its declared result/error payload");
@@ -841,6 +845,8 @@ export class ScopedChangeService {
       this.pending.set(key, {
         command: serialized.command,
         graphMutation,
+        portableImportFingerprint: serialized.command === "import_project_bundle"
+          ? (serialized.args?.request as { fingerprint?: unknown } | undefined)?.fingerprint : undefined,
         resolve: response => resolveResponse(response as ServiceRpcResponse<T>),
         reject: rejectResponse,
         timer,

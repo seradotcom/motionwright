@@ -1501,7 +1501,7 @@ test.describe("real service imports and portable restore", () => {
       await cp(replacementPath, bundlePath, { recursive: true, force: true });
       expect(await readFile(join(bundlePath, "manifest.json"))).toEqual(manifestB);
       await expect(target.importBundle(bundlePath, planA.fingerprint))
-        .rejects.toThrow("bundle manifest changed after inspection");
+        .rejects.toEqual({ kind: "portable_import_source_changed", fingerprint: planA.fingerprint });
       await assertUnpublished(target);
       await testInfo.attach("replacement-original-manifest-b", { body: manifestB, contentType: "application/json" });
 
@@ -1514,7 +1514,7 @@ test.describe("real service imports and portable restore", () => {
       expect(JSON.parse(manifestC.toString("utf8"))).toEqual(JSON.parse(manifestB.toString("utf8")));
       await writeFile(join(bundlePath, "manifest.json"), manifestC);
       await expect(target.importBundle(bundlePath, planB.fingerprint))
-        .rejects.toThrow("bundle manifest changed after inspection");
+        .rejects.toEqual({ kind: "portable_import_source_changed", fingerprint: planB.fingerprint });
       await assertUnpublished(target);
       await testInfo.attach("replacement-original-manifest-c", { body: manifestC, contentType: "application/json" });
 
@@ -1709,13 +1709,47 @@ test.describe("real service imports and portable restore", () => {
       } })).rejects.toThrow("Effect grant");
       expect(await target.project(original.id)).toEqual(original);
 
+      // Change only the manifest bytes after inspection of a separate copy.
+      // The real reader must reject it before creating the destination project
+      // or publishing its original assets.
+      const retryBundle = testInfo.outputPath("reinspected-bundle.motionwright");
+      await cp(bundlePath, retryBundle, { recursive: true });
+      await field(targetPage, "Portable import path").fill(retryBundle);
+      await button(targetPage, "Inspect bundle").click();
+      const preflight = targetPage.getByLabel("Portable bundle preflight", { exact: true });
+      await expect(preflight).toContainText(donor.title);
+      const changedManifest = Buffer.concat([manifestBytes, Buffer.from("\n")]);
+      const fingerprintDomain = Buffer.from("motionwright.bundle-inspection.v1\0");
+      expect(plan.fingerprint).toBe(hash(Buffer.concat([fingerprintDomain, manifestBytes])));
+      const nextFingerprint = hash(Buffer.concat([fingerprintDomain, changedManifest]));
+      await writeFile(join(retryBundle, "manifest.json"), changedManifest);
+      await button(targetPage, "Import verified bundle").click();
+      await expect(targetPage.locator(".portable-project .portable-message.error"))
+        .toContainText("Inspect it again before importing");
+      await expect(preflight).toHaveCount(0);
+      expect(await targetPage.evaluate(() => Object.keys(localStorage)
+        .filter(key => key.startsWith("motionwright.bundle-import-continuity/")))).toEqual([]);
+      expect(requests(target, "import_project_bundle").at(-1)).toMatchObject({
+        path: retryBundle, fingerprint: plan.fingerprint,
+      });
+      await expect(target.project(donor.id)).rejects.toThrow("not found");
+      const digest = fontAsset.content_sha256!;
+      await expect(readFile(join(target.directory, "blobs", "sha256", digest.slice(0, 2), digest)))
+        .rejects.toThrow("ENOENT");
+      expect(await target.project(original.id)).toEqual(original);
+      expect(await target.history(original.id, 0, 256)).toEqual(originalOracle.journal);
+      await button(targetPage, "Inspect bundle").click();
+      await expect(preflight).toContainText(donor.title);
+      expect(await readFile(join(bundlePath, "manifest.json"))).toEqual(manifestBytes);
+      observations.reinspection = { before: plan.fingerprint, after: nextFingerprint };
+
       held = holdRealReply(target, "import_project_bundle");
       await button(targetPage, "Import verified bundle").click();
       const result = await held.observed;
       if ("error" in result) throw result.error;
       const restored = result.project;
       expect(requests(target, "import_project_bundle").at(-1)).toMatchObject({
-        path: bundlePath, fingerprint: plan.fingerprint,
+        path: retryBundle, fingerprint: nextFingerprint,
       });
       observations.restored = restored;
       expect(restored.id).toBe(donor.id);

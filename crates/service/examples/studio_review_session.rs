@@ -516,6 +516,24 @@ impl Session {
             "semantic_graph_authoring_context" => self.graph_context(args),
             "semantic_graph_operation_recovery" => self.graph_operation_recovery(args),
             "apply_change" => self.apply_change(args),
+            "import_project_bundle" => {
+                let request: ImportBundleRequest = request(args)?;
+                self.grants.consume(
+                    request.effect_grant,
+                    EffectKind::ImportLocal,
+                    EffectScope::unscoped_import(),
+                    request.path.trim(),
+                )?;
+                let source = absolute_bundle_path(&request.path)?;
+                encoded(
+                    self.service
+                        .import_project_bundle_inspected(&source, &request.fingerprint)
+                        .map_err(|error| {
+                            local_error::portable_import_error(error, &request.fingerprint)
+                        })?,
+                )
+                .map_err(Value::String)
+            }
             "project_projection_head" => projection_encoded(project_projection::head(
                 &self.service,
                 projection_request(args)?,
@@ -945,21 +963,6 @@ impl Session {
                     >(args)?)
                     .map_err(|error| error.to_string())?,
             ),
-            "import_project_bundle" => {
-                let request: ImportBundleRequest = request(args)?;
-                self.grants.consume(
-                    request.effect_grant,
-                    EffectKind::ImportLocal,
-                    EffectScope::unscoped_import(),
-                    request.path.trim(),
-                )?;
-                let source = absolute_bundle_path(&request.path)?;
-                encoded(
-                    self.service
-                        .import_project_bundle_inspected(&source, &request.fingerprint)
-                        .map_err(|error| error.to_string())?,
-                )
-            }
             "preview_branch_combination" => encoded(
                 self.service
                     .preview_branch_combination(&request(args)?)
