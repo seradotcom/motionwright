@@ -437,35 +437,33 @@ function AudioWorkspaceEditor({
   const [takeLabel, setTakeLabel] = useState("");
   const [importBusy, setImportBusy] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
-  const [waveform, setWaveform] = useState<WaveformPage | null>(null);
-  const [waveformPageIndex, setWaveformPageIndex] = useState(0);
+  const waveformScope = desktopMode && active ? JSON.stringify([
+    project.id, project.generation, active.id, active.source_sha256, active.sample_rate_hz, active.channels,
+  ]) : null;
+  const [waveformNavigation, setWaveformNavigation] = useState<{ scope: string | null; index: number }>({ scope: null, index: 0 });
+  const [waveformReply, setWaveformReply] = useState<{ scope: string; page: WaveformPage | null; error: string | null } | null>(null);
   const [waveformBusy, setWaveformBusy] = useState(false);
-  const [waveformError, setWaveformError] = useState<string | null>(null);
+  const waveformPageIndex = waveformNavigation.scope === waveformScope ? waveformNavigation.index : 0;
+  const currentWaveform = waveformReply?.scope === waveformScope ? waveformReply : null;
+  const waveform = currentWaveform?.page ?? null;
+  const waveformError = currentWaveform?.error ?? null;
 
   useEffect(() => {
-    setWaveformPageIndex(0);
-    setWaveform(null);
-    setWaveformError(null);
-  }, [active?.id]);
-
-  useEffect(() => {
-    if (!desktopMode || !active) {
-      setWaveform(null);
+    setWaveformNavigation(current => current.scope === waveformScope ? current : { scope: waveformScope, index: 0 });
+    setWaveformReply(current => current?.scope === waveformScope && !current.error ? current : null);
+    if (!waveformScope || !active) {
       setWaveformBusy(false);
       return;
     }
     let cancelled = false;
     setWaveformBusy(true);
-    setWaveformError(null);
     void loadWaveformPage(project, active.id, waveformPageIndex, WAVEFORM_PAGE_SIZE)
-      .then((page) => {
-        if (cancelled) return;
-        setWaveform(page);
+      .then(page => {
+        if (!cancelled) setWaveformReply({ scope: waveformScope, page, error: null });
       })
-      .catch((reason) => {
-        if (cancelled) return;
-        setWaveform(null);
-        setWaveformError(reason instanceof Error ? reason.message : String(reason));
+      .catch(reason => {
+        if (!cancelled) setWaveformReply({ scope: waveformScope, page: null,
+          error: reason instanceof Error ? reason.message : String(reason) });
       })
       .finally(() => {
         if (!cancelled) setWaveformBusy(false);
@@ -473,7 +471,7 @@ function AudioWorkspaceEditor({
     return () => {
       cancelled = true;
     };
-  }, [desktopMode, active?.id, waveformPageIndex, project.id]);
+  }, [waveformScope, waveformPageIndex]);
 
   const doImport = async () => {
     if (!path.trim() || !desktopMode || sourceLocked) return;
@@ -632,7 +630,7 @@ function AudioWorkspaceEditor({
                       className="icon-action"
                       aria-label="Previous waveform page"
                       disabled={waveformBusy || !waveform.has_previous}
-                      onClick={() => setWaveformPageIndex((value) => Math.max(0, value - 1))}
+                      onClick={() => setWaveformNavigation({ scope: waveformScope, index: Math.max(0, waveformPageIndex - 1) })}
                     >
                       <ChevronLeft size={14} />
                     </button>
@@ -642,7 +640,7 @@ function AudioWorkspaceEditor({
                       className="icon-action"
                       aria-label="Next waveform page"
                       disabled={waveformBusy || !waveform.has_next}
-                      onClick={() => setWaveformPageIndex((value) => value + 1)}
+                      onClick={() => setWaveformNavigation({ scope: waveformScope, index: waveformPageIndex + 1 })}
                     >
                       <ChevronRight size={14} />
                     </button>

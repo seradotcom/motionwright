@@ -68,8 +68,8 @@ const field = (page: Page, name: string) => page.getByRole("textbox", { name, ex
 const recovery = (page: Page) => page.locator(".file-import-recovery");
 const revision = (page: Page, value: number) => expect(page.locator(".command-bar .revision-chip")).toHaveText("r" + value);
 
-function pcm(frequency = 240): Buffer {
-  const sampleRate = 48_000, frames = sampleRate * 2, channels = 2;
+function pcm(frequency = 240, seconds = 2): Buffer {
+  const sampleRate = 48_000, frames = sampleRate * seconds, channels = 2;
   const bytes = frames * channels * 2;
   const result = Buffer.alloc(44 + bytes);
   result.write("RIFF", 0); result.writeUInt32LE(36 + bytes, 4); result.write("WAVEfmt ", 8);
@@ -253,6 +253,51 @@ test("lost voice acknowledgement preserves ten later edits, then two takes remai
   await page.screenshot({ path: info.outputPath("two-measured-takes-and-preserved-authored-cues.png"), fullPage: true });
   observations.originalReceipt = outcome(); observations.originalCopy = original;
   observations.finalProject = final; observations.behaviorAssertionsCompleted = true;
+});
+
+test("the waveform rejects another measured take and accepts the selected original on reopening Audio", async ({ page, imports }, info) => {
+  const { service, project, cleanup } = imports;
+  const sourcePath = info.outputPath("selected-waveform.wav");
+  const otherPath = info.outputPath("other-waveform.wav");
+  await writeFile(sourcePath, pcm(240, 9));
+  await writeFile(otherPath, pcm(390, 9));
+  let saved = await service.importVoice(project, sourcePath, "Selected waveform original");
+  const selected = saved.audio.voice_tracks.find(track => track.label === "Selected waveform original")!;
+  saved = await service.importVoice(saved, otherPath, "Different waveform original");
+  const other = saved.audio.voice_tracks.find(track => track.label === "Different waveform original")!;
+  if (saved.audio.active_voice_track_id !== selected.id) {
+    saved = await service.apply(saved, { type: "set_active_voice_track", track_id: selected.id });
+  }
+
+  const realInvoke = service.invoke.bind(service);
+  let differentReply = true;
+  const readDigests: string[] = [];
+  service.invoke = async <T>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
+    if (command !== "waveform_page") return realInvoke<T>(command, args);
+    const request = args.request as Record<string, unknown>;
+    expect(request.track_id).toBe(selected.id);
+    const result = await realInvoke<Awaited<ReturnType<typeof service.waveform>>>(command, {
+      request: { ...request, track_id: differentReply ? other.id : selected.id },
+    });
+    readDigests.push(result.source_sha256);
+    return result as T;
+  };
+  cleanup.push(async () => { service.invoke = realInvoke; });
+
+  await page.goto("/"); await audio(page);
+  const waveform = page.getByRole("region", { name: "Measured sample peak waveform" });
+  await expect(waveform.getByRole("alert")).toContainText("does not match the selected voice take");
+  await expect(waveform.getByRole("img", { name: /Measured sample-peak waveform page/ })).toHaveCount(0);
+  expect([...new Set(readDigests)]).toEqual([other.source_sha256]);
+
+  differentReply = false;
+  await button(page, "Brief").click(); await audio(page);
+  await expect(waveform.getByRole("img", { name: "Measured sample-peak waveform page 1 of 2" })).toBeVisible();
+  await expect(waveform.getByRole("alert")).toHaveCount(0);
+  await button(page, "Next waveform page").click();
+  await expect(waveform.getByRole("img", { name: "Measured sample-peak waveform page 2 of 2" })).toBeVisible();
+  expect(readDigests.at(-1)).toBe(selected.source_sha256);
+  expect(await service.project(project.id)).toEqual(saved);
 });
 
 test("lost asset acknowledgement recovers its original bytes and identity after later canvas and narrative revisions", async ({ page, imports }, info) => {

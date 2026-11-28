@@ -477,7 +477,9 @@ export async function waveformPage(
   pageSize = 256,
 ): Promise<WaveformPage | null> {
   if (!isTauri()) return null;
-  return invoke<WaveformPage>("waveform_page", {
+  const track = project.audio.voice_tracks.find(candidate => candidate.id === trackId);
+  if (!track) throw new Error("The selected voice take is unavailable.");
+  const page = await invoke<WaveformPage>("waveform_page", {
     request: {
       project_id: project.id,
       track_id: trackId,
@@ -485,6 +487,13 @@ export async function waveformPage(
       page_size: pageSize,
     },
   });
+  if (!page || page.schema !== "motionwright.waveform-page.v1" || page.algorithm !== "sample-peak-max-abs-v1"
+    || page.source_sha256 !== track.source_sha256 || page.sample_rate_hz !== track.sample_rate_hz
+    || page.channels !== track.channels || page.page_index !== pageIndex || page.page_size !== pageSize
+    || page.start_peak !== pageIndex * pageSize || !Array.isArray(page.peaks) || page.peaks.length > pageSize) {
+    throw new Error("The waveform page does not match the selected voice take or requested range.");
+  }
+  return page;
 }
 
 export interface NativeSourceExportReceipt {
