@@ -431,11 +431,23 @@ impl Store {
         source: impl AsRef<Path>,
         admission: &impl BundleAssetAdmission,
     ) -> Result<InspectedProjectBundle> {
-        let source = source.as_ref();
+        Self::inspect_bundle_source(source.as_ref(), admission, |id| {
+            self.check_import_destination(id)
+        })
+    }
+
+    /// Capture and inspect a portable source without holding the caller's
+    /// Store lock. The destination is checked before and after media readback.
+    pub fn inspect_bundle_source(
+        source: &Path,
+        admission: &impl BundleAssetAdmission,
+        check_target: impl Fn(Uuid) -> Result<()>,
+    ) -> Result<InspectedProjectBundle> {
         let bytes = read_bundle_manifest_bytes(source)?;
         let fingerprint = BundleFingerprint::of_manifest_bytes(&bytes);
         let manifest: ProjectBundleManifest = serde_json::from_slice(&bytes)?;
-        let plan = self.validate_bundle_with_admission(source, &manifest, admission)?;
+        let plan = Self::validate_bundle_with_target(source, &manifest, admission, &check_target)?;
+        check_target(plan.project.project_id)?;
         Ok(InspectedProjectBundle {
             plan,
             fingerprint,
@@ -467,8 +479,32 @@ impl Store {
         migration_notes: Vec<String>,
         admission: &impl BundleAssetAdmission,
     ) -> Result<InspectedProjectBundle> {
-        let (_, plan) =
-            self.validate_migrated_archive(project, originals, &fingerprint, admission)?;
+        Self::inspect_migrated_archive_source(
+            project,
+            originals,
+            fingerprint,
+            migration_notes,
+            admission,
+            |id| self.check_import_destination(id),
+        )
+    }
+
+    pub fn inspect_migrated_archive_source(
+        project: Project,
+        originals: &BTreeMap<String, Vec<u8>>,
+        fingerprint: BundleFingerprint,
+        migration_notes: Vec<String>,
+        admission: &impl BundleAssetAdmission,
+        check_target: impl Fn(Uuid) -> Result<()>,
+    ) -> Result<InspectedProjectBundle> {
+        let (_, plan) = Self::validate_migrated_archive(
+            project,
+            originals,
+            &fingerprint,
+            admission,
+            &check_target,
+        )?;
+        check_target(plan.project.project_id)?;
         Ok(InspectedProjectBundle {
             plan,
             fingerprint,
@@ -486,7 +522,9 @@ impl Store {
         admission: &impl BundleAssetAdmission,
     ) -> Result<Project> {
         let (backup, _) =
-            self.validate_migrated_archive(project, originals, fingerprint, admission)?;
+            Self::validate_migrated_archive(project, originals, fingerprint, admission, |id| {
+                self.check_import_destination(id)
+            })?;
         let mut staged = Vec::with_capacity(originals.len());
         for (digest, bytes) in originals {
             let capture = self.stage_bundle_import_bytes(bytes, bytes.len() as u64)?;
@@ -501,11 +539,11 @@ impl Store {
     }
 
     fn validate_migrated_archive(
-        &self,
         project: Project,
         originals: &BTreeMap<String, Vec<u8>>,
         fingerprint: &BundleFingerprint,
         admission: &impl BundleAssetAdmission,
+        check_target: impl FnOnce(Uuid) -> Result<()>,
     ) -> Result<(ProjectBackup, BundleImportPlan)> {
         if originals.is_empty()
             || originals.len() > MAX_BUNDLE_BLOBS
@@ -563,7 +601,7 @@ impl Store {
             payload_sha256,
         };
         ensure_backup_secret_free(&backup, Some(MAX_BUNDLE_MANIFEST_BYTES))?;
-        let project = self.inspect_import(&backup)?;
+        let project = backup_import_plan(&backup, check_target)?;
         for (digest, bytes) in originals {
             // Revalidate metadata, the complete owned byte set and each admitted
             // prefix before a capture or import intent can exist.

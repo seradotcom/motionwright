@@ -2,10 +2,12 @@ use motionwright_domain::{Change, DomainError, Project, RevisionStamp, UtcTimest
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::fs::OpenOptions;
 use std::{
     cell::Cell,
     collections::BTreeSet,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
     time::Duration,
@@ -314,6 +316,22 @@ pub struct ProjectBackup {
     pub project: Project,
     pub events: Vec<ProjectEvent>,
     pub payload_sha256: String,
+}
+
+fn backup_import_plan(
+    backup: &ProjectBackup,
+    check_target: impl FnOnce(Uuid) -> Result<()>,
+) -> Result<ImportPlan> {
+    validate_backup(backup)?;
+    check_target(backup.project.id)?;
+    Ok(ImportPlan {
+        project_id: backup.project.id,
+        source_generation: backup.project.generation,
+        revision: backup.project.revision,
+        event_count: backup.events.len(),
+        title: backup.project.title.clone(),
+        rotates_generation: true,
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1112,8 +1130,19 @@ impl Store {
         manifest: &ProjectBundleManifest,
         admission: &impl BundleAssetAdmission,
     ) -> Result<BundleImportPlan> {
+        Self::validate_bundle_with_target(source, manifest, admission, |id| {
+            self.check_import_destination(id)
+        })
+    }
+
+    fn validate_bundle_with_target(
+        source: &Path,
+        manifest: &ProjectBundleManifest,
+        admission: &impl BundleAssetAdmission,
+        check_target: impl FnOnce(Uuid) -> Result<()>,
+    ) -> Result<BundleImportPlan> {
         Self::validate_bundle_header(manifest)?;
-        let project_plan = self.inspect_import(&manifest.backup)?;
+        let project_plan = backup_import_plan(&manifest.backup, check_target)?;
         let total_blob_bytes = Self::verify_bundle_blob_bytes(source, manifest, admission)?;
         Ok(BundleImportPlan {
             project: project_plan,
@@ -1368,12 +1397,17 @@ impl Store {
     }
 
     pub fn inspect_import(&self, backup: &ProjectBackup) -> Result<ImportPlan> {
-        validate_backup(backup)?;
+        backup_import_plan(backup, |id| self.check_import_destination(id))
+    }
+
+    /// Lightweight destination occupancy check. Committing an import still
+    /// checks the ID under the SQLite writer transaction.
+    pub fn check_import_destination(&self, id: Uuid) -> Result<()> {
         let exists = self
             .conn
             .query_row(
                 "SELECT 1 FROM projects WHERE id=?1",
-                [backup.project.id.to_string()],
+                [id.to_string()],
                 |_| Ok(()),
             )
             .optional()?
@@ -1381,14 +1415,7 @@ impl Store {
         if exists {
             return Err(StorageError::ProjectExists);
         }
-        Ok(ImportPlan {
-            project_id: backup.project.id,
-            source_generation: backup.project.generation,
-            revision: backup.project.revision,
-            event_count: backup.events.len(),
-            title: backup.project.title.clone(),
-            rotates_generation: true,
-        })
+        Ok(())
     }
 
     pub fn import_project(&mut self, backup: &ProjectBackup) -> Result<Project> {

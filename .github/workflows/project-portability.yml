@@ -45,7 +45,7 @@ on:
         required: true
         default: full
         type: choice
-        options: [full, storage_service, derived_cache, otio_export, bundle_export, project_projection, cas_retention, cas_candidate, gc_proxy_candidate]
+        options: [full, storage_service, derived_cache, otio_export, bundle_export, bundle_inspection, project_projection, cas_retention, cas_candidate, gc_proxy_candidate]
       os_scope:
         description: Explicit CAS operating systems; all is valid only for reviewed candidate source profiles
         required: true
@@ -150,7 +150,7 @@ jobs:
 
   storage-contracts:
     needs: g0-source-controls
-    if: ${{ github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'derived_cache' && inputs.verification_scope != 'otio_export' && inputs.verification_scope != 'bundle_export' && inputs.verification_scope != 'project_projection' && inputs.verification_scope != 'cas_retention' && inputs.verification_scope != 'cas_candidate' && inputs.verification_scope != 'gc_proxy_candidate') }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'derived_cache' && inputs.verification_scope != 'otio_export' && inputs.verification_scope != 'bundle_export' && inputs.verification_scope != 'bundle_inspection' && inputs.verification_scope != 'project_projection' && inputs.verification_scope != 'cas_retention' && inputs.verification_scope != 'cas_candidate' && inputs.verification_scope != 'gc_proxy_candidate') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -1326,7 +1326,7 @@ jobs:
           selection = "full"
           if os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch":
               selection = (event.get("inputs") or {}).get("verification_scope", "full")
-          if selection not in {"full", "derived_cache", "otio_export", "bundle_export", "project_projection", "cas_retention", "cas_candidate", "gc_proxy_candidate"}:
+          if selection not in {"full", "derived_cache", "otio_export", "bundle_export", "bundle_inspection", "project_projection", "cas_retention", "cas_candidate", "gc_proxy_candidate"}:
               raise SystemExit("portability-selection-unsupported")
           if selection in {"cas_retention", "cas_candidate", "gc_proxy_candidate"}:
               run_cas_retention(actual, event)
@@ -1483,6 +1483,10 @@ jobs:
                                             "project_export::tests::exact_bundle_command_exports_verified_project_journal_and_original_blob"],
                    {"project_export::tests::exact_bundle_command_exports_verified_project_journal_and_original_blob"}),
               ]
+          elif selection == "bundle_inspection":
+              cases = [case for case in cases if case[0] == "service-portability-authority"]
+              name = "portability::svg_bundle_admission_tests::bundle_inspection_rejects_a_project_claimed_during_media_readback"
+              cases.append(("portable-bundle-inspection", ["-p", "motionwright-service", "--lib", name], {name}))
           elif selection == "project_projection":
               cases = [('projection-storage',
                 ['-p', 'motionwright-storage', '--lib', 'project_projection::tests::'],
@@ -1587,12 +1591,14 @@ jobs:
                   "apps/desktop/src-tauri/src/project_export.rs",
                   "apps/desktop/src-tauri/src/project_library.rs",
               )
-          if selection == "bundle_export":
+          if selection in {"bundle_export", "bundle_inspection"}:
               source_paths = (
                   WORKFLOW_PATH, "Cargo.lock", "SOURCE_LOCK.json", "rust-toolchain.toml",
                   "crates/storage/Cargo.toml", "crates/storage/src/portability.rs",
                   "crates/storage/src/bundle_export_unix.rs", "crates/storage/src/bundle_export_windows.rs",
-                  "crates/service/src/portability.rs", "crates/service/tests/desktop_project_export.rs",
+                  "crates/storage/src/lib.rs", "crates/service/src/lib.rs", "crates/service/src/portability.rs",
+                  "crates/service/src/legacy_project_archive.rs", "crates/service/tests/desktop_project_export.rs",
+                  "crates/service/tests/project_portability_authority.rs",
                   "apps/desktop/src-tauri/src/main.rs", "apps/desktop/src-tauri/src/project_export.rs",
                   "apps/desktop/src-tauri/src/desktop_owner.rs", "apps/desktop/src-tauri/src/effect_grants.rs",
               )

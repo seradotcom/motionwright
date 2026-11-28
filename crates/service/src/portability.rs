@@ -144,22 +144,31 @@ impl StudioService {
         source: impl AsRef<Path>,
     ) -> StorageResult<InspectedProjectBundle> {
         let source = source.as_ref();
-        // Serialize the bounded archive capture and conversion with other Store work.
-        let store = self.store.lock();
         if std::fs::symlink_metadata(source)?.is_file() {
             let migration = crate::legacy_project_archive::from_bytes(
                 Store::read_project_archive_source(source)?,
                 None,
             )?;
-            return store.inspect_migrated_project_archive(
+            return Store::inspect_migrated_archive_source(
                 migration.project,
                 &migration.originals,
                 migration.fingerprint,
                 migration.notices,
                 &SvgBundleAdmission,
+                |id| self.store.lock().check_import_destination(id),
             );
         }
-        store.inspect_project_bundle_with_fingerprint_and_admission(source, &SvgBundleAdmission)
+        self.inspect_bundle_directory(source, &SvgBundleAdmission)
+    }
+
+    pub(super) fn inspect_bundle_directory(
+        &self,
+        source: &Path,
+        admission: &impl motionwright_storage::BundleAssetAdmission,
+    ) -> StorageResult<InspectedProjectBundle> {
+        Store::inspect_bundle_source(source, admission, |id| {
+            self.store.lock().check_import_destination(id)
+        })
     }
 
     pub fn recover_project_bundle_import(
@@ -324,6 +333,87 @@ mod svg_bundle_admission_tests {
         assert_eq!(
             service.project(current.id).unwrap().revision,
             current.revision + 1
+        );
+    }
+
+    #[test]
+    fn bundle_inspection_rejects_a_project_claimed_during_media_readback() {
+        struct ImportDuringReadback<'a> {
+            target: &'a StudioService,
+            source: &'a Path,
+            fingerprint: &'a BundleFingerprint,
+        }
+
+        impl BundleAssetAdmission for ImportDuringReadback<'_> {
+            fn prefix_limit(&self) -> usize {
+                SvgBundleAdmission.prefix_limit()
+            }
+
+            fn validate(&self, prefix: &[u8], size: u64, aliases: &[&Asset]) -> StorageResult<()> {
+                SvgBundleAdmission.validate(prefix, size, aliases)?;
+                assert!(self.target.store.try_lock().is_some());
+                self.target
+                    .import_project_bundle_inspected(self.source, self.fingerprint)?;
+                Ok(())
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let source = StudioService::open(root.path().join("source/project.sqlite3")).unwrap();
+        let original = source.create_project("Portable source").unwrap();
+        let asset = root.path().join("original.txt");
+        let bytes = b"immutable media for the concurrency test";
+        std::fs::write(&asset, bytes).unwrap();
+        let saved = source
+            .import_asset_file(
+                original.id,
+                &original.stamp(),
+                "portable-inspection-original",
+                &asset,
+                "original.txt".into(),
+                "text/plain".into(),
+            )
+            .unwrap()
+            .project;
+        let bundle = root.path().join("bundle");
+        let exported = source
+            .export_project_bundle_at(saved.id, &saved.stamp(), &bundle)
+            .unwrap();
+
+        let database = root.path().join("target/project.sqlite3");
+        let target = StudioService::open(&database).unwrap();
+        let first = target
+            .inspect_project_bundle_with_fingerprint(&bundle)
+            .unwrap();
+        assert_eq!(first.plan.project.project_id, saved.id);
+        assert!(matches!(
+            target.project(saved.id),
+            Err(StorageError::NotFound)
+        ));
+        let reviewed = target.inspect_bundle_directory(
+            &bundle,
+            &ImportDuringReadback {
+                target: &target,
+                source: &bundle,
+                fingerprint: &first.fingerprint,
+            },
+        );
+        assert!(matches!(reviewed, Err(StorageError::ProjectExists)));
+        let imported = target.project(saved.id).unwrap();
+        assert_ne!(imported.generation, saved.generation);
+        assert_eq!(imported.assets, saved.assets);
+
+        drop(target);
+        let store = Store::open(&database).unwrap();
+        assert_eq!(store.load_project(saved.id).unwrap(), imported);
+        let media = &exported.blobs[0];
+        assert_eq!(
+            store.read_blob(&media.sha256, media.size_bytes).unwrap(),
+            bytes
+        );
+        assert_eq!(
+            std::fs::read(bundle.join(&media.relative_path)).unwrap(),
+            bytes
         );
     }
 

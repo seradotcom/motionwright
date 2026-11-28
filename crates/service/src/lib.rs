@@ -1206,9 +1206,8 @@ impl StudioService {
         &self,
         source: impl AsRef<Path>,
     ) -> StorageResult<BundleImportPlan> {
-        self.store
-            .lock()
-            .inspect_project_bundle_with_admission(source, &portability::SvgBundleAdmission)
+        self.inspect_bundle_directory(source.as_ref(), &portability::SvgBundleAdmission)
+            .map(|inspected| inspected.plan)
     }
 
     pub fn import_project_bundle(&self, source: impl AsRef<Path>) -> StorageResult<Project> {
