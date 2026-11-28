@@ -5,11 +5,14 @@ import { addFrameOffset, nativeFindingBody } from "./nativeInspection";
 import type { ManualCreativeFinding, NativeInspectionPlan, NativeSampleEvidence } from "./nativeInspection";
 import { sameValue } from "./creativeProduction";
 import { sameProjectRevision } from "./projectMutation";
+import { graphAddTime, graphCompareTime } from "./semanticGraph";
 import { recoveryOrigin, matchesRecoveryOrigin, isRecoveryOrigin, type RecoveryOrigin } from "./recoveryOrigin";
 
 export interface NativeFindingSource {
   projectId:string; generation:string; branchId:string; revision:number;
   sceneId:string; profileId:string; frameIndex:number; timelineTime:RationalTime;
+  /** Present when this frame's interval ends at an earlier scene boundary. */
+  clippedEnd?:RationalTime;
   pngSha256:string; width:number; height:number; frameRate:NativeInspectionPlan["frameRate"];
 }
 export interface NativeFindingInput extends ManualCreativeFinding { source:NativeFindingSource|null }
@@ -42,10 +45,19 @@ const rational=(value:unknown):value is RationalTime=>record(value)&&exact(value
   &&typeof value.den==="string"&&/^[1-9][0-9]*$/.test(value.den);
 const frameRate=(value:unknown):value is NativeInspectionPlan["frameRate"]=>record(value)&&exact(value,["num","den"])
   &&integer(value.num)&&integer(value.den)&&value.num>0&&value.den>0&&value.num/value.den>=1&&value.num/value.den<=120;
+function clippedEndShape(value:unknown,start:RationalTime,rate:NativeInspectionPlan["frameRate"]):boolean {
+  if(!rational(value))return false;
+  try {
+    return graphCompareTime(start,value)<0&&graphCompareTime(value,addFrameOffset(start,1,rate))<0;
+  } catch {
+    return false;
+  }
+}
 const sourceShape=(value:unknown):value is NativeFindingSource=>record(value)
-  &&exact(value,["projectId","generation","branchId","revision","sceneId","profileId","frameIndex","timelineTime","pngSha256","width","height","frameRate"])
+  &&exact(value,["projectId","generation","branchId","revision","sceneId","profileId","frameIndex","timelineTime","pngSha256","width","height","frameRate"],["clippedEnd"])
   &&[value.projectId,value.generation,value.branchId,value.sceneId,value.profileId].every(uuid)
   &&integer(value.revision)&&integer(value.frameIndex)&&rational(value.timelineTime)&&frameRate(value.frameRate)
+  &&(!Object.hasOwn(value,"clippedEnd")||clippedEndShape(value.clippedEnd,value.timelineTime,value.frameRate))
   &&typeof value.pngSha256==="string"&&/^[a-f0-9]{64}$/.test(value.pngSha256)
   &&integer(value.width)&&value.width>0&&integer(value.height)&&value.height>0&&value.width*value.height<=16_777_216;
 export const nativeFindingScope=(project:Project)=>json([project.id,project.generation,project.active_branch,"native-finding"]);
@@ -64,14 +76,23 @@ export function createNativeFindingDraft(project:Project):NativeFindingDraft {
 /** Called with the already decoded native sample. No preview token is retained. */
 export function nativeFindingSource(project:Project,scene:Scene|null,profile:DeliverableProfile|null,plan:NativeInspectionPlan|null,sample:NativeSampleEvidence|undefined):NativeFindingSource|null {
   if(!scene||!profile||!plan||!sample)return null;
+  const savedScene=project.scenes.find(value=>value.id===scene.id);
   if(plan.projectId!==project.id||plan.generation!==project.generation||plan.revision!==project.revision
     ||plan.sceneId!==scene.id||plan.profileId!==profile.id||plan.width!==profile.width||plan.height!==profile.height
-    ||!project.scenes.some(value=>value.id===scene.id)||!project.deliverables.some(value=>sameValue(value,profile)))return null;
+    ||!savedScene||!project.deliverables.some(value=>sameValue(value,profile)))return null;
   nativeFindingBody(plan,sample,{severity:"suggestion",confidence:"uncertain",nodeId:null,
     violatedConstraint:"Source reference validation",observation:"Source reference validation",proposedRepair:"Source reference validation"});
+  let clippedEnd:RationalTime|undefined;
+  try {
+    const sceneEnd=graphAddTime(savedScene.start,savedScene.duration);
+    if(graphCompareTime(sample.timelineTime,savedScene.start)<0||graphCompareTime(sample.timelineTime,sceneEnd)>=0)return null;
+    if(graphCompareTime(sceneEnd,addFrameOffset(sample.timelineTime,1,plan.frameRate))<0)clippedEnd=sceneEnd;
+  } catch {
+    return null;
+  }
   const source={projectId:project.id,generation:project.generation,branchId:project.active_branch,revision:project.revision,
     sceneId:scene.id,profileId:profile.id,frameIndex:sample.frameIndex,timelineTime:clone(sample.timelineTime),pngSha256:sample.pngSha256,
-    width:sample.width,height:sample.height,frameRate:clone(plan.frameRate)};
+    width:sample.width,height:sample.height,frameRate:clone(plan.frameRate),...(clippedEnd?{clippedEnd}:{})};
   if(!sourceShape(source))throw new Error("The inspected native source is malformed.");
   return source;
 }
@@ -128,7 +149,7 @@ function bodyFromInput(input:NativeFindingInput):string {
 function changeFromInput(input:NativeFindingInput):NativeFindingChange {
   const body=bodyFromInput(input),source=input.source!;
   return {type:"add_review",kind:"creative",resource:"scene:"+source.sceneId,body,start:clone(source.timelineTime),
-    end:addFrameOffset(source.timelineTime,1,source.frameRate),locale:null,profile_id:source.profileId};
+    end:clone(source.clippedEnd??addFrameOffset(source.timelineTime,1,source.frameRate)),locale:null,profile_id:source.profileId};
 }
 export function nativeFindingCurrent(draft:NativeFindingDraft,project:Project,currentSource:NativeFindingSource|null):boolean {
   const source=draft.input.source;
