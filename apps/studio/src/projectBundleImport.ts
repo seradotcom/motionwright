@@ -1,15 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { canonicalRevision, projectionUuid } from "./projectMutation";
+import { isPortableImportSourceRefusal } from "./projectBundleImportError";
 import type { PortableBundlePlan, Project } from "./types";
 
 export const BUNDLE_IMPORT_PREFIX = "motionwright.bundle-import-continuity/1/";
 type StorageView = Pick<Storage, "length" | "key" | "getItem" | "setItem" | "removeItem">;
 type Invoke = (command: string, args: Record<string, unknown>) => Promise<unknown>;
-export interface PortableImportSourceRefusal {
-  kind: "portable_import_source_changed";
-  fingerprint: string;
-}
-
 export class PortableImportSourceChanged extends Error {
   constructor() {
     super("The portable backup changed. Inspect it again before importing.");
@@ -40,12 +36,6 @@ const record = (value: unknown): value is Record<string, unknown> =>
 const exact = (value: Record<string, unknown>, keys: string[]) =>
   Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const digest = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
-export function isPortableImportSourceRefusal(
-  value: unknown, fingerprint: unknown,
-): value is PortableImportSourceRefusal {
-  return digest(fingerprint) && record(value) && exact(value, ["kind", "fingerprint"])
-    && value.kind === "portable_import_source_changed" && value.fingerprint === fingerprint;
-}
 const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const bytes = (value: string) => new TextEncoder().encode(value).length;
 function storageView(): StorageView {

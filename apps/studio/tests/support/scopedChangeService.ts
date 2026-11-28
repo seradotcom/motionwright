@@ -15,7 +15,7 @@ import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { isDeepStrictEqual } from "node:util";
 import type { Page } from "@playwright/test";
-import { isPortableImportSourceRefusal, type PortableImportSourceRefusal } from "../../src/projectBundleImport.ts";
+import { isPortableImportSourceRefusal, type PortableImportSourceRefusal } from "../../src/projectBundleImportError.ts";
 import { decodeGraphMutationError, type GraphMutationError } from "../../src/semanticGraphMutationError.ts";
 import { decodeGraphContextFailure, type GraphContextFailure } from "../../src/semanticGraphContextFailure.ts";
 import type { FileImportInput, FileImportReceipt, PreparedFileImport } from "../../src/fileImport";
