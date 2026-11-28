@@ -8,7 +8,7 @@ import { ScopedChangeService, type StoreFinalization } from "./support/scopedCha
 // The JSONL invoke bridge does not certify Tauri, Film, mastering or human quality.
 const test = base.extend<{ audio: { service: ScopedChangeService; peers: ScopedChangeService[]; initial: Project; segmentId: string; cueId: string } }>({
   audio: async ({ page }, use, testInfo) => {
-    const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3") });
+    const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true });
     const peers: ScopedChangeService[] = [];
     let initial: Project | undefined;
     try {

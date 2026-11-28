@@ -86,7 +86,7 @@ async function evidence(testInfo: TestInfo, services: ScopedChangeService[], sna
 
 test("six real revisions preserve an authored plan, pending text, source bytes and full service reopen", async ({ page, browser }, testInfo) => {
   test.setTimeout(60_000);
-  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3") });
+  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true });
   let peer: ScopedChangeService | undefined;
   let freshContext: BrowserContext | undefined;
   const snapshots: Record<string, unknown> = {};
@@ -231,7 +231,7 @@ test("six real revisions preserve an authored plan, pending text, source bytes a
 });
 
 test("a newly saved brief seeds the real initial plan without overwriting a later authored plan", async ({ page }, testInfo) => {
-  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3") });
+  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "studio.sqlite3"), desktopInvokeFixture: true });
   const snapshots: Record<string, unknown> = {};
   try {
     const initial = (await service.fixtureBootstrap()).project;
