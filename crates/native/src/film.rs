@@ -1232,6 +1232,14 @@ fn sample_smoothstep_geometry(
     Ok(sampled)
 }
 
+/// Motion Canvas 3.17.2 resumes delay when its fixed clock reaches
+/// (anchor - one frame). A half-frame anchor places the Set on the
+/// authored tick, with margin on either side for floating-point timing.
+fn native_geometry_set_phase(frame: RationalTime) -> NativeResult<RationalTime> {
+    RationalTime::new(frame.num, 2 * frame.den)
+        .map_err(|error| contract("Native geometry Set phase", error))
+}
+
 fn append_native_pose_track(
     shot: &mut Shot,
     node: &CanvasNode,
@@ -1247,20 +1255,16 @@ fn append_native_pose_track(
         i64::from(context.frame_rate.num),
     )
     .map_err(|error| contract("Native waypoint frame duration", error))?;
+    let half = native_geometry_set_phase(frame)?;
     let sampled;
-    let (points, phase, held_span) = if points
+    let points = if points
         .iter()
         .any(|point| point.curve == MotionInterpolation::EaseInOut)
     {
         sampled = sample_smoothstep_geometry(points, frame)?;
-        let half = RationalTime::new(frame.num, 2 * frame.den)
-            .map_err(|error| contract("Native easing frame phase", error))?;
-        // Motion Canvas 3.17.2 resumes its delay on the first fixed tick
-        // at or after (anchor - one frame). Placing the anchor half a
-        // frame later stages each Set on its authored output frame.
-        (sampled.as_slice(), half, half)
+        sampled.as_slice()
     } else {
-        (points, RationalTime::ZERO, frame)
+        points
     };
     let target = subject_id(node.id, None);
     let animated = |property| node.keyframes.iter().any(|key| key.property == property);
@@ -1281,10 +1285,16 @@ fn append_native_pose_track(
         }
         let held = next.is_none_or(|to| to.curve == MotionInterpolation::Hold);
         let to = next.unwrap_or(from);
-        let duration = if held {
-            held_span
+        let (start, duration) = if held {
+            (
+                add(from.at, half, "Native waypoint Set phase overflow")?,
+                half,
+            )
         } else {
-            sub(to.at, from.at, "Native waypoint interval underflow")?
+            (
+                from.at,
+                sub(to.at, from.at, "Native waypoint interval underflow")?,
+            )
         };
         let curve = if held {
             MotionEasing::Linear
@@ -1306,7 +1316,7 @@ fn append_native_pose_track(
             anchor: StartAnchor::Absolute {
                 time: add(
                     context.scene_start,
-                    add(from.at, phase, "Native waypoint phase overflow")?,
+                    start,
                     "Native waypoint span start overflow",
                 )?,
             },
@@ -2832,9 +2842,9 @@ fn build_segment(
                     if motion.held {
                         // Studio's Hold property keeps the first authored pose
                         // until *exactly* the next keyframe, then jumps. The
-                        // pinned Semwright grammar emits zero-duration Set at
-                        // each explicit span start. A one-frame Tween would
-                        // silently change the author's interpolation.
+                        // pinned Semwright grammar emits a zero-duration Set
+                        // for each pose. Phase those two writes on the fixed
+                        // output ticks that carry the original keyframes.
                         let frame = RationalTime::new(
                             i64::from(options.frame_rate.den),
                             i64::from(options.frame_rate.num),
@@ -2846,6 +2856,7 @@ fn build_segment(
                                 "Native held shape key must leave one complete output frame in the scene",
                             ));
                         }
+                        let half = native_geometry_set_phase(frame)?;
                         let start_span = format!("geometry-hold-start-{}", node.id.simple());
                         let end_span = format!("geometry-hold-end-{}", node.id.simple());
                         for (label, span_id, when) in [
@@ -2858,10 +2869,12 @@ fn build_segment(
                         ] {
                             spans.push(TemporalSpan {
                                 id: span_id.clone(),
-                                minimum: frame,
-                                preferred: frame,
-                                maximum: frame,
-                                anchor: StartAnchor::Absolute { time: when },
+                                minimum: half,
+                                preferred: half,
+                                maximum: half,
+                                anchor: StartAnchor::Absolute {
+                                    time: add(when, half, "Hold Set phase overflow")?,
+                                },
                                 preference_priority: 0,
                             });
                             constraints.push(TemporalConstraint::Contains {
@@ -5947,8 +5960,11 @@ mod tests {
                                 assert!(matches!(instruction.operation, NativeOp::Set { .. }));
                                 assert_eq!(instruction.duration, RationalTime::ZERO);
                                 assert!(
-                                    [RationalTime::ZERO, RationalTime::ONE]
-                                        .contains(&instruction.start)
+                                    [
+                                        RationalTime::new(1, 60).unwrap(),
+                                        RationalTime::new(61, 60).unwrap()
+                                    ]
+                                    .contains(&instruction.start)
                                 );
                             } else {
                                 assert!(matches!(instruction.operation, NativeOp::Tween { .. }));
@@ -5964,7 +5980,9 @@ mod tests {
                                     NativeOp::Set { value, .. } => assert_eq!(
                                         value,
                                         &Operand::Vector(
-                                            if instruction.start == RationalTime::ZERO {
+                                            if instruction.start
+                                                == RationalTime::new(1, 60).unwrap()
+                                            {
                                                 from_center
                                             } else {
                                                 to_center
@@ -6156,7 +6174,10 @@ mod tests {
                             .iter()
                             .all(|instruction| instruction.duration == RationalTime::ZERO)
                     );
-                    assert_eq!(rotations.last().unwrap().start, RationalTime::ONE);
+                    assert_eq!(
+                        rotations.last().unwrap().start,
+                        RationalTime::new(61, 60).unwrap()
+                    );
                 }
                 let alpha = realized.instructions.iter().filter(|instruction| matches!(&instruction.operation,
                     NativeOp::Tween { target: actual, channel: Channel::Opacity, .. } if actual == &target)).count();
@@ -6321,8 +6342,8 @@ mod tests {
             })
             .collect();
         assert_eq!(sets.len(), 2);
-        assert_eq!(sets[&half], to);
-        let end = sets[&RationalTime::ONE];
+        assert_eq!(sets[&RationalTime::new(31, 60).unwrap()], to);
+        let end = sets[&RationalTime::new(61, 60).unwrap()];
         assert_eq!(from.y, to.y);
         assert_eq!(to.y, end.y);
         assert!(from.x < to.x && to.x < end.x);
@@ -7661,6 +7682,8 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(selected.len(), 8);
+        let initial = RationalTime::new(1, 60).unwrap();
+        let terminal = RationalTime::new(61, 60).unwrap();
         let mut writes = BTreeSet::new();
         for instruction in selected {
             let NativeOp::Set {
@@ -7674,15 +7697,12 @@ mod tests {
             assert_eq!(actual_target, &target);
             assert_eq!(instruction.duration, RationalTime::ZERO);
             assert_eq!(instruction.easing, MotionEasing::Linear);
-            assert!(
-                instruction.start == RationalTime::ZERO
-                    || instruction.start == RationalTime::new(1, 1).unwrap()
-            );
+            assert!([initial, terminal].contains(&instruction.start));
             assert!(writes.insert((instruction.start, *channel)));
             if *channel == Channel::Rotation {
                 assert_eq!(
                     value,
-                    &Operand::Number(if instruction.start == RationalTime::ZERO {
+                    &Operand::Number(if instruction.start == initial {
                         -18.0
                     } else {
                         0.0
@@ -7696,8 +7716,8 @@ mod tests {
             Channel::Height,
             Channel::Rotation,
         ] {
-            assert!(writes.contains(&(RationalTime::ZERO, channel)));
-            assert!(writes.contains(&(RationalTime::new(1, 1).unwrap(), channel)));
+            assert!(writes.contains(&(initial, channel)));
+            assert!(writes.contains(&(terminal, channel)));
         }
         assert_eq!(project.scenes[0].nodes[0], untouched);
     }
@@ -7719,7 +7739,7 @@ mod tests {
                 interpolation: MotionInterpolation::Linear,
             },
             CanvasKeyframe {
-                at: RationalTime::new(1, 1).unwrap(),
+                at: RationalTime::new(1, 30).unwrap(),
                 property: MotionProperty::X,
                 value: circle.x,
                 interpolation: MotionInterpolation::Hold,
@@ -7750,8 +7770,8 @@ mod tests {
             .collect::<Vec<_>>();
         sets.sort_by_key(|(at, _)| *at);
         assert_eq!(sets.len(), 2);
-        assert_eq!(sets[0].0, RationalTime::ZERO);
-        assert_eq!(sets[1].0, RationalTime::new(1, 1).unwrap());
+        assert_eq!(sets[0].0, RationalTime::new(1, 60).unwrap());
+        assert_eq!(sets[1].0, RationalTime::new(1, 20).unwrap());
         let first = Operand::Vector(Point { x: -20.0, y: 0.0 });
         let second = Operand::Vector(Point { x: 0.0, y: 0.0 });
         assert_eq!(sets[0].1, &first);

@@ -2152,7 +2152,7 @@ jobs:
       expected_source_sha: ${{ github.sha }}
 
   native-film-hold-compiled:
-    name: Native Film frame-exact Hold geometry (3 source tests)
+    name: Native Film frame-exact Hold geometry (6 source tests)
     if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'native-film-hold'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -2168,7 +2168,7 @@ jobs:
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - name: Compile exactly three Hold geometry source and rejection contracts
+      - name: Compile exactly six Hold geometry source and rejection contracts
         shell: bash
         env:
           MW_HOLD_ORIGINALS: ${{ runner.temp }}/native-film-hold-${{ github.run_id }}-${{ github.run_attempt }}
@@ -2185,6 +2185,9 @@ jobs:
             authored_hold_shape_geometry_emits_two_exact_frame_sets_not_a_tween
             single_axis_held_position_uses_instant_native_sets_without_a_size_tween
             authored_hold_geometry_mixed_with_cubic_is_rejected_not_interpolated
+            composed_pose_motion_preserves_all_channels_clip_coordinates_and_hold
+            rotated_terminal_pose_family_keeps_clip_camera_hold_and_independent_opacity
+            waypoint_track_realizes_mixed_curves_with_independent_fade_inside_clip
           )
           for name in "${names[@]}"; do
             test_case="film::tests::$name"
@@ -2202,6 +2205,9 @@ jobs:
               "authored_hold_shape_geometry_emits_two_exact_frame_sets_not_a_tween",
               "single_axis_held_position_uses_instant_native_sets_without_a_size_tween",
               "authored_hold_geometry_mixed_with_cubic_is_rejected_not_interpolated",
+              "composed_pose_motion_preserves_all_channels_clip_coordinates_and_hold",
+              "rotated_terminal_pose_family_keeps_clip_camera_hold_and_independent_opacity",
+              "waypoint_track_realizes_mixed_curves_with_independent_fade_inside_clip",
           )
           folder = Path(os.environ["MW_HOLD_ORIGINALS"])
           observed = []
@@ -2215,13 +2221,13 @@ jobs:
               assert re.search(r"(?m)^test result: ok\. 1 passed; 0 failed; 0 ignored;", text), case
               observed.append({"name": case, "bytes": len(raw),
                                "sha256": hashlib.sha256(raw).hexdigest()})
-          assert len(observed) == 3
+          assert len(observed) == 6
           record = {
               "schema": "motionwright.ci.native-film-hold-source/1",
               "source_sha": os.environ["GITHUB_SHA"],
               "run_id": os.environ["GITHUB_RUN_ID"],
               "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
-              "status": "THREE_COMPILED_HOLD_SOURCE_TESTS_PASS",
+              "status": "SIX_COMPILED_HOLD_SOURCE_TESTS_PASS",
               "cases": observed,
               "real_native_hold_render": "NOT_RUN",
               "hold_frame_0_29_30_oracle": "NOT_RUN",
@@ -2230,7 +2236,7 @@ jobs:
               "release_authorized": False,
           }
           (folder / "receipt.json").write_text(json.dumps(record, sort_keys=True, indent=2) + "\n")
-          print("native-film-hold=PASS cases=3 Host=NOT_RUN G2=NOT_GRANTED")
+          print("native-film-hold=PASS cases=6 Host=NOT_RUN G2=NOT_GRANTED")
           PY_FILM_HOLD
           git diff --exit-code
       - name: Retain only exact compiled Hold original logs and source receipt
