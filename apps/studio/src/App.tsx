@@ -269,6 +269,7 @@ export function PreviewSurface({
   onSeek,
   onPauseEditorial,
   editorialPlaying,
+  editorialSeekSequence,
   desktopMode = false,
   windowEditors,
   onWindowEditors,
@@ -286,6 +287,7 @@ export function PreviewSurface({
   onSeek: (seconds: number) => void;
   onPauseEditorial: () => void;
   editorialPlaying: boolean;
+  editorialSeekSequence?: number;
   desktopMode?: boolean;
   windowEditors?: NativeWindowEditors;
   onWindowEditors?: UpdateNativeWindowEditors;
@@ -630,6 +632,7 @@ export function PreviewSurface({
               reviewOnly={nativeAv.reviewOnly}
               editorialPlaying={editorialPlaying}
               seekTimeSeconds={nativeAv.mediaTimeSeconds}
+              editorialSeekSequence={editorialSeekSequence}
               onMediaPlay={onPauseEditorial}
               onMediaTime={(mediaTime) => {
                 const editorial = editorialTimeForMasterMedia(project, nativeAv, mediaTime);
@@ -1572,6 +1575,7 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState(0);
+  const [editorialSeekSequence, setEditorialSeekSequence] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [audioReviewSession,setAudioReviewSession] = useState<{key:string;request:AudioReviewRequest}|null>(null);
   const [nativeRenderReceipt, setNativeRenderReceipt] = useState<MotionCanvasRenderEvidence | null>(null);
@@ -1884,13 +1888,17 @@ export default function App() {
     setSelectedSceneId(id);
     if (!seekToStart) return;
     const scene = project?.scenes.find((candidate) => candidate.id === id);
-    if (scene) setPlayhead(seconds(scene.start));
+    if (scene) {
+      setEditorialSeekSequence(sequence => sequence + 1);
+      setPlayhead(seconds(scene.start));
+    }
   }, [project]);
 
   // All visual workspaces seek the same project-global editorial clock.
   // A seek is a view operation, not a creative project mutation.
-  const seekTo = useCallback((requestedSeconds: number) => {
+  const seekTo = useCallback((requestedSeconds: number, origin: "editorial" | "native-av" = "editorial") => {
     if (!project || !Number.isFinite(requestedSeconds)) return;
+    if (origin === "editorial") setEditorialSeekSequence(sequence => sequence + 1);
     const next = Math.max(0, Math.min(projectTimelineDuration(project), requestedSeconds));
     setPlaying(false);
     setPlayhead(next);
@@ -1900,6 +1908,7 @@ export default function App() {
 
   const stepFrame = useCallback((direction: -1 | 1) => {
     if (!project) return;
+    setEditorialSeekSequence(sequence => sequence + 1);
     setPlaying(false);
     const next = stepEditorialFrame(playhead, timebaseRate, direction, projectTimelineDuration(project));
     setPlayhead(next);
@@ -2331,7 +2340,8 @@ export default function App() {
           renderEvidence={nativeRenderReceipt}
           avEvidence={nativeRenderReceipt && nativeRenderReceipt.segments.length > 1 ? nativeMultiAvReceipt : nativeAvReceipt}
           onInspectRender={() => setWorkspace("Deliver")}
-          onSeek={seekTo} onPauseEditorial={() => setPlaying(false)}
+          onSeek={seconds => seekTo(seconds, "native-av")} onPauseEditorial={() => setPlaying(false)}
+          editorialSeekSequence={editorialSeekSequence}
           editorialPlaying={playing} desktopMode={boot.native_sdk.mode === "tauri"}
           windowEditors={nativeWindowEditors} onWindowEditors={setNativeWindowEditors}
           onInspectWindow={() => setWorkspace("Jobs")} />;

@@ -28,6 +28,11 @@ test("one original MP4 continues across Program segment handoff and releases on 
   await expect(page.getByLabel("Observed source scene")).toHaveText("Second original segment");
   await expect.poll(()=>video.evaluate(el=>(el as HTMLVideoElement).currentTime)).toBeGreaterThan(2);
   expect(await original!.evaluate(node=>node===document.querySelector('[aria-label="Program preview"] video'))).toBe(true);
+  await video.evaluate(el=>{(el as HTMLVideoElement).playbackRate=.125;});
+  await page.getByRole("button",{name:"Seek five milliseconds ahead"}).click();
+  await expect.poll(()=>video.evaluate(el=>(el as HTMLVideoElement).paused),{timeout:2000}).toBe(true);
+  const nearby=Number(await page.getByLabel("Requested nearby editorial seek").innerText());
+  await expect.poll(()=>video.evaluate(el=>(el as HTMLVideoElement).currentTime)).toBeCloseTo(nearby,4);
   await page.getByRole("button",{name:"Seek second original to three seconds"}).click();
   await expect.poll(()=>video.evaluate(el=>(el as HTMLVideoElement).paused)).toBe(true);
   await expect.poll(()=>video.evaluate(el=>(el as HTMLVideoElement).currentTime)).toBeCloseTo(3,4);

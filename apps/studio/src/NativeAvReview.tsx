@@ -35,6 +35,7 @@ export default function NativeAvReview({
   initialHybridClock,
   savedDelivery,
   seekTimeSeconds,
+  editorialSeekSequence = 0,
   onMediaTime,
   onMediaPlay,
   embedded = false,
@@ -49,6 +50,7 @@ export default function NativeAvReview({
   savedDelivery?: ReactNode;
   /** Optional exact Film output-relative time when embedded in Program. */
   seekTimeSeconds?: number;
+  editorialSeekSequence?: number;
   onMediaTime?: (seconds: number) => void;
   onMediaPlay?: () => void;
   embedded?: boolean;
@@ -85,6 +87,7 @@ export default function NativeAvReview({
   const videoRef = localPlayer.element;
   const lastReportedMediaTimeRef = useRef<number | null>(null);
   const editorSeekRef = useRef<number | null>(null);
+  const handledEditorialSeek = useRef(editorialSeekSequence);
   // React Strict Mode replays effect setup/cleanup during mount. Reuse the
   // same in-flight read without caching settled media beyond the active view.
   const pendingRef = useRef<{ key: string; promise: Promise<NativeAvPlayback> } | null>(null);
@@ -148,14 +151,17 @@ export default function NativeAvReview({
     const player = videoRef.current;
     if (!player) return;
     const requested = Math.max(0, seekTimeSeconds);
+    const editorialSeek = handledEditorialSeek.current !== editorialSeekSequence;
+    handledEditorialSeek.current = editorialSeekSequence;
     // A media clock update should not seek the decoder back to itself;
     // explicit editor stepping or timeline scrubbing *does* change the source.
-    if (lastReportedMediaTimeRef.current !== null &&
+    if (!editorialSeek && lastReportedMediaTimeRef.current !== null &&
       Math.abs(lastReportedMediaTimeRef.current - requested) < 0.015) {
       lastReportedMediaTimeRef.current = null;
       return;
     }
-    if (Math.abs(player.currentTime - requested) >= 0.015) {
+    if (editorialSeek || Math.abs(player.currentTime - requested) >= 0.015) {
+      lastReportedMediaTimeRef.current = null;
       // An explicit editor seek hands the clock back to the editor. Continuing
       // playback here would immediately overwrite the exact selected frame.
       player.pause();
@@ -166,7 +172,7 @@ export default function NativeAvReview({
         // Some WebViews require loadedmetadata; that event re-applies the seek.
       }
     }
-  }, [playback.kind, seekTimeSeconds]);
+  }, [playback.kind, seekTimeSeconds, editorialSeekSequence]);
 
   useEffect(() => {
     if (editorialPlaying) videoRef.current?.pause();

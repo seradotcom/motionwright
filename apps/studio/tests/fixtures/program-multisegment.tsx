@@ -30,19 +30,34 @@ const original:NativeMultisegmentAvMasterEvidence={
 };
 function Fixture(){
   const [project,setProject]=useState(initial),[at,setAt]=useState(0),[open,setOpen]=useState(true);
+  const [requestedSeek,setRequestedSeek]=useState<number|null>(null);
+  const [editorialSeekSequence,setEditorialSeekSequence]=useState(0);
+  const seekEditorial=(time:number)=>{
+    setEditorialSeekSequence(sequence=>sequence+1);
+    setAt(time);
+  };
   const scene=at<2?project.scenes[0]:project.scenes[1];
+  const seekNearby=()=>{
+    const player=document.querySelector<HTMLVideoElement>('video[aria-label="Verified native MP4 review player"]');
+    if(!player)return;
+    const target=player.currentTime+.005;
+    setRequestedSeek(target);
+    seekEditorial(target);
+  };
   return <main>
     <p role="note">Synthetic existing-master inputs and a generated H.264/AAC clip. No Native execution or acceptance is claimed.</p>
     <output aria-label="Observed Program playhead">{at.toFixed(6)}</output>
     <output aria-label="Observed source scene">{scene.name}</output>
-    <button onClick={()=>setAt(3)}>Seek second original to three seconds</button>
+    <output aria-label="Requested nearby editorial seek">{requestedSeek?.toFixed(6)}</output>
+    <button onClick={seekNearby}>Seek five milliseconds ahead</button>
+    <button onClick={()=>seekEditorial(3)}>Seek second original to three seconds</button>
     <button onClick={()=>setProject(p=>({...p,revision:p.revision+1}))}>Change saved revision</button>
     <button onClick={()=>setOpen(false)}>Close Program fixture</button>
     {open&&<div style={{height:600,position:"relative"}}>
       <PreviewSurface scene={scene} project={project} playhead={at} rate={{num:"30",den:"1"}}
         mode="ndf" profile={project.deliverables[0]} renderEvidence={visual} avEvidence={original}
         onInspectRender={()=>{}} onSeek={setAt} onPauseEditorial={()=>{}}
-        editorialPlaying={false} desktopMode/>
+        editorialPlaying={false} editorialSeekSequence={editorialSeekSequence} desktopMode/>
     </div>}
   </main>;
 }
