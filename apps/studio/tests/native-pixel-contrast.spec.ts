@@ -39,6 +39,7 @@ async function installSyntheticSource(page:Page,invalidHeader=false){
   boot.native_sdk.mode="tauri";
   const first=boot.project.scenes[0],second=boot.project.scenes[1];
   const profile=boot.project.deliverables[0];
+  profile.included_scene_ids=[first.id,second.id];
   const receipt={
     project_resource:"project:"+boot.project.id,generation:boot.project.generation,
     revision:boot.project.revision,deliverable_id:profile.id,

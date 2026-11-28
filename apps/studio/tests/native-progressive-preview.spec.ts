@@ -39,6 +39,7 @@ test("rapid editorial seeks coalesce delayed native reads and settle on exact so
   boot.native_sdk.mode="tauri";
   const [first,second]=boot.project.scenes;
   const profile=boot.project.deliverables[0];
+  profile.included_scene_ids=[first.id,second.id];
   const receipt={
     project_resource:"project:"+boot.project.id,
     generation:boot.project.generation,

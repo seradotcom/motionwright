@@ -3,6 +3,7 @@ import {fixtureBootstrap} from "../src/fixture";
 import type { Page as RecipeFixturePage } from "@playwright/test";
 import { applyChange as applySyntheticFixtureChange } from "../src/api";
 import type { Change as RecipeFixtureChange, Project as RecipeFixtureProject } from "../src/types";
+import { openOriginalMixPanel } from "./support/originalMixPanel";
 
 interface RecipeFixtureRequest {
   effect?: string; project_id: string; generation: string; revision: number;
@@ -37,10 +38,7 @@ async function saveFixtureRecipe(page: RecipeFixturePage, group: "film" | "mix" 
 async function openAudition(page:import("@playwright/test").Page){
   await page.goto("/");
   await page.getByRole("button",{name:"Audio",exact:true}).click();
-  const desk=page.locator('details[aria-label="Original three-bus native PCM audition"]');
-  await expect(desk).toBeVisible();
-  await desk.locator(":scope > summary").click();
-  return desk;
+  return openOriginalMixPanel(page);
 }
 test("browser-only Audio cannot fabricate a mixed WAV or rights receipt",async({page})=>{
   const desk=await openAudition(page);

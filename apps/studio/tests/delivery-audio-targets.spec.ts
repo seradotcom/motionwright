@@ -5,6 +5,7 @@ import { recipeDraftScope, recipeDraftStorageKey } from "../src/deliveryRecipe";
 import { recipePointerKey, type RecipeAuthorState } from "../src/deliveryRecipeDraft";
 import type { Project } from "../src/types";
 import type { RecipeFixtureRequest } from "./fixtures/delivery-recipe-authority";
+import { openOriginalMixPanel } from "./support/originalMixPanel";
 
 // The actual Delivery components and browser API, with deliberately controlled
 // original replies. This fixture does not claim StudioService, SQLite or native QC.
@@ -191,8 +192,8 @@ test("Film and mix changes retain saved targets, while pending targets block nat
   await page.getByRole("combobox", { name: scene.name + " narrative role", exact: true }).selectOption("payoff");
   await button(page, "Save scene intent").click(); await expect.poll(async () => (await requests(page)).length).toBe(2);
   const film = (await requests(page))[1]; expect(recipe(film)!.audio_targets).toEqual(saved.audio_targets); expect(recipe(film)!.original_mix).toEqual(saved.original_mix); await resolve(page, film.id);
-  await page.evaluate(() => window.__DELIVERY_RECIPE_AUTHORITY__.show("mix")); const panel = page.locator('details[aria-label="Original three-bus native PCM audition"]');
-  if (await panel.getAttribute("open") === null) await panel.locator("summary").first().click();
+  await page.evaluate(() => window.__DELIVERY_RECIPE_AUTHORITY__.show("mix"));
+  await openOriginalMixPanel(page);
   await page.getByRole("textbox", { name: "SFX gain dB", exact: true }).fill("-11"); await button(page, "Save original mix recipe").click();
   await expect.poll(async () => (await requests(page)).length).toBe(3); const mix = (await requests(page))[2]; expect(recipe(mix)!.audio_targets).toEqual(saved.audio_targets); await resolve(page, mix.id);
   await page.evaluate(() => window.__DELIVERY_RECIPE_AUTHORITY__.show("film")); await lufs(page).fill("1e");

@@ -1678,24 +1678,25 @@ export default function DeliveryProfiles({
                   className="button button-primary"
                   disabled={mixedRendererCut || !renderReady || !firstRenderGate.may_request_native_render || busy !== null || runtimeProbeBusy}
                   onClick={startNativeRender}
-                  title={firstRenderGate.explanation}
+                  title={mixedRendererCut ? "Use Check hybrid sources in Native hybrid master." : firstRenderGate.explanation}
                 >
                   <Play size={14} /> {busy === "render" ? "Rendering…" : "Render native segments"}
                 </button>
               </div>
-              {mixedRendererCut && <p className="delivery-truth-note">
-                This output includes multiple renderers. Use Native hybrid master below to include every scene.
-              </p>}
               <div className={"delivery-truth-note " +
-                (firstRenderGate.may_request_native_render ? "" : "warning")}
+                (!mixedRendererCut && firstRenderGate.may_request_native_render ? "" : "warning")}
                 role="status" aria-label="First native production readiness">
-                {firstRenderGate.may_request_native_render
+                {!mixedRendererCut && firstRenderGate.may_request_native_render
                   ? <CircleCheck size={14} aria-hidden="true" />
                   : <CircleDashed size={14} aria-hidden="true" />}
-                <span>
-                  {firstRenderGate.code.replaceAll("_", " ")} — {firstRenderGate.explanation}
-                  {" "}No native provider health, rendered frames or release approval are attested by this gate.
-                </span>
+                {mixedRendererCut ? (
+                  <span>This output uses multiple renderers. Use Check hybrid sources in Native hybrid master to verify the saved cut.</span>
+                ) : (
+                  <span>
+                    {firstRenderGate.code.replaceAll("_", " ")} — {firstRenderGate.explanation}
+                    {" "}No native provider health, rendered frames or release approval are attested by this gate.
+                  </span>
+                )}
               </div>
               <div className="delivery-editor-actions">
                 <button type="button" className="button secondary"

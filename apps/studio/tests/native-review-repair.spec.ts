@@ -42,6 +42,7 @@ test("a sampled native frame becomes a user-authored scoped repair, never an aut
   const first = boot.project.scenes[0];
   const second = boot.project.scenes[1];
   const profile = boot.project.deliverables[0];
+  profile.included_scene_ids = [first.id, second.id];
   const target = first.nodes.find(node => node.kind === "text");
   expect(target).toBeTruthy();
 

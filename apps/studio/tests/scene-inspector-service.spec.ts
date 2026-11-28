@@ -119,7 +119,8 @@ async function withInspector(page: Page, info: TestInfo, run: (value: InspectorC
 
 test("Inspector raw objective and exact fraction survive actual App navigation before SQLite commits and restart", async ({ page }, info) => {
   await withInspector(page, info, async ({ service, baseline, sceneId, sceneName, applyCount, observations, observe, restart }) => {
-    const workspaces = page.getByRole("navigation", { name: "Workspaces", exact: true });
+    const workspaces = page.getByRole("navigation", { name: "Workspace tools", exact: true });
+    const timeline = button(page.getByRole("navigation", { name: "Editorial workspaces", exact: true }), "Timeline");
     await expect(button(workspaces, "Canvas")).toHaveAttribute("aria-current", "page");
     await objective(page).fill("  Exact Inspector objective\n  retained  ");
     await duration(page).fill("  1001/30  ");
@@ -164,14 +165,14 @@ test("Inspector raw objective and exact fraction survive actual App navigation b
     });
     await expect(storyCard.locator(".story-copy p")).toHaveText(storyboardObjective);
 
-    await button(workspaces, "Timeline").click();
-    await expect(button(workspaces, "Timeline")).toHaveAttribute("aria-current", "page");
+    await timeline.click();
+    await expect(timeline).toHaveAttribute("aria-current", "page");
     const clip = page.locator(".timeline-clip").filter({ has: page.getByText(sceneName, { exact: true }) });
     await expect(clip).toHaveCount(1); await clip.click();
     await expect(clip).toHaveClass(/selected/);
     await expect(page.locator(".inspector .read-field")).toHaveText(sceneName);
     await duration(page).fill("1501/30");
-    await expect(button(workspaces, "Timeline")).toHaveAttribute("aria-current", "page");
+    await expect(timeline).toHaveAttribute("aria-current", "page");
     await button(page, "Ripple").click(); await revision(page, baseline.revision + 4);
     const routedSaved = await observe("Timeline route original exact duration commit");
     expect(routedSaved.scenes.find(item => item.id === sceneId)!.duration).toEqual({ num: "1501", den: "30" });
@@ -219,8 +220,8 @@ test("Inspector raw objective and exact fraction survive actual App navigation b
     await expect(objective(page)).toHaveValue(storyboardObjective);
     await expect(duration(page)).toHaveValue("1501/30");
     await page.screenshot({ path: info.outputPath("inspector-reopened-storyboard.png"), fullPage: true });
-    await button(workspaces, "Timeline").click(); await clip.click();
-    await expect(button(workspaces, "Timeline")).toHaveAttribute("aria-current", "page");
+    await timeline.click(); await clip.click();
+    await expect(timeline).toHaveAttribute("aria-current", "page");
     await expect(clip).toHaveClass(/selected/);
     await expect(objective(page)).toHaveValue(storyboardObjective);
     await expect(duration(page)).toHaveValue("1501/30");

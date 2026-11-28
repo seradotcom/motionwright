@@ -37,6 +37,8 @@ async function saveFixtureRecipe(page: RecipeFixturePage, group: "film" | "mix" 
 test("v0.1 first owner render requires exact Film and rechecked CLI without faking a provider", async ({ page }) => {
   const boot = structuredClone(fixtureBootstrap);
   boot.native_sdk.mode = "tauri";
+  boot.project.deliverables[0].included_scene_ids = boot.project.scenes
+    .filter(scene => scene.renderer === "motion-canvas").map(scene => scene.id);
   await installRecipeAuthoringFixture(page);
   await page.addInitScript(({ initial }) => {
     const simulated = window as unknown as {

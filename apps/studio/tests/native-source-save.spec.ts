@@ -43,7 +43,7 @@ const input = (page: Page, field: keyof Fields) => page.locator(".native-source-
   .getByRole("textbox", { name: labels[field], exact: true });
 
 async function openSources(page: Page) {
-  await page.getByRole("navigation", { name: "Workspaces", exact: true })
+  await page.getByRole("navigation", { name: "Workspace tools", exact: true })
     .getByRole("button", { name: "Production", exact: true }).click();
   await page.getByRole("navigation", { name: "Production tools", exact: true })
     .getByRole("button", { name: "Native sources", exact: true }).click();
@@ -116,7 +116,7 @@ test("browser demo: all six raw source fields and stable capsule identity surviv
     .getByRole("button", { name: "Production plan", exact: true }).click();
   await openSources(page);
   await expectFields(page, rawInput);
-  await page.getByRole("navigation", { name: "Workspaces", exact: true })
+  await page.getByRole("navigation", { name: "Editorial workspaces", exact: true })
     .getByRole("button", { name: "Timeline", exact: true }).click();
   await openSources(page);
   await expectFields(page, rawInput);

@@ -5,6 +5,7 @@ import { defaultOriginalMix, recipeDraftScope, recipeDraftStorageKey, type Deliv
 import { recipePointerKey, type RecipeAuthorState } from "../src/deliveryRecipeDraft";
 import type { Change, DeliverableProfile, Project } from "../src/types";
 import { ScopedChangeService, type StoreFinalization } from "./support/scopedChangeService";
+import { openOriginalMixPanel } from "./support/originalMixPanel";
 
 // Actual App -> desktop invoke fixture -> real StudioService/grants/SQLite.
 // Requires the matching target/envelope wire; no simulated-service fallback.
@@ -101,8 +102,8 @@ async function openTargets(page: Page, selected: DeliverableProfile) {
   await expect(page.getByRole("region", { name: "Audio targets draft review", exact: true })).toBeVisible();
 }
 async function openMix(page: Page, selected: DeliverableProfile) {
-  await button(page, "Audio").click(); const panel = page.locator('details[aria-label="Original three-bus native PCM audition"]');
-  if (await panel.getAttribute("open") === null) await panel.locator("summary").first().click();
+  await button(page, "Audio").click();
+  const panel = await openOriginalMixPanel(page);
   await panel.getByRole("combobox", { name: "Delivery language / profile", exact: true }).selectOption(selected.id);
 }
 async function revision(page: Page, expected: number) {

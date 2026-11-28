@@ -17,6 +17,7 @@ test("five saved hybrid scenes route through three sources and preserve the orig
   await page.goto("/tests/fixtures/hybrid-delivery.html?layout=grouped-motion");
   await expect(panel(page).getByRole("button",{name:"Create hybrid master",exact:true})).toBeDisabled();
   await expect(page.getByRole("button",{name:"Render native segments",exact:true})).toBeDisabled();
+  await expect(page.getByLabel("First native production readiness", { exact: true })).toContainText("Use Check hybrid sources in Native hybrid master");
   await expect(page.getByRole("button",{name:"Assemble native AV master",exact:true})).toHaveCount(0);
   await ready(page);
   await expect(panel(page).getByRole("status")).toContainText("3 sources checked for 5.00 s");

@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { RecipeFixtureRequest } from "./fixtures/delivery-recipe-authority";
+import { openOriginalMixPanel } from "./support/originalMixPanel";
 
 // Existing real components + ProjectMutationGate + browser adapter. Storage
 // timing and reply scheduling are adversarial fixtures, not SQLite/native proof.
@@ -13,10 +14,7 @@ const unknown = (page: Page, group: Group) => page.getByRole("region", { name: t
 const saveLabel = (group: Group) => group === "film" ? "Save scene intent" : "Save original mix recipe";
 const requests = (page: Page) => page.evaluate(() => window.__DELIVERY_RECIPE_AUTHORITY__.requests());
 async function reveal(page: Page, group: Group) {
-  if (group === "mix") {
-    const panel = page.locator('details[aria-label="Original three-bus native PCM audition"]');
-    if (await panel.getAttribute("open") === null) await panel.locator("summary").first().click();
-  }
+  if (group === "mix") await openOriginalMixPanel(page);
   await expect(review(page, group)).toBeVisible();
 }
 async function open(page: Page, group: Group) {

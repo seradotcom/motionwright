@@ -12,6 +12,7 @@ import { expect, test, type Locator, type Page, type TestInfo } from "@playwrigh
 import { defaultOriginalMix, emptyDeliveryRecipe, RECIPE_DRAFT_STORAGE_PREFIX, type DeliveryRecipe } from "../src/deliveryRecipe";
 import type { Change, DeliverableProfile, MotionCanvasFilmOptions, Project } from "../src/types";
 import { ScopedChangeService, type ClosedStoreCapture } from "./support/scopedChangeService";
+import { openOriginalMixPanel } from "./support/originalMixPanel";
 
 test.skip(!process.env.MOTIONWRIGHT_SERVICE_TEST_BIN,
   "Build studio_review_session from the declared composition and set its absolute path; there is no service fallback.");
@@ -81,8 +82,7 @@ async function film(page: Page, profile?: DeliverableProfile) {
 }
 async function mix(page: Page, profile?: DeliverableProfile) {
   await button(page, "Audio").click();
-  const panel = page.locator('details[aria-label="Original three-bus native PCM audition"]');
-  if (await panel.getAttribute("open") === null) await panel.locator("summary").first().click();
+  const panel = await openOriginalMixPanel(page);
   if (profile) await panel.getByRole("combobox", { name: "Delivery language / profile", exact: true }).selectOption(profile.id);
   await expect(panel.getByLabel("Original music asset", { exact: true })).toBeVisible();
   return panel;
@@ -733,7 +733,7 @@ test("Film and PCM guards use saved options and expose unsupported combinations 
   const rights = panel.getByRole("checkbox", { name: /^I confirm I have permission to use these exact original sources/ });
   await expect(rights).toBeEnabled(); await rights.check();
   await expect(button(panel, "Create local original PCM audition")).toBeEnabled();
-  await expect(panel.getByLabel("Saved global mix and audition policy", { exact: true })).toContainText("-1 dBFS · fixed");
+  await expect(panel.getByLabel("Saved global mix and audition policy", { exact: true })).toContainText("-1 dBFS (fixed)");
   await field(panel, "SFX gain dB").fill("-7");
   await expect(rights).not.toBeChecked();
   await expect(button(panel, "Create local original PCM audition")).toBeDisabled();
@@ -764,7 +764,8 @@ test("Film and PCM guards use saved options and expose unsupported combinations 
   project = await service.apply(project, { type: "set_active_voice_track", track_id: originalVoice });
   project = await service.apply(project, { type: "upsert_deliverable", profile: { ...a, voice_track_id: otherVoice } });
   await page.reload(); panel = await mix(page, a);
-  await expect(panel.getByRole("region", { name: "Original mix audition requirements", exact: true })).toContainText("bound to a different voice take");
+  await expect(panel.getByRole("region", { name: "Original mix audition requirements", exact: true }))
+    .toContainText("Music ducking requires every transcript interval for the delivery voice");
   await expect(button(panel, "Create local original PCM audition")).toBeDisabled();
   project = await service.apply(project, { type: "upsert_deliverable", profile: { ...a, voice_track_id: originalVoice } });
   const sfxAsset = project.assets.find(asset => asset.id === sfx)!;

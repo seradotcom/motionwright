@@ -36,12 +36,11 @@ async function saveFixtureRecipe(page: RecipeFixturePage, group: "film" | "mix" 
 
 test("synthetic native receipt remains scene/revision scoped across Deliver and Timeline", async ({ page }) => {
   // This is a UI wiring test, NOT evidence that Semwright actually rendered frames.
-  const boot = {
-    ...fixtureBootstrap,
-    native_sdk: { ...fixtureBootstrap.native_sdk, mode: "tauri" },
-  };
+  const boot = structuredClone(fixtureBootstrap);
+  boot.native_sdk.mode = "tauri";
   const first = boot.project.scenes[0];
   const output = boot.project.deliverables[0];
+  output.included_scene_ids = boot.project.scenes.filter(scene => scene.renderer === "motion-canvas").map(scene => scene.id);
   const receipt = {
     project_resource: "project:" + boot.project.id,
     generation: boot.project.generation,
