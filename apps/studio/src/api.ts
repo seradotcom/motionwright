@@ -1801,6 +1801,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       await applyProductStageChange(next,change);
       break;
     case "upsert_product_hero":
+    case "upsert_versioned_product_hero":
     case "detach_product_hero":
     case "upsert_procedural_field":
     case "detach_procedural_field":

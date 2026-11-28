@@ -13,7 +13,7 @@ import SceneCompositionStudy from "./SceneCompositionStudy";
 import { buildComponentSceneStudy, type ComponentSceneStudy } from "./componentSceneStudy";
 import { resolvedProfileTextOverrides, sampleProfileLayout } from "./profileComposition";
 import { canvasBackground, inheritedTextInk } from "./canvasInheritedInk";
-import { emptyProductionDesign, parseSceneBoundaryEndpoint, realizeProductHero, sameValue, sceneBoundaryNarrativeRoles, sceneBoundaryArchetypes } from "./creativeProduction";
+import { emptyProductionDesign, parseSceneBoundaryEndpoint, PRODUCT_HERO_DEFINITIONS, realizeVersionedProductHero, sameValue, sceneBoundaryNarrativeRoles, sceneBoundaryArchetypes } from "./creativeProduction";
 import ComponentRevisionReview, { useComponentRevisionReview } from "./ComponentRevisionReview";
 import { bootstrap, projectHistory, savedNativeWindowFilmOptions, sceneBoundaryAuthoringContext } from "./api";
 import {
@@ -25,7 +25,7 @@ import {
   resolveProductionDraft, retainProductionFailure, retainProductionOrigin, retainReviewedProductionIntent, writeProductionCopy,
 } from "./productionDesignDraft";
 import type { ProductionBoundaryInput, ProductionCustody, ProductionDraft, ProductionInput, ProductionOperation, ProductionOutcomeReview, ProductionRecoveryEntry, ProductionTarget } from "./productionDesignDraft";
-import type { HeroConfig, ProductionPlan, NarrativeEvidenceKind } from "./creativeProduction";
+import type { HeroConfig, ProductHeroVersion, ProductionPlan, NarrativeEvidenceKind } from "./creativeProduction";
 import PaidGenerationWorkspace from "./PaidGenerationWorkspace";
 import CreativePatchWorkbench from "./CreativePatchWorkbench";
 import ProceduralFieldWorkbench from "./ProceduralFieldWorkbench";
@@ -431,9 +431,11 @@ function HeroWorkbench({ project, scene, commit, commitCamera, busy, playhead, o
 }) {
   const instance = project.production_design?.heroes.find(hero => hero.scene_id === scene?.id);
   const editor = useProductionEditor(project, { kind: "hero", sceneId: scene?.id ?? null }, commitCamera, busy);
-  const draft = (editor.draft.input as Extract<ProductionInput, { kind: "hero" }>).config;
-  const revisionReview = useComponentRevisionReview(project, scene?.id ?? null, instance?.id ?? null, draft, editor.draft.sequence);
-  const setDraft = (config: HeroConfig) => editor.edit({ kind: "hero", config });
+  const input = editor.draft.input as Extract<ProductionInput, { kind: "hero" }>;
+  const draft = input.config;
+  const version = input.requestedVersion ?? instance?.component_version ?? 1;
+  const revisionReview = useComponentRevisionReview(project, scene?.id ?? null, instance?.id ?? null, draft, editor.draft.sequence, version);
+  const setDraft = (config: HeroConfig) => editor.edit({ ...input, config });
   const example=catalogChoice?craftAuthoringExample(catalogChoice):null;
   const familyName = draft.layout === "split_explanation" ? "SplitExplanation" :
     draft.layout === "metric_evidence" ? "MetricEvidence" :
@@ -459,16 +461,16 @@ function HeroWorkbench({ project, scene, commit, commitCamera, busy, playhead, o
     const prepare = async () => {
       if (instance && scene) {
         const context = await buildComponentSceneStudy(project, scene.id, instance.id, draft, editor.draft.sequence,
-          aspect.width, aspect.height, displayProfile ?? null);
+          aspect.width, aspect.height, displayProfile ?? null, version);
         return { ...tag, nodes: [] as CanvasNode[], context };
       }
-      return { ...tag, nodes: await realizeProductHero(previewIdentity, draft, aspect.width, aspect.height), context: null };
+      return { ...tag, nodes: await realizeVersionedProductHero(previewIdentity, draft, aspect.width, aspect.height, version), context: null };
     };
     prepare().then(value => {
       if (current) { setVisual(value); setPreviewLoading(false); }
     }, reason => { if (current) { setVisual(null); setError(String(reason instanceof Error ? reason.message : reason)); setPreviewLoading(false); } });
     return () => { current=false; };
-  }, [project, scene, draft, editor.draft.sequence, aspect, instance, displayProfile]);
+  }, [project, scene, draft, editor.draft.sequence, aspect, instance, displayProfile, version]);
   const localTime = scene ? Math.max(0,Math.min(seconds(scene.duration),playhead-seconds(scene.start))) : 2;
   const visualCurrent = visual !== null && visual.project === project && visual.draft === draft && visual.sequence === editor.draft.sequence
     && visual.aspect === aspect && visual.profile === displayProfile && visual.instanceId === (instance?.id ?? null);
@@ -484,8 +486,14 @@ function HeroWorkbench({ project, scene, commit, commitCamera, busy, playhead, o
   const canApply = !!scene && scene.renderer === "motion-canvas" && seconds(scene.duration)>=2 && !editor.blocked && !error && !viewLoading && !locked && (!instance || revisionReview.ready);
   return <div className="production-split">
     <section className="production-inspector" aria-label={`${familyName} controls`}>
-      <div className="production-section-title"><Layers size={16}/><div><h2>{familyName}</h2><p>Editable first-party composition · v1</p></div></div>
+      <div className="production-section-title"><Layers size={16}/><div><h2>{familyName}</h2><p>Editable first-party composition{instance ? " · saved v" + instance.component_version : ""}</p></div></div>
       <span className="production-status">CREATIVE REVIEW REQUIRED</span>
+      <label className="production-field"><span>Library definition</span>
+        <select aria-label="Component library version" value={version}
+          onChange={event => editor.edit({ ...input, requestedVersion: Number(event.target.value) as ProductHeroVersion })}>
+          {PRODUCT_HERO_DEFINITIONS.map(definition => <option key={definition.version} value={definition.version}>{definition.label}</option>)}
+        </select>
+      </label>
       <p className="production-help">Six persistent semantic objects, synchronized cubic entrances and a responsive composition. These families are graphic studies, not fabricated screenshots, validated statistics, measured comparisons or claims about actual software.</p>
       <label className="production-field"><span>Composition family</span><select aria-label="Component layout" value={draft.layout ?? "product_hero_reveal"} onChange={e => setDraft({...draft, layout:e.target.value as NonNullable<HeroConfig["layout"]>})}>
         <option value="product_hero_reveal">ProductHeroReveal · product statement</option>

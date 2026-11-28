@@ -8,11 +8,11 @@ export interface ComponentSceneStudy { project: Project; scene: Scene; profile: 
 /** Full proposed source scene for the component's existing aspect study. The
  * temporary dimensions are preview parameters, never a saved delivery profile. */
 export async function buildComponentSceneStudy(project: Project, sceneId: string, instanceId: string,
-  config: HeroConfig, sequence: number, width: number, height: number, displayProfile: DeliverableProfile | null = null): Promise<ComponentSceneStudy> {
+  config: HeroConfig, sequence: number, width: number, height: number, displayProfile: DeliverableProfile | null = null, requestedVersion?: number): Promise<ComponentSceneStudy> {
   const selectedProfile = displayProfile ? structuredClone(displayProfile) : null;
   if (selectedProfile && !project.deliverables.some(value => sameValue(value, selectedProfile)))
     throw new Error("The selected delivery profile does not belong to this source revision.");
-  const review = await inspectComponentRevision(project, sceneId, instanceId, config, sequence);
+  const review = await inspectComponentRevision(project, sceneId, instanceId, config, sequence, requestedVersion);
   const proposed = structuredClone(review.source);
   const scene = proposed.scenes.find(value => value.id === sceneId)!;
   scene.nodes = structuredClone(review.after);

@@ -1,4 +1,4 @@
-import { mergeComponentNodes, realizeProductHero, sameValue } from "./creativeProduction";
+import { mergeComponentNodes, PRODUCT_HERO_DEFINITIONS, realizeVersionedProductHero, sameValue } from "./creativeProduction";
 import type { HeroConfig, ProductHeroInstance } from "./creativeProduction";
 import type { CanvasNode, Project } from "./types";
 
@@ -54,7 +54,7 @@ export function componentRevisionField(node: CanvasNode, path: string): unknown 
  * The service remains authoritative when the existing upsert is submitted.
  */
 export async function inspectComponentRevision(
-  project: Project, sceneId: string, instanceId: string, config: HeroConfig, sequence: number,
+  project: Project, sceneId: string, instanceId: string, config: HeroConfig, sequence: number, requestedVersion?: number,
 ): Promise<ComponentRevisionPreview> {
   if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error("The component edit sequence is invalid.");
   // Snapshot before the first digest await. Later edits must invalidate this view.
@@ -62,7 +62,9 @@ export async function inspectComponentRevision(
   const instance = source.production_design?.heroes.find(value => value.id === instanceId);
   const scene = source.scenes.find(value => value.id === sceneId);
   if (!instance || !scene || instance.scene_id !== sceneId) throw new Error("The saved component is outside this scene.");
-  if (instance.component_version !== 1) throw new Error("This component version has no available realization for comparison.");
+  if (!PRODUCT_HERO_DEFINITIONS.some(entry => entry.version === instance.component_version))
+    throw new Error("This saved component version has no available realization for comparison.");
+  const version = requestedVersion ?? instance.component_version;
   if (scene.renderer !== "motion-canvas") throw new Error("The saved component needs a Motion Canvas scene.");
   if (new Set(scene.nodes.map(node => node.id)).size !== scene.nodes.length
     || new Set(instance.baseline.map(node => node.id)).size !== instance.baseline.length) {
@@ -70,7 +72,14 @@ export async function inspectComponentRevision(
   }
   // Canonical component source is authored in the existing 1920 x 1080 space.
   // Responsive studies remain a separate view and do not become the merge base.
-  const generated = await realizeProductHero(instanceId, target);
+  const storedDefinition = await realizeVersionedProductHero(instanceId, instance.config, 1920, 1080, instance.component_version);
+  const heading = storedDefinition.find(node => node.name.endsWith(" / headline"));
+  const storedSize = instance.baseline.find(node => node.id === heading?.id)?.style.font_size;
+  if (typeof heading?.style.font_size !== "number" || typeof storedSize !== "number"
+    || Math.abs(storedSize - heading.style.font_size) > 0.000_001)
+    throw new Error("The saved component heading does not match its library version.");
+  const generated = version === instance.component_version && sameValue(target, instance.config) ? storedDefinition
+    : await realizeVersionedProductHero(instanceId, target, 1920, 1080, version);
   const after = mergeComponentNodes(instance.baseline, scene.nodes, generated);
   const governed = new Set(instance.baseline.map(node => node.id));
   const rows = instance.baseline.map((base, index): ComponentRevisionRow => {
@@ -89,7 +98,7 @@ export async function inspectComponentRevision(
   return {
     kind: "editorial_v1_component_change", source, sceneId, instanceId, sequence, target,
     beforeInstance: clone(instance),
-    afterInstance: { ...clone(instance), component_version: 1, config: clone(target), baseline: clone(generated) },
+    afterInstance: { ...clone(instance), component_version: version, config: clone(target), baseline: clone(generated) },
     before: clone(scene.nodes), after, rows,
     unrelatedNodeIds: scene.nodes.filter(node => !governed.has(node.id)).map(node => node.id),
   };
@@ -98,10 +107,11 @@ export async function inspectComponentRevision(
 /** Full saved state and edit sequence bind the comparison, including ABA edits. */
 export function componentRevisionCurrent(
   preview: ComponentRevisionPreview | null, project: Project, sceneId: string,
-  instanceId: string, config: HeroConfig, sequence: number,
+  instanceId: string, config: HeroConfig, sequence: number, requestedVersion?: number,
 ): preview is ComponentRevisionPreview {
   return preview !== null && preview.kind === "editorial_v1_component_change"
     && preview.sceneId === sceneId && preview.instanceId === instanceId
     && preview.sequence === sequence && sameValue(preview.target, config)
+    && preview.afterInstance.component_version === (requestedVersion ?? preview.beforeInstance.component_version)
     && sameValue(preview.source, project);
 }

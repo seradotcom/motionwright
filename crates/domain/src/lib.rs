@@ -1450,7 +1450,15 @@ impl Project {
                 instance_id,
                 scene_id,
                 config,
-            } => self.upsert_product_hero(*instance_id, *scene_id, config)?,
+            } => self.upsert_product_hero(*instance_id, *scene_id, config, None)?,
+            Change::UpsertVersionedProductHero {
+                instance_id,
+                scene_id,
+                component_version,
+                config,
+            } => {
+                self.upsert_product_hero(*instance_id, *scene_id, config, Some(*component_version))?
+            }
             Change::UpsertProductStage {
                 instance_id,
                 scene_id,
@@ -3048,6 +3056,12 @@ pub enum Change {
     UpsertProductHero {
         instance_id: Uuid,
         scene_id: Uuid,
+        config: HeroConfig,
+    },
+    UpsertVersionedProductHero {
+        instance_id: Uuid,
+        scene_id: Uuid,
+        component_version: u32,
         config: HeroConfig,
     },
     DetachProductHero {

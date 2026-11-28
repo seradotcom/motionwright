@@ -871,6 +871,7 @@ export type Change =
   | { type: "edit_paid_generation"; edit: PaidGenerationEdit }
   | { type: "undo_creative_patch"; patch_id: string }
   | { type: "upsert_product_hero"; instance_id: string; scene_id: string; config: HeroConfig }
+  | { type: "upsert_versioned_product_hero"; instance_id: string; scene_id: string; component_version: number; config: HeroConfig }
   | { type: "detach_product_hero"; instance_id: string }
   | { type: "propose_component_distillation"; input: ComponentDistillationInput }
   | { type: "review_component_distillation"; id: string; review: DistillationReview }

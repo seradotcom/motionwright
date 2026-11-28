@@ -3,8 +3,8 @@ import { assertNativeFidelitySource, nativeFidelityCapsuleShape, nativeFidelityI
 import type { ProductionFidelityInput } from "./nativePropertyFidelityDraft";
 import { nativeRelinkInput, nativeRelinkInputShape, relinkRequest, relinkedCapsuleValue, proposeNativeSourceRelink, type ProductionRelinkInput } from "./nativeSourceRelink";
 import { applyProductionDesignChange, defaultHeroConfig, parseSceneBoundary, parseSceneBoundaryAppearances, parseSceneBoundaryFilmOptions,
-  parseSceneBoundaryPredecessorContext, parseSceneBoundarySource, planContentDigest, realizeProductHero, sameValue, validateProductionPlan } from "./creativeProduction";
-import type { HeroConfig, NativeCapsule, ProductHeroInstance, ProductionPlan } from "./creativeProduction";
+  parseSceneBoundaryPredecessorContext, parseSceneBoundarySource, planContentDigest, realizeVersionedProductHero, sameValue, validateProductionPlan } from "./creativeProduction";
+import type { HeroConfig, NativeCapsule, ProductHeroInstance, ProductHeroVersion, ProductionPlan } from "./creativeProduction";
 import type { CanvasNode, Change, Project, ProjectEvent, SceneBoundary, SceneBoundaryFilmOptions, SceneBoundaryPredecessorContext, SceneBoundarySource } from "./types";
 
 export type ProductionTarget = { kind: "hero"; sceneId: string | null } | { kind: "plan" } | { kind: "source"; sceneId: string | null }
@@ -17,12 +17,12 @@ export interface ProductionBoundaryInput {
   inputKind: "self_contained" | "predecessor"; predecessorBoundaryId: string; appearancesJson: string; entryJson: string; exitJson: string;
   definitionKind: "draft_incomplete" | "explicit"; boundSource: SceneBoundarySource | null; boundPredecessor: SceneBoundaryPredecessorContext | null;
 }
-export type ProductionInput = { kind: "hero"; config: HeroConfig }
+export type ProductionInput = { kind: "hero"; config: HeroConfig; requestedVersion?: ProductHeroVersion }
   | { kind: "plan"; plan: ProductionPlan; reviewer: string; note: string }
   | { kind: "source"; assetId: string; renderer: string; version: string } | ProductionBoundaryInput | ProductionFidelityInput | ProductionRelinkInput;
 export type ProductionValue = ProductHeroInstance | ProductionPlan | NativeCapsule | SceneBoundary | null;
 export type ProductionOperation = "save" | "approve" | "detach" | "remove";
-export type ProductionChange = Extract<Change, { type: "upsert_product_hero" | "detach_product_hero" | "set_production_plan" | "upsert_native_capsule" | "relink_native_capsule_source" | "upsert_scene_boundary" | "remove_scene_boundary" }>;
+export type ProductionChange = Extract<Change, { type: "upsert_product_hero" | "upsert_versioned_product_hero" | "detach_product_hero" | "set_production_plan" | "upsert_native_capsule" | "relink_native_capsule_source" | "upsert_scene_boundary" | "remove_scene_boundary" }>;
 export interface ProductionPending {
   /** Local comparison snapshot, never a service request, grant, or replay token. */
   id: string; revision: number; sequence: number; operation: ProductionOperation;
@@ -275,9 +275,13 @@ export async function prepareProductionSubmission(draft: ProductionDraft, projec
       change = { type: "detach_product_hero", instance_id: existing.id }; value = null; nodesBefore = clone(scene.nodes);
     } else {
       const instanceId = existing?.id ?? crypto.randomUUID(), config = { ...clone(input.config), layout: input.config.layout ?? "product_hero_reveal" as const };
-      const baseline = await realizeProductHero(instanceId, config);
-      value = { id: instanceId, scene_id: scene.id, component_version: 1, config, baseline };
-      change = { type: "upsert_product_hero", instance_id: instanceId, scene_id: scene.id, config: clone(config) };
+      const version = input.requestedVersion ?? existing?.component_version ?? 1;
+      const baseline = await realizeVersionedProductHero(instanceId, config, 1920, 1080, version);
+      value = { id: instanceId, scene_id: scene.id, component_version: version, config, baseline };
+      const args = { instance_id: instanceId, scene_id: scene.id, config: clone(config) };
+      change = input.requestedVersion === undefined
+        ? { type: "upsert_product_hero", ...args }
+        : { type: "upsert_versioned_product_hero", component_version: version, ...args };
     }
   } else if (target.kind === "source" && input.kind === "source") {
     if (operation !== "save") throw new Error("A source attachment only supports an explicit save.");
@@ -440,8 +444,12 @@ export async function inspectProductionOutcome(draft: ProductionDraft, selected:
       if (pending.operation === "detach") return event.change.type === "detach_product_hero"
         && event.change.instance_id === (draft.base as ProductHeroInstance | null)?.id;
       const expected = pending.value as ProductHeroInstance;
-      return event.change.type === "upsert_product_hero" && event.change.instance_id === expected.id
-        && event.change.scene_id === expected.scene_id && sameValue(event.change.config, expected.config);
+      const command = event.change;
+      const requestedVersion = pending.input.kind === "hero" ? pending.input.requestedVersion : undefined;
+      if (command.type !== "upsert_product_hero" && command.type !== "upsert_versioned_product_hero") return false;
+      const version = command.type === "upsert_versioned_product_hero" ? command.component_version : undefined;
+      return version === requestedVersion && command.instance_id === expected.id && command.scene_id === expected.scene_id
+        && sameValue(command.config, expected.config);
     }).map(event => event.revision) };
 }
 export function releaseProductionOutcome(draft: ProductionDraft, project: Project, review: ProductionOutcomeReview): ProductionDraft {
@@ -478,7 +486,9 @@ function inputShape(value: unknown): value is ProductionInput {
     && ["assetId", "renderer", "version"].every(key => typeof value[key] === "string");
   if (value.kind === "hero") {
     const config = value.config;
-    return exact(value, ["kind", "config"]) && record(config) && exact(config, ["eyebrow", "headline", "body", "wordmark", "foreground", "accent", "motion"], ["layout"])
+    return exact(value, ["kind", "config"], ["requestedVersion"])
+      && (!Object.hasOwn(value, "requestedVersion") || value.requestedVersion === 1 || value.requestedVersion === 2)
+      && record(config) && exact(config, ["eyebrow", "headline", "body", "wordmark", "foreground", "accent", "motion"], ["layout"])
       && ["eyebrow", "headline", "body", "wordmark", "foreground", "accent"].every(key => typeof config[key] === "string")
       && typeof config.motion === "boolean" && (config.layout === undefined || ["product_hero_reveal", "split_explanation", "metric_evidence", "step_sequence", "contrast_comparison", "editorial_quote", "typography_focus", "typography_contrast"].includes(String(config.layout)));
   }
@@ -578,6 +588,10 @@ function cleanDraft(value: unknown, scope: string, originDepth = 0): ProductionD
       || (sent.operation === "detach" || sent.operation === "remove" ? sent.value !== null || sent.nodesBefore === null : sent.value === null || sent.nodesBefore !== null)
       || !["UNKNOWN", "NOT_SENT"].includes(String(sent.outcome)) || (sent.diagnostic !== undefined && typeof sent.diagnostic !== "string"))
       throw new Error("Unreadable Production pending comparison snapshot.");
+    if (target.kind === "hero" && sent.input.kind === "hero" && sent.operation === "save") {
+      const version = sent.input.requestedVersion ?? (value.base as ProductHeroInstance | null)?.component_version ?? 1;
+      if ((sent.value as ProductHeroInstance).component_version !== version) throw new Error("The pending component version does not match its original save intent.");
+    }
     if (target.kind === "source") {
       const capsule = sent.value;
       if (sent.revision !== value.baseRevision || sent.operation !== "save" || sent.input.kind !== "source" || !record(capsule)

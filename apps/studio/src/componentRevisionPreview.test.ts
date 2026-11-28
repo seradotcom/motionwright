@@ -122,11 +122,16 @@ describe("existing v1 component revision comparison", () => {
     }
   });
 
-  it.each([0, 2, 99])("refuses unsupported stored component version %s instead of calling it migrated", async version => {
+  it.each([0, 99])("refuses unsupported stored component version %s instead of calling it migrated", async version => {
     const project = await seeded(); project.production_design!.heroes[0].component_version = version;
     const before = structuredClone(project);
     await expect(inspectComponentRevision(project, project.scenes[0].id, instanceId, config(), 2)).rejects.toThrow("no available realization");
     expect(project).toEqual(before);
+  });
+
+  it("refuses a legacy heading presented as the v2 library definition", async () => {
+    const project = await seeded(); project.production_design!.heroes[0].component_version = 2;
+    await expect(inspectComponentRevision(project, project.scenes[0].id, instanceId, config(), 2)).rejects.toThrow(/does not match its library version/);
   });
 
   it("takes its complete source and target before the first asynchronous realization", async () => {
@@ -165,4 +170,20 @@ describe("existing v1 component revision comparison", () => {
     expect(preview.rows.every(row => row.changedFields.length === 0)).toBe(true);
     expect(project).toEqual(before); expect(preview.beforeInstance.config.layout).toBeUndefined();
   });
+});
+
+it("compares the saved library revision, preserves compatible text, and reports a heading style conflict", async () => {
+  const project = await seeded(), scene = project.scenes[0], target = config();
+  scene.nodes[2].text = "An independent body override";
+  const preview = await inspectComponentRevision(project, scene.id, instanceId, target, 8, 2);
+  expect(preview.beforeInstance.component_version).toBe(1);
+  expect(preview.afterInstance.component_version).toBe(2);
+  expect(preview.after[1].style.font_size).toBeCloseTo(scene.nodes[1].style.font_size! * 0.92);
+  expect(preview.after[2].text).toBe("An independent body override");
+  expect(componentRevisionCurrent(preview, project, scene.id, instanceId, target, 8, 2)).toBe(true);
+  expect(componentRevisionCurrent(preview, project, scene.id, instanceId, target, 8, 1)).toBe(false);
+  scene.nodes[1].style.font_size = 51;
+  const before = structuredClone(project);
+  await expect(inspectComponentRevision(project, scene.id, instanceId, target, 9, 2)).rejects.toThrow(/style.font_size/);
+  expect(project).toEqual(before);
 });

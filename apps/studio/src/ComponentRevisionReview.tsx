@@ -6,7 +6,7 @@ import { componentRevisionCurrent, componentRevisionField, inspectComponentRevis
 import type { ComponentRevisionPreview } from "./componentRevisionPreview";
 
 export function useComponentRevisionReview(project: Project, sceneId: string | null,
-  instanceId: string | null, config: HeroConfig, sequence: number) {
+  instanceId: string | null, config: HeroConfig, sequence: number, requestedVersion?: number) {
   const [preview, setPreview] = useState<ComponentRevisionPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -15,15 +15,15 @@ export function useComponentRevisionReview(project: Project, sceneId: string | n
     setPreview(null); setError(null);
     if (!sceneId || !instanceId) { setLoading(false); return; }
     setLoading(true);
-    inspectComponentRevision(project, sceneId, instanceId, config, sequence).then(value => {
+    inspectComponentRevision(project, sceneId, instanceId, config, sequence, requestedVersion).then(value => {
       if (current) { setPreview(value); setLoading(false); }
     }, reason => {
       if (current) { setError(reason instanceof Error ? reason.message : String(reason)); setLoading(false); }
     });
     return () => { current = false; };
-  }, [project, sceneId, instanceId, config, sequence]);
+  }, [project, sceneId, instanceId, config, sequence, requestedVersion]);
   const ready = !!sceneId && !!instanceId
-    && componentRevisionCurrent(preview, project, sceneId, instanceId, config, sequence);
+    && componentRevisionCurrent(preview, project, sceneId, instanceId, config, sequence, requestedVersion);
   return { preview: ready ? preview : null, ready, error, loading };
 }
 
@@ -51,7 +51,7 @@ export default function ComponentRevisionReview({ review, renderScene }: {
   const preview = review.preview;
   return <section className="production-evidence-note" aria-label="Component change review">
     <h3>Review the component change</h3>
-    <p>{preview ? `Existing component v${preview.beforeInstance.component_version} · proposed component v${preview.afterInstance.component_version}. ` : "Supported component v1 comparison. "}This comparison keeps your saved objects and shows the result of the existing merge in the 1920 × 1080 authoring space.</p>
+    <p>{preview ? `Existing component v${preview.beforeInstance.component_version} · proposed component v${preview.afterInstance.component_version}. ` : "Component version comparison. "}This comparison keeps your saved objects and shows the result of the existing merge in the 1920 × 1080 authoring space.</p>
     {review.error && <p role="alert" className="production-error">{review.error} The saved scene is unchanged. Resolve the conflict in the parameters or Canvas before updating.</p>}
     {!preview && !review.error && <p role="status">Preparing the current comparison…</p>}
     {preview && <>

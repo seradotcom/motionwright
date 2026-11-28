@@ -866,3 +866,107 @@ fn whole_track_removal_checks_removed_property_and_scene_timing_locks() {
     );
     assert_eq!(timed, before);
 }
+
+#[test]
+fn versioned_library_updates_keep_instance_overrides_and_reject_conflicts_atomically() {
+    let mut project = project();
+    let first = project.scenes[0].id;
+    let a = Uuid::new_v4();
+    let b = Uuid::new_v4();
+    insert(&mut project, a, HeroConfig::default());
+    project
+        .apply_change(&Change::AddScene {
+            name: "Second instance".into(),
+            objective: "The same library definition with separate copy".into(),
+            duration_seconds: 6,
+        })
+        .unwrap();
+    let second = project.scenes[1].id;
+    project
+        .apply_change(&Change::UpsertProductHero {
+            instance_id: b,
+            scene_id: second,
+            config: HeroConfig {
+                headline: "Independent headline".into(),
+                ..HeroConfig::default()
+            },
+        })
+        .unwrap();
+
+    let body_id = hero_node_id(a, "body");
+    project
+        .apply_change(&Change::UpdateCanvasText {
+            scene_id: first,
+            node_id: body_id,
+            text: Some("An independent Canvas text override".into()),
+        })
+        .unwrap();
+    let title_a = hero_node_id(a, "headline");
+    let title_b = hero_node_id(b, "headline");
+    let old_title = project.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == title_a)
+        .unwrap()
+        .clone();
+    let old_b = project.production_design.heroes[1].clone();
+    let b_title = project.scenes[1]
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == title_b)
+        .unwrap();
+    b_title.style.font_size = Some(51.0);
+    project.validate().unwrap();
+
+    let version_change = |instance_id, scene_id, config| {
+        serde_json::from_value::<Change>(serde_json::json!({
+            "type": "upsert_versioned_product_hero",
+            "instance_id": instance_id,
+            "scene_id": scene_id,
+            "component_version": 2,
+            "config": config,
+        }))
+        .unwrap()
+    };
+    project
+        .apply_change(&version_change(a, first, HeroConfig::default()))
+        .unwrap();
+    assert_eq!(project.production_design.heroes[0].component_version, 2);
+    assert_eq!(project.production_design.heroes[1], old_b);
+    let new_title = project.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == title_a)
+        .unwrap();
+    assert!(new_title.style.font_size.unwrap() < old_title.style.font_size.unwrap());
+    assert_eq!(new_title.keyframes, old_title.keyframes);
+    let body = project.scenes[0]
+        .nodes
+        .iter()
+        .find(|node| node.id == body_id)
+        .unwrap();
+    assert_eq!(
+        body.text.as_deref(),
+        Some("An independent Canvas text override")
+    );
+    let before = project.clone();
+    let error = project
+        .apply_change(&version_change(b, second, old_b.config))
+        .unwrap_err();
+    assert!(error.to_string().contains("style.font_size"), "{error}");
+    assert_eq!(project, before);
+    let restored: Project = serde_json::from_slice(&serde_json::to_vec(&project).unwrap()).unwrap();
+    restored.validate().unwrap();
+    assert_eq!(restored, project);
+
+    // A normal pre-existing authoring caller preserves the selected definition.
+    insert(
+        &mut project,
+        a,
+        HeroConfig {
+            accent: "#FADCA2".into(),
+            ..HeroConfig::default()
+        },
+    );
+    assert_eq!(project.production_design.heroes[0].component_version, 2);
+}

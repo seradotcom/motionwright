@@ -2,7 +2,7 @@
  * StudioService and SQLite remain the sole mutation authority. */
 import type { Change, Project, ProjectEvent } from "./types";
 import { sameProjectRevision, projectionUuid } from "./projectMutation";
-import { emptyProductionDesign, mergeComponentNodes, realizeProductHero, sameValue } from "./creativeProduction";
+import { emptyProductionDesign, mergeComponentNodes, realizeVersionedProductHero, sameValue } from "./creativeProduction";
 import {
   brandDigest, validateBrandGovernance, type BrandProfile, type BrandRule, type TastePreference,
 } from "./brandGovernance";
@@ -257,9 +257,9 @@ export async function prepareBrandSubmission(draft: BrandDraft, project: Project
         throw new Error("The reviewed campaign scene or component is absent from its source.");
       const hero = heroes[heroIndex], scene = scenes[sceneIndex];
       const config = { ...hero.config, accent: row.to_accent, wordmark: row.to_wordmark };
-      const baseline = await realizeProductHero(hero.id, config);
+      const baseline = await realizeVersionedProductHero(hero.id, config, 1920, 1080, hero.component_version);
       const nodes = mergeComponentNodes(hero.baseline, scene.nodes, baseline);
-      heroes[heroIndex] = { id: hero.id, scene_id: hero.scene_id, component_version: 1, config: clone(config), baseline: clone(baseline) };
+      heroes[heroIndex] = { ...hero, config: clone(config), baseline: clone(baseline) };
       scenes[sceneIndex] = { ...scene, status: "draft", nodes };
     }
     receiptProof = { attemptId: id, scope: draft.scope, sourceRevision: project.revision,

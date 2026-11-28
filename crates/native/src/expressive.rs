@@ -3,7 +3,7 @@
 use motionwright_domain::{
     CanvasNode, DeliverableProfile, DomainError, FieldDistribution, FramingStrategy, HeroLayout,
     MotionInterpolation, MotionProperty, Project, RationalTime, Scene, hero_node_id,
-    merge_component_nodes, realize_procedural_field_for_output, realize_product_hero,
+    merge_component_nodes, realize_procedural_field_for_output, realize_versioned_product_hero,
 };
 use semwright_native_sdk::{Error, ErrorCode, Result};
 
@@ -222,9 +222,14 @@ pub(crate) fn responsive_scene(
             }
         }
         if resized || !selected.is_empty() {
-            let mut incoming =
-                realize_product_hero(hero.id, &config, profile.width, profile.height)
-                    .map_err(domain)?;
+            let mut incoming = realize_versioned_product_hero(
+                hero.id,
+                &config,
+                profile.width,
+                profile.height,
+                hero.component_version,
+            )
+            .map_err(domain)?;
             for node in &mut incoming {
                 if motionwright_domain::protected_delivery_text(project, scene, node.id).is_some() {
                     // Preserve current source text through the field-level merge,

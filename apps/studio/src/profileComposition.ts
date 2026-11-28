@@ -1,5 +1,5 @@
 import type { CanvasNode, DeliverableProfile, Project, Scene } from "./types";
-import { heroNodeId, mergeComponentNodes, realizeProductHero } from "./creativeProduction";
+import { heroNodeId, mergeComponentNodes, realizeVersionedProductHero } from "./creativeProduction";
 import { realizeProceduralFieldForOutput } from "./proceduralField";
 import { sampledSceneCamera,CAMERA_DETAIL_RETURN_VERSION,validateCameraDetailReturnBounds } from "./cameraReframe";
 import { realizeCaptureBoard,validateCaptureBoardScene } from "./captureBoard";
@@ -62,7 +62,7 @@ export async function reflowSceneForProfile(project: Project, scene: Scene, prof
       }
     }
     if (resized || selected.size) {
-      const incoming = await realizeProductHero(hero.id, config, profile.width, profile.height);
+      const incoming = await realizeVersionedProductHero(hero.id, config, profile.width, profile.height, hero.component_version);
       for (const node of incoming) {
         if(protectedDeliveryText(project,scene,node.id)){
           const baseline=hero.baseline.find(base=>base.id===node.id);
