@@ -26,6 +26,12 @@ export interface HeroConfig {
   eyebrow: string; headline: string; body: string; wordmark: string;
   foreground: string; accent: string; motion: boolean;
 }
+export const PRODUCT_HERO_DEFINITIONS = [
+  { version: 1, label: "Version 1 · Original heading scale", headingScale: 1 },
+  { version: 2, label: "Version 2 · Compact headings", headingScale: 0.92 },
+] as const;
+export type ProductHeroVersion = typeof PRODUCT_HERO_DEFINITIONS[number]["version"];
+
 export interface ProductHeroInstance {
   id: string; scene_id: string; component_version: number;
   config: HeroConfig; baseline: CanvasNode[];
@@ -76,7 +82,7 @@ export type ScopedCanvasEdit =
   | { kind: "keyframe"; node_id: string; keyframe: CanvasKeyframe }
   | { kind: "motion"; node_id: string; keyframes: CanvasKeyframe[] };
 export interface CreativePatch { scene_id: string; base_revision: number; rationale: string; edits: ScopedCanvasEdit[]; }
-export type ProductionDesignChange = Extract<Change, { type: "upsert_product_hero" | "detach_product_hero" | "set_production_plan" | "set_delivery_recipe" | "upsert_native_capsule" | "relink_native_capsule_source" | "apply_creative_patch" | "upsert_procedural_field" | "detach_procedural_field" }>;
+export type ProductionDesignChange = Extract<Change, { type: "upsert_product_hero" | "upsert_versioned_product_hero" | "detach_product_hero" | "set_production_plan" | "set_delivery_recipe" | "upsert_native_capsule" | "relink_native_capsule_source" | "apply_creative_patch" | "upsert_procedural_field" | "detach_procedural_field" }>;
 
 export function validateNativePropertyFidelity(properties: NativePropertyFidelity[]) {
   if (properties.length > 64) throw new Error("At most 64 native property classifications are permitted.");
@@ -463,6 +469,19 @@ export async function realizeProductHero(id: string, config: HeroConfig, w = 192
     return node;
   }));
 }
+export async function realizeVersionedProductHero(id: string, config: HeroConfig, width: number, height: number, version: number): Promise<CanvasNode[]> {
+  const definition = PRODUCT_HERO_DEFINITIONS.find(entry => entry.version === version);
+  if (!definition) throw new Error("Unsupported ProductHero definition version " + version);
+  const nodes = await realizeProductHero(id, config, width, height);
+  if (definition.version !== 1) {
+    const headingId = await heroNodeId(id, "headline");
+    const heading = nodes.find(node => node.id === headingId);
+    if (!heading || heading.style.font_size === null) throw new Error("The versioned ProductHero heading is missing.");
+    heading.style.font_size *= definition.headingScale;
+  }
+  return nodes;
+}
+
 /** Original typography candidates use four authored text objects and two rules.
  * They retain the six stable component roles; no extra claim or source is invented. */
 async function realizeTypographyHero(id: string, config: HeroConfig, w: number, h: number): Promise<CanvasNode[]> {
@@ -692,12 +711,14 @@ export async function applyProductionDesignChange(project: Project, change: Prod
     case "detach_procedural_field":
       await applyProceduralChange(project, change);
       return;
-    case "upsert_product_hero": {
+    case "upsert_product_hero":
+    case "upsert_versioned_product_hero": {
       unlocked(project,change.scene_id,["content","position","style","timing","renderer"]);
       const scene = project.scenes.find(s => s.id === change.scene_id);
       if (!scene || scene.renderer !== "motion-canvas" || seconds(scene.duration) < 2) throw new Error("ProductHeroReveal needs a Motion Canvas scene of at least two seconds.");
-      const baseline = await realizeProductHero(change.instance_id,change.config);
       const existing = design.heroes.find(h => h.id === change.instance_id);
+      const version = change.type === "upsert_versioned_product_hero" ? change.component_version : existing?.component_version ?? 1;
+      const baseline = await realizeVersionedProductHero(change.instance_id, change.config, 1920, 1080, version);
       let nodes: CanvasNode[];
       if (existing) {
         if (existing.scene_id !== scene.id) throw new Error("Component cannot move scenes through an update.");
@@ -706,7 +727,7 @@ export async function applyProductionDesignChange(project: Project, change: Prod
         if (design.heroes.length >= 64 || design.heroes.some(h => h.scene_id === scene.id) || scene.nodes.some(n => baseline.some(b => n.id === b.id))) throw new Error("Component limit or identity collision.");
         nodes = [...scene.nodes,...structuredClone(baseline)];
       }
-      const hero: ProductHeroInstance = {id:change.instance_id,scene_id:scene.id,component_version:1,config:structuredClone(change.config),baseline:structuredClone(baseline)};
+      const hero: ProductHeroInstance = {id:change.instance_id,scene_id:scene.id,component_version:version,config:structuredClone(change.config),baseline:structuredClone(baseline)};
       const index = design.heroes.findIndex(h => h.id === hero.id);
       if (index < 0) design.heroes.push(hero); else design.heroes[index] = hero;
       scene.nodes = nodes; scene.status = "draft"; break;

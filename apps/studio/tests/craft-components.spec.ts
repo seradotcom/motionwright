@@ -160,3 +160,36 @@ test("delivery Hero text reflows into visible original lines without rewriting t
   expect(saved.scenes.find(row=>row.id===scene.id)!.nodes).toEqual(scene.nodes);
   expect(saved.deliverables.find(row=>row.id===profile.id)!.text_overrides[heading.id]).toBe("Ideas claras para todos");
 });
+
+test("an explicit library update preserves the authored Canvas override", async ({ page }) => {
+  const button = (name: string) => page.getByRole("button", { name, exact: true });
+  await page.goto("/");
+  await button("Add scene").click();
+  await page.getByLabel("New scene name").fill("Versioned product reveal");
+  await button("Add").click();
+  const open = async () => {
+    await button("Production").click();
+    await page.getByLabel("Production working scene").selectOption({ label: "Versioned product reveal" });
+    await button("Components").click();
+  };
+  await open();
+  await expect(page.getByLabel("Component library version")).toHaveValue("1");
+  await button("Add to scene").click();
+  await expect(page.getByText("Editable first-party composition · saved v1")).toBeVisible();
+  await button("Edit objects").click();
+  await button("Canvas object ProductHeroReveal / body").click();
+  await page.getByLabel("Canvas text").fill("A human-owned body override.");
+  await button("Commit text").click();
+  await expect(button("Commit text")).toBeDisabled();
+  await open();
+
+  await page.getByLabel("Component library version").selectOption("2");
+  const review = page.getByRole("region", { name: "Component change review" });
+  await expect(review).toContainText("Existing component v1 · proposed component v2");
+  await expect(review).toContainText("A human-owned body override.");
+  await button("Update component").click();
+  await expect(page.getByText("Editable first-party composition · saved v2")).toBeVisible();
+  await button("Edit objects").click();
+  await button("Canvas object ProductHeroReveal / body").click();
+  await expect(page.getByLabel("Canvas text")).toHaveValue("A human-owned body override.");
+});

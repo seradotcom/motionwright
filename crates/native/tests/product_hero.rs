@@ -350,3 +350,92 @@ fn saved_delivery_hero_copy_is_wrapped_once_in_native_film_after_reopen() {
         assert_eq!(candidate, before);
     }
 }
+
+#[test]
+fn library_version_survives_sqlite_and_changes_the_heading_in_responsive_film() {
+    use motionwright_service::StudioService;
+    use semwright_motion_authoring::SubjectContent;
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("product-hero-v2.sqlite3");
+    let service = StudioService::open(&db).unwrap();
+    let initial = service
+        .create_project("Original versioned component")
+        .unwrap();
+    let project = service
+        .apply(
+            initial.id,
+            &initial.stamp(),
+            "add-scene",
+            &Change::AddScene {
+                name: "Versioned reveal".into(),
+                objective: "Original compact headings".into(),
+                duration_seconds: 6,
+            },
+        )
+        .unwrap()
+        .project;
+    let scene_id = project.scenes[0].id;
+    let instance_id = Uuid::new_v4();
+    let config = HeroConfig::default();
+    let project = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "version-one",
+            &Change::UpsertProductHero {
+                instance_id,
+                scene_id,
+                config: config.clone(),
+            },
+        )
+        .unwrap()
+        .project;
+    let heading = format!("node-{}", hero_node_id(instance_id, "headline").simple());
+    let (_, mut options, _) = fixture();
+    options.scene_intents[0].scene_id = scene_id;
+    let profile_id = project
+        .deliverables
+        .iter()
+        .find(|profile| profile.height > profile.width)
+        .unwrap()
+        .id;
+    let before = build_motion_canvas_segments(&project, profile_id, &options)
+        .unwrap()
+        .remove(0)
+        .film;
+    let saved = service
+        .apply(
+            project.id,
+            &project.stamp(),
+            "version-two",
+            &Change::UpsertVersionedProductHero {
+                instance_id,
+                scene_id,
+                config,
+                component_version: 2,
+            },
+        )
+        .unwrap()
+        .project;
+    drop(service);
+    let source = StudioService::open(&db).unwrap().project(saved.id).unwrap();
+    assert_eq!(source, saved);
+    assert_eq!(source.production_design.heroes[0].component_version, 2);
+    let after = build_motion_canvas_segments(&source, profile_id, &options)
+        .unwrap()
+        .remove(0)
+        .film;
+    let heading_points = |film: &semwright_motion_authoring::Film| {
+        let leaf = film
+            .shots()
+            .flat_map(|shot| &shot.subjects)
+            .find(|subject| subject.parent.as_deref() == Some(heading.as_str()))
+            .unwrap();
+        let SubjectContent::Text { style, .. } = &leaf.content else {
+            panic!("missing original heading")
+        };
+        film.editorial.type_scale[style]
+    };
+    assert!((heading_points(&after) - heading_points(&before) * 0.92).abs() < 0.000_001);
+    assert_eq!(after.output, before.output);
+}

@@ -4,6 +4,23 @@ use sha2::{Digest, Sha256};
 
 pub const HERO_VERSION: u32 = 1;
 
+#[derive(Debug, Clone, Copy)]
+struct ProductHeroDefinition {
+    version: u32,
+    heading_scale: f64,
+}
+
+const PRODUCT_HERO_DEFINITIONS: [ProductHeroDefinition; 2] = [
+    ProductHeroDefinition {
+        version: HERO_VERSION,
+        heading_scale: 1.0,
+    },
+    ProductHeroDefinition {
+        version: 2,
+        heading_scale: 0.92,
+    },
+];
+
 /// A closed family of editable, deterministic six-object realizations.
 /// The default preserves every preexisting ProductHeroReveal project.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1086,10 +1103,47 @@ pub fn merge_component_nodes(
     Ok(result)
 }
 
+/// Realize the exact immutable library definition referenced by a saved instance.
+pub fn realize_versioned_product_hero(
+    id: Uuid,
+    config: &HeroConfig,
+    width: u32,
+    height: u32,
+    version: u32,
+) -> Result<Vec<CanvasNode>> {
+    let definition = PRODUCT_HERO_DEFINITIONS
+        .iter()
+        .find(|entry| entry.version == version)
+        .ok_or_else(|| {
+            DomainError::Invalid(format!(
+                "unsupported ProductHero definition version {version}"
+            ))
+        })?;
+    let mut nodes = realize_product_hero(id, config, width, height)?;
+    if definition.version != HERO_VERSION {
+        let heading_id = hero_node_id(id, "headline");
+        let heading = nodes
+            .iter_mut()
+            .find(|node| node.id == heading_id)
+            .and_then(|node| node.style.font_size.as_mut())
+            .ok_or_else(|| {
+                DomainError::Invalid("the versioned ProductHero heading is missing".into())
+            })?;
+        *heading *= definition.heading_scale;
+    }
+    Ok(nodes)
+}
+
 impl ProductHeroInstance {
     pub fn validate(&self) -> Result<()> {
-        if self.component_version != HERO_VERSION
-            || self.baseline != realize_product_hero(self.id, &self.config, 1920, 1080)?
+        if self.baseline
+            != realize_versioned_product_hero(
+                self.id,
+                &self.config,
+                1920,
+                1080,
+                self.component_version,
+            )?
         {
             return Err(DomainError::Invalid(
                 "component baseline does not match its versioned deterministic realization".into(),
@@ -1105,6 +1159,7 @@ impl Project {
         id: Uuid,
         scene_id: Uuid,
         config: &HeroConfig,
+        requested_version: Option<u32>,
     ) -> Result<()> {
         self.ensure_unlocked(
             &self.resource_key(),
@@ -1136,13 +1191,16 @@ impl Project {
                 "ProductHeroReveal requires a Motion Canvas scene of at least two seconds".into(),
             ));
         }
-        let baseline = realize_product_hero(id, config, 1920, 1080)?;
-        let nodes = if let Some(existing) = self
+        let existing = self
             .production_design
             .heroes
             .iter()
-            .find(|hero| hero.id == id)
-        {
+            .find(|hero| hero.id == id);
+        let component_version = requested_version
+            .or(existing.map(|hero| hero.component_version))
+            .unwrap_or(HERO_VERSION);
+        let baseline = realize_versioned_product_hero(id, config, 1920, 1080, component_version)?;
+        let nodes = if let Some(existing) = existing {
             if existing.scene_id != scene_id {
                 return Err(DomainError::Invalid(
                     "component cannot move scenes through an update".into(),
@@ -1179,7 +1237,7 @@ impl Project {
         let hero = ProductHeroInstance {
             id,
             scene_id,
-            component_version: HERO_VERSION,
+            component_version,
             config: config.clone(),
             baseline,
         };

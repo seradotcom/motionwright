@@ -256,7 +256,7 @@ impl Project {
             config.wordmark = row.to_wordmark.clone();
             // Reuse existing semantic object three-way merge: protected author
             // overrides or a late scene/style lock refuse the *entire* rollout.
-            candidate.upsert_product_hero(row.hero_id, row.scene_id, &config)?;
+            candidate.upsert_product_hero(row.hero_id, row.scene_id, &config, None)?;
             if candidate.production_design.project_decisions.len() >= 256 {
                 return Err(DomainError::Invalid(
                     "Campaign decision history capacity exceeded".into(),
