@@ -100,14 +100,21 @@ impl StudioService {
         expected: &RevisionStamp,
         source: impl AsRef<Path>,
     ) -> StorageResult<motionwright_storage::VerifiedProjectBundle> {
-        self.store
+        self.verify_bundle_snapshot(id, expected, source.as_ref(), &SvgBundleAdmission)
+    }
+
+    fn verify_bundle_snapshot(
+        &self,
+        id: Uuid,
+        expected: &RevisionStamp,
+        source: &Path,
+        admission: &impl motionwright_storage::BundleAssetAdmission,
+    ) -> StorageResult<motionwright_storage::VerifiedProjectBundle> {
+        let prepared = self
+            .store
             .lock()
-            .verify_project_bundle_export_at_with_admission(
-                id,
-                expected,
-                source.as_ref(),
-                &SvgBundleAdmission,
-            )
+            .prepare_project_bundle_export(id, Some(expected))?;
+        prepared.verify_existing_with_admission(source, admission)
     }
 
     pub fn inspect_project_bundle_with_fingerprint(
@@ -191,7 +198,7 @@ mod svg_bundle_admission_tests {
                 SvgBundleAdmission.prefix_limit()
             }
 
-            fn validate(&self, prefix: &[u8], size: u64, aliases: &[Asset]) -> StorageResult<()> {
+            fn validate(&self, prefix: &[u8], size: u64, aliases: &[&Asset]) -> StorageResult<()> {
                 SvgBundleAdmission.validate(prefix, size, aliases)?;
                 // Probe the exact shared mutex so this case fails promptly if
                 // a future exporter still holds it during the real copy path.
@@ -203,9 +210,9 @@ mod svg_bundle_admission_tests {
                 self.service.apply(
                     self.original.id,
                     &self.original.stamp(),
-                    "peer-edit-during-portable-export",
+                    &format!("peer-edit-during-portable-copy-r{}", self.original.revision),
                     &Change::AddScene {
-                        name: "Peer edit".into(),
+                        name: format!("Peer edit r{}", self.original.revision),
                         objective: "Changes only the live project".into(),
                         duration_seconds: 2,
                     },
@@ -248,7 +255,10 @@ mod svg_bundle_admission_tests {
             .unwrap();
         let current = service.project(original.id).unwrap();
         assert_eq!(current.revision, original.revision + 1);
-        assert_eq!(current.scenes.last().unwrap().name, "Peer edit");
+        assert_eq!(
+            current.scenes.last().unwrap().name,
+            format!("Peer edit r{}", original.revision)
+        );
         assert_eq!(exported.backup.project, captured.project);
         assert_eq!(exported.backup.events, captured.events);
         assert_eq!(exported.blobs.len(), 1);
@@ -270,6 +280,29 @@ mod svg_bundle_admission_tests {
         assert_eq!(reopened.revision, original.revision);
         assert_eq!(reopened.scenes, original.scenes);
         assert_ne!(reopened.generation, original.generation);
+
+        let next_bundle = root.path().join("current-revision");
+        service
+            .export_project_bundle_at(current.id, &current.stamp(), &next_bundle)
+            .unwrap();
+        let verified = service
+            .verify_bundle_snapshot(
+                current.id,
+                &current.stamp(),
+                &next_bundle,
+                &EditDuringAdmission {
+                    service: &service,
+                    original: &current,
+                },
+            )
+            .unwrap();
+        assert_eq!(verified.revision, current.revision);
+        assert_eq!(verified.generation, current.generation);
+        assert_eq!(verified.blob_count, 1);
+        assert_eq!(
+            service.project(current.id).unwrap().revision,
+            current.revision + 1
+        );
     }
 
     #[test]

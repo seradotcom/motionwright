@@ -281,6 +281,37 @@ impl PreparedProjectBundleExport {
             |_| {},
         )
     }
+
+    /// Verify an existing bundle against the captured project and journal.
+    pub fn verify_existing_with_admission(
+        self,
+        source: &Path,
+        admission: &impl BundleAssetAdmission,
+    ) -> Result<VerifiedProjectBundle> {
+        let bytes = read_bundle_manifest_bytes(source)?;
+        let manifest: ProjectBundleManifest = serde_json::from_slice(&bytes)?;
+        if manifest.backup.payload_sha256 != self.backup.payload_sha256 {
+            return Err(StorageError::InvalidBackup(
+                "existing bundle does not match the saved project and journal".into(),
+            ));
+        }
+        Store::validate_bundle_header(&manifest)?;
+        validate_backup(&manifest.backup)?;
+        let total_blob_bytes = Store::verify_bundle_blob_bytes(source, &manifest, admission)?;
+        if read_bundle_manifest_bytes(source)? != bytes {
+            return Err(StorageError::InvalidBackup(
+                "bundle manifest changed during verification".into(),
+            ));
+        }
+        Ok(VerifiedProjectBundle {
+            project_id: manifest.backup.project.id,
+            generation: manifest.backup.project.generation,
+            revision: manifest.backup.project.revision,
+            event_count: manifest.backup.events.len(),
+            blob_count: manifest.blobs.len(),
+            total_blob_bytes,
+        })
+    }
 }
 
 impl Store {
@@ -353,32 +384,8 @@ impl Store {
         source: &Path,
         admission: &impl BundleAssetAdmission,
     ) -> Result<VerifiedProjectBundle> {
-        let saved_sha = self
-            .export_project_snapshot(id, Some(expected))?
-            .payload_sha256;
-        let bytes = read_bundle_manifest_bytes(source)?;
-        let manifest: ProjectBundleManifest = serde_json::from_slice(&bytes)?;
-        if manifest.backup.payload_sha256 != saved_sha {
-            return Err(StorageError::InvalidBackup(
-                "existing bundle does not match the saved project and journal".into(),
-            ));
-        }
-        Self::validate_bundle_header(&manifest)?;
-        validate_backup(&manifest.backup)?;
-        let total_blob_bytes = Self::verify_bundle_blob_bytes(source, &manifest, admission)?;
-        if read_bundle_manifest_bytes(source)? != bytes {
-            return Err(StorageError::InvalidBackup(
-                "bundle manifest changed during verification".into(),
-            ));
-        }
-        Ok(VerifiedProjectBundle {
-            project_id: manifest.backup.project.id,
-            generation: manifest.backup.project.generation,
-            revision: manifest.backup.project.revision,
-            event_count: manifest.backup.events.len(),
-            blob_count: manifest.blobs.len(),
-            total_blob_bytes,
-        })
+        self.prepare_project_bundle_export(id, Some(expected))?
+            .verify_existing_with_admission(source, admission)
     }
 
     pub fn inspect_project_bundle_with_fingerprint(
