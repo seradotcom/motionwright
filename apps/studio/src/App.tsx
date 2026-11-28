@@ -476,12 +476,14 @@ export function PreviewSurface({
           <button type="button" className={"button compact native-frame-toggle " + (showingNative ? "selected" : "")}
             disabled={!showingNative && nativeFrame === null}
             title={nativeFrame === null
-              ? "No verified local frame grant was returned with this native render."
+              ? "No verified frame from this scene is available at the current playhead."
               : "Read-only sampled PNG preview. Does not alter project or certify live AV playback."}
             onClick={() => selectPreviewSource(showingNative ? "design" : "frames")}>
             {showingNative ? "Show design" : "Show native frames"}
           </button>
         )}
+        {receipt?.kind === "current" && !nativeFrame && !showingAv && !showingWindow &&
+          <span className="muted" role="status">No native frame for this scene at this playhead.</span>}
         {recovery.frame && <button type="button" className={"button compact native-frame-toggle " + (showingHistorical ? "selected" : "")}
           onClick={() => selectPreviewSource(showingHistorical ? "design" : "recovery")}>
           {showingHistorical ? "Show design" : "Show retained preview"}

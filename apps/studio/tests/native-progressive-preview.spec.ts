@@ -48,7 +48,7 @@ test("rapid editorial seeks coalesce delayed native reads and settle on exact so
     frame_rate:{num:30,den:1},
     segments:[{
       segment_id:"source-bound-progressive-test",
-      scene_ids:[first.id,second.id],frame_count:450,
+      scene_ids:[first.id,second.id],frame_count:480,
       plan_ref:"synthetic-plan-only",fingerprint:"synthetic-fingerprint-only",
       job_ref:"synthetic-job-only",artifact:{},verification:{},
     }],
@@ -56,7 +56,7 @@ test("rapid editorial seeks coalesce delayed native reads and settle on exact so
       token:"synthetic-grant-only",
       segment_id:"source-bound-progressive-test",
       scene_ids:[first.id,second.id],
-      frame_count:450,
+      frame_count:480,
     }],
   };
   const png="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4XyX4HwAGkAKKXzfbLwAAAABJRU5ErkJggg==";
@@ -113,10 +113,10 @@ test("rapid editorial seeks coalesce delayed native reads and settle on exact so
             generation:request.generation,revision:request.revision,
             deliverable_id:request.deliverable_id,
             verdict:"projection_ready",reason:null,segment_count:1,
-            total_frames:450,segments:[{
+            total_frames:480,segments:[{
               segment_id:"source-bound-progressive-test",
               scene_ids:initialBoot.project.scenes.slice(0,2).map(scene=>scene.id),
-              frame_count:450,
+              frame_count:480,
             }],
           };
         }
@@ -172,12 +172,12 @@ test("rapid editorial seeks coalesce delayed native reads and settle on exact so
 
   // Verify first actually-received PNG before rapid transport movement.
   const stage=page.getByRole("region",{name:"Verified native PNG frame preview"});
-  await expect(stage.getByRole("img",{name:/Frame 1 \/ 450/})).toBeVisible();
+  await expect(stage.getByRole("img",{name:/Frame 1 \/ 480/})).toBeVisible();
 
   for(let index=0;index<6;index++)
     await page.getByRole("button",{name:"Step forward one frame"}).click();
 
-  await expect(stage.getByRole("img",{name:/Frame 7 \/ 450/})).toBeVisible();
+  await expect(stage.getByRole("img",{name:/Frame 7 \/ 480/})).toBeVisible();
   const stats=await page.evaluate(()=>(window as unknown as {
     __READ_STATS__:{active:number;max:number;indices:number[]};
   }).__READ_STATS__);
@@ -213,4 +213,26 @@ test("rapid editorial seeks coalesce delayed native reads and settle on exact so
   await page.waitForTimeout(500);
   await expect(stage).toHaveCount(0);
   expect(await page.locator(".revision-chip").first().innerText()).toBe(revision);
+
+  await page.getByLabel("Editor preview timebase").selectOption(profile.id);
+  const showNative=page.getByRole("button",{name:"Show native frames"});
+  await showNative.click();
+  await expect(stage.getByRole("img",{name:/Frame 8 \/ 480/})).toBeVisible();
+  const readsBeforeEnd=await page.evaluate(()=>(window as unknown as {
+    __READ_STATS__:{indices:number[]};
+  }).__READ_STATS__.indices.length);
+
+  // End is outside every half-open scene. The selected scene still has
+  // a receipt, but its neighboring frame must not stand in for this seek.
+  const navigation=page.getByRole("group",{name:"Timeline navigation surface",exact:true});
+  await navigation.press("End");
+  await expect(stage).toHaveCount(0);
+  await expect(showNative).toBeDisabled();
+  await expect(page.getByText("No native frame for this scene at this playhead.",{exact:true})).toBeVisible();
+  await navigation.press("Home");
+  await expect(showNative).toBeEnabled();
+  await expect(stage).toHaveCount(0);
+  expect(await page.evaluate(()=>(window as unknown as {
+    __READ_STATS__:{indices:number[]};
+  }).__READ_STATS__.indices.length)).toBe(readsBeforeEnd);
 });

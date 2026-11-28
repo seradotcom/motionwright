@@ -7,6 +7,7 @@ on:
       - "apps/studio/src/NativeFrameStage.tsx"
       - "apps/studio/src/nativeProgressivePreview*"
       - "apps/studio/src/nativeFrameSelection*"
+      - "apps/studio/src/nativeInspection*"
       - "apps/studio/src/App.tsx"
       - "apps/studio/src/api.ts"
       - "apps/studio/src/styles.css"
@@ -55,7 +56,7 @@ jobs:
           cache: npm
           cache-dependency-path: apps/studio/package-lock.json
       - run: npm ci --no-audit --no-fund
-      - run: npx vitest run src/nativeProgressivePreview.test.ts src/nativeFrameSelection.test.ts
+      - run: npx vitest run src/nativeProgressivePreview.test.ts src/nativeFrameSelection.test.ts src/nativeInspection.test.ts
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npx playwright test tests/native-preview.spec.ts tests/native-progressive-preview.spec.ts

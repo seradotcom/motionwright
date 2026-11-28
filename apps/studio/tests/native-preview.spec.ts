@@ -51,7 +51,7 @@ test("sampled native PNG readback uses only a session grant and follows the edit
     segments: [{
       segment_id: "mock-native-segment",
       scene_ids: [first.id, second.id],
-      frame_count: 450,
+      frame_count: 480,
       plan_ref: "mock-plan",
       fingerprint: "mock-digest",
       job_ref: "mock-job",
@@ -62,7 +62,7 @@ test("sampled native PNG readback uses only a session grant and follows the edit
       token: "mock-read-token",
       segment_id: "mock-native-segment",
       scene_ids: [first.id, second.id],
-      frame_count: 450,
+      frame_count: 480,
     }],
   };
   const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4XyX4HwAGkAKKXzfbLwAAAABJRU5ErkJggg==";
