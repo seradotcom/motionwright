@@ -146,6 +146,15 @@ export function inspectRenderTailImpact(
       case "scene_visual":{
         const affected=visualDependents(project,profile.id,changed);
         changedRanges=scenes.filter(scene=>affected.has(scene.id)).map(scene=>scene.range);
+        const dissolve=project.production_design?.delivery_recipes?.[profile.id]?.mlt_dissolve;
+        if(dissolve && affected.has(dissolve.outgoing_scene_id) && !affected.has(dissolve.incoming_scene_id)){
+          const incoming=scenes.find(scene=>scene.id===dissolve.incoming_scene_id);
+          if(!incoming)invalid("saved dissolve incoming scene is absent");
+          const start=incoming.range.start, end=start+dissolve.duration_frames;
+          if(!Number.isSafeInteger(end) || end<=start || end>incoming.range.end)
+            invalid("saved dissolve exceeds the incoming scene");
+          changedRanges.push({start,end});
+        }
         break;
       }
       case "scene_audio_tail":

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fixtureProject } from "./fixture";
 import type { Project } from "./types";
 import type { DeliveryRecipe, RecipeDraft, RecipeGroup } from "./deliveryRecipe";
+import { assertRecipeHistoryPayload, recipeFingerprint } from "./deliveryRecipeDraft";
 
 let recipe: typeof import("./deliveryRecipe");
 const id = (value: number) => "abcdef00-0000-4000-8000-" + value.toString(16).padStart(12, "0");
@@ -657,7 +658,7 @@ describe("complete original mix bus automation authoring", () => {
 });
 
 describe("saved MLT dissolve intent", () => {
-  it("keeps the ordered boundary and duration in recovery and saves without rewriting the mix", async () => {
+  it("keeps the ordered boundary and duration in recovery and saves without rewriting the mix", () => {
     const { project, profileA, canonical, draft, current, scope, sceneA, sceneB } = context("dissolve");
     const outgoing = project.scenes[0], incoming = project.scenes[1];
     const omitted = { ...structuredClone(incoming), id: id(7000), name: "Excluded middle" };
@@ -677,7 +678,6 @@ describe("saved MLT dissolve intent", () => {
     expect(saved.original_mix).toEqual(canonical.original_mix);
     expect(saved.scene_intents).toEqual(canonical.scene_intents);
     expect(recipe.recipeFields(saved, "dissolve")).toEqual({ boundary, duration_frames: "2" });
-    const { assertRecipeHistoryPayload, recipeFingerprint } = await import("./deliveryRecipeDraft");
     assertRecipeHistoryPayload(saved);
     expect(recipeFingerprint(saved)).not.toBe(recipeFingerprint(canonical));
     expect(() => assertRecipeHistoryPayload({ ...saved, mlt_dissolve: null })).toThrow();

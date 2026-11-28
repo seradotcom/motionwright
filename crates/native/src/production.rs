@@ -204,6 +204,8 @@ const MLT_COMMANDS: &[&str] = &[
     "driver.mlt-video.track.list",
     "driver.mlt-video.asset.import",
     "driver.mlt-video.clip.insert",
+    "driver.mlt-video.transition.add",
+    "driver.mlt-video.transition.list",
     "driver.mlt-video.render.plan",
     "driver.mlt-video.frames.encode",
     "driver.mlt-video.sync.probe",
@@ -4316,6 +4318,17 @@ impl ProductionCoordinator {
             .iter()
             .find(|profile| profile.id == deliverable_id)
             .ok_or_else(|| invalid("Deliverable profile not found"))?;
+        if project
+            .production_design
+            .delivery_recipes
+            .get(&deliverable_id)
+            .is_some_and(|recipe| recipe.mlt_dissolve.is_some())
+        {
+            return Err(Error::new(
+                ErrorCode::Unsupported,
+                "The saved dissolve requires the source-bound hybrid MLT route",
+            ));
+        }
         if deliverable.video_codec != VideoCodec::H264
             || deliverable.audio_codec != AudioCodec::Aac
             || deliverable.audio_sample_rate_hz != 48_000
@@ -5698,6 +5711,20 @@ impl ProductionCoordinator {
         dispatch_context: Option<ReceiptDispatchContext<'_>>,
     ) -> NativeResult<ReceiptExecutionOutcome> {
         let (command, mutation) = operation;
+        if matches!(
+            command,
+            "driver.mlt-video.transition.add" | "driver.mlt-video.transition.list"
+        ) && self
+            .active_hybrid_budget
+            .as_ref()
+            .and_then(|scope| scope.held_dissolve())
+            .is_none()
+        {
+            return Err(Error::new(
+                ErrorCode::PermissionDenied,
+                "MLT transition requires the retained, source-bound hybrid plan",
+            ));
+        }
         let (
             receipt_context,
             media_binding,

@@ -447,12 +447,12 @@ fn validate_prefix_measurement(
     })
 }
 
-#[derive(Deserialize)]
-struct FrameManifest {
+#[derive(Clone, Debug, Deserialize)]
+pub(super) struct FrameManifest {
     index: u64,
-    file: String,
-    sha256: String,
-    bytes: u64,
+    pub(super) file: String,
+    pub(super) sha256: String,
+    pub(super) bytes: u64,
 }
 #[derive(Deserialize)]
 struct ManifestPlan {
@@ -556,6 +556,45 @@ fn selected_originals(
         }
     }
     Ok(output)
+}
+
+pub(super) fn verified_last_png(
+    root: &Path,
+    artifact: &Value,
+    frames: u64,
+    width: u32,
+    height: u32,
+) -> NativeResult<FrameManifest> {
+    let start = frames
+        .checked_sub(1)
+        .ok_or_else(|| invalid("The original contribution has no frame to hold"))?;
+    let mut originals = selected_originals(
+        root,
+        artifact,
+        SourceFrameWindow { start, end: frames },
+        None,
+    )?;
+    let frame = originals
+        .pop()
+        .ok_or_else(|| backend("Original contribution lacks its last PNG"))?;
+    let bytes = read_verified_production_artifact(
+        root,
+        &frame.file,
+        &frame.sha256,
+        MAX_WINDOW_FRAME_BYTES,
+    )?;
+    if bytes.len() as u64 != frame.bytes {
+        return Err(backend("Original contribution's last PNG changed length"));
+    }
+    require_window_raster(
+        &bytes,
+        MotionCanvasWindowRaster {
+            scale: MotionCanvasWindowScale::Full,
+            width,
+            height,
+        },
+    )?;
+    Ok(frame)
 }
 
 /// The manifest SHA and existing Store capture bind the complete bytes.

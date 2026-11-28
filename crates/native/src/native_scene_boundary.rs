@@ -254,6 +254,7 @@ fn effect_target(
         | "driver.mlt-video.track.create"
         | "driver.mlt-video.asset.import"
         | "driver.mlt-video.clip.insert"
+        | "driver.mlt-video.transition.add"
             if scope.is_some_and(|scope| scope.driver == MLT) =>
         {
             Some((MLT, None))

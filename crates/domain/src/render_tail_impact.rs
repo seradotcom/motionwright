@@ -290,11 +290,34 @@ impl Project {
                 }
                 RenderImpactCause::SceneVisual => {
                     let affected = visual_dependents(self, profile.id, &unique);
-                    scenes
+                    let mut dirty = scenes
                         .iter()
                         .filter(|(id, _)| affected.contains(id))
                         .map(|(_, window)| *window)
-                        .collect()
+                        .collect::<Vec<_>>();
+                    if let Some(dissolve) = self
+                        .production_design
+                        .delivery_recipes
+                        .get(&profile.id)
+                        .and_then(|recipe| recipe.mlt_dissolve.as_ref())
+                        && affected.contains(&dissolve.outgoing_scene_id)
+                        && !affected.contains(&dissolve.incoming_scene_id)
+                    {
+                        let (_, incoming) = scenes
+                            .iter()
+                            .find(|(id, _)| *id == dissolve.incoming_scene_id)
+                            .ok_or_else(|| denied("saved dissolve incoming scene is absent"))?;
+                        let end = incoming
+                            .start
+                            .checked_add(u64::from(dissolve.duration_frames))
+                            .filter(|end| *end > incoming.start && *end <= incoming.end)
+                            .ok_or_else(|| denied("saved dissolve exceeds the incoming scene"))?;
+                        dirty.push(SourceFrameWindow {
+                            start: incoming.start,
+                            end,
+                        });
+                    }
+                    dirty
                 }
                 RenderImpactCause::SceneAudioTail => scenes
                     .iter()

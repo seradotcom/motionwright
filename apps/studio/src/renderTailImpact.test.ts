@@ -60,6 +60,23 @@ describe("bounded source-timeline impact",()=>{
     expect(report.requested_scene_ids).toEqual([first.id]);
     expect(report.actually_invalidated_caches).toBe(false);
   });
+  it("marks only the incoming dissolve frames when the outgoing scene changes",()=>{
+    const p=source(), [outgoing, incoming]=p.scenes;
+    const design=p.production_design ??= {plan:null,heroes:[],capsules:[]};
+    design.delivery_recipes={
+      [p.deliverables[0].id]:{
+        schema:"motionwright.delivery-recipe/1",scene_intents:[],original_mix:null,
+        mlt_dissolve:{
+          outgoing_scene_id:outgoing.id, incoming_scene_id:incoming.id,
+          duration_frames:7, mode:"hold_outgoing_last_frame",
+        },
+      },
+    };
+    const report=inspectRenderTailImpact(p,query(p,"scene_visual",[outgoing.id]));
+    expect(report.profiles[0].source_timeline_windows).toEqual([{start:0,end:67}]);
+    expect(report.profiles[0].affected_scene_ids).toEqual([outgoing.id,incoming.id]);
+    expect(report.profiles[1].source_timeline_windows).toEqual([{start:0,end:60}]);
+  });
   it("explicit source-bound sound tails can spill into a neighboring scene",()=>{
     const p=source(),audioId=crypto.randomUUID();
     p.assets.push({id:audioId,name:"Original WAV",media_type:"audio/wav",

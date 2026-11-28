@@ -149,6 +149,16 @@ pub fn preflight_multi_segment_mlt(
         .iter()
         .find(|p| p.id == profile_id)
         .ok_or_else(|| invalid("Deliverable profile does not exist"))?;
+    if project
+        .production_design
+        .delivery_recipes
+        .get(&profile_id)
+        .is_some_and(|recipe| recipe.mlt_dissolve.is_some())
+    {
+        return Err(unsupported(
+            "The saved dissolve requires the source-bound hybrid MLT route",
+        ));
+    }
     let mlt_profile = match (profile.width, profile.height) {
         (1920, 1080) => "h264-1080p",
         (1280, 720) => "h264-720p",

@@ -6,11 +6,12 @@
 use super::*;
 use motionwright_domain::{Project, RendererKind};
 use motionwright_manim_profile::editable_scene as manim_editable;
-use semwright_video_domain::native_observation;
+use semwright_video_domain::{native_observation, time::FrameRange};
 use std::{collections::BTreeMap, io::Write, ops::Range, sync::Arc};
 
 const MEDIA_MAX_BYTES: u64 = 256_000_000;
 const MASTER_MAX_BYTES: u64 = 32 * 1024 * 1024;
+const HELD_DISSOLVE_ATTEMPTS: u64 = 12;
 const STATIC_MANIM_START: &str = "driver.manim-community.static.render.start";
 const EDITABLE_MANIM_START: &str = "driver.manim-community.editable.render.start";
 const MANIM_OBSERVATION_FRAME_MAX_BYTES: u64 = 32 * 1024 * 1024;
@@ -619,6 +620,69 @@ struct MotionContribution {
     output_ordinal: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct HybridHeldDissolve {
+    pub(super) outgoing_ordinal: usize,
+    pub(super) range: FrameRange,
+}
+
+fn resolve_hybrid_dissolve(
+    intent: &motionwright_domain::MltDissolveIntent,
+    motion: &[MotionContribution],
+    ranges: &[Range<u64>],
+    manim_scene_id: Uuid,
+    manim_ordinal: usize,
+) -> NativeResult<HybridHeldDissolve> {
+    use motionwright_domain::MltDissolveMode;
+
+    let duration = match intent.mode {
+        MltDissolveMode::HoldOutgoingLastFrame => u64::from(intent.duration_frames),
+    };
+    if !(2..=30).contains(&duration) {
+        return Err(invalid(
+            "Hybrid dissolve duration must be 2 through 30 frames",
+        ));
+    }
+    let outgoing = motion
+        .iter()
+        .find(|segment| {
+            segment.scene_ids.last() == Some(&intent.outgoing_scene_id)
+                && segment.output_ordinal.checked_add(1) == Some(manim_ordinal)
+                && intent.incoming_scene_id == manim_scene_id
+        })
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::Unsupported,
+                "This dissolve needs a Motion Canvas contribution immediately followed by Manim",
+            )
+        })?;
+    let outgoing_range = ranges
+        .get(outgoing.output_ordinal)
+        .ok_or_else(|| invalid("Hybrid dissolve has no original outgoing frame range"))?;
+    let incoming_range = ranges
+        .get(manim_ordinal)
+        .ok_or_else(|| invalid("Hybrid dissolve has no original incoming frame range"))?;
+    let start = incoming_range.start;
+    let end = start
+        .checked_add(duration)
+        .filter(|end| *end <= incoming_range.end)
+        .ok_or_else(|| invalid("Hybrid dissolve exceeds the original incoming contribution"))?;
+    if outgoing_range.start >= outgoing_range.end
+        || outgoing_range.end != start
+        || outgoing_range.end - outgoing_range.start != outgoing.frames
+    {
+        return Err(invalid(
+            "Hybrid dissolve cannot join discontinuous original frame ranges",
+        ));
+    }
+    let range = FrameRange::new(start, end)
+        .map_err(|error| invalid(format!("Hybrid dissolve range: {error}")))?;
+    Ok(HybridHeldDissolve {
+        outgoing_ordinal: outgoing.output_ordinal,
+        range,
+    })
+}
+
 #[derive(Debug)]
 struct HybridBudgetPlan {
     project: Project,
@@ -643,6 +707,7 @@ struct HybridBudgetPlan {
     editable_manim: Option<manim_editable::Package>,
     manim_ordinal: usize,
     segment_ranges: Vec<Range<u64>>,
+    dissolve: Option<HybridHeldDissolve>,
     total_frames: u64,
     width: u32,
     height: u32,
@@ -656,6 +721,7 @@ struct HybridBudgetPlan {
 struct HybridMltBinding {
     encodes: BTreeMap<String, MltEncodeBudget>,
     source_paths: Vec<String>,
+    held_frame: Option<motion_canvas_window::FrameManifest>,
 }
 
 #[derive(Debug, Clone)]
@@ -1284,6 +1350,21 @@ impl HybridBudgetPlan {
             });
         }
         let manim_scene_id = project.scenes[manim_scene_index].id;
+        let dissolve = project
+            .production_design
+            .delivery_recipes
+            .get(&deliverable_id)
+            .and_then(|recipe| recipe.mlt_dissolve.as_ref())
+            .map(|intent| {
+                resolve_hybrid_dissolve(
+                    intent,
+                    &motion,
+                    &segment_ranges,
+                    manim_scene_id,
+                    manim_ordinal,
+                )
+            })
+            .transpose()?;
         crate::native_scene_boundary::guard_scene_without_film_options(&project, manim_scene_id)?;
         let motion_scene_ids: Vec<_> = motion
             .iter()
@@ -1431,9 +1512,16 @@ impl HybridBudgetPlan {
                     "segment_id":segment.segment_id,"output_start_frame":range.start,"frame_count":segment.frames}));
             }
         }
-        let source_plan = json!({"schema":"motionwright.native.hybrid-source-plan/1",
+        let mut source_plan = json!({"schema":"motionwright.native.hybrid-source-plan/1",
             "project_sha256":project_sha256,"contributions":contributions});
+        if let Some(held) = dissolve {
+            source_plan["held_dissolve"] = json!({
+                "outgoing_ordinal": held.outgoing_ordinal,
+                "range": held.range,
+            });
+        }
         let contribution_count = segment_ranges.len() as u64;
+        let staged_asset_count = bounded_add(contribution_count, u64::from(dissolve.is_some()))?;
         let segment_count =
             u64::try_from(motion.len()).map_err(|_| invalid("Hybrid MC count overflows"))?;
         let mc_polls = bounded_add(
@@ -1452,7 +1540,14 @@ impl HybridBudgetPlan {
         )?;
         let attempts = bounded_add(
             bounded_add(bounded_mul(segment_count, mc_polls)?, manim_polls)?,
-            mlt_calls,
+            bounded_add(
+                mlt_calls,
+                if dissolve.is_some() {
+                    HELD_DISSOLVE_ATTEMPTS
+                } else {
+                    0
+                },
+            )?,
         )?;
         // Actual native frame passes: MC, Manim, MC encodes, one semantic
         // timeline, one mux. Manim is never charged as a fictitious MC encode.
@@ -1492,12 +1587,12 @@ impl HybridBudgetPlan {
         }
         let mlt_output = [
             encode_output,
-            bounded_mul(contribution_count, mlt_import_output_bytes()?)?,
+            bounded_mul(staged_asset_count, mlt_import_output_bytes()?)?,
             mlt_timeline_output_bytes(
                 profile.width,
                 profile.height,
                 cursor,
-                contribution_count,
+                staged_asset_count,
                 &format!("{namespace}-visual.mkv"),
             )?,
             mlt_mux_output_bytes(
@@ -1555,6 +1650,7 @@ impl HybridBudgetPlan {
             editable_manim,
             manim_ordinal,
             segment_ranges,
+            dissolve,
             total_frames: cursor,
             width,
             height,
@@ -1592,6 +1688,15 @@ fn verify_original_pcm(bytes: &[u8], sample_frames: u64) -> NativeResult<()> {
 }
 
 impl HybridRootBudgetScope {
+    pub(super) fn held_dissolve(
+        &self,
+    ) -> Option<(HybridHeldDissolve, &motion_canvas_window::FrameManifest)> {
+        let HybridPhase::Mlt(binding) = &self.phase else {
+            return None;
+        };
+        Some((self.plan.dissolve?, binding.held_frame.as_ref()?))
+    }
+
     pub(super) fn blend_admission(&self) -> Option<&MotionBlendAdmission> {
         self.blend.as_ref()
     }
@@ -2157,7 +2262,10 @@ impl HybridRootBudgetScope {
                         self.plan.width,
                         self.plan.height,
                         self.plan.total_frames,
-                        binding.source_paths.len() as u64,
+                        bounded_add(
+                            binding.source_paths.len() as u64,
+                            u64::from(binding.held_frame.is_some()),
+                        )?,
                         &visual,
                     )?;
                 }
@@ -2200,19 +2308,44 @@ impl HybridRootBudgetScope {
                 )?;
             }
             "driver.mlt-video.asset.import" => {
+                let path = args.get("path").and_then(Value::as_str);
+                let original_video = args.get("image_frames").is_none()
+                    && binding
+                        .source_paths
+                        .iter()
+                        .any(|retained| Some(retained.as_str()) == path);
+                let original_hold = self.held_dissolve().is_some_and(|(dissolve, frame)| {
+                    path == Some(frame.file.as_str())
+                        && args.get("image_frames").and_then(Value::as_u64)
+                            == Some(dissolve.range.duration())
+                });
                 require(
                     mutation
                         && args.get("kind").and_then(Value::as_str) == Some("file")
                         && args.get("root").and_then(Value::as_str) == Some("output")
-                        && args
-                            .get("path")
-                            .and_then(Value::as_str)
-                            .is_some_and(|path| {
-                                binding.source_paths.iter().any(|retained| retained == path)
-                            }),
+                        && (original_video || original_hold),
                     "Hybrid timeline cannot import an unretained contribution",
                 )?;
                 units.output_bytes = mlt_import_output_bytes()?;
+            }
+            "driver.mlt-video.transition.add" => {
+                require(
+                    mutation
+                        && self.held_dissolve().is_some_and(|(dissolve, _)| {
+                            args.get("kind").and_then(Value::as_str) == Some("dissolve")
+                                && args.get("start").and_then(Value::as_u64)
+                                    == Some(dissolve.range.start.0)
+                                && args.get("end").and_then(Value::as_u64)
+                                    == Some(dissolve.range.end.0)
+                        }),
+                    "Hybrid transition differs from the original held dissolve plan",
+                )?;
+            }
+            "driver.mlt-video.transition.list" => {
+                require(
+                    !mutation && self.held_dissolve().is_some(),
+                    "Hybrid transition observation has no original held dissolve plan",
+                )?;
             }
             "driver.mlt-video.project.create"
             | "driver.mlt-video.sequence.create"
@@ -2449,12 +2582,12 @@ impl ProductionCoordinator {
         }
     }
 
-    async fn require_editable_manim_runtime(&self, plan: &HybridBudgetPlan) -> NativeResult<()> {
+    async fn require_hybrid_capability(&self, command: &str, provider: &str) -> NativeResult<()> {
         let described = self
             .client
             .execute_with_authority(
                 "capabilities.describe",
-                json!({"name": EDITABLE_MANIM_START}),
+                json!({"name": command}),
                 false,
                 Some(ExpectedAuthority {
                     provider: "semwright-core",
@@ -2464,19 +2597,18 @@ impl ProductionCoordinator {
                 None,
             )
             .await?;
-        let descriptor = described
-            .value
-            .get("data")
-            .ok_or_else(|| invalid("Selected Host did not describe editable Manim"))?;
+        let descriptor = described.value.get("data").ok_or_else(|| {
+            invalid("Selected Host did not describe the required hybrid capability")
+        })?;
         supported(
             descriptor
                 .pointer("/capability/name")
                 .and_then(Value::as_str)
-                == Some(EDITABLE_MANIM_START)
+                == Some(command)
                 && descriptor
                     .pointer("/provenance/provider")
                     .and_then(Value::as_str)
-                    == Some("driver:manim-community")
+                    == Some(provider)
                 && descriptor.pointer("/provenance/source") == Some(&json!(SourceKind::Driver))
                 && descriptor
                     .pointer("/policy_preview/preview_only")
@@ -2486,8 +2618,13 @@ impl ProductionCoordinator {
                     .pointer("/policy_preview/state")
                     .and_then(Value::as_str)
                     .is_some_and(|state| state != "deny"),
-            "Selected Host does not admit editable Manim",
-        )?;
+            "Selected Host does not admit the required hybrid capability",
+        )
+    }
+
+    async fn require_editable_manim_runtime(&self, plan: &HybridBudgetPlan) -> NativeResult<()> {
+        self.require_hybrid_capability(EDITABLE_MANIM_START, "driver:manim-community")
+            .await?;
         let runtime = self
             .observe_manim_runtime_version(plan.project.id, &plan.expected)
             .await?;
@@ -2511,11 +2648,20 @@ impl ProductionCoordinator {
         self.require_hybrid_owner(&plan)?;
         self.require_hybrid_preparation_current(&plan)?;
         let editable_manim = plan.editable_manim.is_some();
+        if plan.dissolve.is_some() {
+            for command in [
+                "driver.mlt-video.transition.add",
+                "driver.mlt-video.transition.list",
+            ] {
+                self.require_hybrid_capability(command, "driver:mlt-video")
+                    .await?;
+            }
+        }
         if editable_manim {
             self.require_editable_manim_runtime(&plan).await?;
         }
         let blend = self.discover_hybrid_blend(&plan).await?;
-        if blend.is_some() || editable_manim {
+        if blend.is_some() || editable_manim || plan.dissolve.is_some() {
             self.require_hybrid_owner(&plan)?;
             self.require_hybrid_preparation_current(&plan)?;
         }
@@ -2728,10 +2874,33 @@ impl ProductionCoordinator {
             "/artifact/relative_path",
             "Hybrid original Manim video is absent",
         )?);
+        let plan = &sources.scope.plan;
+        let held_frame = plan
+            .dissolve
+            .map(|dissolve| {
+                let (actual, planned) = sources
+                    .motion_canvas
+                    .segments
+                    .iter()
+                    .zip(&plan.motion)
+                    .find(|(_, planned)| planned.output_ordinal == dissolve.outgoing_ordinal)
+                    .ok_or_else(|| {
+                        invalid("Hybrid dissolve lacks its original outgoing segment")
+                    })?;
+                motion_canvas_window::verified_last_png(
+                    &self.client.connection().output_root,
+                    &actual.artifact,
+                    planned.frames,
+                    plan.width,
+                    plan.height,
+                )
+            })
+            .transpose()?;
         let mut scope = sources.scope.clone();
         scope.phase = HybridPhase::Mlt(HybridMltBinding {
             encodes,
             source_paths,
+            held_frame,
         });
         let mut scoped = self.clone();
         scoped.scene_boundary_scope = scope.plan.mlt_boundary_scope();

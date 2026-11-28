@@ -25,6 +25,7 @@ const NATIVE_INPUT_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const DECODED_WAVE_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const SEQUENCE_NAME: &str = "Original Motionwright MC-Manim-MC cut";
 const TRACK_NAME: &str = "Original native hybrid contributions";
+const HELD_TRACK_NAME: &str = "Original outgoing frame hold";
 const MLT_XML_SOURCE_KIND: &str = "mlt_render_project_bytes";
 const DIRECT_AV_SOURCE_KIND: &str = "verified_ffv1_video_source_bytes";
 
@@ -131,6 +132,10 @@ fn changed_session(prior: &Session, value: &Value) -> NativeResult<Session> {
     })
 }
 fn created(value: &Value, kind: &str) -> NativeResult<String> {
+    opaque(created_entity(value, kind)?, "reference")
+}
+
+fn created_entity<'a>(value: &'a Value, kind: &str) -> NativeResult<&'a Value> {
     let entries = value
         .get("created_refs")
         .and_then(Value::as_array)
@@ -145,9 +150,14 @@ fn created(value: &Value, kind: &str) -> NativeResult<String> {
         selected.next().is_none(),
         "Hybrid MLT created references are ambiguous",
     )?;
-    opaque(entry, "reference")
+    Ok(entry)
 }
-fn named_reference(value: &Value, revision: &str, name: &str) -> NativeResult<String> {
+fn named_reference(
+    value: &Value,
+    revision: &str,
+    name: &str,
+    expected_video_id: Option<&str>,
+) -> NativeResult<String> {
     require(
         value.get("revision").and_then(Value::as_str) == Some(revision),
         "Hybrid MLT lookup returned a stale revision",
@@ -173,6 +183,13 @@ fn named_reference(value: &Value, revision: &str, name: &str) -> NativeResult<St
         matches.next().is_none(),
         "Hybrid MLT authored name is ambiguous",
     )?;
+    if let Some(id) = expected_video_id {
+        require(
+            entry.get("id").and_then(Value::as_str) == Some(id)
+                && entry.get("kind").and_then(Value::as_str) == Some("video"),
+            "Hybrid MLT track reference does not identify the created video track",
+        )?;
+    }
     opaque(entry, "reference")
 }
 
@@ -374,6 +391,7 @@ fn verify_authored_cut_input(
     sources: &[Artifact],
     ranges: &[Range<u64>],
     native_sources: &Value,
+    held: Option<&AppliedHeldCut>,
 ) -> NativeResult<()> {
     const MISMATCH: &str = "Original hybrid MLT input differs from the authored cuts";
     let bad_input = || backend(MISMATCH);
@@ -416,7 +434,7 @@ fn verify_authored_cut_input(
     let frame_end = ranges.last().and_then(|range| range.end.checked_sub(1));
     require(
         frame_end.is_some()
-            && nodes.len() == sources.len() * 2 + 3
+            && nodes.len() == sources.len() * 2 + 3 + usize::from(held.is_some()) * 4
             && sequence.attributes().len() == 2
             && sequence
                 .attribute("out")
@@ -425,7 +443,76 @@ fn verify_authored_cut_input(
         MISMATCH,
     )?;
     let linked = |id| nodes.get(id).copied().ok_or_else(bad_input);
-    let track = linked(only_mlt_track(sequence, None).ok_or_else(bad_input)?)?;
+    let mut bindings = Vec::with_capacity(sources.len() + usize::from(held.is_some()));
+    let video_track = if let Some(held) = held {
+        let sequence_children = sequence
+            .children()
+            .filter(|node| node.is_element() && !node.has_tag_name("property"))
+            .collect::<Vec<_>>();
+        let [held_track, video_track, transition] = sequence_children.as_slice() else {
+            return Err(bad_input());
+        };
+        let track_link = |track: roxmltree::Node<'_, '_>| {
+            track.has_tag_name("track")
+                && track.attributes().len() == 1
+                && !track.children().any(|node| node.is_element())
+        };
+        let (start, end) = held.range.inclusive();
+        require(
+            track_link(*held_track)
+                && track_link(*video_track)
+                && transition.has_tag_name("transition")
+                && transition.attributes().len() == 2
+                && transition
+                    .attribute("in")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    == Some(start)
+                && transition
+                    .attribute("out")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    == Some(end)
+                && mlt_property(*transition, "mlt_service") == Some("luma")
+                && mlt_property(*transition, "semwright:transition") == Some("1")
+                && mlt_property(*transition, "semwright:transition_id") == Some(held.id.as_str())
+                && mlt_property(*transition, "a_track") == Some("0")
+                && mlt_property(*transition, "b_track") == Some("1")
+                && mlt_property(*transition, "reverse") == Some("0")
+                && transition
+                    .children()
+                    .filter(|node| node.is_element())
+                    .count()
+                    == 6,
+            MISMATCH,
+        )?;
+        let first = linked(held_track.attribute("producer").ok_or_else(bad_input)?)?;
+        let playlist = linked(only_mlt_track(first, Some("audio")).ok_or_else(bad_input)?)?;
+        require(
+            first.has_tag_name("tractor")
+                && first.attributes().len() == 1
+                && playlist.has_tag_name("playlist")
+                && playlist.attributes().len() == 1,
+            MISMATCH,
+        )?;
+        let mut entries = playlist.children().filter(|node| node.is_element());
+        let gap = entries.next().ok_or_else(bad_input)?;
+        let entry = entries.next().ok_or_else(bad_input)?;
+        require(
+            gap.has_tag_name("blank")
+                && gap.attributes().len() == 1
+                && gap
+                    .attribute("length")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    == Some(start)
+                && !gap.children().any(|node| node.is_element())
+                && entries.next().is_none(),
+            MISMATCH,
+        )?;
+        bindings.push((&held.source, entry, held.range.duration() - 1));
+        video_track.attribute("producer").ok_or_else(bad_input)?
+    } else {
+        only_mlt_track(sequence, None).ok_or_else(bad_input)?
+    };
+    let track = linked(video_track)?;
     require(
         track.has_tag_name("tractor") && track.attributes().len() == 1,
         MISMATCH,
@@ -438,7 +525,6 @@ fn verify_authored_cut_input(
 
     let mut entries = playlist.children().filter(|node| node.is_element());
     let mut cursor = 0;
-    let mut staged = std::collections::BTreeMap::new();
     for (source, range) in sources.iter().zip(ranges) {
         let entry = entries.next().ok_or_else(bad_input)?;
         let inclusive_end = range
@@ -446,9 +532,16 @@ fn verify_authored_cut_input(
             .checked_sub(range.start)
             .and_then(|duration| duration.checked_sub(1))
             .ok_or_else(bad_input)?;
+        require(range.start == cursor, MISMATCH)?;
+        cursor = range.end;
+        bindings.push((source, entry, inclusive_end));
+    }
+    require(entries.next().is_none(), MISMATCH)?;
+
+    let mut staged = std::collections::BTreeMap::new();
+    for (source, entry, inclusive_end) in bindings {
         require(
-            range.start == cursor
-                && entry.has_tag_name("entry")
+            entry.has_tag_name("entry")
                 && entry.attributes().len() == 3
                 && entry.attribute("in") == Some("0")
                 && entry
@@ -458,7 +551,6 @@ fn verify_authored_cut_input(
                 && !entry.children().any(|node| node.is_element()),
             MISMATCH,
         )?;
-        cursor = range.end;
         let clip_id = entry.attribute("producer").ok_or_else(bad_input)?;
         let clip = linked(clip_id)?;
         let asset_id = mlt_property(clip, "semwright:clip_asset").ok_or_else(bad_input)?;
@@ -489,10 +581,7 @@ fn verify_authored_cut_input(
     // The host stages assets in ascending ID order. This binds each staged
     // filename to the original byte descriptor, even when metadata is swapped.
     let staged: Vec<_> = staged.into_values().collect();
-    require(
-        entries.next().is_none() && native_sources.as_array() == Some(&staged),
-        MISMATCH,
-    )
+    require(native_sources.as_array() == Some(&staged), MISMATCH)
 }
 
 fn read_bound_video_observation<'a>(
@@ -584,7 +673,7 @@ fn complete_video_observation(
     expected_profile: ObservationProfile,
     sources: &[Artifact],
     frame_count: u64,
-    authored_cuts: Option<&[Range<u64>]>,
+    authored_cuts: Option<AuthoredCut<'_>>,
 ) -> NativeResult<Value> {
     let (original_receipt, parsed) = read_bound_video_observation(
         root,
@@ -616,11 +705,15 @@ fn complete_video_observation(
     )?;
     // SDK ordering follows asset IDs, not cut order. Compare an exact closed
     // multiset without sorting or replacing either retained original document.
-    exact_source_roster(native_sources, sources)?;
-    if let Some(ranges) = authored_cuts {
-        verify_authored_cut_input(&xml_bytes, sources, ranges, native_sources)?;
+    let mut staged = sources.to_vec();
+    if let Some(held) = authored_cuts.as_ref().and_then(|cut| cut.held) {
+        staged.push(held.source.clone());
     }
-    for source in sources {
+    exact_source_roster(native_sources, &staged)?;
+    if let Some(cut) = authored_cuts {
+        verify_authored_cut_input(&xml_bytes, sources, cut.ranges, native_sources, cut.held)?;
+    }
+    for source in &staged {
         artifact(root, &source.descriptor(), &source.path, MEDIA_MAX_BYTES)?;
     }
     let frames = document
@@ -834,10 +927,10 @@ async fn reference(
     expected: &RevisionStamp,
     request_id: &str,
     session: &Session,
-    sequence: Option<&str>,
+    track: Option<(&str, Option<&str>)>,
     name: &str,
 ) -> NativeResult<String> {
-    let (command, mut args) = if let Some(sequence) = sequence {
+    let (command, mut args) = if let Some((sequence, _)) = track {
         ("driver.mlt-video.track.list", json!({"sequence":sequence}))
     } else {
         ("driver.mlt-video.sequence.list", json!({}))
@@ -847,7 +940,234 @@ async fn reference(
     let response = coordinator
         .execute(project_id, expected, request_id, command, args, false)
         .await?;
-    named_reference(response_data(&response)?, &session.revision, name)
+    named_reference(
+        response_data(&response)?,
+        &session.revision,
+        name,
+        track.and_then(|(_, id)| id),
+    )
+}
+
+fn recheck_held_frame(coordinator: &ProductionCoordinator) -> NativeResult<()> {
+    if let Some((_, frame)) = coordinator
+        .active_hybrid_budget
+        .as_ref()
+        .and_then(|budget| budget.held_dissolve())
+    {
+        let bytes = read_verified_production_artifact(
+            &coordinator.client.connection().output_root,
+            &frame.file,
+            &frame.sha256,
+            frame.bytes,
+        )?;
+        require(
+            bytes.len() as u64 == frame.bytes,
+            "Hybrid held frame changed length",
+        )?;
+    }
+    Ok(())
+}
+
+fn verify_held_dissolve_observation(
+    data: &Value,
+    revision: &str,
+    transition_id: &str,
+    held_id: &str,
+    video_id: &str,
+    range: semwright_video_domain::time::FrameRange,
+) -> NativeResult<()> {
+    require(
+        data.get("revision").and_then(Value::as_str) == Some(revision)
+            && data.get("total").and_then(Value::as_u64) == Some(1)
+            && data.get("cursor").is_some_and(Value::is_null)
+            && data
+                .get("items")
+                .and_then(Value::as_array)
+                .is_some_and(|items| {
+                    matches!(items.as_slice(), [item]
+                    if item.get("id").and_then(Value::as_str) == Some(transition_id)
+                    && item.get("a_track").and_then(Value::as_str) == Some(held_id)
+                    && item.get("b_track").and_then(Value::as_str) == Some(video_id)
+                    && item.get("kind").and_then(Value::as_str) == Some("dissolve")
+                    && item.get("start").and_then(Value::as_u64) == Some(range.start.0)
+                    && item.get("end").and_then(Value::as_u64) == Some(range.end.0)
+                    && item.get("reverse").and_then(Value::as_bool) == Some(false)
+                    && item.get("opaque").and_then(Value::as_bool) == Some(false))
+                }),
+        "Hybrid MLT observation differs from the original held dissolve",
+    )
+}
+
+struct AuthoredCut<'a> {
+    ranges: &'a [Range<u64>],
+    held: Option<&'a AppliedHeldCut>,
+}
+
+struct AppliedHeldCut {
+    source: Artifact,
+    range: semwright_video_domain::time::FrameRange,
+    id: String,
+}
+
+async fn append_held_dissolve(
+    scoped: &ProductionCoordinator,
+    sources: &HybridNativeSources,
+    mut session: Session,
+    sequence_name: &str,
+    held_id: &str,
+    video_id: &str,
+) -> NativeResult<(Session, Vec<Value>, Value, AppliedHeldCut)> {
+    let (planned, frame) = scoped
+        .active_hybrid_budget
+        .as_ref()
+        .and_then(|budget| budget.held_dissolve())
+        .ok_or_else(|| invalid("Hybrid dissolve has no authorized original PNG"))?;
+    let id = sources.project.id;
+    let expected = &sources.expected;
+    let request = &sources.request_prefix;
+    let range = planned.range;
+    recheck_held_frame(scoped)?;
+
+    let (next, imported) = edit(
+        scoped,
+        id,
+        expected,
+        &format!("{request}:mlt:hold-source"),
+        "driver.mlt-video.asset.import",
+        session,
+        json!({"kind":"file","name":HELD_TRACK_NAME,"root":"output","path":frame.file,
+            "image_frames":range.duration()}),
+    )
+    .await?;
+    let asset = created(&imported, "asset")?;
+    session = next;
+    let sequence = reference(
+        scoped,
+        id,
+        expected,
+        &format!("{request}:mlt:hold-sequence"),
+        &session,
+        None,
+        sequence_name,
+    )
+    .await?;
+    let track = reference(
+        scoped,
+        id,
+        expected,
+        &format!("{request}:mlt:hold-track-ref"),
+        &session,
+        Some((&sequence, Some(held_id))),
+        HELD_TRACK_NAME,
+    )
+    .await?;
+    let (next, inserted) = edit(
+        scoped,
+        id,
+        expected,
+        &format!("{request}:mlt:hold-insert"),
+        "driver.mlt-video.clip.insert",
+        session,
+        json!({"sequence":sequence,"track":track,"asset":asset,"start":range.start.0,
+            "source_in":0,"source_out":range.duration(),"name":HELD_TRACK_NAME,"ripple":false}),
+    )
+    .await?;
+    let _ = created(&inserted, "clip")?;
+    require(
+        inserted.get("after_frames").and_then(Value::as_u64) == Some(sources.frame_count()),
+        "Hybrid held frame changed the editorial duration",
+    )?;
+    session = next;
+    let sequence = reference(
+        scoped,
+        id,
+        expected,
+        &format!("{request}:mlt:transition-sequence"),
+        &session,
+        None,
+        sequence_name,
+    )
+    .await?;
+    let held_ref = reference(
+        scoped,
+        id,
+        expected,
+        &format!("{request}:mlt:transition-hold-ref"),
+        &session,
+        Some((&sequence, Some(held_id))),
+        HELD_TRACK_NAME,
+    )
+    .await?;
+    let video_ref = reference(
+        scoped,
+        id,
+        expected,
+        &format!("{request}:mlt:transition-video-ref"),
+        &session,
+        Some((&sequence, Some(video_id))),
+        TRACK_NAME,
+    )
+    .await?;
+    let (next, transition) = edit(
+        scoped,
+        id,
+        expected,
+        &format!("{request}:mlt:held-dissolve"),
+        "driver.mlt-video.transition.add",
+        session,
+        json!({"sequence":sequence,"kind":"dissolve","a_track":held_ref,"b_track":video_ref,
+            "start":range.start.0,"end":range.end.0}),
+    )
+    .await?;
+    let transition_id = opaque(created_entity(&transition, "transition")?, "id")?;
+    if transition.get("after_frames").and_then(Value::as_u64) != Some(sources.frame_count()) {
+        return Err(backend(
+            "Hybrid MLT transition changed the editorial duration",
+        ));
+    }
+    let sequence = reference(
+        scoped,
+        id,
+        expected,
+        &format!("{request}:mlt:retained-transition-sequence"),
+        &next,
+        None,
+        sequence_name,
+    )
+    .await?;
+    let observed = scoped
+        .execute(
+            id,
+            expected,
+            &format!("{request}:mlt:retained-transition"),
+            "driver.mlt-video.transition.list",
+            json!({"project":next.project,"sequence":sequence,"limit":2}),
+            false,
+        )
+        .await?;
+    verify_held_dissolve_observation(
+        response_data(&observed)?,
+        &next.revision,
+        &transition_id,
+        held_id,
+        video_id,
+        range,
+    )?;
+    recheck_held_frame(scoped)?;
+    Ok((
+        next,
+        vec![imported, inserted, transition],
+        observed,
+        AppliedHeldCut {
+            source: Artifact {
+                path: frame.file.clone(),
+                sha256: frame.sha256.clone(),
+                bytes: frame.bytes,
+            },
+            range,
+            id: transition_id,
+        },
+    ))
 }
 
 impl ProductionCoordinator {
@@ -989,8 +1309,44 @@ impl ProductionCoordinator {
             json!({"name":sequence_name}),
         )
         .await?;
-        let sequence = created(&created_sequence, "sequence")?;
+        let mut sequence = created(&created_sequence, "sequence")?;
         session = next;
+        let mut edit_receipts = vec![created_sequence];
+        // The outgoing hold is the lower track. The incoming original stays on
+        // the main track above it throughout the transition and the rest of the cut.
+        let held_id = if scoped
+            .active_hybrid_budget
+            .as_ref()
+            .and_then(|budget| budget.held_dissolve())
+            .is_some()
+        {
+            let (next, held_track) = edit(
+                &scoped,
+                id,
+                expected,
+                &format!("{request}:mlt:hold-track-create"),
+                "driver.mlt-video.track.create",
+                session,
+                json!({"sequence":sequence,"name":HELD_TRACK_NAME,"kind":"video"}),
+            )
+            .await?;
+            let held_id = opaque(created_entity(&held_track, "track")?, "id")?;
+            edit_receipts.push(held_track);
+            session = next;
+            sequence = reference(
+                &scoped,
+                id,
+                expected,
+                &format!("{request}:mlt:video-track-sequence"),
+                &session,
+                None,
+                sequence_name,
+            )
+            .await?;
+            Some(held_id)
+        } else {
+            None
+        };
         let (next, created_track) = edit(
             &scoped,
             id,
@@ -1002,8 +1358,13 @@ impl ProductionCoordinator {
         )
         .await?;
         let _ = created(&created_track, "track")?;
+        let video_id = if held_id.is_some() {
+            Some(opaque(created_entity(&created_track, "track")?, "id")?)
+        } else {
+            None
+        };
         session = next;
-        let mut edit_receipts = vec![created_sequence, created_track];
+        edit_receipts.push(created_track);
         for (index, (clip, range)) in clips.iter().zip(ranges).enumerate() {
             // Rehash every actual contribution before import; a provider ref
             // from an earlier native revision is never carried across edits.
@@ -1029,7 +1390,7 @@ impl ProductionCoordinator {
                 expected,
                 &format!("{request}:mlt:track-ref:{index}"),
                 &session,
-                Some(&sequence),
+                Some((&sequence, video_id.as_deref())),
                 TRACK_NAME,
             )
             .await?;
@@ -1054,6 +1415,23 @@ impl ProductionCoordinator {
             edit_receipts.push(inserted);
             session = next;
         }
+        let held_cut = if let (Some(held_id), Some(video_id)) = (held_id, video_id) {
+            let (next, edits, observed, held) = append_held_dissolve(
+                &scoped,
+                sources,
+                session,
+                sequence_name,
+                &held_id,
+                &video_id,
+            )
+            .await?;
+            edit_receipts.extend(edits);
+            originals.push(observed);
+            session = next;
+            Some(held)
+        } else {
+            None
+        };
         let sequence = reference(
             &scoped,
             id,
@@ -1109,6 +1487,7 @@ impl ProductionCoordinator {
             "Hybrid MLT plan did not confirm its exact native source and output",
         )?;
         originals.push(planned);
+        recheck_held_frame(&scoped)?;
         let mut start_args = args;
         start_args["expected_revision"] = session.revision.clone().into();
         let started = scoped
@@ -1193,6 +1572,7 @@ impl ProductionCoordinator {
                 }
             }
         }
+        recheck_held_frame(&scoped).map_err(unconfirmed_render)?;
         let original_result = scoped
             .execute(
                 id,
@@ -1222,7 +1602,10 @@ impl ProductionCoordinator {
             ObservationProfile::MltVisualFfv1,
             &clips,
             frame_count,
-            Some(ranges),
+            Some(AuthoredCut {
+                ranges,
+                held: held_cut.as_ref(),
+            }),
         )?;
         require(
             scoped.service.project(id).map_err(storage_error)? == sources.project,
@@ -1579,6 +1962,39 @@ mod tests {
 
     #[test]
     fn hybrid_native_input_binds_authored_order_and_inclusive_endpoints() {
+        let track = |id, kind| {
+            json!({"revision":"current","total":1,"cursor":null,
+            "items":[{"name":HELD_TRACK_NAME,"id":id,"kind":kind,"reference":"native-track"}]})
+        };
+        assert_eq!(
+            named_reference(
+                &track("held", "video"),
+                "current",
+                HELD_TRACK_NAME,
+                Some("held")
+            )
+            .unwrap(),
+            "native-track"
+        );
+        assert!(
+            named_reference(
+                &track("other", "video"),
+                "current",
+                HELD_TRACK_NAME,
+                Some("held")
+            )
+            .is_err()
+        );
+        assert!(
+            named_reference(
+                &track("held", "audio"),
+                "current",
+                HELD_TRACK_NAME,
+                Some("held")
+            )
+            .is_err()
+        );
+
         let sources = ["original-mc.mkv", "original-manim.mp4"].map(|path| Artifact {
             path: path.into(),
             sha256: "a".repeat(64),
@@ -1607,9 +2023,13 @@ mod tests {
         );
         let cuts = [0..18, 18..30];
         let native_order = json!([sources[1].descriptor(), sources[0].descriptor()]);
-        assert!(verify_authored_cut_input(xml.as_bytes(), &sources, &cuts, &native_order).is_ok());
+        assert!(
+            verify_authored_cut_input(xml.as_bytes(), &sources, &cuts, &native_order, None).is_ok()
+        );
         let wrong_order = json!([sources[0].descriptor(), sources[1].descriptor()]);
-        assert!(verify_authored_cut_input(xml.as_bytes(), &sources, &cuts, &wrong_order).is_err());
+        assert!(
+            verify_authored_cut_input(xml.as_bytes(), &sources, &cuts, &wrong_order, None).is_err()
+        );
         for altered in [
             xml.replace(r#"entry producer="source_0""#, r#"entry producer="swap""#)
                 .replace(
@@ -1628,8 +2048,76 @@ mod tests {
             xml.replacen("asset-", "other-", 1),
         ] {
             assert!(
-                verify_authored_cut_input(altered.as_bytes(), &sources, &cuts, &native_order)
+                verify_authored_cut_input(altered.as_bytes(), &sources, &cuts, &native_order, None)
                     .is_err()
+            );
+        }
+        let held = AppliedHeldCut {
+            source: Artifact {
+                path: "render-original/frames/000017.png".into(),
+                sha256: "b".repeat(64),
+                bytes: 101,
+            },
+            range: semwright_video_domain::time::FrameRange::new(18, 22).unwrap(),
+            id: "tr-held".into(),
+        };
+        let staged = hex::encode(Sha256::digest(b"asset2"));
+        let properties = format!(
+            r#"<property name="resource">asset-{}.bin</property><property name="semwright:resource_root">output</property><property name="semwright:resource_path">{}</property>"#,
+            &staged[..24],
+            held.source.path,
+        );
+        let held_track = format!(
+            r#"<producer id="asset2">{properties}</producer>
+<producer id="source_held">{properties}<property name="semwright:clip_asset">asset2</property></producer>
+<playlist id="holdlane"><blank length="18"/><entry producer="source_held" in="0" out="3"/></playlist>
+<tractor id="holdtrack"><track producer="holdlane" hide="audio"/></tractor>"#,
+        );
+        let transition = r#"<transition in="18" out="21"><property name="mlt_service">luma</property><property name="semwright:transition">1</property><property name="semwright:transition_id">tr-held</property><property name="a_track">0</property><property name="b_track">1</property><property name="reverse">0</property></transition>"#;
+        let dissolved = xml
+            .replace(r#"<tractor id="sequence" out="29">"#, &format!(r#"{held_track}<tractor id="sequence" out="29">"#))
+            .replace(r#"<track producer="track"/></tractor></mlt>"#, &format!(r#"<track producer="holdtrack"/><track producer="track"/>{transition}</tractor></mlt>"#));
+        let native_order = json!([
+            sources[1].descriptor(),
+            sources[0].descriptor(),
+            held.source.descriptor()
+        ]);
+        assert!(
+            verify_authored_cut_input(
+                dissolved.as_bytes(),
+                &sources,
+                &cuts,
+                &native_order,
+                Some(&held)
+            )
+            .is_ok()
+        );
+        assert!(
+            verify_authored_cut_input(dissolved.as_bytes(), &sources, &cuts, &native_order, None)
+                .is_err()
+        );
+        for altered in [
+            dissolved.replace(r#"in="18" out="21""#, r#"in="18" out="22""#),
+            dissolved.replace(r#"<blank length="18"/>"#, r#"<blank length="17"/>"#),
+            dissolved.replace(
+                r#"<property name="reverse">0</property>"#,
+                r#"<property name="reverse">1</property>"#,
+            ),
+            dissolved.replace(
+                r#"<track producer="holdtrack"/><track producer="track"/>"#,
+                r#"<track producer="track"/><track producer="holdtrack"/>"#,
+            ),
+            dissolved.replace(&held.source.path, "substitute.png"),
+        ] {
+            assert!(
+                verify_authored_cut_input(
+                    altered.as_bytes(),
+                    &sources,
+                    &cuts,
+                    &native_order,
+                    Some(&held)
+                )
+                .is_err()
             );
         }
     }

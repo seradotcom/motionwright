@@ -294,6 +294,7 @@ fn test_mlt_scope(scoped: &ProductionCoordinator) -> ProductionCoordinator {
     }
     continuation.active_hybrid_budget.as_mut().unwrap().phase =
         HybridPhase::Mlt(HybridMltBinding {
+            held_frame: None,
             source_paths: encodes
                 .values()
                 .map(|row| row.output_path.clone())
@@ -819,6 +820,37 @@ fn hybrid_two_sources_preserve_renderer_order_and_exact_cut_origin() {
         assert_eq!(scope.plan.manim_ordinal, 1 - motion_ordinal);
         assert_eq!(scope.plan.motion[0].output_ordinal, motion_ordinal);
         assert_eq!(scope.plan.limits.render_frames, 630);
+        let intent = motionwright_domain::MltDissolveIntent {
+            outgoing_scene_id: f.project.scenes[0].id,
+            incoming_scene_id: f.project.scenes[1].id,
+            duration_frames: 7,
+            mode: motionwright_domain::MltDissolveMode::HoldOutgoingLastFrame,
+        };
+        let planned = |intent: &motionwright_domain::MltDissolveIntent, ranges: &[Range<u64>]| {
+            resolve_hybrid_dissolve(
+                intent,
+                &scope.plan.motion,
+                ranges,
+                scope.plan.manim_scene_id,
+                scope.plan.manim_ordinal,
+            )
+        };
+        if motion_ordinal == 0 {
+            assert_eq!(
+                planned(&intent, &scope.plan.segment_ranges).unwrap(),
+                HybridHeldDissolve {
+                    outgoing_ordinal: 0,
+                    range: FrameRange::new(90, 97).unwrap()
+                }
+            );
+            assert!(planned(&intent, &[0..90, 90..96]).is_err());
+            assert!(planned(&intent, &[0..90, 91..180]).is_err());
+            let mut invalid_intent = intent;
+            invalid_intent.duration_frames = 31;
+            assert!(planned(&invalid_intent, &scope.plan.segment_ranges).is_err());
+        } else {
+            assert!(planned(&intent, &scope.plan.segment_ranges).is_err());
+        }
         let contributions = scope.plan.source_plan["contributions"].as_array().unwrap();
         assert_eq!(contributions.len(), 2);
         for (index, (contribution, renderer)) in
@@ -1389,6 +1421,23 @@ async fn closed_hybrid_scope_rejects_other_providers_and_altered_manim_plan_befo
             .await
             .is_err()
     );
+    for (command, mutation) in [
+        ("driver.mlt-video.transition.add", true),
+        ("driver.mlt-video.transition.list", false),
+    ] {
+        let error = scoped
+            .execute(
+                f.project.id,
+                &f.project.stamp(),
+                "hybrid-transition-without-intent",
+                command,
+                json!({}),
+                mutation,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::PermissionDenied);
+    }
     let mut forged = json!({"plan":scope.plan.manim_plan,"profile":scope.plan.manim_profile});
     forged["plan"]["clock"]["frame_count"] = json!(600);
     assert!(
