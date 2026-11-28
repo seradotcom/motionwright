@@ -66,7 +66,7 @@ use caption_export::{CaptionExportResponse, ExportCaptionRequest};
 
 use effect_authority::IssueEffectGrantRequest;
 use effect_grants::{EffectGrantReceipt, EffectGrantRegistry, EffectKind, EffectScope};
-use local_error::{portable_bundle_error, sanitized, scene_trim_preview_error};
+use local_error::{portable_bundle_error, sanitized};
 use motionwright_domain::{Change, Project, RevisionStamp};
 use motionwright_native::{
     assembly::preflight_multi_segment_mlt,
@@ -944,6 +944,35 @@ async fn observe_marker_receipt(
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+fn scene_trim_preview_error(error: motionwright_service::StorageError) -> String {
+    use motionwright_domain::DomainError;
+    use motionwright_service::StorageError;
+
+    match &error {
+        StorageError::Domain(DomainError::Locked(_)) => {
+            "Scene trim would change locked timing.".into()
+        }
+        StorageError::Domain(DomainError::Invalid(reason)) => match reason.as_str() {
+            "Scene trim time is out of bounds."
+            | "Scene trim would change approved scene timing."
+            | "Scene trim would change protected delivery timing."
+            | "Trimming requires an editable scene without a bound capsule."
+            | "Position the playhead inside the selected scene to trim its end."
+            | "The trimmed duration must align to the scene's delivery frame grids." => {
+                reason.clone()
+            }
+            "scene duration would strand an authored keyframe" => {
+                "This trim would cut off an authored keyframe.".into()
+            }
+            "scene duration would strand an authored beat" => {
+                "This trim would cut off an authored beat.".into()
+            }
+            _ => "This trim conflicts with the saved project timing.".into(),
+        },
+        _ => sanitized(error),
+    }
 }
 
 #[tauri::command]

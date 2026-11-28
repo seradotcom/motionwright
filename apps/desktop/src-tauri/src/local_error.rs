@@ -38,35 +38,6 @@ pub(crate) fn sanitized(error: impl std::fmt::Display) -> String {
     "Motionwright could not complete the local operation".into()
 }
 
-pub(crate) fn scene_trim_preview_error(error: motionwright_service::StorageError) -> String {
-    use motionwright_domain::DomainError;
-    use motionwright_service::StorageError;
-
-    match &error {
-        StorageError::Domain(DomainError::Locked(_)) => {
-            "Scene trim would change locked timing.".into()
-        }
-        StorageError::Domain(DomainError::Invalid(reason)) => match reason.as_str() {
-            "Scene trim time is out of bounds."
-            | "Scene trim would change approved scene timing."
-            | "Scene trim would change protected delivery timing."
-            | "Trimming requires an editable scene without a bound capsule."
-            | "Position the playhead inside the selected scene to trim its end."
-            | "The trimmed duration must align to the scene's delivery frame grids." => {
-                reason.clone()
-            }
-            "scene duration would strand an authored keyframe" => {
-                "This trim would cut off an authored keyframe.".into()
-            }
-            "scene duration would strand an authored beat" => {
-                "This trim would cut off an authored beat.".into()
-            }
-            _ => "This trim conflicts with the saved project timing.".into(),
-        },
-        _ => sanitized(error),
-    }
-}
-
 pub(crate) fn portable_bundle_error(error: motionwright_service::StorageError) -> String {
     if let motionwright_service::StorageError::MissingPortableMedia { digests } = &error {
         if digests.is_empty()
