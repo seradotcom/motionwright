@@ -37,8 +37,8 @@ class HistoryCrossOsSelectionTests(unittest.TestCase):
     def test_reviewed_composed_storage_source_pins_are_exact_in_both_jobs(self):
         source = WORKFLOW.read_text(encoding="utf-8")
         expected = {
-            "crates/storage/src/lib.rs": "867026bc32773ab817f141cd6ca3385c656ed8d696a2f41034d355c310c3464b",
-            "crates/storage/src/portability.rs": "1080d26e3ddb58758b7262f91150a60496be04706b921a63f6ebacab3acb940c",
+            "crates/storage/src/lib.rs": "4d819492dfd52171bc1cba6cf115affdc9915150a4d768a5d508876a0162e630",
+            "crates/storage/src/portability.rs": "890a3095a86c485ab5c76ca7f0a815d0e328d32820e9dcb4ba8e3a791b31e13d",
             "crates/storage/Cargo.toml": "3d5ddb85a9c2998090a0f0e7be0c0cd4031bfbeb76a7e42b1b3b75be84105c82",
             "crates/storage/src/bundle_export_unix.rs": "61a31e6d255ea0331b12957b02d8281cfe15f54f2f929e03d9fd78cd13beabb7",
             "crates/storage/src/bundle_export_windows.rs": "b0f88151c36c209ca040ac3ca6b49d381f415d8d083ecbbd7d5d230a65a35f96",
@@ -48,7 +48,7 @@ class HistoryCrossOsSelectionTests(unittest.TestCase):
         }
         maps = re.findall(r"^          pins=(\{[^\n]+\})$", source, flags=re.M)
         self.assertEqual(len(maps), 2, "G0 and real CrossOS must bind the same reviewed inputs")
-        self.assertEqual(source.count('foundation_reviewed_source="9b2db25e68f064bfc9bca32d33ddda1f52f8e143"'), 2)
+        self.assertEqual(source.count('foundation_reviewed_source="aa0285ed9ba70da8bad45b3d27c59ab7dfdbdb0d"'), 2)
         self.assertEqual(source.count('source_lock_reviewed_source="576201b3fca3a7a6f7bc57cc4d6cbf5dd7d3d347"'), 2)
         self.assertEqual(source.count('workspace_lock_source="4679ca7b0965409fb9c230e5063dbeec5490108c"'), 2)
         self.assertIn('source_lock_reviewed_source if rel=="SOURCE_LOCK.json"', source)
