@@ -707,9 +707,26 @@ function SourcesWorkbench({project,scene,commitCamera,busy,sourceServices,displa
       key={JSON.stringify([project.id,project.generation,project.active_branch,scene.id,displayProfile.id])}
       project={project} scene={scene} profile={displayProfile} busy={busy} commit={commitCamera} refreshProject={sourceServices.refreshProject}/>}
     <SourceAttachmentEditor key={productionScope(project,{kind:"source",sceneId:scene?.id ?? null})} project={project} scene={scene} commitCamera={commitCamera} busy={busy}/>
-    <div className="production-capsule-list">{capsules.map(c=><article key={c.id}><header><strong>{c.label}</strong><span>{c.fidelity.renderer} / {c.fidelity.renderer_version}</span></header>
-      <p className="mono">sha256:{c.source_sha256}</p><dl>{(["visual","temporal","structural","editable"] as const).map(d=><div key={d}><dt>{d}</dt><dd>{c.fidelity[d]}</dd></div>)}</dl>
-      {c.fidelity.losses.map(loss=><p key={loss}>{loss}</p>)}<small>Declared support metadata, not an independently verified renderer receipt.</small></article>)}</div>
+    <div className="production-capsule-list">{capsules.map(capsule => {
+      const propertyLosses = (capsule.property_fidelity ?? []).filter(({ fidelity }) =>
+        fidelity === "baked" || fidelity === "approximate" || fidelity === "unavailable");
+      return <article key={capsule.id}>
+        <header><strong>{capsule.label}</strong><span>{capsule.fidelity.renderer} / {capsule.fidelity.renderer_version}</span></header>
+        <p className="mono">sha256:{capsule.source_sha256}</p>
+        <dl>{(["visual", "temporal", "structural", "editable"] as const).map(dimension =>
+          <div key={dimension}><dt>{dimension}</dt><dd>{capsule.fidelity[dimension]}</dd></div>)}</dl>
+        {capsule.fidelity.losses.map(loss => <p key={loss}>{loss}</p>)}
+        {propertyLosses.length > 0 && <>
+          <p><strong>Declared property losses</strong></p>
+          <ul aria-label="Declared property losses">
+            {propertyLosses.map(property => <li key={property.path}>
+              <code>{property.path}</code> · {property.fidelity}. {property.loss_note}
+            </li>)}
+          </ul>
+        </>}
+        <small>Declared support metadata, not an independently verified renderer receipt.</small>
+      </article>;
+    })}</div>
     <NativeSourceRelinkWorkbench key={JSON.stringify([project.id, project.generation, project.active_branch, scene?.id ?? null])} project={project} scene={scene} commit={commitCamera} busy={busy}/>
     <NativePropertyReview key={JSON.stringify([project.id, project.generation, project.active_branch])} project={project} commit={commitCamera} busy={busy}/>
   </div>;

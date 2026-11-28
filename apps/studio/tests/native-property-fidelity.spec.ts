@@ -24,6 +24,12 @@ test("one native source retains bytes across a complete property review and late
   await expect(header).toContainText("revision " + prior);
   await panel.getByRole("button", { name: "Save property review", exact: true }).click();
   await expect(header).toContainText("revision " + (prior + 1));
+  const capsule = page.locator(".production-capsule-list article").filter({ hasText: beforeDigest });
+  const losses = capsule.getByRole("list", { name: "Declared property losses" });
+  await expect(losses.getByRole("listitem")).toHaveCount(1);
+  await expect(losses).toContainText("camera.focal_length");
+  await expect(losses).toContainText("baked");
+  await expect(losses).toContainText("The original GLB camera focal length remains in its source editor.");
   const records = panel.getByLabel("Property classifications before and after");
   await expect(records).toContainText("camera.focal_length"); await expect(records).toContainText("geometry.mesh");
   await expect(panel.locator(".native-fidelity-source code")).toHaveText(beforeDigest);
@@ -35,9 +41,11 @@ test("one native source retains bytes across a complete property review and late
   await page.getByRole("button", { name: "Production plan", exact: true }).click();
   await page.getByRole("button", { name: "Native sources", exact: true }).click();
   await expect(records).toContainText("Removed in draft");
+  await expect(losses).toContainText("The original GLB camera focal length remains in its source editor.");
   await panel.getByRole("button", { name: "Save property review", exact: true }).click();
   await expect(header).toContainText("revision " + (prior + 2));
   await expect(records).not.toContainText("geometry.mesh"); await expect(records).toContainText("updated loss note");
+  await expect(losses).toContainText("An updated loss note in the retained review.");
   await expect(panel).toContainText("does not authorize execution");
   await page.screenshot({ path: info.outputPath("native-source-property-review.png"), fullPage: true });
 });
