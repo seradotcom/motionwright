@@ -52,7 +52,8 @@ impl PreparedMasterDestination {
         #[cfg(unix)]
         let workspace = unix::Workspace::new(self.directory.as_file());
         #[cfg(windows)]
-        let workspace = windows::Workspace::new(self.path.parent().ok_or(CHANGED)?);
+        let workspace =
+            windows::Workspace::new(self.path.parent().ok_or(CHANGED)?, self.directory.as_file());
         Ok(ExportStage {
             target: self,
             workspace: workspace.map_err(|_| "Unable to create the MP4 export staging area.")?,
@@ -71,29 +72,50 @@ pub(super) struct ExportStage<'a> {
     workspace: windows::Workspace,
 }
 
+pub(super) struct StagedFile {
+    pub(super) file: File,
+    #[cfg(windows)]
+    published: bool,
+}
+
 impl ExportStage<'_> {
-    pub(super) fn create(&self, name: &'static str) -> io::Result<File> {
-        #[cfg(unix)]
-        let result = self.workspace.create(name);
-        #[cfg(windows)]
-        let result = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(self.workspace.path.join(name));
-        result
+    pub(super) fn create(&self, name: &'static str) -> io::Result<StagedFile> {
+        let file = self.workspace.create(name)?;
+        Ok(StagedFile {
+            file,
+            #[cfg(windows)]
+            published: false,
+        })
     }
 
-    pub(super) fn publish(&self, name: &'static str, destination: &Path) -> io::Result<()> {
+    pub(super) fn publish(
+        &self,
+        name: &'static str,
+        staged: &mut StagedFile,
+        destination: &Path,
+    ) -> io::Result<()> {
         self.target.check_current().map_err(io::Error::other)?;
-        #[cfg(unix)]
         let leaf = destination
             .file_name()
             .ok_or_else(|| io::Error::other(CHANGED))?;
         #[cfg(unix)]
-        let result = self.workspace.publish(name, leaf);
+        self.workspace.publish(name, &staged.file, leaf)?;
         #[cfg(windows)]
-        let result = windows::publish(&self.workspace.path.join(name), destination);
-        result
+        {
+            let _ = name;
+            windows::publish(&staged.file, self.target.directory.as_file(), leaf)?;
+            staged.published = true;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        if !self.published {
+            windows::retire(&self.file);
+        }
     }
 }
 
@@ -180,6 +202,10 @@ mod unix {
                     "MP4 export staging directory is not private.",
                 ));
             }
+            #[cfg(target_os = "macos")]
+            if !crate::otio_bridge::private_workspace_acl_is_safe(&workspace.directory) {
+                return Err(io::Error::other("MP4 export staging ACL is not private."));
+            }
             Ok(workspace)
         }
 
@@ -195,16 +221,31 @@ mod unix {
                         | libc::O_EXCL
                         | libc::O_NOFOLLOW
                         | libc::O_CLOEXEC,
-                    0o600 as libc::mode_t,
+                    0o600 as libc::c_uint,
                 )
             })
         }
 
-        pub(super) fn publish(&self, source: &str, target: &OsStr) -> io::Result<()> {
+        pub(super) fn publish(&self, source: &str, held: &File, target: &OsStr) -> io::Result<()> {
             let source = c_name(OsStr::new(source))?;
             let target = c_name(target)?;
             let from = self.directory.as_raw_fd();
             let to = self.parent.as_raw_fd();
+            // SAFETY: from is live and source is a terminated component of its private directory.
+            let entry = owned_fd(unsafe {
+                libc::openat(
+                    from,
+                    source.as_ptr(),
+                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+                )
+            })?
+            .metadata()?;
+            let expected = held.metadata()?;
+            if !entry.is_file() || entry.dev() != expected.dev() || entry.ino() != expected.ino() {
+                return Err(io::Error::other(
+                    "The staged MP4 or integrity file changed.",
+                ));
+            }
             // SAFETY: both descriptors and terminated components live through the call.
             #[cfg(target_os = "linux")]
             let result = unsafe {
@@ -248,6 +289,18 @@ mod unix {
                 libc::unlinkat(self.directory.as_raw_fd(), c"master".as_ptr(), 0);
                 libc::unlinkat(self.directory.as_raw_fd(), c"integrity".as_ptr(), 0);
             }
+            // SAFETY: geteuid reads the current Unix process identity.
+            let uid = unsafe { libc::geteuid() };
+            let protected_parent = self.parent.metadata().is_ok_and(|meta| {
+                (meta.uid() == uid || meta.uid() == 0)
+                    && (meta.mode() & 0o022 == 0 || meta.mode() & 0o1000 != 0)
+            });
+            #[cfg(target_os = "macos")]
+            let protected_parent =
+                protected_parent && crate::otio_bridge::private_workspace_acl_is_safe(self.parent);
+            if !protected_parent {
+                return;
+            }
             let same_directory = open_directory(self.parent, &self.name)
                 .and_then(|candidate| candidate.metadata())
                 .ok()
@@ -273,13 +326,22 @@ mod unix {
 #[cfg(windows)]
 pub(super) mod windows {
     use super::*;
-    use std::os::windows::{
-        ffi::OsStrExt,
-        fs::{MetadataExt, OpenOptionsExt},
+    use std::{
+        mem::{offset_of, size_of},
+        os::windows::{
+            ffi::OsStrExt,
+            fs::{MetadataExt, OpenOptionsExt},
+            io::AsRawHandle,
+        },
     };
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    use windows_sys::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{
+            DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
+            FILE_GENERIC_WRITE, FILE_RENAME_INFO, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            FileDispositionInfo, FileRenameInfo, SetFileInformationByHandle,
+        },
     };
 
     pub(in crate::av_delivery) fn local_drive(path: &Path) -> bool {
@@ -335,55 +397,99 @@ pub(super) mod windows {
     }
 
     pub(super) struct Workspace {
-        pub(super) path: PathBuf,
-        directory: Option<File>,
+        path: PathBuf,
+        directory: File,
     }
 
     impl Workspace {
-        pub(super) fn new(parent: &Path) -> io::Result<Self> {
+        pub(super) fn new(parent: &Path, held_parent: &File) -> io::Result<Self> {
             let path = parent.join(format!(
                 ".motionwright-delivery-{}",
                 Uuid::new_v4().simple()
             ));
-            std::fs::create_dir(&path)?;
-            let directory = open_directory(&path)?;
-            Ok(Self {
-                path,
-                directory: Some(directory),
-            })
+            crate::otio_bridge::windows_runtime::create_private_directory(&path, held_parent)
+                .map_err(io::Error::other)?;
+            let directory = OpenOptions::new()
+                .access_mode(FILE_GENERIC_READ | DELETE)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(&path)?;
+            let meta = directory.metadata()?;
+            if !meta.is_dir() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return Err(io::Error::other(CHANGED));
+            }
+            crate::otio_bridge::windows_runtime::verify_private_directory(&directory)
+                .map_err(io::Error::other)?;
+            Ok(Self { path, directory })
+        }
+
+        pub(super) fn create(&self, name: &str) -> io::Result<File> {
+            OpenOptions::new()
+                .write(true)
+                .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE)
+                .share_mode(0)
+                .create_new(true)
+                .open(self.path.join(name))
         }
     }
 
     impl Drop for Workspace {
         fn drop(&mut self) {
-            for name in [STAGED_MEDIA, STAGED_PROOF] {
-                let _ = std::fs::remove_file(self.path.join(name));
-            }
-            drop(self.directory.take());
-            // A sibling target or a foreign subtree is never recursively removed.
-            let _ = std::fs::remove_dir(&self.path);
+            // Unpublished files and the empty stage directory retire by identity.
+            retire(&self.directory);
         }
     }
 
-    pub(super) fn publish(source: &Path, destination: &Path) -> io::Result<()> {
-        fn wide(path: &Path) -> Vec<u16> {
-            path.as_os_str().encode_wide().chain([0]).collect()
+    #[repr(C)]
+    struct RenameBuffer {
+        flags: u32,
+        parent: HANDLE,
+        name_bytes: u32,
+        name: [u16; 256],
+    }
+
+    const _: () = assert!(offset_of!(RenameBuffer, name) == offset_of!(FILE_RENAME_INFO, FileName));
+
+    pub(super) fn publish(file: &File, directory: &File, leaf: &OsStr) -> io::Result<()> {
+        let name: Vec<_> = leaf.encode_wide().collect();
+        if name.is_empty() || name.len() >= 256 || name.contains(&0) {
+            return Err(io::Error::other(CHANGED));
         }
-        let source = wide(source);
-        let destination = wide(destination);
-        // SAFETY: both private paths are NUL-terminated, validated, and live.
-        // No replacement or cross-volume copy flags are set.
-        if unsafe {
-            MoveFileExW(
-                source.as_ptr(),
-                destination.as_ptr(),
-                MOVEFILE_WRITE_THROUGH,
+        let mut buffer = RenameBuffer {
+            flags: 0,
+            parent: directory.as_raw_handle(),
+            name_bytes: (name.len() * size_of::<u16>()) as u32,
+            name: [0; 256],
+        };
+        buffer.name[..name.len()].copy_from_slice(&name);
+        // SAFETY: the validated name is relative to the held directory. The
+        // C-layout buffer and both handles remain live. Flags zero forbid overwrite.
+        let result = unsafe {
+            SetFileInformationByHandle(
+                file.as_raw_handle(),
+                FileRenameInfo,
+                (&mut buffer as *mut RenameBuffer).cast(),
+                size_of::<RenameBuffer>() as u32,
             )
-        } == 0
-        {
+        };
+        if result == 0 {
             Err(io::Error::last_os_error())
         } else {
             Ok(())
+        }
+    }
+
+    pub(super) fn retire(file: &File) {
+        let mut disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+        // SAFETY: the original exclusive file handle has DELETE permission.
+        // Disposition applies to this object and never resolves its path again.
+        unsafe {
+            SetFileInformationByHandle(
+                file.as_raw_handle(),
+                FileDispositionInfo,
+                (&mut disposition as *mut FILE_DISPOSITION_INFO).cast(),
+                size_of::<FILE_DISPOSITION_INFO>() as u32,
+            );
         }
     }
 }

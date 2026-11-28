@@ -24,10 +24,10 @@ use windows_sys::Win32::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
             ConvertStringSidToSidW, GetSecurityInfo, SE_FILE_OBJECT,
         },
-        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetTokenInformation, INHERIT_ONLY_ACE,
-        IsValidAcl, IsValidSid, IsWellKnownSid, OWNER_SECURITY_INFORMATION, PSID,
-        SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser, WinBuiltinAdministratorsSid,
-        WinLocalSystemSid,
+        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetSecurityDescriptorControl,
+        GetSecurityDescriptorDacl, GetTokenInformation, INHERIT_ONLY_ACE, IsValidAcl, IsValidSid,
+        IsWellKnownSid, OWNER_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
+        TOKEN_QUERY, TOKEN_USER, TokenUser, WinBuiltinAdministratorsSid, WinLocalSystemSid,
     },
     Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, DELETE, FILE_APPEND_DATA,
@@ -597,6 +597,96 @@ impl CurrentUserSid {
     }
 }
 
+pub(crate) fn create_private_directory(root: &Path, parent: &File) -> Admission<()> {
+    require_acl_volume(parent).map_err(|_| WORKSPACE_REFUSED)?;
+    let descriptor = CurrentUserSid::read()?.private_descriptor()?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: 0,
+    };
+    let path: Vec<_> = root.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: the absolute local path is terminated and the security
+    // descriptor lives through exclusive directory creation.
+    if unsafe { CreateDirectoryW(path.as_ptr(), &attributes) } == 0 {
+        return Err(WORKSPACE_REFUSED);
+    }
+    Ok(())
+}
+
+/// Inspect the actual held directory before storing any bytes in it.
+pub(crate) fn verify_private_directory(directory: &File) -> Admission<()> {
+    let user = CurrentUserSid::read()?;
+    let expected = user.private_descriptor()?;
+    let mut owner = null_mut();
+    let mut actual_acl: *mut ACL = null_mut();
+    let mut actual = LocalAllocation(null_mut());
+    let mut control = 0;
+    let mut revision = 0;
+    let mut present = 0;
+    let mut defaulted = 0;
+    let mut expected_acl: *mut ACL = null_mut();
+    // SAFETY: both descriptors own their ACLs for the entire comparison. All
+    // output pointers are initialized, live, and sized to the Win32 API.
+    unsafe {
+        if GetSecurityInfo(
+            directory.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            null_mut(),
+            &mut actual_acl,
+            null_mut(),
+            &mut actual.0,
+        ) != 0
+            || owner.is_null()
+            || IsValidSid(owner) == 0
+            || (EqualSid(owner, user.sid()) == 0
+                && IsWellKnownSid(owner, WinLocalSystemSid) == 0
+                && IsWellKnownSid(owner, WinBuiltinAdministratorsSid) == 0)
+            || actual.0.is_null()
+            || GetSecurityDescriptorControl(actual.0, &mut control, &mut revision) == 0
+            || control & SE_DACL_PROTECTED == 0
+            || GetSecurityDescriptorDacl(
+                expected.0,
+                &mut present,
+                &mut expected_acl,
+                &mut defaulted,
+            ) == 0
+            || present == 0
+            || actual_acl.is_null()
+            || expected_acl.is_null()
+            || IsValidAcl(actual_acl) == 0
+            || IsValidAcl(expected_acl) == 0
+            || (*actual_acl).AceCount != 2
+            || (*expected_acl).AceCount != 2
+        {
+            return Err(WORKSPACE_REFUSED);
+        }
+        // Compare each ACE rather than allocated ACL capacity. Rights,
+        // inheritance and identities must all match the protected descriptor.
+        for index in 0..2 {
+            let mut actual_ace: *mut c_void = null_mut();
+            let mut expected_ace: *mut c_void = null_mut();
+            if GetAce(actual_acl, index, &mut actual_ace) == 0
+                || GetAce(expected_acl, index, &mut expected_ace) == 0
+                || actual_ace.is_null()
+                || expected_ace.is_null()
+            {
+                return Err(WORKSPACE_REFUSED);
+            }
+            let size = (*actual_ace.cast::<ACE_HEADER>()).AceSize;
+            if size != (*expected_ace.cast::<ACE_HEADER>()).AceSize
+                || std::slice::from_raw_parts(actual_ace.cast::<u8>(), usize::from(size))
+                    != std::slice::from_raw_parts(expected_ace.cast::<u8>(), usize::from(size))
+            {
+                return Err(WORKSPACE_REFUSED);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) struct WindowsOtioWorkspaceParent {
     path: PathBuf,
     _ancestors: Vec<File>,
@@ -658,24 +748,15 @@ impl WindowsOtioWorkspaceParent {
             return Err(WORKSPACE_REFUSED);
         }
         let root = self.path.join(name);
-        let descriptor = self.user.private_descriptor()?;
-        let attributes = SECURITY_ATTRIBUTES {
-            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: descriptor.0,
-            bInheritHandle: 0,
-        };
-        let path: Vec<_> = root.as_os_str().encode_wide().chain([0]).collect();
-        // SAFETY: the absolute local path is terminated and the security
-        // descriptor lives through exclusive directory creation.
-        if unsafe { CreateDirectoryW(path.as_ptr(), &attributes) } == 0 {
-            return Err(WORKSPACE_REFUSED);
-        }
+        create_private_directory(&root, self._ancestors.last().ok_or(WORKSPACE_REFUSED)?)?;
         let mut workspace = WindowsOtioWorkspace {
             root,
             root_handle: None,
             parent: self,
         };
-        workspace.root_handle = Some(workspace.hold(&workspace.root, true)?);
+        let held = workspace.hold(&workspace.root, true)?;
+        verify_private_directory(&held)?;
+        workspace.root_handle = Some(held);
         Ok(workspace)
     }
 }

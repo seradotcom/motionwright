@@ -151,13 +151,13 @@ if any(token in workflow_text for token in automatic_publish_tokens):
 # job bounds the child, and readback precedes any no-clobber publication.
 reviewed_otio_sources = {
     "apps/desktop/src-tauri/src/otio_bridge.rs":
-        "2cc1789c73aee6a84d3d947c782b7a2407e6e4d834587f7fe89a3a7eb9a7ee56",
+        "27209787c4a7327d79ee9c1acb40531b767832fcccc7714c8070fd5578c09f2d",
     "apps/desktop/src-tauri/src/otio_bridge_macos.rs":
         "3337b54d13cb20ef0e0453a974d3e4e53b2359c7f62cadad501ee8dafe5427b8",
     "apps/desktop/src-tauri/src/otio_bridge_windows_process.rs":
         "e763b91bdf94bc8b8424693f0780cdc930a805fab11a7bbff1bf9891a94c2067",
     "apps/desktop/src-tauri/src/otio_bridge_windows_runtime.rs":
-        "e2ba0917ccb5d82cd42f20546ffa7e847d7fdcaa0068dfd63043ead3459f3903",
+        "fda19f471af1a4f88f414d2a35930dd5e5df08df7af6d9ce5f46b402e01c13ba",
     "tooling/manim_native_readback.py":
         "14fc30caefed5a220d437bfc32c738ff83fca3ccc5da19abfe4343b1dea3637a",
     "tooling/mlt_official_runtime_intake.py":

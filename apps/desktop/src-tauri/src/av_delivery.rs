@@ -943,8 +943,7 @@ impl DeliverySource {
         let mut output = stage
             .create(STAGED_MEDIA)
             .map_err(|_| "Unable to stage the MP4 export.")?;
-        let size_bytes = self.copy_verified_bytes(&mut output)?;
-        drop(output);
+        let size_bytes = self.copy_verified_bytes(&mut output.file)?;
         let mut receipt = MasterExportReceipt {
             destination: destination.to_string_lossy().into_owned(),
             size_bytes,
@@ -954,26 +953,29 @@ impl DeliverySource {
             source_current: true,
             integrity_manifest_path: None,
         };
-        if proof_path.is_some() {
+        let mut proof = if proof_path.is_some() {
             let mut proof = stage
                 .create(STAGED_PROOF)
                 .map_err(|_| "Unable to stage the MP4 verification receipt.")?;
-            self.write_integrity_manifest(&mut proof, name, size_bytes, native_sdk_revision)?;
-        }
+            self.write_integrity_manifest(&mut proof.file, name, size_bytes, native_sdk_revision)?;
+            Some(proof)
+        } else {
+            None
+        };
         target.check_current()?;
         if let Some(path) = &proof_path {
             require_free_export_path(path)?;
         }
         let _publication = admit_publication()?;
-        stage.publish(STAGED_MEDIA, destination).map_err(|error| {
+        stage.publish(STAGED_MEDIA, &mut output, destination).map_err(|error| {
             if error.kind() == std::io::ErrorKind::AlreadyExists {
                 "MP4 destination already exists; Motionwright never overwrites user files.".to_owned()
             } else {
                 format!("MP4 publication did not complete: {error}. Inspect the destination before retrying.")
             }
         })?;
-        if let Some(path) = proof_path {
-            stage.publish(STAGED_PROOF, &path).map_err(|error| format!(
+        if let Some((path, proof)) = proof_path.zip(proof.as_mut()) {
+            stage.publish(STAGED_PROOF, proof, &path).map_err(|error| format!(
                 "MP4 was exported and verified, but its optional verification receipt failed: {error}. The MP4 was preserved; check its destination."
             ))?;
             receipt.integrity_manifest_path = Some(path.to_string_lossy().into_owned());
@@ -1765,14 +1767,14 @@ mod tests {
         let output = real.join("master.mp4");
         let prepared = PreparedMasterDestination::open(output.to_str().unwrap()).unwrap();
         let stage = prepared.stage().unwrap();
-        stage
-            .create(STAGED_MEDIA)
-            .unwrap()
-            .write_all(b"verified fixture")
-            .unwrap();
+        let mut staged = stage.create(STAGED_MEDIA).unwrap();
+        staged.file.write_all(b"verified fixture").unwrap();
         fs::write(&output, b"competing original").unwrap();
         assert_eq!(
-            stage.publish(STAGED_MEDIA, &output).unwrap_err().kind(),
+            stage
+                .publish(STAGED_MEDIA, &mut staged, &output)
+                .unwrap_err()
+                .kind(),
             std::io::ErrorKind::AlreadyExists
         );
         fs::remove_file(&output).unwrap();
@@ -1782,7 +1784,7 @@ mod tests {
         fs::create_dir(&real).unwrap();
         fs::write(&output, b"replacement directory original").unwrap();
         assert!(prepared.check_current().is_err());
-        assert!(stage.publish(STAGED_MEDIA, &output).is_err());
+        assert!(stage.publish(STAGED_MEDIA, &mut staged, &output).is_err());
         drop(stage);
         assert_eq!(
             fs::read(&output).unwrap(),

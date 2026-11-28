@@ -306,7 +306,7 @@ mod macos_runtime;
 mod windows_process;
 #[cfg(windows)]
 #[path = "otio_bridge_windows_runtime.rs"]
-mod windows_runtime;
+pub(super) mod windows_runtime;
 
 #[derive(Debug)]
 struct BridgeRuntime {
@@ -501,6 +501,11 @@ struct BridgeWorkspaceParent {
     ancestors: Vec<fs::File>,
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) fn private_workspace_acl_is_safe(directory: &fs::File) -> bool {
+    macos_runtime::acl_cannot_grant_access(directory)
+}
+
 impl BridgeWorkspaceParent {
     /// Check only directory metadata. Keep the admitted ancestors alive until
     /// the authorized operation has finished with its private workspace.
@@ -682,7 +687,7 @@ fn open_private_unix_path(path: &Path, entry: UnixWorkspaceEntry) -> Result<fs::
         return Err(WORKSPACE_REFUSED.into());
     }
     #[cfg(target_os = "macos")]
-    if !macos_runtime::acl_cannot_grant_access(&file) {
+    if !private_workspace_acl_is_safe(&file) {
         return Err(WORKSPACE_REFUSED.into());
     }
     Ok(file)

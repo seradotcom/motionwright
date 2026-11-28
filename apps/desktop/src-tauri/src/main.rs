@@ -3472,19 +3472,16 @@ async fn export_native_av_master(
             ..receipt
         });
     }
-    let latest = state
+    let current = state
         .service
         .project(request.project_id)
-        .map_err(sanitized)?;
-    if latest.generation != request.generation || latest.revision != request.revision {
-        // The new file exists and is digest-verified, but is no longer the
-        // current project revision. Preserve it and mark historical in UI.
-        return Ok(MasterExportReceipt {
-            source_current: false,
-            ..receipt
+        .is_ok_and(|project| {
+            project.generation == request.generation && project.revision == request.revision
         });
-    }
-    Ok(receipt)
+    Ok(MasterExportReceipt {
+        source_current: current,
+        ..receipt
+    })
 }
 
 /// Qualify the original after a restart, then consume a NEW scoped local
@@ -3577,13 +3574,14 @@ async fn export_saved_native_av_master(
             ..receipt
         });
     }
-    let latest = state
+    let current = state
         .service
         .project(request.project_id)
-        .map_err(sanitized)?;
+        .is_ok_and(|project| {
+            project.generation == request.generation && project.revision == request.revision
+        });
     Ok(MasterExportReceipt {
-        source_current: latest.generation == request.generation
-            && latest.revision == request.revision,
+        source_current: current,
         ..receipt
     })
 }
