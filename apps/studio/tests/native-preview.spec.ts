@@ -41,6 +41,7 @@ test("sampled native PNG readback uses only a session grant and follows the edit
   const first = boot.project.scenes[0];
   const second = boot.project.scenes[1];
   const master = boot.project.deliverables[0];
+  master.included_scene_ids = [first.id, second.id];
   const rendered = {
     project_resource: "project:" + boot.project.id,
     generation: boot.project.generation,
@@ -190,7 +191,7 @@ test("invalid synthetic frame bytes display a truthful readback error and a retr
   const boot = structuredClone(fixtureBootstrap);
   boot.native_sdk.mode = "tauri";
   const first = boot.project.scenes[0];
-  const second = boot.project.scenes[1];
+  boot.project.deliverables[0].included_scene_ids = [first.id];
   const receipt = {
     project_resource: "project:" + boot.project.id,
     generation: boot.project.generation,
@@ -260,13 +261,8 @@ test("invalid synthetic frame bytes display a truthful readback error and a retr
 
   await page.goto("/");
   await page.getByRole("button", { name: "Deliver", exact: true }).click();
-  for (const [scene, role, archetype] of [
-    [first, "hook", "statement"],
-    [second, "problem", "diagram_build"],
-  ] as const) {
-    await page.getByLabel(scene.name + " narrative role").selectOption(role);
-    await page.getByLabel(scene.name + " motion archetype").selectOption(archetype);
-  }
+  await page.getByLabel(first.name + " narrative role").selectOption("hook");
+  await page.getByLabel(first.name + " motion archetype").selectOption("statement");
   await saveFixtureRecipe(page);
   await page.getByRole("button", { name: "Check Film projection" }).click();
   await expect(page.getByLabel("First native production readiness")).toContainText("ELIGIBLE FOR AUTHORIZED DISPATCH");
