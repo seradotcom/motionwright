@@ -576,6 +576,13 @@ impl ProductionCoordinator {
                     ));
                 }
             }
+            let audio_cue_frame_coverage = motion_canvas_window::verified_audio_cue_frames(
+                &segment,
+                &plan_ref,
+                &fingerprint,
+                artifact,
+                verification,
+            )?;
             evidence.push(MotionCanvasSegmentEvidence {
                 segment_id: segment.id,
                 scene_ids: segment.scene_ids,
@@ -585,6 +592,7 @@ impl ProductionCoordinator {
                 job_ref,
                 artifact: artifact.clone(),
                 verification: verification.clone(),
+                audio_cue_frame_coverage,
             });
         }
         Ok(Some(CaptureSource {

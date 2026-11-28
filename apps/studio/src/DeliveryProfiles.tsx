@@ -1744,26 +1744,35 @@ export default function DeliveryProfiles({
                 </div>
               )}
 
-              {currentPreflight?.segments.filter(segment => segment.audio_cue_alignment?.length).map(segment => (
-                <details key={segment.segment_id}>
+              {currentPreflight?.segments.filter(segment => segment.audio_cue_alignment?.length).map(segment => {
+                const rendered = currentMotion?.project_resource === "project:" + project.id
+                  ? currentMotion.segments.find(item => item.segment_id === segment.segment_id && item.frame_count === segment.frame_count)
+                  : undefined;
+                const coverage = rendered?.audio_cue_frame_coverage;
+                const matchingCoverage = coverage && /^[a-f0-9]{64}$/.test(coverage.film_sha256)
+                  && coverage.film_sha256 === segment.film_sha256
+                  && coverage.manifest_sha256 === rendered?.artifact.manifest_sha256 ? coverage : null;
+                return <details key={segment.segment_id}>
                   <summary>Audio cue timing · {segment.segment_id}</summary>
                   <p>Planned segment-local frames. The signed residual is the frame time minus the exact Film cue time.</p>
                   <p className="mono">Film SHA-256 {segment.film_sha256}</p>
                   <table>
-                    <thead><tr><th>Cue</th><th>Project time</th><th>Film time</th><th>Frame</th><th>Residual</th></tr></thead>
+                    <thead><tr><th>Cue</th><th>Project time</th><th>Film time</th><th>Frame</th><th>Residual</th><th>Renderer frame</th></tr></thead>
                     <tbody>{segment.audio_cue_alignment!.map(row => {
                       const label = project.audio.cues.find(cue => cue.id === row.cue_id)?.label ?? row.cue_id;
                       return row.status === "unknown"
-                        ? <tr key={row.cue_id}><th scope="row">{label}</th><td colSpan={4}>Unknown timing</td></tr>
+                        ? <tr key={row.cue_id}><th scope="row">{label}</th><td colSpan={5}>Unknown timing</td></tr>
                         : <tr key={row.cue_id}><th scope="row">{label}</th>
                           <td>{row.authored_at.num}/{row.authored_at.den} s</td>
                           <td>{row.segment_at.num}/{row.segment_at.den} s</td>
                           <td>{row.frame}</td><td>{row.residual.num}/{row.residual.den} s</td>
+                          <td>{matchingCoverage?.frames.some(item => item.cue_id === row.cue_id && item.frame === row.frame)
+                            ? "Frame observed" : "Pending observation"}</td>
                         </tr>;
                     })}</tbody>
                   </table>
-                </details>
-              ))}
+                </details>;
+              })}
 
               {!desktopMode && (
                 <div className="delivery-truth-note"><CircleDashed size={14} /> Native production requires the desktop runtime and an owner-provisioned Semwright connection.</div>

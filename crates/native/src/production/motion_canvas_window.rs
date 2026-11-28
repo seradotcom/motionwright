@@ -2,12 +2,15 @@
 //! This module consumes the existing provider and Store proxy cache. It neither
 //! authorizes a master nor asserts seek/checkpoint or unobserved simulation work.
 use super::*;
-use crate::film::{MotionCanvasWindowPlan, build_motion_canvas_window};
+use crate::film::{
+    MotionCanvasAudioCueAlignment, MotionCanvasSegment, MotionCanvasWindowPlan,
+    build_motion_canvas_window,
+};
 use motionwright_domain::{Project, SourceFrameWindow};
 use motionwright_service::{DerivedCacheRecord, RenderWindowCacheKey};
 use semwright_motion_authoring::{Film, MotionMeasurement, SubjectContent};
 use semwright_semantic_composition::{
-    ExecutionStatus, SupportLevel, Verdict, VerificationReport, canonical_digest,
+    EvidenceSource, ExecutionStatus, SupportLevel, Verdict, VerificationReport, canonical_digest,
 };
 use std::collections::BTreeSet;
 
@@ -334,6 +337,27 @@ fn validate_prefix_measurement(
     end: u64,
     full_count: u64,
 ) -> NativeResult<MotionCanvasWindowValidation> {
+    check_prefix_measurement(
+        value,
+        film,
+        plan_ref,
+        fingerprint,
+        artifact,
+        end,
+        full_count,
+    )
+    .map(|(validation, _)| validation)
+}
+
+fn check_prefix_measurement(
+    value: &Value,
+    film: &Film,
+    plan_ref: &str,
+    fingerprint: &str,
+    artifact: &Value,
+    end: u64,
+    full_count: u64,
+) -> NativeResult<(MotionCanvasWindowValidation, VerificationWire)> {
     let wire: VerificationWire = serde_json::from_value(value.clone())
         .map_err(|_| backend("Native window measurement has an incompatible schema"))?;
     let measurement = &wire.measurement;
@@ -434,7 +458,7 @@ fn validate_prefix_measurement(
         .iter()
         .filter(|finding| finding.verdict == Verdict::Unknown)
         .count();
-    Ok(MotionCanvasWindowValidation {
+    let validation = MotionCanvasWindowValidation {
         verdict: if unknown_findings > 0 {
             Verdict::Unknown
         } else {
@@ -444,7 +468,83 @@ fn validate_prefix_measurement(
         pass_checks: checks.len() - unknown_checks,
         unknown_checks,
         unknown_findings,
-    })
+    };
+    Ok((validation, wire))
+}
+
+pub(super) fn verified_audio_cue_frames(
+    segment: &MotionCanvasSegment,
+    plan_ref: &str,
+    fingerprint: &str,
+    artifact: &Value,
+    verification: &Value,
+) -> NativeResult<Option<MotionCanvasAudioCueFrameCoverage>> {
+    let frames = segment
+        .audio_cue_alignment
+        .iter()
+        .filter_map(|cue| match cue {
+            MotionCanvasAudioCueAlignment::Resolved { cue_id, frame, .. } => {
+                Some(MotionCanvasCoveredAudioCueFrame {
+                    cue_id: *cue_id,
+                    frame: *frame,
+                })
+            }
+            MotionCanvasAudioCueAlignment::Unknown { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    if frames.is_empty() {
+        return Ok(None);
+    }
+    let (validation, wire) = check_prefix_measurement(
+        verification,
+        &segment.film,
+        plan_ref,
+        fingerprint,
+        artifact,
+        segment.frame_count,
+        segment.frame_count,
+    )?;
+    let measurement = &wire.measurement;
+    let coverage = &measurement.coverage;
+    let observation_id = format!("render-{}", &coverage.observation_digest.as_str()[..16]);
+    let resource = &measurement.validation.base.0[0].key;
+    for rule in ["native-frame-coverage", "resolved-cues"] {
+        let has_observation = measurement.validation.checks.iter().any(|check| {
+            check.rule == rule
+                && check.verdict == Verdict::Pass
+                && check.evidence.iter().any(|observation| {
+                    observation.id == observation_id
+                        && observation.source == EvidenceSource::RendererState
+                        && observation.method == coverage.method
+                        && observation.method_version == 1
+                        && observation.exhaustive
+                        && observation.artifact.as_ref() == Some(&coverage.artifact_digest)
+                        && matches!(observation.scope.as_slice(), [scope]
+                            if &scope.resource == resource && scope.logical_id == segment.film.id
+                                && scope.property == "native-frame-state")
+                })
+        });
+        if !has_observation {
+            return Err(backend(
+                "Native audio cue frame coverage lacks its bound renderer observation",
+            ));
+        }
+    }
+    if validation.verdict != Verdict::Pass
+        || frames
+            .iter()
+            .any(|cue| cue.frame >= coverage.end_frame_exclusive)
+    {
+        return Err(backend(
+            "Native audio cue frame is outside complete verified coverage",
+        ));
+    }
+    Ok(Some(MotionCanvasAudioCueFrameCoverage {
+        film_sha256: measurement.intent_digest.as_str().to_owned(),
+        manifest_sha256: coverage.artifact_digest.as_str().to_owned(),
+        observation_sha256: coverage.observation_digest.as_str().to_owned(),
+        frames,
+    }))
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1591,6 +1691,136 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn full_audio_cue_coverage_binds_renderer_frame_evidence_and_preserves_legacy() {
+        use motionwright_domain::{
+            AudioCue, CueEvidence, DeliveryRecipe, MotionCanvasAudioCuePolicy, RationalTime,
+        };
+
+        let (_dir, _service, mut project, evidence) = fixture();
+        let capture = evidence.original_capture;
+        let legacy = request_plan(&project, &evidence.request).unwrap().segment;
+        assert!(
+            verified_audio_cue_frames(&legacy, "", "", &Value::Null, &Value::Null)
+                .unwrap()
+                .is_none()
+        );
+        let known = Uuid::new_v4();
+        for (id, at, evidence) in [
+            (
+                known,
+                RationalTime::new(1, 10).unwrap(),
+                CueEvidence::Manual,
+            ),
+            (
+                Uuid::new_v4(),
+                RationalTime::new(1, 5).unwrap(),
+                CueEvidence::Unknown,
+            ),
+        ] {
+            project
+                .apply_change(&Change::UpsertAudioCue {
+                    cue: AudioCue {
+                        id,
+                        label: "Synthetic authored cue".into(),
+                        at,
+                        source_segment_id: None,
+                        evidence,
+                    },
+                })
+                .unwrap();
+        }
+        project
+            .apply_change(&Change::SetDeliveryRecipe {
+                deliverable_profile_id: evidence.request.deliverable_id,
+                recipe: Some(DeliveryRecipe {
+                    motion_canvas_audio_cues: Some(
+                        MotionCanvasAudioCuePolicy::PreserveAuthoredTime,
+                    ),
+                    ..Default::default()
+                }),
+            })
+            .unwrap();
+        let segment = request_plan(&project, &evidence.request).unwrap().segment;
+        let mut verified = capture.verification.clone();
+        let film_sha = segment.film_sha256().unwrap();
+        let manifest_sha = capture.artifact["manifest_sha256"].as_str().unwrap();
+        let observation_sha = "c3".repeat(32);
+        verified["measurement"]["intent_digest"] = json!(film_sha);
+        verified["measurement"]["coverage"]["end_frame_exclusive"] = json!(segment.frame_count);
+        verified["measurement"]["coverage"]["observed_frames"] = json!(segment.frame_count);
+        let base = verified["measurement"]["validation"]["base"].clone();
+        let observation = json!({
+            "id": format!("render-{}", &observation_sha[..16]), "base": base,
+            "source": "renderer_state", "method": "motion-canvas-3.17.2-native-frame-probe-v1",
+            "method_version": 1, "artifact": manifest_sha, "exhaustive": true,
+            "scope": [{"resource":base[0]["key"], "logical_id":segment.film.id, "property":"native-frame-state"}]
+        });
+        let rules = ["native-frame-coverage", "resolved-cues"];
+        verified["measurement"]["validation"]["required_rules"] = json!(rules);
+        verified["measurement"]["validation"]["checks"] = json!(rules.map(|rule| json!({
+            "rule":rule, "version":1, "verdict":"PASS",
+            "evidence_class":"DETERMINISTIC", "evidence":[observation], "reason":null
+        })));
+        verified["report"]["validation"] = verified["measurement"]["validation"].clone();
+        let verify = |receipt: &Value| {
+            verified_audio_cue_frames(
+                &segment,
+                &capture.plan_ref,
+                &capture.fingerprint,
+                &capture.artifact,
+                receipt,
+            )
+        };
+        let covered = verify(&verified).unwrap().unwrap();
+        assert_eq!(covered.film_sha256, film_sha);
+        assert_eq!(covered.manifest_sha256, manifest_sha);
+        assert_eq!(covered.observation_sha256, observation_sha);
+        assert_eq!(
+            covered.frames,
+            vec![MotionCanvasCoveredAudioCueFrame {
+                cue_id: known,
+                frame: 3
+            }]
+        );
+
+        // All negatives preserve the old nominal PASS rule strings.
+        for (pointer, value) in [
+            ("/measurement/intent_digest", json!("f0".repeat(32))),
+            (
+                "/measurement/coverage/artifact_digest",
+                json!("f0".repeat(32)),
+            ),
+            ("/measurement/coverage/observed_frames", json!(59)),
+            (
+                "/measurement/coverage/observation_digest",
+                json!("f0".repeat(32)),
+            ),
+            (
+                "/measurement/validation/plan_digest",
+                json!("f0".repeat(32)),
+            ),
+            (
+                "/measurement/validation/checks/0/evidence/0/source",
+                json!("native_api"),
+            ),
+            (
+                "/measurement/validation/checks/1/evidence/0/scope/0/logical_id",
+                json!("foreign-film"),
+            ),
+            ("/measurement/validation/checks/1/evidence", json!([])),
+        ] {
+            let mut substituted = verified.clone();
+            *substituted.pointer_mut(pointer).unwrap() = value;
+            substituted["report"]["validation"] = substituted["measurement"]["validation"].clone();
+            assert!(
+                ensure_native_motion_verification(&substituted).is_ok(),
+                "{pointer}"
+            );
+            assert!(verify(&substituted).is_err(), "{pointer}");
+        }
     }
 
     #[test]

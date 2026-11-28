@@ -524,6 +524,12 @@ export interface MotionCanvasSegmentEvidence {
   job_ref: string;
   artifact: Record<string, unknown>;
   verification: Record<string, unknown>;
+  audio_cue_frame_coverage?: {
+    film_sha256: string;
+    manifest_sha256: string;
+    observation_sha256: string;
+    frames: { cue_id: string; frame: number }[];
+  };
 }
 export interface NativePreviewGrant {
   token: string;

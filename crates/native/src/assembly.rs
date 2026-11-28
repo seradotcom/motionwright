@@ -447,6 +447,7 @@ mod tests {
                     "manifest_sha256": sha,
                     "frame_count": segment.frame_count
                 }),
+                audio_cue_frame_coverage: None,
                 verification: json!({
                     "report": {"execution_status": "completed", "support_level": "native"},
                     "measurement": {"findings": [], "validation": {"checks": [{"verdict": "PASS"}]}}

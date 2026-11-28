@@ -1172,6 +1172,7 @@ mod tests {
                 job_ref: "real-job".into(),
                 artifact: json!({"directory":"render-one","frame_count":1,
                                  "manifest_sha256":manifest_sha}),
+                audio_cue_frame_coverage: None,
                 verification: json!({
                     "report":{"execution_status":"completed","support_level":"native"},
                     "measurement":{"findings":[],"validation":{"checks":[

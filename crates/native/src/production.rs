@@ -1173,6 +1173,26 @@ pub struct MotionCanvasSegmentEvidence {
     pub job_ref: String,
     pub artifact: Value,
     pub verification: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_cue_frame_coverage: Option<MotionCanvasAudioCueFrameCoverage>,
+}
+
+/// Exhaustive renderer coverage of the selected frame indices. The point cue's
+/// time and residual remain properties of its authored Film projection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MotionCanvasAudioCueFrameCoverage {
+    pub film_sha256: String,
+    pub manifest_sha256: String,
+    pub observation_sha256: String,
+    pub frames: Vec<MotionCanvasCoveredAudioCueFrame>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MotionCanvasCoveredAudioCueFrame {
+    pub cue_id: Uuid,
+    pub frame: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4229,6 +4249,13 @@ impl ProductionCoordinator {
                 }
                 return Err(error);
             }
+            let audio_cue_frame_coverage = motion_canvas_window::verified_audio_cue_frames(
+                &segment,
+                &capture.plan_ref,
+                &capture.fingerprint,
+                &capture.artifact,
+                &verification,
+            )?;
             evidence.push(MotionCanvasSegmentEvidence {
                 segment_id: segment.id,
                 scene_ids: segment.scene_ids,
@@ -4238,6 +4265,7 @@ impl ProductionCoordinator {
                 job_ref: capture.job_ref,
                 artifact: capture.artifact,
                 verification,
+                audio_cue_frame_coverage,
             });
         }
 

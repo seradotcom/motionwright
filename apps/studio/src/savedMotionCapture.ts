@@ -1,3 +1,4 @@
+import {savedDeliveryRecipe} from "./deliveryRecipe";
 import type {MotionCanvasRenderEvidence,Project} from "./types";
 
 export interface SavedMotionCaptureHint {
@@ -22,9 +23,9 @@ function object(value:unknown):Record<string,unknown>{
   if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("Saved capture response is invalid.");
   return value as Record<string,unknown>;
 }
-function closed(value:unknown,keys:readonly string[]):Record<string,unknown>{
+function closed(value:unknown,keys:readonly string[],optional:readonly string[]=[]):Record<string,unknown>{
   const result=object(value);
-  if(Object.keys(result).length!==keys.length||!keys.every(key=>Object.hasOwn(result,key)))
+  if(!keys.every(key=>Object.hasOwn(result,key))||Object.keys(result).some(key=>!keys.includes(key)&&!optional.includes(key)))
     throw new Error("Saved capture response fields are invalid.");
   return result;
 }
@@ -71,7 +72,8 @@ export function parseRecoveredMotionCapture(value:unknown,project:Project,delive
   const ids=new Set<string>(),tokens=new Set<string>(),scenes=new Set(project.scenes.map(scene=>scene.id));
   let frames=0;
   data.segments.forEach((value,index)=>{
-    const segment=closed(value,["segment_id","scene_ids","frame_count","plan_ref","fingerprint","job_ref","artifact","verification"]);
+    const segment=closed(value,["segment_id","scene_ids","frame_count","plan_ref","fingerprint","job_ref","artifact","verification"],
+      ["audio_cue_frame_coverage"]);
     if(typeof segment.segment_id!=="string"||segment.segment_id.length>256||!segment.segment_id.length||ids.has(segment.segment_id)
       ||!positive(segment.frame_count,36000)||!Array.isArray(segment.scene_ids)||!segment.scene_ids.length
       ||segment.scene_ids.length>1024||!segment.scene_ids.every(id=>typeof id==="string"&&scenes.has(id))
@@ -79,9 +81,29 @@ export function parseRecoveredMotionCapture(value:unknown,project:Project,delive
       ||![segment.plan_ref,segment.fingerprint,segment.job_ref].every(value=>typeof value==="string"&&value.length>0&&value.length<=256))
       throw new Error("Recovered capture segment is invalid.");
     ids.add(segment.segment_id);frames+=segment.frame_count;
-    const artifact=object(segment.artifact);object(segment.verification);
+    const artifact=object(segment.artifact),verification=object(segment.verification);
     if(artifact.frame_count!==segment.frame_count||typeof artifact.manifest_sha256!=="string"||!sha.test(artifact.manifest_sha256))
       throw new Error("Recovered capture original manifest is invalid.");
+    if(Object.hasOwn(segment,"audio_cue_frame_coverage")){
+      const coverage=closed(segment.audio_cue_frame_coverage,["film_sha256","manifest_sha256","observation_sha256","frames"]);
+      const measurement=object(verification.measurement),observed=object(measurement.coverage),fps=object(observed.fps);
+      if(savedDeliveryRecipe(project,deliverableId)?.motion_canvas_audio_cues!=="preserve_authored_time"
+        ||typeof coverage.film_sha256!=="string"||!sha.test(coverage.film_sha256)||measurement.intent_digest!==coverage.film_sha256
+        ||coverage.manifest_sha256!==artifact.manifest_sha256||observed.artifact_digest!==coverage.manifest_sha256
+        ||typeof coverage.observation_sha256!=="string"||!sha.test(coverage.observation_sha256)
+        ||observed.observation_digest!==coverage.observation_sha256||observed.first_frame!==0
+        ||observed.end_frame_exclusive!==segment.frame_count||observed.observed_frames!==segment.frame_count
+        ||observed.exhaustive!==true||fps.num!==hint.fps_num||fps.den!==hint.fps_den
+        ||!Array.isArray(coverage.frames)||!coverage.frames.length||coverage.frames.length>512)
+        throw new Error("Saved audio cue frame coverage differs from the original observation.");
+      const known=new Set(project.audio.cues.filter(cue=>cue.evidence!=="unknown").map(cue=>cue.id));
+      for(const value of coverage.frames){
+        const frame=closed(value,["cue_id","frame"]);
+        if(typeof frame.cue_id!=="string"||!known.delete(frame.cue_id)
+          ||(frame.frame!==0&&!positive(frame.frame,segment.frame_count-1)))
+          throw new Error("Saved audio cue frame is absent, duplicated or outside coverage.");
+      }
+    }
     const preview=closed((data.preview as unknown[])[index],["token","segment_id","scene_ids","frame_count"]);
     if(typeof preview.token!=="string"||!uuid.test(preview.token)||tokens.has(preview.token)
       ||preview.segment_id!==segment.segment_id||preview.frame_count!==segment.frame_count

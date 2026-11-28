@@ -41,6 +41,33 @@ describe("saved complete Motion Canvas capture",()=>{
       const value=response();Object.assign(value,{[key]:key==="revision"?project.revision+1:"other"});
       expect(()=>parseRecoveredMotionCapture(value,project,profile,hint)).toThrow();
     });
+  it("admits covered audio cue frames only with the original renderer observation",()=>{
+    const authored=structuredClone(project),cueId="33333333-3333-4333-8333-333333333333";
+    authored.audio.cues.push({id:cueId,at:{num:"0",den:"1"},label:"Cue",source_segment_id:null,evidence:"manual"});
+    authored.production_design ??= {plan:null,heroes:[],capsules:[]};
+    authored.production_design.delivery_recipes = {[profile]:{schema:"motionwright.delivery-recipe/1",
+      scene_intents:[],original_mix:null,motion_canvas_audio_cues:"preserve_authored_time"}};
+    const film="d".repeat(64), manifest="c".repeat(64), observation="e".repeat(64);
+    const value=response();
+    const coverage={film_sha256:film,manifest_sha256:manifest,observation_sha256:observation,frames:[{cue_id:cueId,frame:0}]};
+    Object.assign(value.segments[0],{audio_cue_frame_coverage:coverage,verification:{measurement:{
+      intent_digest:film,coverage:{first_frame:0,end_frame_exclusive:60,observed_frames:60,exhaustive:true,
+        fps:{num:30,den:1},artifact_digest:manifest,observation_digest:observation}
+    }}});
+    expect(parseRecoveredMotionCapture(value,authored,profile,hint).segments[0].audio_cue_frame_coverage).toEqual(coverage);
+    for(const patch of [
+      {film_sha256:"f".repeat(64)}, {manifest_sha256:"f".repeat(64)}, {observation_sha256:"f".repeat(64)},
+      {frames:[{cue_id:cueId,frame:60}]}, {frames:[{cue_id:cueId,frame:-1}]},
+      {frames:[{cue_id:hint.receipt_id,frame:0}]}, {frames:[{cue_id:cueId,frame:0},{cue_id:cueId,frame:1}]},
+      {frames:[]}, {local_path:"untrusted"},
+    ]){
+      const changed=structuredClone(value);
+      Object.assign(changed.segments[0],{audio_cue_frame_coverage:{...coverage,...patch}});
+      expect(()=>parseRecoveredMotionCapture(changed,authored,profile,hint)).toThrow();
+    }
+    const unknown=structuredClone(authored);unknown.audio.cues.at(-1)!.evidence="unknown";
+    expect(()=>parseRecoveredMotionCapture(value,unknown,profile,hint)).toThrow(/audio cue/);
+  });
   it("rejects incomplete, substituted and duplicated source handles",()=>{
     const original=response();
     const wrongFrame=structuredClone(original);wrongFrame.preview[0].frame_count=59;
