@@ -965,6 +965,16 @@ impl Session {
                     .preview_branch_combination(&request(args)?)
                     .map_err(|error| error.to_string())?,
             ),
+            "preview_scene_split" => encoded(
+                self.service
+                    .preview_scene_split(&request(args)?)
+                    .map_err(|error| error.to_string())?,
+            ),
+            "observe_scene_split_receipt" => encoded(
+                self.service
+                    .observe_scene_split_receipt(&request(args)?)
+                    .map_err(|error| error.to_string())?,
+            ),
             "preview_scoped_change" => encoded(
                 self.service
                     .preview_scoped_change(&request(args)?)

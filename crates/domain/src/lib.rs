@@ -38,6 +38,7 @@ mod project_template;
 mod render_tail_impact;
 mod scene_beat_timeline;
 mod scene_boundary;
+mod scene_split;
 mod scene_timing_guard;
 mod semantic_graph;
 mod semantic_sfx;
@@ -1299,7 +1300,7 @@ impl Project {
     fn apply_change_with_domain_guards(&mut self, change: &Change) -> Result<()> {
         if matches!(
             change,
-            Change::MoveScene { .. } | Change::SetSceneDuration { .. }
+            Change::MoveScene { .. } | Change::SetSceneDuration { .. } | Change::SplitScene { .. }
         ) {
             return self.apply_general_scene_timing(change);
         }
@@ -1955,6 +1956,11 @@ impl Project {
                 *base_revision,
                 *acknowledge_absolute_anchors,
             )?,
+            Change::SplitScene {
+                scene_id,
+                right_scene_id,
+                at,
+            } => self.split_scene(*scene_id, *right_scene_id, *at)?,
             Change::SetSceneDuration { scene_id, duration } => {
                 let resource = format!("scene:{scene_id}");
                 self.ensure_unlocked(&resource, &[LockKind::Timing])?;
@@ -3293,6 +3299,11 @@ pub enum Change {
     SetSceneDuration {
         scene_id: Uuid,
         duration: RationalTime,
+    },
+    SplitScene {
+        scene_id: Uuid,
+        right_scene_id: Uuid,
+        at: RationalTime,
     },
     /// Exactly one bounded CAS revision for 2–16 author-mapped music cuts.
     /// All affected scenes are revalidated before any source mutation.

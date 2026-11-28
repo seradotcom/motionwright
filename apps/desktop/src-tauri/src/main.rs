@@ -947,6 +947,36 @@ async fn observe_marker_receipt(
 }
 
 #[tauri::command]
+async fn preview_scene_split(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: motionwright_service::SceneSplitRequest,
+) -> Result<motionwright_service::SceneSplitPreview, String> {
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        service.preview_scene_split(&request).map_err(sanitized)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn observe_scene_split_receipt(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: motionwright_service::SceneSplitReceiptRequest,
+) -> Result<motionwright_service::ApplyReceiptObservation, String> {
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        service
+            .observe_scene_split_receipt(&request)
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn preview_scoped_change(
     mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
@@ -5395,6 +5425,8 @@ fn main() {
             project_history,
             project_history_recent,
             observe_marker_receipt,
+            preview_scene_split,
+            observe_scene_split_receipt,
             preview_scoped_change,
             observe_scoped_change_receipt,
             asset_integrity_page,

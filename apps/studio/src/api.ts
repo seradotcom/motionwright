@@ -81,6 +81,7 @@ import type {
   ProjectEvent,
   MarkerChange,
   ScopedMutationChange,
+  SceneSplitChange,
   RationalTime,
   Scene,
   SceneBoundaryContextRequest,
@@ -1671,6 +1672,51 @@ export async function previewBranchCombination(project: Project, input: BranchCo
   return invoke<unknown>("preview_branch_combination", { request });
 }
 
+export interface SceneSplitPreview {
+  scene_id: string;
+  right_scene_id: string;
+  revision: number;
+  at: RationalTime;
+  left_duration: RationalTime;
+  right_duration: RationalTime;
+}
+
+const sceneSplitRequest = (project: Project, change: SceneSplitChange, revision: number) => ({
+  project_id: project.id, generation: project.generation, branch_id: project.active_branch,
+  revision, scene_id: change.scene_id, right_scene_id: change.right_scene_id, at: change.at,
+});
+
+export async function previewSceneSplit(project: Project, change: SceneSplitChange): Promise<SceneSplitPreview> {
+  if (!isTauri()) throw new Error("Split requires the saved Studio Desktop project.");
+  const result = await invoke<SceneSplitPreview>("preview_scene_split", { request: sceneSplitRequest(project, change, project.revision) });
+  if (!result || result.scene_id !== change.scene_id || result.right_scene_id !== change.right_scene_id
+      || result.revision !== project.revision || result.at?.num !== change.at.num || result.at?.den !== change.at.den
+      || !result.left_duration || !result.right_duration) {
+    throw new Error("The split preview does not match the selected scene and frame.");
+  }
+  return result;
+}
+
+export async function observeSceneSplitReceipt(project: Project, change: SceneSplitChange, revision: number, requestId: string): Promise<boolean> {
+  if (!isTauri()) throw new Error("A durable split receipt requires Studio Desktop.");
+  const response = await invoke<{
+    state: string;
+    binding?: {
+      project_id: string; generation: string; base_branch: string; result_branch: string;
+      request_id: string; base_revision: string; result_revision: string;
+    };
+  }>("observe_scene_split_receipt", { request: { request_id: requestId, split: sceneSplitRequest(project, change, revision) } });
+  if (response?.state === "not_found") return false;
+  const binding = response?.binding;
+  if (response?.state !== "known_verified_v1" || !binding || binding.request_id !== requestId
+      || binding.project_id !== project.id || binding.generation !== project.generation
+      || binding.base_branch !== project.active_branch || binding.result_branch !== project.active_branch
+      || binding.base_revision !== String(revision) || binding.result_revision !== String(BigInt(revision) + 1n)) {
+    throw new Error("The stored receipt could not confirm this original scene split.");
+  }
+  return true;
+}
+
 export async function observeMarkerReceipt(
   project: Project, revision: number, requestId: string, change: MarkerChange,
 ): Promise<boolean> {
@@ -1729,6 +1775,7 @@ export async function observeScopedChangeReceipt(
 export async function applyChange(project: Project, change: Change, retainedRequestId?: string): Promise<Project> {
   const graphChange = change.type === "upsert_semantic_graph" || change.type === "remove_semantic_graph";
   const markerChange = change.type === "edit_marker" || change.type === "remove_marker";
+  const splitChange = change.type === "split_scene";
   const proposalChange = change.type === "apply_creative_patch" || change.type === "undo_creative_patch";
   const validRequest = graphUuid(retainedRequestId) && retainedRequestId.length === 36;
   // Both editors retain the original request identity before asking for a grant.
@@ -1736,7 +1783,9 @@ export async function applyChange(project: Project, change: Change, retainedRequ
     throw new Error("Retain the original Graph request identity before dispatch.");
   if (markerChange && !validRequest)
     throw new Error("Retain the original marker request identity before dispatch.");
-  if (retainedRequestId !== undefined && (!validRequest || (!graphChange && !markerChange && !proposalChange)))
+  if (splitChange && !validRequest)
+    throw new Error("Retain the original scene split request identity before dispatch.");
+  if (retainedRequestId !== undefined && (!validRequest || (!graphChange && !markerChange && !proposalChange && !splitChange)))
     throw new Error("The retained request identity cannot authorize another editor change.");
   const requestId = retainedRequestId ?? crypto.randomUUID();
   if (isTauri()) {
@@ -1843,6 +1892,8 @@ export async function previewSceneBeatTimeline(project: Project, change: SceneBe
 async function simulateChange(project: Project, change: Change, requestId: string, record: boolean): Promise<Project> {
   const next = simulationCandidate(project);
   switch (change.type) {
+    case "split_scene":
+      throw new Error("Scene splitting requires the saved Studio Desktop project.");
     case "combine_creative_branches":
       throw new Error("Combining editable branches requires the actual StudioService and canonical source preview.");
     case "upsert_scene_boundary":

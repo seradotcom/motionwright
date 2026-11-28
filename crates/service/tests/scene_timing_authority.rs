@@ -336,3 +336,148 @@ fn marker_edits_preserve_identity_locks_and_original_receipts_after_reopen() {
     assert_eq!(binding.result_revision, removed.revision.to_string());
     assert_eq!(binding.base_branch, moved.active_branch.to_string());
 }
+
+#[test]
+fn split_keeps_the_absolute_cut_and_persists_both_halves_in_one_revision() {
+    use uuid::Uuid;
+
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("split.sqlite3");
+    let service = StudioService::open(&database).unwrap();
+    let mut initial = project(&service);
+    let left = initial.scenes[0].id;
+    let right = Uuid::new_v4();
+    let node = Uuid::new_v4();
+    let beat = Uuid::new_v4();
+    initial = apply(
+        &service,
+        &initial,
+        "add-static-title",
+        Change::AddCanvasNode {
+            scene_id: left,
+            node: CanvasNode {
+                id: node,
+                name: "Original title".into(),
+                kind: "text".into(),
+                parent_id: None,
+                x: 10.0,
+                y: 20.0,
+                width: 300.0,
+                height: 80.0,
+                rotation_deg: 0.0,
+                opacity: 1.0,
+                text: Some("Copy on both sides".into()),
+                coordinate_space: CoordinateSpace::ProjectPixels,
+                z_index: 0,
+                style: NodeStyle::default(),
+                relations: vec![],
+                property_locks: Default::default(),
+                keyframes: vec![],
+            },
+        },
+    );
+    initial = apply(
+        &service,
+        &initial,
+        "add-later-beat",
+        Change::UpsertSceneBeat {
+            scene_id: left,
+            beat: Beat {
+                id: beat,
+                label: "Second beat".into(),
+                objective: String::new(),
+                start: time(2, 1),
+                duration: time(1, 1),
+            },
+        },
+    );
+    initial = apply(
+        &service,
+        &initial,
+        "add-fixed-marker",
+        Change::AddMarker {
+            at: time(5, 1),
+            label: "Fixed cue".into(),
+        },
+    );
+    let split = Change::SplitScene {
+        scene_id: left,
+        right_scene_id: right,
+        at: time(1001, 1000),
+    };
+    let locked = apply(
+        &service,
+        &initial,
+        "lock-the-cut",
+        Change::SetLock {
+            resource: format!("scene:{left}"),
+            kind: LockKind::Timing,
+            note: String::new(),
+        },
+    );
+    assert!(
+        service
+            .apply(locked.id, &locked.stamp(), "refuse-locked-split", &split)
+            .is_err()
+    );
+    assert_eq!(service.project(locked.id).unwrap(), locked);
+    initial = apply(
+        &service,
+        &locked,
+        "unlock-the-cut",
+        Change::RemoveLock {
+            lock_id: locked.locks[0].id,
+        },
+    );
+    let crossing = Change::SplitScene {
+        scene_id: left,
+        right_scene_id: right,
+        at: time(5, 2),
+    };
+    assert!(
+        service
+            .apply(
+                initial.id,
+                &initial.stamp(),
+                "refuse-crossing-beat",
+                &crossing
+            )
+            .is_err()
+    );
+    assert!(
+        service
+            .history(initial.id, initial.revision, 8)
+            .unwrap()
+            .is_empty()
+    );
+    let preview = service
+        .preview_change(initial.id, &initial.stamp(), &split)
+        .unwrap();
+    assert_eq!(preview.candidate_scene_count, initial.scenes.len() + 1);
+    assert_eq!(service.project(initial.id).unwrap(), initial);
+
+    let saved = apply(&service, &initial, "save-the-cut", split.clone());
+    assert_eq!(saved.revision, initial.revision + 1);
+    assert_eq!(saved.scenes[0].id, left);
+    assert_eq!(saved.scenes[0].duration, time(1001, 1000));
+    assert_eq!(saved.scenes[1].id, right);
+    assert_eq!(saved.scenes[1].start, time(1001, 1000));
+    assert_eq!(saved.scenes[1].duration, time(5999, 1000));
+    assert!(saved.scenes[0].beats.is_empty());
+    assert_eq!(saved.scenes[1].beats[0].id, beat);
+    assert_eq!(saved.scenes[1].beats[0].start, time(999, 1000));
+    assert_eq!(saved.scenes[0].nodes[0].id, node);
+    let mut right_node = saved.scenes[1].nodes[0].clone();
+    assert_ne!(right_node.id, node);
+    right_node.id = node;
+    assert_eq!(right_node, saved.scenes[0].nodes[0]);
+    assert_eq!(&saved.scenes[2..], &initial.scenes[1..]);
+    assert_eq!(saved.markers, initial.markers);
+    assert_eq!(
+        service.history(initial.id, initial.revision, 8).unwrap()[0].change,
+        split
+    );
+    drop(service);
+    let reopened = StudioService::open(&database).unwrap();
+    assert_eq!(reopened.project(saved.id).unwrap(), saved);
+}

@@ -32,3 +32,61 @@ test("Beat split uses real Service authority, one SQLite history change and a co
     expect(closure.oracle?.project).toEqual(restored);expect(service.lifecycleTaints).toEqual([]);
   }finally{if(!page.isClosed())await page.close();if(!finalized)await service.close();}
 });
+
+test("a scene split keeps its exact saved cut and recovers a lost reply without another write", async ({ page }, info) => {
+  const service = await ScopedChangeService.create({ databasePath: info.outputPath("service", "scene-split.sqlite3"), desktopInvokeFixture: true });
+  let finalized = false;
+  try {
+    const boot = await service.fixtureBootstrap();
+    const name = "Editable scene split";
+    const base = await service.apply(boot.project, { type: "add_scene", name, objective: "Preserve editorial timing", duration_seconds: 6 });
+    const scene = base.scenes.at(-1)!;
+    const invoke = service.invoke.bind(service);
+    let sent = 0;
+    let originalId: string | undefined;
+    let observedId: string | undefined;
+    service.invoke = async <T>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
+      const request = args.request as { request_id?: string; change?: { type?: string } } | undefined;
+      if (command === "observe_scene_split_receipt") observedId = request?.request_id;
+      if (command !== "apply_change" || request?.change?.type !== "split_scene") return invoke<T>(command, args);
+      originalId = request.request_id;
+      sent++;
+      await invoke<T>(command, args);
+      throw new Error("The original split reply was lost.");
+    };
+    await service.attachFixturePage(page, base.id);
+    await page.goto("/");
+    await page.locator(".tree-row").filter({ has: page.getByText(name, { exact: true }) }).click();
+    const start = Number(scene.start.num) / Number(scene.start.den);
+    await page.getByTitle("Go to timecode", { exact: true }).click();
+    await page.getByLabel("Go to timecode", { exact: true }).fill(String(start + 2) + "s");
+    await page.getByRole("button", { name: "Go", exact: true }).click();
+    await page.getByRole("button", { name: "Split scene", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Split scene", exact: true });
+    await expect(dialog).toContainText("2.000 s before");
+    expect(await service.history(base.id, base.revision, 8)).toEqual([]);
+    await dialog.getByRole("button", { name: "Save scene split", exact: true }).click();
+    await expect(dialog).toContainText("The original split reply was lost.");
+    const saved = await service.project(base.id);
+    const right = saved.scenes.at(-1)!;
+    expect(saved.revision).toBe(base.revision + 1);
+    expect(right.name).toBe(name + " (continued)");
+    expect(saved.scenes.at(-2)?.duration).toEqual({ num: "2", den: "1" });
+    expect(right.duration).toEqual({ num: "4", den: "1" });
+    expect(await service.history(base.id, base.revision, 8)).toHaveLength(1);
+    await service.close();
+    await service.start();
+    await page.reload();
+    await page.getByRole("button", { name: "Check scene split", exact: true }).click();
+    await dialog.getByRole("button", { name: "Check original split", exact: true }).click();
+    await expect(page.getByText("The original split was confirmed.", { exact: true })).toBeVisible();
+    expect(observedId).toBe(originalId);
+    expect(sent).toBe(1);
+    const closure = await service.finalizeClosedStore(info.outputPath("closed-store"), saved, [], [async () => { await page.close(); }]);
+    finalized = true;
+    expect(closure.oracle?.project).toEqual(saved);
+  } finally {
+    if (!page.isClosed()) await page.close();
+    if (!finalized) await service.close();
+  }
+});
