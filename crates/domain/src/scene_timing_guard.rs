@@ -45,17 +45,17 @@ impl Project {
                         "Scene trim would change approved scene timing.".into(),
                     ));
                 }
-                if let Some(operation) = protected_delivery_operation {
-                    if self.deliverables.iter().any(|profile| {
+                if let Some(operation) = protected_delivery_operation
+                    && self.deliverables.iter().any(|profile| {
                         profile.protected_scene_ids.contains(&original.id)
                             || (profile.timing_locked
                                 && (profile.included_scene_ids.is_empty()
                                     || profile.included_scene_ids.contains(&original.id)))
-                    }) {
-                        return Err(DomainError::Invalid(format!(
-                            "{operation} would change protected delivery timing."
-                        )));
-                    }
+                    })
+                {
+                    return Err(DomainError::Invalid(format!(
+                        "{operation} would change protected delivery timing."
+                    )));
                 }
             }
         }

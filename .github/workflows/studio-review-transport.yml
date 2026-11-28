@@ -1,0 +1,102 @@
+name: Studio review transport
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/studio-review-transport.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-review-session:
+    name: Windows StudioService test transport
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: g
+        shell: pwsh
+    env:
+      CARGO_TARGET_DIR: target
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_TERM_COLOR: never
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: g
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: '1.98.1'
+          components: clippy
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Verify source policies
+        run: |
+          python -B tooling/source_policy.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B tooling/public_surface_policy.py
+      - name: Verify scene timing persistence and build the test transport
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = (git rev-parse HEAD).Trim()
+          if ($source -cne $env:GITHUB_SHA -or (git status --porcelain=v1)) {
+            throw 'StudioService source does not match the requested clean revision.'
+          }
+
+          $case = 'unrelated_locked_timing_and_exact_rational_changes_survive_reopen'
+          $lines = @(cargo test --locked --jobs 2 -p motionwright-service --test scene_timing_authority $case -- --exact --test-threads=1)
+          $result = $LASTEXITCODE
+          $lines | Write-Output
+          if ($result -ne 0 -or $lines -cnotcontains "test $case ... ok") {
+            throw 'The selected SQLite contract did not pass.'
+          }
+
+          cargo clippy --locked --jobs 2 -p motionwright-domain -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Domain lint failed.' }
+
+          cargo build --locked --jobs 2 -p motionwright-service --example studio_review_session
+          if ($LASTEXITCODE -ne 0) { throw 'StudioService test transport build failed.' }
+          $binary = (Get-Item -LiteralPath 'target/debug/examples/studio_review_session.exe').FullName
+
+          $smoke = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP 'studio-review-smoke')
+          $line = '{"id":"bootstrap-smoke","command":"bootstrap","args":{}}'
+          $reply = @($line | & $binary --database (Join-Path $smoke.FullName 'studio.sqlite3'))
+          if ($LASTEXITCODE -ne 0 -or $reply.Count -ne 1) { throw 'StudioService JSONL startup or EOF failed.' }
+          $response = $reply[0] | ConvertFrom-Json
+          if ($response.id -cne 'bootstrap-smoke' -or $response.ok -ne $true -or
+              $response.result.test_transport -cne 'service-test-jsonl' -or $null -ne $response.result.project) {
+            throw 'Unexpected test transport startup response.'
+          }
+
+          $output = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP 'studio-review-artifact')
+          $name = 'studio_review_session.exe'
+          $target = Join-Path $output.FullName $name
+          Copy-Item -LiteralPath $binary -Destination $target
+          $receipt = [ordered]@{
+            schema = 'motionwright.studio-review-binary/1'
+            source_sha = $source
+            source_tree = (git rev-parse 'HEAD^{tree}').Trim()
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            platform = $env:RUNNER_OS
+            architecture = $env:RUNNER_ARCH
+            scene_timing_test = $case
+            executable = $name
+            sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash.ToLowerInvariant()
+            bytes = (Get-Item -LiteralPath $target).Length
+          }
+          $receipt | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $output.FullName 'receipt.json') -Encoding utf8NoBOM
+      - name: Retain the test executable and source receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: studio-review-session-windows-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/studio-review-artifact/studio_review_session.exe
+            ${{ runner.temp }}/studio-review-artifact/receipt.json
+          if-no-files-found: error
+          retention-days: 7
