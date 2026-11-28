@@ -1,3 +1,4 @@
+import type { ScopedMutationChange } from "./types";
 import { previewTransform } from "./canvasMotion";
 import { rectangularAncestorClip } from "./canvasClip";
 import { alignmentScale } from "./canvasAlignment";
@@ -635,6 +636,8 @@ export default function CanvasWorkspace({
   scene,
   commit,
   commitRequired,
+  commitScoped,
+  refreshScopedProject,
   playhead,
   onSeek,
   profile,
@@ -648,6 +651,8 @@ export default function CanvasWorkspace({
   scene: Scene | null;
   commit: Commit;
   commitRequired: Commit;
+  commitScoped: (change: ScopedMutationChange, requestId: string) => Promise<Project>;
+  refreshScopedProject: (source: Project) => Promise<Project>;
   playhead: number;
   onSeek: (absoluteSeconds: number) => void;
   profile: Project["deliverables"][number] | null;
@@ -1035,7 +1040,7 @@ export default function CanvasWorkspace({
   if (showArrangement) return <section className="production-workspace canvas-arrange-workspace" aria-label={scopedToolMode==="motion"?"Canvas animation workspace":"Canvas arrangement workspace"}>
     <header><div><h2>{scopedToolMode==="motion"?"Edit canvas animation":"Arrange canvas objects"}</h2><span>{scene.name}</span></div>
       <button className="secondary-button" disabled={busy} onClick={() => setShowArrangement(false)}>Back to object editing</button></header>
-    <CreativePatchWorkbench project={project} scene={scene} commit={async change => { await commitRequired(change); }}
+    <CreativePatchWorkbench project={project} scene={scene} commit={commitScoped} refreshProject={refreshScopedProject}
       busy={busy} playhead={playhead} onSeek={onSeek} displayProfile={profile} repairDraft={null}
       onDismissRepair={() => {}} initialNodeId={selectedNodeId} arrangementOpen={scopedToolMode==="arrange"}
       selectionRequest={scopedToolMode==="motion" ? scopedSelectionRequest : undefined}/>

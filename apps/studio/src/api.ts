@@ -80,7 +80,9 @@ import type {
   Project,
   ProjectEvent,
   MarkerChange,
+  ScopedMutationChange,
   RationalTime,
+  Scene,
   SceneBoundaryContextRequest,
   SceneBoundaryAuthoringContext,
   ProductionJobProjection,
@@ -1694,17 +1696,47 @@ export async function observeMarkerReceipt(
   return true;
 }
 
+export async function observeScopedChangeReceipt(
+  project: Project, sceneId: string, revision: number, requestId: string, change: ScopedMutationChange,
+): Promise<{ revision: number; scene: Scene } | null> {
+  if (!isTauri()) throw new Error("A durable proposal receipt requires Studio Desktop.");
+  const response = await invoke<{
+    binding?: {
+      format: string; resource: string; request_id: string; project_id: string; generation: string;
+      base_branch: string; result_branch: string; base_revision: string; result_revision: string;
+    };
+    scene?: Scene;
+  } | null>("observe_scoped_change_receipt", { request: {
+    project_id: project.id, generation: project.generation, branch_id: project.active_branch,
+    scene_id: sceneId, revision, request_id: requestId, change,
+  } });
+  if (response === null) return null;
+  const nextRevision = revision + 1;
+  const binding = response?.binding;
+  const scene = response?.scene;
+  if (!binding || !scene || scene.id !== sceneId || !Array.isArray(scene.nodes)
+      || binding.format !== "motionwright.apply-binding/1" || binding.resource !== "project:" + project.id
+      || binding.request_id !== requestId || binding.project_id !== project.id || binding.generation !== project.generation
+      || binding.base_branch !== project.active_branch || binding.result_branch !== project.active_branch
+      || binding.base_revision !== String(revision) || !Number.isSafeInteger(nextRevision)
+      || binding.result_revision !== String(nextRevision)) {
+    throw new Error("The stored receipt could not confirm the original proposal.");
+  }
+  return { revision: nextRevision, scene };
+}
+
 export async function applyChange(project: Project, change: Change, retainedRequestId?: string): Promise<Project> {
   const graphChange = change.type === "upsert_semantic_graph" || change.type === "remove_semantic_graph";
   const markerChange = change.type === "edit_marker" || change.type === "remove_marker";
+  const proposalChange = change.type === "apply_creative_patch" || change.type === "undo_creative_patch";
   const validRequest = graphUuid(retainedRequestId) && retainedRequestId.length === 36;
   // Both editors retain the original request identity before asking for a grant.
   if (graphChange && !validRequest)
     throw new Error("Retain the original Graph request identity before dispatch.");
   if (markerChange && !validRequest)
     throw new Error("Retain the original marker request identity before dispatch.");
-  if (!graphChange && !markerChange && retainedRequestId !== undefined)
-    throw new Error("A retained Graph request identity cannot authorize another editor change.");
+  if (retainedRequestId !== undefined && (!validRequest || (!graphChange && !markerChange && !proposalChange)))
+    throw new Error("The retained request identity cannot authorize this editor change.");
   const requestId = retainedRequestId ?? crypto.randomUUID();
   if (isTauri()) {
     const grant = await issueEffectGrant("project_edit", project, requestId);
@@ -2946,8 +2978,39 @@ function scopedEditChange(scene_id: string, edit: ScopedCanvasEdit): Change {
   }
 }
 
+interface ScopedEditorialPreview {
+  source_revision: number;
+  scene_id: string;
+  before: CanvasNode[];
+  after: CanvasNode[];
+  dirty_start: RationalTime;
+  dirty_end: RationalTime;
+  kind: string;
+}
+
+async function previewSavedScopedChange(project: Project, sceneId: string, change: ScopedMutationChange): Promise<ScopedEditorialPreview> {
+  const response = await invoke<ScopedEditorialPreview>("preview_scoped_change", { request: {
+    project_id: project.id, generation: project.generation, branch_id: project.active_branch,
+    revision: project.revision, scene_id: sceneId, change,
+  } });
+  if (response?.source_revision !== project.revision || response.scene_id !== sceneId
+      || response.kind !== "semantic_diff_full_scene_invalidation_not_pixel_verification"
+      || !Array.isArray(response.before) || !Array.isArray(response.after)
+      || !response.before.length || response.before.length !== response.after.length
+      || response.before.some((node, index) => node.id !== response.after[index]?.id)) {
+    throw new Error("The saved project returned a preview for a different proposal source.");
+  }
+  return response;
+}
+
+export function previewScopedUndo(project: Project, sceneId: string, patchId: string): Promise<ScopedEditorialPreview> {
+  if (isTauri()) return previewSavedScopedChange(project, sceneId, { type: "undo_creative_patch", patch_id: patchId });
+  return Promise.resolve().then(() => previewCreativePatchUndo(project, patchId));
+}
+
 /** Pure editorial A/B: no journal writes, persistence or renderer evidence. */
-export async function previewCreativePatch(project: Project, patch: CreativePatch) {
+export async function previewCreativePatch(project: Project, patch: CreativePatch): Promise<ScopedEditorialPreview> {
+  if (isTauri()) return previewSavedScopedChange(project, patch.scene_id, { type: "apply_creative_patch", patch });
   assertUnlocked(project, projectResource(project), ["content","style","position","timing"]);
   if (patch.base_revision !== project.revision || !patch.rationale.trim() || new TextEncoder().encode(patch.rationale).length > 4000
     || /[\u0000-\u0009\u000b-\u001f\u007f]/u.test(patch.rationale) || !patch.edits.length || patch.edits.length > 128) throw new Error("Creative patch is stale or outside its bounded scope.");

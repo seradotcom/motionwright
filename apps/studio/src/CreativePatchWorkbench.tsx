@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Eye, Plus, Trash2 } from "lucide-react";
-import { previewCreativePatch } from "./api";
+import { observeScopedChangeReceipt, previewCreativePatch, previewScopedUndo } from "./api";
+import { sameValue } from "./creativeProduction";
+import { finishScopedSave, readScopedSaves, retainScopedSave, sameRetainedDraft, scopedSaveStorageChanged } from "./scopedChangeRecovery";
+import type { ScopedSaveAttempt } from "./scopedChangeRecovery";
 import SceneCompositionStudy from "./SceneCompositionStudy";
 import ScopedPaintMotionEditor from "./ScopedPaintMotionEditor";
 import CanvasArrangementControls from "./CanvasArrangementControls";
@@ -10,7 +13,6 @@ import MeasuredComparisonControls from "./MeasuredComparisonControls";
 import MeasuredSeriesRevealControls from "./MeasuredSeriesRevealControls";
 import { scopedMotionIssue, scopedStyleIssues } from "./scopedPaintMotion";
 import { inheritedTextInk } from "./canvasInheritedInk";
-import { previewCreativePatchUndo } from "./creativeUndo";
 import { nativeRepairDraftIsCurrent } from "./nativeReviewRepair";
 import type { NativeReviewRepairDraft } from "./nativeReviewRepair";
 import {
@@ -21,7 +23,7 @@ import {
   scopedReviewKey, selectDraftNode, unqueuedInputCount, updateDraftTransformInput,
 } from "./scopedChangeDraft";
 import type { DraftEdit, ReviewedScopedChange, ScopedChangeDraft } from "./scopedChangeDraft";
-import type { CanvasNode, Change, DeliverableProfile, Project, Scene } from "./types";
+import type { CanvasNode, DeliverableProfile, Project, Scene, ScopedMutationChange } from "./types";
 import { seconds } from "./types";
 
 type Preview = Awaited<ReturnType<typeof previewCreativePatch>>;
@@ -29,7 +31,8 @@ type Review = ReviewedScopedChange & { preview: Preview };
 interface Props {
   project: Project;
   scene: Scene | null;
-  commit: (change: Change) => Promise<void>;
+  commit: (change: ScopedMutationChange, requestId: string) => Promise<Project>;
+  refreshProject: (source: Project) => Promise<Project>;
   busy: boolean;
   playhead: number;
   onSeek: (time: number) => void;
@@ -50,15 +53,38 @@ export default function CreativePatchWorkbench(props: Props) {
   return <ScopedEditor key={scopedDraftScope(props.project, props.scene)} {...props}/>;
 }
 
-function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayProfile, repairDraft, onDismissRepair, initialNodeId, arrangementOpen, selectionRequest, assistantDraft, onAssistantDraftHandled }: Props) {
+function ScopedEditor({ project, scene, commit, refreshProject, busy, playhead, onSeek, displayProfile, repairDraft, onDismissRepair, initialNodeId, arrangementOpen, selectionRequest, assistantDraft, onAssistantDraftHandled }: Props) {
   const scope = scopedDraftScope(project, scene);
   const storageKey = DRAFT_STORAGE_PREFIX + scope;
+  const desktop = "__TAURI_INTERNALS__" in window;
+  const sceneId = scene?.id;
+  const loadPendingSaves = () => {
+    try {
+      return { attempts: desktop && sceneId ? readScopedSaves(window.localStorage, scope, sceneId) : [], error: null };
+    } catch (reason) {
+      return { attempts: [], error: message(reason) };
+    }
+  };
+  const [pendingSaves, setPendingSaves] = useState(loadPendingSaves);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [unconfirmedAtNewerRevision, setUnconfirmedAtNewerRevision] = useState<string | null>(null);
+  const needsRecovery = pendingSaves.error !== null || pendingSaves.attempts.length > 0;
+  useEffect(() => {
+    const changed = (event: StorageEvent) => {
+      if (scopedSaveStorageChanged(event.key, scope)) setPendingSaves(loadPendingSaves());
+    };
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+    // The editor remounts when the project, branch, generation or scene changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope]);
   const freshDraft = () => selectDraftNode(createScopedDraft(project, scene),
     scene?.nodes.find(node => node.id === initialNodeId) ?? scene?.nodes[0]);
   const [recovery] = useState(() => {
     try {
       const raw = window.sessionStorage.getItem(storageKey);
-      return { draft: raw ? hydrateScopedDraft(decodeScopedDraft(raw, scope), project, scene) : freshDraft(), blocked: false, error: null as string | null };
+      return { draft: raw ? hydrateScopedDraft(decodeScopedDraft(raw, scope), project, scene)
+        : pendingSaves.attempts[0]?.draft ?? freshDraft(), blocked: false, error: null as string | null };
     } catch {
       return { draft: freshDraft(), blocked: true,
         error: "The saved draft could not be restored. Its recovery copy has been left untouched; your project is unchanged." };
@@ -75,7 +101,6 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
   const [notice, setNotice] = useState<string | null>(null);
   const epoch = useRef(0);
   const inFlight = useRef(false);
-  const submitted = useRef<Review | null>(null);
   const nativeSource = draft.nativeSource;
   const sourceStale = nativeSource !== null && !nativeRepairDraftIsCurrent(project, scene, nativeSource, displayProfile?.id ?? null);
   const recipeStale = draft.recipeSource !== undefined && draft.recipeSource.revision !== project.revision;
@@ -86,7 +111,7 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
   const activeReview = review?.key === key && (undoTarget !== null || !draftStale) ? review : null;
   const preview = activeReview?.preview ?? null;
   const node = scene?.nodes.find(item => item.id === draft.editor.nodeId);
-  const lockedUi = busy || submitting;
+  const lockedUi = busy || submitting || needsRecovery;
   const hasObjectSource = Boolean(node && draft.editor.source?.id === node.id);
   const hasTargetSource = hasObjectSource && draftEditorSourceAvailable(draft);
   const targetEditingDisabled = lockedUi || !hasTargetSource;
@@ -101,9 +126,6 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
 
   const invalidate = () => {
     epoch.current += 1;
-    // A later editing decision must not be cleared by an unconfirmed earlier
-    // submission if the project is refreshed after its callback failed.
-    submitted.current = null;
     setReview(null);
     setPending(false);
     setError(null);
@@ -124,34 +146,24 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
       setBackupError("This tab could not keep a recovery copy. Your draft is still open; keep this view open until you commit or discard it.");
     }
   }, [draft, storageKey, backupBlocked]);
+  useEffect(() => {
+    if (!needsRecovery) return;
+    epoch.current += 1;
+    setReview(null);
+    setPending(false);
+  }, [needsRecovery]);
   useEffect(() => () => { epoch.current += 1; }, []);
   useEffect(() => {
     epoch.current += 1;
     setReview(null);
     setPending(false);
-    const receipt = submitted.current;
-    if (receipt && reviewedChangeWasCommitted(project, receipt)) {
-      const next = receipt.change.type === "undo_creative_patch" && scopedDraftHasWork(draft)
-        ? draft : retainUnqueuedInputs(draft, project, scene);
-      const keepDraft = scopedDraftHasWork(next);
-      if (keepDraft) setDraft(next);
-      else {
-        const selected=selectDraftNode(next,scene?.nodes.find(item=>item.id===draft.editor.nodeId)??scene?.nodes[0]);
-        setDraft({...selected,editor:{...selected.editor,kind:draft.editor.kind}});
-      }
-      if (!keepDraft) onDismissRepair();
-      setUndoTarget(null);
-      setNotice(keepDraft ? "The reviewed change is stored. Your other uncommitted inputs are still available."
-        : "The reviewed change is stored in this project revision.");
-    } else if (!scopedDraftHasWork(draft)) {
+    if (!needsRecovery && !scopedDraftHasWork(draft)) {
       setDraft(current=>{
         const next=selectDraftNode(createScopedDraft(project,scene),scene?.nodes.find(item=>item.id===current.editor.nodeId)??scene?.nodes[0]);
         return {...next,editor:{...next.editor,kind:current.editor.kind}};
       });
     }
-    submitted.current = null;
-    // A new revision invalidates a preview, never an operator's draft. Commit
-    // callbacks may resolve after an error; only persisted matching state clears it.
+    // A new revision invalidates a preview while preserving the operator's draft.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.revision, project.generation, project.id, project.active_branch, displayProfile?.id]);
 
@@ -165,7 +177,7 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
   };
   const handledSelection = useRef<number | null>(null);
   useEffect(() => {
-    if (!selectionRequest || handledSelection.current === selectionRequest.nonce) return;
+    if (lockedUi || !selectionRequest || handledSelection.current === selectionRequest.nonce) return;
     handledSelection.current = selectionRequest.nonce;
     const target = scene?.nodes.find(item=>item.id===selectionRequest.nodeId);
     if (!target) { setNotice("The requested animation object is unavailable in this scene."); return; }
@@ -179,13 +191,13 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
     // This is an explicit navigation request. Subsequent edits keep their local
     // selection and RAW inputs rather than replaying the request on each render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[selectionRequest?.nonce,scope]);
+  },[selectionRequest?.nonce,scope,lockedUi]);
   useEffect(() => {
-    if (incomingRepair && !scopedDraftHasWork(draft)) beginRepair(incomingRepair);
+    if (!lockedUi && incomingRepair && !scopedDraftHasWork(draft)) beginRepair(incomingRepair);
     // An explicit handoff initializes an empty draft. A different existing draft
     // requires the visible replace/keep choice below and survives ordinary refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [incomingRepair && JSON.stringify(incomingRepair)]);
+  }, [incomingRepair && JSON.stringify(incomingRepair), lockedUi]);
 
   const assistantDraftCurrent = assistantDraft?.scope === scope && assistantDraft.baseRevision === project.revision;
   const acceptAssistantDraft = () => {
@@ -223,7 +235,7 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
     setPending(true);
     const requestEpoch = ++epoch.current;
     const requestKey = scopedReviewKey(project, scene, draft, null) + JSON.stringify(displayProfile?.id ?? null);
-    const change: Change = { type: "apply_creative_patch", patch: draftPatch(draft, scene.id) };
+    const change: ScopedMutationChange = { type: "apply_creative_patch", patch: draftPatch(draft, scene.id) };
     try {
       const result = await previewCreativePatch(project, structuredClone(change.patch));
       if (requestEpoch !== epoch.current || requestKey !== latest.current) return;
@@ -248,32 +260,145 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
     } catch (reason) { setError(message(reason)); }
   };
   const records = (project.production_design?.patches ?? []).filter(record => record.scene_id === scene?.id);
-  const inspectUndo = (id: string) => {
-    if (lockedUi || pending) return;
+  const inspectUndo = async (id: string) => {
+    if (!scene || lockedUi || pending) return;
     invalidate();
     setUndoTarget(id);
+    setPending(true);
+    const epochAtRequest = epoch.current;
+    const requestKey = scopedReviewKey(project, scene, draft, id) + JSON.stringify(displayProfile?.id ?? null);
     try {
-      const result = previewCreativePatchUndo(project, id);
-      const requestKey = scopedReviewKey(project, scene, draft, id) + JSON.stringify(displayProfile?.id ?? null);
+      const result = await previewScopedUndo(project, scene.id, id);
+      if (epoch.current !== epochAtRequest) return;
+      if (result.source_revision !== project.revision || result.scene_id !== scene.id) throw new Error("The undo preview belongs to a different scene or revision.");
       setReview({ key: requestKey, projectId: project.id, generation: project.generation, branchId: project.active_branch,
         revision: project.revision, change: { type: "undo_creative_patch", patch_id: id }, preview: result });
-    } catch (reason) { setError(message(reason)); }
+    } catch (reason) {
+      if (epoch.current === epochAtRequest) setError(message(reason));
+    } finally {
+      if (epoch.current === epochAtRequest) setPending(false);
+    }
+  };
+  const settleDraft = (change: ScopedMutationChange, revision: number, savedScene: Scene, attempt?: ScopedSaveAttempt) => {
+    const sameDraft = !attempt || (!backupBlocked && sameRetainedDraft(draft, attempt));
+    if (sameDraft && change.type === "apply_creative_patch") {
+      const savedProject = { ...project, revision };
+      let next = retainUnqueuedInputs(draft, savedProject, savedScene);
+      const keepDraft = scopedDraftHasWork(next);
+      if (!keepDraft) {
+        const selected = selectDraftNode(next, savedScene.nodes.find(item => item.id === draft.editor.nodeId) ?? savedScene.nodes[0]);
+        next = { ...selected, editor: { ...selected.editor, kind: draft.editor.kind } };
+      }
+      if (attempt) {
+        // Save the remaining inputs before clearing the durable pending slot.
+        if (keepDraft) window.sessionStorage.setItem(storageKey, encodeScopedDraft(next));
+        else window.sessionStorage.removeItem(storageKey);
+      }
+      update(next);
+      if (!keepDraft) onDismissRepair();
+    } else {
+      invalidate();
+      setUndoTarget(null);
+    }
+    if (attempt) finishScopedSave(window.localStorage, scope, attempt);
+    setNotice("The original save is confirmed.");
   };
   const applyReviewed = async () => {
-    if (!activeReview || lockedUi || pending || inFlight.current || activeReview.key !== latest.current) return;
+    if (!scene || !activeReview || lockedUi || pending || inFlight.current || activeReview.key !== latest.current) return;
     const exactReview = structuredClone(activeReview);
+    const requestId = crypto.randomUUID();
+    let attempt: ScopedSaveAttempt | undefined;
+    if (desktop) {
+      try {
+        attempt = retainScopedSave(window.localStorage, scope, scene.id, requestId, exactReview.revision, draft,
+          exactReview.change.type === "undo_creative_patch" ? exactReview.change.patch_id : null);
+      } catch (reason) {
+        setError(message(reason) + " No proposal was sent.");
+        setPendingSaves(loadPendingSaves());
+        return;
+      }
+      if (!sameValue(attempt.change, exactReview.change)) {
+        try { finishScopedSave(window.localStorage, scope, attempt); }
+        catch (reason) { setSaveMessage(message(reason)); }
+        setError("The retained change differs from the reviewed proposal. Prepare a new preview.");
+        setPendingSaves(loadPendingSaves());
+        return;
+      }
+      setPendingSaves(loadPendingSaves());
+    }
     inFlight.current = true;
-    submitted.current = exactReview;
     setSubmitting(true);
     setError(null);
-    try { await commit(structuredClone(exactReview.change)); }
-    catch (reason) { setError(message(reason)); }
-    finally { inFlight.current = false; setSubmitting(false); }
+    setSaveMessage(null);
+    try {
+      const saved = await commit(exactReview.change, requestId);
+      const savedScene = saved.scenes.find(item => item.id === scene.id);
+      if (!savedScene || !reviewedChangeWasCommitted(saved, exactReview)) {
+        throw new Error("The original reply did not confirm the reviewed change.");
+      }
+      settleDraft(exactReview.change, saved.revision, savedScene, attempt);
+    } catch (reason) {
+      if (attempt) setSaveMessage(message(reason));
+      else setError(message(reason));
+    } finally {
+      inFlight.current = false;
+      setSubmitting(false);
+      setPendingSaves(loadPendingSaves());
+    }
+  };
+
+  const checkOriginalSave = async (attempt: ScopedSaveAttempt, keepOriginal = false) => {
+    if (!scene || busy || inFlight.current) return;
+    inFlight.current = true;
+    setSubmitting(true);
+    setSaveMessage(null);
+    setUnconfirmedAtNewerRevision(null);
+    try {
+      const observe = () => observeScopedChangeReceipt(project, scene.id, attempt.revision, attempt.requestId, attempt.change);
+      let receipt = await observe();
+      const saved = await refreshProject(project);
+      if (saved.id !== project.id || saved.generation !== project.generation || saved.active_branch !== project.active_branch) {
+        throw new Error("Open the original saved project and branch to finish recovery.");
+      }
+      // A newer project revision fences this original CAS. Read its receipt
+      // again so an apply between the first read and that fence is still seen.
+      if (!receipt && saved.revision > attempt.revision) receipt = await observe();
+      if (receipt) {
+        if (saved.revision < receipt.revision) throw new Error("Refresh the saved project before using the confirmed original receipt.");
+        settleDraft(attempt.change, receipt.revision, receipt.scene, attempt);
+      } else if (keepOriginal && saved.revision > attempt.revision) {
+        finishScopedSave(window.localStorage, scope, attempt, true);
+        invalidate();
+        setUndoTarget(null);
+        setNotice("The original save is retained. Review the changes on the newer saved revision.");
+      } else {
+        if (saved.revision > attempt.revision) setUnconfirmedAtNewerRevision(attempt.requestId);
+        setSaveMessage("There is no verified receipt for this original save.");
+      }
+    } catch (reason) {
+      setSaveMessage(message(reason));
+    } finally {
+      setPendingSaves(loadPendingSaves());
+      inFlight.current = false;
+      setSubmitting(false);
+    }
   };
   const editSummary = (edit: { node_id: string; kind: string }) => `${scene?.nodes.find(item => item.id === edit.node_id)?.name ?? edit.node_id} / ${edit.kind}`;
 
   return <div className="production-patch">
     <div className="production-section-title"><Eye size={18}/><div><h2>Scoped changes</h2><p>Stage a bounded proposal, inspect the difference and commit once.</p></div></div>
+    {needsRecovery && <section className="production-notice" aria-label="Original proposal save">
+      <strong>Check the original save</strong>
+      <span>Studio kept the submitted request. Check its saved receipt before another proposal or undo.</span>
+      {pendingSaves.error && <p className="production-error" role="alert">{pendingSaves.error}</p>}
+      {saveMessage && <p className="production-help" role="status">{saveMessage}</p>}
+      {pendingSaves.attempts.map(attempt => <div className="production-button-row" key={attempt.requestId}>
+        <span>{attempt.change.type === "undo_creative_patch" ? "Undo" : "Proposal"} from revision {attempt.revision}</span>
+        <button type="button" className="secondary-button" disabled={busy || submitting} onClick={() => checkOriginalSave(attempt)}>Check original save</button>
+        {unconfirmedAtNewerRevision === attempt.requestId && <button type="button" className="secondary-button"
+          disabled={busy || submitting} onClick={() => checkOriginalSave(attempt, true)}>Keep original and review current</button>}
+      </div>)}
+    </section>}
     {assistantDraft && (!assistantDraftCurrent || backupBlocked || scopedDraftHasWork(draft)) && <div className="production-notice" role="status">
       <strong>Assistant proposal · {assistantDraft.edits.length} suggested edits</strong>
       <span>{!assistantDraftCurrent ? "The saved revision changed. Export current context from the Assistant to request an updated proposal."

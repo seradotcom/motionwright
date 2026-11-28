@@ -17,6 +17,7 @@ mod project_creation;
 mod project_projection;
 mod read_only;
 mod scene_boundary;
+mod scoped_changes;
 mod semantic_graph;
 mod semantic_graph_admission;
 mod svg_admission;
@@ -56,6 +57,9 @@ pub use project_projection::{
 pub use read_only::StudioServiceReader;
 pub use scene_boundary::{
     SceneBoundaryAuthoringContext, SceneBoundaryContextRequest, SceneBoundaryPredecessorContext,
+};
+pub use scoped_changes::{
+    ScopedChangePreviewRequest, ScopedChangeReceipt, ScopedChangeReceiptRequest,
 };
 pub use semantic_graph::SemanticGraphContextRequest;
 pub use semantic_graph_admission::{

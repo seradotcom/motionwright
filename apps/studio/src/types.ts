@@ -973,6 +973,8 @@ export type Change =
   | { type: "set_lock"; resource: string; kind: LockKind; note: string }
   | { type: "remove_lock"; lock_id: string };
 
+export type ScopedMutationChange = Extract<Change, { type: "apply_creative_patch" | "undo_creative_patch" }>;
+
 export type MarkerChange = Extract<Change, { type: "edit_marker" | "remove_marker" }>;
 
 export interface ProjectEvent {

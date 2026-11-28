@@ -965,6 +965,16 @@ impl Session {
                     .preview_branch_combination(&request(args)?)
                     .map_err(|error| error.to_string())?,
             ),
+            "preview_scoped_change" => encoded(
+                self.service
+                    .preview_scoped_change(&request(args)?)
+                    .map_err(|error| error.to_string())?,
+            ),
+            "observe_scoped_change_receipt" => encoded(
+                self.service
+                    .observe_scoped_change_receipt(&request(args)?)
+                    .map_err(|error| error.to_string())?,
+            ),
             "preview_creative_patch" => {
                 let request: PatchRequest = request(args)?;
                 let project =

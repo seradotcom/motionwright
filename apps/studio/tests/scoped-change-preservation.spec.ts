@@ -134,8 +134,8 @@ test("uncommitted inputs survive changing fields, objects, tabs and reloading", 
   await xInput(page).fill(rawX);
   await expect(xInput(page)).toHaveValue(rawX);
   await expect(xInput(page)).toHaveAttribute("aria-invalid", "true");
-  await expect(page.locator("#scoped-transform-error")).toHaveText("Complete x with a finite number before adding this transform.");
-  await expect(page.locator("#scoped-transform-error")).toBeVisible();
+  await expect(page.locator("#scoped-editor-error")).toHaveText("Complete x with a finite number before adding this transform.");
+  await expect(page.locator("#scoped-editor-error")).toBeVisible();
   await expect(button(page, "Add to proposal")).toBeDisabled();
   await page.getByLabel("Patch target object").selectOption(second.id);
   await page.getByLabel("Patch edit kind").selectOption("text");
@@ -155,7 +155,7 @@ test("uncommitted inputs survive changing fields, objects, tabs and reloading", 
   await openProposal(page);
   await expect(xInput(page)).toHaveValue(rawX);
   await expect(xInput(page)).toHaveAttribute("aria-invalid", "true");
-  await expect(page.locator("#scoped-transform-error")).toBeVisible();
+  await expect(page.locator("#scoped-editor-error")).toBeVisible();
   await expect(button(page, "Add to proposal")).toBeDisabled();
   await page.getByLabel("Patch edit kind").selectOption("text");
   await expect(page.getByLabel("Patch replacement text")).toHaveValue("Author input kept before it enters the queue.");

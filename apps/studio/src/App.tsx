@@ -130,6 +130,7 @@ import type {
   StudioBootstrap,
   Change,
   MarkerChange,
+  ScopedMutationChange,
   PortableBundlePlan,
   MotionCanvasRenderEvidence,
   MotionCanvasFilmOptions,
@@ -1725,17 +1726,26 @@ export default function App() {
     }
   }, []);
 
-  const admitSavedView = useCallback(async (id: string, mode: ProjectOpenMode = "auto"): Promise<StudioProjectView> => {
+  const admitSavedView = useCallback(async (
+    id: string, mode: ProjectOpenMode = "auto", expectedBranch?: Pick<Project, "id" | "generation" | "active_branch">,
+  ): Promise<StudioProjectView> => {
     const source = viewRef.current;
     return mutationGate.current.readView({
       source: projectViewRevision(source),
       current: () => projectViewRevision(viewRef.current),
       requestedProjectId: id,
-      load: () => openSavedProjectView(id, mode, sdk => {
-        // Shell information is not project authority. Keep library creation
-        // available when the selected saved identity cannot be opened.
-        if (viewRef.current === source) shellSdkRef.current = sdk;
-      }),
+      load: async () => {
+        const next = await openSavedProjectView(id, mode, sdk => {
+          // Shell information is not project authority. Keep library creation
+          // available when the selected saved identity cannot be opened.
+          if (viewRef.current === source) shellSdkRef.current = sdk;
+        });
+        if (expectedBranch && (next.kind !== "full" ||
+            timelineSelectionScope(next.boot.project) !== timelineSelectionScope(expectedBranch))) {
+          throw new Error("Open the original saved project and branch to finish recovery.");
+        }
+        return next;
+      },
       view: projectViewRevision,
       publish: publishOpenedView,
       pending: setBusy,
@@ -2093,12 +2103,15 @@ export default function App() {
   const commitMarker = useCallback((change: MarkerChange, requestId: string): Promise<Project> =>
     transactProject(source => applyChange(source, change, requestId)), [transactProject]);
 
-  const refreshMarkerProject = useCallback(async (source: Project): Promise<Project> => {
+  const commitScoped = useCallback((change: ScopedMutationChange, requestId: string): Promise<Project> =>
+    transactProject(source => applyChange(source, change, requestId)), [transactProject]);
+
+  const refreshSavedBranch = useCallback(async (source: Project): Promise<Project> => {
     if (!("__TAURI_INTERNALS__" in window) || !bootRef.current
         || timelineSelectionScope(bootRef.current.project) !== timelineSelectionScope(source)) {
-      throw new Error("Marker recovery requires the same saved project and branch in Studio Desktop.");
+      throw new Error("Recovery requires the same saved project and branch in Studio Desktop.");
     }
-    const next = await admitSavedView(source.id, "editor");
+    const next = await admitSavedView(source.id, "editor", source);
     if (next.kind !== "full") throw new Error("The complete saved project is unavailable.");
     return next.boot.project;
   }, [admitSavedView]);
@@ -2367,7 +2380,7 @@ export default function App() {
             rate={timebaseRate} mode={displayMode} onEditTiming={()=>setBeatTimelineOpen(true)} />;
       case "Production":
         return <ProductionDesignWorkspace timelineRequest={timelineEditorRequest} onTimelineRequestHandled={consumeTimelineEditorRequest} project={project} scene={selectedScene} commit={commit} commitCamera={commitCamera}
-          sourceServices={{
+          commitScoped={commitScoped} refreshScopedProject={refreshSavedBranch} sourceServices={{
             saveSource: ingestNativeSource,
             refreshProject: refreshGraphProject,
             exportSource: request => {
@@ -2409,7 +2422,8 @@ export default function App() {
           }} displayProfile={selectedProfile} evidence={nativeRenderReceipt} onOpenRender={() => setWorkspace("Deliver")} />;
       case "Canvas":
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit}
-          commitRequired={commitCamera} playhead={playhead} onSeek={seekTo} profile={selectedProfile} busy={busy}
+          commitRequired={commitCamera} commitScoped={commitScoped} refreshScopedProject={refreshSavedBranch}
+          playhead={playhead} onSeek={seekTo} profile={selectedProfile} busy={busy}
           initialSelectedNodeId={selectedAssistantNodeId} onObjectSelectionChange={selectAssistantObject}
           timelineRequest={timelineEditorRequest} onTimelineRequestHandled={consumeTimelineEditorRequest} />;
       case "Timeline":
@@ -2661,7 +2675,7 @@ export default function App() {
                 assistantToggle.current?.focus();
               }}>Return to editor</button>
               <CreativePatchWorkbench project={project} scene={selectedScene} playhead={playhead} onSeek={seekTo}
-                displayProfile={selectedProfile} busy={busy} commit={async change => { await commitCamera(change); }}
+                displayProfile={selectedProfile} busy={busy} commit={commitScoped} refreshProject={refreshSavedBranch}
                 repairDraft={null} onDismissRepair={() => {}} initialNodeId={selectedAssistantNodeId}
                 assistantDraft={activeProposalReview.draft}
                 onAssistantDraftHandled={() => setProposalReview(current => current ? { ...current, draft: undefined } : current)} />
@@ -2710,7 +2724,7 @@ export default function App() {
         setPlayhead={seekTo}
         commit={commit}
         commitMarker={commitMarker}
-        refreshMarkerProject={refreshMarkerProject}
+        refreshMarkerProject={refreshSavedBranch}
         playing={playing}
         togglePlayback={() => setPlaying((current) => !current)}
         stepFrame={stepFrame}

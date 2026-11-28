@@ -947,6 +947,36 @@ async fn observe_marker_receipt(
 }
 
 #[tauri::command]
+async fn preview_scoped_change(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: motionwright_service::ScopedChangePreviewRequest,
+) -> Result<motionwright_domain::CreativePatchPreview, String> {
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        service.preview_scoped_change(&request).map_err(sanitized)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn observe_scoped_change_receipt(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: motionwright_service::ScopedChangeReceiptRequest,
+) -> Result<Option<motionwright_service::ScopedChangeReceipt>, String> {
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        service
+            .observe_scoped_change_receipt(&request)
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn project_history_recent(
     mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
@@ -5365,6 +5395,8 @@ fn main() {
             project_history,
             project_history_recent,
             observe_marker_receipt,
+            preview_scoped_change,
+            observe_scoped_change_receipt,
             asset_integrity_page,
             model_request_preflight,
             production_runtime_status,

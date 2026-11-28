@@ -270,12 +270,15 @@ test("two Studio clients reject a stale commit and let the author resolve only t
     await button(secondPage, "Apply as one revision").click();
     await expect(secondPage.locator(".production-workspace-header p")).toContainText(`revision ${initial.revision + 1}`);
     await button(page, "Apply as one revision").click();
-    await expect(page.locator(".error-banner")).toBeVisible();
+    await expect(page.getByRole("region", { name: "Original proposal save" })).toBeVisible();
     await expect(page.getByLabel("Patch replacement text")).toHaveValue("Client A's preserved draft.");
     expect((await service.project(initial.id)).revision).toBe(initial.revision + 1);
     expect(await service.history(initial.id, initial.revision)).toHaveLength(1);
     await page.reload();
     await openProposal(page, scene.id);
+    await button(page, "Check original save").click();
+    await expect(page.getByRole("region", { name: "Original proposal save" })).toContainText("There is no verified receipt");
+    await button(page, "Keep original and review current").click();
     const conflicts = page.getByRole("region", { name: "Proposal conflicts", exact: true });
     await expect(conflicts).toContainText("text · value changed");
     await expect(button(page, "Review on current revision")).toBeDisabled();
@@ -302,5 +305,87 @@ test("two Studio clients reject a stale commit and let the author resolve only t
   } finally {
     await evidence(testInfo, peer ? [service, peer] : [service], final,
       [() => page.close(), ...(secondPage ? [() => secondPage!.close()] : [])]);
+  }
+});
+
+test("assistant checks the original saved proposal after a lost reply and a later revision", async ({ page }, testInfo) => {
+  const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "assistant.sqlite3"), desktopInvokeFixture: true });
+  let peer: ScopedChangeService | undefined;
+  let final: Project | undefined;
+  try {
+    const boot = await service.fixtureBootstrap();
+    const initial = boot.project;
+    final = initial;
+    const scene = initial.scenes.find(item => item.id === boot.fixture.scene_id)!;
+    const target = scene.nodes.find(item => item.id === boot.fixture.node_id)!;
+    const other = scene.nodes.find(item => item.kind === "text" && item.id !== target.id)!;
+    const text = "Reviewed assistant copy in the saved cut.";
+    let applyCount = 0;
+    let originalRequestId: unknown;
+    let observedRequestId: unknown;
+    const invoke = service.invoke.bind(service);
+    service.invoke = async <T>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
+      const request = args.request as { request_id?: string; change?: { type: string } } | undefined;
+      if (command === "observe_scoped_change_receipt") observedRequestId = request?.request_id;
+      if (command !== "apply_change" || request?.change?.type !== "apply_creative_patch") return invoke<T>(command, args);
+      applyCount += 1;
+      const applied = await invoke<T>(command, args);
+      if (applyCount !== 1) return applied;
+      originalRequestId = request.request_id;
+      throw new Error("The original save reply was lost.");
+    };
+    await service.attachFixturePage(page);
+    await page.goto("/");
+    const openAssistantReview = async () => {
+      await button(page, "Assistant").click();
+      await button(page, "Open scoped changes").click();
+    };
+    await button(page, "Assistant").click();
+    await page.getByLabel("Editing scope").selectOption("object:" + target.id);
+    await page.getByLabel("Proposal JSON").fill(JSON.stringify({
+      schema: "motionwright.assistant-proposal/1",
+      source: {
+        project_id: initial.id, generation: initial.generation, branch_id: initial.active_branch,
+        revision: initial.revision, scene_id: scene.id,
+      },
+      rationale: "Replace the body with its reviewed line.",
+      edits: [{ kind: "text", node_id: target.id, text }],
+    }));
+    await button(page, "Review proposal").click();
+    await page.getByLabel("Patch target object").selectOption(other.id);
+    await page.getByLabel("Patch replacement text").fill("Keep this outside the submitted proposal.");
+    await button(page, "Preview scoped changes").click();
+    await button(page, "Apply as one revision").click();
+    const recovery = page.getByRole("region", { name: "Original proposal save" });
+    await expect.poll(async () => (await service.project(initial.id)).revision).toBe(initial.revision + 1);
+    const committed = await service.project(initial.id);
+    final = committed;
+    await expect(recovery).toContainText("The original save reply was lost.");
+    expect(committed.revision).toBe(initial.revision + 1);
+    expect(await service.history(initial.id, initial.revision)).toHaveLength(1);
+    expect(applyCount).toBe(1);
+
+    peer = await service.peer();
+    final = await peer.apply(committed, {
+      type: "update_canvas_text", scene_id: scene.id, node_id: other.id, text: "A later saved line.",
+    });
+    await page.evaluate(() => window.sessionStorage.clear());
+    await page.reload();
+    await openAssistantReview();
+    await expect(recovery).toBeVisible();
+    await expect(button(page, "Apply as one revision")).toBeDisabled();
+    await button(page, "Check original save").click();
+    await expect(recovery).toHaveCount(0);
+    await expect(page.getByText("The original save is confirmed.", { exact: false })).toBeVisible();
+    expect(observedRequestId).toBe(originalRequestId);
+    expect(applyCount).toBe(1);
+    await expect(page.getByRole("region", { name: "Proposed edits" })).toContainText("No edits queued.");
+    const conflicts = page.getByRole("region", { name: "Proposal conflicts" });
+    await expect(conflicts).toContainText("text · value changed");
+    await expect(page.getByLabel("Patch replacement text")).toHaveValue("Keep this outside the submitted proposal.");
+    expect(await peer.reopen(initial.id)).toEqual(final);
+    expect(final.production_design.patches).toHaveLength(1);
+  } finally {
+    await evidence(testInfo, peer ? [service, peer] : [service], final, [() => page.close()]);
   }
 });

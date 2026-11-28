@@ -1,7 +1,7 @@
 import type { CreativePatch, ScopedCanvasEdit } from "./creativeProduction";
 import { sameValue } from "./creativeProduction";
 import type { NativeReviewRepairDraft } from "./nativeReviewRepair";
-import type { CanvasNode, CanvasTransform, Change, Project, Scene } from "./types";
+import type { CanvasNode, CanvasTransform, Project, Scene, ScopedMutationChange } from "./types";
 import { CANVAS_STYLE_FIELDS, cleanScopedMotion, cleanScopedStyle, parseScopedMotion, parseScopedStyle,
   scopedMotionRows, scopedStyleRaw, validScopedMotion, validScopedMotionRows, validScopedStyle, validScopedStyleRaw } from "./scopedPaintMotion";
 import type { ScopedMotionRow, ScopedStyleRaw } from "./scopedPaintMotion";
@@ -551,7 +551,7 @@ export interface ReviewedScopedChange {
   generation: string;
   branchId: string;
   revision: number;
-  change: Change;
+  change: ScopedMutationChange;
   preview: { source_revision: number; scene_id: string; before: CanvasNode[]; after: CanvasNode[] };
 }
 export function reviewedChangeWasCommitted(project: Project, reviewed: ReviewedScopedChange): boolean {
