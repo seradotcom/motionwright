@@ -64,8 +64,8 @@ CAS_INDEXES = {
 # Source and SQLite declarations for Storage schema six.
 BUDGET_SOURCE_PATH = 'crates/storage/src/root_operation_budget.rs'
 # Reviewed exact current Storage v6 module source; drift must fail closed.
-BUDGET_SOURCE_GIT_BYTES = 33678
-BUDGET_SOURCE_GIT_SHA256 = 'b9e9b62c25090bad0ca54d5d4331a35a8be2c29084e75d8c23325a4cde998e77'
+BUDGET_SOURCE_GIT_BYTES = 33795
+BUDGET_SOURCE_GIT_SHA256 = 'd0d0d8fd99c6de65c8a98326bd2ff3eb8feba63ad378077bb632edf47458aa17'
 BUDGET_OBJECTS = {'production_operation_debit_budget_gate': ('trigger',
                                             'production_operation_debits',
                                             'CREATE TRIGGER '
