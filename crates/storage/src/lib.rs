@@ -1540,6 +1540,39 @@ impl Store {
         request_id: &str,
         change: &Change,
     ) -> Result<ApplyOutcome> {
+        self.apply_with_capture(id, expected, request_id, change, None, || Ok(()))
+    }
+
+    /// Commit an admitted file import using its private, verified capture.
+    /// The final SQLite revision check and journal writes precede CAS publication.
+    pub fn apply_captured_file_import<P>(
+        &mut self,
+        id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        change: &Change,
+        captured: &StagedFileImport,
+        admit_publication: impl FnOnce() -> std::io::Result<P>,
+    ) -> Result<ApplyOutcome> {
+        self.apply_with_capture(
+            id,
+            expected,
+            request_id,
+            change,
+            Some(captured),
+            admit_publication,
+        )
+    }
+
+    fn apply_with_capture<P>(
+        &mut self,
+        id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        change: &Change,
+        captured: Option<&StagedFileImport>,
+        admit_publication: impl FnOnce() -> std::io::Result<P>,
+    ) -> Result<ApplyOutcome> {
         if request_id.is_empty()
             || request_id.len() > 256
             || request_id.chars().any(char::is_control)
@@ -1594,22 +1627,30 @@ impl Store {
 
         // Only a new mutation inspects source bytes. Replaying a committed
         // receipt neither reimports nor proves continued asset availability.
-        let required_blob = match change {
+        let asset_digest = match change {
             Change::AddAsset { asset }
             | Change::ImportMeasuredVoice { asset, .. }
-            | Change::ImportNativeCapsuleSource { asset, .. } => {
-                match asset.content_sha256.as_deref() {
-                    Some(digest) => {
-                        cas_retention::pin_digests(&blob_root, [digest])?;
-                        Some((
-                            digest.to_owned(),
-                            checked_existing_blob_path_from_root(&blob_root, digest)?,
-                        ))
-                    }
-                    None => None,
-                }
-            }
+            | Change::ImportNativeCapsuleSource { asset, .. } => asset.content_sha256.as_deref(),
             _ => None,
+        };
+        let required_blob = match (asset_digest, captured) {
+            (Some(digest), Some(capture)) if digest == capture.descriptor().sha256.as_str() => {
+                if capture.captured_root() != blob_root.as_path() {
+                    return Err(StorageError::UnsafeSourcePath(
+                        "staged import belongs to another blob root".into(),
+                    ));
+                }
+                None
+            }
+            (_, Some(_)) => return Err(StorageError::InvalidBlobDigest),
+            (Some(digest), None) => {
+                cas_retention::pin_digests(&blob_root, [digest])?;
+                Some((
+                    digest.to_owned(),
+                    checked_existing_blob_path_from_root(&blob_root, digest)?,
+                ))
+            }
+            (None, None) => None,
         };
 
         if let Change::RegisterCaptureSource { record } = change {
@@ -1685,8 +1726,13 @@ impl Store {
             read_verified_blob_from_root(&blob_root, &application.source_sha256, 8 * 1024 * 1024)?;
         }
         project.commit_revision(result_revision, change)?;
-        cas_retention::pin_project(&blob_root, &project)?;
         let project_json = serde_json::to_string(&project)?;
+        let _permit = if captured.is_some() {
+            Some(admit_publication()?)
+        } else {
+            cas_retention::pin_project(&blob_root, &project)?;
+            None
+        };
         let changed = tx.execute(
             "UPDATE projects
              SET generation=?2,revision=?3,title=?4,document_json=?5,updated_at=?6
@@ -1754,6 +1800,12 @@ impl Store {
             ],
         )?;
 
+        if let Some(capture) = captured {
+            // Commit only after the exact bytes are present in CAS. A failure
+            // to publish rolls back the project, event and receipt together.
+            file_import::publish_file_import_under_root(&blob_root, capture)?;
+            cas_retention::pin_project(&blob_root, &outcome.project)?;
+        }
         #[cfg(test)]
         apply_crash_tests::checkpoint(request_id, "before_commit");
         tx.commit()?;

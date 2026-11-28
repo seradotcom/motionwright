@@ -415,18 +415,14 @@ impl StudioService {
                 }
                 return Ok(recorded.outcome);
             }
-            if matches!(&change, Change::ImportNativeCapsuleSource { .. }) {
-                // Reject invalid capsule metadata and locked/missing scenes
-                // before immutable publication. Store.apply still performs the
-                // authoritative generation/revision check in its transaction.
-                let mut candidate = store.load_project(project_id)?;
-                candidate.apply_change(&change)?;
-                candidate.validate()?;
-            }
-            let _permit = admit_publication()?;
-            store.publish_file_import(&staged)?;
-            drop(staged);
-            store.apply(project_id, expected, request_id, &change)
+            store.apply_captured_file_import(
+                project_id,
+                expected,
+                request_id,
+                &change,
+                &staged,
+                admit_publication,
+            )
         };
         match result {
             Err(StorageError::RequestReuse) => {
@@ -590,6 +586,123 @@ mod verified_source_tests {
                 .read_blob(&expected.sha256, expected.size_bytes)
                 .unwrap(),
             bytes
+        );
+    }
+
+    #[test]
+    fn rejected_sqlite_write_keeps_the_original_out_of_cas() {
+        let root = tempfile::tempdir().unwrap();
+        let database = root.path().join("studio.sqlite3");
+        let blobs = root.path().join("blobs");
+        let open = || {
+            StudioService::from_store(
+                motionwright_storage::Store::open_with_managed_blob_root(&database, &blobs)
+                    .unwrap(),
+            )
+        };
+        let service = open();
+        let project = service.create_project("Managed source import").unwrap();
+        let bytes = b"original for a rejected SQLite journal entry";
+        let source = source(root.path(), bytes);
+        let descriptor = descriptor(bytes);
+        let intent = asset_intent();
+        let initial = state(&service, project.id);
+        let peer = rusqlite::Connection::open(&database).unwrap();
+        peer.execute_batch(
+            "CREATE TRIGGER reject_test_import BEFORE INSERT ON events
+             BEGIN SELECT RAISE(ABORT, 'test journal rejection'); END;",
+        )
+        .unwrap();
+        let result = service.import_local_file_checked(
+            project.id,
+            &project.stamp(),
+            "rejected-journal-write",
+            &source,
+            intent.clone(),
+            || Ok(()),
+        );
+        assert!(
+            matches!(result, Err(StorageError::Sql(error)) if error.to_string().contains("test journal rejection"))
+        );
+        assert_eq!(state(&service, project.id), initial);
+        no_published_blob(&service, &descriptor);
+        assert!(
+            service
+                .recover_file_import(
+                    project.id,
+                    &project.stamp(),
+                    "rejected-journal-write",
+                    &intent
+                )
+                .unwrap()
+                .is_none()
+        );
+
+        peer.execute_batch("DROP TRIGGER reject_test_import")
+            .unwrap();
+        let outcome = service
+            .import_local_file_checked(
+                project.id,
+                &project.stamp(),
+                "accepted-journal-write",
+                &source,
+                intent,
+                || Ok(()),
+            )
+            .unwrap();
+        drop(peer);
+        drop(service);
+        let reopened = open();
+        assert_eq!(reopened.project(project.id).unwrap(), outcome.project);
+        assert_eq!(
+            reopened
+                .store
+                .lock()
+                .read_blob(&descriptor.sha256, descriptor.size_bytes)
+                .unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn invalid_staged_bytes_roll_back_the_project_journal_and_receipt() {
+        let (root, service, project) = fixture();
+        let bytes = b"original retained source bytes";
+        let path = source(root.path(), bytes);
+        let descriptor = descriptor(bytes);
+        let before = state(&service, project.id);
+        let intent = asset_intent();
+        let staging = service.store.lock().blob_root().join(".staging");
+        let result = service.import_local_file_checked(
+            project.id,
+            &project.stamp(),
+            "capture-changed-before-publication",
+            &path,
+            intent.clone(),
+            || {
+                let mut captures = fs::read_dir(staging)?;
+                let capture = captures.next().unwrap()?.path();
+                assert!(captures.next().is_none());
+                let mut changed = bytes.to_vec();
+                changed[0] ^= 1;
+                fs::write(capture, changed)?;
+                Ok(())
+            },
+        );
+        assert!(matches!(result, Err(StorageError::InvalidBlobDigest)));
+        assert_eq!(state(&service, project.id), before);
+        no_published_blob(&service, &descriptor);
+        assert_eq!(fs::read(path).unwrap(), bytes);
+        assert!(
+            service
+                .recover_file_import(
+                    project.id,
+                    &project.stamp(),
+                    "capture-changed-before-publication",
+                    &intent
+                )
+                .unwrap()
+                .is_none()
         );
     }
 

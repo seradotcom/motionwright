@@ -1715,8 +1715,19 @@ jobs:
           cargo clippy --locked --jobs 2 -p motionwright-storage --lib --test creative_migration -- -D warnings
           cargo clippy --locked --jobs 2 -p motionwright-domain --lib -- -D warnings
           git diff --exit-code
+      - name: Verify imported media against the final SQLite write
+        if: inputs.verification_scope == 'storage-service-current' && inputs.first_use_case == 'asset-media'
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$MW_STORAGE_SERVICE_EVIDENCE/file-import.original.log"
+          cargo test --locked --jobs 2 -p motionwright-service --lib file_import::verified_source_tests:: -- --test-threads=1 2>&1 | tee "$log"
+          grep -F 'rejected_sqlite_write_keeps_the_original_out_of_cas ... ok' "$log"
+          cargo test --locked --jobs 2 -p motionwright-service --test file_import_idempotency -- --test-threads=1 2>&1 | tee -a "$log"
+          cargo clippy --locked --jobs 2 -p motionwright-storage -p motionwright-service --lib -- -D warnings
+          git diff --exit-code
       - name: Run current Store and Service contracts
-        if: inputs.verification_scope == 'storage-service-current' && inputs.first_use_case != 'project-compatibility' && inputs.first_use_case != 'code-experiment'
+        if: inputs.verification_scope == 'storage-service-current' && inputs.first_use_case != 'project-compatibility' && inputs.first_use_case != 'code-experiment' && inputs.first_use_case != 'asset-media'
         shell: bash
         run: |
           set -euo pipefail
@@ -1796,7 +1807,7 @@ jobs:
           PY
           git diff --exit-code
       - name: Check current Store and Service warnings
-        if: inputs.first_use_case != 'project-compatibility' && inputs.first_use_case != 'code-experiment'
+        if: inputs.first_use_case != 'project-compatibility' && inputs.first_use_case != 'code-experiment' && (inputs.verification_scope != 'storage-service-current' || inputs.first_use_case != 'asset-media')
         shell: bash
         run: |
           set -euo pipefail
