@@ -2185,7 +2185,7 @@ jobs:
             authored_hold_shape_geometry_emits_two_exact_frame_sets_not_a_tween
             single_axis_held_position_uses_instant_native_sets_without_a_size_tween
             authored_hold_geometry_mixed_with_cubic_is_rejected_not_interpolated
-            joined_geometry_preserves_the_frame_before_the_next_tween
+            joined_motion_preserves_geometry_and_opacity_on_output_frames
             composed_pose_motion_preserves_all_channels_clip_coordinates_and_hold
             rotated_terminal_pose_family_keeps_clip_camera_hold_and_independent_opacity
             waypoint_track_realizes_mixed_curves_with_independent_fade_inside_clip
@@ -2206,7 +2206,7 @@ jobs:
               "authored_hold_shape_geometry_emits_two_exact_frame_sets_not_a_tween",
               "single_axis_held_position_uses_instant_native_sets_without_a_size_tween",
               "authored_hold_geometry_mixed_with_cubic_is_rejected_not_interpolated",
-              "joined_geometry_preserves_the_frame_before_the_next_tween",
+              "joined_motion_preserves_geometry_and_opacity_on_output_frames",
               "composed_pose_motion_preserves_all_channels_clip_coordinates_and_hold",
               "rotated_terminal_pose_family_keeps_clip_camera_hold_and_independent_opacity",
               "waypoint_track_realizes_mixed_curves_with_independent_fade_inside_clip",

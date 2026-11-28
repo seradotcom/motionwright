@@ -242,50 +242,46 @@ fn easing_interval_frames(
         .ok_or_else(|| unsupported("Sampled easing exceeds the canonical Film span budget"))
 }
 
-// The ordinary estimate counts authored intervals. Some geometry tracks
-// and smoothstep opacity additionally need an exact write at each output tick.
+// The ordinary estimate counts authored intervals. Tracks with an
+// unsafe joint or a smoothstep curve also need explicit frame samples.
 fn sampled_motion_extra_spans(scene: &Scene, fps: RationalTime) -> NativeResult<usize> {
     let mut extra = 0;
-    for node in &scene.nodes {
-        if node.keyframes.iter().any(|key| {
-            key.property == MotionProperty::Opacity
-                && key.interpolation == MotionInterpolation::EaseInOut
-        }) {
-            let intervals = motionwright_domain::exact_canvas_opacity_spans(node, scene, fps)
+    for node in scene.nodes.iter().filter(|node| !node.keyframes.is_empty()) {
+        let composed = composed_shape_motion(node);
+        let opacity = composed.as_ref().map_or(node, |(_, opacity)| opacity);
+        let keys = &opacity.keyframes;
+        if keys
+            .iter()
+            .all(|key| key.property == MotionProperty::Opacity)
+            && (keys.len() > 2
+                || keys
+                    .iter()
+                    .any(|key| key.interpolation == MotionInterpolation::EaseInOut))
+        {
+            let intervals = motionwright_domain::exact_canvas_opacity_spans(opacity, scene, fps)
                 .map_err(|error| unsupported(error.to_string()))?
                 .unwrap_or_default();
-            if intervals
-                .iter()
-                .any(|span| span.curve == MotionInterpolation::EaseInOut)
-            {
+            if opacity_track_needs_frame_samples(&intervals) {
                 let frames = intervals.iter().try_fold(0, |total, span| {
                     easing_interval_frames(span.start, span.end, fps).map(|frames| total + frames)
                 })?;
-                let keys = node
-                    .keyframes
-                    .iter()
-                    .filter(|key| key.property == MotionProperty::Opacity)
-                    .count();
-                extra += frames.saturating_sub(keys.saturating_sub(1));
+                extra += frames.saturating_sub(keys.len().saturating_sub(1));
             }
         }
 
-        let times = node
+        let geometry = composed.as_ref().map_or(node, |(geometry, _)| geometry);
+        let keys = geometry
             .keyframes
             .iter()
-            .filter(|key| key.property != MotionProperty::Opacity)
-            .map(|key| key.at)
-            .collect::<BTreeSet<_>>();
+            .filter(|key| key.property != MotionProperty::Opacity);
+        let times = keys.clone().map(|key| key.at).collect::<BTreeSet<_>>();
         if times.len() < 3
-            && !node.keyframes.iter().any(|key| {
-                key.property != MotionProperty::Opacity
-                    && key.interpolation == MotionInterpolation::EaseInOut
-            })
+            && !keys
+                .clone()
+                .any(|key| key.interpolation == MotionInterpolation::EaseInOut)
         {
             continue;
         }
-        let composed = composed_shape_motion(node);
-        let geometry = composed.as_ref().map_or(node, |(geometry, _)| geometry);
         if let Some(points) = native_pose_waypoints(geometry, scene, fps)?
             && pose_track_needs_frame_samples(&points)
         {
@@ -648,10 +644,16 @@ fn native_static_root_group_parent(node: &CanvasNode, scene: &Scene) -> bool {
     motionwright_domain::static_native_group_parent(node, scene).is_some()
 }
 
-/// Only the two exact native opacity endpoints are admitted: 0 -> 1 (FadeIn)
-/// or 1 -> 0 (FadeOut), at an integer output frame. The Canvas base opacity
-/// remains 1; the terminal FadeOut value is a saved keyframe, not a mutation
-/// of the underlying object. No quantization or mixed channel substitution.
+fn opacity_track_needs_frame_samples(intervals: &[motionwright_domain::CanvasOpacitySpan]) -> bool {
+    intervals
+        .iter()
+        .any(|span| span.curve == MotionInterpolation::EaseInOut)
+        || intervals
+            .windows(2)
+            .any(|pair| pair[0].end == pair[1].start)
+}
+
+/// Admit the authored binary endpoints and preserve opacity at output ticks.
 fn native_exact_opacity_fade(
     node: &CanvasNode,
     scene: &Scene,
@@ -690,11 +692,8 @@ fn native_exact_opacity_fade(
     else {
         return Ok(None);
     };
-    let sample = intervals
-        .iter()
-        .any(|span| span.curve == MotionInterpolation::EaseInOut);
     let mut fades = Vec::new();
-    if sample {
+    if opacity_track_needs_frame_samples(&intervals) {
         let frame = RationalTime::new(fps.den, fps.num).map_err(|_| fail())?;
         let half = RationalTime::new(frame.num, 2 * frame.den).map_err(|_| fail())?;
         let quarter = RationalTime::new(frame.num, 4 * frame.den).map_err(|_| fail())?;
@@ -7789,7 +7788,7 @@ mod tests {
     }
 
     #[test]
-    fn joined_geometry_preserves_the_frame_before_the_next_tween() {
+    fn joined_motion_preserves_geometry_and_opacity_on_output_frames() {
         use semwright_motion_authoring::NativeOp;
 
         for first_curve in [MotionInterpolation::Hold, MotionInterpolation::Linear] {
@@ -7816,6 +7815,25 @@ mod tests {
                 interpolation,
             })
             .collect();
+            let initial_alpha = if first_curve == MotionInterpolation::Hold {
+                0.0
+            } else {
+                1.0
+            };
+            shape.keyframes.extend(
+                [
+                    (RationalTime::ZERO, initial_alpha),
+                    (RationalTime::new(1, 30).unwrap(), 1.0 - initial_alpha),
+                    (RationalTime::new(24, 30).unwrap(), initial_alpha),
+                ]
+                .into_iter()
+                .map(|(at, value)| CanvasKeyframe {
+                    at,
+                    property: MotionProperty::Opacity,
+                    value,
+                    interpolation: MotionInterpolation::Linear,
+                }),
+            );
             let target = subject_id(shape.id, None);
             project.scenes[0].nodes[0] = shape;
             let original = project.clone();
@@ -7827,6 +7845,7 @@ mod tests {
             .unwrap();
             let realized = realize(&segments[0].film).unwrap();
             let mut values = BTreeMap::new();
+            let mut alpha = BTreeMap::new();
             for instruction in realized.instructions {
                 match instruction.operation {
                     NativeOp::Set {
@@ -7837,13 +7856,32 @@ mod tests {
                         assert_eq!(instruction.duration, RationalTime::ZERO);
                         assert!(values.insert(instruction.start, value).is_none());
                     }
+                    NativeOp::Tween {
+                        target: actual,
+                        channel: Channel::Opacity,
+                        from: None,
+                        to: Operand::Number(value),
+                    } if actual == target => {
+                        assert_eq!(instruction.duration, RationalTime::new(1, 120).unwrap());
+                        assert!(alpha.insert(instruction.start, value).is_none());
+                    }
                     NativeOp::Tween { target: actual, .. } if actual == target => {
-                        panic!("a tween at the joint can write the next pose a frame early");
+                        panic!("only short opacity tweens may start at these joins");
                     }
                     _ => {}
                 }
             }
             assert_eq!(values.len(), 25, "{first_curve:?}");
+            assert_eq!(alpha.len(), 24);
+            assert_eq!(
+                segments[0].film.sequences[0].beats[0].shots[0]
+                    .subjects
+                    .iter()
+                    .find(|subject| subject.id == target)
+                    .unwrap()
+                    .initially_visible,
+                initial_alpha == 1.0
+            );
             for frame in 0..=24 {
                 let at = RationalTime::new(2 * frame + 1, 60).unwrap();
                 let expected = if frame == 0 {
@@ -7854,6 +7892,12 @@ mod tests {
                 };
                 assert!((values[&at].x - expected).abs() < 1e-9);
                 assert_eq!(values[&at].y, 0.0);
+                if frame > 0 {
+                    let t = (frame - 1) as f64 / 23.0;
+                    let wanted = (1.0 - initial_alpha) + (2.0 * initial_alpha - 1.0) * t;
+                    let at = RationalTime::new(2 * frame - 1, 60).unwrap();
+                    assert!((alpha[&at] - wanted).abs() < 1e-9);
+                }
             }
             assert_eq!(project, original);
         }
