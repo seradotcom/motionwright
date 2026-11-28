@@ -249,7 +249,7 @@ interface NativeWindowEditorState {
   renderScale?: import("./types").NativeWindowScale;
   startRaw: string;
   endRaw: string;
-  receipt: NativeWindowReceipt | null;
+  receipts: Partial<Record<import("./types").NativeWindowScale, NativeWindowReceipt>>;
   pending: NativeWindowIntent | null;
   error: string | null;
 }
@@ -307,8 +307,10 @@ export function PreviewSurface({
       defaultBounds = { start: String(bounds.start), end: String(Math.min(bounds.end, bounds.start + 30, 1_080_000)) };
     } catch (reason) { windowInputIssue = reason instanceof Error ? reason.message : "The saved source window is unavailable."; }
   }
-  const windowEditor = windowEditors?.[windowDraftKey] ?? { startRaw: defaultBounds.start, endRaw: defaultBounds.end, receipt: null, pending: null, error: null };
+  const windowEditor: NativeWindowEditorState = windowEditors?.[windowDraftKey]
+    ?? { startRaw: defaultBounds.start, endRaw: defaultBounds.end, receipts: {}, pending: null, error: null };
   const windowScale = windowEditor.renderScale ?? "full";
+  const selectedWindowReceipt = windowEditor.receipts[windowScale];
   if (scene && profile && !windowInputIssue) {
     try {
       nativeWindowRaster(profile, windowScale);
@@ -330,14 +332,14 @@ export function PreviewSurface({
     try { return { unresolvedWindows: desktopMode && onWindowEditors ? readNativeWindowUncertainties(window.localStorage, project) : [], windowCopyIssue: null }; }
     catch (reason) { return { unresolvedWindows: [], windowCopyIssue: reason instanceof Error ? reason.message : "The original window outcome copy is unavailable." }; }
   }, [desktopMode, onWindowEditors, project, windowEditors, windowStorageVersion]);
-  const currentWindowReceipt = scene && profile && windowRange && windowOptions && windowEditor.receipt
-    && nativeWindowIntentMatches(windowEditor.receipt.intent, project, scene, profile, windowRange, windowOptions, windowScale)
-    ? windowEditor.receipt : null;
+  const currentWindowReceipt = scene && profile && windowRange && windowOptions && selectedWindowReceipt
+    && nativeWindowIntentMatches(selectedWindowReceipt.intent, project, scene, profile, windowRange, windowOptions, windowScale)
+    ? selectedWindowReceipt : null;
   const previousWindowReceipt = !currentWindowReceipt && scene && profile && windowRange && windowOptions
-    && windowEditor.receipt && windowEditor.receipt.intent.revision < project.revision
-    && nativeWindowIntentMatches({ ...windowEditor.receipt.intent, revision: project.revision },
+    && selectedWindowReceipt && selectedWindowReceipt.intent.revision < project.revision
+    && nativeWindowIntentMatches({ ...selectedWindowReceipt.intent, revision: project.revision },
       project, scene, profile, windowRange, windowOptions, windowScale)
-    ? windowEditor.receipt : null;
+    ? selectedWindowReceipt : null;
   const windowFrame = nativeWindowFrameAtPlayhead(project, scene, profile, currentWindowReceipt, playhead);
   const windowAuthorityKey = JSON.stringify(["window", project.id, project.generation, project.active_branch,
     project.revision, scene?.id, profile?.id, windowEditor.startRaw, windowEditor.endRaw, windowOptions, windowScale,
@@ -408,7 +410,7 @@ export function PreviewSurface({
       }
       const canPublish = fresh();
       updateWindow(key, initial, value => value.pending?.request_id !== intent.request_id ? value : ({ ...value, pending: null,
-        receipt: canPublish ? result : value.receipt,
+        receipts: canPublish ? { ...value.receipts, [windowScale]: result } : value.receipts,
         error: canPublish ? copyWarning : "The original window completed for an earlier selection. Its pixels were not published; inspect the original operation in Jobs." }));
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "The native window request did not return a verified response.";

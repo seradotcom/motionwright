@@ -807,6 +807,29 @@ test("reduced native window selection uses provider raster identity without chan
   await expect(page.getByRole("button",{name:"Reuse original window",exact:true})).toBeDisabled();
   await page.getByRole("button",{name:"Capture native window",exact:true}).click();
   await expect(evidence).toContainText("Provider-rendered quarter raster: "+profile.width/4+" x "+profile.height/4);
+  expect(await nativeWindowTrace(page,"render_motion_canvas_window")).toHaveLength(3);
+
+  await scale.selectOption("half");
+  await expect(evidence).toContainText("Provider-rendered half raster: "+profile.width/2+" x "+profile.height/2);
+  await expect(frame).toHaveCount(0);
+  await page.getByRole("button",{name:"Show window frames",exact:true}).click();
+  await expect.poll(()=>frame.getByRole("img").evaluate(image=>(image as HTMLImageElement).naturalWidth)).toBe(profile.width/2);
+  expect((await nativeWindowTrace(page,"preview_native_frame")).at(-1)).toMatchObject({token:reuse.reuse_token,revision});
+
+  await scale.selectOption("quarter");
+  await expect(evidence).toContainText("Provider-rendered quarter raster: "+profile.width/4+" x "+profile.height/4);
+  await expect(frame).toHaveCount(0);
+  const end=page.getByLabel("Source window end frame (exclusive)",{exact:true});
+  await end.fill("3");
+  await expect(evidence).toHaveCount(0);
+  await end.fill("2");
+  await expect(evidence).toContainText("Provider-rendered quarter raster");
+  await page.getByRole("button",{name:"Show window frames",exact:true}).click();
+  await expect.poll(()=>frame.getByRole("img").evaluate(image=>(image as HTMLImageElement).naturalWidth)).toBe(profile.width/4);
+  expect((await nativeWindowTrace(page,"preview_native_frame")).at(-1)).toMatchObject({
+    token:"cb060ec7-a16b-4f38-bae2-000000000002",revision,
+  });
+  expect(await nativeWindowTrace(page,"render_motion_canvas_window")).toHaveLength(3);
   await expect(page.locator(".revision-chip")).toHaveText("r"+revision);
   await expectNoWindowPromotion(page);
 });
