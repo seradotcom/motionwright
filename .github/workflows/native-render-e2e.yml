@@ -726,8 +726,8 @@ jobs:
               raw=(root/path).read_text()
               assert "test "+test+" ... ok" in raw, "missing exact original G1: "+path
               assert "test result: ok. 1 passed; 0 failed;" in raw, "not isolated: "+path
-          assert "Ran 22 tests" in (root/"oracle.original.log").read_text()
-          print("selected-native-source=PASS Rust="+str(len(tests))+" Python=22 StudioType=PASS Browser=READY NativeHost=NOT_RUN")
+          assert "Ran 24 tests" in (root/"oracle.original.log").read_text()
+          print("selected-native-source=PASS Rust="+str(len(tests))+" Python=24 StudioType=PASS Browser=READY NativeHost=NOT_RUN")
           PY_LAYER_G1
 
       - name: Install exact Motion Canvas runtime and Firefox
