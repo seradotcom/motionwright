@@ -627,7 +627,7 @@ export default function DeliveryProfiles({
   const savedVoiceRecipe = selected ? savedDeliveryRecipe(project, selected.id) : null;
   const savedVoiceBinding = savedVoiceRecipe?.original_mix?.voice_cut_sha256 ?? savedVoiceRecipe?.voice_only_cut_sha256;
   const voiceCutReview = useVoiceCutReview(project, selected);
-  const voiceDurationSeconds = (savedVoiceRecipe?.original_mix && voiceCutReview.montage || savedVoiceBinding !== undefined)
+  const voiceDurationSeconds = (voiceCutReview.montage || savedVoiceBinding !== undefined)
     ? (voiceCutReview.cut && voiceCutReview.digest && savedVoiceBinding === voiceCutReview.digest
       ? voiceCutReview.cut.outputFrames / 48000 : Number.NaN)
     : selectedVoice

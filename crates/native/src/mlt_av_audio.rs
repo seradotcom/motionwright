@@ -1166,6 +1166,133 @@ mod tests {
         bytes
     }
 
+    #[test]
+    fn reviewed_full_voice_cut_copies_only_scene_pcm_after_sqlite_reopen() {
+        use motionwright_domain::{
+            DeliveryRecipe, derive_original_voice_cut, resolve_original_voice_cut,
+        };
+        use motionwright_service::{OriginalMixDecodeBudget, VoiceImportMetadata};
+
+        let home = TempDir::new().unwrap();
+        let db = home.path().join("studio.sqlite3");
+        let service = StudioService::open(&db).unwrap();
+        let mut project = Project::new("Voice cut with a source gap").unwrap();
+        for name in ["Opening", "Closing"] {
+            project
+                .apply_change(&Change::AddScene {
+                    name: name.into(),
+                    objective: "Retain exact voice samples".into(),
+                    duration_seconds: 2,
+                })
+                .unwrap();
+        }
+        project.scenes[1].start = RationalTime::new(3, 1).unwrap();
+        service.store().lock().create_project(&project).unwrap();
+
+        let mut source = synthetic_wav(240_000);
+        for (index, frame) in source[44..].chunks_exact_mut(4).enumerate() {
+            let level: i16 = match index {
+                0..96_000 => 1_000,
+                96_000..144_000 => 9_000,
+                _ => 2_000,
+            };
+            frame[..2].copy_from_slice(&level.to_le_bytes());
+            frame[2..].copy_from_slice(&(-level).to_le_bytes());
+        }
+        let wav_path = home.path().join("original.wav");
+        fs::write(&wav_path, &source).unwrap();
+        project = service
+            .import_voice_file(
+                project.id,
+                &project.stamp(),
+                "import-original-gapped-voice",
+                &wav_path,
+                VoiceImportMetadata {
+                    name: "original.wav".into(),
+                    media_type: "audio/wav".into(),
+                    label: "Synthetic PCM".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        let track = project.audio.voice_tracks[0].clone();
+        let mut profile = project.deliverables[0].clone();
+        let profile_id = profile.id;
+        profile.voice_track_id = Some(track.id);
+        project = service
+            .apply(
+                project.id,
+                &project.stamp(),
+                "select-original-gapped-voice",
+                &Change::UpsertDeliverable { profile },
+            )
+            .unwrap()
+            .project;
+        let profile = &project.deliverables[0];
+        assert!(resolve_original_voice_cut(&project, profile, None).is_err());
+        let cut = derive_original_voice_cut(&project, profile).unwrap();
+        assert_eq!((cut.source_frames, cut.output_frames), (240_000, 192_000));
+        assert_eq!(
+            cut.spans
+                .iter()
+                .map(|span| (span.source_start, span.source_end, span.output_start))
+                .collect::<Vec<_>>(),
+            [(0, 96_000, 0), (144_000, 240_000, 96_000)]
+        );
+        let budget = OriginalMixDecodeBudget::Audition15Seconds;
+        assert!(
+            prepare_saved_voice_cut(&service, project.id, &project.stamp(), profile_id, budget)
+                .is_err()
+        );
+        project = service
+            .apply(
+                project.id,
+                &project.stamp(),
+                "save-original-gapped-voice-cut",
+                &Change::SetDeliveryRecipe {
+                    deliverable_profile_id: profile_id,
+                    recipe: Some(DeliveryRecipe {
+                        voice_only_cut_sha256: Some(cut.sha256.clone()),
+                        ..Default::default()
+                    }),
+                },
+            )
+            .unwrap()
+            .project;
+        let playback =
+            prepare_saved_voice_cut(&service, project.id, &project.stamp(), profile_id, budget)
+                .unwrap();
+        assert_eq!(playback.cut_sha256(), cut.sha256);
+        let first_end = 44 + 96_000 * 4;
+        assert_eq!(&playback.wav_bytes()[44..first_end], &source[44..first_end]);
+        assert_eq!(
+            &playback.wav_bytes()[first_end..],
+            &source[44 + 144_000 * 4..]
+        );
+
+        drop(service);
+        let reopened = StudioService::open(&db).unwrap();
+        let restored = reopened.project(project.id).unwrap();
+        assert_eq!(restored, project);
+        let replay = prepare_saved_voice_cut(
+            &reopened,
+            restored.id,
+            &restored.stamp(),
+            profile_id,
+            budget,
+        )
+        .unwrap();
+        assert_eq!(replay.wav_bytes(), playback.wav_bytes());
+        assert_eq!(
+            reopened
+                .store()
+                .lock()
+                .read_blob(&track.source_sha256, 2 * 1024 * 1024)
+                .unwrap(),
+            source
+        );
+    }
+
     fn fixture() -> Fixture {
         let mut project = Project::new("Owner AV mix preflight").unwrap();
         for index in 0..2 {

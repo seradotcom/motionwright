@@ -1,12 +1,21 @@
 import type { DeliverableProfile, Project, RationalTime } from "./types";
+import { addTimelineTime } from "./sceneBeatTiming";
 
 const maxSamples = 48_000 * 180;
 const sha = /^[a-f0-9]{64}$/;
 export type VoiceCutSpan = { sceneId: string; sourceStart: number; sourceEnd: number; outputStart: number };
 export type VoiceCut = { sourceFrames: number; outputFrames: number; spans: VoiceCutSpan[]; wire: string };
 export function isOriginalVoiceMontage(project: Project, profile: DeliverableProfile): boolean {
-  return profile.included_scene_ids.length > 0 && (profile.included_scene_ids.length !== project.scenes.length ||
-    profile.included_scene_ids.some((id, i) => id !== project.scenes[i].id));
+  if (profile.included_scene_ids.length > 0 && (profile.included_scene_ids.length !== project.scenes.length ||
+    profile.included_scene_ids.some((id, i) => id !== project.scenes[i].id))) return true;
+  let cursor: RationalTime = { num: "0", den: "1" };
+  try {
+    for (const scene of project.scenes) {
+      if (scene.start.num !== cursor.num || scene.start.den !== cursor.den) return true;
+      cursor = addTimelineTime(cursor, scene.duration);
+    }
+  } catch { return true; }
+  return false;
 }
 function exactSamples(time: RationalTime): number {
   if (!/^(0|[1-9][0-9]{0,18})$/.test(time.num) || !/^[1-9][0-9]{0,18}$/.test(time.den))
@@ -19,7 +28,7 @@ function exactSamples(time: RationalTime): number {
 export function deriveVoiceCut(project: Project, profile: DeliverableProfile): VoiceCut {
   if (!isOriginalVoiceMontage(project, profile) || profile.audio_sample_rate_hz !== 48000 ||
       !project.scenes.length || project.scenes.length > 512)
-    throw new Error("Voice cut requires an explicit non-original selected cut at 48 kHz.");
+    throw new Error("Voice cut review requires a saved cut that changes the original clock at 48 kHz.");
   const track = project.audio.voice_tracks.find(t => t.id === profile.voice_track_id);
   if (!track || track.sample_rate_hz !== 48000 || track.channels !== 2 || !sha.test(track.source_sha256) ||
       !project.assets.some(a => a.id === track.asset_id && a.content_sha256 === track.source_sha256 &&
@@ -30,8 +39,8 @@ export function deriveVoiceCut(project: Project, profile: DeliverableProfile): V
   const sourceSpans = new Map<string, {start: number; end: number}>();
   for (const scene of project.scenes) {
     const start = exactSamples(scene.start), length = exactSamples(scene.duration);
-    if (start !== fullEnd || !length || sourceSpans.has(scene.id))
-      throw new Error("Original voice must cover a continuous original project clock.");
+    if (start < fullEnd || !length || sourceSpans.has(scene.id))
+      throw new Error("Original voice scenes must have positive, non-overlapping source intervals in project order.");
     fullEnd = start + length;
     sourceSpans.set(scene.id, { start, end: fullEnd });
   }
@@ -39,7 +48,9 @@ export function deriveVoiceCut(project: Project, profile: DeliverableProfile): V
     throw new Error("Original voice must exactly cover the complete original project clock.");
   let outputFrames = 0, previousSourceEnd = 0;
   const seen = new Set<string>();
-  const spans = profile.included_scene_ids.map(sceneId => {
+  const selected = profile.included_scene_ids.length
+    ? profile.included_scene_ids : project.scenes.map(scene => scene.id);
+  const spans = selected.map(sceneId => {
     const source = sourceSpans.get(sceneId);
     if (!source || seen.has(sceneId)) throw new Error("Selected voice cut has missing or duplicate scenes.");
     if (source.start < previousSourceEnd) throw new Error("Voice cut must preserve approved project scene order.");

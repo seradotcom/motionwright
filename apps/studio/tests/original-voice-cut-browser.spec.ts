@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { readStudioProject, proposalButton as button } from "./support/scopedPaintMotionJourney";
 import { fixtureBootstrap } from "../src/fixture";
 import { deriveVoiceCut } from "../src/voiceCut";
@@ -6,17 +6,22 @@ import { createHash } from "node:crypto";
 
 // Authoring-only browser fixture. The original sources are synthetic metadata;
 // no native dispatch, generated media, or real Store proof is supplied.
-test("review and save a noncontiguous original voice cut without replacing source assets", async ({page}) => {
+async function reviewVoiceCut(page: Page, fullWithGap: boolean) {
   const seed = structuredClone(fixtureBootstrap.project);
   const trackId = "00000000-0000-4000-8000-000000000801";
   const assetId = "00000000-0000-4000-8000-000000000802";
   const digest = "a".repeat(64);
   seed.assets.push({id:assetId,name:"Synthetic voice metadata",media_type:"audio/wav",content_sha256:digest,source_revision:null});
   seed.audio.voice_tracks = [{id:trackId,asset_id:assetId,label:"Synthetic voice",source_sha256:digest,
-    sample_rate_hz:48000,channels:2,measured_duration:{num:"36",den:"1"},loudness_lufs:null,true_peak_dbfs:null}];
+    sample_rate_hz:48000,channels:2,measured_duration:{num:fullWithGap?"37":"36",den:"1"},loudness_lufs:null,true_peak_dbfs:null}];
   const profile = seed.deliverables[0];
   profile.voice_track_id = trackId;
-  profile.included_scene_ids = [seed.scenes[0].id,seed.scenes[3].id];
+  profile.included_scene_ids = fullWithGap ? [] : [seed.scenes[0].id,seed.scenes[3].id];
+  if(fullWithGap){
+    for(const scene of seed.scenes.slice(1)){
+      scene.start={num:String(BigInt(scene.start.num)+BigInt(scene.start.den)),den:scene.start.den};
+    }
+  }
   const cut = deriveVoiceCut(seed,profile);
   const binding = createHash("sha256").update(cut.wire).digest("hex");
   const music = seed.assets.find(a=>a.id!==assetId && a.media_type==="audio/wav")!;
@@ -41,7 +46,7 @@ test("review and save a noncontiguous original voice cut without replacing sourc
   await panel.getByLabel("Original music asset",{exact:true}).selectOption(music.id);
   const review=panel.getByRole("region",{name:"Original voice cut review",exact:true});
   await expect(review).toContainText("Review required");
-  await expect(review.locator("tbody tr")).toHaveCount(2);
+  await expect(review.locator("tbody tr")).toHaveCount(cut.spans.length);
   await expect(review.locator("tbody tr").first()).toContainText(seed.scenes[0].name);
   await review.getByRole("button",{name:"Bind reviewed original voice cut",exact:true}).click();
   await expect(review).toContainText("Exact cut binding selected.");
@@ -72,4 +77,10 @@ test("review and save a noncontiguous original voice cut without replacing sourc
   await button(page,"Canvas").click();await open();
   await expect(review).toContainText("Exact cut binding selected.");
   await expect(panel.getByLabel("Enable original mix recipe",{exact:true})).not.toBeChecked();
-});
+}
+
+test("review and save a noncontiguous original voice cut without replacing source assets", ({page}) =>
+  reviewVoiceCut(page, false));
+
+test("review and save the full original voice cut across an editorial gap", ({page}) =>
+  reviewVoiceCut(page, true));

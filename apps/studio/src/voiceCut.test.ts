@@ -47,6 +47,38 @@ describe("explicit original voice montage binding", () => {
     profile.id = "00000000-0000-4000-8000-000000000201";
     await expect(requireCurrentVoiceCut(project,profile,digest)).rejects.toThrow();
   });
+  it("reviews exact original sample windows for the full delivery when it removes source gaps", async () => {
+    const { project, profile, track } = fixture();
+    project.scenes[1].start = { num: "3", den: "1" };
+    project.scenes[2].start = { num: "5", den: "1" };
+    track.measured_duration = { num: "7", den: "1" };
+    profile.included_scene_ids = [];
+
+    await expect(requireCurrentVoiceCut(project, profile)).rejects.toThrow(/Review and save/);
+    const cut = deriveVoiceCut(project, profile);
+    expect(cut.sourceFrames).toBe(336_000);
+    expect(cut.outputFrames).toBe(288_000);
+    expect(cut.spans.map(s => [s.sourceStart, s.sourceEnd, s.outputStart])).toEqual([
+      [0, 96_000, 0], [144_000, 240_000, 96_000], [240_000, 336_000, 192_000],
+    ]);
+    const digest = await voiceCutDigest(cut.wire);
+    profile.included_scene_ids = project.scenes.map(scene => scene.id);
+    expect(await requireCurrentVoiceCut(project, profile, digest)).toEqual(cut);
+    project.production_design!.delivery_recipes = {
+      [profile.id]: { ...emptyDeliveryRecipe(), voice_only_cut_sha256: digest },
+    };
+    const clock = buildAudioReviewClock(project, { kind: "mix", sourceId: profile.id });
+    expect(clock.sampleCount).toBe(288_000);
+    expect(projectToAudioMedia(clock, 5 / 2)).toBeNull();
+    expect(audioSampleToProject(clock, 96_000)).toEqual({ num: "3", den: "1" });
+
+    track.measured_duration = { num: "6", den: "1" };
+    expect(() => deriveVoiceCut(project, profile)).toThrow(/exactly cover/);
+    track.measured_duration = { num: "7", den: "1" };
+    project.scenes[1].start = { num: "1", den: "1" };
+    expect(() => deriveVoiceCut(project, profile)).toThrow(/overlap/);
+  });
+
   it("keeps an explicit binding through recipe history and draft save; rejects invalid new bindings", async () => {
     const {project,profile,recipe} = fixture();
     const digest = await voiceCutDigest(deriveVoiceCut(project,profile).wire);

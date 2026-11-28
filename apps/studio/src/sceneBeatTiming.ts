@@ -93,6 +93,10 @@ export function parseBeatTime(raw: string): RationalTime {
     : reduced(numerator * 10n ** BigInt(-scale), 1n));
 }
 
+export function addTimelineTime(a: RationalTime, b: RationalTime): RationalTime {
+  return parseBeatTime((BigInt(a.num) * BigInt(b.den) + BigInt(b.num) * BigInt(a.den)) + "/" + (BigInt(a.den) * BigInt(b.den)));
+}
+
 /** Show an exact finite decimal when available, otherwise an exact fraction. */
 export function formatBeatTime(time: RationalTime): string {
   const value = stored(time);

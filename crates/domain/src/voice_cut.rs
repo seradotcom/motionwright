@@ -1,4 +1,4 @@
-//! Exact original voice conform for an explicitly ordered delivery cut.
+//! Exact original voice conform for approved delivery cuts that change the source clock.
 //! A saved digest is editorial intent, not a native effect grant. Re-derive
 //! the source and every sample span before using it; never trim implicitly.
 use crate::{DeliverableProfile, DomainError, Project, RationalTime, Result};
@@ -22,12 +22,13 @@ fn exact_samples(time: RationalTime) -> Result<u64> {
         .ok_or_else(|| invalid("Voice cut exceeds the bounded original source clock"))
 }
 pub fn is_original_voice_montage(project: &Project, profile: &DeliverableProfile) -> bool {
-    !profile.included_scene_ids.is_empty()
-        && !profile
-            .included_scene_ids
-            .iter()
-            .copied()
-            .eq(project.scenes.iter().map(|scene| scene.id))
+    !crate::delivery::editorial_matches_full_cut(&project.scenes)
+        || (!profile.included_scene_ids.is_empty()
+            && !profile
+                .included_scene_ids
+                .iter()
+                .copied()
+                .eq(project.scenes.iter().map(|scene| scene.id)))
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OriginalVoiceCutSpan {
@@ -55,7 +56,7 @@ pub fn derive_original_voice_cut(
         || project.scenes.len() > MAX_SCENES
     {
         return Err(invalid(
-            "Voice cut requires an explicit non-original selected cut at 48 kHz",
+            "Voice cut review requires a saved cut that changes the original clock at 48 kHz",
         ));
     }
     let track = project
@@ -89,9 +90,9 @@ pub fn derive_original_voice_cut(
     for scene in &project.scenes {
         let start = exact_samples(scene.start)?;
         let length = exact_samples(scene.duration)?;
-        if start != full_end || length == 0 {
+        if start < full_end || length == 0 {
             return Err(invalid(
-                "Original voice must cover a continuous original project clock",
+                "Original voice scenes must have positive, non-overlapping source intervals in project order",
             ));
         }
         full_end = start

@@ -1,6 +1,6 @@
 import { graphFrameTime } from "./semanticGraph";
 import { editorFps, validEditorRate } from "./timecode";
-import { parseBeatTime } from "./sceneBeatTiming";
+import { addTimelineTime } from "./sceneBeatTiming";
 import { resolveCanvasRelations } from "./canvasFollow";
 import { motionKeyRange } from "./timelineMotionRange";
 import { validateSemanticSfx } from "./semanticSfx";
@@ -44,9 +44,7 @@ export function timelineTicks(start: number, span: number, pixels: number, rate:
   return Array.from({ length: count }, (_, index) => (firstFrame + index * stepFrames) / fps)
     .filter(time => time <= start + span);
 }
-export function addTimelineTime(a: RationalTime, b: RationalTime): RationalTime {
-  return parseBeatTime((BigInt(a.num) * BigInt(b.den) + BigInt(b.num) * BigInt(a.den)) + "/" + (BigInt(a.den) * BigInt(b.den)));
-}
+export { addTimelineTime };
 export function timelineSceneEnd(scene: Pick<Scene, "start" | "duration">): number {
   try {
     return seconds(addTimelineTime(scene.start, scene.duration));
