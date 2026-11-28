@@ -1694,6 +1694,121 @@ mod tests {
     }
 
     #[test]
+    fn cue_film_requires_exact_plan_and_apply_acknowledgments_before_render() {
+        use motionwright_domain::{
+            AudioCue, CueEvidence, DeliveryRecipe, MotionCanvasAudioCuePolicy, RationalTime,
+        };
+
+        let (_dir, _service, mut project, evidence) = fixture();
+        let legacy = request_plan(&project, &evidence.request).unwrap().segment;
+        assert!(
+            MotionCuePlanBinding::from_plan(&Value::Null, &Value::Null, &legacy, "", &Value::Null)
+                .unwrap()
+                .is_none()
+        );
+        project
+            .apply_change(&Change::UpsertAudioCue {
+                cue: AudioCue {
+                    id: Uuid::new_v4(),
+                    label: "Saved point cue".into(),
+                    at: RationalTime::new(1, 10).unwrap(),
+                    source_segment_id: None,
+                    evidence: CueEvidence::Manual,
+                },
+            })
+            .unwrap();
+        project
+            .apply_change(&Change::SetDeliveryRecipe {
+                deliverable_profile_id: evidence.request.deliverable_id,
+                recipe: Some(DeliveryRecipe {
+                    motion_canvas_audio_cues: Some(
+                        MotionCanvasAudioCuePolicy::PreserveAuthoredTime,
+                    ),
+                    ..Default::default()
+                }),
+            })
+            .unwrap();
+        let segment = request_plan(&project, &evidence.request).unwrap().segment;
+        assert_eq!(
+            segment.film.version,
+            semwright_motion_authoring::AUTHORING_VERSION
+        );
+        assert_eq!(segment.film.cues.cues.len(), 1);
+        let film = serde_json::to_value(&segment.film).unwrap();
+        let digest = segment.film_sha256().unwrap();
+        let fingerprint = "a1".repeat(32);
+        let body = json!({"profile":{"id":"semwright-motion-authoring","version":segment.film.version},
+            "intent":film,"intent_digest":digest});
+        let plan_ref = canonical_digest(&body).unwrap().as_str().to_owned();
+        let execution = json!({"provenance":{"provider":"driver:motion-canvas","source":"driver","provider_generation":7}});
+        let planned = json!({"result":{"execution":execution,"data":{
+            "plan_ref":plan_ref,"resulting_fingerprint":fingerprint,"repair":false,
+            "plan":{"digest":plan_ref,"body":body}
+        }}});
+        let read = |receipt: &Value| {
+            let data = &receipt["result"]["data"];
+            MotionCuePlanBinding::from_plan(
+                receipt,
+                data,
+                &segment,
+                data["plan_ref"].as_str().unwrap(),
+                &film,
+            )
+        };
+        let binding = read(&planned).unwrap().unwrap();
+        for (pointer, value) in [
+            (
+                "/result/data/plan/body/intent/cues/cues/0/duration",
+                json!(RationalTime::new(1, 10).unwrap()),
+            ),
+            (
+                "/result/data/plan/body/intent_digest",
+                json!("2a".repeat(32)),
+            ),
+            ("/result/data/plan/body/profile/version", json!(2)),
+            ("/result/data/resulting_fingerprint", Value::Null),
+            ("/result/data/repair", json!(true)),
+            (
+                "/result/execution/provenance/provider_generation",
+                Value::Null,
+            ),
+        ] {
+            let mut substituted = planned.clone();
+            *substituted.pointer_mut(pointer).unwrap() = value;
+            assert!(read(&substituted).err().unwrap().outcome_known, "{pointer}");
+        }
+        let mut foreign_plan = planned.clone();
+        foreign_plan["result"]["data"]["plan_ref"] = json!("2b".repeat(32));
+        foreign_plan["result"]["data"]["plan"]["digest"] = json!("2b".repeat(32));
+        assert!(read(&foreign_plan).err().unwrap().outcome_known);
+
+        let applied = json!({"result":{"execution":execution,"data":{
+            "plan_ref":plan_ref,"fingerprint":fingerprint,"intent_digest":digest,
+            "applied":true,"execution_status":"completed"
+        }}});
+        let require =
+            |receipt: &Value| binding.require_applied(receipt, &receipt["result"]["data"]);
+        require(&applied).unwrap();
+        for (pointer, value) in [
+            ("/result/data/plan_ref", json!("c1".repeat(32))),
+            ("/result/data/fingerprint", json!("c2".repeat(32))),
+            ("/result/data/intent_digest", json!("c3".repeat(32))),
+            (
+                "/result/execution/provenance/provider",
+                json!("driver:manim"),
+            ),
+            ("/result/execution/provenance/provider_generation", json!(8)),
+        ] {
+            let mut substituted = applied.clone();
+            *substituted.pointer_mut(pointer).unwrap() = value;
+            assert!(
+                !require(&substituted).unwrap_err().outcome_known,
+                "{pointer}"
+            );
+        }
+    }
+
+    #[test]
     fn full_audio_cue_coverage_binds_renderer_frame_evidence_and_preserves_legacy() {
         use motionwright_domain::{
             AudioCue, CueEvidence, DeliveryRecipe, MotionCanvasAudioCuePolicy, RationalTime,

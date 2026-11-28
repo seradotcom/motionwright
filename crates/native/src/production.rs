@@ -1858,29 +1858,104 @@ impl MotionBlendAdmission {
         if provenance.get("capability_version").and_then(Value::as_str) != Some("1.1")
             || provenance.get("descriptor_sha256").and_then(Value::as_str)
                 != Some(self.descriptor_sha256.as_str())
-            || data
-                .pointer("/plan/body/profile/version")
-                .and_then(Value::as_u64)
-                != Some(u64::from(film.version))
-            || data
-                .pointer("/plan/body/profile/id")
-                .and_then(Value::as_str)
-                != Some("semwright-motion-authoring")
-            || data.pointer("/plan/body/intent") != Some(&expected)
-            || data
-                .pointer("/plan/body/intent_digest")
-                .and_then(Value::as_str)
-                != Some(intent.as_str())
-            || data.get("repair").and_then(Value::as_bool) != Some(false)
-            || data
-                .get("plan_ref")
-                .and_then(Value::as_str)
-                .is_none_or(|value| !is_sha256(value))
-            || data.get("plan_ref") != data.pointer("/plan/digest")
+            || !motion_plan_matches_film(data, film.version, &expected, intent.as_str())
         {
             return Err(backend(
                 "Motion Canvas did not return the exact admitted Film v2 plan; no apply was dispatched",
             ));
+        }
+        Ok(())
+    }
+}
+
+fn motion_plan_matches_film(data: &Value, version: u32, film: &Value, digest: &str) -> bool {
+    data.pointer("/plan/body/profile/version")
+        .and_then(Value::as_u64)
+        == Some(u64::from(version))
+        && data
+            .pointer("/plan/body/profile/id")
+            .and_then(Value::as_str)
+            == Some("semwright-motion-authoring")
+        && data.pointer("/plan/body/intent") == Some(film)
+        && data
+            .pointer("/plan/body/intent_digest")
+            .and_then(Value::as_str)
+            == Some(digest)
+        && data.get("repair").and_then(Value::as_bool) == Some(false)
+        && data
+            .get("plan_ref")
+            .and_then(Value::as_str)
+            .is_some_and(is_sha256)
+        && data.get("plan_ref") == data.pointer("/plan/digest")
+}
+
+struct MotionCuePlanBinding {
+    plan_ref: String,
+    film_sha256: String,
+    proposed_fingerprint: String,
+    provider_generation: u64,
+}
+
+impl MotionCuePlanBinding {
+    fn from_plan(
+        planned: &Value,
+        data: &Value,
+        segment: &crate::film::MotionCanvasSegment,
+        plan_ref: &str,
+        encoded_film: &Value,
+    ) -> NativeResult<Option<Self>> {
+        if !segment.audio_cue_alignment.iter().any(|cue| {
+            matches!(
+                cue,
+                crate::film::MotionCanvasAudioCueAlignment::Resolved { .. }
+            )
+        }) {
+            return Ok(None);
+        }
+        let rejected = || {
+            backend("Motion Canvas cue Film plan differs from its source; no apply was dispatched")
+        };
+        let film_sha256 = segment.film_sha256()?;
+        let proposed_fingerprint = data
+            .get("resulting_fingerprint")
+            .and_then(Value::as_str)
+            .filter(|value| is_sha256(value))
+            .ok_or_else(rejected)?;
+        let provider_generation = Self::provider_generation(planned).ok_or_else(rejected)?;
+        let body = data.pointer("/plan/body").ok_or_else(rejected)?;
+        let body_digest =
+            semwright_semantic_composition::canonical_digest(body).map_err(|_| rejected())?;
+        if !motion_plan_matches_film(data, segment.film.version, encoded_film, &film_sha256)
+            || body_digest.as_str() != plan_ref
+        {
+            return Err(rejected());
+        }
+        Ok(Some(Self {
+            plan_ref: plan_ref.to_owned(),
+            film_sha256,
+            proposed_fingerprint: proposed_fingerprint.to_owned(),
+            provider_generation,
+        }))
+    }
+
+    fn provider_generation(receipt: &Value) -> Option<u64> {
+        let provenance = receipt.pointer("/result/execution/provenance")?;
+        if provenance.get("provider").and_then(Value::as_str) != Some("driver:motion-canvas")
+            || provenance.get("source") != Some(&json!(SourceKind::Driver))
+        {
+            return None;
+        }
+        provenance.get("provider_generation")?.as_u64()
+    }
+
+    fn require_applied(&self, applied: &Value, data: &Value) -> NativeResult<()> {
+        if Self::provider_generation(applied) != Some(self.provider_generation)
+            || data.get("plan_ref").and_then(Value::as_str) != Some(self.plan_ref.as_str())
+            || data.get("intent_digest").and_then(Value::as_str) != Some(self.film_sha256.as_str())
+            || data.get("fingerprint").and_then(Value::as_str)
+                != Some(self.proposed_fingerprint.as_str())
+        {
+            return Err(backend("Motion Canvas cue Film apply result differs from its plan; no render was dispatched").uncertain());
         }
         Ok(())
     }
@@ -3817,11 +3892,14 @@ impl ProductionCoordinator {
         if let Some(admission) = blend {
             admission.require_plan(&planned, &segment.film)?;
         }
+        let planned_data = response_data(&planned)?;
         let plan_ref = required_string(
-            response_data(&planned)?,
+            planned_data,
             "/plan_ref",
             "Motion Canvas composition plan returned no plan reference",
         )?;
+        let cue_plan =
+            MotionCuePlanBinding::from_plan(&planned, planned_data, segment, &plan_ref, &film)?;
 
         let plan_micros = motion_canvas_window::elapsed_micros(phase_started);
         let phase_started = std::time::Instant::now();
@@ -3837,6 +3915,9 @@ impl ProductionCoordinator {
             .await?;
         self.revalidate_retained_brand_font_staging()?;
         let applied_data = response_data(&applied)?;
+        if let Some(cue_plan) = cue_plan {
+            cue_plan.require_applied(&applied, applied_data)?;
+        }
         if let Some(admission) = blend {
             admission
                 .require_provider(&applied)
