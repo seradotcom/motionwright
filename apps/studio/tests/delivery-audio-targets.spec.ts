@@ -219,6 +219,7 @@ test("Studio saves a selected dissolve by profile through the existing recipe ac
   const boundary = outgoing.id + ":" + incoming.id;
   const secondProfile = before.deliverables[1];
   const pane = page.getByRole("region", { name: "Native MLT dissolve intent", exact: true });
+  await expect(pane).toContainText("Native rendering currently supports Motion Canvas followed by Manim.");
   const chooseBoundary = pane.getByRole("combobox", { name: "Dissolve boundary", exact: true });
   const duration = pane.getByRole("textbox", { name: "Dissolve frames", exact: true });
   await chooseBoundary.selectOption(boundary);

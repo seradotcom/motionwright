@@ -1533,7 +1533,7 @@ export default function DeliveryProfiles({
               <header>
                 <div>
                   <strong>Scene dissolve</strong>
-                  <span>Hold the last outgoing frame over the incoming scene. The cut length and audio timing stay the same.</span>
+                  <span>Hold the last outgoing frame over the incoming scene while preserving the cut length and audio timing. Native rendering currently supports Motion Canvas followed by Manim.</span>
                 </div>
               </header>
               <div className="delivery-field-grid">
@@ -1558,7 +1558,7 @@ export default function DeliveryProfiles({
                 </label>
               </div>
               {dissolveDraft.savedValues.boundary && <p className="delivery-truth-note" role="status">
-                Dissolve intent saved. Check native delivery jobs for the rendered result.
+                Dissolve intent saved. Render status appears in native delivery jobs.
               </p>}
               <RecipeDraftReview controller={dissolveDraft} title="Dissolve intent" revision={project.revision}
                 fields={{
