@@ -1,7 +1,9 @@
 #[path = "support/sqlite_v6_corruptible.rs"]
 mod fixture;
 use motionwright_domain::{
-    Change, Project, RenderImpactCause, RenderTailInspectRequest, RevisionStamp, SourceFrameWindow,
+    Change, Project, RenderImpactCause, RenderTailInspectRequest, RevisionStamp,
+    SCENE_BOUNDARY_VERSION, SceneBoundary, SceneBoundaryDefinition, SceneBoundaryInput,
+    SourceFrameWindow,
 };
 use motionwright_storage::{RenderWindowCacheKey, StorageError, Store};
 use std::fs;
@@ -151,6 +153,67 @@ fn selective_physical_purge_preserves_clean_windows_and_immutable_cas() {
         .collect::<Vec<_>>()
         .concat();
     assert_eq!(rebuilt, full);
+
+    let with_continuity = store
+        .apply(
+            p.id,
+            &p.stamp(),
+            "authored-closing-continuity",
+            &Change::UpsertSceneBoundary {
+                boundary: Box::new(SceneBoundary {
+                    version: SCENE_BOUNDARY_VERSION,
+                    id: Uuid::new_v4(),
+                    scene_id: p.scenes[2].id,
+                    input: SceneBoundaryInput::Predecessor {
+                        scene_id: Some(p.scenes[1].id),
+                        boundary_id: None,
+                        exit_sha256: None,
+                        appearances: vec![],
+                    },
+                    definition: SceneBoundaryDefinition::DraftIncomplete {
+                        source: None,
+                        entry: None,
+                        exit: None,
+                    },
+                }),
+            },
+        )
+        .unwrap()
+        .project;
+    let keys = keys.map(|mut original| {
+        original.expected = with_continuity.stamp();
+        original
+    });
+    for (key, input) in keys.iter().zip(&inputs) {
+        store.put_render_window_proxy(key, input, 60).unwrap();
+    }
+    let report = store
+        .purge_render_window_proxies(
+            p.id,
+            &request(
+                &with_continuity,
+                RenderImpactCause::SceneVisual,
+                vec![p.scenes[1].id],
+            ),
+        )
+        .unwrap();
+    assert_eq!(
+        report.impact.profiles[0].affected_scene_ids,
+        vec![p.scenes[1].id, p.scenes[2].id]
+    );
+    assert_eq!(report.manifests_removed, 2);
+    assert_eq!(report.registrations_retained, 1);
+    assert!(
+        store
+            .lookup_render_window_proxy(&keys[0])
+            .unwrap()
+            .is_some()
+    );
+    for key in &keys[1..] {
+        assert!(store.lookup_render_window_proxy(key).unwrap().is_none());
+    }
+    assert_eq!(report.immutable_blobs_deleted, 0);
+    assert_eq!(store.load_project(p.id).unwrap(), with_continuity);
 }
 
 #[test]

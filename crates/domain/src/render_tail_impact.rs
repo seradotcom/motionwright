@@ -3,9 +3,9 @@
 //! This is an exact-rational *invalidation proposal*, not a rendered cache
 //! hit, video regeneration, time saving, sound analysis or human approval.
 //! Real native frame equivalence must be proved separately before caching.
-use crate::{DomainError, Project, RationalTime, Result};
+use crate::{DomainError, Project, RationalTime, Result, SceneBoundaryInput};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 pub const RENDER_TAIL_IMPACT_SCHEMA: &str = "motionwright.render-tail-impact/1";
@@ -151,6 +151,40 @@ fn frame_end(start: RationalTime, duration: RationalTime, fps: (i128, i128)) -> 
     }
     Ok(number)
 }
+/// A successor can depend on an earlier scene outside the profile's visible cut.
+fn visual_dependents(
+    project: &Project,
+    profile_id: Uuid,
+    changed: &BTreeSet<Uuid>,
+) -> BTreeSet<Uuid> {
+    let mut successors = BTreeMap::<Uuid, Vec<Uuid>>::new();
+    for boundary in &project.production_design.scene_boundaries {
+        if let SceneBoundaryInput::Predecessor {
+            scene_id: Some(predecessor),
+            ..
+        } = &boundary.input
+            && boundary
+                .source()
+                .is_none_or(|source| source.deliverable_profile_id == profile_id)
+        {
+            successors
+                .entry(*predecessor)
+                .or_default()
+                .push(boundary.scene_id);
+        }
+    }
+    let mut affected = changed.clone();
+    let mut pending = changed.iter().copied().collect::<Vec<_>>();
+    while let Some(predecessor) = pending.pop() {
+        for &successor in successors.get(&predecessor).into_iter().flatten() {
+            if affected.insert(successor) {
+                pending.push(successor);
+            }
+        }
+    }
+    affected
+}
+
 fn union(mut windows: Vec<SourceFrameWindow>) -> Vec<SourceFrameWindow> {
     windows.sort_by_key(|w| (w.start, w.end));
     let mut merged: Vec<SourceFrameWindow> = Vec::new();
@@ -254,7 +288,15 @@ impl Project {
                         end: film_end,
                     }]
                 }
-                RenderImpactCause::SceneVisual | RenderImpactCause::SceneAudioTail => scenes
+                RenderImpactCause::SceneVisual => {
+                    let affected = visual_dependents(self, profile.id, &unique);
+                    scenes
+                        .iter()
+                        .filter(|(id, _)| affected.contains(id))
+                        .map(|(_, window)| *window)
+                        .collect()
+                }
+                RenderImpactCause::SceneAudioTail => scenes
                     .iter()
                     .filter(|(id, _)| unique.contains(id))
                     .map(|(_, window)| SourceFrameWindow {

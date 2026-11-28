@@ -40,6 +40,26 @@ describe("bounded source-timeline impact",()=>{
     expect(report.native_renderer_saved_wallclock_micros).toBeNull();
     expect(report.profiles[0].output_frame_projection_verified).toBe(false);
   });
+  it("follows transitive saved continuity through scenes omitted from a profile",()=>{
+    const p=source(), [first, second, third]=p.scenes;
+    const design=p.production_design ??= {plan:null,heroes:[],capsules:[]};
+    design.scene_boundaries=[
+      {scene:third, predecessor:second},
+      {scene:second, predecessor:first},
+    ].map(({scene,predecessor})=>({
+      version:1,id:crypto.randomUUID(),scene_id:scene.id,
+      input:{kind:"predecessor",scene_id:predecessor.id,boundary_id:null,exit_sha256:null,appearances:[]},
+      definition:{kind:"draft_incomplete",source:null,entry:null,exit:null},
+    }));
+    p.deliverables[1].included_scene_ids=[third.id];
+    const report=inspectRenderTailImpact(p,query(p,"scene_visual",[first.id]));
+    expect(report.profiles[0].source_timeline_windows).toEqual([{start:0,end:180}]);
+    expect(report.profiles[0].affected_scene_ids).toEqual([first.id,second.id,third.id]);
+    expect(report.profiles[1].source_timeline_windows).toEqual([{start:120,end:180}]);
+    expect(report.profiles[1].affected_scene_ids).toEqual([third.id]);
+    expect(report.requested_scene_ids).toEqual([first.id]);
+    expect(report.actually_invalidated_caches).toBe(false);
+  });
   it("explicit source-bound sound tails can spill into a neighboring scene",()=>{
     const p=source(),audioId=crypto.randomUUID();
     p.assets.push({id:audioId,name:"Original WAV",media_type:"audio/wav",

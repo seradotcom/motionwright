@@ -1055,6 +1055,13 @@ pub fn carry_unchanged_motion_canvas_window(
             "Native window reuse after editing requires self-contained shape geometry",
         ));
     }
+    // The Film digest does not bind the current declaration or its predecessor.
+    crate::native_scene_boundary::guard_motion_scenes(
+        &project,
+        request.deliverable_id,
+        &request.options,
+        &plan.segment.scene_ids,
+    )?;
     let validation = verify_reusable_window(&plan, request, original)?;
     let count = request.source_window.end - request.source_window.start;
     if original.cached_frames.len() as u64 != count {
@@ -1676,6 +1683,66 @@ mod tests {
             ),
             Err(error) if error.code == ErrorCode::StaleReference
         ));
+
+        let boundary_id = Uuid::new_v4();
+        let draft = service
+            .apply(
+                project.id,
+                &edited.stamp(),
+                "window-continuity-draft",
+                &Change::UpsertSceneBoundary {
+                    boundary: Box::new(motionwright_domain::SceneBoundary {
+                        version: motionwright_domain::SCENE_BOUNDARY_VERSION,
+                        id: boundary_id,
+                        scene_id: evidence.request.source_scene_id,
+                        input: motionwright_domain::SceneBoundaryInput::SelfContained,
+                        definition: motionwright_domain::SceneBoundaryDefinition::DraftIncomplete {
+                            source: None,
+                            entry: None,
+                            exit: None,
+                        },
+                    }),
+                },
+            )
+            .unwrap()
+            .project;
+        let plan = request_plan(&draft, &evidence.request).unwrap();
+        assert_eq!(
+            canonical_digest(&plan.segment.film).unwrap().as_str(),
+            evidence.film_digest.as_str(),
+        );
+        let error = carry_unchanged_motion_canvas_window(
+            &service,
+            project.id,
+            &draft.stamp(),
+            &evidence.request,
+            &evidence,
+            &connection,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert!(error.message.contains("unsourced Draft"));
+        let mut draft_evidence = evidence.clone();
+        draft_evidence.revision = draft.revision;
+        for (index, frame) in draft_evidence.cached_frames.iter().enumerate() {
+            let key = frame_key(&draft_evidence, index as u64, &frame.sha256).unwrap();
+            assert!(service.lookup_render_window_proxy(&key).unwrap().is_none());
+        }
+        assert!(
+            service
+                .production_receipts(project.id, 10)
+                .unwrap()
+                .is_empty()
+        );
+        let edited = service
+            .apply(
+                project.id,
+                &draft.stamp(),
+                "window-remove-continuity-draft",
+                &Change::RemoveSceneBoundary { boundary_id },
+            )
+            .unwrap()
+            .project;
 
         fs::write(
             root.join(&evidence.cached_frames[0].original_relative_path),

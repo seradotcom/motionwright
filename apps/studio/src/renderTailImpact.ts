@@ -80,6 +80,28 @@ function union(windows:SourceFrameWindow[]):SourceFrameWindow[] {
   }
   return answer;
 }
+function visualDependents(project:Project,profileId:string,changed:Set<string>):Set<string> {
+  const successors=new Map<string,string[]>();
+  for(const boundary of project.production_design?.scene_boundaries??[]){
+    const source=boundary.definition.source;
+    const predecessor=boundary.input.kind==="predecessor"?boundary.input.scene_id:null;
+    if(!predecessor || (source && source.deliverable_profile_id!==profileId)) continue;
+    const targets=successors.get(predecessor)??[];
+    targets.push(boundary.scene_id);
+    successors.set(predecessor,targets);
+  }
+  const affected=new Set(changed);
+  const pending=[...changed];
+  while(pending.length){
+    const predecessor=pending.pop()!;
+    for(const successor of successors.get(predecessor)??[]){
+      if(affected.has(successor)) continue;
+      affected.add(successor);
+      pending.push(successor);
+    }
+  }
+  return affected;
+}
 export function inspectRenderTailImpact(
   project:Project,request:RenderTailInspectRequest
 ):RenderTailImpactReport {
@@ -121,7 +143,11 @@ export function inspectRenderTailImpact(
         const start=Math.min(...scenes.filter(s=>changed.has(s.id)).map(s=>s.range.start));
         changedRanges=[{start,end:filmEnd}];break;
       }
-      case "scene_visual":
+      case "scene_visual":{
+        const affected=visualDependents(project,profile.id,changed);
+        changedRanges=scenes.filter(scene=>affected.has(scene.id)).map(scene=>scene.range);
+        break;
+      }
       case "scene_audio_tail":
         changedRanges=scenes.filter(s=>changed.has(s.id)).map(s=>({
           start:s.range.start,end:s.range.end+request.tail_frames,
