@@ -8,7 +8,9 @@ export async function authorBlenderCameraComposition(page:Page) {
   await page.getByLabel("New scene name",{exact:true}).fill(name);
   await page.locator(".add-scene-form").getByRole("button",{name:"Add",exact:true}).click();await saved();
   await button(page,"Canvas").click();await page.locator(".tree-row").filter({hasText:name}).click();
-  await page.getByLabel("Renderer",{exact:true}).selectOption("blender");await saved();
+  await page.getByLabel("Renderer",{exact:true}).selectOption("blender");
+  await page.getByRole("button", { name: "Apply renderer change", exact: true }).click();
+  await saved();
   const tools=page.getByLabel("Create canvas object",{exact:true});
   await tools.getByRole("button",{name:"rectangle",exact:true}).click();await saved();
   await tools.getByRole("button",{name:"circle",exact:true}).click();await saved();

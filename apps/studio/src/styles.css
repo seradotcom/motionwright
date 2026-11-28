@@ -2100,6 +2100,28 @@ select:focus {
   line-height: 1.45;
 }
 
+.renderer-change-review {
+  display: grid;
+  gap: 8px;
+  margin-block: 8px 12px;
+  padding: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+.renderer-change-review p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.renderer-change-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .scene-beat-editor {
   display: grid;
   gap: 8px;

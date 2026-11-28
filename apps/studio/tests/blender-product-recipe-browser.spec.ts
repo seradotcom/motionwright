@@ -14,6 +14,7 @@ test("Author exact Blender product recipe and recover raw controls without nativ
   await expect(page.locator(".tree-row").filter({hasText:"Product recipe study"})).toBeVisible();
   await page.locator(".tree-row").filter({hasText:"Product recipe study"}).click();
   await page.getByLabel("Renderer",{exact:true}).selectOption("blender");
+  await page.getByRole("button", { name: "Apply renderer change", exact: true }).click();
   await expect.poll(async()=>(await readStudioProject(page)).scenes.find(s=>s.name==="Product recipe study")?.renderer).toBe("blender");
   await page.getByLabel("Scene duration seconds",{exact:true}).fill("40");
   await button(page,"Ripple").click();

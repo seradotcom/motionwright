@@ -1,5 +1,6 @@
-import { CircleDashed, Clock3, LockKeyhole, Settings2, Unlock } from "lucide-react";
+import { Clock3, LockKeyhole, Settings2, Unlock } from "lucide-react";
 import SceneBeatEditor from "./SceneBeatEditor";
+import { useRef, useState } from "react";
 import type { Ref } from "react";
 import type { Change, Project, RationalTime, RendererKind, Scene } from "./types";
 import type { TimecodeMode } from "./timecode";
@@ -45,6 +46,24 @@ function SelectedSceneInspector({ project, scene, commit, commitScene, commitBea
   const locks = project.locks.filter((lock) => lock.resource === resource);
   const timingLocked = locks.some((lock) => lock.kind === "timing");
   const contentLocked = locks.some((lock) => lock.kind === "content");
+  const rendererLocked = locks.some(lock => lock.kind === "renderer");
+  const rendererSource = JSON.stringify([project.id, project.generation, project.active_branch, project.revision, scene.id]);
+  const [rendererChoice, setRendererChoice] = useState<{ source: string; value: RendererKind } | null>(null);
+  const [savingRenderer, setSavingRenderer] = useState(false);
+  const rendererSelect = useRef<HTMLSelectElement>(null);
+  const proposedRenderer = rendererChoice?.source === rendererSource && !rendererLocked
+    && rendererAvailable(project, rendererChoice.value) ? rendererChoice.value : null;
+
+  const applyRendererChange = async () => {
+    if (!proposedRenderer || savingRenderer) return;
+    setSavingRenderer(true);
+    setRendererChoice(null);
+    try {
+      await commit({ type: "set_scene_renderer", scene_id: scene.id, renderer: proposedRenderer });
+    } finally {
+      setSavingRenderer(false);
+    }
+  };
   return (
     <aside ref={panelRef} tabIndex={-1} className="inspector" aria-label="Scene inspector">
       <div className="inspector-heading">
@@ -59,12 +78,13 @@ function SelectedSceneInspector({ project, scene, commit, commitScene, commitBea
         <label className="field-label" htmlFor="renderer">Renderer</label>
         <select
           id="renderer"
-          value={scene.renderer}
-          onChange={(event) => commit({
-            type: "set_scene_renderer",
-            scene_id: scene.id,
-            renderer: event.target.value as RendererKind,
-          })}
+          ref={rendererSelect}
+          value={proposedRenderer ?? scene.renderer}
+          disabled={rendererLocked || savingRenderer}
+          onChange={event => {
+            const value = event.target.value as RendererKind;
+            setRendererChoice(value === scene.renderer ? null : { source: rendererSource, value });
+          }}
         >
           {Object.entries(rendererLabels).map(([value, label]) => {
             const renderer = value as RendererKind;
@@ -76,6 +96,20 @@ function SelectedSceneInspector({ project, scene, commit, commitScene, commitBea
             );
           })}
         </select>
+        {proposedRenderer && <section className="renderer-change-review" aria-label="Review renderer change">
+          <strong>{rendererLabels[scene.renderer]} to {rendererLabels[proposedRenderer]}</strong>
+          <p>Canvas objects and timing stay editable. Review the new renderer's output before using it in a cut.</p>
+          {proposedRenderer === "blender" && scene.nodes.some(node => node.kind === "text") &&
+            <p>Canvas text needs a separate realization for Blender.</p>}
+          <div className="renderer-change-actions">
+            <button type="button" className="button compact" onClick={() => void applyRendererChange()}>Apply renderer change</button>
+            <button type="button" className="button compact" onClick={() => {
+              setRendererChoice(null);
+              rendererSelect.current?.focus();
+            }}>Cancel renderer change</button>
+          </div>
+        </section>}
+        {rendererLocked && <p className="renderer-note"><LockKeyhole size={13} aria-hidden="true"/>The renderer is locked.</p>}
         <label className="field-label" htmlFor="scene-status">Review state</label>
         <select
           id="scene-status"
@@ -116,10 +150,6 @@ function SelectedSceneInspector({ project, scene, commit, commitScene, commitBea
         <div className="renderer-note">
           <Clock3 size={13} />
           Duration accepts exact seconds or fractions. Ripple reflows later scene starts without stretching or inferring voice timing.
-        </div>
-        <div className="renderer-note">
-          <CircleDashed size={13} />
-          Capability loss is evaluated before a renderer swap is executed.
         </div>
       </section>
 

@@ -75,6 +75,13 @@ test("renderer and locks mutate the same visible project revision", async ({ pag
   const renderer = page.getByLabel("Renderer", { exact: true });
   await expect(renderer).toHaveValue("motion-canvas");
   await renderer.selectOption("blender");
+  const pending = page.getByRole("region", { name: "Review renderer change", exact: true });
+  await expect(pending).toContainText("Motion Canvas to Blender");
+  await expect(page.locator(".command-bar .revision-chip")).toHaveText("r12");
+  await pending.getByRole("button", { name: "Cancel renderer change", exact: true }).click();
+  await expect(renderer).toHaveValue("motion-canvas");
+  await renderer.selectOption("blender");
+  await pending.getByRole("button", { name: "Apply renderer change", exact: true }).click();
   await expect(page.getByText("r13", { exact: true }).first()).toBeVisible();
 
   await page.getByRole("button", { name: "Content", exact: true }).click();
@@ -494,6 +501,7 @@ test("optional renderers stay closed until a reviewed project extension is expli
   await expect(renderer.locator('option[value="manim-gl"]')).toBeDisabled();
 
   await renderer.selectOption("remotion");
+  await page.getByRole("button", { name: "Apply renderer change", exact: true }).click();
   await expect(renderer).toHaveValue("remotion");
 
   // The editor blocks its stale descriptor after a renderer revision, rather than

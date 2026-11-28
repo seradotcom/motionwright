@@ -390,6 +390,7 @@ test("the exported original returns to the native source editor as a new version
     const inspector = page.locator(".inspector");
     await expect(inspector.getByText(scene.name, {exact:true})).toBeVisible();
     await inspector.getByLabel("Renderer", {exact:true}).selectOption("blender");
+    await inspector.getByRole("button", { name: "Apply renderer change", exact: true }).click();
     await revision(page, project.revision + 1);
     project = await service.project(project.id);
     expect(project.scenes.find(item => item.id === scene.id)?.renderer).toBe("blender");
