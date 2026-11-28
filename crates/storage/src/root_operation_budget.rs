@@ -732,7 +732,9 @@ impl Store {
             || intent.command.chars().any(char::is_control)
             || !digest_valid(&intent.request_sha256)
             || intent.command.starts_with("motionwright.recovery.")
-            || intent.command.starts_with(super::private_delivery::COMMAND_PREFIX)
+            || intent
+                .command
+                .starts_with(super::private_delivery::COMMAND_PREFIX)
         {
             return Err(invalid("budgeted dispatch intent is malformed"));
         }
