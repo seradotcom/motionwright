@@ -133,6 +133,18 @@ export default function CreativeEvaluatorWorkbench({project,scene,commit,busy,on
         {bundles.map(bundle=><option value={bundle.id+":"+bundle.version}
           key={bundle.id+":"+bundle.version}>{bundle.label} · v{bundle.version}</option>)}
       </select></label>
+    {latest?.artifacts && <section className="production-evidence-note" aria-label="Independent evaluator artifact versions">
+      <h3>Evaluator artifacts</h3>
+      <dl>
+        <div><dt>Instructions</dt><dd>v{latest.artifacts.instructions_version}</dd></div>
+        <div><dt>Examples</dt><dd>v{latest.artifacts.examples.version}<ul>{latest.artifacts.examples.cases.map(example =>
+          <li key={example.label}>{example.label} · expected {example.expected.replaceAll("_", " ")}</li>
+        )}</ul></dd></div>
+        <div><dt>Interpreter dependencies</dt><dd>v{latest.artifacts.dependencies.version} · {latest.artifacts.dependencies.interpreter}
+          <ul>{latest.artifacts.dependencies.inputs.map(input => <li key={input}>{input.replaceAll("_", " ")}</li>)}</ul>
+        </dd></div>
+      </dl>
+    </section>}
     <p className="production-help">
       Selected scene: {scene?.name??"none"}. This produces a source-revision-bound
       technical report only; ask a human to assess the creative question separately.

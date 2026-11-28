@@ -163,3 +163,33 @@ describe("source-bound style advisory acceptance without aesthetic automation",(
     await expect(validateEvaluatorState(p)).resolves.toBeUndefined();
   });
 });
+
+describe("independent versions of evaluator data", () => {
+  it("admits only deliberate versions of the actual instruction, example and dependency content", async () => {
+    const original = bundle();
+    original.artifacts = {
+      instructions_version: 1,
+      examples: { version: 1, cases: [{ label: "Complete editable scene", criterion_id: nodeId, expected: "pass" }] },
+      dependencies: { version: 1, interpreter: EVALUATOR_SCHEMA, inputs: ["canvas_node_roster", "canvas_text", "human_review"] },
+    };
+    let saved = await applyChange(project(), { type: "register_creative_evaluator", bundle: original });
+    const historical = await evaluatorDigest(original);
+    const next = structuredClone(original);
+    next.version = 2;
+    next.artifacts!.examples.cases[0].label = "Complete scene with readable source";
+    await expect(applyChange(saved, { type: "register_creative_evaluator", bundle: next })).rejects.toThrow(/artifact versions/);
+    next.artifacts!.examples.version = 2;
+    saved = await applyChange(saved, { type: "register_creative_evaluator", bundle: next });
+    expect(await evaluatorDigest(saved.production_design!.evaluator_bundles![0])).toBe(historical);
+    expect(saved.production_design!.evaluator_bundles![1].artifacts).toEqual(next.artifacts);
+    await validateEvaluatorState(saved);
+    const foreign = structuredClone(next);
+    foreign.artifacts!.dependencies.inputs = ["canvas_node_roster"];
+    expect(() => validateEvaluator(foreign)).toThrow(/interpreter dependencies/);
+    const executable = { ...next, artifacts: { ...next.artifacts!, entry_point: "untrusted" } };
+    expect(() => validateEvaluator(executable)).toThrow(/unknown/);
+    const mislabeled = { ...next, artifacts: { ...next.artifacts!, examples: { version: 2,
+      cases: [{ label: "Claim approval", criterion_id: reviewId, expected: "pass" as const }] } } };
+    expect(() => validateEvaluator(mislabeled)).toThrow(/supported criterion/);
+  });
+});

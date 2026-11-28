@@ -2,7 +2,7 @@
  * Never execute bundle text as code/instructions or equate structural PASS
  * with a human editor's aesthetic, legal, or creative approval.
  */
-import { emptyProductionDesign } from "./creativeProduction";
+import { emptyProductionDesign, sameValue } from "./creativeProduction";
 import type { Project, Scene, Change, RationalTime } from "./types";
 
 export const EVALUATOR_SCHEMA="motionwright.creative-evaluator/1";
@@ -13,9 +13,19 @@ export type CreativeCriterion =
   | {kind:"text_contains";id:string;phrase:string}
   | {kind:"project_pixel_safe_area";id:string;margin_permille:number}
   | {kind:"human_question";id:string;question:string};
+
+const evaluatorInputKinds = ["canvas_node_roster", "canvas_text", "canvas_pixel_bounds", "human_review"] as const;
+export type EvaluatorInputDependency = typeof evaluatorInputKinds[number];
+export interface EvaluatorDataArtifacts {
+  instructions_version: number;
+  examples: { version: number; cases: { label: string; criterion_id: string; expected: CriterionOutcome }[] };
+  dependencies: { version: number; interpreter: typeof EVALUATOR_SCHEMA; inputs: EvaluatorInputDependency[] };
+}
+
 export interface CreativeEvaluatorBundle {
   schema:string;id:string;version:number;label:string;purpose:string;
   author_attestation:string;playbook:string[];criteria:CreativeCriterion[];
+  artifacts?: EvaluatorDataArtifacts;
 }
 export type CriterionOutcome="pass"|"fail"|"not_assessed";
 export type TechnicalConclusion="pass_technical_only"|"fail"|"needs_human_review";
@@ -53,10 +63,72 @@ function bounded(value:unknown,budget:number,label:string):void {
     new TextEncoder().encode(value).length>budget || badControl.test(value))
     deny("Invalid bounded "+label+".");
 }
+
+function evaluatorRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function validateEvaluatorArtifacts(artifacts: EvaluatorDataArtifacts, criteria: CreativeCriterion[]): void {
+  if (!evaluatorRecord(artifacts) || !evaluatorRecord(artifacts.examples) || !evaluatorRecord(artifacts.dependencies))
+    deny("Evaluator artifacts must be typed data objects.");
+  strictKeys(artifacts, ["instructions_version", "examples", "dependencies"]);
+  strictKeys(artifacts.examples, ["version", "cases"]);
+  strictKeys(artifacts.dependencies, ["version", "interpreter", "inputs"]);
+  const byCriterion = {
+    minimum_nodes: "canvas_node_roster", text_contains: "canvas_text",
+    project_pixel_safe_area: "canvas_pixel_bounds", human_question: "human_review",
+  } as const;
+  const used = new Set(criteria.map(criterion => byCriterion[criterion.kind]));
+  const expected = evaluatorInputKinds.filter(input => used.has(input));
+  if ([artifacts.instructions_version, artifacts.examples.version, artifacts.dependencies.version]
+      .some(version => !Number.isInteger(version) || version < 1 || version > 0xffffffff)
+    || artifacts.dependencies.interpreter !== EVALUATOR_SCHEMA || !sameValue(artifacts.dependencies.inputs, expected)
+    || !Array.isArray(artifacts.examples.cases) || !artifacts.examples.cases.length || artifacts.examples.cases.length > 16)
+    deny("Invalid evaluator artifact versions, examples or interpreter dependencies.");
+  const labels = new Set<string>();
+  for (const example of artifacts.examples.cases) {
+    if (!evaluatorRecord(example)) deny("An evaluator example needs a typed data object.");
+    strictKeys(example, ["label", "criterion_id", "expected"]);
+    bounded(example.label, 180, "evaluator example label");
+    const criterion = criteria.find(value => value.id === example.criterion_id);
+    if (!criterion || labels.has(example.label) || !["pass", "fail", "not_assessed"].includes(example.expected)
+      || (criterion.kind === "human_question" && example.expected !== "not_assessed"))
+      deny("An example must identify a distinct original case for a supported criterion.");
+    labels.add(example.label);
+  }
+}
+
+export function validateEvaluatorArtifactTransition(previous: CreativeEvaluatorBundle | undefined, bundle: CreativeEvaluatorBundle): void {
+  const current = bundle.artifacts, prior = previous?.artifacts;
+  if (!current) {
+    if (prior) deny("Evaluator history must retain its independent artifacts.");
+    return;
+  }
+  const advances = (currentVersion: number, priorVersion: number, before: unknown, after: unknown) =>
+    currentVersion === priorVersion + (sameValue(before, after) ? 0 : 1);
+  const valid = prior && previous
+    ? advances(current.instructions_version, prior.instructions_version, previous.playbook, bundle.playbook)
+      && advances(current.examples.version, prior.examples.version, prior.examples.cases, current.examples.cases)
+      && advances(current.dependencies.version, prior.dependencies.version, prior.dependencies.inputs, current.dependencies.inputs)
+    : current.instructions_version === 1 && current.examples.version === 1 && current.dependencies.version === 1;
+  if (!valid) deny("Evaluator artifact versions must advance once only when their own content changes.");
+}
+
+function canonicalEvaluatorArtifacts(artifacts: EvaluatorDataArtifacts): EvaluatorDataArtifacts {
+  return {
+    instructions_version: artifacts.instructions_version,
+    examples: { version: artifacts.examples.version,
+      cases: artifacts.examples.cases.map(example => ({ label: example.label, criterion_id: example.criterion_id, expected: example.expected })) },
+    dependencies: { version: artifacts.dependencies.version, interpreter: artifacts.dependencies.interpreter, inputs: artifacts.dependencies.inputs },
+  };
+}
+
 export function validateEvaluator(bundle:CreativeEvaluatorBundle):void {
   if(!bundle || typeof bundle!=="object" || Array.isArray(bundle))
     deny("Creative evaluator must be a data-only object.");
-  strictKeys(bundle,["schema","id","version","label","purpose","author_attestation","playbook","criteria"]);
+  strictKeys(bundle,["schema","id","version","label","purpose","author_attestation","playbook","criteria",
+    ...(Object.hasOwn(bundle, "artifacts") ? ["artifacts"] : [])]);
+  if (Object.hasOwn(bundle, "artifacts") && !bundle.artifacts) deny("Independent evaluator artifacts must have a typed object value.");
   if(bundle.schema!==EVALUATOR_SCHEMA || !uuid.test(bundle.id) ||
     !Number.isSafeInteger(bundle.version) || bundle.version<1 ||
     !Array.isArray(bundle.playbook) || bundle.playbook.length<1 || bundle.playbook.length>12 ||
@@ -93,6 +165,7 @@ export function validateEvaluator(bundle:CreativeEvaluatorBundle):void {
       case "human_question":bounded(criterion.question,250,"human-review question");break;
     }
   }
+  if (bundle.artifacts) validateEvaluatorArtifacts(bundle.artifacts, bundle.criteria);
 }
 /** Canonical Rust serde struct and internally-tagged criterion serialization
  * both use insertion order. Compute digest from an explicitly ordered clone.
@@ -111,6 +184,7 @@ export async function evaluatorDigest(bundle:CreativeEvaluatorBundle):Promise<st
     schema:bundle.schema,id:bundle.id,version:bundle.version,label:bundle.label,
     purpose:bundle.purpose,author_attestation:bundle.author_attestation,
     playbook:bundle.playbook,criteria:bundle.criteria.map(fields),
+    ...(bundle.artifacts ? { artifacts: canonicalEvaluatorArtifacts(bundle.artifacts) } : {}),
   };
   const source=new TextEncoder().encode(EVALUATOR_SCHEMA+"\0"+JSON.stringify(canonical));
   const bytes=new Uint8Array(await crypto.subtle.digest("SHA-256",source));
@@ -244,15 +318,17 @@ export async function validateEvaluatorState(project:Project):Promise<void>{
   const bundles=project.production_design?.evaluator_bundles??[];
   const reports=project.production_design?.evaluation_reports??[];
   if(bundles.length>64 || reports.length>256)deny("Evaluator state exceeds its budget.");
-  const versions=new Map<string,number[]>();
+  const versions=new Map<string,CreativeEvaluatorBundle[]>();
   for(const bundle of bundles){
     validateEvaluator(bundle);
-    versions.set(bundle.id,[...(versions.get(bundle.id)??[]),bundle.version]);
+    versions.set(bundle.id,[...(versions.get(bundle.id)??[]),bundle]);
   }
   for(const revisions of versions.values()){
-    revisions.sort((a,b)=>a-b);
-    if(revisions.some((version,index)=>version!==index+1))
-      deny("Versioned creative evaluator history is not append-only.");
+    revisions.sort((a,b)=>a.version-b.version);
+    revisions.forEach((bundle, index) => {
+      if (bundle.version !== index + 1) deny("Versioned creative evaluator history is not append-only.");
+      validateEvaluatorArtifactTransition(revisions[index - 1], bundle);
+    });
   }
   const checksums=new Map<string,string>();
   for(const bundle of bundles)checksums.set(bundle.id+":"+bundle.version,await evaluatorDigest(bundle));
@@ -316,9 +392,10 @@ export async function applyEvaluatorChange(project:Project,change:EvaluatorChang
   if(change.type==="register_creative_evaluator"){
     validateEvaluator(change.bundle);
     if(bundles.length>=64)deny("Evaluator bundle version budget exceeded.");
-    const latest=Math.max(0,...bundles.filter(b=>b.id===change.bundle.id).map(b=>b.version));
-    if(change.bundle.version!==latest+1)
+    const latest = bundles.filter(bundle => bundle.id === change.bundle.id).sort((a, b) => b.version - a.version)[0];
+    if (change.bundle.version !== (latest?.version ?? 0) + 1)
       deny("Evaluator recipe versions are append-only; previous versions cannot change.");
+    validateEvaluatorArtifactTransition(latest, change.bundle);
     design.evaluator_bundles=[...bundles,structuredClone(change.bundle)];
   }else{
     if(project.locks.some(lock=>lock.resource==="scene:"+change.scene_id && lock.kind==="content"))

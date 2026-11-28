@@ -60,6 +60,106 @@ fn safe_text(value: &str, budget: usize, label: &str) -> Result<()> {
     }
     Ok(())
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluatorInputDependency {
+    CanvasNodeRoster,
+    CanvasText,
+    CanvasPixelBounds,
+    HumanReview,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvaluatorExample {
+    pub label: String,
+    pub criterion_id: Uuid,
+    pub expected: CriterionOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvaluatorExamplesArtifact {
+    pub version: u32,
+    pub cases: Vec<EvaluatorExample>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvaluatorDependenciesArtifact {
+    pub version: u32,
+    pub interpreter: String,
+    pub inputs: Vec<EvaluatorInputDependency>,
+}
+
+/// Independently versioned data consumed or displayed by the first-party evaluator.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvaluatorDataArtifacts {
+    pub instructions_version: u32,
+    pub examples: EvaluatorExamplesArtifact,
+    pub dependencies: EvaluatorDependenciesArtifact,
+}
+
+fn present_artifacts<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<EvaluatorDataArtifacts>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    EvaluatorDataArtifacts::deserialize(deserializer).map(Some)
+}
+
+impl EvaluatorDataArtifacts {
+    fn validate(&self, criteria: &[CreativeCriterion]) -> Result<()> {
+        let expected = criteria
+            .iter()
+            .map(|criterion| match criterion {
+                CreativeCriterion::MinimumNodes { .. } => {
+                    EvaluatorInputDependency::CanvasNodeRoster
+                }
+                CreativeCriterion::TextContains { .. } => EvaluatorInputDependency::CanvasText,
+                CreativeCriterion::ProjectPixelSafeArea { .. } => {
+                    EvaluatorInputDependency::CanvasPixelBounds
+                }
+                CreativeCriterion::HumanQuestion { .. } => EvaluatorInputDependency::HumanReview,
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if self.instructions_version == 0
+            || self.examples.version == 0
+            || self.dependencies.version == 0
+            || self.dependencies.interpreter != CREATIVE_EVALUATOR_SCHEMA
+            || self.dependencies.inputs != expected
+            || !(1..=16).contains(&self.examples.cases.len())
+        {
+            return Err(DomainError::Invalid(
+                "invalid evaluator artifact versions, examples or interpreter dependencies".into(),
+            ));
+        }
+        let mut labels = BTreeSet::new();
+        for example in &self.examples.cases {
+            safe_text(&example.label, 180, "evaluator example label")?;
+            let criterion = criteria
+                .iter()
+                .find(|criterion| criterion.id() == example.criterion_id);
+            if !labels.insert(example.label.as_str())
+                || criterion.is_none_or(|criterion| {
+                    criterion.is_human() && example.expected != CriterionOutcome::NotAssessed
+                })
+            {
+                return Err(DomainError::Invalid(
+                    "example must identify a distinct original case for a supported criterion"
+                        .into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreativeEvaluatorBundle {
@@ -73,6 +173,12 @@ pub struct CreativeEvaluatorBundle {
     /// Data-only editorial guidance: never executed, installed or delegated.
     pub playbook: Vec<String>,
     pub criteria: Vec<CreativeCriterion>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_artifacts"
+    )]
+    pub artifacts: Option<EvaluatorDataArtifacts>,
 }
 impl CreativeEvaluatorBundle {
     pub fn content_digest(&self) -> Result<String> {
@@ -114,6 +220,56 @@ impl CreativeEvaluatorBundle {
                     "duplicate creative criterion identity".into(),
                 ));
             }
+        }
+        if let Some(artifacts) = &self.artifacts {
+            artifacts.validate(&self.criteria)?;
+        }
+        Ok(())
+    }
+
+    fn validate_artifact_transition(&self, previous: Option<&Self>) -> Result<()> {
+        let prior = previous.and_then(|bundle| {
+            bundle
+                .artifacts
+                .as_ref()
+                .map(|artifacts| (bundle, artifacts))
+        });
+        let Some(current) = &self.artifacts else {
+            return if prior.is_none() {
+                Ok(())
+            } else {
+                Err(DomainError::Invalid(
+                    "evaluator history must retain its independent artifacts".into(),
+                ))
+            };
+        };
+        let valid = if let Some((previous, prior)) = prior {
+            let next = |version: u32, changed: bool| version.checked_add(u32::from(changed));
+            Some(current.instructions_version)
+                == next(
+                    prior.instructions_version,
+                    self.playbook != previous.playbook,
+                )
+                && Some(current.examples.version)
+                    == next(
+                        prior.examples.version,
+                        current.examples.cases != prior.examples.cases,
+                    )
+                && Some(current.dependencies.version)
+                    == next(
+                        prior.dependencies.version,
+                        current.dependencies.inputs != prior.dependencies.inputs,
+                    )
+        } else {
+            current.instructions_version == 1
+                && current.examples.version == 1
+                && current.dependencies.version == 1
+        };
+        if !valid {
+            return Err(DomainError::Invalid(
+                "evaluator artifact versions must advance once only when their own content changes"
+                    .into(),
+            ));
         }
         Ok(())
     }
@@ -288,18 +444,14 @@ impl Project {
                 "creative evaluator version budget exceeded".into(),
             ));
         }
-        let versions: Vec<u32> = self
+        let previous = self
             .production_design
             .evaluator_bundles
             .iter()
             .filter(|prior| prior.id == bundle.id)
-            .map(|prior| prior.version)
-            .collect();
-        let next = versions
-            .iter()
-            .max()
-            .copied()
-            .unwrap_or(0)
+            .max_by_key(|prior| prior.version);
+        let next = previous
+            .map_or(0, |prior| prior.version)
             .checked_add(1)
             .ok_or_else(|| DomainError::Invalid("evaluator version overflow".into()))?;
         if bundle.version != next {
@@ -308,6 +460,7 @@ impl Project {
                     .into(),
             ));
         }
+        bundle.validate_artifact_transition(previous)?;
         self.production_design
             .evaluator_bundles
             .push(bundle.clone());
@@ -598,17 +751,17 @@ impl ProductionDesign {
                 .evaluator_bundles
                 .iter()
                 .filter(|bundle| bundle.id == id)
-                .map(|bundle| bundle.version)
                 .collect::<Vec<_>>();
-            versions.sort_unstable();
-            if versions
-                .iter()
-                .enumerate()
-                .any(|(index, version)| *version != (index as u32 + 1))
-            {
-                return Err(DomainError::Invalid(
-                    "creative evaluator history skips a source version".into(),
-                ));
+            versions.sort_unstable_by_key(|bundle| bundle.version);
+            let mut previous = None;
+            for (index, bundle) in versions.into_iter().enumerate() {
+                if bundle.version != index as u32 + 1 {
+                    return Err(DomainError::Invalid(
+                        "creative evaluator history skips a source version".into(),
+                    ));
+                }
+                bundle.validate_artifact_transition(previous)?;
+                previous = Some(bundle);
             }
         }
         let mut reports = BTreeSet::new();
