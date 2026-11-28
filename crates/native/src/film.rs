@@ -35,6 +35,12 @@ const CANVAS_HEIGHT: f64 = 1080.0;
 const MAX_FILM_SECONDS: i64 = 600;
 const MAX_SEQUENCES: usize = 32;
 const MAX_TEMPORAL_SPANS: usize = 128;
+// Keep the usual subject and transition observations below the native
+// transport's 64 MiB per-render limit. The renderer enforces its byte limit.
+const TARGET_NATIVE_OBSERVATION_BYTES: u64 = 60 * 1024 * 1024;
+const NATIVE_OBSERVATION_FRAME_OVERHEAD: u64 = 1024;
+const NATIVE_OBSERVATION_SUBJECT_BYTES: u64 = 2048;
+const NATIVE_OBSERVATION_MOTION_BYTES: u64 = 512;
 
 pub const MOTION_CANVAS_FONT_FAMILY: &str = "Instrument Sans Variable";
 pub const MOTION_CANVAS_MONO_FONT_FAMILY: &str = "IBM Plex Mono";
@@ -3309,7 +3315,7 @@ pub fn build_motion_canvas_segments(
     deliverable_id: Uuid,
     options: &FilmBuildOptions,
 ) -> NativeResult<Vec<MotionCanvasSegment>> {
-    build_motion_canvas_segments_inner(project, deliverable_id, options, true)
+    build_motion_canvas_segments_inner(project, deliverable_id, options, true, true)
 }
 
 /// Pure planning for callers that must inspect original receipts before new
@@ -3319,7 +3325,32 @@ pub(crate) fn plan_motion_canvas_segments(
     deliverable_id: Uuid,
     options: &FilmBuildOptions,
 ) -> NativeResult<Vec<MotionCanvasSegment>> {
-    build_motion_canvas_segments_inner(project, deliverable_id, options, false)
+    build_motion_canvas_segments_inner(project, deliverable_id, options, false, true)
+}
+
+/// Rebuild the original contiguous runs for receipts written before
+/// observation-aware partitioning.
+pub(crate) fn plan_original_motion_canvas_segments(
+    project: &Project,
+    deliverable_id: Uuid,
+    options: &FilmBuildOptions,
+) -> NativeResult<Vec<MotionCanvasSegment>> {
+    build_motion_canvas_segments_inner(project, deliverable_id, options, false, false)
+}
+
+fn exceeds_native_observation_target(segment: &MotionCanvasSegment) -> bool {
+    // The pinned renderer emits the complete shot subject and transition
+    // tables at every frame, including inactive shots in the same Film.
+    let bytes_per_frame =
+        segment
+            .film
+            .shots()
+            .fold(NATIVE_OBSERVATION_FRAME_OVERHEAD, |total, shot| {
+                total
+                    + shot.subjects.len() as u64 * NATIVE_OBSERVATION_SUBJECT_BYTES
+                    + shot.motion.len() as u64 * NATIVE_OBSERVATION_MOTION_BYTES
+            });
+    segment.frame_count.saturating_mul(bytes_per_frame) > TARGET_NATIVE_OBSERVATION_BYTES
 }
 
 fn build_motion_canvas_segments_inner(
@@ -3327,6 +3358,7 @@ fn build_motion_canvas_segments_inner(
     deliverable_id: Uuid,
     options: &FilmBuildOptions,
     guard_full_selection: bool,
+    partition_observations: bool,
 ) -> NativeResult<Vec<MotionCanvasSegment>> {
     project
         .validate()
@@ -3357,13 +3389,28 @@ fn build_motion_canvas_segments_inner(
             &scene_ids,
         )?;
     }
-    let mut segments = runs
-        .iter()
-        .enumerate()
-        .map(|(index, scenes)| {
-            build_segment(project, scenes, index, deliverable, options, &intents)
-        })
-        .collect::<NativeResult<Vec<_>>>()?;
+    let mut pending: Vec<&[Scene]> = runs.iter().rev().map(Vec::as_slice).collect();
+    let mut segments = Vec::with_capacity(runs.len());
+    while let Some(scenes) = pending.pop() {
+        let segment = build_segment(
+            project,
+            scenes,
+            segments.len(),
+            deliverable,
+            options,
+            &intents,
+        )?;
+        if partition_observations && scenes.len() > 1 && exceeds_native_observation_target(&segment)
+        {
+            // Only split between complete scenes; a single scene keeps its
+            // authored timing and its existing provider admission behavior.
+            let (left, right) = scenes.split_at(scenes.len() / 2);
+            pending.push(right);
+            pending.push(left);
+        } else {
+            segments.push(segment);
+        }
+    }
     // Burn-in is an explicit saved deliverable choice. Sidecar-only profiles
     // retain their historical native pixels and do not import voice audio.
     film_captions::attach_native_caption_cues(
@@ -5091,6 +5138,41 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn long_film_partitions_native_observations_at_exact_scene_boundaries() {
+        let mut project = fixture_project();
+        for (index, scene) in project.scenes.iter_mut().enumerate() {
+            scene.start = RationalTime::new(20 * index as i64, 1).unwrap();
+            scene.duration = RationalTime::new(20, 1).unwrap();
+            for _ in 0..13 {
+                scene.nodes.push(node("shape", None));
+            }
+        }
+        let source = project.clone();
+        let profile = project.deliverables[0].id;
+        let options = fixture_options(&project);
+        let original = plan_original_motion_canvas_segments(&project, profile, &options).unwrap();
+        assert_eq!(original.len(), 1);
+        assert!(exceeds_native_observation_target(&original[0]));
+
+        let bounded = build_motion_canvas_segments(&project, profile, &options).unwrap();
+        assert_eq!(bounded.len(), 2);
+        for (segment, scene) in bounded.iter().zip(&project.scenes) {
+            assert_eq!(segment.scene_ids, [scene.id]);
+            assert_eq!(
+                segment.global_start,
+                Rational::new(scene.start.num, scene.start.den).unwrap()
+            );
+            assert_eq!(
+                segment.duration,
+                Rational::new(scene.duration.num, scene.duration.den).unwrap()
+            );
+            assert_eq!(segment.frame_count, 600);
+            assert!(!exceeds_native_observation_target(segment));
+        }
+        assert_eq!(project, source);
     }
 
     #[test]

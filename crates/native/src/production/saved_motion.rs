@@ -7,7 +7,8 @@ use semwright_native_sdk::types::Execution;
 use std::collections::BTreeMap;
 
 const KEY: &str = "original_motion_reopen";
-const SCHEMA: &str = "motionwright.original-motion-reopen/1";
+const ORIGINAL_SCHEMA: &str = "motionwright.original-motion-reopen/1";
+const SCHEMA: &str = "motionwright.original-motion-reopen/2";
 const VERIFY: &str = "driver.motion-canvas.composition.verify";
 const MAX_SEGMENTS: usize = 64;
 const MAX_FRAMES: u64 = 36_000;
@@ -112,7 +113,7 @@ impl SavedMotionBase {
     }
 
     fn check(&self, coordinator: &ProductionCoordinator, project: &Project) -> NativeResult<()> {
-        if self.schema != SCHEMA
+        if !matches!(self.schema.as_str(), ORIGINAL_SCHEMA | SCHEMA)
             || self.project_sha256 != project_digest(project)?
             || self.connection_identity != coordinator.client.connection().identity()?
             || self.root_id.is_nil()
@@ -421,7 +422,15 @@ impl ProductionCoordinator {
             ));
         }
         let base = context.source;
-        let segments = plan_motion_canvas_segments(project, deliverable_id, &base.options)?;
+        let segments = if base.schema == ORIGINAL_SCHEMA {
+            crate::film::plan_original_motion_canvas_segments(
+                project,
+                deliverable_id,
+                &base.options,
+            )?
+        } else {
+            plan_motion_canvas_segments(project, deliverable_id, &base.options)?
+        };
         let total = segments.iter().try_fold(0_u64, |total, segment| {
             total
                 .checked_add(segment.frame_count)
@@ -804,11 +813,12 @@ impl ProductionCoordinator {
             .iter()
             .flat_map(|s| s.scene_ids.iter().copied())
             .collect::<Vec<_>>();
-        let scoped = isolated.with_motion_scene_boundary_scope(
+        let scoped = isolated.with_motion_scene_boundary_plan(
             &project,
             deliverable_id,
             &source.base.options,
             &scene_ids,
+            source.base.schema == ORIGINAL_SCHEMA,
         )?;
         let scope = scoped
             .active_motion_budget

@@ -145,6 +145,38 @@ fn read_previous<T: DeserializeOwned>(
     )
 }
 
+fn read_previous_motion(
+    coordinator: &ProductionCoordinator,
+    project: &Project,
+    flow: &str,
+    deliverable_id: Uuid,
+    options: &FilmBuildOptions,
+    current_key: &StageKey,
+) -> NativeResult<Option<(MotionProof, ProductionReceipt)>> {
+    let current = read_previous::<MotionProof>(coordinator, project, current_key)?;
+    if current.is_some() {
+        return Ok(current);
+    }
+    let original =
+        crate::film::plan_original_motion_canvas_segments(project, deliverable_id, options)?;
+    let original_key = StageKey::for_input(
+        flow,
+        "motion-canvas",
+        current_key.command,
+        &stage_input(
+            project,
+            coordinator.client.connection(),
+            &(project.revision, &original),
+        )?,
+    )?;
+    if original_key.digest == current_key.digest {
+        return Ok(None);
+    }
+    // Read the original stage before claiming the newly partitioned one.
+    // In particular, its uncertain outcome must still block redispatch.
+    read_previous(coordinator, project, &original_key)
+}
+
 fn ensure_same_revision(
     coordinator: &ProductionCoordinator,
     id: Uuid,
@@ -547,7 +579,9 @@ impl ProductionCoordinator {
                 &(project.revision, &segments),
             )?,
         )?;
-        if let Some((proof, _)) = read_previous::<MotionProof>(self, project, &key)? {
+        if let Some((proof, _)) =
+            read_previous_motion(self, project, flow, deliverable_id, options, &key)?
+        {
             if proof.evidence.generation != project.generation
                 || proof.evidence.project_resource != project.resource_key()
                 || proof.evidence.revision != project.revision
@@ -672,11 +706,6 @@ impl ProductionCoordinator {
                 total.checked_add(segment.frame_count)
             })
             .ok_or_else(|| invalid("Recovery preflight frame count overflow"))?;
-        if segments.len() > RECOVERY_MAX_SEGMENTS || total_frames > RECOVERY_MAX_FRAMES {
-            return Err(invalid(
-                "Recovery preflight exceeds native frame verification budget",
-            ));
-        }
         let blender_key = StageKey::for_input(
             flow,
             "blender",
@@ -695,7 +724,8 @@ impl ProductionCoordinator {
         )?;
         // Read both original stage histories before any new admission or claim.
         let previous_blender = read_previous::<RecoveryBlenderProof>(self, &project, &blender_key)?;
-        let previous_motion = read_previous::<MotionProof>(self, &project, &motion_key)?;
+        let previous_motion =
+            read_previous_motion(self, &project, flow, deliverable, options, &motion_key)?;
         if previous_blender.is_none() {
             crate::native_scene_boundary::guard_scene_without_film_options(
                 &project,
@@ -703,6 +733,11 @@ impl ProductionCoordinator {
             )?;
         }
         if previous_motion.is_none() {
+            if segments.len() > RECOVERY_MAX_SEGMENTS || total_frames > RECOVERY_MAX_FRAMES {
+                return Err(invalid(
+                    "Recovery preflight exceeds native frame verification budget",
+                ));
+            }
             let scene_ids = segments
                 .iter()
                 .flat_map(|segment| segment.scene_ids.iter().copied())

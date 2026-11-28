@@ -3098,6 +3098,17 @@ impl ProductionCoordinator {
         options: &FilmBuildOptions,
         scene_ids: &[Uuid],
     ) -> NativeResult<Self> {
+        self.with_motion_scene_boundary_plan(project, deliverable_id, options, scene_ids, false)
+    }
+
+    fn with_motion_scene_boundary_plan(
+        &self,
+        project: &motionwright_domain::Project,
+        deliverable_id: Uuid,
+        options: &FilmBuildOptions,
+        scene_ids: &[Uuid],
+        original_partition: bool,
+    ) -> NativeResult<Self> {
         let scope = crate::native_scene_boundary::ExecutionScope::motion(
             project,
             deliverable_id,
@@ -3124,7 +3135,11 @@ impl ProductionCoordinator {
 
         // Replan from the exact committed project before constructing ANY
         // Motion Canvas provider effect. No client JSON supplies root/limits.
-        let segments = plan_motion_canvas_segments(project, deliverable_id, options)?;
+        let segments = if original_partition {
+            crate::film::plan_original_motion_canvas_segments(project, deliverable_id, options)?
+        } else {
+            plan_motion_canvas_segments(project, deliverable_id, options)?
+        };
         if segments.is_empty() {
             return Err(invalid(
                 "Budgeted Motion Canvas root has no native segments",

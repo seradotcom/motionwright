@@ -45,6 +45,8 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libssl-dev libpipewire-0.3-dev pkg-config clang
+      - name: Verify bounded native Film partitioning
+        run: cargo test --locked -p motionwright-native --lib film::tests::long_film_partitions_native_observations_at_exact_scene_boundaries -- --exact
       - name: Build Studio with the embedded frontend
         run: |
           set -euo pipefail
