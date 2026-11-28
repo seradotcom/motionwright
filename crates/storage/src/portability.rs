@@ -575,6 +575,11 @@ impl Store {
         let manifest: ProjectBundleManifest = serde_json::from_slice(&bytes)?;
         let plan = Self::validate_bundle_with_target(source, &manifest, admission, &check_target)?;
         check_target(plan.project.project_id)?;
+        if read_bundle_manifest_bytes(source)? != bytes {
+            return Err(StorageError::InvalidBackup(
+                "bundle manifest changed during inspection".into(),
+            ));
+        }
         Ok(InspectedProjectBundle {
             plan,
             fingerprint,
@@ -2398,6 +2403,29 @@ mod tests {
         assert_eq!(snapshot(&target), before);
         assert_eq!(target.conn.total_changes(), changes);
         assert_eq!(fs::read(bundle.join("manifest.json")).unwrap(), bytes);
+        assert_eq!(cas_control_bytes(&target), cas_before);
+
+        let checks = std::cell::Cell::new(0);
+        let changed_bytes = [&bytes[..], b" "].concat();
+        let inspected = Store::inspect_bundle_source(&bundle, &StructuralBundleAdmission, |id| {
+            target.check_import_destination(id)?;
+            if checks.replace(checks.get() + 1) == 1 {
+                fs::write(bundle.join("manifest.json"), &changed_bytes)?;
+            }
+            Ok(())
+        });
+        assert!(matches!(
+            inspected,
+            Err(StorageError::InvalidBackup(message))
+                if message == "bundle manifest changed during inspection"
+        ));
+        assert_eq!(checks.get(), 2);
+        assert_eq!(snapshot(&target), before);
+        assert_eq!(target.conn.total_changes(), changes);
+        assert_eq!(
+            fs::read(bundle.join("manifest.json")).unwrap(),
+            changed_bytes
+        );
         assert_eq!(cas_control_bytes(&target), cas_before);
     }
 

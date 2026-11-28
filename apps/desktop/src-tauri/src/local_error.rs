@@ -43,7 +43,17 @@ pub(crate) fn sanitized(error: impl std::fmt::Display) -> String {
 }
 
 pub(crate) fn portable_bundle_error(error: motionwright_service::StorageError) -> String {
-    if let motionwright_service::StorageError::MissingPortableMedia { digests } = &error {
+    use motionwright_service::StorageError;
+    if let StorageError::InvalidBackup(reason) = &error
+        && matches!(
+            reason.as_str(),
+            "bundle manifest changed during inspection"
+                | "bundle manifest changed after inspection"
+        )
+    {
+        return "The portable backup changed. Inspect it again before importing.".into();
+    }
+    if let StorageError::MissingPortableMedia { digests } = &error {
         if digests.is_empty()
             || digests.len() > 4096
             || digests.iter().any(|digest| {
@@ -100,6 +110,26 @@ mod tests {
         assert_eq!(
             sanitized("unrecognized backend detail MW_PRIVATE_METADATA_SENTINEL"),
             "Motionwright could not complete the local operation"
+        );
+    }
+
+    #[test]
+    fn portable_bundle_error_asks_for_a_fresh_inspection_only_for_a_changed_manifest() {
+        use motionwright_service::StorageError;
+        for reason in [
+            "bundle manifest changed during inspection",
+            "bundle manifest changed after inspection",
+        ] {
+            assert_eq!(
+                portable_bundle_error(StorageError::InvalidBackup(reason.into())),
+                "The portable backup changed. Inspect it again before importing."
+            );
+        }
+        assert_eq!(
+            portable_bundle_error(StorageError::InvalidBackup(
+                "bundle manifest changed during inspection of MW_PRIVATE_PATH".into()
+            )),
+            "invalid project backup"
         );
     }
 
