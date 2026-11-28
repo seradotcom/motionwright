@@ -133,7 +133,7 @@ import type {
   Change,
   MarkerChange,
   ScopedMutationChange,
-  SceneSplitChange,
+  SceneTimingChange,
   PortableBundlePlan,
   MotionCanvasRenderEvidence,
   MotionCanvasFilmOptions,
@@ -2121,8 +2121,13 @@ export default function App() {
   const commitMarker = useCallback((change: MarkerChange, requestId: string): Promise<Project> =>
     transactProject(source => applyChange(source, change, requestId)), [transactProject]);
 
-  const commitSplit = useCallback((change: SceneSplitChange, requestId: string): Promise<Project> =>
-    transactProject(source => applyChange(source, change, requestId)), [transactProject]);
+  const commitSceneTiming = useCallback((project: Project, change: SceneTimingChange, requestId: string): Promise<Project> =>
+    transactProject(source => {
+      if (timelineSelectionScope(source) !== timelineSelectionScope(project) || source.revision !== project.revision) {
+        throw new Error("The saved project changed after you prepared this scene edit.");
+      }
+      return applyChange(source, change, requestId);
+    }), [transactProject]);
 
   const commitScoped = useCallback((change: ScopedMutationChange, requestId: string): Promise<Project> =>
     transactProject(source => applyChange(source, change, requestId)), [transactProject]);
@@ -2747,7 +2752,7 @@ export default function App() {
         commit={commit}
         commitMarker={commitMarker}
         refreshMarkerProject={refreshSavedBranch}
-        commitSplit={commitSplit}
+        commitSceneTiming={commitSceneTiming}
         desktopMode={boot.native_sdk.mode === "tauri"}
         playing={playing}
         togglePlayback={() => setPlaying((current) => !current)}

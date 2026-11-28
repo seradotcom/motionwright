@@ -1,9 +1,9 @@
 import { Film, Pause, Play, Plus, SkipBack, SkipForward } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { Change, MarkerChange, Project, RationalTime, RendererKind, SceneSplitChange } from "./types";
+import type { Change, MarkerChange, Project, RationalTime, RendererKind, SceneTimingChange } from "./types";
 import TimelineMarkerEditor from "./TimelineMarkerEditor";
-import TimelineSceneSplit from "./TimelineSceneSplit";
+import TimelineSceneTiming from "./TimelineSceneTiming";
 import { seconds } from "./types";
 import { formatEditorTimecode as formatTime, parseEditorSeekTime, rulerTime, supportsDropFrame, timebaseLabel, validEditorRate } from "./timecode";
 import type { TimecodeMode } from "./timecode";
@@ -153,7 +153,7 @@ export default function Timeline({
   commit,
   commitMarker,
   refreshMarkerProject,
-  commitSplit,
+  commitSceneTiming,
   desktopMode,
   playing,
   togglePlayback,
@@ -174,7 +174,7 @@ export default function Timeline({
   commit: (change: Change) => Promise<void>;
   commitMarker: (change: MarkerChange, requestId: string) => Promise<Project>;
   refreshMarkerProject: (project: Project) => Promise<Project>;
-  commitSplit: (change: SceneSplitChange, requestId: string) => Promise<Project>;
+  commitSceneTiming: (project: Project, change: SceneTimingChange, requestId: string) => Promise<Project>;
   desktopMode: boolean;
   playing: boolean;
   togglePlayback: () => void;
@@ -423,8 +423,8 @@ export default function Timeline({
         </button>}
         <TimelineMarkerEditor marker={selectedMarker} project={project} rate={rate} mode={mode}
           commit={commitMarker} refresh={refreshMarkerProject} />
-        {desktopMode && <TimelineSceneSplit project={project} sceneId={selectedSceneId} playhead={playhead} rate={rate} mode={mode}
-          commit={commitSplit} refresh={refreshMarkerProject} onSaved={id => selectScene(id, false)} />}
+        {desktopMode && <TimelineSceneTiming project={project} sceneId={selectedSceneId} playhead={playhead} rate={rate} mode={mode}
+          commit={commitSceneTiming} refresh={refreshMarkerProject} onSaved={id => selectScene(id, false)} />}
         {(viewWarning || extras.issues.length > 0) && <span className="timeline-view-warning" role="status">{viewWarning || extras.issues.join(" · ")}</span>}
       </div>
       <div id={timelineBodyId} className="timeline-body">

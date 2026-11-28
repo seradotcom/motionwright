@@ -1,5 +1,5 @@
 use crate::{ApplyReceiptObservation, StorageError, StorageResult, StudioService};
-use motionwright_domain::{Change, DomainError, RationalTime, RevisionStamp};
+use motionwright_domain::{Change, DomainError, Project, RationalTime, RevisionStamp};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -43,24 +43,106 @@ pub struct SceneSplitReceiptRequest {
     split: SceneSplitRequest,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SceneTrimRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    branch_id: Uuid,
+    revision: u64,
+    scene_id: Uuid,
+    at: RationalTime,
+}
+
+impl SceneTrimRequest {
+    fn change(&self) -> Change {
+        Change::TrimSceneEnd {
+            scene_id: self.scene_id,
+            at: self.at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct SceneTrimPreview {
+    scene_id: Uuid,
+    revision: u64,
+    at: RationalTime,
+    old_duration: RationalTime,
+    new_duration: RationalTime,
+    shifted_scenes: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SceneTrimReceiptRequest {
+    request_id: Uuid,
+    trim: SceneTrimRequest,
+}
+
 impl StudioService {
+    pub fn preview_scene_trim(
+        &self,
+        request: &SceneTrimRequest,
+    ) -> StorageResult<SceneTrimPreview> {
+        let mut candidate = self.scene_timing_source(
+            request.project_id,
+            request.generation,
+            request.branch_id,
+            request.revision,
+        )?;
+        let index = candidate
+            .scenes
+            .iter()
+            .position(|scene| scene.id == request.scene_id)
+            .ok_or_else(|| DomainError::NotFound(format!("scene:{}", request.scene_id)))?;
+        let old_duration = candidate.scenes[index].duration;
+        let following: Vec<_> = candidate.scenes[index + 1..]
+            .iter()
+            .map(|scene| scene.start)
+            .collect();
+        candidate.apply_change(&request.change())?;
+        Ok(SceneTrimPreview {
+            scene_id: request.scene_id,
+            revision: request.revision,
+            at: request.at,
+            old_duration,
+            new_duration: candidate.scenes[index].duration,
+            shifted_scenes: candidate.scenes[index + 1..]
+                .iter()
+                .zip(following)
+                .filter(|(scene, old_start)| scene.start != *old_start)
+                .count(),
+        })
+    }
+
+    pub fn observe_scene_trim_receipt(
+        &self,
+        request: &SceneTrimReceiptRequest,
+    ) -> StorageResult<ApplyReceiptObservation> {
+        let trim = &request.trim;
+        self.observe_scene_timing_receipt(
+            trim.project_id,
+            RevisionStamp {
+                resource: format!("project:{}", trim.project_id),
+                generation: trim.generation,
+                revision: trim.revision,
+            },
+            trim.branch_id,
+            request.request_id,
+            &trim.change(),
+        )
+    }
     pub fn preview_scene_split(
         &self,
         request: &SceneSplitRequest,
     ) -> StorageResult<SceneSplitPreview> {
-        let mut candidate = self.project(request.project_id)?;
-        if candidate.id != request.project_id
-            || candidate.generation != request.generation
-            || candidate.active_branch != request.branch_id
-        {
-            return Err(StorageError::GenerationConflict);
-        }
-        if candidate.revision != request.revision {
-            return Err(StorageError::Conflict {
-                expected: request.revision,
-                actual: candidate.revision,
-            });
-        }
+        let mut candidate = self.scene_timing_source(
+            request.project_id,
+            request.generation,
+            request.branch_id,
+            request.revision,
+        )?;
         let animated_objects = candidate
             .scenes
             .iter()
@@ -97,23 +179,62 @@ impl StudioService {
         request: &SceneSplitReceiptRequest,
     ) -> StorageResult<ApplyReceiptObservation> {
         let split = &request.split;
-        if request.request_id.is_nil() {
-            return Err(DomainError::Invalid("invalid split request identity".into()).into());
-        }
-        let expected = RevisionStamp {
-            resource: format!("project:{}", split.project_id),
-            generation: split.generation,
-            revision: split.revision,
-        };
-        let observed = self.store.lock().observe_apply_receipt_v1(
+        self.observe_scene_timing_receipt(
             split.project_id,
-            &expected,
-            &request.request_id.to_string(),
+            RevisionStamp {
+                resource: format!("project:{}", split.project_id),
+                generation: split.generation,
+                revision: split.revision,
+            },
+            split.branch_id,
+            request.request_id,
             &split.change(),
+        )
+    }
+
+    fn scene_timing_source(
+        &self,
+        project_id: Uuid,
+        generation: Uuid,
+        branch_id: Uuid,
+        revision: u64,
+    ) -> StorageResult<Project> {
+        let project = self.project(project_id)?;
+        if project.id != project_id
+            || project.generation != generation
+            || project.active_branch != branch_id
+        {
+            return Err(StorageError::GenerationConflict);
+        }
+        if project.revision != revision {
+            return Err(StorageError::Conflict {
+                expected: revision,
+                actual: project.revision,
+            });
+        }
+        Ok(project)
+    }
+
+    fn observe_scene_timing_receipt(
+        &self,
+        project_id: Uuid,
+        expected: RevisionStamp,
+        branch_id: Uuid,
+        request_id: Uuid,
+        change: &Change,
+    ) -> StorageResult<ApplyReceiptObservation> {
+        if request_id.is_nil() {
+            return Err(DomainError::Invalid("invalid scene edit request identity".into()).into());
+        }
+        let observed = self.store.lock().observe_apply_receipt_v1(
+            project_id,
+            &expected,
+            &request_id.to_string(),
+            change,
             motionwright_storage::APPLY_REQUEST_ENCODING_V1,
         )?;
         if let ApplyReceiptObservation::KnownVerifiedV1 { binding } = &observed {
-            let branch = split.branch_id.to_string();
+            let branch = branch_id.to_string();
             if binding.base_branch != branch || binding.result_branch != branch {
                 return Ok(ApplyReceiptObservation::AuthorityMismatch);
             }

@@ -1300,7 +1300,10 @@ impl Project {
     fn apply_change_with_domain_guards(&mut self, change: &Change) -> Result<()> {
         if matches!(
             change,
-            Change::MoveScene { .. } | Change::SetSceneDuration { .. } | Change::SplitScene { .. }
+            Change::MoveScene { .. }
+                | Change::SetSceneDuration { .. }
+                | Change::SplitScene { .. }
+                | Change::TrimSceneEnd { .. }
         ) {
             return self.apply_general_scene_timing(change);
         }
@@ -1956,44 +1959,14 @@ impl Project {
                 *base_revision,
                 *acknowledge_absolute_anchors,
             )?,
+            Change::TrimSceneEnd { scene_id, at } => self.trim_scene_end(*scene_id, *at)?,
             Change::SplitScene {
                 scene_id,
                 right_scene_id,
                 at,
             } => self.split_scene(*scene_id, *right_scene_id, *at)?,
             Change::SetSceneDuration { scene_id, duration } => {
-                let resource = format!("scene:{scene_id}");
-                self.ensure_unlocked(&resource, &[LockKind::Timing])?;
-                if duration.num <= 0 || *duration > whole_seconds(86_400) {
-                    return Err(DomainError::Invalid(
-                        "scene duration is out of bounds".into(),
-                    ));
-                }
-                let scene = self
-                    .scenes
-                    .iter_mut()
-                    .find(|scene| scene.id == *scene_id)
-                    .ok_or(DomainError::NotFound(resource))?;
-                if scene
-                    .nodes
-                    .iter()
-                    .flat_map(|node| &node.keyframes)
-                    .any(|keyframe| keyframe.at >= *duration)
-                {
-                    return Err(DomainError::Invalid(
-                        "scene duration would strand an authored keyframe".into(),
-                    ));
-                }
-                if scene.beats.iter().any(|beat| {
-                    beat.start
-                        .checked_add(beat.duration)
-                        .map_or(true, |end| end > *duration)
-                }) {
-                    return Err(DomainError::Invalid(
-                        "scene duration would strand an authored beat".into(),
-                    ));
-                }
-                scene.duration = *duration;
+                self.set_scene_duration(*scene_id, *duration)?;
                 self.reflow_scene_starts()?;
             }
             Change::AddCanvasNode { scene_id, node } => {
@@ -3299,6 +3272,10 @@ pub enum Change {
     SetSceneDuration {
         scene_id: Uuid,
         duration: RationalTime,
+    },
+    TrimSceneEnd {
+        scene_id: Uuid,
+        at: RationalTime,
     },
     SplitScene {
         scene_id: Uuid,

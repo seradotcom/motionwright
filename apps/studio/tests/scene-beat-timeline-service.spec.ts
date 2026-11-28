@@ -90,3 +90,64 @@ test("a scene split keeps its exact saved cut and recovers a lost reply without 
     if (!finalized) await service.close();
   }
 });
+
+test("timeline trim previews the ripple and preserves absolute markers through SQLite reopen", async ({ page }, info) => {
+  const service = await ScopedChangeService.create({
+    databasePath: info.outputPath("service", "scene-trim.sqlite3"), desktopInvokeFixture: true,
+  });
+  let finalized = false;
+  try {
+    const boot = await service.fixtureBootstrap();
+    const name = "Editable trim scene";
+    const added = await service.apply(boot.project, { type: "add_scene", name, objective: "Trim the end only", duration_seconds: 6 });
+    const scene = added.scenes.at(-1)!;
+    const withNext = await service.apply(added, { type: "add_scene", name: "Following trim scene", objective: "Keep duration", duration_seconds: 8 });
+    const following = withNext.scenes.at(-1)!;
+    const marked = await service.apply(withNext, { type: "add_marker", label: "Absolute trim reference", at: following.start });
+    const base = await service.apply(marked, { type: "set_lock", resource: "scene:" + following.id, kind: "timing", note: "Protect the following scene" });
+    const start = Number(scene.start.num) / Number(scene.start.den);
+    await service.attachFixturePage(page, base.id);
+    await page.goto("/");
+    const positionTrim = async () => {
+      await page.locator(".tree-row").filter({ has: page.getByText(name, { exact: true }) }).click();
+      await page.getByTitle("Go to timecode", { exact: true }).click();
+      await page.getByLabel("Go to timecode", { exact: true }).fill(String(start + 4) + "s");
+      await page.getByRole("button", { name: "Go", exact: true }).click();
+      await page.getByRole("button", { name: "Trim scene end", exact: true }).click({ timeout: 5_000 });
+    };
+    const dialog = page.getByRole("dialog", { name: "Trim scene end", exact: true });
+    await positionTrim();
+    await expect(dialog.getByRole("alert")).toContainText("locked");
+    expect(await service.history(base.id, base.revision, 8)).toEqual([]);
+
+    const unlocked = await service.apply(base, { type: "remove_lock", lock_id: base.locks.at(-1)!.id });
+    await page.reload();
+    await positionTrim();
+    await expect(dialog).toContainText("6 s → 4 s");
+    await expect(dialog).toContainText("1 following scene moves earlier");
+    await expect(dialog).toContainText("Audio and markers keep their absolute positions.");
+    expect(await service.history(base.id, unlocked.revision, 8)).toEqual([]);
+    await dialog.getByRole("button", { name: "Save scene trim", exact: true }).click();
+    await expect(page.getByText("Scene trim saved.", { exact: true })).toBeVisible();
+    const saved = await service.project(base.id);
+    expect(saved.revision).toBe(unlocked.revision + 1);
+    expect(saved.scenes.at(-2)?.duration).toEqual({ num: "4", den: "1" });
+    const next = saved.scenes.at(-1)!;
+    expect(next.id).toBe(following.id);
+    expect(next.duration).toEqual(following.duration);
+    expect(Number(next.start.num) / Number(next.start.den)).toBe(start + 4);
+    expect(saved.markers).toEqual(unlocked.markers);
+    expect(saved.audio).toEqual(unlocked.audio);
+    expect((await service.history(base.id, unlocked.revision, 8)).map(event => event.change.type)).toEqual(["trim_scene_end"]);
+
+    await service.close();
+    await service.start();
+    expect(await service.project(base.id)).toEqual(saved);
+    const closure = await service.finalizeClosedStore(info.outputPath("closed-store"), saved, [], [async () => { await page.close(); }]);
+    finalized = true;
+    expect(closure.oracle?.project).toEqual(saved);
+  } finally {
+    if (!page.isClosed()) await page.close();
+    if (!finalized) await service.close();
+  }
+});

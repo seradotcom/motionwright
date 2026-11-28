@@ -59,7 +59,10 @@ pub use read_only::StudioServiceReader;
 pub use scene_boundary::{
     SceneBoundaryAuthoringContext, SceneBoundaryContextRequest, SceneBoundaryPredecessorContext,
 };
-pub use scene_split::{SceneSplitPreview, SceneSplitReceiptRequest, SceneSplitRequest};
+pub use scene_split::{
+    SceneSplitPreview, SceneSplitReceiptRequest, SceneSplitRequest, SceneTrimPreview,
+    SceneTrimReceiptRequest, SceneTrimRequest,
+};
 pub use scoped_changes::{
     ScopedChangePreviewRequest, ScopedChangeReceipt, ScopedChangeReceiptRequest,
 };

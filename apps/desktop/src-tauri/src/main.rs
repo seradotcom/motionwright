@@ -66,7 +66,7 @@ use caption_export::{CaptionExportResponse, ExportCaptionRequest};
 
 use effect_authority::IssueEffectGrantRequest;
 use effect_grants::{EffectGrantReceipt, EffectGrantRegistry, EffectKind, EffectScope};
-use local_error::{portable_bundle_error, sanitized};
+use local_error::{portable_bundle_error, sanitized, scene_trim_preview_error};
 use motionwright_domain::{Change, Project, RevisionStamp};
 use motionwright_native::{
     assembly::preflight_multi_segment_mlt,
@@ -940,6 +940,38 @@ async fn observe_marker_receipt(
                 &request.request_id.to_string(),
                 &request.change,
             )
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn preview_scene_trim(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: motionwright_service::SceneTrimRequest,
+) -> Result<motionwright_service::SceneTrimPreview, String> {
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        service
+            .preview_scene_trim(&request)
+            .map_err(scene_trim_preview_error)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn observe_scene_trim_receipt(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: motionwright_service::SceneTrimReceiptRequest,
+) -> Result<motionwright_service::ApplyReceiptObservation, String> {
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        service
+            .observe_scene_trim_receipt(&request)
             .map_err(sanitized)
     })
     .await
@@ -5426,6 +5458,8 @@ fn main() {
             project_history_recent,
             observe_marker_receipt,
             preview_scene_split,
+            preview_scene_trim,
+            observe_scene_trim_receipt,
             observe_scene_split_receipt,
             preview_scoped_change,
             observe_scoped_change_receipt,
