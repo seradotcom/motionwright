@@ -250,10 +250,11 @@ fn graph_recipe_acknowledgement_refuses_silent_project_field_loss_or_default_fil
             .as_object_mut()
             .unwrap()
             .remove("reviews");
+        assert!(serde_json::from_value::<SaveWire>(extra.clone()).is_err());
+        let normalized: SaveWire = serde_json::from_value(omitted.clone()).unwrap();
+        normalized.project.validate().unwrap();
+        assert_eq!(&normalized.project, accepted.project());
         for changed in [extra, omitted] {
-            let normalized: SaveWire = serde_json::from_value(changed.clone()).unwrap();
-            normalized.project.validate().unwrap();
-            assert_eq!(&normalized.project, accepted.project());
             let error = decode_apply_receipt(&changed, request_id, &source, &identity)
                 .err()
                 .unwrap();
