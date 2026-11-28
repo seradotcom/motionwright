@@ -778,6 +778,8 @@ export default function DeliveryProfiles({
     preflight: currentPreflight,
     runtime: runtimeObservation,
   });
+  const showHybridReadiness = desktopMode && mixedRendererCut;
+  const firstRenderReady = !mixedRendererCut && firstRenderGate.may_request_native_render;
 
   function filmOptions(): MotionCanvasFilmOptions {
     if (!selected) throw new Error("Select a saved profile before building a Film projection.");
@@ -1059,7 +1061,7 @@ export default function DeliveryProfiles({
   };
 
   const startNativeRender = () => {
-    if (!selected || !renderReady || mixedRendererCut || !firstRenderGate.may_request_native_render) return;
+    if (!selected || !renderReady || !firstRenderReady) return;
     void run("render", async () => {
       const gesture = prepareNativeDispatch("render");
       const options = filmOptions();
@@ -1676,20 +1678,20 @@ export default function DeliveryProfiles({
                 <button
                   type="button"
                   className="button button-primary"
-                  disabled={mixedRendererCut || !renderReady || !firstRenderGate.may_request_native_render || busy !== null || runtimeProbeBusy}
+                  disabled={!renderReady || !firstRenderReady || busy !== null || runtimeProbeBusy}
                   onClick={startNativeRender}
-                  title={mixedRendererCut ? "Use Check hybrid sources in Native hybrid master." : firstRenderGate.explanation}
+                  title={showHybridReadiness ? "Use Check hybrid sources in Native hybrid master." : firstRenderGate.explanation}
                 >
                   <Play size={14} /> {busy === "render" ? "Rendering…" : "Render native segments"}
                 </button>
               </div>
               <div className={"delivery-truth-note " +
-                (!mixedRendererCut && firstRenderGate.may_request_native_render ? "" : "warning")}
+                (firstRenderReady ? "" : "warning")}
                 role="status" aria-label="First native production readiness">
-                {!mixedRendererCut && firstRenderGate.may_request_native_render
+                {firstRenderReady
                   ? <CircleCheck size={14} aria-hidden="true" />
                   : <CircleDashed size={14} aria-hidden="true" />}
-                {mixedRendererCut ? (
+                {showHybridReadiness ? (
                   <span>This output uses multiple renderers. Use Check hybrid sources in Native hybrid master to verify the saved cut.</span>
                 ) : (
                   <span>
