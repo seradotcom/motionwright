@@ -1679,6 +1679,7 @@ export interface SceneSplitPreview {
   at: RationalTime;
   left_duration: RationalTime;
   right_duration: RationalTime;
+  animated_objects: number;
 }
 
 const sceneSplitRequest = (project: Project, change: SceneSplitChange, revision: number) => ({
@@ -1691,7 +1692,8 @@ export async function previewSceneSplit(project: Project, change: SceneSplitChan
   const result = await invoke<SceneSplitPreview>("preview_scene_split", { request: sceneSplitRequest(project, change, project.revision) });
   if (!result || result.scene_id !== change.scene_id || result.right_scene_id !== change.right_scene_id
       || result.revision !== project.revision || result.at?.num !== change.at.num || result.at?.den !== change.at.den
-      || !result.left_duration || !result.right_duration) {
+      || !result.left_duration || !result.right_duration
+      || !Number.isSafeInteger(result.animated_objects) || result.animated_objects < 0) {
     throw new Error("The split preview does not match the selected scene and frame.");
   }
   return result;

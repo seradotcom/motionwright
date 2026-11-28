@@ -33,6 +33,7 @@ pub struct SceneSplitPreview {
     at: RationalTime,
     left_duration: RationalTime,
     right_duration: RationalTime,
+    animated_objects: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +61,17 @@ impl StudioService {
                 actual: candidate.revision,
             });
         }
+        let animated_objects = candidate
+            .scenes
+            .iter()
+            .find(|scene| scene.id == request.scene_id)
+            .map_or(0, |scene| {
+                scene
+                    .nodes
+                    .iter()
+                    .filter(|node| !node.keyframes.is_empty())
+                    .count()
+            });
         candidate.apply_change(&request.change())?;
         let duration = |id| {
             candidate
@@ -76,6 +88,7 @@ impl StudioService {
             at: request.at,
             left_duration: duration(request.scene_id)?,
             right_duration: duration(request.right_scene_id)?,
+            animated_objects,
         })
     }
 

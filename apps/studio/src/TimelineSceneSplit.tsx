@@ -157,6 +157,7 @@ export default function TimelineSceneSplit({ project, sceneId, playhead, rate, m
         <p>{scene?.name} · {formatEditorTimecode(seconds(preview.at), rate, mode)}</p>
         <p>{seconds(preview.left_duration).toFixed(3)} s before · {seconds(preview.right_duration).toFixed(3)} s after.</p>
         <p>Both scenes keep their editable objects and the absolute positions of their beats. The cut keeps later scenes and audio on the same clock.</p>
+        {preview.animated_objects > 0 && <p>The continuation starts with the pose at the cut. Active motion keeps its timing, and constant portions become static poses.</p>}
         {!current && <p role="alert">The saved scene changed. Close this preview and prepare a new split.</p>}
         <button type="button" className="button button-primary compact" disabled={busy || !current} onClick={save}>Save scene split</button>
       </div>}

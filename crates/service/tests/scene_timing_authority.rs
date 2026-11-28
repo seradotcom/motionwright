@@ -481,3 +481,105 @@ fn split_keeps_the_absolute_cut_and_persists_both_halves_in_one_revision() {
     let reopened = StudioService::open(&database).unwrap();
     assert_eq!(reopened.project(saved.id).unwrap(), saved);
 }
+
+#[test]
+fn scene_split_rebases_held_motion_without_changing_its_poses_or_sampling_clock() {
+    use uuid::Uuid;
+
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("motion-split.sqlite3");
+    let service = StudioService::open(&database).unwrap();
+    let initial = project(&service);
+    let left = initial.scenes[0].id;
+    let right = Uuid::new_v4();
+    let node_id = Uuid::new_v4();
+    let key = |at, property, value, interpolation| CanvasKeyframe {
+        at,
+        property,
+        value,
+        interpolation,
+    };
+    let hold = MotionInterpolation::Hold;
+    let linear = MotionInterpolation::Linear;
+    let original = apply(
+        &service,
+        &initial,
+        "author-held-motion",
+        Change::AddCanvasNode {
+            scene_id: left,
+            node: CanvasNode {
+                id: node_id,
+                name: "Held callout".into(),
+                kind: "rectangle".into(),
+                parent_id: None,
+                x: 90.0,
+                y: 20.0,
+                width: 300.0,
+                height: 80.0,
+                rotation_deg: 0.0,
+                opacity: 1.0,
+                text: None,
+                coordinate_space: CoordinateSpace::ProjectPixels,
+                z_index: 0,
+                style: NodeStyle::default(),
+                relations: vec![],
+                property_locks: Default::default(),
+                keyframes: vec![
+                    key(time(0, 1), MotionProperty::X, 10.0, linear),
+                    key(time(1, 1), MotionProperty::X, 30.0, linear),
+                    key(time(3, 1), MotionProperty::X, 90.0, hold),
+                    key(time(0, 1), MotionProperty::Opacity, 0.0, linear),
+                    key(time(1, 1), MotionProperty::Opacity, 1.0, linear),
+                ],
+            },
+        },
+    );
+    let split = |at| Change::SplitScene {
+        scene_id: left,
+        right_scene_id: right,
+        at,
+    };
+    for (request, at, reason) in [
+        ("reject-interpolation-cut", time(1, 1), "crosses a changing"),
+        ("reject-off-grid-cut", time(201, 100), "output frame"),
+    ] {
+        let result = service.apply(original.id, &original.stamp(), request, &split(at));
+        assert!(result.unwrap_err().to_string().contains(reason));
+    }
+    assert_eq!(service.project(original.id).unwrap(), original);
+    assert!(
+        service
+            .history(original.id, original.revision, 4)
+            .unwrap()
+            .is_empty()
+    );
+
+    let saved = apply(&service, &original, "split-held-motion", split(time(2, 1)));
+    let a = &saved.scenes[0].nodes[0];
+    let b = &saved.scenes[1].nodes[0];
+    assert_eq!(a.id, node_id);
+    assert_ne!(b.id, node_id);
+    assert_eq!(a.x, 30.0);
+    assert!(a.keyframes.iter().all(|key| key.at < time(2, 1)));
+    assert_eq!(
+        b.keyframes,
+        vec![
+            key(time(0, 1), MotionProperty::X, 30.0, linear),
+            key(time(1, 1), MotionProperty::X, 90.0, hold)
+        ],
+    );
+    assert_eq!(b.x, 90.0);
+    assert_eq!(b.opacity, 1.0);
+    assert_eq!(saved.scenes[1].start, time(2, 1));
+    assert_eq!(&saved.scenes[2..], &original.scenes[1..]);
+    assert_eq!(
+        service
+            .history(original.id, original.revision, 4)
+            .unwrap()
+            .len(),
+        1
+    );
+    drop(service);
+    let reopened = StudioService::open(&database).unwrap();
+    assert_eq!(reopened.project(saved.id).unwrap(), saved);
+}
