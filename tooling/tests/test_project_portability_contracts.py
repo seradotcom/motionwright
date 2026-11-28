@@ -53,7 +53,7 @@ class PortabilityContractTests(unittest.TestCase):
         calls = {
             "inspect_project_bundle": ".inspect_project_bundle_with_fingerprint(",
             "recover_project_bundle_import": ".recover_project_bundle_import(",
-            "import_project_bundle": ".import_project_bundle_inspected(",
+            "import_project_bundle": ".import_project_bundle_inspected_checked(",
             "bootstrap": "project_library::bootstrap_project(",
             "list_projects": "project_library::list_projects(",
             "open_project": "project_library::open_project(",
@@ -77,13 +77,22 @@ class PortabilityContractTests(unittest.TestCase):
                 start = source.index(f"fn {command}(")
                 command_source = source[start - len("async "):].split("#[tauri::command]", 1)[0]
                 self.assertTrue(command_source.startswith(f"async fn {command}("))
-                worker = command_source.index("desktop_owner::spawn_blocking(owner.worker_owner()")
+                if command == "import_project_bundle":
+                    owner = command_source.index("let worker = owner.worker_owner();")
+                    clone = command_source.index("let publisher = worker.clone();")
+                    worker = command_source.index("desktop_owner::spawn_blocking(worker,")
+                    consume = command_source.index("grants.consume(")
+                    call = command_source.index(service_call)
+                    publication = re.search(r"publisher\s*\.phase\(\)", command_source[call:])
+                    self.assertIsNotNone(publication)
+                    self.assertLess(owner, clone)
+                    self.assertLess(clone, worker)
+                    self.assertLess(worker, consume)
+                    self.assertLess(consume, call)
+                else:
+                    worker = command_source.index("desktop_owner::spawn_blocking(owner.worker_owner()")
                 self.assertLess(worker, command_source.index(service_call))
                 self.assertIn(".await", command_source)
-                if command == "import_project_bundle":
-                    consume = command_source.index("grants.consume(")
-                    self.assertLess(worker, consume)
-                    self.assertLess(consume, command_source.index(service_call))
 
     def test_unknown_platform_is_rejected(self):
         with self.assertRaises(ValueError):

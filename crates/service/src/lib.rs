@@ -1211,9 +1211,12 @@ impl StudioService {
     }
 
     pub fn import_project_bundle(&self, source: impl AsRef<Path>) -> StorageResult<Project> {
-        self.store
-            .lock()
-            .import_project_bundle_with_admission(source, &portability::SvgBundleAdmission)
+        self.import_bundle_directory(
+            source.as_ref(),
+            None,
+            &portability::SvgBundleAdmission,
+            || Ok(()),
+        )
     }
 
     /// Atomic cross-process application recovery claim, not an execution grant.

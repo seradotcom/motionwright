@@ -267,6 +267,131 @@ fn validate_recorded_portable_font_copy(
     Ok(())
 }
 
+/// The Store identity needed to prepare a portable import outside SQLite.
+pub struct ProjectBundleImportTarget {
+    blob_root: PathBuf,
+    store_id: Uuid,
+    database_id: String,
+}
+
+/// Validated, private captures for one import into the originating Store.
+pub struct PreparedProjectBundleImport {
+    target: ProjectBundleImportTarget,
+    backup: ProjectBackup,
+    staged: Vec<StagedFileImport>,
+    fingerprint: BundleFingerprint,
+}
+
+impl ProjectBundleImportTarget {
+    pub fn prepare_bundle(
+        self,
+        source: &Path,
+        expected: Option<&BundleFingerprint>,
+        admission: &impl BundleAssetAdmission,
+        check_target: impl FnOnce(Uuid) -> Result<()>,
+    ) -> Result<PreparedProjectBundleImport> {
+        let bytes = read_bundle_manifest_bytes(source)?;
+        let fingerprint = BundleFingerprint::of_manifest_bytes(&bytes);
+        if expected.is_some_and(|expected| expected != &fingerprint) {
+            return Err(StorageError::InvalidBackup(
+                "bundle manifest changed after inspection".into(),
+            ));
+        }
+        // Fingerprinting and parsing consume the same capture.
+        let manifest: ProjectBundleManifest = serde_json::from_slice(&bytes)?;
+        Store::validate_bundle_with_target(source, &manifest, admission, check_target)?;
+        let staged = self.capture_bundle_blobs(source, &manifest, admission)?;
+        Ok(PreparedProjectBundleImport {
+            target: self,
+            backup: manifest.backup,
+            staged,
+            fingerprint,
+        })
+    }
+
+    pub fn prepare_migrated_archive(
+        self,
+        project: Project,
+        originals: &BTreeMap<String, Vec<u8>>,
+        fingerprint: &BundleFingerprint,
+        admission: &impl BundleAssetAdmission,
+        check_target: impl FnOnce(Uuid) -> Result<()>,
+    ) -> Result<PreparedProjectBundleImport> {
+        let (backup, _) = Store::validate_migrated_archive(
+            project,
+            originals,
+            fingerprint,
+            admission,
+            check_target,
+        )?;
+        let mut staged = Vec::with_capacity(originals.len());
+        for (digest, bytes) in originals {
+            let capture = file_import::stage_reader_from_root(
+                &self.blob_root,
+                self.store_id,
+                bytes.as_slice(),
+                bytes.len() as u64,
+                cas_retention::CapturePurpose::BundleImport,
+                None,
+            )?;
+            if capture.descriptor().sha256 != *digest
+                || capture.descriptor().size_bytes != bytes.len() as u64
+            {
+                return Err(StorageError::InvalidBlobDigest);
+            }
+            staged.push(capture);
+        }
+        Ok(PreparedProjectBundleImport {
+            target: self,
+            backup,
+            staged,
+            fingerprint: fingerprint.clone(),
+        })
+    }
+
+    fn capture_bundle_blobs(
+        &self,
+        source: &Path,
+        manifest: &ProjectBundleManifest,
+        admission: &impl BundleAssetAdmission,
+    ) -> Result<Vec<StagedFileImport>> {
+        let mut staged = Vec::with_capacity(manifest.blobs.len());
+        for blob in &manifest.blobs {
+            let path = bundle_member_path(source, &blob.relative_path, "portable bundle blob")?;
+            let captured = file_import::stage_file_from_root(
+                &self.blob_root,
+                self.store_id,
+                &path,
+                blob.size_bytes,
+                cas_retention::CapturePurpose::BundleImport,
+            )?;
+            if captured.descriptor().sha256 != blob.sha256
+                || captured.descriptor().size_bytes != blob.size_bytes
+            {
+                return Err(StorageError::InvalidBackup(
+                    "captured blob differs from bundle manifest".into(),
+                ));
+            }
+            // Rehash and inspect the same retained stream from this private
+            // capture. A prior source-path inspection cannot authorize it.
+            let (descriptor, prefix) = inspect_portable_file_with_prefix(
+                captured.path(),
+                "captured portable asset",
+                blob.size_bytes,
+                admission.prefix_limit(),
+            )?;
+            if descriptor != *captured.descriptor() {
+                return Err(StorageError::InvalidBackup(
+                    "captured blob changed during content admission".into(),
+                ));
+            }
+            admit_bundle_blob(admission, &prefix, &descriptor, &manifest.backup.project)?;
+            staged.push(captured);
+        }
+        Ok(staged)
+    }
+}
+
 /// A portable export's captured document, history and CAS location.
 /// Copying the admitted snapshot needs no live SQLite connection or transaction.
 pub struct PreparedProjectBundleExport {
@@ -519,21 +644,46 @@ impl Store {
         fingerprint: &BundleFingerprint,
         admission: &impl BundleAssetAdmission,
     ) -> Result<Project> {
-        let (backup, _) =
-            Self::validate_migrated_archive(project, originals, fingerprint, admission, |id| {
+        let prepared = self
+            .project_bundle_import_target()
+            .prepare_migrated_archive(project, originals, fingerprint, admission, |id| {
                 self.check_import_destination(id)
             })?;
-        let mut staged = Vec::with_capacity(originals.len());
-        for (digest, bytes) in originals {
-            let capture = self.stage_bundle_import_bytes(bytes, bytes.len() as u64)?;
-            if capture.descriptor().sha256 != *digest
-                || capture.descriptor().size_bytes != bytes.len() as u64
-            {
-                return Err(StorageError::InvalidBlobDigest);
-            }
-            staged.push(capture);
+        self.commit_prepared_bundle_import(prepared, || Ok(()))
+    }
+
+    /// Capture the identity needed for preparation without lending out SQLite.
+    pub fn project_bundle_import_target(&self) -> ProjectBundleImportTarget {
+        ProjectBundleImportTarget {
+            blob_root: self.blob_root.clone(),
+            store_id: self.cas_store_id,
+            database_id: self.cas_database_id.clone(),
         }
-        self.publish_bundle_captures(&backup, &staged, fingerprint.as_str(), || {})
+    }
+
+    /// Recheck target and caller authority before starting CAS publication.
+    pub fn commit_prepared_bundle_import<P>(
+        &mut self,
+        prepared: PreparedProjectBundleImport,
+        admit_publication: impl FnOnce() -> std::io::Result<P>,
+    ) -> Result<Project> {
+        let target = &prepared.target;
+        if target.blob_root != self.blob_root
+            || target.store_id != self.cas_store_id
+            || target.database_id != self.cas_database_id
+        {
+            return Err(StorageError::UnsafeSourcePath(
+                "prepared portable import belongs to a different Store".into(),
+            ));
+        }
+        self.check_import_destination(prepared.backup.project.id)?;
+        let _permit = admit_publication()?;
+        self.publish_bundle_captures(
+            &prepared.backup,
+            &prepared.staged,
+            prepared.fingerprint.as_str(),
+            || {},
+        )
     }
 
     fn validate_migrated_archive(
@@ -666,25 +816,13 @@ impl Store {
         expected: Option<&BundleFingerprint>,
         admission: &impl BundleAssetAdmission,
     ) -> Result<Project> {
-        let bytes = read_bundle_manifest_bytes(source)?;
-        if let Some(expected) = expected
-            && BundleFingerprint::of_manifest_bytes(&bytes) != *expected
-        {
-            return Err(StorageError::InvalidBackup(
-                "bundle manifest changed after inspection".into(),
-            ));
-        }
-        // Fingerprinting and parsing consume the same capture, never a reload.
-        let manifest: ProjectBundleManifest = serde_json::from_slice(&bytes)?;
-        self.validate_bundle_with_admission(source, &manifest, admission)?;
-        let fingerprint = BundleFingerprint::of_manifest_bytes(&bytes);
-        self.import_validated_bundle_bound(
+        let prepared = self.project_bundle_import_target().prepare_bundle(
             source,
-            &manifest,
+            expected,
             admission,
-            fingerprint.as_str(),
-            || {},
-        )
+            |id| self.check_import_destination(id),
+        )?;
+        self.commit_prepared_bundle_import(prepared, || Ok(()))
     }
 
     #[cfg(test)]
@@ -717,6 +855,7 @@ impl Store {
         )
     }
 
+    #[cfg(test)]
     fn import_validated_bundle_bound(
         &mut self,
         source: &Path,
@@ -789,40 +928,15 @@ impl Store {
         Ok(())
     }
 
+    #[cfg(test)]
     fn capture_bundle_blobs(
         &self,
         source: &Path,
         manifest: &ProjectBundleManifest,
         admission: &impl BundleAssetAdmission,
     ) -> Result<Vec<StagedFileImport>> {
-        let mut staged = Vec::with_capacity(manifest.blobs.len());
-        for blob in &manifest.blobs {
-            let path = bundle_member_path(source, &blob.relative_path, "portable bundle blob")?;
-            let captured = self.stage_bundle_file_import_with_limit(&path, blob.size_bytes)?;
-            if captured.descriptor().sha256 != blob.sha256
-                || captured.descriptor().size_bytes != blob.size_bytes
-            {
-                return Err(StorageError::InvalidBackup(
-                    "captured blob differs from bundle manifest".into(),
-                ));
-            }
-            // Rehash and inspect the same retained stream from this private
-            // capture. A prior source-path inspection cannot authorize it.
-            let (descriptor, prefix) = inspect_portable_file_with_prefix(
-                captured.path(),
-                "captured portable asset",
-                blob.size_bytes,
-                admission.prefix_limit(),
-            )?;
-            if descriptor != *captured.descriptor() {
-                return Err(StorageError::InvalidBackup(
-                    "captured blob changed during content admission".into(),
-                ));
-            }
-            admit_bundle_blob(admission, &prefix, &descriptor, &manifest.backup.project)?;
-            staged.push(captured);
-        }
-        Ok(staged)
+        self.project_bundle_import_target()
+            .capture_bundle_blobs(source, manifest, admission)
     }
 
     pub(super) fn export_project_snapshot(

@@ -1487,8 +1487,17 @@ jobs:
               ]
           elif selection == "bundle_inspection":
               cases = [case for case in cases if case[0] == "service-portability-authority"]
-              name = "portability::svg_bundle_admission_tests::bundle_inspection_rejects_a_project_claimed_during_media_readback"
-              cases.append(("portable-bundle-inspection", ["-p", "motionwright-service", "--lib", name], {name}))
+              prefix = "portability::svg_bundle_admission_tests::"
+              cases.extend([
+                  ("portable-bundle-inspection", ["-p", "motionwright-service", "--lib", prefix + "bundle_i"], {
+                      prefix + "bundle_inspection_rejects_a_project_claimed_during_media_readback",
+                      prefix + "bundle_import_keeps_studio_available_and_rechecks_publication_authority",
+                  }),
+                  ("legacy-portable-archive", ["-p", "motionwright-service", "--test", "legacy_project_archive"], {
+                      "original_archive_inspects_imports_and_reopens_without_foreign_authority",
+                      "changed_or_corrupt_archive_never_publishes_assets_or_replaces_existing_project",
+                  }),
+              ])
           elif selection == "project_projection":
               cases = [('projection-storage',
                 ['-p', 'motionwright-storage', '--lib', 'project_projection::tests::'],
@@ -1597,10 +1606,11 @@ jobs:
               source_paths = (
                   WORKFLOW_PATH, "Cargo.lock", "SOURCE_LOCK.json", "rust-toolchain.toml",
                   "crates/storage/Cargo.toml", "crates/storage/src/portability.rs",
+                  "crates/storage/src/file_import.rs", "crates/storage/src/cas_retention.rs",
                   "crates/storage/src/bundle_export_unix.rs", "crates/storage/src/bundle_export_windows.rs",
                   "crates/storage/src/lib.rs", "crates/service/src/lib.rs", "crates/service/src/portability.rs",
                   "crates/service/src/legacy_project_archive.rs", "crates/service/tests/desktop_project_export.rs",
-                  "crates/service/tests/project_portability_authority.rs",
+                  "crates/service/tests/legacy_project_archive.rs", "crates/service/tests/project_portability_authority.rs",
                   "apps/desktop/src-tauri/src/main.rs", "apps/desktop/src-tauri/src/project_export.rs",
                   "apps/desktop/src-tauri/src/desktop_owner.rs", "apps/desktop/src-tauri/src/effect_grants.rs",
               )

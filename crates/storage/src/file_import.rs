@@ -431,6 +431,7 @@ impl Store {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn stage_bundle_file_import_with_limit(
         &self,
         source: &Path,
@@ -440,19 +441,6 @@ impl Store {
             source,
             max_bytes,
             super::cas_retention::CapturePurpose::BundleImport,
-        )
-    }
-
-    pub(super) fn stage_bundle_import_bytes(
-        &self,
-        bytes: &[u8],
-        limit: u64,
-    ) -> Result<StagedFileImport> {
-        self.stage_import_reader_with_purpose(
-            bytes,
-            limit,
-            super::cas_retention::CapturePurpose::BundleImport,
-            None,
         )
     }
 
@@ -501,9 +489,13 @@ impl Store {
         max_bytes: u64,
         purpose: super::cas_retention::CapturePurpose,
     ) -> Result<StagedFileImport> {
-        ensure_regular_directory(&self.blob_root, "blob root")?;
-        let input = open_regular_import_source(source, max_bytes)?;
-        self.stage_import_reader_with_purpose(input, max_bytes, purpose, Some(source))
+        stage_file_from_root(
+            &self.blob_root,
+            self.cas_store_id,
+            source,
+            max_bytes,
+            purpose,
+        )
     }
 
     fn stage_import_reader_with_purpose(
@@ -511,77 +503,107 @@ impl Store {
         input: impl Read,
         max_bytes: u64,
         purpose: super::cas_retention::CapturePurpose,
-        _source_for_tests: Option<&Path>,
+        source_for_tests: Option<&Path>,
     ) -> Result<StagedFileImport> {
-        ensure_regular_directory(&self.blob_root, "blob root")?;
-        let (path, output, retention) =
-            super::cas_retention::begin_capture(&self.blob_root, self.cas_store_id, purpose)?;
-        let mut staged = StagedFileImport {
-            path,
-            descriptor: BlobDescriptor {
-                sha256: String::new(),
-                size_bytes: 0,
-            },
-            blob_root: self.blob_root.clone(),
-            retention,
-        };
-        {
-            // Handles close before the outer guard cleans up on any error.
-            let mut input = input.take(max_bytes.saturating_add(1));
-            let mut output = output;
-            let mut hasher = Sha256::new();
-            let mut credentials = super::CredentialScan::default();
-            let mut buffer = [0_u8; 128 * 1024];
-            let mut size_bytes = 0_u64;
-            #[cfg(test)]
-            let mut first_read = true;
-            loop {
-                let count = input.read(&mut buffer)?;
-                if count == 0 {
-                    break;
-                }
-                #[cfg(test)]
-                if first_read {
-                    first_read = false;
-                    if let Some(source) = _source_for_tests {
-                        run_import_source_read_hook(source);
-                    }
-                }
-                let next_size =
-                    size_bytes
-                        .checked_add(count as u64)
-                        .ok_or(StorageError::BlobTooLarge {
-                            size: u64::MAX,
-                            limit: max_bytes,
-                        })?;
-                if next_size > max_bytes {
-                    return Err(StorageError::BlobTooLarge {
-                        size: next_size,
-                        limit: max_bytes,
-                    });
-                }
-                credentials.check(&buffer[..count], "file import source")?;
-                output.write_all(&buffer[..count])?;
-                hasher.update(&buffer[..count]);
-                size_bytes = next_size;
-            }
-            output.flush()?;
-            output.sync_all()?;
-            staged.descriptor = BlobDescriptor {
-                sha256: hex::encode(hasher.finalize()),
-                size_bytes,
-            };
-        }
-        if let Some(retention) = staged.retention.as_mut() {
-            retention.completed(&staged.descriptor)?;
-        }
-        Ok(staged)
+        stage_reader_from_root(
+            &self.blob_root,
+            self.cas_store_id,
+            input,
+            max_bytes,
+            purpose,
+            source_for_tests,
+        )
     }
 
     /// Publish only the unchanged validated capture; never overwrite a blob.
     pub fn publish_file_import(&self, staged: &StagedFileImport) -> Result<BlobDescriptor> {
         publish_file_import_under_root(&self.blob_root, staged)
     }
+}
+
+pub(super) fn stage_file_from_root(
+    blob_root: &Path,
+    store_id: Uuid,
+    source: &Path,
+    max_bytes: u64,
+    purpose: super::cas_retention::CapturePurpose,
+) -> Result<StagedFileImport> {
+    ensure_regular_directory(blob_root, "blob root")?;
+    let input = open_regular_import_source(source, max_bytes)?;
+    stage_reader_from_root(blob_root, store_id, input, max_bytes, purpose, Some(source))
+}
+
+pub(super) fn stage_reader_from_root(
+    blob_root: &Path,
+    store_id: Uuid,
+    input: impl Read,
+    max_bytes: u64,
+    purpose: super::cas_retention::CapturePurpose,
+    _source_for_tests: Option<&Path>,
+) -> Result<StagedFileImport> {
+    ensure_regular_directory(blob_root, "blob root")?;
+    let (path, output, retention) =
+        super::cas_retention::begin_capture(blob_root, store_id, purpose)?;
+    let mut staged = StagedFileImport {
+        path,
+        descriptor: BlobDescriptor {
+            sha256: String::new(),
+            size_bytes: 0,
+        },
+        blob_root: blob_root.to_path_buf(),
+        retention,
+    };
+    {
+        // Handles close before the outer guard cleans up on any error.
+        let mut input = input.take(max_bytes.saturating_add(1));
+        let mut output = output;
+        let mut hasher = Sha256::new();
+        let mut credentials = super::CredentialScan::default();
+        let mut buffer = [0_u8; 128 * 1024];
+        let mut size_bytes = 0_u64;
+        #[cfg(test)]
+        let mut first_read = true;
+        loop {
+            let count = input.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            #[cfg(test)]
+            if first_read {
+                first_read = false;
+                if let Some(source) = _source_for_tests {
+                    run_import_source_read_hook(source);
+                }
+            }
+            let next_size =
+                size_bytes
+                    .checked_add(count as u64)
+                    .ok_or(StorageError::BlobTooLarge {
+                        size: u64::MAX,
+                        limit: max_bytes,
+                    })?;
+            if next_size > max_bytes {
+                return Err(StorageError::BlobTooLarge {
+                    size: next_size,
+                    limit: max_bytes,
+                });
+            }
+            credentials.check(&buffer[..count], "file import source")?;
+            output.write_all(&buffer[..count])?;
+            hasher.update(&buffer[..count]);
+            size_bytes = next_size;
+        }
+        output.flush()?;
+        output.sync_all()?;
+        staged.descriptor = BlobDescriptor {
+            sha256: hex::encode(hasher.finalize()),
+            size_bytes,
+        };
+    }
+    if let Some(retention) = staged.retention.as_mut() {
+        retention.completed(&staged.descriptor)?;
+    }
+    Ok(staged)
 }
 
 /// Publish an already validated capture without borrowing the SQLite handle.

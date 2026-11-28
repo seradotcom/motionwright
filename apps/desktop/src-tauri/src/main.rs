@@ -4603,7 +4603,9 @@ async fn import_project_bundle(
 ) -> Result<Project, String> {
     let service = state.service.clone();
     let grants = state.effect_grants.clone();
-    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+    let worker = owner.worker_owner();
+    let publisher = worker.clone();
+    desktop_owner::spawn_blocking(worker, move || {
         grants.consume(
             request.effect_grant,
             EffectKind::ImportLocal,
@@ -4612,7 +4614,11 @@ async fn import_project_bundle(
         )?;
         let source = absolute_bundle_path(&request.path)?;
         service
-            .import_project_bundle_inspected(&source, &request.fingerprint)
+            .import_project_bundle_inspected_checked(&source, &request.fingerprint, || {
+                publisher
+                    .phase()
+                    .map_err(|_| std::io::ErrorKind::PermissionDenied.into())
+            })
             .map_err(sanitized)
     })
     .await

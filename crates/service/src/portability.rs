@@ -183,21 +183,57 @@ impl StudioService {
         source: impl AsRef<Path>,
         expected: &BundleFingerprint,
     ) -> StorageResult<Project> {
+        self.import_project_bundle_inspected_checked(source, expected, || Ok(()))
+    }
+
+    /// Prepare the inspected source while the destination Store remains available.
+    pub fn import_project_bundle_inspected_checked<P>(
+        &self,
+        source: impl AsRef<Path>,
+        expected: &BundleFingerprint,
+        admit_publication: impl FnOnce() -> std::io::Result<P>,
+    ) -> StorageResult<Project> {
         let source = source.as_ref();
-        let mut store = self.store.lock();
         if std::fs::symlink_metadata(source)?.is_file() {
             let migration = crate::legacy_project_archive::from_bytes(
                 Store::read_project_archive_source(source)?,
                 Some(expected),
             )?;
-            return store.import_migrated_project_archive(
+            let target = self.store.lock().project_bundle_import_target();
+            let prepared = target.prepare_migrated_archive(
                 migration.project,
                 &migration.originals,
                 expected,
                 &SvgBundleAdmission,
-            );
+                |id| self.store.lock().check_import_destination(id),
+            )?;
+            self.store
+                .lock()
+                .commit_prepared_bundle_import(prepared, admit_publication)
+        } else {
+            self.import_bundle_directory(
+                source,
+                Some(expected),
+                &SvgBundleAdmission,
+                admit_publication,
+            )
         }
-        store.import_project_bundle_inspected_with_admission(source, expected, &SvgBundleAdmission)
+    }
+
+    pub(super) fn import_bundle_directory<P>(
+        &self,
+        source: &Path,
+        expected: Option<&BundleFingerprint>,
+        admission: &impl motionwright_storage::BundleAssetAdmission,
+        admit_publication: impl FnOnce() -> std::io::Result<P>,
+    ) -> StorageResult<Project> {
+        let target = self.store.lock().project_bundle_import_target();
+        let prepared = target.prepare_bundle(source, expected, admission, |id| {
+            self.store.lock().check_import_destination(id)
+        })?;
+        self.store
+            .lock()
+            .commit_prepared_bundle_import(prepared, admit_publication)
     }
 }
 
@@ -413,6 +449,126 @@ mod svg_bundle_admission_tests {
         );
         assert_eq!(
             std::fs::read(bundle.join(&media.relative_path)).unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn bundle_import_keeps_studio_available_and_rechecks_publication_authority() {
+        use std::{cell::Cell, io::ErrorKind};
+
+        struct EditWhileCapturing<'a> {
+            target: &'a StudioService,
+            existing: &'a Project,
+            reads: Cell<usize>,
+        }
+
+        impl BundleAssetAdmission for EditWhileCapturing<'_> {
+            fn prefix_limit(&self) -> usize {
+                SvgBundleAdmission.prefix_limit()
+            }
+
+            fn validate(&self, prefix: &[u8], size: u64, aliases: &[&Asset]) -> StorageResult<()> {
+                SvgBundleAdmission.validate(prefix, size, aliases)?;
+                assert!(self.target.store.try_lock().is_some());
+                let observed = self.reads.get() + 1;
+                self.reads.set(observed);
+                if observed == 2 {
+                    self.target.apply(
+                        self.existing.id,
+                        &self.existing.stamp(),
+                        "edit-during-bundle-capture",
+                        &Change::RenameProject {
+                            title: "Edited during import".into(),
+                        },
+                    )?;
+                }
+                Ok(())
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let source = StudioService::open(temp.path().join("source/project.sqlite3")).unwrap();
+        let original = source.create_project("Portable capture").unwrap();
+        let asset = temp.path().join("original.txt");
+        let bytes = b"media whose capture leaves the Store available";
+        std::fs::write(&asset, bytes).unwrap();
+        let saved = source
+            .import_asset_file(
+                original.id,
+                &original.stamp(),
+                "asset-for-portable-capture",
+                &asset,
+                "original.txt".into(),
+                "text/plain".into(),
+            )
+            .unwrap()
+            .project;
+        let bundle = temp.path().join("bundle");
+        let exported = source
+            .export_project_bundle_at(saved.id, &saved.stamp(), &bundle)
+            .unwrap();
+
+        let database = temp.path().join("target/project.sqlite3");
+        let target = StudioService::open(&database).unwrap();
+        let existing = target.create_project("Another open project").unwrap();
+        let inspection = target
+            .inspect_project_bundle_with_fingerprint(&bundle)
+            .unwrap();
+        let admission = EditWhileCapturing {
+            target: &target,
+            existing: &existing,
+            reads: Cell::new(0),
+        };
+        let result = target.import_bundle_directory(
+            &bundle,
+            Some(&inspection.fingerprint),
+            &admission,
+            || Err::<(), _>(ErrorKind::PermissionDenied.into()),
+        );
+        assert_eq!(
+            admission.reads.get(),
+            2,
+            "source and held copy must both be admitted"
+        );
+        assert!(
+            matches!(result, Err(StorageError::Io(error)) if error.kind() == ErrorKind::PermissionDenied)
+        );
+        assert!(matches!(
+            target.project(saved.id),
+            Err(StorageError::NotFound)
+        ));
+        let edit = target.project(existing.id).unwrap();
+        assert_eq!(edit.title, "Edited during import");
+        assert_eq!(edit.revision, existing.revision + 1);
+        let media = &exported.blobs[0];
+        {
+            let store = target.store.lock();
+            assert!(matches!(
+                store.read_blob(&media.sha256, media.size_bytes),
+                Err(StorageError::BlobMissing { .. })
+            ));
+            assert!(
+                store
+                    .blob_root()
+                    .join(".staging")
+                    .read_dir()
+                    .unwrap()
+                    .next()
+                    .is_none()
+            );
+        }
+
+        let imported = target
+            .import_project_bundle_inspected(&bundle, &inspection.fingerprint)
+            .unwrap();
+        assert_ne!(imported.generation, saved.generation);
+        drop(target);
+        let store = Store::open(&database).unwrap();
+        assert_eq!(store.load_project(existing.id).unwrap(), edit);
+        assert_eq!(store.load_project(saved.id).unwrap(), imported);
+        assert_eq!(
+            store.read_blob(&media.sha256, media.size_bytes).unwrap(),
             bytes
         );
     }

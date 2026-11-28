@@ -55,7 +55,8 @@ pub use integrity::{
 };
 pub use portability::{
     BundleAssetAdmission, BundleFingerprint, BundleImportCommit, BundleImportRecoveryRequest,
-    InspectedProjectBundle, PreparedProjectBundleExport, publish_bundle_directory,
+    InspectedProjectBundle, PreparedProjectBundleExport, PreparedProjectBundleImport,
+    ProjectBundleImportTarget, publish_bundle_directory,
 };
 #[cfg(windows)]
 /// Admit a bounded, regular local source and return its held file identity.
