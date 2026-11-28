@@ -18,7 +18,7 @@ import sys
 import wave
 
 from native_av_media_probe import (
-    MediaProbeError, inspect_streams, inspect_decoded_video,
+    AV_PROBE_ENTRIES, MediaProbeError, inspect_streams, inspect_decoded_video,
 )
 from native_original_mix_custody import OriginalPcmCustody
 
@@ -251,7 +251,7 @@ def probe_saved_mix(root: Path, master: Path, ffmpeg: Path, ffprobe: Path, *, so
         capture.observe(root / name)
     probe = capture.run([
         str(ffprobe), "-v", "error", "-count_frames", "-show_entries",
-        "stream=codec_type,codec_name,width,height,avg_frame_rate,nb_read_frames,sample_rate,channels:format=duration",
+        AV_PROBE_ENTRIES,
         "-of", "json", str(retained_master),
     ], "saved-mix-ffprobe", inputs=[original_master])
     streams = inspect_streams(json.loads(probe["stdout"]))

@@ -23,6 +23,11 @@ FPS_DEN = 1
 WIDTH = 1920
 HEIGHT = 1080
 AUDIO_RATE = 48_000
+AV_PROBE_ENTRIES = (
+    "stream=codec_type,codec_name,width,height,avg_frame_rate,nb_read_frames,"
+    "pix_fmt,color_range,color_space,color_transfer,color_primaries,sample_rate,channels:"
+    "format=duration"
+)
 EXPECTED_SECONDS = 2.0
 MAX_MP4_BYTES = 512 * 1024 * 1024
 MAX_DECODED_PCM_BYTES = 5 * 1024 * 1024  # exact 18s stereo s16le + bounded AAC tail
@@ -101,6 +106,16 @@ def inspect_streams(probed: dict, *, expected_frames: int = FRAME_COUNT,
     _require(len(video) == 1 and len(audio) == 1, "Native MP4 must contain exactly one video and audio stream")
     v, a = video[0], audio[0]
     _require(v.get("codec_name") == "h264", "Native AV video is not decoded as H.264")
+    video_tags = {
+        "pix_fmt": "yuv420p",
+        "color_range": "tv",
+        "color_space": "bt709",
+        "color_transfer": "bt709",
+        "color_primaries": "bt709",
+    }
+    for field, expected in video_tags.items():
+        _require(v.get(field) == expected,
+                 f"Native AV {field} must be observed as {expected}")
     _require((v.get("width"), v.get("height")) == expected_size,
              f"Decoded master dimensions differ from the {expected_size[0]}x{expected_size[1]} profile")
     _require(_rate(v.get("avg_frame_rate")) == (FPS_NUM, FPS_DEN), "Decoded master frame rate differs from the native profile")
@@ -119,6 +134,14 @@ def inspect_streams(probed: dict, *, expected_frames: int = FRAME_COUNT,
     return {
         "container_seconds": duration,
         "video_codec": "h264",
+        "video_color": {
+            "primaries": v["color_primaries"],
+            "transfer": v["color_transfer"],
+            "matrix": v["color_space"],
+            "range": "limited",
+            "pixel_format": v["pix_fmt"],
+            "alpha": "opaque",
+        },
         "video_frames_decoded": expected_frames,
         "video_width": expected_size[0],
         "video_height": expected_size[1],
@@ -270,7 +293,7 @@ def probe_native_mp4(master: Path, source_wav: Path, ffmpeg: Path, ffprobe: Path
 
     metadata = _run_decoder([
         str(ffprobe), "-v", "error", "-count_frames", "-show_entries",
-        "stream=codec_type,codec_name,width,height,avg_frame_rate,nb_read_frames,sample_rate,channels:format=duration",
+        AV_PROBE_ENTRIES,
         "-of", "json", str(master),
     ], max_bytes=128 * 1024)
     try:
