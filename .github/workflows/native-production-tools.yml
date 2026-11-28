@@ -1,0 +1,111 @@
+name: Native production tools
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/native-production-tools.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  linux-native-tools:
+    name: Build pinned Linux production tools
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Verify source and select the locked Semwright revision
+        id: source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python -B tooling/source_policy.py
+          python -B tooling/public_surface_policy.py
+          python -B - <<'PY'
+          import json, os, re
+          from pathlib import Path
+
+          source = json.loads(Path("SOURCE_LOCK.json").read_bytes())["dependencies"]["semwright"]
+          assert source["repository"] == "https://github.com/seradotcom/semwright"
+          assert re.fullmatch("[0-9a-f]{40}", source["revision"])
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write("pin=" + source["revision"] + "\n")
+          PY
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: seradotcom/semwright
+          ref: ${{ steps.source.outputs.pin }}
+          path: semwright
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: '1.98.1'
+      - name: Install Linux build prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libpipewire-0.3-dev pkg-config clang
+      - name: Build the Broker, Driver Host and audiovisual providers
+        working-directory: semwright
+        env:
+          EXPECTED_SEMWRIGHT: ${{ steps.source.outputs.pin }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SEMWRIGHT"
+          cargo build --locked --jobs 2 \
+            -p semwright-daemon --bin semwrightd \
+            -p semwright-cli --bin semwright \
+            -p semwright-plugin-host --bin semwright-sandbox \
+            -p semwright-driver-motion-canvas --bin semwright-motion-canvas-driver \
+            -p semwright-mlt-video-driver --bin semwright-mlt-video-driver \
+            -p semwright-mlt-video-driver --bin semwright-mlt-runtime-runner
+          target/debug/semwright --version
+
+          export OUTPUT="$RUNNER_TEMP/native-production-tools"
+          mkdir -p "$OUTPUT/bin"
+          for executable in semwrightd semwright semwright-sandbox semwright-motion-canvas-driver semwright-mlt-video-driver semwright-mlt-runtime-runner; do
+            install -m 0755 "target/debug/$executable" "$OUTPUT/bin/$executable"
+          done
+          install -m 0644 LICENSE-APACHE LICENSE-MIT NOTICE "$OUTPUT/"
+          python -B - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+
+          root = Path(os.environ["OUTPUT"])
+          files = {}
+          for path in sorted(p for p in root.rglob("*") if p.is_file()):
+              with path.open("rb") as stream:
+                  digest = hashlib.file_digest(stream, "sha256").hexdigest()
+              files[path.relative_to(root).as_posix()] = {"bytes": path.stat().st_size, "sha256": digest}
+          assert len(files) == 9
+          receipt = {
+              "schema": "motionwright.native-production-tools/1",
+              "motionwright_source": os.environ["GITHUB_SHA"],
+              "semwright_source": os.environ["EXPECTED_SEMWRIGHT"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "platform": os.environ["RUNNER_OS"],
+              "architecture": os.environ["RUNNER_ARCH"],
+              "files": files,
+          }
+          (root / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+          PY
+          tar -C "$OUTPUT" -czf "$RUNNER_TEMP/native-production-tools-linux-x64.tar.gz" bin LICENSE-APACHE LICENSE-MIT NOTICE receipt.json
+      - name: Retain the source-bound Linux build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-production-tools-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-production-tools-linux-x64.tar.gz
+          retention-days: 7
+          if-no-files-found: error
