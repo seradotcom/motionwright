@@ -45,7 +45,7 @@ on:
         required: true
         default: full
         type: choice
-        options: [full, storage_service, derived_cache, otio_export, project_projection, cas_retention, cas_candidate, gc_proxy_candidate]
+        options: [full, storage_service, derived_cache, otio_export, bundle_export, project_projection, cas_retention, cas_candidate, gc_proxy_candidate]
       os_scope:
         description: Explicit CAS operating systems; all is valid only for reviewed candidate source profiles
         required: true
@@ -150,7 +150,7 @@ jobs:
 
   storage-contracts:
     needs: g0-source-controls
-    if: ${{ github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'derived_cache' && inputs.verification_scope != 'otio_export' && inputs.verification_scope != 'project_projection' && inputs.verification_scope != 'cas_retention' && inputs.verification_scope != 'cas_candidate' && inputs.verification_scope != 'gc_proxy_candidate') }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (inputs.verification_scope != 'derived_cache' && inputs.verification_scope != 'otio_export' && inputs.verification_scope != 'bundle_export' && inputs.verification_scope != 'project_projection' && inputs.verification_scope != 'cas_retention' && inputs.verification_scope != 'cas_candidate' && inputs.verification_scope != 'gc_proxy_candidate') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -1326,7 +1326,7 @@ jobs:
           selection = "full"
           if os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch":
               selection = (event.get("inputs") or {}).get("verification_scope", "full")
-          if selection not in {"full", "derived_cache", "otio_export", "project_projection", "cas_retention", "cas_candidate", "gc_proxy_candidate"}:
+          if selection not in {"full", "derived_cache", "otio_export", "bundle_export", "project_projection", "cas_retention", "cas_candidate", "gc_proxy_candidate"}:
               raise SystemExit("portability-selection-unsupported")
           if selection in {"cas_retention", "cas_candidate", "gc_proxy_candidate"}:
               run_cas_retention(actual, event)
@@ -1463,6 +1463,23 @@ jobs:
               ]
               if len(cases) != 1 or len(cases[0][2]) != 9:
                   raise SystemExit("otio-export-selection-incomplete")
+          elif selection == "bundle_export":
+              names = {
+                  "bundle_export_keeps_destination_and_cleanup_bound_to_owned_directories",
+                  "bundle_export_preserves_preexisting_destinations",
+                  "bundle_export_rejects_empty_destination_created_at_publication",
+                  "bundle_export_rejects_file_created_at_publication",
+                  "bundle_export_unclaimed_destination_restores_complete_original_bytes",
+              }
+              if os.environ["RUNNER_OS"] == "Windows":
+                  names.update({"bundle_export_windows_long_unicode_destination_remains_operational",
+                                "bundle_export_windows_nul_paths_fail_before_publication"})
+              else:
+                  names.add("bundle_export_preserves_dangling_symlink_created_at_publication")
+              cases = [
+                  ("portable-bundle-destination", ["-p", "motionwright-storage", "--lib", "portability::tests::bundle_export_"],
+                   {"portability::tests::" + name for name in names}),
+              ]
           elif selection == "project_projection":
               cases = [('projection-storage',
                 ['-p', 'motionwright-storage', '--lib', 'project_projection::tests::'],
@@ -1566,6 +1583,12 @@ jobs:
                   "apps/desktop/src-tauri/src/local_error.rs",
                   "apps/desktop/src-tauri/src/project_export.rs",
                   "apps/desktop/src-tauri/src/project_library.rs",
+              )
+          if selection == "bundle_export":
+              source_paths = (
+                  WORKFLOW_PATH, "Cargo.lock", "SOURCE_LOCK.json", "rust-toolchain.toml",
+                  "crates/storage/Cargo.toml", "crates/storage/src/portability.rs",
+                  "crates/storage/src/bundle_export_unix.rs", "crates/storage/src/bundle_export_windows.rs",
               )
           if projection:
               source_paths = (WORKFLOW_PATH, *PROJECTION_PRODUCT_PATHS, *PROJECTION_DEPENDENCIES)

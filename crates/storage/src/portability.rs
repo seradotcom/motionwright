@@ -2,6 +2,13 @@
 use super::*;
 use std::collections::BTreeMap;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "bundle_export_unix.rs"]
+mod bundle_export;
+#[cfg(windows)]
+#[path = "bundle_export_windows.rs"]
+mod bundle_export;
+
 const MAX_PROJECT_ARCHIVE_BYTES: u64 = 32 * 1024 * 1024;
 
 const BUNDLE_FINGERPRINT_DOMAIN: &[u8] = b"motionwright.bundle-inspection.v1\0";
@@ -892,6 +899,22 @@ impl Store {
 }
 
 impl PreparedProjectBundleExport {
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    fn publish_snapshot(
+        _: &Path,
+        _: ProjectBackup,
+        _: &Path,
+        _: &impl BundleAssetAdmission,
+        _: impl FnOnce(&Path),
+    ) -> Result<ProjectBundleManifest> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "exclusive bundle directory publication is unsupported on this platform",
+        )
+        .into())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     fn publish_snapshot(
         blob_root: &Path,
         backup: ProjectBackup,
@@ -899,6 +922,16 @@ impl PreparedProjectBundleExport {
         admission: &impl BundleAssetAdmission,
         before_publication: impl FnOnce(&Path),
     ) -> Result<ProjectBundleManifest> {
+        use std::io::Seek;
+
+        #[cfg(windows)]
+        if !bundle_export::local_drive(&std::path::absolute(destination)?) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "portable bundle export needs a local Windows destination",
+            )
+            .into());
+        }
         match fs::symlink_metadata(destination) {
             Ok(_) => return Err(StorageError::DestinationExists),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -1033,47 +1066,54 @@ impl PreparedProjectBundleExport {
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent)?;
-        // Resolve the existing parent once, before creating either entry.
-        // Windows canonical paths retain long-path and Unicode support at FFI.
-        let parent = fs::canonicalize(parent)?;
-        let publication_destination = parent.join(destination_name);
-        let staging = parent.join(format!(".motionwright-export-{}", Uuid::now_v7()));
-        fs::create_dir(&staging)?;
-        let mut owned_stage = BundleExportStage(Some(staging.clone()));
+        let mut staging = bundle_export::BundleExportStage::new(parent)?;
 
         for blob in &manifest.blobs {
             let source = checked_existing_blob_path_from_root(blob_root, &blob.sha256)?;
-            let target = staging.join(&blob.relative_path);
-            if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let captured = copy_portable_file(&source, &target, blob.size_bytes)?;
+            let input =
+                checked_portable_source(&source, "copied portable source", blob.size_bytes)?;
+            let mut output = staging.create(Path::new(&blob.relative_path))?;
+            let captured = copy_portable_contents(input, &mut output, blob.size_bytes)?;
             if captured.sha256 != blob.sha256 || captured.size_bytes != blob.size_bytes {
                 return Err(StorageError::InvalidBackup(
                     "export source changed after blob validation".into(),
                 ));
             }
-            let copied = hash_portable_file(&target, blob.size_bytes)?;
-            if copied.sha256 != blob.sha256 || copied.size_bytes != blob.size_bytes {
+            output.rewind()?;
+            let copied = transfer_portable_bytes(&mut output, std::io::sink(), blob.size_bytes)?;
+            if copied != captured {
                 return Err(StorageError::InvalidBackup(
                     "exported blob failed readback verification".into(),
                 ));
             }
         }
 
-        let manifest_path = staging.join("manifest.json");
-        let mut manifest_file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&manifest_path)?;
+        let mut manifest_file = staging.create(Path::new("manifest.json"))?;
         manifest_file.write_all(&manifest_bytes)?;
         manifest_file.flush()?;
         manifest_file.sync_all()?;
+        manifest_file.rewind()?;
+        let saved = transfer_portable_bytes(
+            &mut manifest_file,
+            std::io::sink(),
+            manifest_bytes.len() as u64,
+        )?;
+        if saved.size_bytes != manifest_bytes.len() as u64
+            || saved.sha256 != hex::encode(Sha256::digest(&manifest_bytes))
+        {
+            return Err(StorageError::InvalidBackup(
+                "exported manifest failed readback verification".into(),
+            ));
+        }
         drop(manifest_file);
-        before_publication(&staging);
-        publish_bundle_directory(&staging, &publication_destination)?;
-        owned_stage.0 = None;
-        Ok(manifest)
+        before_publication(staging.path());
+        match staging.publish(destination_name) {
+            Ok(()) => Ok(manifest),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(StorageError::DestinationExists)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
@@ -1130,17 +1170,6 @@ fn bundle_windows_path(path: &Path) -> std::io::Result<Vec<u16>> {
     }
     encoded.push(0);
     Ok(encoded)
-}
-
-/// Only the directory created for this attempt is removed on failure.
-struct BundleExportStage(Option<PathBuf>);
-
-impl Drop for BundleExportStage {
-    fn drop(&mut self) {
-        if let Some(path) = self.0.take() {
-            let _ = fs::remove_dir_all(path);
-        }
-    }
 }
 
 /// The byte budget constrains the actual read, including growth after stat.
@@ -1270,6 +1299,7 @@ pub(super) fn inspect_portable_file(
     transfer_portable_bytes_with_credential_check(input, std::io::sink(), limit, Some(context))
 }
 
+#[cfg(test)]
 fn copy_portable_file(source: &Path, target: &Path, limit: u64) -> Result<BlobDescriptor> {
     let input = checked_portable_source(source, "copied portable source", limit)?;
     let mut options = OpenOptions::new();
@@ -1280,9 +1310,13 @@ fn copy_portable_file(source: &Path, target: &Path, limit: u64) -> Result<BlobDe
         options.mode(0o600);
     }
     let mut output = options.open(target)?;
+    copy_portable_contents(input, &mut output, limit)
+}
+
+fn copy_portable_contents(input: File, output: &mut File, limit: u64) -> Result<BlobDescriptor> {
     let descriptor = transfer_portable_bytes_with_credential_check(
         input,
-        &mut output,
+        &mut *output,
         limit,
         Some("copied portable asset"),
     )?;
@@ -1900,6 +1934,71 @@ mod tests {
         assert!(retained.file_type().is_symlink());
         assert_eq!(Some((retained.dev(), retained.ino())), peer_identity);
         assert!(!missing.exists());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[test]
+    fn bundle_export_keeps_destination_and_cleanup_bound_to_owned_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, backup, sources) = bundle_export_source(dir.path());
+        let root = fs::canonicalize(dir.path()).unwrap();
+
+        for replace_parent in [true, false] {
+            let parent = root.join(if replace_parent { "parent" } else { "stage" });
+            fs::create_dir(&parent).unwrap();
+            let destination = parent.join("backup");
+            let moved = root.join(if replace_parent {
+                "held-parent"
+            } else {
+                "held-stage"
+            });
+            #[cfg(unix)]
+            let mut foreign = PathBuf::new();
+            let result = store.export_captured_bundle_before_publication(
+                backup.clone(),
+                &destination,
+                |staging| {
+                    let entry = if replace_parent {
+                        parent.as_path()
+                    } else {
+                        staging
+                    };
+                    assert!(staging.join("manifest.json").is_file());
+                    #[cfg(unix)]
+                    {
+                        fs::rename(entry, &moved).unwrap();
+                        fs::create_dir(entry).unwrap();
+                        foreign = entry.join("sentinel");
+                        fs::write(&foreign, b"unrelated entry").unwrap();
+                    }
+                    #[cfg(windows)]
+                    {
+                        let error = fs::rename(entry, &moved).unwrap_err();
+                        assert!(matches!(error.raw_os_error(), Some(5 | 32)));
+                        assert!(!moved.exists());
+                    }
+                },
+            );
+            #[cfg(unix)]
+            {
+                assert!(matches!(result, Err(StorageError::Io(_))));
+                assert!(!destination.exists());
+                assert!(!moved.join("backup").exists());
+                assert_eq!(fs::read(&foreign).unwrap(), b"unrelated entry");
+                assert_eq!(fs::read_dir(&moved).unwrap().count(), 0);
+            }
+            #[cfg(windows)]
+            {
+                let manifest = result.unwrap();
+                assert_eq!(manifest.backup.project, backup.project);
+                assert!(destination.join("manifest.json").is_file());
+                assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+            }
+        }
+
+        for (digest, bytes) in sources {
+            assert_eq!(store.read_blob(&digest, bytes.len() as u64).unwrap(), bytes);
+        }
     }
 
     #[cfg(windows)]
