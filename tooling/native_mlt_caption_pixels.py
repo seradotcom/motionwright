@@ -220,8 +220,126 @@ def hybrid_frame_presence(rgba, frame, *, policy=HYBRID_PIXEL_CONTRACT):
             "all_pixels_opaque":True,"predeclared_center_and_matte_screen":True}
 
 
+
+HYBRID_DISSOLVE_RANGE = range(60, 67)
+
+
+def hybrid_dissolve_levels(observed, held, incoming, frame, *, policy=HYBRID_PIXEL_CONTRACT):
+    """Measure the two separate source markers within the sealed dissolve range."""
+    width, height = policy["width"], policy["height"]
+    _hybrid_need(frame in HYBRID_DISSOLVE_RANGE
+                 and all(type(rgba) is bytes and len(rgba) == width * height * 4
+                         for rgba in (observed, held, incoming)),
+                 "hybrid_dissolve_frame_inputs")
+    _hybrid_need(observed[3::4] == b"\xff" * (width * height),
+                 "hybrid_nonopaque_original_frame")
+    levels = []
+    for index, (x, y, w, h) in enumerate(policy["source_geometry"]):
+        marker = []
+        for dx, dy in policy["probe_offsets"]:
+            at = ((y + h // 2 + dy) * width + x + w // 2 + dx) * 4
+            rgb = observed[at:at + 3]
+            if index == 2:
+                _hybrid_need(max(rgb) <= policy["inactive_rgb_maximum"],
+                             "hybrid_dissolve_foreign_contribution")
+                continue
+            _hybrid_need(all(rgb[c] <= policy["other_active_channels_maximum"]
+                             for c in (0, 1, 2) if c != index),
+                         "hybrid_dissolve_marker_color_changed")
+            active, inactive = (held, incoming) if index == 0 else (incoming, held)
+            active_value, background_value = active[at + index], inactive[at + index]
+            span = active_value - background_value
+            _hybrid_need(active_value >= policy["active_center_rgb_minimum"]
+                         and background_value <= policy["inactive_rgb_maximum"] and span > 0,
+                         "hybrid_dissolve_original_markers_are_not_distinct")
+            marker.append(1000 * (rgb[index] - background_value) // span)
+        if marker:
+            _hybrid_need(min(marker) >= -125 and max(marker) <= 1125
+                         and max(marker) - min(marker) <= 125,
+                         "hybrid_dissolve_marker_outside_source_envelope")
+            levels.append(sum(marker) // len(marker))
+    red, green = levels
+    _hybrid_need(600 <= red + green <= 1650, "hybrid_dissolve_source_levels_changed")
+    for x, y in [(20, 20), (width - 21, 20), (20, height - 21), (width - 21, height - 21)]:
+        at = (y * width + x) * 4
+        _hybrid_need(max(observed[at:at + 3]) <= policy["inactive_rgb_maximum"],
+                     "hybrid_authored_black_matte_changed")
+    return {"frame": frame, "outgoing_marker_milli": red, "incoming_marker_milli": green}
+
+
+def hybrid_dissolve_progress(levels):
+    """Require simultaneous marker evidence and a forward dissolve."""
+    _hybrid_need([level["frame"] for level in levels] == list(HYBRID_DISSOLVE_RANGE),
+                 "hybrid_dissolve_incomplete_range")
+    red = [level["outgoing_marker_milli"] for level in levels]
+    green = [level["incoming_marker_milli"] for level in levels]
+    mixed = [level["frame"] for level in levels
+             if 160 <= level["outgoing_marker_milli"] <= 840
+             and 160 <= level["incoming_marker_milli"] <= 840]
+    _hybrid_need(bool(mixed), "hybrid_dissolve_no_observed_mixture")
+    _hybrid_need(red[0] - red[-1] >= 300 and green[-1] - green[0] >= 300
+                 and all(after <= before + 125 for before, after in zip(red, red[1:]))
+                 and all(after >= before - 125 for before, after in zip(green, green[1:])),
+                 "hybrid_dissolve_direction_changed")
+    return mixed
+
+
+def hybrid_dissolve_clock(document, *, exact):
+    """Admit the same six-second clock from the original retained frame ticks."""
+    frames = document["frames"]
+    count = HYBRID_PIXEL_CONTRACT["frame_count"]
+    _hybrid_need(type(frames) is list and len(frames) == count, "hybrid_dissolve_clock_frame_count")
+    first = frames[0]
+    num, den = first.get("time_base_num"), first.get("time_base_den")
+    _hybrid_need(type(num) is int and type(den) is int and num > 0 and den > 0
+                 and (exact or num * 1000 <= den), "hybrid_dissolve_clock_time_base")
+
+    # MP4 retains the exact frame grid. Matroska may round to its own tick;
+    # bound every residual and the endpoint in that observed time base.
+    tick = num * 30
+    tolerance = 0 if exact else tick
+    previous = -1
+    largest = 0
+    for i, row in enumerate(frames):
+        index, pts, duration = (row.get(key) for key in ("index", "pts", "duration"))
+        _hybrid_need(type(index) is int and index == i and type(pts) is int and pts > previous
+                     and type(duration) is int and duration > 0 and (i != 0 or pts == 0)
+                     and row.get("time_base_num") == num and row.get("time_base_den") == den,
+                     "hybrid_dissolve_clock_frame_identity")
+        error = abs(pts * tick - i * den)
+        _hybrid_need(error <= tolerance and abs(duration * tick - den) <= tolerance,
+                     "hybrid_dissolve_clock_frame_timing")
+        largest = max(largest, error)
+        previous = pts
+    end_error = (previous + frames[-1]["duration"]) * tick - count * den
+    _hybrid_need(abs(end_error) <= tolerance and (not exact or document["exact_clock"] is True),
+                 "hybrid_dissolve_clock_endpoint")
+    return {"frame_count": count, "extent_frames": [0, count], "time_base": [num, den],
+            "maximum_pts_error_seconds": [largest, den * 30],
+            "endpoint_error_seconds": [end_error, den * 30]}
+
+
+def hybrid_dissolve_intent(project, plan, declared, expected_result):
+    start, end = HYBRID_DISSOLVE_RANGE.start, HYBRID_DISSOLVE_RANGE.stop
+    masters = [profile["id"] for profile in project["deliverables"] if profile["name"] == "Master 16:9"]
+    _hybrid_need(len(masters) == 1, "hybrid_dissolve_master_profile")
+    recipes = project["production_design"].get("delivery_recipes", {})
+    stored = recipes.get(masters[0], {}).get("mlt_dissolve")
+    _hybrid_need(stored == {
+        "outgoing_scene_id": project["scenes"][0]["id"], "incoming_scene_id": project["scenes"][1]["id"],
+        "duration_frames": end - start, "mode": "hold_outgoing_last_frame",
+    } and plan.get("held_dissolve") == {"outgoing_ordinal": 0, "range": {"start": start, "end": end}},
+                 "hybrid_dissolve_original_intent_changed")
+    audio_sha = expected_result.get("original_audio_sha256")
+    _hybrid_need(type(audio_sha) is str and len(audio_sha) == 64
+                 and all(char in "0123456789abcdef" for char in audio_sha)
+                 and declared.get("original_audio_sha256") == audio_sha,
+                 "hybrid_dissolve_original_audio_binding_changed")
+    return audio_sha
+
+
 def inspect_original_hybrid_pixels(output_root, caller_root, expected_result, *, ffmpeg,
-                                   executable_sha256, retain_decode):
+                                   executable_sha256, retain_decode, dissolve_fixture=False):
     """Join the original three families, decode held PNG bytes, retain differences.
 
     Every frame is bound to its original native report/manifest and output byte
@@ -236,6 +354,7 @@ def inspect_original_hybrid_pixels(output_root, caller_root, expected_result, *,
     from native_direct_mediated_parity import decoded_rgba_png_capture
     from native_motion_canvas_roundtrip import validate_png_crc_bytes
 
+    _hybrid_need(type(dissolve_fixture) is bool, "hybrid_dissolve_fixture_selector")
     _hybrid_need(callable(retain_decode),"hybrid_original_decode_custodian_required")
     _hybrid_need(type(expected_result) is dict and expected_result.get("schema") == "motionwright.native.hybrid-av-summary/1",
                  "hybrid_original_result_schema")
@@ -311,6 +430,15 @@ def inspect_original_hybrid_pixels(output_root, caller_root, expected_result, *,
                      and declared["pixel_difference_policy"] == "retain_all_original_measurements"
                      and len(plan["contributions"]) == 3 and len(project["scenes"]) == 3,
                      "hybrid_original_source_plan_changed")
+        if dissolve_fixture:
+            audio_sha = hybrid_dissolve_intent(project, plan, declared, expected_result)
+            _hybrid_need(master.get("original_audio_sha256") == audio_sha
+                         and type(master.get("measured_original_audio_frames")) is int
+                         and master["measured_original_audio_frames"] == 288000
+                         and master.get("decoded_wav_stereo_tail_verified") is True,
+                         "hybrid_dissolve_native_audio_source_changed")
+        else:
+            _hybrid_need("held_dissolve" not in plan, "hybrid_dissolve_requires_explicit_fixture")
         for index,(part,scene) in enumerate(zip(plan["contributions"],project["scenes"])):
             _hybrid_need(part["output_start_frame"] == index*60 and part["frame_count"] == 60
                          and part["renderer"] == ("manim_static" if index==1 else "motion_canvas")
@@ -359,8 +487,26 @@ def inspect_original_hybrid_pixels(output_root, caller_root, expected_result, *,
                      "hybrid_final_original_artifacts_differ")
         timeline,visual_document=observed_frames(visual["complete_video_observation"],visual_media,180)
         final,master_document=observed_frames(master["complete_video_observation"],master_media,180)
+        if dissolve_fixture:
+            timeline_clock = hybrid_dissolve_clock(visual_document, exact=False)
+            master_clock = hybrid_dissolve_clock(master_document, exact=True)
+            _hybrid_need(type(visual_document.get("audio_streams")) is int
+                         and visual_document["audio_streams"] == 0
+                         and type(master_document.get("audio_streams")) is int
+                         and master_document["audio_streams"] == 1,
+                         "hybrid_dissolve_changed_audio_stream_roster")
+            frame = sources[HYBRID_DISSOLVE_RANGE.start - 1]
+            descriptor = {"root": "output", **{key: frame[key] for key in ("path", "sha256", "bytes")}}
+            staged = visual_document.get("native_input_sources")
+            _hybrid_need(type(staged) is list
+                         and len(staged) == len(plan["contributions"]) + 1
+                         and all(type(entry) is dict for entry in staged)
+                         and [entry for entry in staged if entry.get("path") == frame["path"]] == [descriptor],
+                         "hybrid_dissolve_did_not_stage_the_authenticated_outgoing_png")
         started=time.monotonic(); cache=OrderedDict(); decoded_keys=set(); decode_count=reuses=0
         evidence_rows=[]
+        dissolve_levels = {"ffv1": [], "h264": []}
+        held, held_record = None, None
         def decode(row,label):
             nonlocal decode_count,reuses
             _hybrid_need(time.monotonic()-started <= HYBRID_PIXEL_CONTRACT["decode_start_deadline_seconds"],"hybrid_decode_start_deadline")
@@ -395,12 +541,23 @@ def inspect_original_hybrid_pixels(output_root, caller_root, expected_result, *,
             source,source_record=decode(sources[frame],f"hybrid-source-{frame:03}")
             rendered_frame,timeline_record=decode(timeline[frame],f"hybrid-timeline-{frame:03}")
             master_frame,master_record=decode(final[frame],f"hybrid-master-{frame:03}")
-            for pixels in (source,rendered_frame,master_frame):hybrid_frame_presence(pixels,frame)
-            evidence_rows.append({"frame":frame,"source":source_record,"timeline":timeline_record,"master":master_record,
-                "source_to_ffv1":hybrid_rgb_difference(source,rendered_frame,width=1920,height=1080),
-                "source_to_h264":hybrid_rgb_difference(source,master_frame,width=1920,height=1080)})
+            hybrid_frame_presence(source,frame)
+            row = {"frame":frame,"source":source_record,"timeline":timeline_record,"master":master_record}
+            if dissolve_fixture and frame == HYBRID_DISSOLVE_RANGE.start - 1:
+                held, held_record = source, source_record
+            if dissolve_fixture and frame in HYBRID_DISSOLVE_RANGE:
+                measured = {}
+                for media, pixels in (("ffv1", rendered_frame), ("h264", master_frame)):
+                    measured[media] = hybrid_dissolve_levels(pixels, held, source, frame)
+                    dissolve_levels[media].append(measured[media])
+                row["held_dissolve_levels"] = measured
+            else:
+                for pixels in (rendered_frame,master_frame):hybrid_frame_presence(pixels,frame)
+            row["source_to_ffv1"] = hybrid_rgb_difference(source,rendered_frame,width=1920,height=1080)
+            row["source_to_h264"] = hybrid_rgb_difference(source,master_frame,width=1920,height=1080)
+            evidence_rows.append(row)
         _hybrid_need(handles.stable_roots(),"hybrid_original_reader_roots_changed")
-        return {"schema":"motionwright.native.hybrid-pixel-observation/1","project_sha256":plan["project_sha256"],
+        report = {"schema":"motionwright.native.hybrid-pixel-observation/1","project_sha256":plan["project_sha256"],
             "policy":HYBRID_PIXEL_CONTRACT,"frame_count":180,"source_segment_frames":[60,60,60],
             "original_PNG_frames_bound":540,"original_PNG_decoder_invocations":decode_count,
             "distinct_original_PNGs_decoded":len(decoded_keys),
@@ -413,6 +570,17 @@ def inspect_original_hybrid_pixels(output_root, caller_root, expected_result, *,
             "all180_independent_decoder_processes_claimed":False,
             "codec_loss_absence_claimed":False,"human_approval":False,"physical_acceptance":False,
             "Host_receiver_closure_proved":False,"automatic_native_retry":False}
+        if dissolve_fixture:
+            start, end = HYBRID_DISSOLVE_RANGE.start, HYBRID_DISSOLVE_RANGE.stop
+            report["held_dissolve"] = {
+                "frame_range": [start, end], "last_outgoing_frame": start - 1,
+                "first_incoming_only_frame": end, "original_held_png": held_record,
+                "ffv1_mixed_frames": hybrid_dissolve_progress(dissolve_levels["ffv1"]),
+                "h264_mixed_frames": hybrid_dissolve_progress(dissolve_levels["h264"]),
+                "ffv1_clock": timeline_clock, "h264_clock": master_clock,
+                "original_audio_sha256": audio_sha,
+            }
+        return report
     except BaseException as error:
         primary=error
         raise
