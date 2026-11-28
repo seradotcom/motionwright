@@ -193,7 +193,7 @@ export default function Timeline({
   const [view, setView] = useState(initialView.view);
   const timelineBodyId = useId();
   const panelRef = useRef<HTMLElement>(null);
-  const [panelHeight, setPanelHeight] = useState(300);
+  const [panelHeight, setPanelHeight] = useState(280);
   const [viewport, setViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
   useEffect(() => {
     const panel = panelRef.current;
@@ -234,8 +234,9 @@ export default function Timeline({
   const position = (time: number) => ((time - windowRange.start) / windowRange.span) * 100 + "%";
   const extras = useMemo(() => timelineExtraTracks(project, selectedProfileId, selectedSceneId, rate),
     [project, selectedProfileId, selectedSceneId, rate]);
-  const heights = [24,28,packTimelineRanges(extras.music).height,packTimelineRanges(extras.sfx).height,28,28,36,
-    packTimelineRanges(extras.object).height,packTimelineRanges(extras.camera).height,28,packTimelineRanges(extras.review).height];
+  const heights = [24, 36, packTimelineRanges(extras.object).height, 28,
+    packTimelineRanges(extras.music).height, packTimelineRanges(extras.sfx).height,
+    28, 28, packTimelineRanges(extras.camera).height, 28, packTimelineRanges(extras.review).height];
   const rows = { gridTemplateRows: heights.map(height => height + "px").join(" "), height: heights.reduce((sum,height) => sum + height,0) };
   const pan = (amount: number) => setView(current => ({ ...current, start: timelineWindow(duration, { ...current, start: timelineWindow(duration,current).start + amount }).start }));
   const zoom = (value: number) => setView(current => zoomTimeline(current, duration, value, Math.max(windowRange.start, Math.min(windowRange.end, playhead))));
@@ -414,13 +415,13 @@ export default function Timeline({
       <div id={timelineBodyId} className="timeline-body">
         <div className="track-labels" style={rows} aria-hidden="true">
           <div className="ruler-label">time</div>
+          <div><span>Scenes</span><span className="track-type">semantic</span></div>
+          <div><span>Objects</span><span className="track-type">scene</span></div>
           <div><span>VO</span><span className="track-type">audio</span></div>
           <div><span>Music</span><span className="track-type">intent</span></div>
           <div><span>SFX</span><span className="track-type">source</span></div>
           <div><span>Transcript</span><span className="track-type">text</span></div>
           <div><span>Beats</span><span className="track-type">story</span></div>
-          <div><span>Scenes</span><span className="track-type">semantic</span></div>
-          <div><span>Objects</span><span className="track-type">scene</span></div>
           <div><span>Camera</span><span className="track-type">path</span></div>
           <div><span>Cues</span><span className="track-type">markers</span></div>
           <div><span>Reviews</span><span className="track-type">ranges</span></div>
@@ -474,6 +475,29 @@ export default function Timeline({
               </span>
             ))}
           </div>
+          <div className="track scene-track">
+            {project.scenes.map((scene, index) => (
+              <button
+                key={scene.id}
+                type="button"
+                className={"timeline-clip clip-" + (index % 4) + (selectedSceneId === scene.id ? " selected" : "")}
+                style={{
+                  left: position(seconds(scene.start)),
+                  width: (seconds(scene.duration) / windowRange.span) * 100 + "%",
+                }}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => {
+                  setSelection(null);
+                  selectScene(scene.id);
+                }}
+              >
+                <span>{scene.name}</span>
+                <small>{rendererLabels[scene.renderer]}</small>
+              </button>
+            ))}
+          </div>
+          <RangeLane kind="object" entries={extras.object} selection={selection} position={position} span={windowRange.span}
+            select={entry => selectAt(seconds(entry.start),entry.selection,entry.sceneId,entry.start)}/>
           <div className="track voice-track">
             {measuredVoice.map((track) => (
               <div
@@ -571,29 +595,6 @@ export default function Timeline({
               })
             )}
           </div>
-          <div className="track scene-track">
-            {project.scenes.map((scene, index) => (
-              <button
-                key={scene.id}
-                type="button"
-                className={"timeline-clip clip-" + (index % 4) + (selectedSceneId === scene.id ? " selected" : "")}
-                style={{
-                  left: position(seconds(scene.start)),
-                  width: (seconds(scene.duration) / windowRange.span) * 100 + "%",
-                }}
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={() => {
-                  setSelection(null);
-                  selectScene(scene.id);
-                }}
-              >
-                <span>{scene.name}</span>
-                <small>{rendererLabels[scene.renderer]}</small>
-              </button>
-            ))}
-          </div>
-          <RangeLane kind="object" entries={extras.object} selection={selection} position={position} span={windowRange.span}
-            select={entry => selectAt(seconds(entry.start),entry.selection,entry.sceneId,entry.start)}/>
           <RangeLane kind="camera" entries={extras.camera} selection={selection} position={position} span={windowRange.span}
             select={entry => selectAt(seconds(entry.start),entry.selection,entry.sceneId,entry.start)}/>
           <div className="track review-track">

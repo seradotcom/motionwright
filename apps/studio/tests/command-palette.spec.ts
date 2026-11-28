@@ -31,6 +31,9 @@ test("palette navigates workspaces without mutating the shared project", async (
   await expect(inspector).toBeHidden();
   await page.getByRole("button", { name: "Show inspector" }).click({ timeout: 5000 });
   await expect(inspector).toBeVisible();
+  const inspectorBounds = (await inspector.boundingBox())!;
+  expect(inspectorBounds.x).toBeGreaterThanOrEqual(0);
+  expect(inspectorBounds.x + inspectorBounds.width).toBeLessThanOrEqual(1180);
   await page.getByRole("button", { name: "Hide inspector" }).click();
   await expect(inspector).toBeHidden();
   await expect(page.locator(".revision-chip")).toHaveText(revision);

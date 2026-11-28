@@ -128,8 +128,6 @@
 @media (max-width: 800px) { .production-undo-history article { align-items: start; flex-direction: column; } }
 
 /* Production owns its inspector; keep the actual study visible while controls scroll. */
-.editor-grid.production-layout { grid-template-columns: 232px minmax(0, 1fr); }
-.editor-grid.production-layout.rail-collapsed { grid-template-columns: 44px minmax(0, 1fr); }
 .production-workspace { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .production-workspace-header { flex-shrink: 0; padding: 18px 24px 16px; }
 .production-workspace-header h1 { font-size: clamp(18px, 1.6vw, 23px); margin-block: 7px; }
@@ -153,9 +151,7 @@
 .production-workspace .production-transport .secondary-button { min-height: 28px; padding: 5px 9px; font-size: 10px; }
 .project-format-notice { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 14px; padding: 6px 15px; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--muted); font-size: 10px; }
 .project-format-notice button { flex-shrink: 0; }
-@media (max-width: 1180px) { .editor-grid.production-layout { grid-template-columns: 210px minmax(0, 1fr); } }
 @media (max-width: 800px) {
-  .editor-grid.production-layout, .editor-grid.production-layout.rail-collapsed { grid-template-columns: 44px minmax(0, 1fr); }
   .production-workspace { overflow-y: auto; }
   .production-workspace-header { flex-direction: row; flex-wrap: wrap; gap: 15px; }
   .production-split { overflow: visible; flex: none; }

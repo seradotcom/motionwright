@@ -38,7 +38,6 @@ import {
   LockKeyhole,
   MessageSquareText,
   Moon,
-  MoreHorizontal,
   MoveRight,
   PanelLeftClose,
   PanelRight,
@@ -144,6 +143,7 @@ import { seconds } from "./types";
 import {
   DEFAULT_EDITOR_RATE,
   formatEditorTimecode as formatTime,
+  rulerTime,
   stepEditorialFrame,
   supportsDropFrame,
   timebaseLabel,
@@ -200,6 +200,21 @@ const workspaces: Array<{ name: Workspace; icon: typeof Film }> = [
   { name: "Review", icon: MessageSquareText },
   { name: "Deliver", icon: FileOutput },
 ];
+
+const primaryWorkspaces: readonly Workspace[] = ["Narrative", "Timeline", "Review"];
+const toolWorkspaces = workspaces.filter(({ name }) => name !== "Deliver" && !primaryWorkspaces.includes(name));
+
+function useCompactLayout(query: string): boolean {
+  const [compact, setCompact] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const breakpoint = window.matchMedia(query);
+    const read = () => setCompact(breakpoint.matches);
+    read();
+    breakpoint.addEventListener("change", read);
+    return () => breakpoint.removeEventListener("change", read);
+  }, [query]);
+  return compact;
+}
 
 const rendererLabels: Record<RendererKind, string> = {
   "motion-canvas": "Motion Canvas",
@@ -1447,7 +1462,10 @@ function ProjectRail({
               onClick={() => selectScene(scene.id)}
             >
               <span className="tree-index">{String(index + 1).padStart(2, "0")}</span>
-              <span className="tree-name">{scene.name}</span>
+              <span className="tree-row-copy">
+                <span className="tree-name">{scene.name}</span>
+                <time className="tree-start mono" aria-hidden="true">{rulerTime(seconds(scene.start))}</time>
+              </span>
               <span className={"scene-state-dot state-" + scene.status} />
             </button>
           ))}
@@ -1609,21 +1627,18 @@ export default function App() {
   const [bootError, setBootError] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>(preferredTheme);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
-  const [railCollapsed, setRailCollapsed] = useState(false);
-  const [compactWorkspace, setCompactWorkspace] = useState(() => window.matchMedia("(max-width: 1180px)").matches);
+  const compactRail = useCompactLayout("(max-width: 860px)");
+  const compactWorkspace = useCompactLayout("(max-width: 1180px)");
+  const [wideRailCollapsed, setWideRailCollapsed] = useState(false);
+  const [compactRailCollapsed, setCompactRailCollapsed] = useState(true);
+  const railCollapsed = compactRail ? compactRailCollapsed : wideRailCollapsed;
+  const setRailCollapsed = compactRail ? setCompactRailCollapsed : setWideRailCollapsed;
   const [compactInspectorOpen, setCompactInspectorOpen] = useState(false);
   const [wideInspectorOpen, setWideInspectorOpen] = useState(true);
   const inspectorToggle = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    const query = window.matchMedia("(max-width: 1180px)");
-    const readBreakpoint = () => setCompactWorkspace(query.matches);
-    readBreakpoint();
-    query.addEventListener("change", readBreakpoint);
-    return () => query.removeEventListener("change", readBreakpoint);
-  }, []);
   const inspectorOpen = compactWorkspace ? compactInspectorOpen : wideInspectorOpen;
   const setInspectorOpen = compactWorkspace ? setCompactInspectorOpen : setWideInspectorOpen;
-  const workspaceNavRef = useRef<HTMLElement>(null);
+  const editorShellRef = useRef<HTMLElement>(null);
   const bootRef = useRef<Bootstrap | null>(boot);
   const mutationGate = useRef(new ProjectMutationGate());
   const currentProjectState = useCallback((): DeliveryProjectState => ({
@@ -2488,20 +2503,26 @@ export default function App() {
   ];
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" ref={editorShellRef}>
       <header className="command-bar">
-        <div className="brand">
-          <div className="brand-mark">MW</div>
-          <div className="brand-copy">
-            <strong>Motionwright</strong>
-            <h1 className="project-title">{project.title}</h1>
+        <div className="command-project">
+          <div className="brand">
+            <div className="brand-mark" aria-hidden="true">MW</div>
+            <div className="brand-copy">
+              <strong>Motionwright</strong>
+              <h1 className="project-title">{project.title}</h1>
+            </div>
+          </div>
+          <div className="project-context">
+            <span className="branch-chip"><GitBranch size={13} /> {project.branches.find((branch) => branch.id === project.active_branch)?.name ?? "main"}</span>
+            <output className="revision-chip">r{project.revision}</output>
+            <span className={"status-pill status-" + project.state}>{stateLabel(project.state)}</span>
           </div>
         </div>
-        <div className="project-context">
-          <span className="branch-chip"><GitBranch size={13} /> {project.branches.find((branch) => branch.id === project.active_branch)?.name ?? "main"}</span>
-          <output className="revision-chip">r{project.revision}</output>
-          <span className={"status-pill status-" + project.state}>{stateLabel(project.state)}</span>
-        </div>
+        <nav className="primary-workspaces" aria-label="Editorial workspaces">
+          {primaryWorkspaces.map(name => <button type="button" key={name} className={workspace === name ? "active" : ""}
+            aria-current={workspace === name ? "page" : undefined} onClick={() => setWorkspace(name)}>{name}</button>)}
+        </nav>
         <div className="command-actions">
           {desktopBridge && <button type="button" className="button compact"
             disabled={busy} onClick={() => setLibraryOpen(true)}>Open project library</button>}
@@ -2530,9 +2551,12 @@ export default function App() {
             onClick={() => setInspectorOpen(open => !open)}>
             <PanelRight size={16} aria-hidden="true" />
           </button>}
-          <IconButton label="More project information" onClick={() => setWorkspace("Brief")}>
-            <MoreHorizontal size={17} />
-          </IconButton>
+          <button type="button" className={"button button-primary workspace-deliver" + (workspace === "Deliver" ? " active" : "")}
+            aria-current={workspace === "Deliver" ? "page" : undefined} aria-label="Deliver"
+            onClick={() => setWorkspace("Deliver")}>
+            <FileOutput size={15} aria-hidden="true" />
+            <span>Deliver</span>
+          </button>
         </div>
       </header>
 
@@ -2547,24 +2571,8 @@ export default function App() {
         project={project} busy={busy} confirmation={fileImportConfirmation} onRecover={recoverFileImport}
         onClearConfirmation={() => setFileImportConfirmation(null)} onDismiss={() => {
           setFileImportConfirmation(null);
-          workspaceNavRef.current?.querySelector<HTMLButtonElement>('button[aria-current="page"]')?.focus();
+          editorShellRef.current?.querySelector<HTMLButtonElement>('button[aria-current="page"]')?.focus();
         }} />}
-
-      <nav ref={workspaceNavRef} className="workspace-bar" aria-label="Workspaces">
-        {workspaces.map(({ name, icon: Icon }) => (
-          <button
-            type="button"
-            key={name}
-            className={workspace === name ? "active" : ""}
-            aria-label={name}
-            aria-current={workspace === name ? "page" : undefined}
-            onClick={() => setWorkspace(name)}
-          >
-            <Icon size={14} />
-            <span>{name}</span>
-          </button>
-        ))}
-      </nav>
 
       {error && (
         <div className="error-banner" role="alert">
@@ -2576,7 +2584,16 @@ export default function App() {
 
       {project.schema_version === 1 && <div className="project-format-notice" role="status"><span>Legacy project format · the next successful edit upgrades to v2. Export a backup before returning to an older client.</span><button className="button compact" onClick={() => setWorkspace("Deliver")}>Open backup export</button></div>}
       <div className={"editor-grid" + (railCollapsed ? " rail-collapsed" : "")
+        + (compactRail && !railCollapsed ? " rail-overlay" : "")
         + (workspace === "Production" ? " production-layout" : inspectorOpen ? "" : " inspector-collapsed")}>
+        <nav className="workspace-bar" aria-label="Workspace tools">
+          {toolWorkspaces.map(({ name, icon: Icon }) => (
+            <button type="button" key={name} title={name} className={workspace === name ? "active" : ""}
+              aria-label={name} aria-current={workspace === name ? "page" : undefined} onClick={() => setWorkspace(name)}>
+              <Icon size={18} aria-hidden="true" />
+            </button>
+          ))}
+        </nav>
         <ProjectRail
           project={project}
           selectedSceneId={selectedSceneId}
