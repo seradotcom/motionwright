@@ -34,6 +34,7 @@ mod file_import;
 mod identity_evidence;
 mod integrity;
 mod portability;
+mod private_delivery;
 mod production;
 mod project_creation;
 mod project_projection;
@@ -81,6 +82,7 @@ pub fn capture_portable_source(path: &Path, limit: u64) -> Result<Vec<u8>> {
     }
     Ok(data)
 }
+pub use private_delivery::{PrivateDeliveryManifest, PrivateDeliveryPlan};
 pub use production::{
     OtioBridgeOperation, ProductionReceipt, ProductionReceiptInput, ProductionReceiptWatermark,
     voice_alignment_receipt_sha256_v1,
@@ -144,6 +146,10 @@ pub enum StorageError {
     InvalidDerivedCache(String),
     #[error("export destination already exists")]
     DestinationExists,
+    #[error(
+        "private delivery slot changed after preparation; inspect the slot before approving again"
+    )]
+    PrivateDeliveryConflict,
     #[error("unsafe source path: {0}")]
     UnsafeSourcePath(String),
 }

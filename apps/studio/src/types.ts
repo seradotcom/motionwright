@@ -792,6 +792,7 @@ export type EffectKind =
   | "import_local"
   | "render_local"
   | "deliver_local"
+  | "promote_private_delivery"
   | "workflow_mutation"
   | "close_mlt_project"
   | "remote_egress"

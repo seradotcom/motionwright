@@ -105,6 +105,10 @@ fn storage_error(error: StorageError) -> Error {
             ErrorCode::StaleReference,
             "Motionwright project changed since observation",
         ),
+        StorageError::PrivateDeliveryConflict => Error::new(
+            ErrorCode::Conflict,
+            "Private delivery slot changed after preparation",
+        ),
         StorageError::RequestReuse => Error::new(
             ErrorCode::Conflict,
             "Request id was already used for different input",

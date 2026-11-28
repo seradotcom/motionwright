@@ -58,12 +58,13 @@ const replies = new Map<number, {
   resolve(value: unknown): void;
   reject(reason: Error): void;
 }>();
+const privateDeliveryMode = new URLSearchParams(window.location.search).get("private-delivery") === "1";
 const paint = () => new Promise<void>(resolve =>
   requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 
 // This is only a transport fixture. NativeAvReview imports the actual API and
 // public QC reader; no parser, read guard, selector cache or verdict is copied.
-// Every command is recorded. Only the four explicit read-only APIs are allowed.
+// Every command is recorded. Write APIs are enabled only by their dedicated fixture mode.
 const runtime = window as unknown as {
   __TAURI_INTERNALS__?: {
     invoke(command: string, args?: Record<string, unknown>): Promise<unknown>;
@@ -79,7 +80,10 @@ if (new URLSearchParams(window.location.search).get("desktop") !== "0") {
         settled: false,
       };
       calls.push(call);
-      if ((new URLSearchParams(window.location.search).get("export") === "1"
+      const isPrivateDelivery = privateDeliveryMode && [
+        "prepare_private_delivery", "commit_private_delivery", "inspect_private_delivery", "issue_effect_grant",
+      ].includes(command);
+      if (isPrivateDelivery || (new URLSearchParams(window.location.search).get("export") === "1"
         && (command === "issue_effect_grant" || command === "export_saved_native_av_master"))
         || command === "read_native_av_audio_qc" || command === "native_av_audio_qc_receipt_inventory" || command === "native_av_saved_master_inventory"
         || command === "recover_native_av_audio_qc"
@@ -112,7 +116,7 @@ function render() {
   flushSync(() => root.render(mounted ? <StrictMode>
     {new URLSearchParams(window.location.search).get("saved") === "1"
       ? <SavedNativeMasters project={project} deliverableId={selection.deliverableId}
-          currentProjectState={new URLSearchParams(window.location.search).get("export")==="1"
+          currentProjectState={privateDeliveryMode || new URLSearchParams(window.location.search).get("export")==="1"
             ? ()=>({project:{id:selection.projectId,generation:selection.generation,active_branch:selection.branch,revision:selection.revision},
                 busy:false,serial:projectSerial}) : undefined} />
       : new URLSearchParams(window.location.search).get("recovery") === "1"

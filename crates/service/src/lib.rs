@@ -82,7 +82,8 @@ pub use motionwright_storage::StorageError;
 #[cfg(windows)]
 pub use motionwright_storage::open_portable_source;
 pub use motionwright_storage::{
-    ASSET_MEDIA_RANGE_BYTES, VerifiedAssetMedia, publish_bundle_directory,
+    ASSET_MEDIA_RANGE_BYTES, FileImportCaptureTarget, PrivateDeliveryManifest, PrivateDeliveryPlan,
+    StagedFileImport, VerifiedAssetMedia, publish_bundle_directory,
 };
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, Store};
 pub use motionwright_storage::{

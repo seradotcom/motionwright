@@ -3049,6 +3049,65 @@ export async function prepareSavedNativeMuxReview(project:Project,deliverableId:
 }
 
 
+export interface PrivateDeliveryPlan {
+  project_id: string;
+  generation: string;
+  revision: number;
+  deliverable_id: string;
+  mux_receipt_id: string;
+  previous_commit_id: string | null;
+  artifact: { sha256: string; size_bytes: number };
+}
+
+export interface PreparedPrivateDelivery { plan: PrivateDeliveryPlan; subject: string }
+export interface PrivateDeliveryManifest { commit_id: string; plan: PrivateDeliveryPlan }
+
+export async function inspectPrivateDelivery(project: Project, deliverableId: string) {
+  if (!isTauri()) throw new Error("Private delivery requires the desktop runtime.");
+  const manifest = await invoke<PrivateDeliveryManifest | null>("inspect_private_delivery", {
+    request: { project_id: project.id, generation: project.generation, deliverable_id: deliverableId },
+  });
+  if (manifest && (manifest.plan.project_id !== project.id || manifest.plan.generation !== project.generation
+    || manifest.plan.deliverable_id !== deliverableId)) {
+    throw new Error("Private delivery returned a different slot.");
+  }
+  return manifest;
+}
+
+export async function preparePrivateDelivery(project: Project, deliverableId: string, hint: SavedMasterHint) {
+  if (!isTauri()) throw new Error("Private delivery requires the desktop runtime.");
+  const prepared = await invoke<PreparedPrivateDelivery>("prepare_private_delivery", {
+    request: { project_id: project.id, generation: project.generation, revision: project.revision,
+      deliverable_id: deliverableId, mux_receipt_id: hint.mux_receipt_id, expected_master_sha256: hint.master_sha256 },
+  });
+  const { plan, subject } = prepared;
+  if (plan.project_id !== project.id || plan.generation !== project.generation || plan.revision !== project.revision
+    || plan.deliverable_id !== deliverableId || plan.mux_receipt_id !== hint.mux_receipt_id
+    || plan.artifact.sha256 !== hint.master_sha256 || !Number.isSafeInteger(plan.artifact.size_bytes)
+    || plan.artifact.size_bytes < 1 || plan.artifact.size_bytes > 1024 * 1024 * 1024
+    || !/^private-delivery:[0-9a-f]{64}$/.test(subject)) {
+    throw new Error("Private delivery preparation did not bind the selected master.");
+  }
+  return prepared;
+}
+
+export async function commitPrivateDelivery(project: Project, prepared: PreparedPrivateDelivery, beforeDispatch: NativeDeliveryDispatchCheck) {
+  beforeDispatch();
+  const grant = await issueEffectGrant("promote_private_delivery", project, prepared.subject);
+  beforeDispatch();
+  const manifest = await invoke<PrivateDeliveryManifest>("commit_private_delivery", {
+    request: { plan: prepared.plan, effect_grant: grant.token },
+  });
+  const plan = manifest.plan, expected = prepared.plan;
+  if (plan.project_id !== expected.project_id || plan.generation !== expected.generation
+    || plan.revision !== expected.revision || plan.deliverable_id !== expected.deliverable_id
+    || plan.mux_receipt_id !== expected.mux_receipt_id || plan.previous_commit_id !== expected.previous_commit_id
+    || plan.artifact.sha256 !== expected.artifact.sha256 || plan.artifact.size_bytes !== expected.artifact.size_bytes) {
+    throw new Error("Private delivery returned a different receipt. Inspect the slot.");
+  }
+  return manifest;
+}
+
 /** A NEW local delivery permission; recovery hints never restore an export token. */
 export async function exportSavedNativeMaster(
   project:Project,deliverableId:string,hint:SavedMasterHint,destination:string,

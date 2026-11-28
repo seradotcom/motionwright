@@ -184,3 +184,49 @@ test("an unresolved saved delivery is shown once and is never retried automatica
   await page.evaluate(()=>window.__NATIVE_AV_AUDIO_QC__.settle());
   expect((await calls(page)).filter(c=>c.command==="export_saved_native_av_master")).toHaveLength(1);
 });
+
+test("private delivery approves the exact plan and inspects the slot after an unknown reply", async ({page}) => {
+  await page.goto("/tests/fixtures/native-av-audio-qc.html?saved=1&private-delivery=1");
+  const current = await selection(page);
+  const slot = page.getByRole("region", {name: "Private delivery slot"});
+  const prepare = slot.getByRole("button", {name: "Prepare private delivery"});
+  const approve = slot.getByRole("button", {name: "Approve and commit privately"});
+  const inspect = slot.getByRole("button", {name: "Inspect private slot"});
+  const sha256 = "1".repeat(64);
+  const prepared = {
+    subject: "private-delivery:" + "b".repeat(64),
+    plan: {
+      project_id: current.projectId, generation: current.generation, revision: current.revision,
+      deliverable_id: current.deliverableId, mux_receipt_id: receipt, previous_commit_id: null,
+      artifact: {sha256, size_bytes: 1024},
+    },
+  };
+  const manifest = {commit_id: "44444444-4444-4444-8444-444444444444", plan: prepared.plan};
+  await find(page).click();
+  await resolve(page, 1, inventory(current));
+  await choose(page).click();
+  await prepare.click();
+  await expect.poll(async () => (await calls(page)).at(-1)?.command).toBe("prepare_private_delivery");
+  await resolve(page, 3, prepared);
+  await expect(slot.getByText("Expected slot commit empty.")).toBeVisible();
+  expect((await calls(page)).map(call => call.command)).toEqual([
+    "native_av_saved_master_inventory", "review_native_av_master", "prepare_private_delivery",
+  ]);
+  await approve.click();
+  await expect.poll(async () => (await calls(page)).at(-1)?.args?.request).toMatchObject({
+    effect: "promote_private_delivery", subject: prepared.subject,
+  });
+  await resolve(page, 4, {token});
+  await expect.poll(async () => (await calls(page)).at(-1)?.args?.request).toEqual({
+    plan: prepared.plan, effect_grant: token,
+  });
+  await page.evaluate(() => window.__NATIVE_AV_AUDIO_QC__.reject(5, "Connection closed before acknowledgement."));
+  await expect(slot.getByRole("alert")).toContainText("Inspect the slot");
+  await expect(prepare).toBeDisabled();
+  await expect(approve).toBeDisabled();
+  await inspect.click();
+  await resolve(page, 6, manifest);
+  await expect(slot.getByRole("status")).toContainText(sha256);
+  await expect(approve).toHaveCount(0);
+  expect((await calls(page)).filter(call => call.command === "commit_private_delivery")).toHaveLength(1);
+});

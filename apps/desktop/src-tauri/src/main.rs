@@ -3586,6 +3586,184 @@ async fn export_saved_native_av_master(
     })
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivateDeliverySlotRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    deliverable_id: Uuid,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommitPrivateDeliveryRequest {
+    plan: motionwright_service::PrivateDeliveryPlan,
+    effect_grant: Uuid,
+}
+
+#[derive(Serialize)]
+struct PreparedPrivateDelivery {
+    plan: motionwright_service::PrivateDeliveryPlan,
+    subject: String,
+}
+
+#[tauri::command]
+async fn inspect_private_delivery(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: PrivateDeliverySlotRequest,
+) -> Result<Option<motionwright_service::PrivateDeliveryManifest>, String> {
+    let store = state.service.store();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        store
+            .lock()
+            .inspect_private_delivery(
+                request.project_id,
+                request.generation,
+                request.deliverable_id,
+            )
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|_| "Private delivery inspection did not complete.".to_string())?
+}
+
+#[tauri::command]
+async fn prepare_private_delivery(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: av_delivery::SavedMasterRecoveryRequest,
+) -> Result<PreparedPrivateDelivery, String> {
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        let project = service.project(request.project_id).map_err(sanitized)?;
+        if project.generation != request.generation || project.revision != request.revision {
+            return Err("The private delivery source is no longer current.".into());
+        }
+        let plan = service
+            .store()
+            .lock()
+            .prepare_private_delivery(
+                request.project_id,
+                &project.stamp(),
+                request.deliverable_id,
+                request.mux_receipt_id,
+                &request.expected_master_sha256,
+            )
+            .map_err(sanitized)?;
+        let subject = format!("private-delivery:{}", plan.identity().map_err(sanitized)?);
+        Ok(PreparedPrivateDelivery { plan, subject })
+    })
+    .await
+    .map_err(|_| "Private delivery preparation did not complete.".to_string())?
+}
+
+#[tauri::command]
+async fn commit_private_delivery(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: CommitPrivateDeliveryRequest,
+) -> Result<motionwright_service::PrivateDeliveryManifest, String> {
+    let plan = request.plan;
+    let project = state.service.project(plan.project_id).map_err(sanitized)?;
+    if project.generation != plan.generation || project.revision != plan.revision {
+        return Err("The private delivery source is no longer current.".into());
+    }
+    let store = state.service.store();
+    let target = {
+        let store = store.lock();
+        let current = store
+            .prepare_private_delivery(
+                plan.project_id,
+                &project.stamp(),
+                plan.deliverable_id,
+                plan.mux_receipt_id,
+                &plan.artifact.sha256,
+            )
+            .map_err(sanitized)?;
+        if current != plan {
+            return Err(
+                "The private delivery slot changed. Inspect it before approving again.".into(),
+            );
+        }
+        store.file_import_capture_target()
+    };
+    let connection_path = selected_connection_path(&state, project.id)?
+        .ok_or("Choose the original owner connection before private delivery.")?;
+    let retained_connection_path = connection_path.clone();
+    let service = state.service.clone();
+    let custody = state.production_receipt_custody.clone();
+    let reader = state
+        .av_review
+        .admit_preparation()
+        .ok_or("Original media read capacity is busy.")?;
+    let subject = format!("private-delivery:{}", plan.identity().map_err(sanitized)?);
+    state.effect_grants.consume(
+        request.effect_grant,
+        EffectKind::PromotePrivateDelivery,
+        EffectScope::project(plan.project_id, plan.generation, plan.revision),
+        &subject,
+    )?;
+    let selection = av_delivery::SavedMasterRecoveryRequest {
+        project_id: plan.project_id,
+        generation: plan.generation,
+        revision: plan.revision,
+        deliverable_id: plan.deliverable_id,
+        mux_receipt_id: plan.mux_receipt_id,
+        expected_master_sha256: plan.artifact.sha256.clone(),
+    };
+    let (plan, target, staged, identity, reader) =
+        desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+            let (source, identity) = av_delivery::prepare_saved_delivery(
+                &project,
+                &selection,
+                service,
+                &connection_path,
+                &custody,
+            )?;
+            let staged = source.stage_private_delivery(&target, &plan)?;
+            Ok::<_, String>((plan, target, staged, identity, reader))
+        })
+        .await
+        .map_err(|_| "Private delivery capture did not complete.".to_string())??;
+    owner.begin_phase()?;
+    let connections = state.runtime_connections.clone();
+    let worker = owner.worker_owner();
+    let publisher = worker.clone();
+    desktop_owner::spawn_blocking(worker, move || {
+        let _reader = reader;
+        let mut store = store.lock();
+        target.check_store(&store).map_err(sanitized)?;
+        store
+            .commit_private_delivery(&plan, &staged, || {
+                let permit = publisher
+                    .phase()
+                    .map_err(|_| std::io::ErrorKind::PermissionDenied)?;
+                if connections
+                    .resolve(plan.project_id, plan.generation)
+                    .ok()
+                    .flatten()
+                    .as_ref()
+                    != Some(&retained_connection_path)
+                    || ProductionConnection::load(&retained_connection_path)
+                        .and_then(|connection| connection.identity())
+                        .ok()
+                        .as_deref()
+                        != Some(identity.as_str())
+                {
+                    return Err(std::io::ErrorKind::PermissionDenied.into());
+                }
+                Ok(permit)
+            })
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|_| {
+        "Private delivery outcome is unknown. Inspect the slot before trying another delivery."
+            .to_string()
+    })?
+}
+
 /// Verify a user-selected local MP4 and its unsigned portable JSON receipt.
 /// Pure read-only content comparison: this grants no delivery or publisher authority.
 #[tauri::command]
@@ -5371,6 +5549,9 @@ fn main() {
             assemble_multisegment_av_master,
             export_native_av_master,
             export_saved_native_av_master,
+            inspect_private_delivery,
+            prepare_private_delivery,
+            commit_private_delivery,
             verify_local_media_integrity,
             review_native_av_master,
             read_native_av_audio_qc,

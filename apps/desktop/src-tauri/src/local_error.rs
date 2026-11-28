@@ -10,6 +10,10 @@ pub(crate) fn sanitized(error: impl std::fmt::Display) -> String {
     for (category, message) in [
         ("stale project base", "stale project base"),
         (
+            "private delivery slot changed after preparation",
+            "Private delivery slot changed after preparation.",
+        ),
+        (
             "generation differs",
             "resource generation differs from expected base",
         ),

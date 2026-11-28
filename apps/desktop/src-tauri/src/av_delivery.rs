@@ -780,6 +780,44 @@ fn require_free_export_path(path: &Path) -> Result<(), String> {
 }
 
 impl DeliverySource {
+    pub(crate) fn stage_private_delivery(
+        &self,
+        target: &motionwright_service::FileImportCaptureTarget,
+        plan: &motionwright_service::PrivateDeliveryPlan,
+    ) -> Result<motionwright_service::StagedFileImport, String> {
+        if self.review_only
+            || self.project_id != plan.project_id
+            || self.generation != plan.generation
+            || self.revision != plan.revision
+            || self.deliverable_id != plan.deliverable_id
+            || self.sha256 != plan.artifact.sha256
+        {
+            return Err("The qualified original does not match the private delivery plan.".into());
+        }
+        let source = verified_native_media_path(
+            &self.owner_root,
+            &self.relative_path,
+            &self.sha256,
+            plan.artifact.size_bytes,
+        )
+        .map_err(|_| "The saved master did not pass its original byte verification.")?;
+        let staged = target
+            .capture_file(&source, plan.artifact.size_bytes)
+            .map_err(|_| "The saved master could not be captured for private delivery.")?;
+        if staged.descriptor() != &plan.artifact {
+            return Err("The saved master changed during private delivery capture.".into());
+        }
+        let mut f = File::open(staged.path())
+            .map_err(|_| "The private delivery capture is unavailable.")?;
+        let mut magic = [0; 12];
+        f.read_exact(&mut magic)
+            .map_err(|_| "The captured MP4 header is incomplete.")?;
+        if &magic[4..8] != b"ftyp" {
+            return Err("Private delivery requires the original MP4 container.".into());
+        }
+        Ok(staged)
+    }
+
     fn audio_qc_source(
         &self,
         project: &Project,

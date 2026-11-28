@@ -169,7 +169,7 @@ fn decode_receipt(fields: StoredReceiptFields) -> Result<ProductionReceipt> {
     Ok(receipt)
 }
 
-fn query_receipts(
+pub(super) fn query_receipts(
     conn: &rusqlite::Connection,
     sql: &str,
     values: impl rusqlite::Params,
@@ -592,6 +592,12 @@ impl Store {
         &mut self,
         input: ProductionReceiptInput,
     ) -> Result<ProductionReceipt> {
+        if input
+            .command
+            .starts_with(super::private_delivery::COMMAND_PREFIX)
+        {
+            return Err(StorageError::RequestReuse);
+        }
         bounded_token(&input.request_id, 256, "production request id")?;
         bounded_token(&input.command, 256, "production command")?;
         bounded_token(&input.stage, 64, "production stage")?;

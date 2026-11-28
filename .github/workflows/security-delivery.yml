@@ -317,6 +317,8 @@ jobs:
           cargo test --locked --jobs 2 -p motionwright-service --lib file_import::verified_source_tests:: -- --test-threads=1 | tee "$log"
           grep -F 'original_capture_allows_a_concurrent_edit_and_rechecks_revision_before_publication ... ok' "$log"
           grep -F 'retired_publication_authority_preserves_exact_project_and_discards_capture ... ok' "$log"
+          cargo test --locked --jobs 2 -p motionwright-storage --lib private_delivery_compares_slot_head_and_preserves_exact_receipts_after_reopen -- --test-threads=1 | tee "$log"
+          grep -F 'private_delivery_compares_slot_head_and_preserves_exact_receipts_after_reopen ... ok' "$log"
       - name: Bounded hybrid Desktop admission and original root continuity
         if: inputs.verification_scope == 'desktop-compile' && inputs.first_use_case == 'camera-spatial'
         shell: bash
