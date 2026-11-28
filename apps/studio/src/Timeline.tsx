@@ -9,7 +9,7 @@ import { resolveTimelineSelection, timelineSelectionScope } from "./timelineSele
 import type { TimelineSelection } from "./timelineSelection";
 import { timelineMarkerTime } from "./timelineMarkerTime";
 import { addTimelineTime, defaultTimelineView, packTimelineRanges, projectTimelineDuration, readTimelineView, snapTimelineTime,
-  timelineExtraTracks, timelineTicks, timelineWindow, zoomTimeline } from "./timelineNavigation";
+  timelineExtraTracks, timelineTicks, timelineWindow, timelineSceneAt, zoomTimeline } from "./timelineNavigation";
 import type { TimelineRangeEntry, TimelineSnap } from "./timelineNavigation";
 import "./timeline-navigation.css";
 
@@ -117,7 +117,7 @@ export default function Timeline({
       const value = Math.max(0,Math.min(duration,seconds(at)));
       exactSeek.current = seconds(at) === value ? { at, value } : null;
       setSelection(null); setPlayhead(value);
-      const target = sceneAtTime(value);
+      const target = timelineSceneAt(project, value);
       if (target && target.id !== selectedSceneId) selectScene(target.id, false);
     } catch (reason) { setViewWarning(reason instanceof Error ? reason.message : String(reason)); }
   };
@@ -139,13 +139,6 @@ export default function Timeline({
     }),
   );
 
-  const sceneAtTime = (time: number) =>
-    project.scenes.find((scene) => {
-      const start = seconds(scene.start);
-      const end = start + seconds(scene.duration);
-      return time >= start && time < end;
-    }) ?? null;
-
   const selectAt = (
     time: number,
     nextSelection: TimelineSelection,
@@ -158,7 +151,7 @@ export default function Timeline({
     setSelection(nextSelection);
     const targetScene = sceneId
       ? project.scenes.find((scene) => scene.id === sceneId) ?? null
-      : sceneAtTime(bounded);
+      : timelineSceneAt(project, bounded);
     if (targetScene && targetScene.id !== selectedSceneId) {
       selectScene(targetScene.id, false);
     }

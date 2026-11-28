@@ -18,6 +18,33 @@ async function addAndReselectFirstFrameMarker(page: Page) {
   await expect(revision).toHaveText("r" + (beforeRevision + 1));
 }
 
+test("stepping onto an exact fractional cut selects the incoming scene", async ({ page }) => {
+  await page.route("**/src/fixture.ts*", async route => {
+    const response = await route.fetch(), body = await response.text();
+    await route.fulfill({ response, body: body
+      + "\nfixtureProject.scenes[0].start={num:'1',den:'10'};fixtureProject.scenes[0].duration={num:'1',den:'5'};"
+      + "\nfixtureProject.scenes[1].start={num:'3',den:'10'};"
+      + "\nfor (const scene of fixtureProject.scenes.slice(0,2)) { scene.beats=[]; scene.nodes=[]; }"
+      + "\nfixtureBootstrap.project=structuredClone(fixtureProject);\n" });
+  });
+  await page.goto("/");
+  const timecode = page.locator(".timeline-header .timecode");
+  const sceneName = page.locator(".preview-stage .frame-meta span").first();
+  const forward = page.getByRole("button", { name: "Step forward one frame", exact: true });
+  const back = page.getByRole("button", { name: "Step back one frame", exact: true });
+  await page.locator(".scene-track button").filter({ hasText: "Reasoning is solved" }).press("Enter");
+  await expect(timecode).toHaveText("00:00:03");
+  for (let frame = 4; frame <= 8; frame++) await forward.click();
+  await expect(timecode).toHaveText("00:00:08");
+  await expect(sceneName).toHaveText("Reasoning is solved");
+
+  await forward.click();
+  await expect(timecode).toHaveText("00:00:09");
+  await expect(sceneName).toHaveText("Pixels are brittle", { timeout: 2500 });
+  await back.click();
+  await expect(sceneName).toHaveText("Reasoning is solved");
+});
+
 test("the timeline and canvas use the selected delivery profile's frame duration", async ({ page }) => {
   await page.goto("/");
   const timecode = page.locator(".timeline-header .timecode");

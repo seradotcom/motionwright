@@ -1,4 +1,5 @@
 import { captionTextRuns, type CaptionTextRun } from "./transcriptEmphasis";
+import { timelineSceneEnd } from "./timelineNavigation";
 import { seconds, type DeliverableProfile, type Project, type Scene, type TranscriptSegment } from "./types";
 
 export interface ProgramCaptionSample { cue: TranscriptSegment | null; runs: CaptionTextRun[]; issue: string | null }
@@ -8,7 +9,7 @@ export function sampleProgramCaption(project: Project, scene: Scene, playhead: n
   if (!profile?.captions || (profile.included_scene_ids.length && !profile.included_scene_ids.includes(scene.id))) return null;
   const blocked = (issue: string): ProgramCaptionSample => ({ cue: null, runs: [], issue });
   const empty: ProgramCaptionSample = { cue: null, runs: [], issue: null };
-  const sceneStart = seconds(scene.start), sceneEnd = sceneStart + seconds(scene.duration);
+  const sceneStart = seconds(scene.start), sceneEnd = timelineSceneEnd(scene);
   if (![playhead, sceneStart, sceneEnd].every(Number.isFinite)) return blocked("The caption source clock is invalid.");
   if (playhead < sceneStart || playhead >= sceneEnd) return empty;
   const tracks = new Set(project.audio.transcript.map(cue => cue.voice_track_id));

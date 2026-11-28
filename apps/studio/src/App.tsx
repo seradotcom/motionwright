@@ -12,7 +12,7 @@ import SceneBeatTimelineEditor from "./SceneBeatTimelineEditor";
 import { isPaletteShortcut } from "./editorCommandSearch";
 import { timelineSelectionScope, type TimelineSelection, type TimelineEditorRequest } from "./timelineSelection";
 import Timeline from "./Timeline";
-import { projectTimelineDuration } from "./timelineNavigation";
+import { projectTimelineDuration, timelineSceneAt } from "./timelineNavigation";
 import ProductionDesignWorkspace from "./ProductionDesignWorkspace";
 import HyperframesSourceWorkbench from "./HyperframesSourceWorkbench";
 import type { NativeSourceSaveRequest } from "./NativeSourceWorkbench";
@@ -1894,10 +1894,7 @@ export default function App() {
     const next = Math.max(0, Math.min(projectTimelineDuration(project), requestedSeconds));
     setPlaying(false);
     setPlayhead(next);
-    const scene = project.scenes.find((candidate) => {
-      const start = seconds(candidate.start);
-      return next >= start && next < start + seconds(candidate.duration);
-    });
+    const scene = timelineSceneAt(project, next);
     if (scene) setSelectedSceneId(scene.id);
   }, [project]);
 
@@ -1906,10 +1903,7 @@ export default function App() {
     setPlaying(false);
     const next = stepEditorialFrame(playhead, timebaseRate, direction, projectTimelineDuration(project));
     setPlayhead(next);
-    const scene = project.scenes.find((candidate) => {
-      const start = seconds(candidate.start);
-      return next >= start && next < start + seconds(candidate.duration);
-    });
+    const scene = timelineSceneAt(project, next);
     if (scene) setSelectedSceneId(scene.id);
   }, [playhead, project, timebaseRate.num, timebaseRate.den]);
 
@@ -1919,10 +1913,7 @@ export default function App() {
     const timer = window.setInterval(() => {
       setPlayhead((current) => {
         const next = Math.min(duration, current + 0.1);
-        const scene = project.scenes.find((candidate) => {
-          const start = seconds(candidate.start);
-          return next >= start && next < start + seconds(candidate.duration);
-        });
+        const scene = timelineSceneAt(project, next);
         if (scene) setSelectedSceneId(scene.id);
         if (next >= duration) setPlaying(false);
         return next;

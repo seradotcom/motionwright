@@ -5,7 +5,7 @@ import { resolveCanvasRelations } from "./canvasFollow";
 import { motionKeyRange } from "./timelineMotionRange";
 import { validateSemanticSfx } from "./semanticSfx";
 import { seconds, rationalSeconds } from "./types";
-import type { Project, RationalTime } from "./types";
+import type { Project, RationalTime, Scene } from "./types";
 import type { TimelineSelection } from "./timelineSelection";
 
 export type TimelineSnap = "off" | "frames" | "cues";
@@ -47,6 +47,19 @@ export function timelineTicks(start: number, span: number, pixels: number, rate:
 export function addTimelineTime(a: RationalTime, b: RationalTime): RationalTime {
   return parseBeatTime((BigInt(a.num) * BigInt(b.den) + BigInt(b.num) * BigInt(a.den)) + "/" + (BigInt(a.den) * BigInt(b.den)));
 }
+export function timelineSceneEnd(scene: Pick<Scene, "start" | "duration">): number {
+  try {
+    return seconds(addTimelineTime(scene.start, scene.duration));
+  } catch {
+    // A historical interval can exceed the representable derived RationalTime range.
+    return seconds(scene.start) + seconds(scene.duration);
+  }
+}
+
+export function timelineSceneAt(project: Pick<Project, "scenes">, time: number): Scene | null {
+  return project.scenes.find(scene => time >= seconds(scene.start) && time < timelineSceneEnd(scene)) ?? null;
+}
+
 export function snapTimelineTime(project: Project, time: number, mode: TimelineSnap, rate: RationalTime, tolerance: number): RationalTime {
   const bounded = Math.max(0, Number.isFinite(time) ? time : 0);
   if (mode === "off" || !validEditorRate(rate)) return rationalSeconds(bounded);
@@ -72,7 +85,7 @@ export function projectTimelineDuration(project: Project): number {
     try { return [validateSemanticSfx(project, cue).absolute_end_frame / 30]; } catch { return []; }
   });
   return Math.max(1,
-    ...project.scenes.map(scene => seconds(scene.start) + seconds(scene.duration)),
+    ...project.scenes.map(timelineSceneEnd),
     ...project.markers.map(marker => seconds(marker.at)),
     ...project.audio.voice_tracks.map(track => seconds(track.measured_duration)),
     ...project.audio.transcript.map(segment => seconds(segment.end)),
