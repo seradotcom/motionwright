@@ -19,6 +19,12 @@ on:
       - "crates/native/**"
       - ".github/workflows/canonical-film.yml"
   workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: Select the full projection suite or the adjacent-shot source case
+        type: choice
+        default: projection
+        options: [projection, adjacent-shot-source]
 
 permissions:
   contents: read
@@ -40,7 +46,12 @@ jobs:
           sudo apt-get install --no-install-recommends -y libpipewire-0.3-dev pkg-config clang
       - name: Source policy
         run: python3 tooling/source_policy.py
+      - name: Inspect the original adjacent-shot Film projection
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'adjacent-shot-source'
+        run: cargo test --locked --jobs 2 -p motionwright-native --lib film::tests::adjacent_saved_scenes_emit_one_frame_exact_native_shot_each -- --exact --nocapture
       - name: Motionwright Film projection
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'adjacent-shot-source'
         run: cargo test --locked --jobs 2 -p motionwright-native --lib film::tests
       - name: Canonical Film clippy
+        if: github.event_name != 'workflow_dispatch' || inputs.verification_scope != 'adjacent-shot-source'
         run: cargo clippy --locked --jobs 2 -p motionwright-native --all-targets -- -D warnings

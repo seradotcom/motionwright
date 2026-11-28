@@ -5319,6 +5319,89 @@ mod tests {
     }
 
     #[test]
+    fn adjacent_saved_scenes_emit_one_frame_exact_native_shot_each() {
+        for (num, den) in [(30, 1), (30_000, 1_001)] {
+            let mut project = Project::new("Synthetic native shot cut").unwrap();
+            project.deliverables[0].frame_rate = RationalTime::new(num, den).unwrap();
+            for (label, count, fill) in [("Opening", 1, "#f02020"), ("Proof", 3, "#20f020")] {
+                project
+                    .apply_change(&Change::AddScene {
+                        name: label.into(),
+                        objective: label.into(),
+                        duration_seconds: 1,
+                    })
+                    .unwrap();
+                let scene_id = project.scenes.last().unwrap().id;
+                project
+                    .apply_change(&Change::SetSceneDuration {
+                        scene_id,
+                        duration: RationalTime::new(count * den, num).unwrap(),
+                    })
+                    .unwrap();
+                let mut shape = node("rectangle", None);
+                shape.x = 840.0;
+                shape.y = 450.0;
+                shape.width = 240.0;
+                shape.height = 180.0;
+                shape.style.fill = Some(fill.into());
+                project
+                    .apply_change(&Change::AddCanvasNode {
+                        scene_id,
+                        node: shape,
+                    })
+                    .unwrap();
+            }
+            let mut options = fixture_options(&project);
+            options.frame_rate =
+                Rate::new(num.try_into().unwrap(), den.try_into().unwrap()).unwrap();
+            let originals = project.clone();
+            let segments =
+                build_motion_canvas_segments(&project, project.deliverables[0].id, &options)
+                    .unwrap();
+            assert_eq!(segments.len(), 1);
+            assert_eq!(segments[0].frame_count, 4);
+            let film = &segments[0].film;
+            let realized = realize(film).unwrap();
+            assert_eq!(film.sequences.len(), 1);
+            assert_eq!(realized.scenes.len(), 1);
+            let shots = film.sequences[0]
+                .beats
+                .iter()
+                .flat_map(|beat| &beat.shots)
+                .collect::<Vec<_>>();
+            assert_eq!(shots.len(), 2);
+            assert_ne!(shots[0].id, shots[1].id);
+            assert_ne!(shots[0].subjects[0].id, shots[1].subjects[0].id);
+            let cut = RationalTime::new(den, num).unwrap();
+            let end = RationalTime::new(4 * den, num).unwrap();
+            let mut observed = Vec::new();
+            for (shot, start, finish, color) in [
+                (shots[0], RationalTime::ZERO, cut, "#f02020"),
+                (shots[1], cut, end, "#20f020"),
+            ] {
+                let range = realized.schedule.interval(&shot.span_id).unwrap();
+                assert_eq!((range.start, range.end), (start, finish));
+                let subject = &shot.subjects[0];
+                let SubjectContent::Rectangle { fill, .. } = &subject.content else {
+                    panic!("expected original editable rectangle");
+                };
+                assert!(fill.eq_ignore_ascii_case(color), "{fill}");
+                observed.push(serde_json::json!({
+                    "id":shot.id,"subject":subject,"start":range.start,"end":range.end
+                }));
+            }
+            assert_eq!(project, originals);
+            println!(
+                "ADJACENT_SHOT_FILM={}",
+                serde_json::json!({
+                    "rate":options.frame_rate,"duration":end,"frames":segments[0].frame_count,
+                    "run":realized.scenes[0].id,"output":film.output,"shots":observed
+                })
+            );
+        }
+    }
+
+    #[test]
     fn tiled_scene_beats_project_to_distinct_realized_film_shots() {
         let mut project = fixture_project();
         let scene_id = project.scenes[0].id;
