@@ -111,11 +111,11 @@ mod linux {
         )?;
         Ok(request)
     }
-    fn expected_manifest(config: &Config) -> Value {
+    fn expected_manifest(driver: &BoundFile, node: &BoundFile) -> Value {
         json!({
             "manifest_version":1,"protocol":7,"id":"hyperframes","version":"0.1.0",
-            "publisher":"motionwright","executable":config.driver.path,
-            "sha256":config.driver.sha256,
+            "publisher":"motionwright","executable":driver.path,
+            "sha256":driver.sha256,
             "application":{"desktop_id":null,"process_names":["node"],
                 "supported_versions":["HyperFrames 0.8.181 (owner installed)"]},
             "transport":"stdio_v1",
@@ -125,7 +125,7 @@ mod linux {
                 {"root":"output","read_only":false,"execute":false}],
             "system_config":[],"secrets":[],
             "tools":[{"root":"hyperframes-node-tool","name":"hyperframes-node",
-                "sha256":config.node.sha256,"mounts":["runtime","project","output"],
+                "sha256":node.sha256,"mounts":["runtime","project","output"],
                 "system_config":[],"dependencies":[]}],
             "network":false,"nvidia_gpu":false,"loopback_port":null,
             "resources":{"open_files":512,"processes":256,"cpu_seconds":300,
@@ -254,6 +254,32 @@ mod linux {
             }
         }
     }
+    async fn require_runtime_grant_refusal(
+        manifest: &Manifest,
+        state: &Path,
+        helper: &Path,
+        grants: &[FilesystemGrant],
+    ) -> Result<()> {
+        require(
+            !grants.iter().any(|grant| grant.name == "runtime"),
+            "negative Host request contains the runtime grant",
+        )?;
+        // The pinned Host checks the owner grants before staging or starting a driver.
+        let denied = tokio::time::timeout(
+            Duration::from_secs(65),
+            DriverProvider::connect(manifest.clone(), state, helper, grants, false),
+        )
+        .await?
+        .err()
+        .ok_or("Host unexpectedly admitted a missing runtime grant")?;
+        require(
+            denied.code == semwright_types::ErrorCode::PolicyDenied
+                && denied.outcome_known
+                && denied.message == "Driver mount has no owner grant",
+            "missing runtime grant refusal was not confirmed",
+        )
+    }
+
     async fn execute(config: &Config, request: &Request, manifest: Manifest) -> Result<Value> {
         let grants = [
             ("runtime", &config.runtime, false),
@@ -269,6 +295,44 @@ mod linux {
             write,
         })
         .collect::<Vec<_>>();
+        if config.phase == "original" {
+            let without_runtime = grants
+                .iter()
+                .filter(|grant| grant.name != "runtime")
+                .cloned()
+                .collect::<Vec<_>>();
+            let roots_are_empty = || -> Result<bool> {
+                Ok(fs::read_dir(&config.project)?.next().is_none()
+                    && fs::read_dir(&config.state)?.next().is_none()
+                    && fs::read_dir(&config.output)?.next().is_none())
+            };
+            require(roots_are_empty()?, "direct refusal roots are not fresh")?;
+            require_runtime_grant_refusal(
+                &manifest,
+                &config.state,
+                &config.sandbox_helper.path,
+                &without_runtime,
+            )
+            .await?;
+            require(
+                roots_are_empty()?,
+                "direct refusal left a job or staged artifact",
+            )?;
+            let retained_grants = without_runtime
+                .iter()
+                .map(|grant| grant.name.as_str())
+                .collect::<Vec<_>>();
+            store::fresh_json(
+                &config.evidence.join("runtime-grant-refusal.json"),
+                &json!({
+                    "schema":"motionwright.hyperframes.runtime-grant-refusal/1",
+                    "omitted_grant":"runtime","retained_grants":retained_grants,
+                    "code":"PolicyDenied","outcome_known":true,"roots_empty_after":true,
+                    "manifest_sha256":config.manifest.sha256,"driver_sha256":config.driver.sha256,
+                    "runtime_lock_sha256":request.runtime_lock_sha256,"fingerprint":request.fingerprint,
+                    "automatic_retry":false}),
+            )?;
+        }
         let provider = tokio::time::timeout(
             Duration::from_secs(65),
             DriverProvider::connect(
@@ -496,7 +560,8 @@ mod linux {
         )?;
         let raw_manifest = bytes(&config.manifest, 512 * 1024)?;
         require(
-            serde_json::from_slice::<Value>(&raw_manifest)? == expected_manifest(&config),
+            serde_json::from_slice::<Value>(&raw_manifest)?
+                == expected_manifest(&config.driver, &config.node),
             "direct manifest authority differs",
         )?;
         let manifest: Manifest = serde_json::from_slice(&raw_manifest)?;
@@ -559,6 +624,33 @@ mod linux {
                 "fingerprint":source.fingerprint,"runtime_lock_sha256":"9".repeat(64),
                 "attempt_id":format!("direct-original-{}",&source.fingerprint[..16]),
                 "source":source})
+        }
+
+        #[tokio::test]
+        async fn direct_host_refuses_missing_runtime_grant_before_launch() {
+            // A device cannot be staged as a regular executable even if the
+            // owner-grant guard regresses. No provider request can run here.
+            let unavailable = BoundFile {
+                path: "/dev/null".into(),
+                sha256: "a".repeat(64),
+                bytes: 1,
+            };
+            let manifest =
+                serde_json::from_value(expected_manifest(&unavailable, &unavailable)).unwrap();
+            let grants = [
+                ("project", true),
+                ("output", true),
+                ("hyperframes-node-tool", false),
+            ]
+            .map(|(name, write)| FilesystemGrant {
+                name: name.into(),
+                path: unavailable.path.clone(),
+                read: true,
+                write,
+            });
+            require_runtime_grant_refusal(&manifest, &unavailable.path, &unavailable.path, &grants)
+                .await
+                .unwrap();
         }
 
         #[test]

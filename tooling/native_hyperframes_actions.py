@@ -195,6 +195,14 @@ def direct_contract():
         "code": F(selection.String(64)), "outcome_known": F(bool),
         "automatic_retry": F(selection.Literal(False)),
         "originals_retained": F(selection.Literal(True))})
+    policies["hf-direct-runtime-grant-refusal"] = selection.Object({
+        "schema": F(selection.Literal("motionwright.hyperframes.runtime-grant-refusal/1")),
+        "omitted_grant": F(selection.Literal("runtime")),
+        "retained_grants": F(selection.Literal(["project", "output", "hyperframes-node-tool"])),
+        "code": F(selection.Literal("PolicyDenied")), "outcome_known": F(selection.Literal(True)),
+        "roots_empty_after": F(selection.Literal(True)), "manifest_sha256": F(H),
+        "driver_sha256": F(H), "runtime_lock_sha256": F(H), "fingerprint": F(H),
+        "automatic_retry": F(selection.Literal(False))})
     policies["hf-direct-host-failure"] = selection.Object({
         "schema": F(selection.Literal("motionwright.hyperframes.direct-host-failure/1")),
         "state": F(selection.Literal("NOT_VERIFIED")),
@@ -269,6 +277,7 @@ def direct_contract():
             roles[(phase, layer, role)] = (1, 1)
         for role in ("direct-host-failure", "direct-host-apply-failure", "direct-host-start-failure"):
             roles[(phase, "attempt-custody", role)] = (0, 1)
+    roles[("original", "attempt-custody", "direct-runtime-grant-refusal")] = (1, 1)
     return policies, roles
 
 
@@ -312,6 +321,8 @@ def extended_spec(args, current, bindings, *, incomplete):
     ):
         select(path, "single", "attempt-custody", role, "json-projection", policy,
                root="records", optional=optional)
+    select("original/evidence/runtime-grant-refusal.json", "original", "attempt-custody",
+           "direct-runtime-grant-refusal", "json-projection", "hf-direct-runtime-grant-refusal")
     for phase in ("original", "edited"):
         for file, role, policy, optional in (
             ("direct-host-intent.json", "direct-host-intent", "hf-direct-host-intent", False),
@@ -445,6 +456,13 @@ def verify_direct_binding(args, current, manifest, *, archive):
         for key in ("driver", "node", "sandbox_helper"):
             require(reference[key + "_sha256"] == inputs["binaries"][key]["sha256"],
                     "direct_native_binary_differs_from_mediated")
+        if phase == "original":
+            refusal = document("direct-host", "original/evidence/runtime-grant-refusal.json")
+            require(refusal["manifest_sha256"] == reference["manifest_sha256"]
+                    and refusal["driver_sha256"] == reference["driver_sha256"]
+                    and refusal["runtime_lock_sha256"] == args.runtime_lock_sha256
+                    and refusal["fingerprint"] == source["fingerprint"],
+                    "runtime_grant_refusal_original_binding")
         bundle = "source-" + source["fingerprint"] + "/"
         for root, prefix in (("direct-source", bundle), ("mediated-source", bundle),
                              ("direct-host", phase + "/project/" + bundle)):
