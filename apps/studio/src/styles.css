@@ -3810,6 +3810,10 @@ select:focus {
   background: var(--accent-wash);
   box-shadow: inset 2px 0 0 var(--accent);
 }
+.delivery-profile-row.selected:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
 .delivery-profile-row .format-frame {
   width: 34px;
   max-height: 38px;
