@@ -168,7 +168,9 @@ test("Deliver checks multi-segment source readiness with only an owner preview t
   });
   expect(JSON.stringify(requests[0])).not.toMatch(/manifest|output_root|source_options|path|sha256|render_evidence/);
 
-  await page.getByRole("list", { name: "Delivery profile index" }).getByRole("listitem").nth(1).click();
+  const alternateProfile = page.getByRole("list", { name: "Delivery profile index" }).getByRole("button").nth(1);
+  await alternateProfile.press("Space");
+  await expect(alternateProfile).toHaveAttribute("aria-pressed", "true");
   await expect(region).toHaveCount(0);
   await expect(report).toHaveCount(0);
 });

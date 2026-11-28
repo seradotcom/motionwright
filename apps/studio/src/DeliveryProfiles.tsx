@@ -1118,21 +1118,22 @@ export default function DeliveryProfiles({
       <div className="delivery-profile-layout">
         <div className="delivery-profile-index" role="list" aria-label="Delivery profile index">
           {project.deliverables.map((profile) => (
-            <button
-              type="button"
-              role="listitem"
-              key={profile.id}
-              data-profile-id={profile.id}
-              className={profile.id === selected?.id ? "delivery-profile-row selected" : "delivery-profile-row"}
-              onClick={() => setSelectedId(profile.id)}
-            >
-              <span className="format-frame" style={{ aspectRatio: profile.width + " / " + profile.height }} />
-              <span className="delivery-profile-row-copy">
-                <strong>{profile.name}</strong>
-                <span>{profile.width} × {profile.height} · {profile.language.toUpperCase()}</span>
-              </span>
-              <span className="delivery-codec">{codecLabel[profile.video_codec]}</span>
-            </button>
+            <div role="listitem" key={profile.id}>
+              <button
+                type="button"
+                data-profile-id={profile.id}
+                aria-pressed={profile.id === selected?.id}
+                className={profile.id === selected?.id ? "delivery-profile-row selected" : "delivery-profile-row"}
+                onClick={() => setSelectedId(profile.id)}
+              >
+                <span className="format-frame" style={{ aspectRatio: profile.width + " / " + profile.height }} />
+                <span className="delivery-profile-row-copy">
+                  <strong>{profile.name}</strong>
+                  <span>{profile.width} × {profile.height} · {profile.language.toUpperCase()}</span>
+                </span>
+                <span className="delivery-codec">{codecLabel[profile.video_codec]}</span>
+              </button>
+            </div>
           ))}
         </div>
 
