@@ -69,10 +69,25 @@ fn persisted_completed_creates_survive_later_unknown_and_distinct_native_outputs
             })
             .unwrap();
     }
+    // The original creation receipts must still be visible beyond the newest page.
+    for _ in 0..256 {
+        service
+            .append_production_receipt(ProductionReceiptInput {
+                project_id: project.id,
+                generation: project.generation,
+                revision: project.revision,
+                request_id: "owner-one-original-status".into(),
+                request_sha256: "d".repeat(64),
+                command: "driver.mlt-video.render.status".into(),
+                stage: "outcome_unknown".into(),
+                payload: json!({"error":{"code":"Timeout","outcome_known":false}}),
+            })
+            .unwrap();
+    }
     let observed = service
         .mlt_cleanup_inventory_snapshot(project.id, project.generation, project.revision)
         .unwrap();
-    assert_eq!(observed.source_receipts_scanned, 3);
+    assert_eq!(observed.source_receipts_scanned, 259);
     assert_eq!(observed.confirmed_native_creations_current_revision, 2);
     assert_eq!(observed.unconfirmed_or_invalid_creation_requests, 0);
     assert!(!observed.foreground_cleanup_consent_obtained);

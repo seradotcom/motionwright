@@ -1403,7 +1403,6 @@ impl StudioService {
         expected: &ProductionReceiptWatermark,
         project_jobs: impl FnOnce(&[ProductionReceipt], Uuid, u64) -> Vec<ProductionJobProjection>,
     ) -> StorageResult<Vec<ProductionJobProjection>> {
-        const MAX_JOB_ENUMERATION_RECEIPTS: u64 = 20_000;
         let (stamp, branch) = {
             let store = self.store.lock();
             let project = store.load_project(project_id)?;
@@ -1412,34 +1411,11 @@ impl StudioService {
             }
             (project.stamp(), project.active_branch)
         };
-        if expected.count > MAX_JOB_ENUMERATION_RECEIPTS {
-            return Err(invalid_import(
-                "Production job enumeration exceeds the bounded 20,000-receipt safety budget; no complete claim was made",
-            ));
-        }
-        let mut receipts = Vec::with_capacity(expected.count as usize);
-        let mut before = None;
-        if let Some(head) = expected.latest_id {
-            loop {
-                // Yield the shared Store after each bounded read.
-                let batch = self
-                    .store
-                    .lock()
-                    .production_receipts_before(project_id, head, before, 256)?;
-                if batch.is_empty() {
-                    break;
-                }
-                before = batch.last().map(|item| item.id);
-                let full_page = batch.len() == 256;
-                receipts.extend(batch);
-                if !full_page {
-                    break;
-                }
-            }
-        }
-        if receipts.len() as u64 != expected.count {
-            return Err(StorageError::ReceiptStreamChanged);
-        }
+        let mut receipts = self.capture_production_receipts(
+            project_id,
+            expected,
+            "Production job enumeration exceeds the bounded 20,000-receipt safety budget; no complete claim was made",
+        )?;
         // Reverse the bounded capture to durable commit order. Project it
         // outside the Store lock, then recheck both source identities.
         receipts.reverse();
@@ -1455,6 +1431,45 @@ impl StudioService {
         Ok(jobs)
     }
 
+    /// Reads inside one admitted watermark. Callers verify the project and
+    /// watermark after projecting the captured receipts.
+    fn capture_production_receipts(
+        &self,
+        project_id: Uuid,
+        expected: &ProductionReceiptWatermark,
+        budget_error: &str,
+    ) -> StorageResult<Vec<ProductionReceipt>> {
+        const MAX_RECEIPTS: u64 = 20_000;
+        const PAGE_SIZE: usize = 256;
+        if expected.count > MAX_RECEIPTS {
+            return Err(invalid_import(budget_error));
+        }
+        let mut receipts = Vec::with_capacity(expected.count as usize);
+        if let Some(head) = expected.latest_id {
+            let mut before = None;
+            loop {
+                // Yield the shared Store after each bounded read.
+                let batch = self
+                    .store
+                    .lock()
+                    .production_receipts_before(project_id, head, before, PAGE_SIZE)?;
+                if receipts.len() + batch.len() > expected.count as usize {
+                    return Err(StorageError::ReceiptStreamChanged);
+                }
+                before = batch.last().map(|item| item.id);
+                let full_page = batch.len() == PAGE_SIZE;
+                receipts.extend(batch);
+                if !full_page {
+                    break;
+                }
+            }
+        }
+        if receipts.len() as u64 != expected.count {
+            return Err(StorageError::ReceiptStreamChanged);
+        }
+        Ok(receipts)
+    }
+
     /// Exact project and receipt-watermark-bound read-only MLT lifetime
     /// inventory. Never queries Semwright or requests destructive cleanup.
     pub fn mlt_cleanup_inventory_snapshot(
@@ -1463,43 +1478,26 @@ impl StudioService {
         expected_generation: Uuid,
         expected_revision: u64,
     ) -> StorageResult<MltCleanupInventory> {
-        const MAX_INVENTORY_RECEIPTS: u64 = 20_000;
-        let initial = self.project(project_id)?;
-        if initial.generation != expected_generation || initial.revision != expected_revision {
-            return Err(StorageError::GenerationConflict);
-        }
-        let watermark = self.production_receipt_watermark(project_id)?;
-        if watermark.count > MAX_INVENTORY_RECEIPTS {
-            return Err(invalid_import(
-                "MLT cleanup inventory exceeds the bounded receipt evidence budget",
-            ));
-        }
-        let mut receipts = Vec::with_capacity(watermark.count as usize);
-        let mut before = None;
-        if watermark.latest_id.is_some() {
-            loop {
-                let batch =
-                    self.production_receipts_snapshot_page(project_id, &watermark, before, 256)?;
-                if batch.is_empty() {
-                    break;
-                }
-                let full = batch.len() == 256;
-                before = batch.last().map(|r| r.id);
-                receipts.extend(batch);
-                if !full {
-                    break;
-                }
+        let (initial, watermark) = {
+            let store = self.store.lock();
+            let project = store.load_project(project_id)?;
+            if project.generation != expected_generation || project.revision != expected_revision {
+                return Err(StorageError::GenerationConflict);
             }
-        }
-        if receipts.len() as u64 != watermark.count {
-            return Err(StorageError::ReceiptStreamChanged);
-        }
+            (project, store.production_receipt_watermark(project_id)?)
+        };
+        let receipts = self.capture_production_receipts(
+            project_id,
+            &watermark,
+            "MLT cleanup inventory exceeds the bounded receipt evidence budget",
+        )?;
         let report = mlt_cleanup::derive_mlt_cleanup_inventory(&initial, &watermark, &receipts)
             .ok_or(StorageError::ReceiptStreamChanged)?;
-        let current = self.project(project_id)?;
-        if current.generation != expected_generation
-            || current.revision != expected_revision
-            || self.production_receipt_watermark(project_id)? != watermark
+        let store = self.store.lock();
+        let current = store.load_project(project_id)?;
+        if current.stamp() != initial.stamp()
+            || current.active_branch != initial.active_branch
+            || store.production_receipt_watermark(project_id)? != watermark
         {
             return Err(StorageError::ReceiptStreamChanged);
         }
