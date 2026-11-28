@@ -207,7 +207,7 @@ textarea:focus-visible {
   min-height: 58px;
   flex: 0 0 58px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr);
   align-items: center;
   padding: 0 10px;
   border-bottom: 1px solid var(--border);
@@ -268,6 +268,12 @@ textarea:focus-visible {
 
 .command-actions {
   justify-content: flex-end;
+  min-width: 0;
+}
+
+.command-actions > * {
+  flex: none;
+  white-space: nowrap;
 }
 
 .branch-chip,
@@ -2705,10 +2711,7 @@ select:focus {
     box-shadow: -8px 0 18px rgba(0, 0, 0, 0.18);
   }
 
-  .command-bar {
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-    column-gap: 8px;
-  }
+  .command-bar { column-gap: 8px; }
 
   .brand-copy {
     flex-direction: column;
@@ -2787,13 +2790,16 @@ select:focus {
 
 @media (max-width: 660px) {
   .command-bar {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
     flex-basis: auto;
     row-gap: 5px;
     padding-block: 6px;
   }
 
-  .command-project { grid-column: 1 / -1; }
+  .command-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
   .brand-copy { flex-direction: row; align-items: baseline; }
   .brand-copy strong { font-size: 13px; }
   .primary-workspaces button { font-size: 12px; }
@@ -6296,3 +6302,5 @@ select:focus {
   overflow-wrap: anywhere;
   pointer-events: none;
 }
+
+.program-design-disclosure button { pointer-events: auto; }

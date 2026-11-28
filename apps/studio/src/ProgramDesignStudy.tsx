@@ -3,6 +3,7 @@ import { sampleProgramCaption } from "./programCaption";
 import "./program-caption.css";
 import { canvasBackground, inheritedTextInk } from "./canvasInheritedInk";
 import { deliveryTextSourceConflict } from "./deliveryTextSources";
+import { useSceneCaptureSourceImages } from "./useCaptureSourceImages";
 import type { DeliverableProfile, Project, Scene } from "./types";
 
 /** This is a bounded source-Canvas representation, never a substitute for
@@ -33,12 +34,14 @@ export default function ProgramDesignStudy({
   const cutScope = programSceneCutScope(scene, profile);
   const caption = sampleProgramCaption(project, scene, time, profile);
   const sourceConflict = profile && cutScope!=="excluded" ? deliveryTextSourceConflict(project,profile,scene) : null;
+  const captureSources = useSceneCaptureSourceImages(project, sourceConflict ? null : scene.id);
   return <div className="program-design-study" aria-label="Saved Canvas editorial design monitor"
     data-source-revision={project.revision} data-selected-profile-id={profile?.id ?? ""}
     data-output-cut-scope={cutScope}>
     {sourceConflict ? <p className="production-error" role="alert">Delivery source layout unavailable: {sourceConflict}</p>
       : <SceneCompositionStudy scene={scene} frameRate={profile?.frame_rate} cameraReframes={project.production_design?.camera_reframes} time={time}
-        background={surface} ink={ink} textOverrides={cutScope === "excluded" ? undefined : profile?.text_overrides}
+        background={surface} ink={ink} imageSources={captureSources.images}
+        textOverrides={cutScope === "excluded" ? undefined : profile?.text_overrides}
         label="Program Canvas editorial study: not native output"/>}
     {caption && <div className="program-caption-study" aria-label="Program caption source study" data-source-revision={project.revision}
       data-caption-id={caption.cue?.id ?? ""} data-caption-voice-id={caption.cue?.voice_track_id ?? ""}>
@@ -50,8 +53,11 @@ export default function ProgramDesignStudy({
     </div>}
     <p className="program-design-disclosure">
       DESIGN_PREVIEW · EDITORIAL SOURCE CANVAS · {profile ? profile.name : "No selected output profile"}
-      {project.production_design?.capture_boards?.some(board=>board.scene_id===scene.id)&&
-        <strong role="status">{" "}Source board geometry only. Review the bound original PNGs in Native output.</strong>}
+      {captureSources.status === "loading" && <strong role="status">{" "}Loading original capture images.</strong>}
+      {captureSources.error && <>
+        <strong role="status">{" "}Original capture preview unavailable. {captureSources.error}</strong>{" "}
+        <button type="button" className="button compact" onClick={captureSources.retry}>Retry original images</button>
+      </>}
       {cutScope === "excluded" &&
         <strong role="status"> · SCENE EXCLUDED FROM SELECTED OUTPUT CUT ·
           This editable source scene will not be exported in this profile.</strong>}

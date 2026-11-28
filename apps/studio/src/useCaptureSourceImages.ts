@@ -28,6 +28,11 @@ function decodeOriginal(url:string,signal:AbortSignal):Promise<void>{
   });
 }
 
+export function useSceneCaptureSourceImages(project:Project,sceneId:string|null){
+  const board=project.production_design?.capture_boards?.find(item=>item.scene_id===sceneId);
+  return useCaptureSourceImages(project,board?.id??"",board?.entries.map(entry=>entry.capture_id)??[]);
+}
+
 /** Two bounded owner reads per changed source/stamp. Label, timing and aspect edits
  * reuse the same originals. A changed scope hides old images before effects run. */
 export function useCaptureSourceImages(project:Project,boardId:string,captureIds:readonly string[]){

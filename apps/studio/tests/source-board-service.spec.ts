@@ -177,8 +177,13 @@ test("Two original CAS capture fixtures survive source board authoring, ordered 
     await expect(afterImage).toHaveAttribute("opacity","0");
     await page.getByRole("slider",{name:"Motion playhead",exact:true}).press("End");
     await expect(afterImage).toHaveAttribute("opacity","1");
+    await button(page,"Timeline").click();
+    const monitorLabel = "Program Canvas editorial study: not native output";
+    await expectOriginalImages(page,[a.record,b.record],monitorLabel);
+    const monitor = page.getByRole("img",{name:monitorLabel,exact:true});
+    await expect(monitor.locator("image").nth(1).locator("..")).toHaveAttribute("opacity","1");
     await sceneRow(flow.scenes[0].name).click();
-    await expect(canvasStudy.locator("image[data-source-sha256]")).toHaveCount(0);
+    await expect(monitor.locator("image[data-source-sha256]")).toHaveCount(0);
     editor=await openBoard(page,sceneId);
     await expect(editor.getByLabel("Board capture 1",{exact:true})).toHaveValue(a.record.id);
     await expect(editor.getByLabel("Source board mode",{exact:true})).toHaveValue("product_flow_bridge");

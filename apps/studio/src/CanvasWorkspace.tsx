@@ -5,7 +5,7 @@ import { alignmentScale } from "./canvasAlignment";
 import { resolveCanvasRelations } from "./canvasFollow";
 import { contextLabelNode } from "./contextLabel";
 import CompositionStudy from "./CompositionStudy";
-import { useCaptureSourceImages } from "./useCaptureSourceImages";
+import { useSceneCaptureSourceImages } from "./useCaptureSourceImages";
 import CreativePatchWorkbench from "./CreativePatchWorkbench";
 import { timelineSelectionScope, type TimelineEditorRequest } from "./timelineSelection";
 import { canvasBackground, inheritedTextInk } from "./canvasInheritedInk";
@@ -663,9 +663,7 @@ export default function CanvasWorkspace({
   initialSelectedNodeId?: string | null;
   onObjectSelectionChange?: (scope: string, nodeId: string | null) => void;
 }) {
-  const captureBoard = project.production_design?.capture_boards?.find(board => board.scene_id === scene?.id);
-  const captureSources = useCaptureSourceImages(project, captureBoard?.id ?? "",
-    captureBoard?.entries.map(entry => entry.capture_id) ?? []);
+  const captureSources = useSceneCaptureSourceImages(project, scene?.id ?? null);
   const firstSelectedNode = () => scene?.nodes.find(node => node.id === initialSelectedNodeId) ?? scene?.nodes[0];
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(() => firstSelectedNode()?.id ?? null);
   const [addBusy, setAddBusy] = useState(false);
@@ -1167,9 +1165,9 @@ export default function CanvasWorkspace({
                 : "Static box alignment is resolved in the source preview. The selected delivery resolves the same relations at its own aspect."}
           </p>}
           {viewCamera.issue && <p className="production-error" role="alert">Camera preview unavailable: {viewCamera.issue}</p>}
-          {captureBoard && captureSources.status === "loading" &&
+          {captureSources.status === "loading" &&
             <p className="production-help" role="status">Loading original capture images…</p>}
-          {captureBoard && captureSources.error && (
+          {captureSources.error && (
             <div>
               <p className="production-error" role="status">Original capture preview unavailable. {captureSources.error}</p>
               <button type="button" className="button compact" onClick={captureSources.retry}>Retry original images</button>
