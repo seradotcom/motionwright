@@ -211,14 +211,15 @@ pub(super) fn committed_media(
     let [receipt]: [ProductionReceipt; 1] =
         history.try_into().map_err(|_| StorageError::RequestReuse)?;
     let delivery = manifest(receipt)?;
-    if delivery.commit_id != receipt_id
-        || delivery.plan.project_id != project_id
+    if delivery.plan.project_id != project_id
         || delivery.plan.generation != generation
         || delivery.plan.artifact.sha256 != digest
     {
         return Err(StorageError::RequestReuse);
     }
-    Ok(true)
+    // A separately approved successor may have adopted the same bytes after
+    // a known rollback. Its own intent or pin protects them.
+    Ok(delivery.commit_id == receipt_id)
 }
 
 impl Store {
@@ -424,6 +425,11 @@ mod tests {
 
     #[test]
     fn private_delivery_reclaims_its_owned_blob_when_sqlite_commit_rolls_back() {
+        check_rolled_back_publication(false);
+        check_rolled_back_publication(true);
+    }
+
+    fn check_rolled_back_publication(approve_again: bool) {
         let directory = tempfile::tempdir().unwrap();
         let database = directory.path().join("studio.sqlite3");
         let media = directory.path().join("media");
@@ -477,22 +483,38 @@ mod tests {
         drop(store);
 
         let mut reopened = open();
+        let winner = approve_again.then(|| {
+            let captured = capture_fixture(
+                &reopened,
+                directory.path(),
+                "adopted.mp4",
+                b"uncommitted master",
+            );
+            reopened
+                .commit_private_delivery(&plan, &captured, || Ok(()))
+                .unwrap()
+        });
         let report = reopened
             .recover_cas(crate::CasRetentionPolicy {
                 retention: std::time::Duration::ZERO,
                 max_objects: 32,
             })
             .unwrap();
-        assert!(
-            matches!(
-                reopened.verify_blob(&digest),
-                Err(StorageError::BlobMissing { .. })
-            ),
-            "{report:?}"
-        );
+        assert_eq!(report.unresolved, 0, "{report:?}");
+        if let Some(winner) = &winner {
+            assert_eq!(reopened.verify_blob(&digest).unwrap(), winner.plan.artifact);
+        } else {
+            assert!(
+                matches!(
+                    reopened.verify_blob(&digest),
+                    Err(StorageError::BlobMissing { .. })
+                ),
+                "{report:?}"
+            );
+        }
         assert_eq!(
             inspect(&reopened, project.id, project.generation, deliverable).unwrap(),
-            None
+            winner
         );
     }
 
