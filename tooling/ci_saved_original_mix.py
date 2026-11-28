@@ -693,7 +693,7 @@ def run(repo, expected_source, output, target, selection):
                     if case["command"].get("observation") == "NOT_STARTED_LAUNCH_ERROR":
                         case["status"] = "NOT_STARTED"
                 raise
-        receipt["status"] = "PASS_SELECTED_SAVED_MIX_70"
+        receipt["status"] = "PASS_SELECTED_SAVED_MIX_74"
     except (VerificationError, ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
         receipt["error"] = type(error).__name__ + ": " + str(error)
         receipt["status"] = "UNKNOWN" if execution is not None and execution.unknown else "FAIL"
@@ -711,7 +711,7 @@ def run(repo, expected_source, output, target, selection):
                 generated = generated_schemas(
                     repo, permission_outputs, generated_inventory(execution, "postcheck"))
                 receipt["generated_schemas_after"] = generated
-                if receipt["status"] == "PASS_SELECTED_SAVED_MIX_70":
+                if receipt["status"] == "PASS_SELECTED_SAVED_MIX_74":
                     require(generated == receipt["generated_schema_observations"][-1]["files"],
                             "generated Desktop schemas changed during tests")
                 for index, (name, identity) in enumerate(generated.items()):
@@ -763,7 +763,7 @@ def run(repo, expected_source, output, target, selection):
         receipt["failed"] = sum(case["status"] == "FAIL" for case in receipt["cases"])
         receipt["unknown"] = sum(case["status"] == "UNKNOWN" for case in receipt["cases"])
         custody.write_new(output / "receipt.json", receipt)
-    return (0 if receipt["status"] == "PASS_SELECTED_SAVED_MIX_70" else 2), receipt
+    return (0 if receipt["status"] == "PASS_SELECTED_SAVED_MIX_74" else 2), receipt
 
 
 def main(argv=None):

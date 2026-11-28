@@ -569,7 +569,7 @@ class SyntheticExecution(unittest.TestCase):
     def test_complete_synthetic_flow_keeps_70_rows_four_binaries_and_originals(self):
         code, receipt = self.run_gate()
         self.assertEqual(code, 0)
-        self.assertEqual(receipt["status"], "PASS_SELECTED_SAVED_MIX_70")
+        self.assertEqual(receipt["status"], "PASS_SELECTED_SAVED_MIX_74")
         self.assertEqual((receipt["passed"], receipt["not_run"]), (74, 0))
         self.assertEqual(len(receipt["binaries"]), 4)
         self.assertEqual(len(receipt["retained_generated_schemas"]), 4)
