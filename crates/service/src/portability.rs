@@ -70,12 +70,28 @@ impl StudioService {
         expected: &RevisionStamp,
         destination: impl AsRef<Path>,
     ) -> StorageResult<ProjectBundleManifest> {
-        self.store.lock().export_project_bundle_at_with_admission(
+        self.export_bundle_snapshot(
             id,
-            expected,
-            destination,
+            Some(expected),
+            destination.as_ref(),
             &crate::font_portability::FontBundleExportAdmission,
         )
+    }
+
+    pub(super) fn export_bundle_snapshot(
+        &self,
+        id: Uuid,
+        expected: Option<&RevisionStamp>,
+        destination: &Path,
+        admission: &impl motionwright_storage::BundleAssetAdmission,
+    ) -> StorageResult<ProjectBundleManifest> {
+        // The snapshot and CAS location survive the guard. Content inspection,
+        // file copying and publication must not serialize unrelated Studio work.
+        let prepared = self
+            .store
+            .lock()
+            .prepare_project_bundle_export(id, expected)?;
+        prepared.publish_with_admission(destination, admission)
     }
 
     pub fn verify_project_bundle_export_at(
@@ -161,6 +177,99 @@ mod svg_bundle_admission_tests {
             content_sha256: None,
             source_revision: None,
         }
+    }
+
+    #[test]
+    fn bundle_copy_allows_a_new_revision_without_changing_the_captured_backup() {
+        struct EditDuringAdmission<'a> {
+            service: &'a StudioService,
+            original: &'a Project,
+        }
+
+        impl BundleAssetAdmission for EditDuringAdmission<'_> {
+            fn prefix_limit(&self) -> usize {
+                SvgBundleAdmission.prefix_limit()
+            }
+
+            fn validate(&self, prefix: &[u8], size: u64, aliases: &[Asset]) -> StorageResult<()> {
+                SvgBundleAdmission.validate(prefix, size, aliases)?;
+                // Probe the exact shared mutex so this case fails promptly if
+                // a future exporter still holds it during the real copy path.
+                let store_is_available = self.service.store.try_lock().is_some();
+                assert!(
+                    store_is_available,
+                    "portable blob validation holds the Store"
+                );
+                self.service.apply(
+                    self.original.id,
+                    &self.original.stamp(),
+                    "peer-edit-during-portable-export",
+                    &Change::AddScene {
+                        name: "Peer edit".into(),
+                        objective: "Changes only the live project".into(),
+                        duration_seconds: 2,
+                    },
+                )?;
+                Ok(())
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("live.sqlite3");
+        let service = StudioService::open(&state).unwrap();
+        let project = service.create_project("Portable snapshot").unwrap();
+        let asset = root.path().join("source.txt");
+        std::fs::write(&asset, b"immutable original in the backup").unwrap();
+        let original = service
+            .import_asset_file(
+                project.id,
+                &project.stamp(),
+                "import-portable-original",
+                &asset,
+                "source.txt".into(),
+                "text/plain".into(),
+            )
+            .unwrap()
+            .project;
+        let captured = service
+            .export_project_at(original.id, &original.stamp())
+            .unwrap();
+        let bundle = root.path().join("exported");
+        let exported = service
+            .export_bundle_snapshot(
+                original.id,
+                Some(&original.stamp()),
+                &bundle,
+                &EditDuringAdmission {
+                    service: &service,
+                    original: &original,
+                },
+            )
+            .unwrap();
+        let current = service.project(original.id).unwrap();
+        assert_eq!(current.revision, original.revision + 1);
+        assert_eq!(current.scenes.last().unwrap().name, "Peer edit");
+        assert_eq!(exported.backup.project, captured.project);
+        assert_eq!(exported.backup.events, captured.events);
+        assert_eq!(exported.blobs.len(), 1);
+        assert_eq!(
+            std::fs::read(bundle.join(&exported.blobs[0].relative_path)).unwrap(),
+            b"immutable original in the backup"
+        );
+
+        let restored_path = root.path().join("isolated").join("restored.sqlite3");
+        let restored = StudioService::open(&restored_path)
+            .unwrap()
+            .import_project_bundle(&bundle)
+            .unwrap();
+        let reopened = StudioService::open(&restored_path)
+            .unwrap()
+            .project(restored.id)
+            .unwrap();
+        assert_eq!(restored, reopened);
+        assert_eq!(reopened.revision, original.revision);
+        assert_eq!(reopened.scenes, original.scenes);
+        assert_ne!(reopened.generation, original.generation);
     }
 
     #[test]

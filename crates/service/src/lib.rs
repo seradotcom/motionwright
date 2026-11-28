@@ -1190,8 +1190,13 @@ impl StudioService {
         id: Uuid,
         destination: impl AsRef<Path>,
     ) -> StorageResult<ProjectBundleManifest> {
-        self.store.lock().export_project_bundle_with_admission(
+        let destination = destination.as_ref();
+        if destination.exists() {
+            return Err(motionwright_storage::StorageError::DestinationExists);
+        }
+        self.export_bundle_snapshot(
             id,
+            None,
             destination,
             &font_portability::FontBundleExportAdmission,
         )

@@ -260,7 +260,42 @@ fn validate_recorded_portable_font_copy(
     Ok(())
 }
 
+/// A portable export's captured document, history and CAS location.
+/// Copying the admitted snapshot needs no live SQLite connection or transaction.
+pub struct PreparedProjectBundleExport {
+    backup: ProjectBackup,
+    blob_root: PathBuf,
+}
+
+impl PreparedProjectBundleExport {
+    pub fn publish_with_admission(
+        self,
+        destination: &Path,
+        admission: &impl BundleAssetAdmission,
+    ) -> Result<ProjectBundleManifest> {
+        PreparedProjectBundleExport::publish_snapshot(
+            &self.blob_root,
+            self.backup,
+            destination,
+            admission,
+            |_| {},
+        )
+    }
+}
+
 impl Store {
+    /// Capture a bundle at an optional exact revision before releasing the Store.
+    pub fn prepare_project_bundle_export(
+        &mut self,
+        id: Uuid,
+        expected: Option<&RevisionStamp>,
+    ) -> Result<PreparedProjectBundleExport> {
+        Ok(PreparedProjectBundleExport {
+            backup: self.export_project_snapshot(id, expected)?,
+            blob_root: self.blob_root.clone(),
+        })
+    }
+
     /// Read the authorized document and its journal in one SQLite snapshot.
     pub fn export_project_at(
         &mut self,
@@ -294,13 +329,8 @@ impl Store {
         if destination.exists() {
             return Err(StorageError::DestinationExists);
         }
-        let backup = self.export_project_snapshot(id, None)?;
-        self.export_captured_bundle_with_admission_before_publication(
-            backup,
-            destination,
-            admission,
-            |_| {},
-        )
+        self.prepare_project_bundle_export(id, None)?
+            .publish_with_admission(destination, admission)
     }
 
     pub fn export_project_bundle_at_with_admission(
@@ -310,13 +340,8 @@ impl Store {
         destination: impl AsRef<Path>,
         admission: &impl BundleAssetAdmission,
     ) -> Result<ProjectBundleManifest> {
-        let backup = self.export_project_snapshot(id, Some(expected))?;
-        self.export_captured_bundle_with_admission_before_publication(
-            backup,
-            destination.as_ref(),
-            admission,
-            |_| {},
-        )
+        self.prepare_project_bundle_export(id, Some(expected))?
+            .publish_with_admission(destination.as_ref(), admission)
     }
 
     /// Recheck an existing export against the saved project and its journal.
@@ -849,16 +874,19 @@ impl Store {
         destination: &Path,
         before_publication: impl FnOnce(&Path),
     ) -> Result<ProjectBundleManifest> {
-        self.export_captured_bundle_with_admission_before_publication(
+        PreparedProjectBundleExport::publish_snapshot(
+            &self.blob_root,
             backup,
             destination,
             &StructuralBundleAdmission,
             before_publication,
         )
     }
+}
 
-    fn export_captured_bundle_with_admission_before_publication(
-        &self,
+impl PreparedProjectBundleExport {
+    fn publish_snapshot(
+        blob_root: &Path,
         backup: ProjectBackup,
         destination: &Path,
         admission: &impl BundleAssetAdmission,
@@ -898,7 +926,7 @@ impl Store {
         let mut blobs = Vec::with_capacity(digests.len());
         let mut total_blob_bytes = 0_u64;
         for digest in digests {
-            let source = self.checked_existing_blob_path(&digest)?;
+            let source = checked_existing_blob_path_from_root(blob_root, &digest)?;
             let (descriptor, prefix) = inspect_portable_file_with_prefix(
                 &source,
                 "portable asset",
@@ -1007,7 +1035,7 @@ impl Store {
         let mut owned_stage = BundleExportStage(Some(staging.clone()));
 
         for blob in &manifest.blobs {
-            let source = self.checked_existing_blob_path(&blob.sha256)?;
+            let source = checked_existing_blob_path_from_root(blob_root, &blob.sha256)?;
             let target = staging.join(&blob.relative_path);
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
