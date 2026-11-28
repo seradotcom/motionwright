@@ -72,3 +72,81 @@ test("measured output editing retains independent formats and explicit axes on t
   await page.getByRole("button",{name:"Discard removed output draft",exact:true}).click();
   await expect(page.getByLabel("Measured output to edit",{exact:true})).toHaveValue("");
 });
+
+test("a verified source revision previews a wider measured value before committing", async ({page}) => {
+  const project = structuredClone(fixtureProject);
+  project.schema_version = 2;
+  project.locks = [];
+  project.production_design = emptyProductionDesign();
+  const scene = project.scenes[0];
+  scene.renderer = "motion-canvas";
+  scene.beats = [];
+  const counter = {
+    ...scene.nodes[0], name: "Response time", kind: "text", text: "Initial counter",
+    x: 200, y: 200, width: 180, height: 80, opacity: 1, rotation_deg: 0,
+    parent_id: null, relations: [], property_locks: [], keyframes: [],
+    style: {...scene.nodes[0].style, font_family: "IBM Plex Mono", font_size: 32, font_weight: 400},
+  };
+  scene.nodes = [counter];
+  const rows = [{key:"latency", label:"Synthetic latency", milli:12500, unit:"milliseconds" as const}];
+  const replacement = Buffer.from(JSON.stringify([{...rows[0], milli:999999000}]));
+  const firstDigest = createHash("sha256").update(JSON.stringify(rows)).digest("hex");
+  const nextDigest = createHash("sha256").update(replacement).digest("hex");
+  const nextAsset = "00000000-0000-4000-8000-000000000735";
+  for (const [id, name, content_sha256] of [[assetId, "metrics-v1.json", firstDigest],
+                  [nextAsset, "metrics-v2.json", nextDigest]]) {
+    project.assets.push({id, name, media_type:"application/json", content_sha256, source_revision:null});
+  }
+  applyMeasuredTable(project, {schema:"motionwright.measured-table/1", id:tableId, label:"Measured response",
+    version:1, source_asset_id:assetId, source_sha256:firstDigest, rows});
+  applyMeasuredBinding(project, {binding_id:counterId, node_id:counter.id, scene_id:scene.id,
+    table_id:tableId, datum_key:"latency", view:{kind:"counter", decimals:2}});
+  await page.route("**/src/fixture.ts", async route => {
+    const response = await route.fetch();
+    await route.fulfill({response, body:(await response.text())+"\nfixtureBootstrap.project = "+JSON.stringify(project)+";\n"});
+  });
+  await page.goto("/");
+  await page.getByRole("button", {name:"Production", exact:true}).click();
+  await page.getByLabel("Production working scene", {exact:true}).selectOption(scene.id);
+  await page.getByRole("button", {name:"Measured data", exact:true}).click();
+  await page.getByLabel("Measured table", {exact:true}).selectOption(tableId);
+  await page.getByLabel("Measured source asset", {exact:true}).selectOption(nextAsset);
+  const preview = page.getByRole("region", {name:"Measured source revision preview", exact:true});
+  await expect(preview).toHaveCount(0);
+  const sourceFile = page.getByLabel("Measured source file verification", {exact:true});
+  await sourceFile.setInputFiles({name:"wrong.json", mimeType:"application/json", buffer:Buffer.from("[]")});
+  await expect(page.getByRole("alert").filter({hasText:"SHA-256 differs"})).toBeVisible();
+  await expect(preview).toHaveCount(0);
+  await sourceFile.setInputFiles({name:"metrics-v2.json", mimeType:"application/json", buffer:replacement});
+  await expect(preview).toBeVisible();
+  await expect(preview.getByRole("img", {name:"Saved measured source Canvas"})).toContainText("12.50 ms");
+  const proposed = preview.getByRole("img", {name:"Proposed measured source Canvas"});
+  await expect(proposed).toContainText("999999.00 ms");
+  const glyph = proposed.locator("text").filter({hasText:"999999.00 ms"});
+  expect(await glyph.evaluate(element => (element as SVGTextElement).getBBox().width)).toBeGreaterThan(180);
+  const warning = preview.getByText("Response time exceeds its Canvas text box", {exact:false});
+  await expect(warning).toBeVisible();
+  await expect(page.getByLabel("Measured table", {exact:true}).locator("option:checked")).toHaveText(/v1/);
+  await preview.getByRole("button", {name:"Edit affected Canvas objects"}).click();
+  await expect(page.getByLabel("Canvas object tree", {exact:true})).toBeVisible();
+  await page.locator(".canvas-tree-row").filter({has:page.getByText("Response time", {exact:true})}).click();
+  await page.getByLabel("Canvas W", {exact:true}).fill("360");
+  await page.getByRole("button", {name:"Commit transform", exact:true}).click();
+  await expect(page.getByRole("button", {name:"Commit transform", exact:true})).toBeDisabled();
+  await page.getByRole("button", {name:"Production", exact:true}).click();
+  await page.getByRole("button", {name:"Measured data", exact:true}).click();
+  await page.getByLabel("Measured table", {exact:true}).selectOption(tableId);
+  await page.getByLabel("Measured source asset", {exact:true}).selectOption(nextAsset);
+  await sourceFile.setInputFiles({name:"metrics-v2.json", mimeType:"application/json", buffer:replacement});
+  await expect(preview.getByText("Measured text fits its Canvas boxes at this preview position.")).toBeVisible();
+  await expect(warning).toHaveCount(0);
+  const commit = page.getByRole("button", {name:"Commit next measured source revision", exact:true});
+  await expect(commit).toBeDisabled();
+  await page.getByRole("button", {name:"Keep my Measured data input", exact:true}).click();
+  await expect(preview.getByText("Measured text fits its Canvas boxes at this preview position.")).toBeVisible();
+  await commit.click();
+  await expect(page.getByLabel("Measured table", {exact:true}).locator("option:checked")).toHaveText(/v2/);
+  await expect(preview).toHaveCount(0);
+  await page.getByLabel("Measured output to edit", {exact:true}).selectOption(counterId);
+  await expect(page.getByLabel("Measured output comparison", {exact:true})).toContainText("999999.00 ms");
+});

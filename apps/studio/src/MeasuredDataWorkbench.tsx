@@ -3,15 +3,16 @@ import { ExternalLink, Save, Unlink } from "lucide-react";
 import type { Change, Project, Scene } from "./types";
 import { seconds } from "./types";
 import SceneCompositionStudy from "./SceneCompositionStudy";
+import MeasuredSourcePreview from "./MeasuredSourcePreview";
 import { inheritedTextInk } from "./canvasInheritedInk";
 import { sameValue } from "./creativeProduction";
-import { applyMeasuredBinding, parseMeasuredSource } from "./measuredData";
+import { applyMeasuredBinding, applyMeasuredTable, parseMeasuredSource } from "./measuredData";
 import type { MeasuredOutput, MeasuredView } from "./measuredData";
 import { discardMeasuredPresentation, editMeasuredPresentation, measuredBindingProposal, measuredPresentation, measuredProofMatches, measuredRaw, measuredTable, selectMeasuredBinding, selectMeasuredTable, workbenchScope } from "./creativeWorkbenchDraft";
 import type { MeasuredByteProof, MeasuredPresentationRaw, MeasuredRaw, WorkbenchInput } from "./creativeWorkbenchDraft";
 import { useCreativeWorkbenchDraft, WorkbenchDraftFeedback } from "./useCreativeWorkbenchDraft";
 
-type Props={project:Project;scene:Scene|null;busy:boolean;commit:(change:Change)=>Promise<Project>;onOpenCanvas:()=>void};
+type Props={project:Project;scene:Scene|null;busy:boolean;commit:(change:Change)=>Promise<Project>;onSelectScene:(id:string)=>void;onOpenCanvas:()=>void};
 const hash=/^[0-9a-f]{64}$/;
 const errorMessage=(reason:unknown)=>reason instanceof Error?reason.message:String(reason);
 const outputLabel=(output:MeasuredOutput)=>output.kind==="text"?output.value:output.width_px+" px wide";
@@ -20,7 +21,7 @@ export default function MeasuredDataWorkbench(props:Props){
 }
 /** Readonly source preview remains derived from locally reselected exact bytes.
  * Preserved rows are editable-work custody, never recovered byte verification. */
-function MeasuredEditor({project,scene,busy,commit,onOpenCanvas}:Props){
+function MeasuredEditor({project,scene,busy,commit,onSelectScene,onOpenCanvas}:Props){
   const editor=useCreativeWorkbenchDraft(project,{kind:"measured",sceneId:scene?.id??null},commit,busy);
   const input=editor.draft.input as Extract<WorkbenchInput,{kind:"measured"}>, raw=measuredRaw(input);
   const {label,assetId,rowsText}=raw;
@@ -45,6 +46,26 @@ function MeasuredEditor({project,scene,busy,commit,onOpenCanvas}:Props){
   const [tableError,table]=useMemo(()=>{
     try{return [null,measuredTable(raw,project)] as const;}catch(reason){return [errorMessage(reason),null] as const;}
   },[raw,project]);
+  const [previewSceneId, setPreviewSceneId] = useState("");
+  const [revisionError, revisionPreview] = useMemo(() => {
+    if (!sourceBytesMatch || !stored || !table) return [null, null] as const;
+    try {
+      const candidate = structuredClone(project);
+      applyMeasuredTable(candidate, table);
+      const impact = candidate.production_design!.last_measured_impact!;
+      return [null, {impact,
+        affected: candidate.scenes.filter(item => impact.scene_ids.includes(item.id))}] as const;
+    } catch (reason) {
+      return [errorMessage(reason), null] as const;
+    }
+  }, [project, sourceBytesMatch, stored, table]);
+  const proposedScene = revisionPreview?.affected.find(item => item.id === previewSceneId)
+    ?? revisionPreview?.affected.find(item => item.id === scene?.id)
+    ?? revisionPreview?.affected[0];
+  const savedScene = proposedScene && project.scenes.find(item => item.id === proposedScene.id);
+  const boundTextNodes = useMemo(() => new Set(bindings
+    .filter(binding => binding.table_id === table?.id && binding.scene_id === proposedScene?.id && binding.view.kind !== "bar")
+    .map(binding => binding.node_id)), [bindings, proposedScene, table?.id]);
   async function verifyLocalFile(file:File|undefined){
     const token=editor.authorToken(), started=++fileEpoch.current, source=currentAsset;
     setVerified(null);setFileError(null);
@@ -90,7 +111,7 @@ function MeasuredEditor({project,scene,busy,commit,onOpenCanvas}:Props){
     }catch(reason){setFileError(errorMessage(reason));}
   };
   const previewMax=scene?Math.max(0,seconds(scene.duration)-1/30):0, renderedTime=Math.min(previewTime,previewMax);
-  const submitTable=async()=>{if(table&&sourceBytesMatch&&!editor.blocked)await editor.send("table",verified);};
+  const submitTable=async()=>{if(table&&sourceBytesMatch&&!revisionError&&!editor.blocked)await editor.send("table",verified);};
   const submitBinding=async()=>{if(bindingStudy?.changed&&!bindError&&!editor.blocked)await editor.send("binding");};
   const detach=async(id:string)=>{if(!editor.blocked)await editor.send({detachBinding:id});};
   return <section className="production-plan" aria-label="Measured data and units">
@@ -138,7 +159,27 @@ function MeasuredEditor({project,scene,busy,commit,onOpenCanvas}:Props){
       Native Storage will independently verify the exact SHA-256 bytes again.</p>}
     {sourceValid && <p className="mono">SHA-256: {currentAsset!.content_sha256} · Version to save: {stored?stored.version+1:1}</p>}
     {tableError && <p className="production-help" role="status">Source preflight: {tableError}</p>}
-    <button className="primary-button" disabled={!table || !sourceBytesMatch || editor.blocked} onClick={submitTable}>
+    {revisionError && <p className="production-error" role="alert">Source revision cannot be applied: {revisionError}</p>}
+    {revisionPreview && <section className="production-approval" aria-label="Measured source revision preview">
+      <h3>Source revision preview</h3>
+      <p>Version {stored?.version} → {table?.version} · {revisionPreview.affected.length} affected scenes ·{" "}
+        {revisionPreview.impact.deliverable_ids.length} affected output profiles</p>
+      {revisionPreview.affected.length > 1 && <label className="production-field">
+        <span>Affected scene</span>
+        <select aria-label="Measured revision preview scene" value={proposedScene?.id ?? ""}
+          onChange={event => setPreviewSceneId(event.target.value)}>
+          {revisionPreview.affected.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+        </select>
+      </label>}
+      {savedScene && proposedScene && <MeasuredSourcePreview
+        key={JSON.stringify([project.revision, proposedScene.id, table?.source_sha256])}
+        before={savedScene} after={proposedScene} boundTextNodes={boundTextNodes}
+        frameRate={project.deliverables[0]?.frame_rate} cameraReframes={project.production_design?.camera_reframes}
+        ink={inheritedTextInk(project.visual_language.palette)}
+        time={Math.min(renderedTime, Math.max(0, seconds(proposedScene.duration) - 1/30))}
+        openCanvas={() => { onSelectScene(proposedScene.id); onOpenCanvas(); }}/>}
+    </section>}
+    <button className="primary-button" disabled={!table || !sourceBytesMatch || !!revisionError || editor.blocked} onClick={submitTable}>
       <Save size={14}/>{stored?"Commit next measured source revision":"Register measured source"}</button>
     <div className="production-section-title"><h3>2. Create or edit a measured output</h3></div>
     <p className="production-help">Counters and labels update only text. Bars update only rectangle width;
