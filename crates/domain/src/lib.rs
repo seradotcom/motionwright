@@ -40,6 +40,7 @@ mod scene_beat_timeline;
 mod scene_boundary;
 mod scene_split;
 mod scene_timing_guard;
+pub use scene_timing_guard::SceneTrimSource;
 mod semantic_graph;
 mod semantic_sfx;
 mod stage_capture;
@@ -1304,6 +1305,7 @@ impl Project {
                 | Change::SetSceneDuration { .. }
                 | Change::SplitScene { .. }
                 | Change::TrimSceneEnd { .. }
+                | Change::ReverseSceneTrim { .. }
         ) {
             return self.apply_general_scene_timing(change);
         }
@@ -1959,7 +1961,21 @@ impl Project {
                 *base_revision,
                 *acknowledge_absolute_anchors,
             )?,
-            Change::TrimSceneEnd { scene_id, at } => self.trim_scene_end(*scene_id, *at)?,
+            Change::TrimSceneEnd {
+                scene_id,
+                at,
+                source,
+            } => {
+                self.trim_scene_end(*scene_id, *at, source.as_ref())?;
+            }
+            Change::ReverseSceneTrim {
+                scene_id,
+                source_revision,
+                source,
+                duration,
+            } => {
+                self.reverse_scene_trim(*scene_id, *source_revision, source, *duration)?;
+            }
             Change::SplitScene {
                 scene_id,
                 right_scene_id,
@@ -3276,6 +3292,14 @@ pub enum Change {
     TrimSceneEnd {
         scene_id: Uuid,
         at: RationalTime,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<SceneTrimSource>,
+    },
+    ReverseSceneTrim {
+        scene_id: Uuid,
+        source_revision: u64,
+        source: SceneTrimSource,
+        duration: RationalTime,
     },
     SplitScene {
         scene_id: Uuid,

@@ -1,7 +1,7 @@
 import { Scissors } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { observeSceneTimingReceipt, previewSceneSplit, previewSceneTrim } from "./api";
-import type { SceneSplitPreview, SceneTrimPreview } from "./api";
+import { observeSceneTimingReceipt, previewSceneSplit, previewSceneTrim, previewSceneTrimReverse, projectHistoryRecent } from "./api";
+import type { SceneSplitPreview, SceneTrimPreview, SceneTrimReversePreview } from "./api";
 import { formatBeatTime } from "./sceneBeatTiming";
 import { finishSceneTiming, readSceneTimingAttempts, retainSceneTiming, sameSceneTime } from "./sceneTimingDraft";
 import type { SceneTimingAttempt } from "./sceneTimingDraft";
@@ -9,7 +9,7 @@ import { formatEditorTimecode, parseEditorSeekTime, projectFrameIndex } from "./
 import type { TimecodeMode } from "./timecode";
 import { timelineSelectionScope } from "./timelineSelection";
 import { seconds } from "./types";
-import type { Project, RationalTime, SceneTimingChange } from "./types";
+import type { Project, ProjectEvent, RationalTime, SceneTimingChange } from "./types";
 
 interface Props {
   project: Project;
@@ -22,19 +22,24 @@ interface Props {
   onSaved: (id: string) => void;
 }
 
-type Operation = "split" | "trim";
+type Operation = "split" | "trim" | "history";
 type Preview =
   | ({ operation: "split" } & SceneSplitPreview)
-  | ({ operation: "trim" } & SceneTrimPreview);
+  | ({ operation: "trim" } & SceneTrimPreview)
+  | ({ operation: "history" } & SceneTrimReversePreview);
 
 const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
-const operationFor = (change: SceneTimingChange): Operation => change.type === "split_scene" ? "split" : "trim";
+const operationFor = (change: SceneTimingChange): Operation => change.type === "split_scene" ? "split"
+  : change.type === "trim_scene_end" ? "trim" : "history";
+const labelFor = (operation: Operation) => operation === "history" ? "trim reversal" : operation;
+const grows = (before: RationalTime, after: RationalTime) =>
+  BigInt(after.num) * BigInt(before.den) > BigInt(before.num) * BigInt(after.den);
 
 function confirmEdit(next: Project, preview: Preview): string | null {
   const index = next.scenes.findIndex(item => item.id === preview.scene_id);
   if (index < 0) return null;
   const scene = next.scenes[index];
-  if (preview.operation === "trim") {
+  if (preview.operation !== "split") {
     return sameSceneTime(scene.duration, preview.new_duration) ? scene.id : null;
   }
   const right = next.scenes[index + 1];
@@ -49,6 +54,7 @@ export default function TimelineSceneTiming({ project, sceneId, playhead, rate, 
   const scope = timelineSelectionScope(project);
   const [operation, setOperation] = useState<Operation>("split");
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [history, setHistory] = useState<ProjectEvent[] | null>(null);
   const [attempts, setAttempts] = useState<SceneTimingAttempt[]>([]);
   const [fault, setFault] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -56,7 +62,10 @@ export default function TimelineSceneTiming({ project, sceneId, playhead, rate, 
   const [notice, setNotice] = useState("");
   const scene = project.scenes.find(item => item.id === sceneId);
   const current = preview && preview.revision === project.revision && scene?.id === preview.scene_id;
-  const title = operation === "split" ? "Split scene" : "Trim scene end";
+  const title = operation === "split" ? "Split scene" : operation === "trim" ? "Trim scene end" : "Scene trim history";
+  const extendsScene = preview && preview.operation !== "split" && grows(preview.old_duration, preview.new_duration);
+  const confirmLabel = preview?.operation === "history" ? (extendsScene ? "Undo trim" : "Redo trim")
+    : "Save scene " + preview?.operation;
 
   const load = () => {
     try {
@@ -95,6 +104,7 @@ export default function TimelineSceneTiming({ project, sceneId, playhead, rate, 
   const open = (requested: Operation) => {
     if (running.current) return;
     setPreview(null);
+    setHistory(null);
     setCanSeparate(null);
     setFault(null);
     setNotice("");
@@ -103,6 +113,12 @@ export default function TimelineSceneTiming({ project, sceneId, playhead, rate, 
     dialog.current?.showModal();
     if (!scene || !records || records.length) return;
     void perform(async () => {
+      if (requested === "history") {
+        const recent = await projectHistoryRecent(project, project.revision, 64);
+        setHistory(recent.filter(event => event.change.scene_id === scene.id && event.change.source
+          && (event.change.type === "trim_scene_end" || event.change.type === "reverse_scene_trim")));
+        return;
+      }
       const at = parseEditorSeekTime(projectFrameIndex(playhead, rate) + "f", rate, "ndf");
       if (requested === "split") {
         const change = { type: "split_scene", scene_id: scene.id, right_scene_id: crypto.randomUUID(), at } as const;
@@ -114,23 +130,36 @@ export default function TimelineSceneTiming({ project, sceneId, playhead, rate, 
     });
   };
 
+  const inspectTrim = (event: ProjectEvent) => {
+    if (!scene || scene.id !== event.change.scene_id) return;
+    void perform(async () => {
+      setPreview(null);
+      setPreview({ operation: "history", ...await previewSceneTrimReverse(project, scene.id, event.revision, crypto.randomUUID()) });
+    });
+  };
+
   const save = () => {
     if (!preview || !current || attempts.length) return;
     void perform(async () => {
+      const requestId = preview.operation === "history" ? preview.change.source.request_id : crypto.randomUUID();
       const change: SceneTimingChange = preview.operation === "split"
         ? { type: "split_scene", scene_id: preview.scene_id, right_scene_id: preview.right_scene_id, at: preview.at }
-        : { type: "trim_scene_end", scene_id: preview.scene_id, at: preview.at };
-      const attempt = { requestId: crypto.randomUUID(), revision: project.revision, change };
+        : preview.operation === "trim"
+          ? { type: "trim_scene_end", scene_id: preview.scene_id, at: preview.at, source: { request_id: requestId, duration: preview.old_duration } }
+          : preview.change;
+      const attempt = { requestId, revision: project.revision, change };
       retainSceneTiming(window.localStorage, project, attempt);
       setAttempts([attempt]);
       const next = await commit(project, change, attempt.requestId);
       const selected = confirmEdit(next, preview);
       if (timelineSelectionScope(next) !== scope || next.revision !== attempt.revision + 1 || !selected) {
-        throw new Error("The original " + preview.operation + " response could not be confirmed. Check its saved receipt.");
+        throw new Error("The original " + labelFor(preview.operation) + " response could not be confirmed. Check its saved receipt.");
       }
       finishSceneTiming(window.localStorage, project, attempt);
       onSaved(selected);
-      setNotice(preview.operation === "split" ? "Scene split saved." : "Scene trim saved.");
+      setNotice(preview.operation === "split" ? "Scene split saved."
+        : preview.operation === "trim" ? "Scene trim saved."
+          : extendsScene ? "Scene trim undone." : "Scene trim redone.");
       dialog.current?.close();
     });
   };
@@ -138,7 +167,7 @@ export default function TimelineSceneTiming({ project, sceneId, playhead, rate, 
   const check = (attempt: SceneTimingAttempt, keepOriginal = false) => {
     setCanSeparate(null);
     void perform(async () => {
-      const original = operationFor(attempt.change);
+      const original = labelFor(operationFor(attempt.change));
       const observe = () => observeSceneTimingReceipt(project, attempt.change, attempt.revision, attempt.requestId);
       let known = await observe();
       const saved = await refresh(project);
@@ -167,12 +196,13 @@ export default function TimelineSceneTiming({ project, sceneId, playhead, rate, 
 
   return <>
     {attempts.length > 0 ? <button type="button" className="button compact" onClick={() => open(operationFor(attempts[0].change))}>
-      Check scene {operationFor(attempts[0].change)}
+      Check scene {labelFor(operationFor(attempts[0].change))}
     </button> : scene && <>
       <button type="button" className="button compact" onClick={() => open("split")}>
         <Scissors size={13} aria-hidden="true" /> Split scene
       </button>
       <button type="button" className="button compact" onClick={() => open("trim")}>Trim scene end</button>
+      <button type="button" className="button compact" onClick={() => open("history")}>Scene trim history</button>
     </>}
     {notice && <span className="timeline-view-warning" role="status">{notice}</span>}
     <dialog ref={dialog} className="timeline-marker-dialog" aria-labelledby="timeline-scene-timing-title"
@@ -181,12 +211,17 @@ export default function TimelineSceneTiming({ project, sceneId, playhead, rate, 
       {busy && <p role="status">Checking the saved scene…</p>}
       {fault && <p role="alert">{fault}</p>}
       {attempts.map(attempt => <div key={attempt.requestId} className="marker-recovery-list">
-        <span>Original scene {operationFor(attempt.change)} from revision {attempt.revision}</span>
+        <span>Original scene {labelFor(operationFor(attempt.change))} from revision {attempt.revision}</span>
         <button type="button" className="button compact" disabled={busy}
-          onClick={() => check(attempt)}>Check original {operationFor(attempt.change)}</button>
+          onClick={() => check(attempt)}>Check original {labelFor(operationFor(attempt.change))}</button>
         {canSeparate === attempt.requestId && <button type="button" className="button compact" disabled={busy}
           onClick={() => check(attempt, true)}>Keep original and close</button>}
       </div>)}
+      {operation === "history" && history && attempts.length === 0 && <div className="marker-recovery-list">
+        {history.length === 0 && <p>No reversible trim was found in the last 64 revisions.</p>}
+        {history.slice(0, 8).map(event => <button type="button" className="button compact" key={event.revision}
+          disabled={busy} onClick={() => inspectTrim(event)}>Review inverse at r{event.revision}</button>)}
+      </div>}
       {preview && attempts.length === 0 && <div className="marker-recovery-list">
         <p>{scene?.name} · {formatEditorTimecode(seconds(preview.at), rate, mode)}</p>
         {preview.operation === "split" ? <>
@@ -195,14 +230,14 @@ export default function TimelineSceneTiming({ project, sceneId, playhead, rate, 
           {preview.animated_objects > 0 && <p>The continuation starts with the pose at the cut. Active motion keeps its timing, and constant portions become static poses.</p>}
         </> : <>
           <p>{formatBeatTime(preview.old_duration)} s → {formatBeatTime(preview.new_duration)} s</p>
-          <p>{preview.shifted_scenes === 1 ? "1 following scene moves earlier"
-            : preview.shifted_scenes > 1 ? preview.shifted_scenes + " following scenes move earlier"
+          <p>{preview.shifted_scenes === 1 ? "1 following scene moves " + (extendsScene ? "later" : "earlier")
+            : preview.shifted_scenes > 1 ? preview.shifted_scenes + " following scenes move " + (extendsScene ? "later" : "earlier")
             : "The scene sequence ends here."}</p>
           <p>Audio and markers keep their absolute positions.</p>
         </>}
-        {!current && <p role="alert">The saved scene changed. Close this preview and prepare a new {preview.operation}.</p>}
+        {!current && <p role="alert">The saved scene changed. Open a new preview to continue.</p>}
         <button type="button" className="button button-primary compact" disabled={busy || !current}
-          onClick={save}>Save scene {preview.operation}</button>
+          onClick={save}>{confirmLabel}</button>
       </div>}
       <button type="button" className="button compact" disabled={busy} onClick={() => dialog.current?.close()}>Close</button>
     </dialog>

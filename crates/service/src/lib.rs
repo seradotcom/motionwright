@@ -61,7 +61,8 @@ pub use scene_boundary::{
 };
 pub use scene_split::{
     SceneSplitPreview, SceneSplitReceiptRequest, SceneSplitRequest, SceneTrimPreview,
-    SceneTrimReceiptRequest, SceneTrimRequest,
+    SceneTrimReceiptRequest, SceneTrimRequest, SceneTrimReversePreview,
+    SceneTrimReverseReceiptRequest, SceneTrimReverseRequest,
 };
 pub use scoped_changes::{
     ScopedChangePreviewRequest, ScopedChangeReceipt, ScopedChangeReceiptRequest,

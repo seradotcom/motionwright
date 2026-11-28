@@ -143,9 +143,32 @@ test("timeline trim previews the ripple and preserves absolute markers through S
     await service.close();
     await service.start();
     expect(await service.project(base.id)).toEqual(saved);
-    const closure = await service.finalizeClosedStore(info.outputPath("closed-store"), saved, [], [async () => { await page.close(); }]);
+    const edited = await service.apply(saved, { type: "add_marker", label: "Later marker", at: following.start });
+    await page.reload();
+    await page.locator(".tree-row").filter({ has: page.getByText(name, { exact: true }) }).click();
+
+    const reviewInverse = async (revision: number, action: "Undo trim" | "Redo trim") => {
+      await page.getByRole("button", { name: "Scene trim history", exact: true }).click();
+      const history = page.getByRole("dialog", { name: "Scene trim history", exact: true });
+      await history.getByRole("button", { name: "Review inverse at r" + revision, exact: true }).click();
+      await history.getByRole("button", { name: action, exact: true }).click();
+    };
+    await reviewInverse(saved.revision, "Undo trim");
+    await expect(page.getByText("Scene trim undone.", { exact: true })).toBeVisible();
+    const restored = await service.project(base.id);
+    expect(restored.scenes).toEqual(unlocked.scenes);
+    expect(restored.markers).toEqual(edited.markers);
+
+    await reviewInverse(restored.revision, "Redo trim");
+    await expect(page.getByText("Scene trim redone.", { exact: true })).toBeVisible();
+    const redone = await service.project(base.id);
+    expect(redone.scenes).toEqual(saved.scenes);
+    expect(redone.markers).toEqual(edited.markers);
+    expect((await service.history(base.id, edited.revision, 8)).map(event => event.change.type))
+      .toEqual(["reverse_scene_trim", "reverse_scene_trim"]);
+    const closure = await service.finalizeClosedStore(info.outputPath("closed-store"), redone, [], [async () => { await page.close(); }]);
     finalized = true;
-    expect(closure.oracle?.project).toEqual(saved);
+    expect(closure.oracle?.project).toEqual(redone);
   } finally {
     if (!page.isClosed()) await page.close();
     if (!finalized) await service.close();

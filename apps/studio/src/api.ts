@@ -84,6 +84,7 @@ import type {
   SceneSplitChange,
   SceneTimingChange,
   SceneTrimChange,
+  SceneTrimReverseChange,
   RationalTime,
   Scene,
   SceneBoundaryContextRequest,
@@ -1706,11 +1707,40 @@ export interface SceneTrimPreview {
   shifted_scenes: number;
 }
 
-const sceneTimingRequest = (project: Project, change: SceneTimingChange, revision: number) => ({
-  project_id: project.id, generation: project.generation, branch_id: project.active_branch,
-  revision, scene_id: change.scene_id, at: change.at,
-  ...(change.type === "split_scene" ? { right_scene_id: change.right_scene_id } : {}),
+const sceneTimingScope = (project: Project, revision: number) => ({
+  project_id: project.id, generation: project.generation, branch_id: project.active_branch, revision,
 });
+
+const sceneTimingRequest = (project: Project, change: SceneSplitChange | SceneTrimChange, revision: number) => ({
+  ...sceneTimingScope(project, revision), scene_id: change.scene_id, at: change.at,
+  ...(change.type === "split_scene" ? { right_scene_id: change.right_scene_id }
+    : change.source ? { source: change.source } : {}),
+});
+
+export interface SceneTrimReversePreview extends SceneTrimPreview {
+  change: SceneTrimReverseChange;
+}
+
+export async function previewSceneTrimReverse(
+  project: Project, sceneId: string, sourceRevision: number, requestId: string,
+): Promise<SceneTrimReversePreview> {
+  if (!isTauri()) throw new Error("Trim history requires the saved Studio Desktop project.");
+  const result = await invoke<SceneTrimReversePreview>("preview_scene_trim_reverse", { request: {
+    ...sceneTimingScope(project, project.revision), scene_id: sceneId,
+    source_revision: sourceRevision, request_id: requestId,
+  } });
+  const change = result?.change;
+  if (!result || !result.at || result.revision !== project.revision || result.scene_id !== sceneId
+      || change?.type !== "reverse_scene_trim" || change.scene_id !== sceneId
+      || change.source_revision !== sourceRevision || change.source?.request_id !== requestId
+      || change.source.duration?.num !== result.old_duration?.num || change.source.duration?.den !== result.old_duration?.den
+      || change.duration?.num !== result.new_duration?.num || change.duration?.den !== result.new_duration?.den
+      || !result.old_duration || !result.new_duration
+      || !Number.isSafeInteger(result.shifted_scenes) || result.shifted_scenes < 0) {
+    throw new Error("The trim history preview does not match the original saved edit.");
+  }
+  return result;
+}
 
 export async function previewSceneTrim(project: Project, change: SceneTrimChange): Promise<SceneTrimPreview> {
   if (!isTauri()) throw new Error("Trim requires the saved Studio Desktop project.");
@@ -1738,23 +1768,25 @@ export async function previewSceneSplit(project: Project, change: SceneSplitChan
 
 export async function observeSceneTimingReceipt(project: Project, change: SceneTimingChange, revision: number, requestId: string): Promise<boolean> {
   if (!isTauri()) throw new Error("A durable scene edit receipt requires Studio Desktop.");
-  const operation = change.type === "split_scene" ? "split" : "trim";
+  const operation = change.type === "split_scene" ? "split"
+    : change.type === "trim_scene_end" ? "trim" : "trim_reverse";
+  const request = change.type === "reverse_scene_trim"
+    ? { ...sceneTimingScope(project, revision), request_id: requestId, change }
+    : { request_id: requestId, [operation]: sceneTimingRequest(project, change, revision) };
   const response = await invoke<{
     state: string;
     binding?: {
       project_id: string; generation: string; base_branch: string; result_branch: string;
       request_id: string; base_revision: string; result_revision: string;
     };
-  }>("observe_scene_" + operation + "_receipt", {
-    request: { request_id: requestId, [operation]: sceneTimingRequest(project, change, revision) },
-  });
+  }>("observe_scene_" + operation + "_receipt", { request });
   if (response?.state === "not_found") return false;
   const binding = response?.binding;
   if (response?.state !== "known_verified_v1" || !binding || binding.request_id !== requestId
       || binding.project_id !== project.id || binding.generation !== project.generation
       || binding.base_branch !== project.active_branch || binding.result_branch !== project.active_branch
       || binding.base_revision !== String(revision) || binding.result_revision !== String(BigInt(revision) + 1n)) {
-    throw new Error("The stored receipt could not confirm the original scene " + operation + ".");
+    throw new Error("The stored receipt could not confirm the original scene edit.");
   }
   return true;
 }
@@ -1817,7 +1849,7 @@ export async function observeScopedChangeReceipt(
 export async function applyChange(project: Project, change: Change, retainedRequestId?: string): Promise<Project> {
   const graphChange = change.type === "upsert_semantic_graph" || change.type === "remove_semantic_graph";
   const markerChange = change.type === "edit_marker" || change.type === "remove_marker";
-  const sceneTimingChange = change.type === "split_scene" || change.type === "trim_scene_end";
+  const sceneTimingChange = change.type === "split_scene" || change.type === "trim_scene_end" || change.type === "reverse_scene_trim";
   const proposalChange = change.type === "apply_creative_patch" || change.type === "undo_creative_patch";
   const validRequest = graphUuid(retainedRequestId) && retainedRequestId.length === 36;
   // Both editors retain the original request identity before asking for a grant.
@@ -1936,6 +1968,7 @@ async function simulateChange(project: Project, change: Change, requestId: strin
   switch (change.type) {
     case "split_scene":
     case "trim_scene_end":
+    case "reverse_scene_trim":
       throw new Error("Scene splitting and trimming require the saved Studio Desktop project.");
     case "combine_creative_branches":
       throw new Error("Combining editable branches requires the actual StudioService and canonical source preview.");

@@ -12,6 +12,7 @@ export interface SceneTimingAttempt {
 const roots = {
   split_scene: "motionwright.scene-split.v1",
   trim_scene_end: "motionwright.scene-trim.v1",
+  reverse_scene_trim: "motionwright.scene-trim-reverse.v1",
 };
 
 const prefix = (project: Project, type: SceneTimingChange["type"], status: "pending" | "retained") =>
@@ -21,19 +22,20 @@ export const sameSceneTime = (a: RationalTime, b: RationalTime) => a.num === b.n
 
 export function readSceneTimingAttempts(storage: Storage, project: Project): SceneTimingAttempt[] {
   if (storage.length > 4096) throw new Error("The scene edit recovery catalogue exceeds its lookup limit.");
-  const split = prefix(project, "split_scene", "pending");
-  const trim = prefix(project, "trim_scene_end", "pending");
+  const prefixes = (Object.keys(roots) as SceneTimingChange["type"][])
+    .map(type => ({ type, start: prefix(project, type, "pending") }));
   const result: SceneTimingAttempt[] = [];
   for (let index = 0; index < storage.length; index++) {
     const key = storage.key(index);
     if (!key) continue;
-    const start = key.startsWith(split) ? split : key.startsWith(trim) ? trim : null;
-    if (!start) continue;
+    const match = prefixes.find(({ start }) => key.startsWith(start));
+    if (!match) continue;
+    const { type, start } = match;
     const raw = storage.getItem(key);
     if (raw === null) continue;
     if (raw.length > 1024 || result.length >= 8) throw new Error("Resolve retained scene edits before starting another.");
     const attempt = JSON.parse(raw) as SceneTimingAttempt;
-    const type = start === split ? "split_scene" : "trim_scene_end";
+
     if (!attempt || Object.keys(attempt).length !== 3
         || !projectionUuid(attempt.requestId) || attempt.requestId !== key.slice(start.length)
         || !Number.isSafeInteger(attempt.revision) || attempt.revision < 0
@@ -41,12 +43,21 @@ export function readSceneTimingAttempts(storage: Storage, project: Project): Sce
       throw new Error("The original scene edit could not be restored.");
     }
     const change = attempt.change;
-    if (change.type === "split_scene"
-        ? Object.keys(change).length !== 4 || !projectionUuid(change.right_scene_id) || change.scene_id === change.right_scene_id
-        : Object.keys(change).length !== 3) {
-      throw new Error("The original scene edit could not be restored.");
+    const invalid = () => new Error("The original scene edit could not be restored.");
+    if (change.type === "split_scene") {
+      if (Object.keys(change).length !== 4 || !projectionUuid(change.right_scene_id) || change.scene_id === change.right_scene_id) throw invalid();
+    } else if (change.type === "trim_scene_end") {
+      if (Object.keys(change).length !== (change.source ? 4 : 3)) throw invalid();
+    } else {
+      if (Object.keys(change).length !== 5 || !change.source || !Number.isSafeInteger(change.source_revision)
+          || change.source_revision <= 0 || change.source_revision > attempt.revision) throw invalid();
+      formatBeatTime(change.duration);
     }
-    formatBeatTime(change.at);
+    if (change.type !== "split_scene" && change.source) {
+      if (Object.keys(change.source).length !== 2 || change.source.request_id !== attempt.requestId) throw invalid();
+      formatBeatTime(change.source.duration);
+    }
+    if (change.type !== "reverse_scene_trim") formatBeatTime(change.at);
     result.push(attempt);
   }
   return result;

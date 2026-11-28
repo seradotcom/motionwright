@@ -1,5 +1,7 @@
 use crate::{ApplyReceiptObservation, StorageError, StorageResult, StudioService};
-use motionwright_domain::{Change, DomainError, Project, RationalTime, RevisionStamp};
+use motionwright_domain::{
+    Change, DomainError, Project, RationalTime, RevisionStamp, SceneTrimSource,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -52,6 +54,7 @@ pub struct SceneTrimRequest {
     revision: u64,
     scene_id: Uuid,
     at: RationalTime,
+    source: Option<SceneTrimSource>,
 }
 
 impl SceneTrimRequest {
@@ -59,6 +62,7 @@ impl SceneTrimRequest {
         Change::TrimSceneEnd {
             scene_id: self.scene_id,
             at: self.at,
+            source: self.source.clone(),
         }
     }
 }
@@ -80,40 +84,100 @@ pub struct SceneTrimReceiptRequest {
     trim: SceneTrimRequest,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SceneTrimReverseRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    branch_id: Uuid,
+    revision: u64,
+    scene_id: Uuid,
+    source_revision: u64,
+    request_id: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SceneTrimReversePreview {
+    #[serde(flatten)]
+    timing: SceneTrimPreview,
+    change: Change,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SceneTrimReverseReceiptRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    branch_id: Uuid,
+    revision: u64,
+    request_id: Uuid,
+    change: Change,
+}
+
 impl StudioService {
+    pub fn preview_scene_trim_reverse(
+        &self,
+        request: &SceneTrimReverseRequest,
+    ) -> StorageResult<SceneTrimReversePreview> {
+        let (project, change) = self.store.lock().prepare_scene_trim_reverse(
+            request.project_id,
+            &RevisionStamp {
+                resource: format!("project:{}", request.project_id),
+                generation: request.generation,
+                revision: request.revision,
+            },
+            request.branch_id,
+            request.scene_id,
+            request.source_revision,
+            request.request_id,
+        )?;
+        let Change::ReverseSceneTrim { duration, .. } = &change else {
+            return Err(DomainError::Invalid("Unexpected scene trim reversal.".into()).into());
+        };
+        let start = project
+            .scenes
+            .iter()
+            .find(|scene| scene.id == request.scene_id)
+            .ok_or_else(|| DomainError::NotFound(format!("scene:{}", request.scene_id)))?
+            .start;
+        let at = start
+            .checked_add(*duration)
+            .map_err(|_| DomainError::Invalid("Scene trim time is out of bounds.".into()))?;
+        let timing = preview_trim_effect(project, &change, request.scene_id, at)?;
+        Ok(SceneTrimReversePreview { timing, change })
+    }
+
+    pub fn observe_scene_trim_reverse_receipt(
+        &self,
+        request: &SceneTrimReverseReceiptRequest,
+    ) -> StorageResult<ApplyReceiptObservation> {
+        if !matches!(&request.change, Change::ReverseSceneTrim { source, .. } if source.request_id == request.request_id)
+        {
+            return Err(DomainError::Invalid("Invalid reversal request identity.".into()).into());
+        }
+        self.observe_scene_timing_receipt(
+            request.project_id,
+            RevisionStamp {
+                resource: format!("project:{}", request.project_id),
+                generation: request.generation,
+                revision: request.revision,
+            },
+            request.branch_id,
+            request.request_id,
+            &request.change,
+        )
+    }
     pub fn preview_scene_trim(
         &self,
         request: &SceneTrimRequest,
     ) -> StorageResult<SceneTrimPreview> {
-        let mut candidate = self.scene_timing_source(
+        let candidate = self.scene_timing_source(
             request.project_id,
             request.generation,
             request.branch_id,
             request.revision,
         )?;
-        let index = candidate
-            .scenes
-            .iter()
-            .position(|scene| scene.id == request.scene_id)
-            .ok_or_else(|| DomainError::NotFound(format!("scene:{}", request.scene_id)))?;
-        let old_duration = candidate.scenes[index].duration;
-        let following: Vec<_> = candidate.scenes[index + 1..]
-            .iter()
-            .map(|scene| scene.start)
-            .collect();
-        candidate.apply_change(&request.change())?;
-        Ok(SceneTrimPreview {
-            scene_id: request.scene_id,
-            revision: request.revision,
-            at: request.at,
-            old_duration,
-            new_duration: candidate.scenes[index].duration,
-            shifted_scenes: candidate.scenes[index + 1..]
-                .iter()
-                .zip(following)
-                .filter(|(scene, old_start)| scene.start != *old_start)
-                .count(),
-        })
+        preview_trim_effect(candidate, &request.change(), request.scene_id, request.at)
     }
 
     pub fn observe_scene_trim_receipt(
@@ -241,4 +305,35 @@ impl StudioService {
         }
         Ok(observed)
     }
+}
+
+fn preview_trim_effect(
+    mut candidate: Project,
+    change: &Change,
+    scene_id: Uuid,
+    at: RationalTime,
+) -> StorageResult<SceneTrimPreview> {
+    let index = candidate
+        .scenes
+        .iter()
+        .position(|scene| scene.id == scene_id)
+        .ok_or_else(|| DomainError::NotFound(format!("scene:{scene_id}")))?;
+    let old_duration = candidate.scenes[index].duration;
+    let following: Vec<_> = candidate.scenes[index + 1..]
+        .iter()
+        .map(|scene| scene.start)
+        .collect();
+    candidate.apply_change(change)?;
+    Ok(SceneTrimPreview {
+        scene_id,
+        revision: candidate.revision,
+        at,
+        old_duration,
+        new_duration: candidate.scenes[index].duration,
+        shifted_scenes: candidate.scenes[index + 1..]
+            .iter()
+            .zip(following)
+            .filter(|(scene, old_start)| scene.start != *old_start)
+            .count(),
+    })
 }

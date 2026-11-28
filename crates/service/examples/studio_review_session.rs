@@ -965,6 +965,16 @@ impl Session {
                     .preview_branch_combination(&request(args)?)
                     .map_err(|error| error.to_string())?,
             ),
+            "preview_scene_trim_reverse" => encoded(
+                self.service
+                    .preview_scene_trim_reverse(&request(args)?)
+                    .map_err(|error| error.to_string())?,
+            ),
+            "observe_scene_trim_reverse_receipt" => encoded(
+                self.service
+                    .observe_scene_trim_reverse_receipt(&request(args)?)
+                    .map_err(|error| error.to_string())?,
+            ),
             "preview_scene_trim" => encoded(
                 self.service
                     .preview_scene_trim(&request(args)?)

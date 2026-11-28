@@ -957,6 +957,9 @@ fn scene_trim_preview_error(error: motionwright_service::StorageError) -> String
         StorageError::Domain(DomainError::Invalid(reason)) => match reason.as_str() {
             "Scene trim time is out of bounds."
             | "Scene trim would change approved scene timing."
+            | "The original scene trim receipt is unavailable on this branch."
+            | "The affected scene timing changed after the original trim."
+            | "The saved scene duration changed."
             | "Scene trim would change protected delivery timing."
             | "Trimming requires an editable scene without a bound capsule."
             | "Position the playhead inside the selected scene to trim its end."
@@ -973,6 +976,38 @@ fn scene_trim_preview_error(error: motionwright_service::StorageError) -> String
         },
         _ => sanitized(error),
     }
+}
+
+#[tauri::command]
+async fn preview_scene_trim_reverse(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: motionwright_service::SceneTrimReverseRequest,
+) -> Result<motionwright_service::SceneTrimReversePreview, String> {
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        service
+            .preview_scene_trim_reverse(&request)
+            .map_err(scene_trim_preview_error)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn observe_scene_trim_reverse_receipt(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: motionwright_service::SceneTrimReverseReceiptRequest,
+) -> Result<motionwright_service::ApplyReceiptObservation, String> {
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        service
+            .observe_scene_trim_reverse_receipt(&request)
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -5519,6 +5554,8 @@ fn main() {
             observe_marker_receipt,
             preview_scene_split,
             preview_scene_trim,
+            preview_scene_trim_reverse,
+            observe_scene_trim_reverse_receipt,
             observe_scene_trim_receipt,
             observe_scene_split_receipt,
             preview_scoped_change,

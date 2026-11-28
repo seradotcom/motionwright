@@ -916,7 +916,8 @@ export type Change =
   | { type: "set_scene_status"; scene_id: string; status: SceneStatus }
   | { type: "set_scene_duration"; scene_id: string; duration: RationalTime }
   | { type: "split_scene"; scene_id: string; right_scene_id: string; at: RationalTime }
-  | { type: "trim_scene_end"; scene_id: string; at: RationalTime }
+  | { type: "trim_scene_end"; scene_id: string; at: RationalTime; source?: SceneTrimSource }
+  | { type: "reverse_scene_trim"; scene_id: string; source_revision: number; source: SceneTrimSource; duration: RationalTime }
   | { type: "snap_scene_cut_to_music"; scene_id: string; beat_index: number; source_sha256: string; base_revision: number; acknowledge_absolute_anchors: boolean }
   | { type: "conform_scenes_to_music"; targets: Array<{scene_id:string;beat_index:number}>; source_sha256: string; base_revision:number; acknowledge_absolute_anchors:boolean }
   | import("./sceneBeatTimeline").SceneBeatTimelineChange
@@ -979,7 +980,9 @@ export type ScopedMutationChange = Extract<Change, { type: "apply_creative_patch
 
 export type SceneSplitChange = Extract<Change, { type: "split_scene" }>;
 export type SceneTrimChange = Extract<Change, { type: "trim_scene_end" }>;
-export type SceneTimingChange = SceneSplitChange | SceneTrimChange;
+export interface SceneTrimSource { request_id: string; duration: RationalTime }
+export type SceneTrimReverseChange = Extract<Change, { type: "reverse_scene_trim" }>;
+export type SceneTimingChange = SceneSplitChange | SceneTrimChange | SceneTrimReverseChange;
 export type MarkerChange = Extract<Change, { type: "edit_marker" | "remove_marker" }>;
 
 export interface ProjectEvent {

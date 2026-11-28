@@ -41,6 +41,7 @@ mod read_only;
 mod render_window_cache;
 mod root_operation_budget;
 mod scene_boundary_target;
+mod scene_trim;
 mod sqlite_identity;
 pub use apply_receipt_binding::{
     APPLY_REQUEST_ENCODING_V1, ApplyReceiptInvalid, ApplyReceiptObservation,
@@ -1624,6 +1625,7 @@ impl Store {
             });
         }
 
+        scene_trim::verify_scene_trim(&tx, &project, request_id, change)?;
         if let Change::UpsertSceneBoundary { boundary } = change {
             scene_boundary_target::verify_upsert_target(&tx, &project, boundary)?;
         }

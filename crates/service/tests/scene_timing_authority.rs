@@ -583,3 +583,98 @@ fn scene_split_rebases_held_motion_without_changing_its_poses_or_sampling_clock(
     let reopened = StudioService::open(&database).unwrap();
     assert_eq!(reopened.project(saved.id).unwrap(), saved);
 }
+
+#[test]
+fn reverse_trim_preserves_later_edits_and_uses_the_original_timing_receipt() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("trim-history.sqlite3");
+    let service = StudioService::open(&database).unwrap();
+    let base = project(&service);
+    let scene_id = base.scenes[0].id;
+    let trim_id = uuid::Uuid::now_v7();
+    let trimmed = apply(
+        &service,
+        &base,
+        &trim_id.to_string(),
+        Change::TrimSceneEnd {
+            scene_id,
+            at: time(5, 1),
+            source: Some(SceneTrimSource {
+                request_id: trim_id,
+                duration: time(7, 1),
+            }),
+        },
+    );
+    let edited = apply(
+        &service,
+        &trimmed,
+        "later-marker",
+        Change::AddMarker {
+            label: "Keep this reference".into(),
+            at: time(11, 1),
+        },
+    );
+    drop(service);
+    let reopened = StudioService::open(&database).unwrap();
+    let undo_id = uuid::Uuid::now_v7();
+    let undo = Change::ReverseSceneTrim {
+        scene_id,
+        source_revision: trimmed.revision,
+        source: SceneTrimSource {
+            request_id: undo_id,
+            duration: time(5, 1),
+        },
+        duration: time(7, 1),
+    };
+    let mut forged = undo.clone();
+    if let Change::ReverseSceneTrim {
+        ref mut duration, ..
+    } = forged
+    {
+        *duration = time(8, 1);
+    }
+    assert!(
+        reopened
+            .apply(edited.id, &edited.stamp(), &undo_id.to_string(), &forged)
+            .is_err()
+    );
+    assert_eq!(reopened.project(edited.id).unwrap(), edited);
+
+    let restored = apply(&reopened, &edited, &undo_id.to_string(), undo);
+    assert_eq!(restored.scenes, base.scenes);
+    assert_eq!(restored.markers, edited.markers);
+    assert_eq!(restored.revision, edited.revision + 1);
+
+    let redo_id = uuid::Uuid::now_v7();
+    let redone = apply(
+        &reopened,
+        &restored,
+        &redo_id.to_string(),
+        Change::ReverseSceneTrim {
+            scene_id,
+            source_revision: restored.revision,
+            source: SceneTrimSource {
+                request_id: redo_id,
+                duration: time(7, 1),
+            },
+            duration: time(5, 1),
+        },
+    );
+    assert_eq!(redone.scenes, trimmed.scenes);
+    assert_eq!(redone.markers, edited.markers);
+    assert_eq!(
+        reopened
+            .history(edited.id, edited.revision, 8)
+            .unwrap()
+            .len(),
+        2
+    );
+    drop(reopened);
+    assert_eq!(
+        StudioService::open(&database)
+            .unwrap()
+            .project(edited.id)
+            .unwrap(),
+        redone
+    );
+}
