@@ -293,6 +293,16 @@ class DirectBindingTests(unittest.TestCase):
                 "automatic_retry": False, "formal_acceptance": False}
             docs[f"/direct-host/{phase}/evidence/direct-host-reference.json"] = reference
             docs[f"/direct-host/{phase}/evidence/terminal.json"] = terminal
+            if phase == "original":
+                docs["/direct-host/original/evidence/runtime-grant-refusal.json"] = {
+                    "schema": "motionwright.hyperframes.runtime-grant-refusal/1",
+                    "omitted_grant": "runtime",
+                    "retained_grants": ["project", "output", "hyperframes-node-tool"],
+                    "code": "PolicyDenied", "outcome_known": True, "roots_empty_after": True,
+                    "manifest_sha256": reference["manifest_sha256"],
+                    "driver_sha256": reference["driver_sha256"],
+                    "runtime_lock_sha256": existing.PIN, "fingerprint": source["fingerprint"],
+                    "automatic_retry": False}
             for name in actions.FILES:
                 rel = "source-" + source["fingerprint"] + "/" + name
                 files[f"/direct-host/{phase}/project/" + rel] = files["/direct-source/" + rel]
@@ -457,6 +467,20 @@ class DirectBindingTests(unittest.TestCase):
                     **current, "run_id": "124"}
             with self.subTest(kind=kind), self.assertRaises(HyperframesEvidenceRejected):
                 self.verify(args, current, docs, files)
+
+    def test_original_host_requires_the_retained_owner_grant_refusal(self):
+        target = "/direct-host/original/evidence/runtime-grant-refusal.json"
+        for replacement in (None, {"runtime_lock_sha256": "f" * 64},
+                            {"manifest_sha256": "e" * 64}, {"driver_sha256": "d" * 64},
+                            {"fingerprint": "c" * 64}):
+            with self.subTest(replacement=replacement):
+                args, current, docs, files = self.fixture()
+                if replacement is None:
+                    docs.pop(target, None)
+                else:
+                    docs.setdefault(target, {}).update(replacement)
+                with self.assertRaisesRegex(ValueError, "runtime_grant_refusal|original_member_not_retained"):
+                    self.verify(args, current, docs, files)
 
     def test_direct_and_mediated_job_identity_must_remain_distinct(self):
         args, current, docs, files = self.fixture()
