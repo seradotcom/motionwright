@@ -951,7 +951,14 @@ CLOSEOUT_SERVICE_ADDITIONS = {'canvas': ('saved Canvas font drives the read-only
                        'Scene boundary explicit source binding, Draft and Explicit saves preserve authored '
                        'objects and assets through SQLite reopen and journalled removal',
                        'Scene boundary keeps invalid raw endpoint JSON and its prior source when a real peer '
-                       'makes explicit rebind stale'),
+                       'makes explicit rebind stale',
+                       'native property review edits a complete source-bound batch, retains later input and reopens the same SQLite capsule'),
+ 'creative-workbench': (
+     'procedural influence edits and reopens one source-bound field with independent human overrides and incomplete input retained',
+     'Measured complete output editing preserves independent drafts, source revisions and the original SQLite bindings',
+     'editable procedural path and count reflow preserve original source, late input and human objects through SQLite reopen',
+     'saved scene camera follows the same playhead without writes and survives SQLite reopen',
+ ),
  'branch-authoring': ('an unchanged SQLite branch base stays UNKNOWN until a real peer advances it, '
                       'preserving later input without replay',),
  'branch-combination': ('two real strategies produce a persisted inactive candidate, then editable undo '
@@ -984,7 +991,7 @@ SELECTION_GROUPS = {
                           "required_tests": 143},
     "project-authoring-core": {"labels": tuple(row[0] for row in PROJECT_AUTHORING_SELECTIONS if row[0] != "review"), "required_tests": 132},
     "creative-production": {"labels": ("production-design", "creative-workbench"),
-                            "required_tests": 30},
+                            "required_tests": 35},
     "complete-authoring": {
         "labels": ("beat-draft", "beat-time", "delivery-recipe", "recipe-authority", "review",
                    "inspector", "profile-metadata", "profile-authority"),
@@ -999,8 +1006,8 @@ SELECTION_TIMEOUTS = {
     "branch-authoring": 2340,
     "claim-source": 1860,
     "branch-combination": 540,
-    "production-design": 2700,
-    "creative-workbench": 1260,
+    "production-design": 2820,
+    "creative-workbench": 1740,
     "canvas": 2160,
     "ink": 180,
     "program": 600,
@@ -1987,7 +1994,7 @@ BROWSER_SELECTION_TIMEOUTS.update({label: 180 + 30 * len(titles)
                                    for label, _, titles in WORKFLOW_PREVIEW_BROWSER_SELECTIONS})
 
 
-CREATIVE_PRODUCTION_UNITS = (('src/productionDesignDraft.test.ts',
+HISTORICAL_CREATIVE_PRODUCTION_UNITS = (('src/productionDesignDraft.test.ts',
   (('Production author input and original response authority',
     'scopes component and plan input by project, generation, branch and component scene'),
    ('Production author input and original response authority',
@@ -2127,6 +2134,144 @@ CREATIVE_PRODUCTION_UNITS = (('src/productionDesignDraft.test.ts',
     'rejects an existing Hero collision before arming an attempt and retains the exact author input'),
    ('ProductStage existing project eligibility before mutation dispatch',
     'rejects creation at the existing sixteen-Stage limit while a bound Stage can still update'))))
+
+
+CREATIVE_PRODUCTION_UNIT_ADDITIONS = {
+    'src/productionDesignDraft.test.ts': (
+        ('Production recovery after an initially unreadable pointer or copy', (
+            'does not treat a failed first pointer read as an observed empty writer',
+            'confirms an initially unknown empty pointer and then rejects a writer appearing after that observation',
+            'rejects replacement or removal of a previously observed writer after a copy read failed',
+            'restores intact ordinary hero input without manufacturing a new edit after a failed copy read',
+            'retains an explicit clear hero edit made while recovery was blocked together with the original UNKNOWN',
+            'retains an explicit ABA hero edit made while recovery was blocked together with the original UNKNOWN',
+            'restores intact ordinary plan input without manufacturing a new edit after a failed copy read',
+            'retains an explicit clear plan edit made while recovery was blocked together with the original UNKNOWN',
+            'retains an explicit ABA plan edit made while recovery was blocked together with the original UNKNOWN',
+            'recovers untouched pending input rather than the placeholder and treats an old NOT_SENT label as UNKNOWN',
+            'rejects recovery into another target or over a different pending attempt',
+            'refuses sequence overflow while retaining both the earlier and later input',
+            'forks recovered UNKNOWN input while retaining exact original bytes through reload without nesting each reload again',
+            'blocks another copy write if a retained original changed while keeping a complete export available',
+            'rechecks a retained original after the new writer pointer is published',
+            'reads older v1 copies without origins and preserves malformed new-origin copies as downloadable raw bytes',
+        )),
+        ('legacy source attachment uses durable Production intent without native admission', (
+            'starts an explicitly scoped creation with no selected asset or existing capsule base',
+            'prepares the exact eight-field opaque capsule using the pending UUID and raw renderer/version',
+            'a missing scene prevents preparation and retains the raw source input',
+            'a ambiguous scene prevents preparation and retains the raw source input',
+            'a none scene prevents preparation and retains the raw source input',
+            'a source asset with empty cannot become an attachment',
+            'a source asset with missing cannot become an attachment',
+            'a source asset with ambiguous cannot become an attachment',
+            'a source asset with no digest cannot become an attachment',
+            'a source asset with malformed digest cannot become an attachment',
+            'a source asset with uppercase digest cannot become an attachment',
+            'invalid renderer metadata with empty input stays raw and fails before a Change can be sent',
+            'invalid renderer metadata with whitespace stays raw and fails before a Change can be sent',
+            'invalid renderer metadata with oversized UTF-8 stays raw and fails before a Change can be sent',
+            'invalid renderer metadata with a control character stays raw and fails before a Change can be sent',
+            'invalid version metadata with empty input stays raw and fails before a Change can be sent',
+            'invalid version metadata with whitespace stays raw and fails before a Change can be sent',
+            'invalid version metadata with oversized UTF-8 stays raw and fails before a Change can be sent',
+            'invalid version metadata with a control character stays raw and fails before a Change can be sent',
+            'a project content lock prevents source preparation without replacing input',
+            'a scene content lock prevents source preparation without replacing input',
+            'source creation cannot perform approve',
+            'source creation cannot perform detach',
+            'refuses an existing capsule UUID and the existing capsule budget without updating any capsule',
+            'a matching original source ACK makes the form clean; another attachment requires an explicit new edit',
+            'a later asset clear survives the original attachment ACK',
+            'a later renderer survives the original attachment ACK',
+            'a later version survives the original attachment ACK',
+            'a later ABA survives the original attachment ACK',
+            'a wrong id source ACK cannot clear the original intent',
+            'a wrong generation source ACK cannot clear the original intent',
+            'a wrong active_branch source ACK cannot clear the original intent',
+            'a wrong revision source ACK cannot clear the original intent',
+            'a wrong capsule id source ACK cannot clear the original intent',
+            'a wrong capsule value source ACK cannot clear the original intent',
+            'a wrong missing source ACK cannot clear the original intent',
+            'a wrong duplicate source ACK cannot clear the original intent',
+            'same-stamp asset digest changes invalidate source preparation despite a null base',
+            'same-stamp asset name changes invalidate source preparation despite a null base',
+            'same-stamp asset removal changes invalidate source preparation despite a null base',
+            'same-stamp scene changes invalidate source preparation despite a null base',
+            'same-stamp locks changes invalidate source preparation despite a null base',
+            'same-stamp capsules changes invalidate source preparation despite a null base',
+            'same-stamp source changes invalidate the two outcome reads and a previously accepted review',
+            'an equivalent peer capsule with another ID is not a matching original attachment',
+            'Continue after an observed source result preserves the original intent and creates no capsule until a separate Attach',
+            'rejects a source copy with changed native authority without expanding the eight-field contract',
+            'rejects a source copy with changed fidelity without expanding the eight-field contract',
+            'rejects a source copy with changed editable without expanding the eight-field contract',
+            'rejects a source copy with changed disclosure without expanding the eight-field contract',
+            'rejects a source copy with changed identity without expanding the eight-field contract',
+            'rejects a source copy with changed scene without expanding the eight-field contract',
+            'rejects a source copy with changed asset without expanding the eight-field contract',
+            'rejects a source copy with changed renderer without expanding the eight-field contract',
+            'rejects a source copy with changed base without expanding the eight-field contract',
+        )),
+        ('Production UNKNOWN base authority across component, plan and source', (
+            'hero keeps UNKNOWN on the same saved revision with an empty journal',
+            'hero permits the live NOT_SENT caller to continue explicitly on the same base while recovery remains UNKNOWN',
+            'hero retains later input and exact original bytes after an independent peer advances the base',
+            'plan keeps UNKNOWN on the same saved revision with an empty journal',
+            'plan permits the live NOT_SENT caller to continue explicitly on the same base while recovery remains UNKNOWN',
+            'plan retains later input and exact original bytes after an independent peer advances the base',
+            'source keeps UNKNOWN on the same saved revision with an empty journal',
+            'source permits the live NOT_SENT caller to continue explicitly on the same base while recovery remains UNKNOWN',
+            'source retains later input and exact original bytes after an independent peer advances the base',
+        )),
+        ('Production confirmation preserves actual raw bytes and full custody checks', (
+            'retains whitespace, timestamp and absent legacy origins when confirming unchanged decoded input',
+            'unchanged live NOT_SENT bytes stay exact while a recovered UNKNOWN is published into a separate writer',
+            'counts the exact retained legacy bytes before confirming the global recovery quota',
+            'does not overwrite a peer pointer installed during data publication',
+            'an unchanged-byte confirmation still rejects a removed pointer',
+        )),
+        ('Scene boundary authoring through existing Production custody', (
+            'keeps legacy five-element scopes unchanged and scopes each boundary by a sixth explicit selector',
+            'creates one declaration UUID and retains it through read, reset, preparation and ACK without changing scope',
+            'recovers every incomplete numeric, option and JSON string exactly without inventing a source',
+            'retains unsourced authoring fields after a persisted incomplete draft and subsequent peer revision',
+            'requires complete explicit endpoints and a bound source rather than promoting a draft to readiness',
+            'keeps an unchanged stale or foreign source during edits but rejects a changed source without a current explicit bind',
+            'preserves changed profileId and the earlier source while requiring an explicit rebind',
+            'preserves changed frameRateNum and the earlier source while requiring an explicit rebind',
+            'preserves changed frameRateDen and the earlier source while requiring an explicit rebind',
+            'preserves changed fontFamily and the earlier source while requiring an explicit rebind',
+            'preserves changed monoFontFamily and the earlier source while requiring an explicit rebind',
+            'preserves changed role and the earlier source while requiring an explicit rebind',
+            'preserves changed archetype and the earlier source while requiring an explicit rebind',
+            'preserves a partial predecessor declaration without substituting a guessed scene or exit digest',
+            'does not reuse bound predecessor context after the author selects another declaration',
+            'requires full Project equality through asynchronous preparation, including unselected scenes and assets',
+            "keeps later invalid input and another writer's raw bytes when the original reply arrives",
+            'retains UNKNOWN after observing matching history and rejects a same-revision dependency change during review',
+            'removes only the selected declaration, preserves editable nodes and durably blocks accidental identity reuse',
+            'rejects forged pending values and authority fields while leaving the complete original copy intact',
+            'rejects oversized recovery without truncating endpoint input and refuses boundary operations on legacy targets',
+        )),
+    ),
+    'src/creativeWorkbenchDraft.test.ts': (
+        ('creative workbench verified custody and uncertain outcome review', (
+            'accepts boolean focus snapshots and preserves invalid submitted-only recovery bytes',
+        )),
+        ('complete procedural influence drafts', (
+            'retains incomplete and disabled influence fields through copy, original ACK and later revisions',
+            'refuses a new intent while the original UNKNOWN could still commit at the same revision',
+            'validates the complete scene budget and timing locks before a procedural dispatch is prepared',
+        )),
+    ),
+}
+CREATIVE_PRODUCTION_UNITS = tuple(
+    (filename, (historical + tuple((group, title)
+                              for group, titles in CREATIVE_PRODUCTION_UNIT_ADDITIONS[filename]
+                              for title in titles)))
+    for filename, historical in HISTORICAL_CREATIVE_PRODUCTION_UNITS
+)
 
 
 REVIEW_UNITS = (('src/reviewDraft.test.ts',
@@ -3278,7 +3423,7 @@ def selected_unit_inventory(selection):
         return window_frontend_inventory()
     require(selection in ("creative-production", "review", "workflow-preview", "branch-claim"), "unknown selected unit scope")
     rows, expected_files, expected_tests = {
-        "creative-production": (CREATIVE_PRODUCTION_UNITS, 2, 67),
+        "creative-production": (CREATIVE_PRODUCTION_UNITS, 2, 177),
         "review": (REVIEW_UNITS, 1, 72),
         "workflow-preview": (WORKFLOW_PREVIEW_UNITS, 3, 79),
         "branch-claim": (BRANCH_CLAIM_UNITS, 2, 134),
@@ -4314,7 +4459,7 @@ def selected_selections(selection):
             and len(HISTORICAL_PROJECT_AUTHORING_SELECTIONS) == 19
             and sum(len(row[2]) for row in HISTORICAL_PROJECT_AUTHORING_SELECTIONS) == 135
             and len(CREATIVE_PRODUCTION_SELECTIONS) == 2
-            and sum(len(row[2]) for row in CREATIVE_PRODUCTION_SELECTIONS) == 30
+            and tuple(len(row[2]) for row in CREATIVE_PRODUCTION_SELECTIONS) == (22, 13)
             and len(BRANCH_CLAIM_SELECTIONS) == 3
             and tuple((label, filename, len(titles)) for label, filename, titles in BRANCH_CLAIM_SELECTIONS) == (
                 ("branch-authoring", "branch-authoring-service.spec.ts", 18),
@@ -4359,7 +4504,7 @@ def selection_plan(selection):
                 "not_selected": [{"label": label, "file": filename, "titles": list(titles),
                                   "status": "NOT_SELECTED", "technical_credit": "NONE"}
                                  for label, filename, titles in SELECTIONS if label != "camera"],
-                "required_tests": 8, "full_default_tests": 208, "existing_camera_cases": 7,
+                "required_tests": 8, "full_default_tests": 213, "existing_camera_cases": 7,
                 "added_v2_cases": 1, "discovery_required_before_execution": True,
                 "execution_platform": "Linux", "independent_archive_reopen": False,
                 "criterion_acceptance": "NOT_ASSESSED", "formal_acceptance": False}
@@ -4370,7 +4515,7 @@ def selection_plan(selection):
                 "not_selected": [{"label": label, "file": filename, "titles": list(titles),
                                   "status": "NOT_SELECTED", "technical_credit": "NONE"}
                                  for label, filename, titles in SELECTIONS],
-                "required_tests": 6, "full_default_tests": 208,
+                "required_tests": 6, "full_default_tests": 213,
                 "discovery_required_before_execution": True, "execution_platform": "Linux",
                 "criterion_acceptance": "NOT_ASSESSED", "formal_acceptance": False}
     if is_browser_scope(selection):

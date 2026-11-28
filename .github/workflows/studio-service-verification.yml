@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       selection:
-        description: Run a closed selection; all requires four bounded same-source shards (132 plus 11 plus 30 plus 35)
+        description: Run a closed selection; all requires four bounded same-source shards (132 plus 11 plus 35 plus 35)
         type: choice
         required: true
         default: authoring-drafts
@@ -113,7 +113,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   creative-unit-build:
-    name: ${{ inputs.selection == 'window-frontend' && 'Window and saved-font units (250), build and six Chromium contracts' || inputs.selection == 'branch-claim' && 'Branch and Claim units (134), domain and SQLite contracts' || inputs.selection == 'workflow-preview-browser' && 'Workflow and Preview units (79), native route and desktop compile' || inputs.selection == 'review' && 'Review units (72) and production build' || 'Creative Production and Workbench units (67) and production build' }}
+    name: ${{ inputs.selection == 'window-frontend' && 'Window and saved-font units (250), build and six Chromium contracts' || inputs.selection == 'branch-claim' && 'Branch and Claim units (134), domain and SQLite contracts' || inputs.selection == 'workflow-preview-browser' && 'Workflow and Preview units (79), native route and desktop compile' || inputs.selection == 'review' && 'Review units (72) and production build' || 'Creative Production and Workbench units (177) and production build' }}
     if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["all","creative-production","creative-production-browser","production-design","creative-workbench","review","workflow-preview-browser","branch-claim","window-frontend"]'), inputs.selection)
     needs: g0
     runs-on: ubuntu-24.04
@@ -322,7 +322,7 @@ jobs:
       matrix:
         selection: ${{ fromJSON(inputs.selection == 'all' && '["project-authoring-core","review","creative-production","branch-claim"]' || inputs.selection == 'project-authoring' && '["project-authoring-core","review"]' || inputs.selection == 'review' && '["review-browser","review"]' || format('["{0}"]', inputs.selection)) }}
     # Each child keeps every original per-case bound; all requires every child.
-    timeout-minutes: ${{ matrix.selection == 'phase1-native-graph' && 180 || matrix.selection == 'phase1-service47' && 110 || matrix.selection == 'camera-with-v2' && 90 || matrix.selection == 'branch-claim' && 120 || matrix.selection == 'browser-contracts' && 240 || matrix.selection == 'creative-production-browser' && 75 || matrix.selection == 'project-authoring-core' && 360 || matrix.selection == 'creative-production' && 110 || matrix.selection == 'review' && 70 || contains(fromJSON('["creative-production","production-design","creative-workbench","branch-claim","branch-authoring","claim-source"]'), matrix.selection) && 90 || matrix.selection == 'complete-authoring' && 180 || matrix.selection == 'authoring-drafts' && 120 || 60 }}
+    timeout-minutes: ${{ matrix.selection == 'phase1-native-graph' && 180 || matrix.selection == 'phase1-service47' && 110 || matrix.selection == 'camera-with-v2' && 90 || matrix.selection == 'branch-claim' && 120 || matrix.selection == 'browser-contracts' && 240 || matrix.selection == 'creative-production-browser' && 75 || matrix.selection == 'project-authoring-core' && 360 || matrix.selection == 'creative-production' && 120 || matrix.selection == 'review' && 70 || contains(fromJSON('["creative-production","production-design","creative-workbench","branch-claim","branch-authoring","claim-source"]'), matrix.selection) && 90 || matrix.selection == 'complete-authoring' && 180 || matrix.selection == 'authoring-drafts' && 120 || 60 }}
     env:
       CARGO_HOME: ${{ github.workspace }}/v/c
       CARGO_TARGET_DIR: ${{ github.workspace }}/v/t

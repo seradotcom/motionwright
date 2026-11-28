@@ -425,9 +425,11 @@ describe("legacy source attachment uses durable Production intent without native
     expect(draft.input).toEqual(input); expect(project).toEqual(before);
   });
   it.each([
-    ["renderer", ""], ["renderer", "  \t"], ["renderer", "🙂".repeat(33)], ["renderer", "value\u0000"],
-    ["version", ""], ["version", "  "], ["version", "🙂".repeat(33)], ["version", "value\u0000"],
-  ] as const)("invalid %s metadata stays raw and fails before a Change can be sent", async (field, value) => {
+    ["renderer", "empty input", ""], ["renderer", "whitespace", "  \t"],
+    ["renderer", "oversized UTF-8", "🙂".repeat(33)], ["renderer", "a control character", "value\u0000"],
+    ["version", "empty input", ""], ["version", "whitespace", "  "],
+    ["version", "oversized UTF-8", "🙂".repeat(33)], ["version", "a control character", "value\u0000"],
+  ] as const)("invalid %s metadata with %s stays raw and fails before a Change can be sent", async (field, _case, value) => {
     const project = source(), input = { ...sourceInput(project), [field]: value }, draft = authoredSource(project, input);
     await expect(prepareProductionSubmission(draft, project, id)).rejects.toThrow(/renderer/i);
     const raw = encodeProductionCopy({ schema: "motionwright.production-recovery/1", scope: draft.scope, writerId: writer, updatedAt: 1, draft });
