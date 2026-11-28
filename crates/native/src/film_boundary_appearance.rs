@@ -86,7 +86,7 @@ fn cut_pose(
         .keyframes
         .retain(|key| key.property == MotionProperty::Opacity);
     let mut initial = node.clone();
-    if let Some(points) = native_pose_waypoints(&geometry, scene, rate)? {
+    if let Some(points) = native_pose_waypoints(&geometry, scene, profile.frame_rate)? {
         initial = points
             .first()
             .ok_or_else(|| loss("empty pose track"))?
