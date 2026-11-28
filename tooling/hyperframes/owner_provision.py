@@ -3,14 +3,18 @@
 
 Reads an explicit installed closure; never downloads, executes it, modifies an
 existing policy, opens a session, starts a renderer, or retries a native effect.
-Outputs review material for the existing Semwright54d Host, not another Host.
+Outputs review material for the Semwright Host selected by the source lock.
 """
 from __future__ import annotations
 import argparse,hashlib,json,os,re,stat,sys
 from pathlib import Path
+
+SOURCE_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(SOURCE_ROOT / 'tooling'))
+from source_lock_admission import load_source_lock, verify_source_lock
+
 VERSION='0.8.181'
 COMMIT='ae02e5aceff4742e5d72c20f0859eb3e6b449035'
-SDK_PIN='4849b3c1dcee9b37438801b4264f59480bff9e40'
 METADATA_SHA='d3f1dd614e50191bd08391108fb17e521aded5c9a9aa0f30947672f8667ea673'
 RUNNER_SHA='e2352fe31555f06f8a423e1cad4d84e8ff196f9707d04961ab476855d080b7b0'
 INTEGRITY='sha512-rBShZnCVW5xLe+6VViIv+SEAjYQ1Z9z8mt5M+XTCHoRj/eGRg5Z/yyvVNsWZZeuipoba5yhNfodOnwn94n4PPw=='
@@ -86,7 +90,7 @@ def validate_runtime(runtime:Path)->tuple:
  return lock,roles,sha(raw)
 def check_host_profile(manifest:dict)->None:
  # Specific .181 compatibility guard; SDK deserialization/Host validation remain mandatory.
- require(manifest['protocol']==7 and manifest['resources']['operation_cpu_seconds']==0,'SDK54 Linux Host tools require operation_cpu_seconds=0')
+ require(manifest['protocol']==7 and manifest['resources']['operation_cpu_seconds']==0,'HyperFrames Linux Host tools require operation_cpu_seconds=0')
  require(manifest['network'] is False and manifest['loopback_port'] is None,'external network and proxy are not authorized')
  require(len(manifest['tools'])==1 and manifest['tools'][0]['name']=='hyperframes-node','fixed Node Host tool required')
  require(set(manifest['tools'][0])=={'root','name','sha256','mounts','system_config','dependencies'},'unsupported ToolMount fields')
@@ -103,6 +107,9 @@ def build_manifest(paths:dict,driver_sha:str,node_sha:str)->dict:
 def make(args:argparse.Namespace)->dict:
  require(sys.platform=='linux','Only the reviewed Linux native profile can be provisioned')
  require(args.approved_license_terms and args.approved_sandbox_controls and args.approved_runtime_executables,'Owner must explicitly confirm rights and runtime execution authority')
+ source_lock = load_source_lock(SOURCE_ROOT)
+ verify_source_lock(SOURCE_ROOT, source_lock)
+ sdk_revision = source_lock['dependencies']['semwright']['revision']
  paths={name:absolute(getattr(args,name),name in ('runtime','project','output')) for name in ('runtime','driver','node','project','output')}
  roots=[paths[x] for x in ('runtime','project','output')]
  for i,left in enumerate(roots):
@@ -118,7 +125,7 @@ def make(args:argparse.Namespace)->dict:
   'drivers = ["__OWNER_SET_MANIFEST_PATH__"]','driver_network = false','','[policy]','profile = "workspace"','allow = ["driver:hyperframes"]']
  for name,p,writable in [('runtime',paths['runtime'],False),('project',paths['project'],True),('output',paths['output'],True),('hyperframes-node-tool',paths['node'],False)]:
   owner+=['','[[policy.filesystem]]','name = '+json.dumps(name),'path = '+json.dumps(str(p)),'read = true','write = '+str(writable).lower()]
- return {'manifest':manifest,'owner':'\n'.join(owner)+'\n','runtime_lock_sha256':lock_sha,'native_driver_sha256':driver_sha,'node_sha256':node_sha,'semwright_source_pin':SDK_PIN,'tool_versions_observed':False,'native_executed':False,'automatic_retry':False}
+ return {'manifest':manifest,'owner':'\n'.join(owner)+'\n','runtime_lock_sha256':lock_sha,'native_driver_sha256':driver_sha,'node_sha256':node_sha,'semwright_source_pin':sdk_revision,'tool_versions_observed':False,'native_executed':False,'automatic_retry':False}
 def main()->None:
  p=argparse.ArgumentParser(description=__doc__)
  for name in ('runtime','driver','node','project','output'):p.add_argument('--'+name,required=True)

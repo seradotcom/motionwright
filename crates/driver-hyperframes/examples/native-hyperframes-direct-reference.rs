@@ -19,7 +19,7 @@ mod linux {
     use tokio_util::sync::CancellationToken;
 
     type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
-    const SDK: &str = "4849b3c1dcee9b37438801b4264f59480bff9e40";
+    const SOURCE_LOCK: &str = include_str!("../../../SOURCE_LOCK.json");
 
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -172,6 +172,21 @@ mod linux {
             }
         }
         Ok(())
+    }
+
+    fn matches_build_sdk_revision(revision: &str) -> Result<bool> {
+        let lock: Value = serde_json::from_str(SOURCE_LOCK)?;
+        let expected = lock
+            .pointer("/dependencies/semwright/revision")
+            .and_then(Value::as_str)
+            .filter(|sha| {
+                sha.len() == 40
+                    && sha
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+            .ok_or("compiled Semwright revision is missing or invalid")?;
+        Ok(revision == expected)
     }
 
     struct Calls<'a> {
@@ -386,7 +401,7 @@ mod linux {
         .await??;
         let summary = json!({
             "schema":"motionwright.hyperframes.direct-host-reference/1",
-            "context":{"source_sha":config.source_sha,"semwright_sha":SDK,
+            "context":{"source_sha":config.source_sha,"semwright_sha":config.semwright_sha,
                 "run_id":std::env::var("GITHUB_RUN_ID")?,"run_attempt":"1",
                 "scenario":"hyperframes-first-party-direct-mediated-edit"},
             "phase":config.phase,"source":request.source,
@@ -433,7 +448,7 @@ mod linux {
                     .source_sha
                     .bytes()
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                && config.semwright_sha == SDK,
+                && matches_build_sdk_revision(&config.semwright_sha)?,
             "direct original Actions identity required",
         )?;
         let request = checked_request(&bytes(&config.request, 512 * 1024)?, &config.phase)?;
@@ -544,6 +559,23 @@ mod linux {
                 "fingerprint":source.fingerprint,"runtime_lock_sha256":"9".repeat(64),
                 "attempt_id":format!("direct-original-{}",&source.fingerprint[..16]),
                 "source":source})
+        }
+
+        #[test]
+        fn direct_sdk_revision_requires_the_compiled_source_lock() {
+            let workspace_lock = std::fs::read(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../SOURCE_LOCK.json"
+            ))
+            .unwrap();
+            let workspace_lock: Value = serde_json::from_slice(&workspace_lock).unwrap();
+            let current = workspace_lock["dependencies"]["semwright"]["revision"]
+                .as_str()
+                .unwrap();
+            assert!(matches_build_sdk_revision(current).unwrap());
+            let different = if current.starts_with('0') { '1' } else { '0' };
+            let wrong = format!("{different}{}", &current[1..]);
+            assert!(!matches_build_sdk_revision(&wrong).unwrap());
         }
 
         #[test]
