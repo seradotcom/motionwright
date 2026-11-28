@@ -1563,7 +1563,15 @@ export async function prepareVerifiedNativeAvReview(
     request:{project_id:project.id,generation:project.generation,revision:project.revision,
       export_token:exportToken,stream:true},
   });
-  return parseNativeAvPlayback(data,{project,exportToken,deliverableId,masterSha256});
+  const playback = parseNativeAvPlayback(data,{project,exportToken,deliverableId,masterSha256});
+  if (playback.kind !== "bytes" || masterSha256 === null) return playback;
+
+  // Bind the exact bytes passed to the player, including legacy binary replies.
+  const bytes = Uint8Array.from(playback.bytes);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  const observed = Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
+  if (observed !== masterSha256) throw new Error("Native media playback does not match the selected original source.");
+  return { kind: "bytes", bytes };
 }
 
 /** Reconstruct one original master reader from a durable receipt selector.

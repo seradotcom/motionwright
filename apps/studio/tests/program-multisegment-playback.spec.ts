@@ -1,8 +1,8 @@
 import {readFile} from "node:fs/promises";
 import {createHash} from "node:crypto";
-import {test,expect} from "@playwright/test";
+import {test,expect,type Page} from "@playwright/test";
 
-test("one original MP4 continues across Program segment handoff and releases on source change",async({page})=>{
+async function openProgramOriginal(page:Page, expectedSha?:string) {
   const source=process.env.MOTIONWRIGHT_REVIEW_MEDIA_FIXTURE;
   test.skip(!source,"Requires the existing synthetic four-second H.264/AAC fixture; never renders a replacement.");
   const bytes=await readFile(source!);
@@ -17,10 +17,15 @@ test("one original MP4 continues across Program segment handoff and releases on 
       app.__PROGRAM_ORIGINAL_READS__.push(args?.request);
       return Uint8Array.from(bytes);
     }};
-  },{bytes:[...bytes],sha:createHash("sha256").update(bytes).digest("hex")});
+  },{bytes:[...bytes],sha:expectedSha??createHash("sha256").update(bytes).digest("hex")});
   await page.goto("/tests/fixtures/program-multisegment.html");
   const program=page.getByRole("region",{name:"Program preview"});
   await program.getByRole("button",{name:"Review final AV"}).click();
+  return program;
+}
+
+test("one original MP4 continues across Program segment handoff and releases on source change",async({page})=>{
+  const program=await openProgramOriginal(page);
   const video=program.locator("video");
   await expect.poll(()=>video.evaluate(el=>(el as HTMLVideoElement).duration)).toBe(4);
   const original=await video.elementHandle();
@@ -46,4 +51,12 @@ test("one original MP4 continues across Program segment handoff and releases on 
   expect(reads).toHaveLength(1);
   expect(reads[0]).toMatchObject({export_token:"77777777-7777-4777-8777-777777777777",stream:true});
   expect(Object.keys(reads[0] as object).sort()).toEqual(["project_id","generation","revision","export_token","stream"].sort());
+});
+
+test("binary playback refuses an MP4 with a different digest from the selected original",async({page})=>{
+  const program=await openProgramOriginal(page,"1".repeat(64));
+  await expect(program.getByRole("alert")).toContainText("The original master could not be read in this session.",{timeout:2500});
+  await expect(program.locator("video")).toHaveCount(0);
+  const reads=await page.evaluate(()=>(window as unknown as {__PROGRAM_ORIGINAL_READS__:unknown[]}).__PROGRAM_ORIGINAL_READS__);
+  expect(reads).toHaveLength(1);
 });
