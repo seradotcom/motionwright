@@ -37,19 +37,22 @@ class HistoryCrossOsSelectionTests(unittest.TestCase):
     def test_reviewed_composed_storage_source_pins_are_exact_in_both_jobs(self):
         source = WORKFLOW.read_text(encoding="utf-8")
         expected = {
-            "crates/storage/src/lib.rs": "f5c2ee567971efff48a9198b088f8fd59b7afa56f5cc41d132778c3ec8893485",
-            "crates/storage/src/portability.rs": "685025f806c73e83676a1c487161f50aee2bea2901ccdeec89d9d0184eb3099a",
-            "Cargo.lock": "d59d987a8ad7cabf00fcc4e0a9dae1effe9bef54edd5694eaaf8436eef984091",
+            "crates/storage/src/lib.rs": "f69979bcebcde7899940d7b8081d36ce7f44c7a2590957d1547752c98d1e5f2b",
+            "crates/storage/src/portability.rs": "2862aff84e8b847fbcc0043a1582c69893a35b22c57f09f88d56492d5b13b025",
+            "crates/storage/Cargo.toml": "3d5ddb85a9c2998090a0f0e7be0c0cd4031bfbeb76a7e42b1b3b75be84105c82",
+            "crates/storage/src/bundle_export_unix.rs": "61a31e6d255ea0331b12957b02d8281cfe15f54f2f929e03d9fd78cd13beabb7",
+            "crates/storage/src/bundle_export_windows.rs": "b0f88151c36c209ca040ac3ca6b49d381f415d8d083ecbbd7d5d230a65a35f96",
+            "Cargo.lock": "af9ab7a693d34db49ebbbb897c0b89de1990e5aae774dcf4ece60b3155780931",
             "SOURCE_LOCK.json": "4a03e1e5f7b91b4608260fb8437ce51e7df346683d50667860dc5354cb1074b8",
         }
         maps = re.findall(r"^          pins=(\{[^\n]+\})$", source, flags=re.M)
         self.assertEqual(len(maps), 2, "G0 and real CrossOS must bind the same reviewed inputs")
-        self.assertEqual(source.count('foundation_reviewed_source="576201b3fca3a7a6f7bc57cc4d6cbf5dd7d3d347"'), 2)
+        self.assertEqual(source.count('foundation_reviewed_source="94d5c3116bd63a5218c87f4004a81a4c53be349a"'), 2)
         self.assertEqual(source.count('source_lock_reviewed_source="576201b3fca3a7a6f7bc57cc4d6cbf5dd7d3d347"'), 2)
-        self.assertEqual(source.count('workspace_lock_source="576201b3fca3a7a6f7bc57cc4d6cbf5dd7d3d347"'), 2)
+        self.assertEqual(source.count('workspace_lock_source="4679ca7b0965409fb9c230e5063dbeec5490108c"'), 2)
         self.assertIn('source_lock_reviewed_source if rel=="SOURCE_LOCK.json"', source)
         self.assertIn('workspace_lock_source if rel=="Cargo.lock"', source)
-        origin = 'foundation_reviewed_source if rel in ("crates/storage/src/lib.rs","crates/storage/src/portability.rs")'
+        origin = "foundation_reviewed_source if rel in ('crates/storage/src/lib.rs', 'crates/storage/src/portability.rs', 'crates/storage/Cargo.toml', 'crates/storage/src/bundle_export_unix.rs', 'crates/storage/src/bundle_export_windows.rs')"
         self.assertEqual(source.count(origin), 2, "Both Storage inputs must name the composed source")
         for raw in maps:
             pins = ast.literal_eval(raw)
