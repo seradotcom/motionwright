@@ -7,6 +7,7 @@ import {HybridNativeOperationError,type HybridSourcePreflight} from "./hybridNat
 import SavedMotionCapturePanel from "./SavedMotionCapturePanel";
 import type {SavedMotionCaptureHint} from "./savedMotionCapture";
 import DeliveryAudioTargets from "./DeliveryAudioTargets";
+import { nativeAvMasterContract } from "./nativeAvMedia";
 import { nativeAvSelectionFromEvidence, retainedNativeAvReviewSelections } from "./nativeAvAudioQc";
 import {
   evaluateFirstNativeRenderGate, firstRenderRuntimeScope, nativeRuntimeObservationIssue,
@@ -639,12 +640,8 @@ export default function DeliveryProfiles({
   const voiceAligned = Number.isFinite(voiceDurationSeconds)
     && Number.isFinite(nativeVideoSeconds)
     && Math.abs(voiceDurationSeconds - nativeVideoSeconds) <= 1 / 48_000;
-  const masterProfileSupported = Boolean(selected
-    && selected.video_codec === "h264"
-    && selected.audio_codec === "aac"
-    && selected.audio_sample_rate_hz === 48000
-    && selected.color_space === "rec709"
-    && selected.container === "mp4");
+  const masterContract = nativeAvMasterContract(selected);
+  const masterProfileSupported = masterContract !== null;
   const masterReady = Boolean(desktopMode && selected && !profileDraftBlocked && !recipeDraftBlocked
     && verifiedWavIntent && voiceAligned && masterPreviewToken && masterProfileSupported);
   const currentAv = avEvidence?.project_resource === "project:" + project.id && avEvidence.generation === project.generation
@@ -1805,6 +1802,13 @@ export default function DeliveryProfiles({
                 </div>
                 <span className="status-pill status-unknown">OWNER-GRANTED</span>
               </header>
+              {masterContract && <dl aria-label="Expected Native master format" className="portable-plan">
+                <div><dt>Video</dt><dd>{masterContract.video.codec} · {masterContract.container} · {masterContract.video.frameRate} fps</dd></div>
+                <div><dt>Color</dt><dd>{masterContract.video.primaries} primaries · {masterContract.video.transfer} transfer · {masterContract.video.matrix} matrix · {masterContract.video.range} range</dd></div>
+                <div><dt>Pixels</dt><dd>{masterContract.video.pixelFormat} · {masterContract.video.alpha}</dd></div>
+                <div><dt>Audio</dt><dd>{masterContract.audio.codec} · 48 kHz · stereo</dd></div>
+                <div><dt>Captions</dt><dd>{masterContract.captions}</dd></div>
+              </dl>}
               <div className="delivery-editor-actions">
                 {!mixedRendererCut && (!currentMotion || currentMotion.segments.length <= 1) && (
                   <button className="button button-primary" type="button"

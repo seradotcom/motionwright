@@ -25,6 +25,11 @@ def real_metadata() -> dict:
             {
                 "codec_type": "video",
                 "codec_name": "h264",
+                "pix_fmt": "yuv420p",
+                "color_range": "tv",
+                "color_space": "bt709",
+                "color_transfer": "bt709",
+                "color_primaries": "bt709",
                 "width": 1920,
                 "height": 1080,
                 "avg_frame_rate": "30/1",
@@ -52,6 +57,27 @@ class NativeMediaProbeTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.temp.cleanup()
+
+    def test_exact_rec709_tags_and_opaque_pixel_format(self):
+        report = probe.inspect_streams(real_metadata())
+        self.assertEqual(report["video_color"], {
+            "primaries": "bt709", "transfer": "bt709", "matrix": "bt709",
+            "range": "limited", "pixel_format": "yuv420p", "alpha": "opaque",
+        })
+        invalid_tags = {
+            "pix_fmt": "yuva420p", "color_range": "pc", "color_space": "bt2020nc",
+            "color_transfer": "smpte2084", "color_primaries": "smpte432",
+        }
+        for key, wrong in invalid_tags.items():
+            for missing in (False, True):
+                with self.subTest(field=key, missing=missing):
+                    payload = real_metadata()
+                    if missing:
+                        del payload["streams"][0][key]
+                    else:
+                        payload["streams"][0][key] = wrong
+                    with self.assertRaisesRegex(probe.MediaProbeError, key):
+                        probe.inspect_streams(payload)
 
     def test_real_deterministic_source_contains_distinct_non_silent_channels(self):
         report = probe.inspect_decoded_audio(self.pcm)

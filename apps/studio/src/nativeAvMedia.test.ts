@@ -1,5 +1,6 @@
 import {describe,expect,it} from "vitest";
-import {parseNativeAvPlayback,verifiedNativeReviewBytes} from "./nativeAvMedia";
+import {nativeAvMasterContract,parseNativeAvPlayback,verifiedNativeReviewBytes} from "./nativeAvMedia";
+import {fixtureProject} from "./fixture";
 
 const scope={project:{id:"source-project",generation:"source-generation",revision:7},exportToken:"original-session",
   deliverableId:"profile",masterSha256:"a".repeat(64)};
@@ -70,4 +71,22 @@ describe("original Native media playback",()=>{
     expect(()=>parseNativeAvPlayback(bytes,recovered)).toThrow();
   });
 
+});
+
+describe("the saved Native master profile", () => {
+  it("retains rational cadence and exposes the prescribed final color and alpha encoding", () => {
+    const profile = { ...fixtureProject.deliverables[0], frame_rate: { num: "30000", den: "1001" },
+      color_space: "rec709", video_codec: "h264", audio_codec: "aac", audio_sample_rate_hz: 48000, container: "mp4",
+      captions: true, burn_in_captions: false, caption_format: "web_vtt" } as const;
+    expect(nativeAvMasterContract(profile)).toMatchObject({
+      container: "MP4", video: { codec: "H.264", frameRate: "30000/1001", pixelFormat: "yuv420p",
+        primaries: "BT.709", transfer: "BT.709", matrix: "BT.709", range: "limited", alpha: "opaque" },
+      audio: { codec: "AAC", sampleRateHz: 48000, channels: 2 }, captions: "Separate WebVTT sidecar",
+    });
+    expect(nativeAvMasterContract({ ...profile, caption_format: "srt" })?.captions).toBe("Separate SRT sidecar");
+    expect(nativeAvMasterContract({ ...profile, burn_in_captions: true })?.captions).toBe("Burn-in on supported routes");
+    expect(nativeAvMasterContract({ ...profile, captions: false })?.captions).toBe("None");
+    expect(nativeAvMasterContract({ ...profile, color_space: "display_p3" })).toBeNull();
+    expect(nativeAvMasterContract({ ...profile, audio_sample_rate_hz: 44100 })).toBeNull();
+  });
 });
