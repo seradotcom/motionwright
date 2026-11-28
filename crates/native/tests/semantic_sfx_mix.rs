@@ -240,6 +240,32 @@ fn cross_cut_pcm() -> (Project, VerifiedSfxWav) {
 }
 
 #[test]
+fn implicit_full_cut_uses_the_same_pcm_as_explicitly_selected_scenes() {
+    let (mut project, source) = cross_cut_pcm();
+    let cue = &mut project.audio.sfx_cues[0];
+    cue.scene_id = project.scenes[1].id;
+    project.scenes[1].start = RationalTime::new(3, 2).unwrap();
+    project.scenes[2].start = RationalTime::new(5, 2).unwrap();
+
+    let id = project.deliverables[0].id;
+    let wav = std::slice::from_ref(&source);
+    let full = mix_source_bound_semantic_sfx(&project, id, wav, 90).unwrap();
+    let mut profile = project.deliverables[0].clone();
+    profile.included_scene_ids = project.scenes.iter().map(|scene| scene.id).collect();
+    project
+        .apply_change(&Change::UpsertDeliverable { profile })
+        .unwrap();
+    let explicit = mix_source_bound_semantic_sfx(&project, id, wav, 90).unwrap();
+
+    assert_eq!(full.wav_bytes, explicit.wav_bytes);
+    assert_eq!(full.output_sha256, explicit.output_sha256);
+    assert_eq!(sample(&full.wav_bytes, 71_999, 0), 0);
+    assert_eq!(sample(&full.wav_bytes, 72_000, 0), 8_000);
+    assert_eq!(sample(&full.wav_bytes, 96_000, 1), -4_000);
+    assert_eq!(sample(&full.wav_bytes, 120_000, 1), 0);
+}
+
+#[test]
 fn source_pcm_tail_survives_the_scene_cut_at_exact_48khz_samples() {
     let (project, source) = cross_cut_pcm();
     let original = project.clone();

@@ -73,8 +73,9 @@ export function validateSemanticSfx(project:Project,cue:SemanticSfxCue):Schedule
   if(!project.assets.some(a=>a.id===cue.source_asset_id && a.content_sha256===cue.source_sha256 &&
     ["audio/wav","audio/x-wav","audio/wave"].includes(a.media_type)))
     invalid("SFX references a missing or mismatched imported stereo WAV Asset.");
-  const scene=project.scenes.find(s=>s.id===cue.scene_id);
-  if(!scene)invalid("SFX source scene is missing.");
+  const sceneIndex=project.scenes.findIndex(scene=>scene.id===cue.scene_id);
+  if(sceneIndex<0)invalid("SFX source scene is missing.");
+  const scene=project.scenes[sceneIndex];
   let relative=0;
   if(cue.anchor.kind==="scene_start"){
     exactly(cue.anchor,["kind"]);
@@ -92,8 +93,13 @@ export function validateSemanticSfx(project:Project,cue:SemanticSfxCue):Schedule
   if((cue.tail_policy??"within_scene")==="within_scene" && at+cue.source_frames>frame(scene.duration))
     invalid("SFX source tail leaves its authored scene interval.");
   const begin=frame(scene.start)+at,end=begin+cue.source_frames;
-  if(cue.tail_policy==="continue_across_cuts" && end>project.scenes.reduce((total,item)=>total+frame(item.duration),0))
-    invalid("SFX source tail exceeds the complete project cut; no implicit trim.");
+  if(cue.tail_policy==="continue_across_cuts"){
+    const remaining=project.scenes.reduce((total,item,index)=>{
+      const duration=frame(item.duration);
+      return index>=sceneIndex ? total+duration : total;
+    },0);
+    if(at+cue.source_frames>remaining)invalid("SFX source tail exceeds the complete project cut; no implicit trim.");
+  }
   // This source placement remains distinct from the canonical domain service's
   // selected-delivery-cut admission and the native mixer's real PCM readback.
   if(end>36000)invalid("SFX placement exceeds bounded native film.");

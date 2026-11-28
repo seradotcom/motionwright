@@ -313,6 +313,56 @@ fn tail_is_opt_in_and_onset_and_final_project_bound_remain_exact() {
 }
 
 #[test]
+fn editorial_gaps_keep_source_positions_and_compact_the_full_delivery_cut() {
+    for (second_start, editorial_onset) in [
+        (RationalTime::new(3, 2).unwrap(), 60),
+        (RationalTime::new(9, 1).unwrap(), 285),
+    ] {
+        let (mut project, mut source) = cross_cut_fixture();
+        project.scenes[1].start = second_start;
+        project.scenes[2].start = second_start
+            .checked_add(RationalTime::new(1, 1).unwrap())
+            .unwrap();
+        source.scene_id = project.scenes[1].id;
+        project
+            .apply_change(&Change::UpsertSemanticSfx { cue: source })
+            .unwrap();
+
+        let original = project.validated_sfx_schedule().unwrap();
+        assert_eq!(
+            (
+                original[0].absolute_start_frame,
+                original[0].absolute_end_frame
+            ),
+            (editorial_onset, editorial_onset + 30)
+        );
+
+        let mut profile = project.deliverables[0].clone();
+        let full = project
+            .validated_sfx_schedule_for_profile(profile.id)
+            .unwrap();
+        assert_eq!(
+            (full[0].absolute_start_frame, full[0].absolute_end_frame),
+            (45, 75)
+        );
+        assert_eq!(
+            (full[0].first_sample, full[0].sample_count),
+            (72_000, 48_000)
+        );
+        profile.included_scene_ids = project.scenes.iter().map(|scene| scene.id).collect();
+        let id = profile.id;
+        project
+            .apply_change(&Change::UpsertDeliverable { profile })
+            .unwrap();
+        assert_eq!(
+            project.validated_sfx_schedule_for_profile(id).unwrap(),
+            full
+        );
+        assert_eq!(project.validated_sfx_schedule().unwrap(), original);
+    }
+}
+
+#[test]
 fn profile_schedule_uses_authored_selection_order_and_only_omits_excluded_scene_cues() {
     let (mut project, source) = cross_cut_fixture();
     project

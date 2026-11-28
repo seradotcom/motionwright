@@ -212,11 +212,12 @@ impl SemanticSfxCue {
                 "SFX must reference an imported immutable WAV source in this project".into(),
             ));
         }
-        let scene = project
+        let scene_index = project
             .scenes
             .iter()
-            .find(|scene| scene.id == self.scene_id)
+            .position(|scene| scene.id == self.scene_id)
             .ok_or_else(|| DomainError::Invalid("SFX references missing scene".into()))?;
+        let scene = &project.scenes[scene_index];
         let relative_frame = match self.anchor {
             SfxAnchor::SceneStart => 0_i128,
             SfxAnchor::BeatStart { beat_id } => {
@@ -255,7 +256,9 @@ impl SemanticSfxCue {
             .ok_or_else(|| DomainError::Invalid("SFX duration frame overflow".into()))?;
         if self.tail_policy == SfxTailPolicy::ContinueAcrossCuts {
             let cut_frames = exact_cut_frames(project.scenes.iter())?;
-            if end > cut_frames {
+            let earlier_frames = exact_cut_frames(project.scenes[..scene_index].iter())?;
+            let remaining_frames = i128::from(cut_frames - earlier_frames);
+            if at + i128::from(self.source_frames) > remaining_frames {
                 return Err(DomainError::Invalid(
                     "SFX tail exceeds the complete project cut; no implicit trim".into(),
                 ));
@@ -292,6 +295,20 @@ fn exact_cut_frames<'a>(scenes: impl IntoIterator<Item = &'a Scene>) -> Result<u
             .ok_or_else(|| DomainError::Invalid("SFX cut frame overflow".into()))?;
     }
     Ok(total)
+}
+
+fn editorial_matches_full_cut(scenes: &[Scene]) -> bool {
+    let mut cursor = RationalTime::ZERO;
+    for scene in scenes {
+        if scene.start != cursor {
+            return false;
+        }
+        let Ok(end) = cursor.checked_add(scene.duration) else {
+            return false;
+        };
+        cursor = end;
+    }
+    true
 }
 
 fn checked_schedule(mut schedule: Vec<ScheduledSfx>) -> Result<Vec<ScheduledSfx>> {
@@ -331,7 +348,8 @@ impl Project {
         profile: &DeliverableProfile,
         source: &[ScheduledSfx],
     ) -> Result<Vec<ScheduledSfx>> {
-        if profile.included_scene_ids.is_empty() {
+        // The implicit full cut uses source positions only when both clocks coincide.
+        if profile.included_scene_ids.is_empty() && editorial_matches_full_cut(&self.scenes) {
             return Ok(source.to_vec());
         }
         let selected = crate::delivery::scenes_for_profile(&self.scenes, profile)?;

@@ -64,6 +64,23 @@ describe("source-bound semantic SFX choreography at 30 fps / 48 kHz",()=>{
     p.scenes[0].beats[0].start={num:"1",den:"43"};
     expect(()=>validateSemanticSfx(p,anchored)).toThrow(/exact at 30/);
   });
+  it("preserves authored tail positions after a gap when they fit the compacted cut", async () => {
+    const p = ready();
+    p.scenes[0].start = { num: "9", den: "1" };
+    p.scenes[0].duration = { num: "1", den: "1" };
+    p.scenes.push({
+      ...p.scenes[0], id: crypto.randomUUID(), start: { num: "10", den: "1" },
+    });
+    const source = { ...cue(), offset_frames: 15, tail_policy: "continue_across_cuts" as const };
+    expect(validateSemanticSfx(p, source)).toMatchObject({
+      absolute_start_frame: 285, absolute_end_frame: 315, first_sample: 456_000, sample_count: 48_000,
+    });
+    const saved = await applyChange(p, { type: "upsert_semantic_sfx", cue: source });
+    expect(saved.audio.sfx_cues).toEqual([source]);
+    saved.scenes.pop();
+    expect(() => validateSemanticSfx(saved, source)).toThrow(/complete project cut/);
+  });
+
   it("rejects invented WAV rights, unknown schema, overrun and source digest mismatch",()=>{
     const p=ready(),c=cue();
     const bad=[
