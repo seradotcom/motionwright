@@ -93,8 +93,9 @@ def protocol_fixture(private):
         "cold_bounded_video_render": [binary, "render", "0s..1s", "--draft", "--scale", "0.25", "-o",
                                         str(private / "upstream-source-preview.mp4")],
         "native_audio_mix_render": [str(checkout / "target/release/examples" / m.AUDIO_APP), "--json", "--assets",
-                                     str(private / "audio/inputs"), "audio", "render", "0s..2s", "--float", "-o",
-                                     str(private / "audio/native-mix.wav")],
+                                     str(private / "audio/inputs"), "audio", "--assets", str(private / "audio/inputs"),
+                                     "render", "--assets", str(private / "audio/inputs"), "--float", "--output",
+                                     str(private / "audio/native-mix.wav"), "0s..2s"],
         "ffmpeg_version": [ffmpeg, "-version"], "ffprobe_version": [ffprobe, "-version"],
         "rustc_version": ["rustc", "--version"], "architecture": ["uname", "-m"],
         "video_metadata": [ffprobe, "-v", "error", "-show_entries",
@@ -351,6 +352,25 @@ class PublicFframesTests(unittest.TestCase):
         self.report["measurements"]["cold_bounded_video_render"]["argv_sha256"] = m.sha(raw)
         self.save()
         self.reject("baseline_video_render_argv")
+
+    def test_audio_render_requires_the_same_assets_in_every_cli_scope(self):
+        label = "native_audio_mix_render"
+        path = self.private / "processes" / label / "argv.json"
+        request = json.loads(path.read_bytes())
+        exact = request["argv"]
+        legacy = [exact[0], "--json", "--assets", str(self.private / "audio/inputs"), "audio",
+                  "render", "0s..2s", "--float", "-o", str(self.private / "audio/native-mix.wav")]
+        different_audio_assets = list(exact)
+        different_audio_assets[different_audio_assets.index("audio") + 2] = str(self.private / "different")
+        for case, argv in (("legacy", legacy), ("different audio assets", different_audio_assets)):
+            with self.subTest(case=case):
+                request["argv"] = argv
+                raw = m.json_bytes(request)
+                path.write_bytes(raw)
+                self.report["measurements"][label]["argv_sha256"] = m.sha(raw)
+                self.save()
+                with self.assertRaisesRegex(pub.Refused, "native_audio_render_argv"):
+                    pub.validate_originals(self.private, MW)
 
     def test_ffprobe_metadata_cannot_replace_full_decode_original(self):
         path = self.private / "processes/video_full_framehash/stdout.bin"

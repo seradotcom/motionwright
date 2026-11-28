@@ -271,6 +271,31 @@ class FframesProtocol(unittest.TestCase):
                 self.assertEqual((stream.getnchannels(), stream.getframerate(), stream.getnframes()),
                                  (2, 48000, frames))
 
+    def test_native_audio_render_passes_the_same_assets_in_all_clap_scopes(self):
+        checkout = self.root / "checkout"
+        (checkout / "examples/hello-world").mkdir(parents=True)
+        output = self.root / "evidence"
+        output.mkdir()
+        assets = str(output / "audio/inputs")
+
+        class ReachedRender(Exception):
+            pass
+
+        def capture_argv(args, _timeout, phase, _metrics, **_kwargs):
+            if phase == "audio_probe_build":
+                return None
+            self.assertEqual(phase, "native_audio_mix_render")
+            self.assertEqual(args, [
+                str(checkout / "target/release/examples" / m.AUDIO_APP), "--json",
+                "--assets", assets, "audio", "--assets", assets, "render", "--assets", assets,
+                "--float", "--output", str(output / "audio/native-mix.wav"), "0s..2s",
+            ])
+            raise ReachedRender
+
+        with mock.patch.object(m, "run", side_effect=capture_argv), mock.patch.object(m, "sha_file"):
+            with self.assertRaises(ReachedRender):
+                m.measure_audio(checkout, Path("ffmpeg"), Path("ffprobe"), {}, evidence_root=output)
+
     def test_audio_comparison_observes_only_the_synthetic_mix_scope(self):
         bed, cue, expected = synthetic_pcm()
         result = m.compare_audio_pcm(bed, cue, expected)
