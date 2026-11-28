@@ -13,9 +13,10 @@ interface Props {
   reviewing: boolean;
   onClose: () => void;
   onReview: (draft?: ScopedChangeDraft) => void;
+  onOpenReview: (nodeId: string | null) => void;
 }
 
-export default function AssistantDock({ project, scene, selectedNodeId, playhead, busy, reviewing, onClose, onReview }: Props) {
+export default function AssistantDock({ project, scene, selectedNodeId, playhead, busy, reviewing, onClose, onReview, onOpenReview }: Props) {
   const [scope, setScope] = useState<{ nodeId: string | null }>();
   const [intention, setIntention] = useState("");
   const [rawProposal, setRawProposal] = useState("");
@@ -80,7 +81,11 @@ export default function AssistantDock({ project, scene, selectedNodeId, playhead
         </label>
         <button type="button" className="button button-primary" disabled={busy || reviewing || !scopeAvailable || !rawProposal.trim()} onClick={review}>Review proposal</button>
       </> : <p className="production-help">Add an object in Canvas to prepare a proposal.</p>}
-      <button type="button" className="button" disabled={busy || reviewing} onClick={() => onReview()}>Open scoped changes</button>
+      <div className="production-button-row">
+        <button type="button" className="button" disabled={busy || reviewing} onClick={() => onReview()}>Open scoped changes</button>
+        <button type="button" className="button" disabled={busy || (nodeId !== null && !scopeAvailable)}
+          onClick={() => onOpenReview(nodeId)}>Review comments</button>
+      </div>
       {error && <p className="production-error" role="alert">{error}</p>}
     </div>}
   </aside>;

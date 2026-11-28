@@ -568,6 +568,39 @@ impl Project {
                     locale.as_deref(),
                     *profile_id,
                 )?;
+                if let Some(id) = resource.strip_prefix("canvas-node:") {
+                    let node = Uuid::parse_str(id)
+                        .ok()
+                        .filter(|value| !value.is_nil() && value.to_string() == id)
+                        .ok_or_else(|| {
+                            DomainError::Invalid("invalid canvas review resource".into())
+                        })?;
+                    let mut matching_scenes = self
+                        .scenes
+                        .iter()
+                        .filter(|scene| scene.nodes.iter().any(|candidate| candidate.id == node));
+                    let scene = matching_scenes
+                        .next()
+                        .ok_or_else(|| DomainError::NotFound(resource.clone()))?;
+                    if matching_scenes.next().is_some() {
+                        return Err(DomainError::Invalid(
+                            "ambiguous canvas review resource".into(),
+                        ));
+                    }
+                    let scene_end = scene
+                        .start
+                        .checked_add(scene.duration)
+                        .map_err(|error| DomainError::Invalid(error.to_string()))?;
+                    if [*start, *end]
+                        .into_iter()
+                        .flatten()
+                        .any(|time| time < scene.start || time > scene_end)
+                    {
+                        return Err(DomainError::Invalid(
+                            "canvas review time is outside the object's scene".into(),
+                        ));
+                    }
+                }
                 if let Some(claim_id) = resource.strip_prefix("claim:")
                     && !self
                         .brief

@@ -44,6 +44,7 @@ interface Props {
   selectionRequest?: { nonce: number; nodeId: string };
   assistantDraft?: ScopedChangeDraft;
   onAssistantDraftHandled?: () => void;
+  onOpenReview?: (nodeId: string | null) => void;
 }
 const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
 
@@ -53,7 +54,7 @@ export default function CreativePatchWorkbench(props: Props) {
   return <ScopedEditor key={scopedDraftScope(props.project, props.scene)} {...props}/>;
 }
 
-function ScopedEditor({ project, scene, commit, refreshProject, busy, playhead, onSeek, displayProfile, repairDraft, onDismissRepair, initialNodeId, arrangementOpen, selectionRequest, assistantDraft, onAssistantDraftHandled }: Props) {
+function ScopedEditor({ project, scene, commit, refreshProject, busy, playhead, onSeek, displayProfile, repairDraft, onDismissRepair, initialNodeId, arrangementOpen, selectionRequest, assistantDraft, onAssistantDraftHandled, onOpenReview }: Props) {
   const scope = scopedDraftScope(project, scene);
   const storageKey = DRAFT_STORAGE_PREFIX + scope;
   const desktop = "__TAURI_INTERNALS__" in window;
@@ -504,6 +505,8 @@ function ScopedEditor({ project, scene, commit, refreshProject, busy, playhead, 
       <p className="production-help">Both sides share the application playhead, scene camera and saved object relationships. Imported media and advanced paint effects require review in native frames.</p></>}
     <div className="production-button-row"><button className="primary-button" disabled={!activeReview || lockedUi || pending} onClick={applyReviewed}><Check size={14}/> {undoTarget ? "Apply undo as new revision" : "Apply as one revision"}</button>
       {undoTarget && <button className="secondary-button" disabled={lockedUi} onClick={() => { invalidate(); setUndoTarget(null); }}>Back to proposal</button>}
+      {activeReview && onOpenReview && <button type="button" className="secondary-button" disabled={lockedUi || pending}
+        onClick={() => onOpenReview(activeReview.preview.after.length === 1 ? activeReview.preview.after[0].id : null)}>Review saved source</button>}
       <button className="secondary-button" disabled={lockedUi} onClick={reset}>Discard proposal</button></div>
     <section className="production-undo-history" aria-label="Reversible scoped changes"><h3>Reversible scoped changes</h3>
       <p className="production-help">Undo and redo create new revisions and preserve unrelated edits. Inspecting an undo keeps your uncommitted proposal. The latest 64 changes are available within a four-megabyte window.</p>

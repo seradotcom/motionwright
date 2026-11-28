@@ -59,7 +59,9 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ProjectMutationGate, ProjectReadSupersededError } from "./projectMutation";
+import { ProjectMutationGate, ProjectReadSupersededError, sameProjectRevision } from "./projectMutation";
+import { canvasReviewResource, reviewResourceScene } from "./reviewResource";
+import { reviewOwner } from "./reviewDraft";
 import { ProjectLibraryDialog } from "./ProjectLibraryDialog";
 import ProjectProjectionWorkspace from "./ProjectProjectionWorkspace";
 import {
@@ -1612,7 +1614,7 @@ export default function App() {
   const [beatTimelineOpen,setBeatTimelineOpen]=useState(false);
   const timelineRequestSequence = useRef(0);
   const consumeTimelineEditorRequest = useCallback((nonce: number) => setTimelineEditorRequest(current => current?.nonce === nonce ? null : current), []);
-  const [graphReviewSelection, setGraphReviewSelection] = useState<{ owner: string; resource: string } | null>(null);
+  const [reviewSelection, setReviewSelection] = useState<{ owner: string; resource: string } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState(0);
@@ -1948,6 +1950,7 @@ export default function App() {
   );
 
   const proposalScope = project ? scopedDraftScope(project, selectedScene) : null;
+  const externalReviewResource = project && reviewSelection?.owner === reviewOwner(project) ? reviewSelection.resource : null;
   const activeProposalReview = proposalReview?.scope === proposalScope && proposalReview?.workspace === workspace ? proposalReview : null;
   const selectedAssistantNodeId = canvasSelection && canvasSelection.scope === proposalScope &&
     selectedScene?.nodes.some(node => node.id === canvasSelection.nodeId) ? canvasSelection.nodeId : null;
@@ -1957,6 +1960,20 @@ export default function App() {
   useEffect(() => {
     if (proposalReview && !activeProposalReview) setProposalReview(null);
   }, [proposalReview, activeProposalReview]);
+
+  const openSourceReview = (nodeId: string | null) => {
+    if (!project || !selectedScene) return;
+    const resource = nodeId ? canvasReviewResource(nodeId) : "scene:" + selectedScene.id;
+    if (!sameProjectRevision(bootRef.current?.project ?? null, project) ||
+        reviewResourceScene(project, resource)?.id !== selectedScene.id) {
+      setError("The saved review source changed. Select the current scene or object again.");
+      return;
+    }
+    setReviewSelection({ owner: reviewOwner(project), resource });
+    setAssistantOpen(false);
+    setProposalReview(null);
+    setWorkspace("Review");
+  };
 
   const selectScene = useCallback((id: string, seekToStart = true) => {
     setSelectedSceneId(id);
@@ -2097,7 +2114,7 @@ export default function App() {
     if (!source || !graphSame(graphReviewAnchor(source, anchor.resource), anchor)) {
       setError("The saved Graph review source changed. Inspect the current Graph before opening its review."); return;
     }
-    setGraphReviewSelection({ owner: JSON.stringify([source.id, source.generation, source.active_branch]), resource: anchor.resource });
+    setReviewSelection({ owner: reviewOwner(source), resource: anchor.resource });
     setWorkspace("Review");
   }, []);
   const commitMarker = useCallback((change: MarkerChange, requestId: string): Promise<Project> =>
@@ -2464,8 +2481,7 @@ export default function App() {
       case "Review":
         return <ReviewWorkspace project={project} scene={selectedScene} commit={commitCamera} playhead={playhead} onSeek={seekTo}
           desktopMode={boot.native_sdk.mode === "tauri"}
-          key={graphReviewSelection?.owner === JSON.stringify([project.id, project.generation, project.active_branch]) ? graphReviewSelection.resource : "selected-resource"}
-          externalResource={graphReviewSelection?.owner === JSON.stringify([project.id, project.generation, project.active_branch]) ? graphReviewSelection.resource : null} />;
+          key={externalReviewResource ?? "selected-resource"} externalResource={externalReviewResource} />;
       case "Deliver":
         return (
           <DeliverView
@@ -2677,6 +2693,7 @@ export default function App() {
               <CreativePatchWorkbench project={project} scene={selectedScene} playhead={playhead} onSeek={seekTo}
                 displayProfile={selectedProfile} busy={busy} commit={commitScoped} refreshProject={refreshSavedBranch}
                 repairDraft={null} onDismissRepair={() => {}} initialNodeId={selectedAssistantNodeId}
+                onOpenReview={openSourceReview}
                 assistantDraft={activeProposalReview.draft}
                 onAssistantDraftHandled={() => setProposalReview(current => current ? { ...current, draft: undefined } : current)} />
             </section>
@@ -2702,6 +2719,7 @@ export default function App() {
           <div id="studio-assistant-panel" className="inspector-surface" hidden={!assistantOpen}>
             <AssistantDock key={proposalScope} project={project} scene={selectedScene}
               selectedNodeId={selectedAssistantNodeId} playhead={playhead} busy={busy} reviewing={!!activeProposalReview}
+              onOpenReview={openSourceReview}
               onClose={() => { setAssistantOpen(false); assistantToggle.current?.focus(); }}
               onReview={draft => {
                 if (!proposalScope || busy) return;

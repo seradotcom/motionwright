@@ -98,6 +98,7 @@ import type {
   WorkflowOverview,
 } from "./types";
 import { applyGeneralSceneTiming } from "./sceneTimingAuthority";
+import { isCanvasReviewResource, reviewResourceScene } from "./reviewResource";
 import { applySceneBeatTimeline, type SceneBeatTimelineChange } from "./sceneBeatTimeline";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -1736,7 +1737,7 @@ export async function applyChange(project: Project, change: Change, retainedRequ
   if (markerChange && !validRequest)
     throw new Error("Retain the original marker request identity before dispatch.");
   if (retainedRequestId !== undefined && (!validRequest || (!graphChange && !markerChange && !proposalChange)))
-    throw new Error("The retained request identity cannot authorize this editor change.");
+    throw new Error("The retained request identity cannot authorize another editor change.");
   const requestId = retainedRequestId ?? crypto.randomUUID();
   if (isTauri()) {
     const grant = await issueEffectGrant("project_edit", project, requestId);
@@ -2858,6 +2859,8 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       break;
     }
     case "add_review":
+      if (isCanvasReviewResource(change.resource) && !reviewResourceScene(next, change.resource))
+        throw new Error("The reviewed object is unavailable on this branch.");
       if (change.resource.startsWith("claim:") && !next.brief.claims.some(claim => "claim:" + claim.id === change.resource))
         throw new Error("resource not found: " + change.resource);
       next.reviews.push({

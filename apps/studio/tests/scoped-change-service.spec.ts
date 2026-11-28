@@ -309,6 +309,7 @@ test("two Studio clients reject a stale commit and let the author resolve only t
 });
 
 test("assistant checks the original saved proposal after a lost reply and a later revision", async ({ page }, testInfo) => {
+  testInfo.setTimeout(90_000);
   const service = await ScopedChangeService.create({ databasePath: testInfo.outputPath("service", "assistant.sqlite3"), desktopInvokeFixture: true });
   let peer: ScopedChangeService | undefined;
   let final: Project | undefined;
@@ -383,8 +384,26 @@ test("assistant checks the original saved proposal after a lost reply and a late
     const conflicts = page.getByRole("region", { name: "Proposal conflicts" });
     await expect(conflicts).toContainText("text · value changed");
     await expect(page.getByLabel("Patch replacement text")).toHaveValue("Keep this outside the submitted proposal.");
-    expect(await peer.reopen(initial.id)).toEqual(final);
     expect(final.production_design.patches).toHaveLength(1);
+
+    const body = "Verify the body comes from the saved proposal.";
+    const missing = { type: "add_review", kind: "editorial", resource: "canvas-node:" + randomUUID(),
+      body, start: null, end: null, locale: null, profile_id: null } as const;
+    await expect(peer.apply(final, missing)).rejects.toThrow();
+    expect(await peer.project(initial.id)).toEqual(final);
+    await button(page, "Return to editor").click();
+    await button(page, "Assistant").click();
+    await page.getByLabel("Editing scope").selectOption("object:" + target.id);
+    await button(page, "Review comments").click();
+    await page.getByLabel("Review comment", { exact: true }).fill(body);
+    const commentRevision = final.revision;
+    await button(page, "Add anchored review").click();
+    await expect(page.locator("[data-review-id]").filter({ hasText: body })).toBeVisible();
+    final = await service.project(initial.id);
+    expect(final.reviews.at(-1)).toMatchObject({
+      body, anchor: { resource: "canvas-node:" + target.id, branch_id: initial.active_branch, revision: commentRevision },
+    });
+    expect(await peer.reopen(initial.id)).toEqual(final);
   } finally {
     await evidence(testInfo, peer ? [service, peer] : [service], final, [() => page.close()]);
   }

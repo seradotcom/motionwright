@@ -183,4 +183,18 @@ test("assistant reviews only current scoped edits and keeps draft replacement ex
   await expect(review.getByRole("button", { name: "Preview redo", exact: true })).toBeEnabled();
   await review.getByRole("button", { name: "Return to editor", exact: true }).click();
   await expect(body).toContainText(original);
+
+  const savedRevision = await page.locator(".command-bar .revision-chip").innerText();
+  await assistant.click();
+  await dock.getByLabel("Editing scope").selectOption("object:" + target.id);
+  await dock.getByRole("button", { name: "Review comments", exact: true }).click();
+  await expect(page.getByLabel("Review resource scope")).toHaveValue("object");
+  await expect(page.locator(".narrative-sheet").getByText("ProductHeroReveal / body", { exact: true })).toBeVisible();
+  const comment = page.getByLabel("Review comment", { exact: true });
+  await expect(comment).toBeFocused();
+  await comment.fill("Check this body copy at its saved object anchor.");
+  await page.getByRole("button", { name: "Add anchored review", exact: true }).click();
+  const note = page.locator("[data-review-id]").filter({ hasText: "Check this body copy at its saved object anchor." });
+  await expect(note).toContainText("canvas-node:" + target.id);
+  await expect(note).toContainText(savedRevision);
 });

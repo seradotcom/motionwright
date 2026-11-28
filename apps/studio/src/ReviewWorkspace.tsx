@@ -6,7 +6,8 @@ import { unavailableBranchCombination } from "./branchCombinationDraft";
 import { reviewHasWork, reviewProfileAnchor, reviewTimes, useReviewDraft } from "./reviewDraft";
 import type { Change, CreativeReview, Project, RationalTime, ReviewKind, ReviewStatus, Scene } from "./types";
 import { seconds } from "./types";
-import { graphReviewAnchor } from "./semanticGraph";
+import { graphReviewAnchor, isGraphReviewResource } from "./semanticGraph";
+import { canvasReviewResource, isCanvasReviewResource, reviewResourceScene } from "./reviewResource";
 
 const reviewLabel: Record<ReviewStatus, string> = {
   open: "OPEN", resolved: "RESOLVED", dismissed: "DISMISSED", needs_recheck: "NEEDS RECHECK",
@@ -29,10 +30,19 @@ export default function ReviewWorkspace({
   playhead: number;
   onSeek: (absoluteSeconds: number) => void;
 }) {
-  const [anchorScope, setAnchorScope] = useState<"selection" | "project" | "graph">(externalResource ? "graph" : "selection");
-  const resource = anchorScope === "graph" && externalResource ? externalResource : anchorScope === "project" || !scene ? "project:" + project.id : "scene:" + scene.id;
-  const graphAnchor = anchorScope === "graph" && externalResource ? graphReviewAnchor(project, externalResource) : null;
+  const externalGraph = externalResource && isGraphReviewResource(externalResource) ? externalResource : null;
+  const externalObject = externalResource && isCanvasReviewResource(externalResource) ? externalResource : null;
+  const [anchorScope, setAnchorScope] = useState<"selection" | "project" | "graph" | "object">(
+    externalGraph ? "graph" : externalObject ? "object" : "selection",
+  );
+  const resource = (anchorScope === "graph" ? externalGraph : anchorScope === "object" ? externalObject : null)
+    ?? (anchorScope === "project" || !scene ? "project:" + project.id : "scene:" + scene.id);
+  const graphAnchor = anchorScope === "graph" && externalGraph ? graphReviewAnchor(project, resource) : null;
   const graphUnavailable = anchorScope === "graph" && !graphAnchor;
+  const anchorScene = reviewResourceScene(project, resource);
+  const anchorNode = externalObject && anchorScope === "object"
+    ? anchorScene?.nodes.find(node => resource === canvasReviewResource(node.id)) : null;
+  const objectUnavailable = anchorScope === "object" && !anchorNode;
   const editor = useReviewDraft(project, { kind: "comment", id: resource }, commit);
   const { kind, timeMode, rangeStart, rangeEnd, body, profileId = "" } = editor.draft.raw;
   const setKind = (value: ReviewKind) => editor.edit("kind", value);
@@ -44,7 +54,7 @@ export default function ReviewWorkspace({
     () => [...project.reviews].sort((left, right) => right.created_at.localeCompare(left.created_at)),
     [project.reviews],
   );
-  const sceneLocks = scene ? project.locks.filter((lock) => lock.resource === resource) : [];
+  const resourceLocks = project.locks.filter(lock => lock.resource === resource);
   const projectDuration = Math.max(
     1,
     ...project.scenes.map((item) => seconds(item.start) + seconds(item.duration)),
@@ -53,9 +63,9 @@ export default function ReviewWorkspace({
     ...project.audio.cues.map((cue) => seconds(cue.at)),
     ...project.markers.map((marker) => seconds(marker.at)),
   );
-  const boundsStart = graphAnchor?.start ? seconds(graphAnchor.start) : scene && anchorScope === "selection" ? seconds(scene.start) : 0;
-  const boundsEnd = graphAnchor?.end ? seconds(graphAnchor.end) : scene && anchorScope === "selection"
-    ? seconds(scene.start) + seconds(scene.duration) : projectDuration;
+  const boundsStart = graphAnchor?.start ? seconds(graphAnchor.start) : anchorScene ? seconds(anchorScene.start) : 0;
+  const boundsEnd = graphAnchor?.end ? seconds(graphAnchor.end) : anchorScene
+    ? seconds(anchorScene.start) + seconds(anchorScene.duration) : projectDuration;
   let times: { start: RationalTime | null; end: RationalTime | null } | null = null;
   try { times = reviewTimes(project, resource, editor.draft.raw, playhead); } catch { /* Keep incomplete author input unchanged. */ }
   let profileAnchor: ReturnType<typeof reviewProfileAnchor> | null = null, profileError: string | null = null;
@@ -98,12 +108,15 @@ export default function ReviewWorkspace({
                   onChange={(event) => setAnchorScope(event.target.value as typeof anchorScope)}>
                   <option value="selection">{scene ? "Selected scene" : "Current project"}</option>
                   <option value="project">Whole project</option>
-                  {externalResource && <option value="graph">Saved Graph identity and profile</option>}
+                  {externalGraph && <option value="graph">Saved Graph identity and profile</option>}
+                  {externalObject && <option value="object">Selected object</option>}
                 </select>
+                {anchorNode && <span className="review-resource-name">{anchorNode.name}</span>}
                 <span className="review-resource-name mono">{resource}</span>
               </label>
             </div>
             {graphUnavailable && <p role="alert">This saved Graph identity or profile is unavailable. Your review input is retained.</p>}
+            {objectUnavailable && <p role="alert">This object is unavailable on the saved branch. Your review input is retained.</p>}
             {anchorScope === "graph" ? <p className="review-time-hint">
               Saved Graph deliverable: <span className="mono">{graphAnchor?.profile_id ?? "unavailable"}</span>
               {" · language: "}{graphAnchor?.locale ?? "unavailable"}. This anchor belongs to the saved Graph.
@@ -180,7 +193,10 @@ export default function ReviewWorkspace({
                 maxLength={8000}
                 rows={5}
                 value={body}
-                placeholder={scene ? "Review " + scene.name + " at the current revision…" : "Review the current project revision…"}
+                autoFocus={externalResource !== null && !externalGraph}
+                placeholder={anchorNode || anchorScene
+                  ? "Review " + (anchorNode?.name ?? anchorScene?.name) + " at the current revision…"
+                  : "Review the current project revision…"}
                 onChange={(event) => setBody(event.target.value)}
               />
             </label>
@@ -189,7 +205,7 @@ export default function ReviewWorkspace({
               <button
                 className="button button-primary"
                 type="button"
-                disabled={editor.blocked || graphUnavailable || !profileAnchor || !times || !body.trim() || (timeMode === "range" && !rangeValid) || (timeMode === "playhead" && !pointValid)}
+                disabled={editor.blocked || graphUnavailable || objectUnavailable || !profileAnchor || !times || !body.trim() || (timeMode === "range" && !rangeValid) || (timeMode === "playhead" && !pointValid)}
                 onClick={() => {
                   if (!times || !profileAnchor) return;
                   void editor.submit({
@@ -215,7 +231,7 @@ export default function ReviewWorkspace({
             <ShieldCheck size={18} />
             <div>
               <strong>Selected-resource locks</strong>
-              <span>{sceneLocks.length ? sceneLocks.map((lock) => lock.kind).join(", ") : "No explicit locks on this resource."}</span>
+              <span>{resourceLocks.length ? resourceLocks.map(lock => lock.kind).join(", ") : "No explicit locks on this resource."}</span>
             </div>
           </div>
         </section>
