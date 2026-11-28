@@ -49,7 +49,9 @@ pub use apply_receipt_binding::{
 };
 pub use cas_retention::{CasBlobLease, CasRecoveryReport, CasRetentionPolicy};
 pub use derived_cache::{DERIVED_CACHE_FORMAT_VERSION, DerivedCacheHit, DerivedCacheRecord};
-pub use file_import::{FileImportIntent, RecordedFileImport, StagedFileImport};
+pub use file_import::{
+    FileImportCaptureTarget, FileImportIntent, RecordedFileImport, StagedFileImport,
+};
 pub use integrity::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, MAX_ASSET_INTEGRITY_PAGE,
 };

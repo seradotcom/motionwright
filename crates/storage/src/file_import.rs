@@ -410,7 +410,51 @@ impl Drop for StagedFileImport {
         }
     }
 }
+/// An owned capture destination for staging without a SQLite connection.
+pub struct FileImportCaptureTarget {
+    blob_root: PathBuf,
+    store_id: Uuid,
+    database_id: String,
+}
+
+impl FileImportCaptureTarget {
+    pub fn capture_file(&self, source: &Path, max_bytes: u64) -> Result<StagedFileImport> {
+        stage_file_from_root(
+            &self.blob_root,
+            self.store_id,
+            source,
+            max_bytes,
+            super::cas_retention::CapturePurpose::Legacy,
+        )
+    }
+
+    pub fn capture_bytes(&self, bytes: &[u8], max_bytes: u64) -> Result<StagedFileImport> {
+        stage_import_bytes_from_root(&self.blob_root, self.store_id, bytes, max_bytes)
+    }
+
+    pub fn check_store(&self, store: &Store) -> Result<()> {
+        if self.blob_root != store.blob_root
+            || self.store_id != store.cas_store_id
+            || self.database_id != store.cas_database_id
+        {
+            return Err(StorageError::UnsafeSourcePath(
+                "captured file import belongs to a different Store".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl Store {
+    /// Hold the original Store identity across an unlocked media capture.
+    pub fn file_import_capture_target(&self) -> FileImportCaptureTarget {
+        FileImportCaptureTarget {
+            blob_root: self.blob_root.clone(),
+            store_id: self.cas_store_id,
+            database_id: self.cas_database_id.clone(),
+        }
+    }
+
     /// Capture the source once without a SQLite writer transaction.
     pub fn stage_file_import(&self, source: &Path) -> Result<StagedFileImport> {
         self.stage_file_import_with_limit(source, u64::MAX)
@@ -452,19 +496,7 @@ impl Store {
         bytes: &[u8],
         max_bytes: u64,
     ) -> Result<StagedFileImport> {
-        let size = bytes.len() as u64;
-        if size > max_bytes {
-            return Err(StorageError::BlobTooLarge {
-                size,
-                limit: max_bytes,
-            });
-        }
-        self.stage_import_reader_with_purpose(
-            bytes,
-            max_bytes,
-            super::cas_retention::CapturePurpose::Legacy,
-            None,
-        )
+        stage_import_bytes_from_root(&self.blob_root, self.cas_store_id, bytes, max_bytes)
     }
 
     pub(super) fn stage_derived_file_import(&self, source: &Path) -> Result<StagedFileImport> {
@@ -498,27 +530,33 @@ impl Store {
         )
     }
 
-    fn stage_import_reader_with_purpose(
-        &self,
-        input: impl Read,
-        max_bytes: u64,
-        purpose: super::cas_retention::CapturePurpose,
-        source_for_tests: Option<&Path>,
-    ) -> Result<StagedFileImport> {
-        stage_reader_from_root(
-            &self.blob_root,
-            self.cas_store_id,
-            input,
-            max_bytes,
-            purpose,
-            source_for_tests,
-        )
-    }
-
     /// Publish only the unchanged validated capture; never overwrite a blob.
     pub fn publish_file_import(&self, staged: &StagedFileImport) -> Result<BlobDescriptor> {
         publish_file_import_under_root(&self.blob_root, staged)
     }
+}
+
+fn stage_import_bytes_from_root(
+    blob_root: &Path,
+    store_id: Uuid,
+    bytes: &[u8],
+    max_bytes: u64,
+) -> Result<StagedFileImport> {
+    let size = bytes.len() as u64;
+    if size > max_bytes {
+        return Err(StorageError::BlobTooLarge {
+            size,
+            limit: max_bytes,
+        });
+    }
+    stage_reader_from_root(
+        blob_root,
+        store_id,
+        bytes,
+        max_bytes,
+        super::cas_retention::CapturePurpose::Legacy,
+        None,
+    )
 }
 
 pub(super) fn stage_file_from_root(

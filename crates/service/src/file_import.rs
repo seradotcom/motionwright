@@ -3,7 +3,9 @@ use super::{
     MAX_SVG_IMPORT_BYTES, StudioService, audio, invalid_import, validate_importable_asset,
 };
 use motionwright_domain::{Asset, Change, NativeCapsuleSourceSpec, RevisionStamp, VoiceTrack};
-use motionwright_storage::{ApplyOutcome, BlobDescriptor, FileImportIntent, Result, StorageError};
+use motionwright_storage::{
+    ApplyOutcome, BlobDescriptor, FileImportCaptureTarget, FileImportIntent, Result, StorageError,
+};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use uuid::Uuid;
@@ -89,13 +91,16 @@ impl ImportSource<'_> {
 
     fn stage(
         self,
-        store: &motionwright_storage::Store,
+        target: &FileImportCaptureTarget,
         maximum: u64,
     ) -> Result<motionwright_storage::StagedFileImport> {
-        match self {
-            Self::File(path) => store.stage_file_import_with_limit(path, maximum),
-            Self::Captured(bytes) => store.stage_file_import_bytes_with_limit(bytes, maximum),
-        }
+        let captured = match self {
+            Self::File(path) => target.capture_file(path, maximum)?,
+            Self::Captured(bytes) => target.capture_bytes(bytes, maximum)?,
+        };
+        #[cfg(test)]
+        verified_source_tests::observe_capture();
+        Ok(captured)
     }
 }
 
@@ -238,10 +243,12 @@ impl StudioService {
             Ok(())
         };
         // Current scope and new-request revision are checked before source IO.
-        let recorded = self
-            .store
-            .lock()
-            .inspect_file_import(project_id, expected, request_id, &intent, true)?;
+        let (recorded, capture_target) = {
+            let mut store = self.store.lock();
+            let recorded =
+                store.inspect_file_import(project_id, expected, request_id, &intent, true)?;
+            (recorded, store.file_import_capture_target())
+        };
         if let Some(recorded) = recorded {
             // Known replay does not ingest or repair CAS, and never remeasures
             // a voice take. A normal file import still binds the supplied bytes.
@@ -252,9 +259,9 @@ impl StudioService {
             verify_expected_source(&source_descriptor, expected_source)?;
             verify_native_digest(&source_descriptor.sha256)?;
             let source_sha256 = source_descriptor.sha256;
-            let confirmed = self
-                .store
-                .lock()
+            let mut store = self.store.lock();
+            capture_target.check_store(&store)?;
+            let confirmed = store
                 .inspect_file_import(project_id, expected, request_id, &intent, false)?
                 .ok_or_else(|| {
                     StorageError::InvalidFileImportReceipt(
@@ -285,7 +292,11 @@ impl StudioService {
             }
             _ => self.import_limits.source_bytes(),
         };
-        let staged = source.stage(&self.store.lock(), max_bytes)?;
+        let staged = {
+            // Keep one source capture at a time without blocking editorial work.
+            let _capture = self.file_import_capture.lock();
+            source.stage(&capture_target, max_bytes)?
+        };
         // The descriptor is measured by this same retained capture. A mismatch
         // drops only its private stage before publication, decoding or apply.
         verify_expected_source(staged.descriptor(), expected_source)?;
@@ -374,6 +385,7 @@ impl StudioService {
         // No writer transaction is held during file copying or audio decoding.
         let result = {
             let mut store = self.store.lock();
+            capture_target.check_store(&store)?;
             if let Some(recorded) =
                 store.inspect_file_import(project_id, expected, request_id, &intent, true)?
             {
@@ -419,7 +431,19 @@ mod verified_source_tests {
     use super::*;
     use motionwright_domain::{DomainError, Fidelity, Project, RationalTime};
     use motionwright_storage::ProjectEvent;
-    use std::{fs, path::PathBuf};
+    use std::{cell::RefCell, fs, path::PathBuf};
+
+    type CaptureObserver = Option<Box<dyn FnOnce()>>;
+
+    thread_local! {
+        static CAPTURE_OBSERVER: RefCell<CaptureObserver> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn observe_capture() {
+        if let Some(observe) = CAPTURE_OBSERVER.take() {
+            observe();
+        }
+    }
 
     fn fixture() -> (tempfile::TempDir, StudioService, Project) {
         let root = tempfile::tempdir().unwrap();
@@ -465,6 +489,86 @@ mod verified_source_tests {
         let path = root.join("source.bin");
         fs::write(&path, bytes).unwrap();
         path
+    }
+
+    #[test]
+    fn original_capture_allows_a_concurrent_edit_and_rechecks_revision_before_publication() {
+        let (root, service, project) = fixture();
+        let bytes = b"original media captured while an editor changes the project";
+        let path = source(root.path(), bytes);
+        let expected = descriptor(bytes);
+        let editor = service.clone();
+        let project_id = project.id;
+        let stamp = project.stamp();
+        CAPTURE_OBSERVER.set(Some(Box::new(move || {
+            assert!(
+                editor.store.try_lock().is_some(),
+                "file capture must not hold the editor's Store mutex"
+            );
+            std::thread::spawn(move || {
+                editor
+                    .apply(
+                        project_id,
+                        &stamp,
+                        "edit-during-original-capture",
+                        &Change::RenameProject {
+                            title: "Concurrent edit".into(),
+                        },
+                    )
+                    .unwrap();
+            })
+            .join()
+            .unwrap();
+        })));
+        let intent = asset_intent();
+        let error = service
+            .import_file_verified(
+                project.id,
+                &project.stamp(),
+                "import-with-stale-revision",
+                &path,
+                &expected,
+                intent.clone(),
+            )
+            .unwrap_err();
+        assert!(matches!(error, StorageError::Conflict { .. }));
+        no_published_blob(&service, &expected);
+        assert!(
+            service
+                .recover_file_import(
+                    project.id,
+                    &project.stamp(),
+                    "import-with-stale-revision",
+                    &intent
+                )
+                .unwrap()
+                .is_none()
+        );
+        let edited = service.project(project.id).unwrap();
+        assert_eq!(edited.title, "Concurrent edit");
+        assert_eq!(edited.revision, project.revision + 1);
+        assert!(edited.assets.is_empty());
+        let imported = service
+            .import_file_verified(
+                project.id,
+                &edited.stamp(),
+                "import-with-current-revision",
+                &path,
+                &expected,
+                intent,
+            )
+            .unwrap();
+        drop(service);
+        let reopened = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
+        assert_eq!(reopened.project(project.id).unwrap(), imported.project);
+        assert_eq!(
+            reopened
+                .store
+                .lock()
+                .read_blob(&expected.sha256, expected.size_bytes)
+                .unwrap(),
+            bytes
+        );
     }
 
     #[test]

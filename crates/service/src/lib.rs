@@ -482,6 +482,7 @@ fn validate_importable_asset_reader(
 #[derive(Clone)]
 pub struct StudioService {
     store: Arc<Mutex<Store>>,
+    file_import_capture: Arc<Mutex<()>>,
     import_limits: ImportLimits,
 }
 
@@ -525,6 +526,7 @@ impl StudioService {
     pub fn from_store_with_import_limits(store: Store, limits: ImportLimits) -> Self {
         Self {
             store: Arc::new(Mutex::new(store)),
+            file_import_capture: Arc::new(Mutex::new(())),
             import_limits: limits,
         }
     }
