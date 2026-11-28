@@ -534,8 +534,10 @@ def measure_audio(checkout: Path, ffmpeg: Path, ffprobe: Path, metrics: dict, *,
     binary = checkout / "target/release/examples" / AUDIO_APP
     binary_sha = sha_file(binary)
     mixed = audio_root / "native-mix.wav"
-    rendered = run([str(binary), "--json", "--assets", str(audio_root / "inputs"),
-                    "audio", "render", "0s..2s", "--float", "-o", str(mixed)],
+    assets = str(audio_root / "inputs")
+    # Clap 4.5.36 Release requires the probe's global assets at each command scope.
+    rendered = run([str(binary), "--json", "--assets", assets, "audio", "--assets", assets,
+                    "render", "--assets", assets, "--float", "--output", str(mixed), "0s..2s"],
                    120, "native_audio_mix_render", metrics, evidence_root=evidence_root)
     result = strict_object(rendered.stdout)
     expect(result.get("output") == str(mixed) and result.get("missing_files") == []

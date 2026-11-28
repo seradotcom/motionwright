@@ -301,10 +301,12 @@ def validate_commands(private: Path, captures: dict) -> None:
     require(argv["cold_bounded_video_render"] == [binary, "render", "0s..1s", "--draft", "--scale", "0.25",
                                                  "-o", str(private / "upstream-source-preview.mp4")],
             "baseline_video_render_argv")
+    assets = str(private / "audio/inputs")
     require(argv["native_audio_mix_render"] == [str(checkout / "target/release/examples" / experiment.AUDIO_APP),
-                                                "--json", "--assets", str(private / "audio/inputs"),
-                                                "audio", "render", "0s..2s", "--float", "-o",
-                                                str(private / "audio/native-mix.wav")], "native_audio_render_argv")
+                                                "--json", "--assets", assets, "audio", "--assets", assets,
+                                                "render", "--assets", assets, "--float", "--output",
+                                                str(private / "audio/native-mix.wav"), "0s..2s"],
+            "native_audio_render_argv")
     for tool, phases in (("ffmpeg", ("cold_png_rgba_decode", "warm_png_rgba_decode", "video_full_framehash",
                                     "audio_mix_pcm_decode", "audio_bed_pcm_decode", "audio_cue_pcm_decode")),
                          ("ffprobe", ("video_metadata", "audio_mix_metadata"))):
