@@ -7041,6 +7041,95 @@ mod tests {
     }
 
     #[test]
+    fn smoothstep_shape_keys_write_the_authored_pose_at_every_output_frame() {
+        use semwright_motion_authoring::NativeOp;
+
+        let mut project = fixture_project();
+        let mut shape = node("shape", None);
+        shape.x = 720.0;
+        shape.y = 460.0;
+        shape.width = 480.0;
+        shape.height = 160.0;
+        let end = RationalTime::new(24, 30).unwrap();
+        for (property, from, to) in [
+            (MotionProperty::X, 700.0, shape.x),
+            (MotionProperty::Y, 440.0, shape.y),
+            (MotionProperty::Width, 280.0, shape.width),
+            (MotionProperty::Height, 90.0, shape.height),
+            (MotionProperty::RotationDeg, -18.0, shape.rotation_deg),
+        ] {
+            shape.keyframes.extend([
+                CanvasKeyframe {
+                    at: RationalTime::ZERO,
+                    property,
+                    value: from,
+                    interpolation: MotionInterpolation::Linear,
+                },
+                CanvasKeyframe {
+                    at: end,
+                    property,
+                    value: to,
+                    interpolation: MotionInterpolation::EaseInOut,
+                },
+            ]);
+        }
+        let target = subject_id(shape.id, None);
+        project.scenes[0].nodes[0] = shape;
+        let saved = project.clone();
+        let segments = build_motion_canvas_segments(
+            &project,
+            project.deliverables[0].id,
+            &fixture_options(&project),
+        )
+        .expect("frame-aligned smoothstep geometry must realize");
+        let realized = realize(&segments[0].film).unwrap();
+        let mut writes = BTreeMap::<RationalTime, Vec<(Channel, Operand)>>::new();
+        for instruction in &realized.instructions {
+            match &instruction.operation {
+                NativeOp::Set {
+                    target: actual,
+                    channel,
+                    value,
+                } if actual == &target => {
+                    assert_eq!(instruction.duration, RationalTime::ZERO);
+                    writes
+                        .entry(instruction.start)
+                        .or_default()
+                        .push((*channel, value.clone()));
+                }
+                NativeOp::Tween { target: actual, .. } if actual == &target => {
+                    panic!("smoothstep must use the authored frame values");
+                }
+                _ => {}
+            }
+        }
+        let near = |actual: f64, expected: f64| assert!((actual - expected).abs() < 1e-9);
+        assert_eq!(writes.len(), 25);
+        for frame in 0..=24 {
+            let clock = RationalTime::new(frame, 30).unwrap();
+            let progress = frame as f64 / 24.0;
+            let eased = progress * progress * (3.0 - 2.0 * progress);
+            let values = &writes[&clock];
+            assert_eq!(values.len(), 4);
+            for (channel, value) in values {
+                match (channel, value) {
+                    (Channel::Position, Operand::Vector(point)) => {
+                        near(point.x, -120.0 + 120.0 * eased);
+                        near(point.y, -55.0 + 55.0 * eased);
+                    }
+                    (Channel::Width, Operand::Number(value)) => near(*value, 280.0 + 200.0 * eased),
+                    (Channel::Height, Operand::Number(value)) => near(*value, 90.0 + 70.0 * eased),
+                    (Channel::Rotation, Operand::Number(value)) => {
+                        near(*value, -18.0 + 18.0 * eased)
+                    }
+                    _ => panic!("unexpected projected geometry: {channel:?} {value:?}"),
+                }
+            }
+        }
+        assert_eq!(project, saved);
+    }
+
+    #[test]
     fn exact_shape_resize_and_rotation_preserve_top_left_authoring_in_native_tweens() {
         use semwright_motion_authoring::NativeOp;
         let mut project = fixture_project();
