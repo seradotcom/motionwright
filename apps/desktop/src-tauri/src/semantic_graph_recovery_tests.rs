@@ -393,11 +393,7 @@ fn graph_recovery_refuses_silent_project_normalization() {
     let fixture = upsert_fixture();
     let mut extra = fixture.result.clone();
     extra["project"]["future_component_source"] = json!({ "author_intent": "retain me" });
-    // Ordinary Domain loading would silently ignore this neighbor and the
-    // resulting Project remains valid, but it is not the complete projection.
-    let normalized: Project = serde_json::from_value(extra["project"].clone()).unwrap();
-    normalized.validate().unwrap();
-    assert_eq!(normalized, fixture.historical);
+    assert!(serde_json::from_value::<Project>(extra["project"].clone()).is_err());
     assert!(decode_recorded(&fixture.prepared, extra).is_err());
 
     let mut omitted = fixture.result;
