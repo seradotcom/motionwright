@@ -89,8 +89,8 @@ async function captureFixture(service:ScopedChangeService,project:Project,fixtur
   };
   return {project:await service.apply(manifest.project,{type:"register_capture_source",record}),record};
 }
-async function expectOriginalImages(page:Page,records:CaptureSourceRecord[]){
-  const stage=page.getByRole("img",{name:"Source board with original capture images",exact:true});
+async function expectOriginalImages(page:Page,records:CaptureSourceRecord[],label="Source board with original capture images"){
+  const stage=page.getByRole("img",{name:label,exact:true});
   await expect(stage).toBeVisible();
   const images=stage.locator("image[data-source-sha256]");
   await expect(images).toHaveCount(2);
@@ -168,6 +168,17 @@ test("Two original CAS capture fixtures survive source board authoring, ordered 
     expect(flowScene.nodes[5].keyframes.map(key=>key.value)).toEqual([0,0,1]);
 
     await service.close();await service.start();await page.reload();
+    await button(page,"Canvas").click();
+    const sceneRow = (name:string) => page.locator(".tree-row").filter({has:page.getByText(name,{exact:true})});
+    await sceneRow(flowScene.name).click();
+    await expectOriginalImages(page,[a.record,b.record],"Editable Canvas source composition");
+    const canvasStudy = page.getByRole("img",{name:"Editable Canvas source composition",exact:true});
+    const afterImage = canvasStudy.locator("image").nth(1).locator("..");
+    await expect(afterImage).toHaveAttribute("opacity","0");
+    await page.getByRole("slider",{name:"Motion playhead",exact:true}).press("End");
+    await expect(afterImage).toHaveAttribute("opacity","1");
+    await sceneRow(flow.scenes[0].name).click();
+    await expect(canvasStudy.locator("image[data-source-sha256]")).toHaveCount(0);
     editor=await openBoard(page,sceneId);
     await expect(editor.getByLabel("Board capture 1",{exact:true})).toHaveValue(a.record.id);
     await expect(editor.getByLabel("Source board mode",{exact:true})).toHaveValue("product_flow_bridge");
