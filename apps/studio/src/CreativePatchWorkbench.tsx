@@ -39,6 +39,8 @@ interface Props {
   initialNodeId?: string | null;
   arrangementOpen?: boolean;
   selectionRequest?: { nonce: number; nodeId: string };
+  assistantDraft?: ScopedChangeDraft;
+  onAssistantDraftHandled?: () => void;
 }
 const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
 
@@ -48,7 +50,7 @@ export default function CreativePatchWorkbench(props: Props) {
   return <ScopedEditor key={scopedDraftScope(props.project, props.scene)} {...props}/>;
 }
 
-function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayProfile, repairDraft, onDismissRepair, initialNodeId, arrangementOpen, selectionRequest }: Props) {
+function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayProfile, repairDraft, onDismissRepair, initialNodeId, arrangementOpen, selectionRequest, assistantDraft, onAssistantDraftHandled }: Props) {
   const scope = scopedDraftScope(project, scene);
   const storageKey = DRAFT_STORAGE_PREFIX + scope;
   const freshDraft = () => selectDraftNode(createScopedDraft(project, scene),
@@ -185,6 +187,18 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incomingRepair && JSON.stringify(incomingRepair)]);
 
+  const assistantDraftCurrent = assistantDraft?.scope === scope && assistantDraft.baseRevision === project.revision;
+  const acceptAssistantDraft = () => {
+    if (!assistantDraft || !assistantDraftCurrent || backupBlocked || lockedUi) return;
+    update(assistantDraft);
+    onAssistantDraftHandled?.();
+  };
+  useEffect(() => {
+    if (assistantDraftCurrent && !scopedDraftHasWork(draft)) acceptAssistantDraft();
+    // Only the current handoff may initialize an empty draft.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assistantDraft, assistantDraftCurrent, backupBlocked, lockedUi]);
+
   const background = project.visual_language.palette.find(token => ["surface", "background"].includes(token.name.toLowerCase()))?.value ?? "#0F1216";
   const time = scene ? Math.max(0, Math.min(seconds(scene.duration), playhead - seconds(scene.start))) : 0;
   const resultNodes = useMemo(() => {
@@ -260,6 +274,17 @@ function ScopedEditor({ project, scene, commit, busy, playhead, onSeek, displayP
 
   return <div className="production-patch">
     <div className="production-section-title"><Eye size={18}/><div><h2>Scoped changes</h2><p>Stage a bounded proposal, inspect the difference and commit once.</p></div></div>
+    {assistantDraft && (!assistantDraftCurrent || backupBlocked || scopedDraftHasWork(draft)) && <div className="production-notice" role="status">
+      <strong>Assistant proposal · {assistantDraft.edits.length} suggested edits</strong>
+      <span>{!assistantDraftCurrent ? "The saved revision changed. Export current context from the Assistant to request an updated proposal."
+        : backupBlocked ? "Resolve the saved recovery copy before replacing it."
+        : "An existing draft is open. Choose which proposal to review."}</span>
+      <div className="production-button-row">
+        {assistantDraftCurrent && !backupBlocked && <button type="button" className="secondary-button" disabled={lockedUi}
+          onClick={acceptAssistantDraft}>Replace draft with assistant proposal</button>}
+        <button type="button" className="secondary-button" disabled={lockedUi} onClick={onAssistantDraftHandled}>Keep current draft</button>
+      </div>
+    </div>}
     {recipeStale && <div className="production-notice" role="status">
       <strong>Generated recipe source changed.</strong>
       <span>Your original proposal remains retained. Discard it explicitly and restage the recipe on the current source; an object-only rebase cannot confirm the measured data or output clocks.</span>

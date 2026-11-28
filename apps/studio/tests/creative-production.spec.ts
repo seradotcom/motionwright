@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 
 test("creative workstation adds an editable component and commits a scoped proposal once",async({page},testInfo)=>{
@@ -97,4 +98,89 @@ test("applied scoped changes can be inspected and undone without rewinding the p
   await expect(header).toContainText(`revision ${revision+1}`);
   await expect(history.getByRole("button",{name:"Preview redo",exact:true})).toBeEnabled();
   await expect(page.getByRole("img",{name:"Before scoped changes",exact:true})).toContainText(original.split("\n")[0]);
+});
+
+test("assistant reviews only current scoped edits and keeps draft replacement explicit", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Add scene", exact: true }).click();
+  await page.getByLabel("New scene name").fill("Assistant study");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await page.getByRole("button", { name: "Production", exact: true }).click();
+  await page.getByLabel("Production working scene").selectOption({ label: "Assistant study" });
+  await page.getByRole("button", { name: "Add to scene", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Update component", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Edit objects", exact: true }).click();
+
+  const body = page.getByRole("button", { name: "Canvas object ProductHeroReveal / body", exact: true });
+  const original = (await body.innerText()).trim();
+  await body.click();
+  const assistant = page.getByRole("button", { name: "Assistant", exact: true });
+  await assistant.click();
+  const dock = page.getByRole("complementary", { name: "Assistant", exact: true });
+  await expect(dock.getByLabel("Editing scope")).toHaveValue("selection");
+  await dock.getByLabel("Editing instruction").fill("Shorten the body copy.");
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    dock.getByRole("button", { name: "Download context", exact: true }).click(),
+  ]);
+  const path = await download.path();
+  if (!path) throw new Error("Missing assistant context download");
+  const request = JSON.parse(await readFile(path, "utf8"));
+  expect(request.schema).toBe("motionwright.assistant-request/1");
+  expect(request.scope).toHaveLength(1);
+  expect(request.scope[0].name).toBe("ProductHeroReveal / body");
+  const target = request.scope[0];
+  const proposal = {
+    schema: "motionwright.assistant-proposal/1",
+    source: request.source,
+    rationale: "Tighten the body copy and try a slight offset.",
+    edits: [
+      { kind: "text", node_id: target.id, text: "An approved assistant edit." },
+      { kind: "transform", node_id: target.id, transform: { ...target.transform, x: target.transform.x + 10 } },
+    ],
+  };
+  const paste = dock.getByLabel("Proposal JSON");
+  const requestReview = dock.getByRole("button", { name: "Review proposal", exact: true });
+  await paste.fill(JSON.stringify({ ...proposal, source: { ...request.source, revision: request.source.revision - 1 } }));
+  await requestReview.click();
+  await expect(dock.getByRole("alert")).toContainText("different project, branch, scene or revision");
+  await paste.fill(JSON.stringify({ ...proposal, edits: [{ ...proposal.edits[0], node_id: "other-object" }] }));
+  await requestReview.click();
+  await expect(dock.getByRole("alert")).toContainText("outside the selected scope");
+
+  const review = page.getByRole("region", { name: "Proposal review", exact: true });
+  await dock.getByRole("button", { name: "Open scoped changes", exact: true }).click();
+  await review.getByLabel("Patch rationale").fill("Keep this recovered manual draft.");
+  await review.getByRole("button", { name: "Return to editor", exact: true }).click();
+  await assistant.click();
+  await paste.fill(JSON.stringify(proposal));
+  await requestReview.click();
+  await expect(review.getByLabel("Patch rationale")).toHaveValue("Keep this recovered manual draft.");
+  await review.getByRole("button", { name: "Replace draft with assistant proposal", exact: true }).click();
+  const queue = review.getByRole("region", { name: "Proposed edits", exact: true });
+  const preview = queue.getByRole("button", { name: "Preview scoped changes", exact: true });
+  const apply = review.getByRole("button", { name: "Apply as one revision", exact: true });
+  await expect(queue).toContainText("ProductHeroReveal / body / transform");
+  await expect(apply).toBeDisabled();
+  await preview.click();
+  await expect(apply).toBeEnabled();
+  await queue.getByRole("button", { name: "Remove proposed edit 2", exact: true }).click();
+  await expect(apply).toBeDisabled();
+  await preview.click();
+  await expect(review.getByRole("img", { name: "Before scoped changes", exact: true })).toContainText(target.text.split("\n")[0]);
+  await expect(review.getByRole("img", { name: "After scoped changes", exact: true })).toContainText("An approved assistant edit.");
+  await review.getByText("Exact changed object values", { exact: true }).click();
+  const diff = JSON.parse((await review.locator("details pre").last().innerText()));
+  expect(diff[0].before.text).toBe(target.text);
+  expect(diff[0].after.x).toBe(diff[0].before.x);
+  await apply.click();
+  await expect(review.getByRole("button", { name: "Preview undo", exact: true })).toBeEnabled();
+  await expect(apply).toBeDisabled();
+
+  await review.getByRole("button", { name: "Preview undo", exact: true }).click();
+  await expect(review.getByRole("img", { name: "After scoped changes", exact: true })).toContainText(target.text.split("\n")[0]);
+  await review.getByRole("button", { name: "Apply undo as new revision", exact: true }).click();
+  await expect(review.getByRole("button", { name: "Preview redo", exact: true })).toBeEnabled();
+  await review.getByRole("button", { name: "Return to editor", exact: true }).click();
+  await expect(body).toContainText(original);
 });

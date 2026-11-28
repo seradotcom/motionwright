@@ -96,6 +96,10 @@ import {
 import AudioWorkspace from "./AudioWorkspace";
 import type { CraftAudioTarget } from "./craftLibrary";
 import CanvasWorkspace from "./CanvasWorkspace";
+import AssistantDock from "./AssistantDock";
+import CreativePatchWorkbench from "./CreativePatchWorkbench";
+import { scopedDraftScope } from "./scopedChangeDraft";
+import type { ScopedChangeDraft } from "./scopedChangeDraft";
 import DependenciesWorkspace from "./DependenciesWorkspace";
 import DeliveryProfiles from "./DeliveryProfiles";
 import type { DeliveryProjectState } from "./deliveryProfileDraft";
@@ -1637,6 +1641,10 @@ export default function App() {
   const [compactInspectorOpen, setCompactInspectorOpen] = useState(false);
   const [wideInspectorOpen, setWideInspectorOpen] = useState(true);
   const inspectorToggle = useRef<HTMLButtonElement>(null);
+  const assistantToggle = useRef<HTMLButtonElement>(null);
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [canvasSelection, setCanvasSelection] = useState<{ scope: string; nodeId: string | null } | null>(null);
+  const [proposalReview, setProposalReview] = useState<{ scope: string; workspace: Workspace; draft?: ScopedChangeDraft } | null>(null);
   const inspectorOpen = compactWorkspace ? compactInspectorOpen : wideInspectorOpen;
   const setInspectorOpen = compactWorkspace ? setCompactInspectorOpen : setWideInspectorOpen;
   const editorShellRef = useRef<HTMLElement>(null);
@@ -1928,6 +1936,17 @@ export default function App() {
     () => project?.scenes.find((scene) => scene.id === selectedSceneId) ?? null,
     [project, selectedSceneId],
   );
+
+  const proposalScope = project ? scopedDraftScope(project, selectedScene) : null;
+  const activeProposalReview = proposalReview?.scope === proposalScope && proposalReview?.workspace === workspace ? proposalReview : null;
+  const selectedAssistantNodeId = canvasSelection && canvasSelection.scope === proposalScope &&
+    selectedScene?.nodes.some(node => node.id === canvasSelection.nodeId) ? canvasSelection.nodeId : null;
+  const selectAssistantObject = useCallback((scope: string, nodeId: string | null) => {
+    setCanvasSelection(current => current?.scope === scope && current.nodeId === nodeId ? current : { scope, nodeId });
+  }, []);
+  useEffect(() => {
+    if (proposalReview && !activeProposalReview) setProposalReview(null);
+  }, [proposalReview, activeProposalReview]);
 
   const selectScene = useCallback((id: string, seekToStart = true) => {
     setSelectedSceneId(id);
@@ -2390,7 +2409,9 @@ export default function App() {
           }} displayProfile={selectedProfile} evidence={nativeRenderReceipt} onOpenRender={() => setWorkspace("Deliver")} />;
       case "Canvas":
         return <CanvasWorkspace project={project} scene={selectedScene} commit={commit}
-          commitRequired={commitCamera} playhead={playhead} onSeek={seekTo} profile={selectedProfile} busy={busy} timelineRequest={timelineEditorRequest} onTimelineRequestHandled={consumeTimelineEditorRequest} />;
+          commitRequired={commitCamera} playhead={playhead} onSeek={seekTo} profile={selectedProfile} busy={busy}
+          initialSelectedNodeId={selectedAssistantNodeId} onObjectSelectionChange={selectAssistantObject}
+          timelineRequest={timelineEditorRequest} onTimelineRequestHandled={consumeTimelineEditorRequest} />;
       case "Timeline":
         return <PreviewSurface
           key={JSON.stringify([
@@ -2559,12 +2580,25 @@ export default function App() {
             {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
           </IconButton>
           {workspace !== "Production" && <button type="button" className="icon-button"
-            ref={inspectorToggle} aria-controls="studio-inspector-panel" aria-expanded={inspectorOpen}
-            aria-label={inspectorOpen ? "Hide inspector" : "Show inspector"}
-            title={inspectorOpen ? "Hide inspector" : "Show inspector"}
-            onClick={() => setInspectorOpen(open => !open)}>
+            ref={inspectorToggle} aria-controls="studio-inspector-panel" aria-expanded={inspectorOpen && !assistantOpen}
+            aria-label={inspectorOpen && !assistantOpen ? "Hide inspector" : "Show inspector"}
+            title={inspectorOpen && !assistantOpen ? "Hide inspector" : "Show inspector"}
+            onClick={() => {
+              if (assistantOpen) {
+                setAssistantOpen(false);
+                setInspectorOpen(true);
+              } else {
+                setInspectorOpen(open => !open);
+              }
+            }}>
             <PanelRight size={16} aria-hidden="true" />
           </button>}
+          <button type="button" className={"button compact assistant-toggle" + (assistantOpen ? " active" : "")}
+            ref={assistantToggle} aria-controls="studio-assistant-panel" aria-expanded={assistantOpen}
+            aria-label="Assistant" title="Assistant" onClick={() => setAssistantOpen(open => !open)}>
+            <MessageSquareText size={15} aria-hidden="true" />
+            <span>Assistant</span>
+          </button>
           <button type="button" className={"button button-primary workspace-deliver" + (workspace === "Deliver" ? " active" : "")}
             aria-current={workspace === "Deliver" ? "page" : undefined} aria-label="Deliver"
             onClick={() => setWorkspace("Deliver")}>
@@ -2599,7 +2633,7 @@ export default function App() {
       {project.schema_version === 1 && <div className="project-format-notice" role="status"><span>Legacy project format · the next successful edit upgrades to v2. Export a backup before returning to an older client.</span><button className="button compact" onClick={() => setWorkspace("Deliver")}>Open backup export</button></div>}
       <div className={"editor-grid" + (railCollapsed ? " rail-collapsed" : "")
         + (compactRail && !railCollapsed ? " rail-overlay" : "")
-        + (workspace === "Production" ? " production-layout" : inspectorOpen ? "" : " inspector-collapsed")}>
+        + (assistantOpen ? " assistant-layout" : workspace === "Production" ? " production-layout" : inspectorOpen ? "" : " inspector-collapsed")}>
         <nav className="workspace-bar" aria-label="Workspace tools">
           {toolWorkspaces.map(({ name, icon: Icon }) => (
             <button type="button" key={name} title={name} className={workspace === name ? "active" : ""}
@@ -2620,18 +2654,48 @@ export default function App() {
           setCollapsed={setRailCollapsed}
         />
         <div className="center-stack">
-          <div className="workspace-stage">{renderWorkspace()}</div>
+          <div className="workspace-stage">{activeProposalReview
+            ? <section className="production-workspace assistant-review" aria-label="Proposal review">
+              <button type="button" className="button" autoFocus onClick={() => {
+                setProposalReview(null);
+                assistantToggle.current?.focus();
+              }}>Return to editor</button>
+              <CreativePatchWorkbench project={project} scene={selectedScene} playhead={playhead} onSeek={seekTo}
+                displayProfile={selectedProfile} busy={busy} commit={async change => { await commitCamera(change); }}
+                repairDraft={null} onDismissRepair={() => {}} initialNodeId={selectedAssistantNodeId}
+                assistantDraft={activeProposalReview.draft}
+                onAssistantDraftHandled={() => setProposalReview(current => current ? { ...current, draft: undefined } : current)} />
+            </section>
+            : renderWorkspace()}</div>
         </div>
-        {workspace !== "Production" && <div id="studio-inspector-panel" className="workspace-inspector"
-          hidden={!inspectorOpen} onKeyDown={event => {
-            if (!compactWorkspace || event.key !== "Escape" || event.defaultPrevented) return;
-            event.preventDefault();
-            setInspectorOpen(false);
-            inspectorToggle.current?.focus();
+        <div className="workspace-inspector" hidden={!assistantOpen && (workspace === "Production" || !inspectorOpen)}
+          onKeyDown={event => {
+            if (event.key !== "Escape" || event.defaultPrevented) return;
+            if (assistantOpen) {
+              event.preventDefault();
+              setAssistantOpen(false);
+              assistantToggle.current?.focus();
+            } else if (compactWorkspace) {
+              event.preventDefault();
+              setInspectorOpen(false);
+              inspectorToggle.current?.focus();
+            }
           }}>
-          <SceneInspector project={project} scene={selectedScene} commit={commit} commitScene={commitCamera}
-            commitBeat={commitCamera} rate={timebaseRate} mode={displayMode} rendererLabels={rendererLabels} />
-        </div>}
+          {workspace !== "Production" && <div id="studio-inspector-panel" className="inspector-surface" hidden={assistantOpen}>
+            <SceneInspector project={project} scene={selectedScene} commit={commit} commitScene={commitCamera}
+              commitBeat={commitCamera} rate={timebaseRate} mode={displayMode} rendererLabels={rendererLabels} />
+          </div>}
+          <div id="studio-assistant-panel" className="inspector-surface" hidden={!assistantOpen}>
+            <AssistantDock key={proposalScope} project={project} scene={selectedScene}
+              selectedNodeId={selectedAssistantNodeId} playhead={playhead} busy={busy} reviewing={!!activeProposalReview}
+              onClose={() => { setAssistantOpen(false); assistantToggle.current?.focus(); }}
+              onReview={draft => {
+                if (!proposalScope || busy) return;
+                setProposalReview({ scope: proposalScope, workspace, draft });
+                setAssistantOpen(false);
+              }} />
+          </div>
+        </div>
       </div>
 
       {audioReviewSession&&<AudioReviewTransport key={audioReviewSession.key}

@@ -499,6 +499,53 @@ textarea:focus-visible {
 
 .editor-grid > .project-rail { grid-area: 1 / 2; }
 
+.editor-grid.assistant-layout { --inspector-width: 330px; }
+
+.inspector-surface:not([hidden]) {
+  display: grid;
+  min-height: 0;
+  min-width: 0;
+}
+
+.assistant-toggle.active { color: var(--accent); border-color: var(--accent); }
+
+.assistant-dock .inspector-heading { height: 46px; padding-inline: 14px; }
+
+.assistant-dock .inspector-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.assistant-fields {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.assistant-fields .production-field textarea { resize: vertical; }
+
+.assistant-fields > button { justify-self: start; }
+
+.assistant-fields > p { margin: 0; }
+
+.assistant-source {
+  display: grid;
+  gap: 3px;
+  font-size: 12px;
+}
+
+.assistant-source span { color: var(--muted); }
+
+.assistant-proposal { padding-top: 10px; border-top: 1px solid var(--border); }
+
+.assistant-review { padding: 14px; }
+.assistant-review > button { margin-bottom: 14px; }
+
 .workspace-inspector:not([hidden]) {
   grid-area: 1 / 4;
   display: grid;
@@ -2652,6 +2699,7 @@ select:focus {
 @media (max-width: 860px) {
   .editor-grid { --tool-rail-width: 44px; }
   .editor-grid:not(.rail-collapsed) { --project-rail-width: 44px; }
+  .assistant-toggle span { display: none; }
 
   .workspace-bar button { width: 32px; flex-basis: 34px; }
 

@@ -641,6 +641,8 @@ export default function CanvasWorkspace({
   busy = false,
   timelineRequest,
   onTimelineRequestHandled,
+  initialSelectedNodeId,
+  onObjectSelectionChange,
 }: {
   project: Project;
   scene: Scene | null;
@@ -652,8 +654,11 @@ export default function CanvasWorkspace({
   busy?: boolean;
   timelineRequest?: TimelineEditorRequest | null;
   onTimelineRequestHandled?: (nonce:number)=>void;
+  initialSelectedNodeId?: string | null;
+  onObjectSelectionChange?: (scope: string, nodeId: string | null) => void;
 }) {
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(scene?.nodes[0]?.id ?? null);
+  const firstSelectedNode = () => scene?.nodes.find(node => node.id === initialSelectedNodeId) ?? scene?.nodes[0];
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(() => firstSelectedNode()?.id ?? null);
   const [addBusy, setAddBusy] = useState(false);
   const [showArrangement, setShowArrangement] = useState(false);
   const [scopedToolMode,setScopedToolMode] = useState<"arrange"|"motion">("arrange");
@@ -711,7 +716,7 @@ export default function CanvasWorkspace({
 
   useEffect(() => { setAddError(null); setGestureStatus(null); setShowArrangement(false); setScopedSelectionRequest(undefined); }, [creationScope]);
   useEffect(() => {
-    const next = scene?.nodes[0] ?? null;
+    const next = firstSelectedNode();
     setSelectedNodeId(next?.id ?? null);
     setDraftTransforms({});
     // Auto-key is consent for the selected scene, not a sticky global input
@@ -742,6 +747,10 @@ export default function CanvasWorkspace({
     () => scene?.nodes.find((node) => node.id === selectedNodeId) ?? null,
     [scene, selectedNodeId],
   );
+
+  useEffect(() => {
+    onObjectSelectionChange?.(creationScope, selectedNode?.id ?? null);
+  }, [creationScope, onObjectSelectionChange, selectedNode?.id]);
 
   const selectedMotionValue = selectedNode?.[motionProperty];
   useEffect(() => {
