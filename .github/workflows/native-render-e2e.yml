@@ -609,7 +609,8 @@ jobs:
           names=(
             "selected-store.original.log",
             "authored_rectangular_clip_group_has_real_native_parent_and_local_child_geometry.original.log",
-            "nested_rectangular_clip_group_is_refused_without_mask_or_preview_substitution.original.log",
+            "nested_static_group_clip_preserves_exact_world_pose_camera_and_independent_motion.original.log",
+            "native_clipped_position_refuses_dynamic_or_unrepresentable_parentage.original.log",
             "exact_fade_out_opacity_keeps_visible_source_and_real_native_zero_target.original.log",
             "native-build.original.log",
             "studio-service.original.log",
@@ -682,7 +683,8 @@ jobs:
           fi
           for case in \
             authored_rectangular_clip_group_has_real_native_parent_and_local_child_geometry \
-            nested_rectangular_clip_group_is_refused_without_mask_or_preview_substitution \
+            nested_static_group_clip_preserves_exact_world_pose_camera_and_independent_motion \
+            native_clipped_position_refuses_dynamic_or_unrepresentable_parentage \
             exact_fade_out_opacity_keeps_visible_source_and_real_native_zero_target; do
             cargo test --locked -p motionwright-native --lib \
               "film::tests::$case" -- --exact --test-threads=1 \
@@ -713,7 +715,8 @@ jobs:
               ("selected-store.original.log",selected),
               *[(name+".original.log","film::tests::"+name) for name in (
                   "authored_rectangular_clip_group_has_real_native_parent_and_local_child_geometry",
-                  "nested_rectangular_clip_group_is_refused_without_mask_or_preview_substitution",
+                  "nested_static_group_clip_preserves_exact_world_pose_camera_and_independent_motion",
+                  "native_clipped_position_refuses_dynamic_or_unrepresentable_parentage",
                   "exact_fade_out_opacity_keeps_visible_source_and_real_native_zero_target")],
           ]
           if os.environ["MOTIONWRIGHT_NATIVE_CLIP_E2E"] == "1":
