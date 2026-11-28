@@ -343,6 +343,14 @@ fn scene_span_cost(scene: &Scene, camera_reframe: bool) -> usize {
                     .iter()
                     .filter(|key| key.property == MotionProperty::Opacity)
                     .count();
+                // A synchronized entrance has a single shared interval for
+                // its translation, opacity and any rotation.
+                if opacity_keys > 0
+                    && opacity_keys < node.keyframes.len()
+                    && matches!(entry_motion(node), Ok(Some(_)))
+                {
+                    return 1;
+                }
                 // Equal-value holds emit no span; this is a conservative upper
                 // bound before negotiation, including malformed source keys.
                 let opacity_span = if composed_shape_motion(node).is_some() {
