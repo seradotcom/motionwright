@@ -56,22 +56,23 @@ pub(super) struct BundleExportStage {
 impl BundleExportStage {
     pub(super) fn new(parent: &Path) -> io::Result<Self> {
         let requested_parent = std::path::absolute(parent)?;
+        let mut ancestors =
+            hold_parent(&requested_parent, true)?.ok_or_else(|| io::Error::other(REFUSED))?;
         let parent = fs::canonicalize(&requested_parent)?;
-        if !local_drive(&parent) {
-            return Err(io::Error::other(REFUSED));
-        }
-        let mut ancestors = Vec::new();
-        for path in parent.ancestors().filter(|path| path.has_root()) {
-            if ancestors.len() == 64 {
+        // Retain the absolute spelling used for the rename as well. Windows
+        // can return a different drive path when a local drive is substituted.
+        if parent != requested_parent {
+            let resolved = hold_parent(&parent, false)?.ok_or_else(|| io::Error::other(REFUSED))?;
+            let requested_handle = ancestors.last().ok_or_else(|| io::Error::other(REFUSED))?;
+            let resolved_handle = resolved.last().ok_or_else(|| io::Error::other(REFUSED))?;
+            let identity = super::super::cas_retention::file_identity;
+            if identity(requested_handle).map_err(io::Error::other)?
+                != identity(resolved_handle).map_err(io::Error::other)?
+            {
                 return Err(io::Error::other(REFUSED));
             }
-            ancestors.push(path);
+            ancestors.extend(resolved);
         }
-        let ancestors = ancestors
-            .into_iter()
-            .rev()
-            .map(|path| open_directory(path, 0))
-            .collect::<io::Result<Vec<_>>>()?;
         let held_parent = ancestors.last().ok_or_else(|| io::Error::other(REFUSED))?;
 
         let path = parent.join(format!(".motionwright-export-{}", Uuid::new_v4().simple()));
@@ -169,7 +170,57 @@ impl Drop for BundleExportStage {
     }
 }
 
-pub(super) fn local_drive(path: &Path) -> bool {
+pub(super) fn check_destination_available(parent: &Path, name: &OsStr) -> io::Result<()> {
+    let parent = std::path::absolute(parent)?;
+    let Some(_ancestors) = hold_parent(&parent, false)? else {
+        return Ok(());
+    };
+    match fs::symlink_metadata(parent.join(name)) {
+        Ok(_) => Err(io::ErrorKind::AlreadyExists.into()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+// Walk the requested spelling before canonicalizing or touching the leaf.
+// Every existing directory is held before advancing to the next component.
+fn hold_parent(parent: &Path, create_missing: bool) -> io::Result<Option<Vec<File>>> {
+    if !local_drive(parent) || parent.components().any(|part| part == Component::ParentDir) {
+        return Err(io::Error::other(REFUSED));
+    }
+    let paths = parent
+        .ancestors()
+        .filter(|path| path.has_root())
+        .take(65)
+        .collect::<Vec<_>>();
+    if paths.is_empty() || paths.len() > 64 {
+        return Err(io::Error::other(REFUSED));
+    }
+    let mut held = Vec::with_capacity(paths.len());
+    for path in paths.into_iter().rev() {
+        let directory = match open_directory(path, 0) {
+            Ok(directory) => directory,
+            Err(error) if error.kind() == io::ErrorKind::NotFound && !create_missing => {
+                return Ok(None);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let ancestor = held.last().ok_or_else(|| io::Error::other(REFUSED))?;
+                require_acl_volume(ancestor).map_err(io::Error::other)?;
+                match fs::create_dir(path) {
+                    Ok(()) => (),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
+                    Err(error) => return Err(error),
+                }
+                open_directory(path, 0)?
+            }
+            Err(error) => return Err(error),
+        };
+        held.push(directory);
+    }
+    Ok(Some(held))
+}
+
+fn local_drive(path: &Path) -> bool {
     let Some(Component::Prefix(prefix)) = path.components().next() else {
         return false;
     };

@@ -375,9 +375,7 @@ impl Store {
         admission: &impl BundleAssetAdmission,
     ) -> Result<ProjectBundleManifest> {
         let destination = destination.as_ref();
-        if destination.exists() {
-            return Err(StorageError::DestinationExists);
-        }
+        check_bundle_destination(destination)?;
         self.prepare_project_bundle_export(id, None)?
             .publish_with_admission(destination, admission)
     }
@@ -976,19 +974,7 @@ impl PreparedProjectBundleExport {
     ) -> Result<ProjectBundleManifest> {
         use std::io::Seek;
 
-        #[cfg(windows)]
-        if !bundle_export::local_drive(&std::path::absolute(destination)?) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "portable bundle export needs a local Windows destination",
-            )
-            .into());
-        }
-        match fs::symlink_metadata(destination) {
-            Ok(_) => return Err(StorageError::DestinationExists),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
+        let (parent, destination_name) = check_bundle_destination(destination)?;
         validate_backup(&backup)?;
         ensure_backup_secret_free(&backup, Some(MAX_BUNDLE_MANIFEST_BYTES))?;
         let mut digests = BTreeSet::new();
@@ -1107,16 +1093,7 @@ impl PreparedProjectBundleExport {
             });
         }
         ensure_secret_free_bytes(&manifest_bytes, "portable bundle metadata")?;
-        let destination_name = destination.file_name().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "bundle destination must name a new directory",
-            )
-        })?;
-        let parent = destination
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
+        #[cfg(not(windows))]
         fs::create_dir_all(parent)?;
         let mut staging = bundle_export::BundleExportStage::new(parent)?;
 
@@ -1167,6 +1144,35 @@ impl PreparedProjectBundleExport {
             Err(error) => Err(error.into()),
         }
     }
+}
+
+pub(super) fn check_bundle_destination(destination: &Path) -> Result<(&Path, &std::ffi::OsStr)> {
+    let destination_name = destination.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "bundle destination must name a new directory",
+        )
+    })?;
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+
+    #[cfg(windows)]
+    match bundle_export::check_destination_available(parent, destination_name) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(StorageError::DestinationExists);
+        }
+        Err(error) => return Err(error.into()),
+    }
+    #[cfg(not(windows))]
+    match fs::symlink_metadata(destination) {
+        Ok(_) => return Err(StorageError::DestinationExists),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok((parent, destination_name))
 }
 
 /// Publish the complete sibling directory only if its destination is still free.
@@ -2094,6 +2100,37 @@ mod tests {
                 bytes
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires a Windows runner that can create an NTFS directory symlink"]
+    fn bundle_export_windows_refuses_reparse_parent_before_creating_missing_dirs() {
+        use std::os::windows::fs::{MetadataExt, symlink_dir};
+        let root = tempfile::tempdir().unwrap();
+        let (mut store, backup, _) = bundle_export_source(root.path());
+        let foreign = root.path().join("foreign-owner");
+        let alias = root.path().join("redirected-export");
+        fs::create_dir(&foreign).unwrap();
+        fs::write(foreign.join("sentinel"), b"original owner bytes").unwrap();
+        symlink_dir(&foreign, &alias).unwrap();
+        let tag = windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        assert_ne!(
+            fs::symlink_metadata(&alias).unwrap().file_attributes() & tag,
+            0
+        );
+        let result = store.export_project_bundle_at(
+            backup.project.id,
+            &backup.project.stamp(),
+            alias.join("missing-parent").join("backup"),
+        );
+        assert!(matches!(result, Err(StorageError::Io(_))));
+        assert!(!foreign.join("missing-parent").exists());
+        assert_eq!(
+            fs::read(foreign.join("sentinel")).unwrap(),
+            b"original owner bytes"
+        );
+        assert_eq!(fs::read_dir(&foreign).unwrap().count(), 1);
     }
 
     #[cfg(windows)]

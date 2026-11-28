@@ -1096,9 +1096,7 @@ impl Store {
         destination: impl AsRef<Path>,
     ) -> Result<ProjectBundleManifest> {
         let destination = destination.as_ref();
-        if destination.exists() {
-            return Err(StorageError::DestinationExists);
-        }
+        portability::check_bundle_destination(destination)?;
         let backup = self.export_project(id)?;
         self.export_captured_bundle(backup, destination)
     }

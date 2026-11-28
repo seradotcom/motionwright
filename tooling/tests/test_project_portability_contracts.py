@@ -364,6 +364,8 @@ class CasPortabilityContractTests(unittest.TestCase):
         self.assertEqual(matrix("workflow_dispatch", "derived_cache"), ["macos-latest", "windows-latest"])
         self.assertEqual(matrix("workflow_dispatch", "otio_export"), ["macos-latest", "windows-latest"])
         self.assertEqual(matrix("workflow_dispatch", "project_projection"), ["ubuntu-latest"])
+        self.assertEqual(matrix("workflow_dispatch", "bundle_export"), all_platforms)
+        self.assertEqual(matrix("workflow_dispatch", "bundle_export", "windows"), ["windows-latest"])
         for chosen, expected in (
             ("windows", ["windows-latest"]), ("macos", ["macos-latest"]),
             ("both", ["macos-latest", "windows-latest"]), ("linux", ["ubuntu-latest"]),

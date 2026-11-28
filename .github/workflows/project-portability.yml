@@ -47,7 +47,7 @@ on:
         type: choice
         options: [full, storage_service, derived_cache, otio_export, bundle_export, bundle_inspection, project_projection, cas_retention, cas_candidate, gc_proxy_candidate]
       os_scope:
-        description: Explicit CAS operating systems; all is valid only for reviewed candidate source profiles
+        description: Operating systems for CAS contracts or an explicit Windows bundle-export check
         required: true
         type: choice
         options: [windows, macos, both, linux, all]
@@ -176,7 +176,7 @@ jobs:
       fail-fast: false
       max-parallel: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'otio_export' && 1 || 3 }}
       matrix:
-        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'cas_candidate' || inputs.verification_scope == 'gc_proxy_candidate') && (inputs.os_scope == 'windows' && '["windows-latest"]' || inputs.os_scope == 'macos' && '["macos-latest"]' || inputs.os_scope == 'both' && '["macos-latest","windows-latest"]' || inputs.os_scope == 'linux' && '["ubuntu-latest"]' || inputs.os_scope == 'all' && '["ubuntu-latest","macos-latest","windows-latest"]' || '[]') || github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'cas_retention' && (inputs.os_scope == 'windows' && '["windows-latest"]' || inputs.os_scope == 'macos' && '["macos-latest"]' || inputs.os_scope == 'both' && '["macos-latest","windows-latest"]' || inputs.os_scope == 'linux' && '["ubuntu-latest"]' || '[]') || github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'project_projection' && '["ubuntu-latest"]' || github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'derived_cache' || inputs.verification_scope == 'otio_export') && '["macos-latest","windows-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'cas_candidate' || inputs.verification_scope == 'gc_proxy_candidate') && (inputs.os_scope == 'windows' && '["windows-latest"]' || inputs.os_scope == 'macos' && '["macos-latest"]' || inputs.os_scope == 'both' && '["macos-latest","windows-latest"]' || inputs.os_scope == 'linux' && '["ubuntu-latest"]' || inputs.os_scope == 'all' && '["ubuntu-latest","macos-latest","windows-latest"]' || '[]') || github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'cas_retention' && (inputs.os_scope == 'windows' && '["windows-latest"]' || inputs.os_scope == 'macos' && '["macos-latest"]' || inputs.os_scope == 'both' && '["macos-latest","windows-latest"]' || inputs.os_scope == 'linux' && '["ubuntu-latest"]' || '[]') || github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'project_projection' && '["ubuntu-latest"]' || github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'bundle_export' && inputs.os_scope == 'windows' && '["windows-latest"]' || github.event_name == 'workflow_dispatch' && (inputs.verification_scope == 'derived_cache' || inputs.verification_scope == 'otio_export') && '["macos-latest","windows-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     env:
       CARGO_TERM_COLOR: never
       PYTHONDONTWRITEBYTECODE: '1'
@@ -318,7 +318,7 @@ jobs:
               options = ["--nocapture"] if selection == "otio_export" else ["--test-threads=1"]
               # Hosted Windows must actually execute both privileged symlink
               # cases; an ignored result never satisfies the closed roster.
-              if suite == "storage" and runner_os == "Windows":
+              if suite in {"storage", "portable-bundle-destination"} and runner_os == "Windows":
                   options.append("--include-ignored")
               return options
 
@@ -1473,7 +1473,8 @@ jobs:
               }
               if os.environ["RUNNER_OS"] == "Windows":
                   names.update({"bundle_export_windows_long_unicode_destination_remains_operational",
-                                "bundle_export_windows_nul_paths_fail_before_publication"})
+                                "bundle_export_windows_nul_paths_fail_before_publication",
+                                "bundle_export_windows_refuses_reparse_parent_before_creating_missing_dirs"})
               else:
                   names.add("bundle_export_preserves_dangling_symlink_created_at_publication")
               cases = [
