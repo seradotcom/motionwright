@@ -1659,8 +1659,43 @@ select:focus {
 }
 
 .dependency-row {
-  grid-template-columns: 1.3fr 1.7fr 1fr 0.9fr;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.8fr) minmax(0, 0.8fr) minmax(0, 1fr);
+  align-items: start;
+  padding-block: 9px;
+  overflow-wrap: anywhere;
 }
+.asset-reference-list {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.asset-reference-list li {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+}
+.asset-reference-role {
+  color: var(--text);
+  font-weight: 650;
+}
+.asset-reference-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  text-align: start;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.asset-reference-link svg { flex: none; }
 .asset-audit {
   display: grid;
   gap: 0;
@@ -1723,7 +1758,7 @@ select:focus {
   font-size: 11px;
 }
 .asset-audit-result.problem { color: var(--danger); }
-.asset-audit-result small { color: var(--dim); font-size: 10px; }
+.asset-audit-result small { display: block; color: var(--dim); font-size: 10px; }
 
 .evidence-callout {
   margin-top: 18px;

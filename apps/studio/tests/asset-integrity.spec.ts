@@ -25,6 +25,33 @@ test("Dependencies audits real CAS identities in pages without inventing scene c
     loudness_lufs: null,
     true_peak_dbfs: null,
   });
+  const illustration = boot.project.assets[1].id;
+  const scene = boot.project.scenes[1];
+  boot.project.brief.claims.push({
+    id: "019d0000-0000-7000-8000-000000000988",
+    text: "The illustration depicts a semantic tree.",
+    source: { kind: "asset", asset_id: illustration },
+    context: "Source illustration",
+    source_revision: null,
+  });
+  boot.project.production_design = {
+    ...boot.project.production_design,
+    heroes: [],
+    capsules: [],
+    plan: {
+      objective: "Explain semantic controls",
+      audience: "Editors",
+      concept: "Compare interface structure with a screenshot",
+      reference_constraints: [],
+      exclusions: [],
+      shots: [{
+        scene_id: scene.id, purpose: "Show the semantic tree", claim_ids: [],
+        asset_ids: [illustration], evidence_kind: "graphic_study",
+      }],
+      clock: { kind: "timeline" },
+      approval: null,
+    },
+  };
   await page.addInitScript((initial) => {
     const app = window as unknown as {
       __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
@@ -86,9 +113,14 @@ test("Dependencies audits real CAS identities in pages without inventing scene c
   const audit = page.getByRole("region", { name: "Local asset SHA-256 integrity" });
   await expect(audit).toContainText("Not checked");
   await expect(table.getByRole("row")).toHaveCount(11);
-  await expect(table.getByRole("row", { name: "Asset voiceover.wav" })).toContainText("Voice: Recorded narrator");
-  await expect(table.getByRole("row", { name: "Asset native-demo.glb" })).toContainText("Not established (Graph needed)");
-  await expect(table).not.toContainText("Scene One");
+  const voiceRow = table.getByRole("row", { name: "Asset voiceover.wav" });
+  await expect(voiceRow).toContainText("Voice");
+  await expect(voiceRow).toContainText("Recorded narrator");
+  await expect(table.getByRole("row", { name: "Asset native-demo.glb" })).toContainText("No saved references");
+  const illustrationRow = table.getByRole("row", { name: "Asset semwright-mark.svg" });
+  await expect(illustrationRow).toContainText("The illustration depicts a semantic tree.", { timeout: 5_000 });
+  await expect(illustrationRow.getByRole("button", { name: "Open scene " + scene.name })).toBeVisible();
+  await expect(table.getByRole("row", { name: "Asset native-demo.glb" })).not.toContainText(scene.name);
   const initialRevision = await page.locator(".revision-chip").first().innerText();
 
   await page.getByRole("button", { name: "Check local assets" }).click();
@@ -98,7 +130,7 @@ test("Dependencies audits real CAS identities in pages without inventing scene c
   await expect(page.getByRole("button", { name: "Check next local asset page" })).toBeEnabled();
   await page.getByRole("button", { name: "Check next local asset page" }).click();
   await expect(audit).toContainText("10 / 10 assets inspected");
-  await expect(audit).toContainText("all references examined");
+  await expect(audit).toContainText("Check complete.");
   await expect(table.getByRole("row", { name: "Asset imported-extra-6.png" })).toContainText("SHA-256 verified");
   await expect(page.locator(".revision-chip").first()).toHaveText(initialRevision);
 
@@ -120,6 +152,9 @@ test("Dependencies audits real CAS identities in pages without inventing scene c
   await page.getByRole("button", { name: "Dependencies", exact: true }).click();
   await expect(audit).toContainText("Not checked");
   await expect(table.getByRole("row", { name: "Asset voiceover.wav" })).toContainText("Not checked");
+  await illustrationRow.getByRole("button", { name: "Open scene " + scene.name }).click();
+  await expect(page.getByRole("button", { name: "Timeline", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(page.locator(".tree-row.selected")).toContainText(scene.name);
 });
 
 test("browser demo cannot claim local CAS integrity or fabricate Graph associations", async ({ page }) => {
@@ -130,6 +165,6 @@ test("browser demo cannot claim local CAS integrity or fabricate Graph associati
   await expect(page.getByRole("button", { name: "Check local assets" })).toBeDisabled();
   await expect(audit).toContainText("unavailable in browser demo mode");
   await expect(table).not.toContainText("SHA-256 verified");
-  await expect(table).toContainText("Not established (Graph needed)");
-  await expect(page.getByText("GRAPH · UNKNOWN")).toBeVisible();
+  await expect(table).toContainText("No saved references");
+  await expect(page.getByText("Graph status unknown")).toBeVisible();
 });

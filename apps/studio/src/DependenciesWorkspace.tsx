@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
-import { CircleCheck, CircleDashed, RefreshCw, TriangleAlert } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUpRight, CircleCheck, CircleDashed, RefreshCw, TriangleAlert } from "lucide-react";
 import { assetIntegrityPage } from "./api";
+import { assetReferences } from "./assetReferences";
 import type {
   AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, Project,
 } from "./types";
@@ -19,16 +20,16 @@ function isProblem(status: AssetIntegrityStatus): boolean {
   return ["missing", "corrupt", "unsafe", "unreadable"].includes(status);
 }
 
-/** Render actual app-owned asset/voice associations, never fabricated scene
- * or Graph edges. SHA-256 checks are explicit and read-only in desktop.
- */
 export default function DependenciesWorkspace({
   project,
   desktopMode,
+  onOpenScene,
 }: {
   project: Project;
   desktopMode: boolean;
+  onOpenScene: (sceneId: string) => void;
 }) {
+  const references = useMemo(() => assetReferences(project), [project]);
   const [rows, setRows] = useState<AssetIntegrityRecord[]>([]);
   const [next, setNext] = useState<number | null>(null);
   const [total, setTotal] = useState<number | null>(null);
@@ -97,20 +98,15 @@ export default function DependenciesWorkspace({
       <header className="workspace-heading">
         <div>
           <h2>Dependencies</h2>
-          <p>
-            Real project asset and voice-track references. Project Graph
-            admission, cross-renderer consumers and CURRENT/STALE status
-            remain unverified.
-          </p>
+          <p>Trace source assets to saved project references and check the local files.</p>
         </div>
-        <span className="status-pill status-unknown">GRAPH · UNKNOWN</span>
+        <span className="status-pill status-unknown">Graph status unknown</span>
       </header>
       <section className="asset-audit" aria-label="Local asset SHA-256 integrity">
         <div className="asset-audit-head">
           <div>
             <strong>Local asset integrity</strong>
-            <p>Checks exact content-addressed blob bytes already referenced by r{project.revision}.
-              No creative edits, renderer jobs, arbitrary filesystem paths or Graph claims.</p>
+            <p>Compares local files with their saved SHA-256 digests at revision {project.revision}.</p>
           </div>
           <button className="button compact" type="button" onClick={() => void inspect(null)}
             disabled={!desktopMode || busy}>
@@ -123,7 +119,7 @@ export default function DependenciesWorkspace({
             <>
               <CircleDashed size={15} aria-hidden="true" />
               {desktopMode
-                ? "Not checked · no SHA-256 result claimed"
+                ? "Not checked"
                 : "Local verification is unavailable in browser demo mode"}
             </>
           ) : (
@@ -132,9 +128,9 @@ export default function DependenciesWorkspace({
                 : complete && rows.length > 0 && verified === rows.length
                   ? <CircleCheck size={15} aria-hidden="true" />
                   : <CircleDashed size={15} aria-hidden="true" />}
-              <span>{rows.length} / {total} assets inspected · {verified} verified ·
-                {" "}{problems} integrity problems · {Math.floor(checkedBytes / 1024)} KiB hashed
-                {complete ? " · all references examined" : " · more references remain"}
+              <span>{rows.length} / {total} assets inspected. {verified} verified, {problems} with
+                integrity problems. {Math.floor(checkedBytes / 1024)} KiB hashed.
+                {complete ? " Check complete." : " More assets remain."}
               </span>
             </>
           )}
@@ -160,26 +156,36 @@ export default function DependenciesWorkspace({
       </section>
       <div className="data-table" role="table" aria-label="Project asset dependencies and integrity">
         <div className="data-row dependency-row data-head" role="row">
-          <span>Source asset</span><span>Recorded consumer</span>
-          <span>Source revision</span><span>Local integrity</span>
+          <span role="columnheader">Source asset</span><span role="columnheader">Saved references</span>
+          <span role="columnheader">Source revision</span><span role="columnheader">Local integrity</span>
         </div>
         {project.assets.map((asset) => {
-          const relatedTracks = project.audio.voice_tracks
-            .filter((track) => track.asset_id === asset.id);
+          const uses = references.get(asset.id) ?? [];
           const info = summaries.get(asset.id);
           return (
             <div className="data-row dependency-row" role="row" key={asset.id}
               aria-label={"Asset " + asset.name}>
-              <span title={asset.media_type}>{asset.name}</span>
-              <span>{relatedTracks.length
-                ? relatedTracks.map((track) => "Voice: " + track.label).join(", ")
-                : "Not established (Graph needed)"}</span>
-              <span>{asset.source_revision ?? "unspecified"}</span>
-              <span className={"asset-audit-result " +
+              <span role="cell" title={asset.media_type}>{asset.name}</span>
+              <div role="cell">
+                {uses.length === 0 ? "No saved references" : <ul className="asset-reference-list">
+                  {uses.map(({ key, role, label, scene }) => (
+                    <li key={key}>
+                      <span className="asset-reference-role">{role}</span>
+                      {label && <span>{label}</span>}
+                      {scene && <button type="button" className="asset-reference-link"
+                        aria-label={"Open scene " + scene.name} onClick={() => onOpenScene(scene.id)}>
+                        <span>{scene.name}</span><ArrowUpRight size={12} aria-hidden="true" />
+                      </button>}
+                    </li>
+                  ))}
+                </ul>}
+              </div>
+              <span role="cell">{asset.source_revision ?? "Unspecified"}</span>
+              <span role="cell" className={"asset-audit-result " +
                 (info && isProblem(info.status) ? "problem" : "")}>
                 {info ? descriptions[info.status] : "Not checked"}
                 {info?.size_bytes !== null && info?.size_bytes !== undefined
-                  ? <small>{" · " + Math.ceil(info.size_bytes / 1024) + " KiB"}</small>
+                  ? <small>{Math.ceil(info.size_bytes / 1024)} KiB</small>
                   : null}
               </span>
             </div>
@@ -187,13 +193,8 @@ export default function DependenciesWorkspace({
         })}
       </div>
       {project.assets.length === 0 && (
-        <p className="honesty-note">No asset references exist in this project.
-          This says nothing about external Graph dependencies.</p>
+        <p className="honesty-note">Import an asset to trace it here.</p>
       )}
-      <p className="honesty-note">
-        A verified SHA-256 proves only the local bytes for that saved digest at
-        inspection time, not usage in a rendered scene, source rights, or Graph admission.
-      </p>
     </div>
   );
 }

@@ -2486,7 +2486,11 @@ export default function App() {
       case "Dependencies":
         return <DependenciesWorkspace
           key={[project.id, project.generation, project.revision].join(":")}
-          project={project} desktopMode={boot.native_sdk.mode === "tauri"} />;
+          project={project} desktopMode={boot.native_sdk.mode === "tauri"} onOpenScene={id => {
+            setPlaying(false);
+            selectScene(id);
+            setWorkspace("Timeline");
+          }} />;
       case "Review":
         return <ReviewWorkspace project={project} scene={selectedScene} commit={commitCamera} playhead={playhead} onSeek={seekTo}
           desktopMode={boot.native_sdk.mode === "tauri"}
