@@ -8,6 +8,7 @@ evidence root; public_artifact seals that root with the existing CI custodian.
 """
 from __future__ import annotations
 
+import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
@@ -514,7 +515,7 @@ def declared_sdk_pin(raw: bytes) -> str:
 
 
 def measure_audio(checkout: Path, ffmpeg: Path, ffprobe: Path, metrics: dict, *,
-                  evidence_root: Path = OUT) -> dict:
+                  evidence_root: Path = OUT, build_timeout: int = 180) -> dict:
     audio_root = evidence_root / "audio"
     audio_root.mkdir(mode=0o700, exist_ok=False)
     specification = create_audio_fixture(audio_root / "inputs")
@@ -529,7 +530,7 @@ def measure_audio(checkout: Path, ffmpeg: Path, ffprobe: Path, metrics: dict, *,
     new_bytes(example_path, source)
     run(["cargo", "build", "--locked", "--quiet", "--release", "--manifest-path",
          str(checkout / "Cargo.toml"), "--target-dir", str(checkout / "target"),
-         "-p", PKG, "--example", AUDIO_APP], 180, "audio_probe_build", metrics,
+         "-p", PKG, "--example", AUDIO_APP], build_timeout, "audio_probe_build", metrics,
         evidence_root=evidence_root)
     binary = checkout / "target/release/examples" / AUDIO_APP
     binary_sha = sha_file(binary)
@@ -590,7 +591,7 @@ def _finish_diagnostic(evidence: dict, primary: BaseException | None) -> None:
         raise primary
 
 
-def main() -> None:
+def main(*, audio_only: bool = False) -> None:
     expect(os.getenv("GITHUB_ACTIONS") == "true", "disposable_ci_runner_required")
     expect(sys.platform == "linux", "disposable_ubuntu_profile_required")
     expect(os.getenv("CARGO_INCREMENTAL") == "0"
@@ -647,55 +648,59 @@ def main() -> None:
         os.chdir(CHECKOUT)
         run(["git", "-C", str(CHECKOUT), "diff", "--exit-code", "HEAD", "--"],
             15, "upstream_tracked_before", metrics)
-        build = ["cargo", "build", "--locked", "--quiet", "--release", "--manifest-path",
-                 str(CHECKOUT / "Cargo.toml"), "--target-dir", str(CHECKOUT / "target"),
-                 "-p", PKG, "--bin", APP]
-        expect(not (CHECKOUT / "target").exists(), "cold_build_target_already_present")
-        run(build, 1350, "cold_release_build", metrics)
-        evidence["cold_build_measured"] = True
-        binary = CHECKOUT / "target/release" / APP
-        binary_sha = sha_file(binary)
-        evidence["binary_bytes"] = binary.stat().st_size
-        evidence["binary_sha256"] = binary_sha
-        run(build, 90, "warm_release_build", metrics)
-        expect(sha_file(binary) == binary_sha, "baseline_binary_changed_during_warm_build")
-        evidence["warm_build_measured"] = True
-        for index in range(2):
-            help_output = run([str(binary), "--help"], 15, f"cli_startup_{index}", metrics)
-            expect(b"render" in help_output.stdout, "upstream_cli_command_set")
-        previews = []
-        for phase, folder_name, decode_label in (
-            ("cold_headless_native_preview", "frame-preview", "cold_png_rgba_decode"),
-            ("warm_headless_native_preview", "frame-preview-repeat", "warm_png_rgba_decode"),
-        ):
-            folder = OUT / folder_name
-            folder.mkdir()
-            run([str(binary), "frame", "1s", "-o", str(folder), "--scale", "0.25"],
-                180, phase, metrics)
-            paths = sorted(folder.glob("*.png"))
-            expect(len(paths) == 1, "single_native_preview_roster")
-            preview = decode_png(paths[0], ffmpeg, decode_label, metrics)
-            expect((preview["width"], preview["height"]) == (WIDTH, HEIGHT), "baseline_preview_size")
-            previews.append(preview)
-        evidence["preview_png"], evidence["repeated_preview_png"] = previews
-        evidence["repeated_encoded_png_identical"] = previews[0]["sha256"] == previews[1]["sha256"]
-        evidence["repeated_decoded_rgba_identical"] = previews[0]["rgba_sha256"] == previews[1]["rgba_sha256"]
-        expect(evidence["repeated_decoded_rgba_identical"], "repeated_native_pixels_differ")
-        evidence["frame_preview_measured"] = True
-        movie = OUT / "upstream-source-preview.mp4"
-        run([str(binary), "render", "0s..1s", "--draft", "--scale", "0.25", "-o", str(movie)],
-            360, "cold_bounded_video_render", metrics)
-        evidence["video"] = decode_video(movie, ffmpeg, ffprobe, metrics)
-        evidence["full_video_render_measured"] = True
-        evidence["audio"] = measure_audio(CHECKOUT, ffmpeg, ffprobe, metrics)
+        if not audio_only:
+            build = ["cargo", "build", "--locked", "--quiet", "--release", "--manifest-path",
+                     str(CHECKOUT / "Cargo.toml"), "--target-dir", str(CHECKOUT / "target"),
+                     "-p", PKG, "--bin", APP]
+            expect(not (CHECKOUT / "target").exists(), "cold_build_target_already_present")
+            run(build, 1350, "cold_release_build", metrics)
+            evidence["cold_build_measured"] = True
+            binary = CHECKOUT / "target/release" / APP
+            binary_sha = sha_file(binary)
+            evidence["binary_bytes"] = binary.stat().st_size
+            evidence["binary_sha256"] = binary_sha
+            run(build, 90, "warm_release_build", metrics)
+            expect(sha_file(binary) == binary_sha, "baseline_binary_changed_during_warm_build")
+            evidence["warm_build_measured"] = True
+            for index in range(2):
+                help_output = run([str(binary), "--help"], 15, f"cli_startup_{index}", metrics)
+                expect(b"render" in help_output.stdout, "upstream_cli_command_set")
+            previews = []
+            for phase, folder_name, decode_label in (
+                ("cold_headless_native_preview", "frame-preview", "cold_png_rgba_decode"),
+                ("warm_headless_native_preview", "frame-preview-repeat", "warm_png_rgba_decode"),
+            ):
+                folder = OUT / folder_name
+                folder.mkdir()
+                run([str(binary), "frame", "1s", "-o", str(folder), "--scale", "0.25"],
+                    180, phase, metrics)
+                paths = sorted(folder.glob("*.png"))
+                expect(len(paths) == 1, "single_native_preview_roster")
+                preview = decode_png(paths[0], ffmpeg, decode_label, metrics)
+                expect((preview["width"], preview["height"]) == (WIDTH, HEIGHT), "baseline_preview_size")
+                previews.append(preview)
+            evidence["preview_png"], evidence["repeated_preview_png"] = previews
+            evidence["repeated_encoded_png_identical"] = previews[0]["sha256"] == previews[1]["sha256"]
+            evidence["repeated_decoded_rgba_identical"] = previews[0]["rgba_sha256"] == previews[1]["rgba_sha256"]
+            expect(evidence["repeated_decoded_rgba_identical"], "repeated_native_pixels_differ")
+            evidence["frame_preview_measured"] = True
+            movie = OUT / "upstream-source-preview.mp4"
+            run([str(binary), "render", "0s..1s", "--draft", "--scale", "0.25", "-o", str(movie)],
+                360, "cold_bounded_video_render", metrics)
+            evidence["video"] = decode_video(movie, ffmpeg, ffprobe, metrics)
+            evidence["full_video_render_measured"] = True
+        evidence["audio"] = measure_audio(CHECKOUT, ffmpeg, ffprobe, metrics,
+                                          build_timeout=1350 if audio_only else 180)
         evidence["audio_score_composition"] = "OBSERVED_SYNTHETIC_STEREO_MIX"
         run(["git", "-C", str(CHECKOUT), "diff", "--exit-code", "HEAD", "--"],
             15, "upstream_tracked_after", metrics)
-        expect(sha_file(binary) == binary_sha, "baseline_binary_changed")
+        if not audio_only:
+            expect(sha_file(binary) == binary_sha, "baseline_binary_changed")
         expect(sha_file(ffmpeg) == evidence["independent_tools"]["ffmpeg_sha256"]
                and sha_file(ffprobe) == evidence["independent_tools"]["ffprobe_sha256"],
                "independent_decoder_binary_changed")
-        evidence["status"] = "EXPERIMENTAL_UPSTREAM_SOURCE_RENDER_PASS"
+        evidence["status"] = ("EXPERIMENTAL_UPSTREAM_AUDIO_ONLY_PASS" if audio_only
+                              else "EXPERIMENTAL_UPSTREAM_SOURCE_RENDER_PASS")
     except BaseException as error:
         primary = error
         evidence["status"] = "EXPERIMENTAL_UPSTREAM_SOURCE_BLOCKED"
@@ -717,8 +722,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--scope", choices=("full", "audio-only"), default="full")
+    args = parser.parse_args()
     try:
-        main()
+        main(audio_only=args.scope == "audio-only")
     except BaseException:
         # The exact exception/captures stay private. Do not echo decoder stderr
         # through an unhandled traceback into public CI logs.

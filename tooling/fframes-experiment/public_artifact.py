@@ -30,6 +30,9 @@ ALL_PHASES = experiment.OBSERVED_PHASES + (
     "exact_source_checkout", "upstream_source_head", "upstream_tracked_before",
     "cli_startup_0", "cli_startup_1", "upstream_tracked_after",
 )
+VISUAL_PHASES = PHASES + ("cli_startup_0", "cli_startup_1", "cold_png_rgba_decode",
+                           "warm_png_rgba_decode", "video_metadata", "video_full_framehash")
+AUDIO_ONLY_PHASES = tuple(phase for phase in ALL_PHASES if phase not in VISUAL_PHASES)
 SEAL_FILE = "fframes-originals.mwci-seal"
 
 
@@ -270,7 +273,7 @@ def _audio(root: Path, value: dict, captures: dict, witnesses: dict) -> dict:
             "observation": "SYNTHETIC_STEREO_MIX_ONLY"}
 
 
-def validate_commands(private: Path, captures: dict) -> None:
+def validate_commands(private: Path, captures: dict, *, audio_only: bool = False) -> None:
     argv = {key: value["request"]["argv"] for key, value in captures.items()}
     clone = argv["source_checkout"]
     require(len(clone) == 6 and clone[:5] == ["git", "clone", "--quiet", "--filter=blob:none", experiment.REPO]
@@ -289,18 +292,20 @@ def validate_commands(private: Path, captures: dict) -> None:
                 for key in ("upstream_tracked_before", "upstream_tracked_after")), "upstream_diff_argv")
     build = ["cargo", "build", "--locked", "--quiet", "--release", "--manifest-path",
              str(checkout / "Cargo.toml"), "--target-dir", str(checkout / "target"), "-p", experiment.PKG]
-    require(argv["cold_release_build"] == argv["warm_release_build"] == build + ["--bin", experiment.APP]
-            and argv["audio_probe_build"] == build + ["--example", experiment.AUDIO_APP],
+    require(argv["audio_probe_build"] == build + ["--example", experiment.AUDIO_APP],
             "separate_baseline_and_audio_build_argv")
-    binary = str(checkout / "target/release" / experiment.APP)
-    require(argv["cli_startup_0"] == argv["cli_startup_1"] == [binary, "--help"], "baseline_startup_argv")
-    for key, directory in (("cold_headless_native_preview", "frame-preview"),
-                           ("warm_headless_native_preview", "frame-preview-repeat")):
-        require(argv[key] == [binary, "frame", "1s", "-o", str(private / directory), "--scale", "0.25"],
-                "baseline_frame_argv")
-    require(argv["cold_bounded_video_render"] == [binary, "render", "0s..1s", "--draft", "--scale", "0.25",
-                                                 "-o", str(private / "upstream-source-preview.mp4")],
-            "baseline_video_render_argv")
+    if not audio_only:
+        require(argv["cold_release_build"] == argv["warm_release_build"] == build + ["--bin", experiment.APP],
+                "separate_baseline_and_audio_build_argv")
+        binary = str(checkout / "target/release" / experiment.APP)
+        require(argv["cli_startup_0"] == argv["cli_startup_1"] == [binary, "--help"], "baseline_startup_argv")
+        for key, directory in (("cold_headless_native_preview", "frame-preview"),
+                               ("warm_headless_native_preview", "frame-preview-repeat")):
+            require(argv[key] == [binary, "frame", "1s", "-o", str(private / directory), "--scale", "0.25"],
+                    "baseline_frame_argv")
+        require(argv["cold_bounded_video_render"] == [binary, "render", "0s..1s", "--draft", "--scale", "0.25",
+                                                     "-o", str(private / "upstream-source-preview.mp4")],
+                "baseline_video_render_argv")
     require(argv["native_audio_mix_render"] == [str(checkout / "target/release/examples" / experiment.AUDIO_APP),
                                                 "--json", "--assets", str(private / "audio/inputs"),
                                                 "audio", "render", "0s..2s", "--float", "-o",
@@ -310,24 +315,28 @@ def validate_commands(private: Path, captures: dict) -> None:
                          ("ffprobe", ("video_metadata", "audio_mix_metadata"))):
         version = argv[tool + "_version"]
         require(len(version) == 2 and version[1] == "-version" and Path(version[0]).is_absolute()
-                and Path(version[0]).name == tool and all(argv[phase][0] == version[0] for phase in phases),
+                and Path(version[0]).name == tool
+                and all(argv[phase][0] == version[0] for phase in phases if phase in argv),
                 "independent_decoder_command_binding")
-    file_witness = captures["video_metadata"]["request"].get("file_input")
-    require(type(file_witness) is dict, "video_descriptor_witness_required")
-    descriptor = file_witness.get("descriptor_path")
-    require(argv["video_metadata"][1:] == ["-v", "error", "-show_entries",
-                "stream=index,codec_type,codec_name,width,height,r_frame_rate,nb_frames",
-                "-show_entries", "format=duration", "-of", "json", descriptor]
-            and argv["audio_mix_metadata"][1:] == ["-v", "error", "-show_entries",
+    if not audio_only:
+        file_witness = captures["video_metadata"]["request"].get("file_input")
+        require(type(file_witness) is dict, "video_descriptor_witness_required")
+        descriptor = file_witness.get("descriptor_path")
+        require(argv["video_metadata"][1:] == ["-v", "error", "-show_entries",
+                    "stream=index,codec_type,codec_name,width,height,r_frame_rate,nb_frames",
+                    "-show_entries", "format=duration", "-of", "json", descriptor], "metadata_probe_argv")
+    require(argv["audio_mix_metadata"][1:] == ["-v", "error", "-show_entries",
                 "stream=codec_name,codec_type,sample_rate,channels,duration", "-of", "json",
                 str(private / "audio/native-mix.wav")], "metadata_probe_argv")
 
 
-def validate_originals(private: Path, source_sha: str) -> tuple[dict, dict]:
+def validate_originals(private: Path, source_sha: str, *, audio_only: bool = False) -> tuple[dict, dict]:
     witnesses: dict = {}
     result = strict_object(member(private, "result.json", 256 * 1024, witnesses))
+    expected_status = ("EXPERIMENTAL_UPSTREAM_AUDIO_ONLY_PASS" if audio_only
+                       else "EXPERIMENTAL_UPSTREAM_SOURCE_RENDER_PASS")
     require(result.get("schema") == experiment.EXPERIMENT_SCHEMA
-            and result.get("status") == "EXPERIMENTAL_UPSTREAM_SOURCE_RENDER_PASS"
+            and result.get("status") == expected_status
             and result.get("motionwright_sha") == source_sha and result.get("fframes_exact_sha") == PIN
             and result.get("fframes_license") == "MIT" and result.get("fframes_repository") == experiment.REPO
             and result.get("runtime") == "disposable_ubuntu_24_04"
@@ -338,13 +347,14 @@ def validate_originals(private: Path, source_sha: str) -> tuple[dict, dict]:
             and result.get("hyperframes_same_fixture_comparison") == "NOT_RUN"
             and result.get("interactive_gpu_preview") == "NOT_RUN_HEADLESS_CI"
             and result.get("audio_score_composition") == "OBSERVED_SYNTHETIC_STEREO_MIX"
-            and all(result.get(key) is True for key in (
+            and all(result.get(key) is (not audio_only) for key in (
                 "cold_build_measured", "warm_build_measured", "frame_preview_measured",
                 "full_video_render_measured")), "unverified_or_admitted_fframes_experiment")
     metrics = result.get("measurements")
-    require(type(metrics) is dict and set(metrics) == set(ALL_PHASES), "source_process_roster")
-    captures = {name: verified_capture(private, name, metrics[name], witnesses) for name in ALL_PHASES}
-    validate_commands(private, captures)
+    phases = AUDIO_ONLY_PHASES if audio_only else ALL_PHASES
+    require(type(metrics) is dict and set(metrics) == set(phases), "source_process_roster")
+    captures = {name: verified_capture(private, name, metrics[name], witnesses) for name in phases}
+    validate_commands(private, captures, audio_only=audio_only)
     require(captures["motionwright_source_head"]["stdout"] == (source_sha + "\n").encode()
             and captures["upstream_source_head"]["stdout"] == (PIN + "\n").encode()
             and captures["upstream_tracked_before"]["stdout"] == b""
@@ -357,25 +367,28 @@ def validate_originals(private: Path, source_sha: str) -> tuple[dict, dict]:
     require(type(result.get("independent_tools")) is dict
             and set(result["independent_tools"]) == {"ffmpeg_sha256", "ffprobe_sha256"}
             and all(type(value) is str and HEX64.fullmatch(value) is not None
-                    for value in result["independent_tools"].values())
-            and type(result.get("binary_sha256")) is str
-            and HEX64.fullmatch(result["binary_sha256"]) is not None,
+                    for value in result["independent_tools"].values()),
             "independent_binary_digest_contract")
-    preview = _png(private, result.get("preview_png"), captures["cold_png_rgba_decode"],
-                   "frame-preview", witnesses)
-    repeat = _png(private, result.get("repeated_preview_png"), captures["warm_png_rgba_decode"],
-                  "frame-preview-repeat", witnesses)
-    require(captures["cold_png_rgba_decode"]["stdout"] == captures["warm_png_rgba_decode"]["stdout"]
-            and result.get("repeated_decoded_rgba_identical") is True
-            and result.get("repeated_encoded_png_identical") is
-                (preview["encoded_sha256"] == repeat["encoded_sha256"]), "repeated_pixel_comparison")
-    video = _video(private, result.get("video"), captures, witnesses)
+    facts = {}
+    if not audio_only:
+        require(type(result.get("binary_sha256")) is str and HEX64.fullmatch(result["binary_sha256"]) is not None,
+                "independent_binary_digest_contract")
+        preview = _png(private, result.get("preview_png"), captures["cold_png_rgba_decode"],
+                       "frame-preview", witnesses)
+        repeat = _png(private, result.get("repeated_preview_png"), captures["warm_png_rgba_decode"],
+                      "frame-preview-repeat", witnesses)
+        require(captures["cold_png_rgba_decode"]["stdout"] == captures["warm_png_rgba_decode"]["stdout"]
+                and result.get("repeated_decoded_rgba_identical") is True
+                and result.get("repeated_encoded_png_identical") is
+                    (preview["encoded_sha256"] == repeat["encoded_sha256"]), "repeated_pixel_comparison")
+        video = _video(private, result.get("video"), captures, witnesses)
+        facts.update({"source_preview": preview, "repeated_preview": repeat, "source_one_second_video": video,
+                      "actual_measured_seconds": {name: metrics[name]["elapsed_seconds"] for name in PHASES}})
     audio = _audio(private, result.get("audio"), captures, witnesses)
-    return {"source_preview": preview, "repeated_preview": repeat, "source_one_second_video": video,
-            "synthetic_audio_observation": audio, "declared_semwright_sha": sdk,
-            "actual_measured_seconds": {name: metrics[name]["elapsed_seconds"] for name in PHASES},
-            "synthetic_audio_build_seconds": metrics["audio_probe_build"]["elapsed_seconds"],
-            "synthetic_audio_render_seconds": metrics["native_audio_mix_render"]["elapsed_seconds"]}, witnesses
+    facts.update({"synthetic_audio_observation": audio, "declared_semwright_sha": sdk,
+                  "synthetic_audio_build_seconds": metrics["audio_probe_build"]["elapsed_seconds"],
+                  "synthetic_audio_render_seconds": metrics["native_audio_mix_render"]["elapsed_seconds"]})
+    return facts, witnesses
 
 
 def _snapshot_matches(raw: bytes, witnesses: dict) -> bool:
@@ -421,7 +434,8 @@ def _seal_source_binding(private: Path, source_sha: str, context: dict) -> dict:
 
 
 def publish(private: Path, public: Path, source_sha: str, status: str, *,
-            recipient: dict | None = None, context: dict | None = None) -> dict:
+            recipient: dict | None = None, context: dict | None = None,
+            audio_only: bool = False) -> dict:
     require(type(source_sha) is str and HEX40.fullmatch(source_sha) is not None,
             "invalid_motionwright_sha")
     require(status in {"success", "failure", "cancelled", "skipped"}, "invalid_ci_status")
@@ -433,7 +447,7 @@ def publish(private: Path, public: Path, source_sha: str, status: str, *,
     facts, witnesses = {}, {}
     if status == "success":
         try:
-            facts, witnesses = validate_originals(private, source_sha)
+            facts, witnesses = validate_originals(private, source_sha, audio_only=audio_only)
         except BaseException as error:
             primary = error
     try:
@@ -487,7 +501,7 @@ def publish(private: Path, public: Path, source_sha: str, status: str, *,
     elif not verified:
         reason = "PRIVATE_SNAPSHOT_INCOMPLETE_OR_CHANGED"
     else:
-        reason = "VERIFIED_SELECTED_EXPERIMENT"
+        reason = "VERIFIED_SELECTED_AUDIO_RECOVERY" if audio_only else "VERIFIED_SELECTED_EXPERIMENT"
     receipt = {
         "schema": SCHEMA, "motionwright_sha": source_sha, "fframes_sha": PIN,
         "declared_semwright_sha": facts.get("declared_semwright_sha") if verified else None,
@@ -507,6 +521,8 @@ def publish(private: Path, public: Path, source_sha: str, status: str, *,
         "interactive_gpu_preview": "NOT_RUN", "human_creative_acceptance": "NOT_RUN",
         "v05_release_ready": False,
     }
+    if audio_only:
+        receipt["measurement_scope"] = "audio-only"
     try:
         experiment.new_bytes(public / "public-evidence.json", experiment.json_bytes(receipt))
     except BaseException as error:
@@ -532,6 +548,7 @@ def main() -> int:
     parser.add_argument("--public-root", type=Path, required=True)
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--job-status", required=True)
+    parser.add_argument("--scope", choices=("full", "audio-only"), default="full")
     parser.add_argument("--recipient", type=Path)
     parser.add_argument("--context", type=Path)
     args = parser.parse_args()
@@ -541,7 +558,7 @@ def main() -> int:
         context = (strict_object(experiment.read_original(args.context.resolve(strict=True), 8192))
                    if args.context is not None else None)
         value = publish(args.evidence_root, args.public_root, args.source_sha, args.job_status,
-                        recipient=recipient, context=context)
+                        recipient=recipient, context=context, audio_only=args.scope == "audio-only")
     except BaseException:
         # Private messages, paths, argv and decoder stderr are never public output.
         print("fframes-public=NOT_VERIFIED", file=sys.stderr)

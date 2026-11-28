@@ -243,6 +243,31 @@ class PublicFframesTests(unittest.TestCase):
         self.assertNotIn(b"failure_summary", public_raw)
         self.assertNotIn(str(self.private).encode(), public_raw)
 
+    def test_audio_only_recovers_pcm_without_claiming_any_video_measurement(self):
+        self.report["status"] = "EXPERIMENTAL_UPSTREAM_AUDIO_ONLY_PASS"
+        for field in ("cold_build_measured", "warm_build_measured", "frame_preview_measured",
+                      "full_video_render_measured"):
+            self.report[field] = False
+        for field in ("binary_sha256", "preview_png", "repeated_preview_png", "video",
+                      "repeated_encoded_png_identical", "repeated_decoded_rgba_identical"):
+            del self.report[field]
+        for phase in (*m.BASELINE_PHASES, "cli_startup_0", "cli_startup_1",
+                      "cold_png_rgba_decode", "warm_png_rgba_decode", "video_metadata", "video_full_framehash"):
+            del self.report["measurements"][phase]
+        for original in ("upstream-source-preview.mp4", "frame-preview/30.png", "frame-preview-repeat/30.png"):
+            (self.private / original).unlink()
+        self.save()
+        with self.assertRaisesRegex(pub.Refused, "unverified_or_admitted_fframes_experiment"):
+            pub.validate_originals(self.private, MW)
+        report = self.publish(audio_only=True)
+        self.assertEqual(report["outcome_category"], "VERIFIED_SELECTED_AUDIO_RECOVERY")
+        self.assertEqual(report["measurement_scope"], "audio-only")
+        self.assertEqual(report["audio_fidelity_assessed"], "SYNTHETIC_STEREO_MIX_ONLY")
+        self.assertEqual(report["synthetic_audio_observation"]["sample_frames"], 96000)
+        for field in ("actual_measured_seconds", "source_preview", "repeated_preview", "source_one_second_video"):
+            self.assertEqual(report[field], {})
+        self.assertFalse(report["renderer_adoption_authorized"])
+
     def test_sealed_capsule_recovers_exact_original_streams_and_context(self):
         report = self.publish()
         encrypted = (self.public / pub.SEAL_FILE).read_bytes()

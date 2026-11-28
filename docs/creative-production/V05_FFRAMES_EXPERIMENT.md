@@ -12,7 +12,7 @@ properties, not integrated Motionwright capabilities**.
 We pin the upstream exact Git SHA
 `e2b552892c0373a5c8dc79de9280a3289670f27b`.
 No floating `main` dependency, no user machine build and no foreign source
-is admitted as a Semwright Native SDK provider. The pull-request/manual-dispatch job in
+is admitted as a Semwright Native SDK provider. The manual-dispatch job in
 `.github/workflows/v05-fframes-experimental.yml` uses a disposable
 GitHub Actions Ubuntu 24.04 runner, read-only checkout,
 normal `cargo build --locked` and explicit timeout/byte budgets.
@@ -28,37 +28,36 @@ The small first round exercises the upstream `hello-world-example` directly:
 - actual one-second draft MP4 using `render 0s..1s --draft`, and independent
   FFprobe codec, duration, dimensions and SHA-256.
 
-Durations are measured per phase with monotonic time on the **same runner**.
-All media is generated from the *original upstream example*; no owner product
-screens, licensed fonts, private recordings, previous browser or unreviewed
-marketing sources are distributed.
+A separate audio fixture generates two stereo WAV inputs at 48 kHz with
+distinct left and right signals. The native audio command renders two seconds
+of floating-point PCM. Readback checks the sample rate, channel count, clip
+offsets and gains against all 96,000 sample frames of the expected mix.
 
-## Explicitly incomplete criteria
+The runner measures each phase with a monotonic clock. The inputs are the
+pinned upstream example and the generated stereo fixtures.
 
-This is an **experiment, not a migration/adoption**. The first hello-world
-fixture has **no narration/music**, so real audio mixing/loudness remains
-`NOT_RUN_NO_AUDIO_IN_HELLO_FIXTURE`. The interactive GPU preview requires
-a display/GPU not available in normal headless CI; its result remains
-`NOT_RUN_HEADLESS_CI`. The source code is not projected to Motionwright
-Project/Native SDK source; no editing round trip or Semwright Driver Host
-execution is tested. We must use comparable 16:9, 9:16 and 1:1 projects,
-one identical brief and media set, a true professional HyperFrames direct
-baseline, audio sources, and both warm/cold render timing before any
-performance or fidelity comparison is credible.
+## Running and reviewing the experiment
 
-**Important:** Not even a fast fframes result would justify replacing the
-existing Motionwright service, render scheduler or native authoring
-contracts. A negative result is valid evidence for *not* adopting fframes.
-Independent human creative review is required before release, and this
-experiment does not select an engine automatically.
+Dispatch the workflow manually from the reviewed source ref with the admitted
+public recipient and its retained SHA-256 fingerprint. Pull-request runs stop
+at the custody check before building or rendering.
 
-Run from a source-bound PR or manually dispatch the workflow against the
-exact source SHA. The temporary runner keeps raw output, binary, stderr and
-private source checkout only on the runner. A separate fail-closed publisher
-exposes a small `public-evidence.json` with measured phase seconds and
-digest-only media facts after independently verified PASS; a failed or unknown
-upstream experiment publishes only `NOT_VERIFIED` with no timings or binary.
-Neither case grants renderer adoption or comparison against HyperFrames.
+Use `audio-only` to recover a synthetic mix after a confirmed pre-render audio
+failure. That run measures only the audio probe build and mix and records its
+scope separately from any retained preview and video originals.
+
+The publisher validates the original outputs, seals selected originals for the
+designated recipient and uploads the encrypted capsule with a bounded
+`public-evidence.json` receipt. The receipt includes timings and media digests
+after both output validation and sealing succeed. A failed or uncertain run
+reports `NOT_VERIFIED` and omits timings.
+
+This experiment covers the headless CPU renderer and synthetic stereo mix.
+Interactive GPU preview, editable-source round trips and independent creative
+review require separate evidence. A comparison against HyperFrames needs
+the same brief and media, 16:9, 9:16 and 1:1 projects, audio sources, and
+cold and warm render timings under comparable conditions. A negative
+result can support leaving FFrames outside the release.
 
 ## Release status
 

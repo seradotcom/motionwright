@@ -3,6 +3,12 @@ name: V05 fframes disposable upstream experiment (not admitted)
 on:
   workflow_dispatch:
     inputs:
+      measurement_scope:
+        description: Run the full experiment or recover only the synthetic audio measurement
+        type: choice
+        options: [full, audio-only]
+        default: full
+        required: true
       evidence_recipient_spki:
         description: Previously admitted RSA-3072 public SPKI DER in canonical base64
         type: string
@@ -36,6 +42,7 @@ jobs:
       run:
         shell: bash
     env:
+      FFRAMES_MEASUREMENT_SCOPE: ${{ inputs.measurement_scope || 'full' }}
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_RELEASE_DEBUG: '0'
     steps:
@@ -124,7 +131,7 @@ jobs:
       - name: Measure upstream exact-SHA Rust/SVG fframes cold/warm/preview/render
         run: |
           set -euo pipefail
-          "$FFRAMES_CUSTODY_PYTHON" -B tooling/fframes-experiment/measure.py
+          "$FFRAMES_CUSTODY_PYTHON" -B tooling/fframes-experiment/measure.py --scope "$FFRAMES_MEASUREMENT_SCOPE"
       - name: Publish only source-bound bounded upstream timing facts
         if: always()
         env:
@@ -139,6 +146,7 @@ jobs:
             --source-sha "$GITHUB_SHA" \
             --evidence-root verification/fframes-upstream-experiment \
             --public-root verification/fframes-public \
+            --scope "$FFRAMES_MEASUREMENT_SCOPE" \
             --job-status "$UPSTREAM_JOB_STATUS" \
             --recipient "$FFRAMES_CUSTODY_INPUT_ROOT/recipient.json" \
             --context "$FFRAMES_CUSTODY_INPUT_ROOT/context.json"
