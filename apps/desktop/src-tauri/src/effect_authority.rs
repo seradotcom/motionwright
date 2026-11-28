@@ -4,7 +4,6 @@
 //! Creative approval is document content and supplies no outgoing authority.
 
 use super::effect_grants::{EffectGrantReceipt, EffectGrantRegistry, EffectKind, EffectScope};
-use super::local_error::sanitized;
 use super::project_library;
 use motionwright_service::StudioService;
 use serde::Deserialize;
@@ -26,8 +25,7 @@ pub fn checked_effect_scope(
     revision: u64,
 ) -> Result<EffectScope, String> {
     let project =
-        project_library::open_project(service, project_library::OpenProjectRequest { project_id })
-            .map_err(sanitized)?;
+        project_library::open_project(service, project_library::OpenProjectRequest { project_id })?;
     if project.generation != generation || project.revision != revision {
         return Err("Effect grant scope is stale; refresh the project before retrying.".into());
     }

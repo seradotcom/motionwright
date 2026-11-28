@@ -490,16 +490,13 @@ async fn bootstrap(
     desktop_owner::record_windows_startup("bootstrap-request-received");
     let service = state.service.clone();
     // The saved selection only identifies the project to read.
-    let (project, mut project_selection) =
+    let (project, project_selection) =
         desktop_owner::spawn_blocking(owner.worker_owner(), move || {
             project_library::bootstrap_project(&service, request.unwrap_or_default())
         })
         .await
         .map_err(|error| error.to_string())?;
     desktop_owner::record_windows_startup("bootstrap-store-read-complete");
-    if let BootstrapProjectSelection::Unavailable { message, .. } = &mut project_selection {
-        *message = sanitized(&*message);
-    }
     Ok(BootstrapResponse {
         project,
         project_selection,
@@ -520,7 +517,7 @@ async fn list_projects(
 ) -> Result<project_library::ProjectLibraryPage, String> {
     let service = state.service.clone();
     desktop_owner::spawn_blocking(owner.worker_owner(), move || {
-        project_library::list_projects(&service, request).map_err(sanitized)
+        project_library::list_projects(&service, request)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -534,7 +531,7 @@ async fn open_project(
 ) -> Result<Project, String> {
     let service = state.service.clone();
     desktop_owner::spawn_blocking(owner.worker_owner(), move || {
-        project_library::open_project(&service, request).map_err(sanitized)
+        project_library::open_project(&service, request)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -629,8 +626,7 @@ async fn semantic_graph_authoring_context(
             project_library::OpenProjectRequest {
                 project_id: request.source_snapshot.project_id,
             },
-        )
-        .map_err(sanitized)?;
+        )?;
         request
             .source_snapshot
             .require_current(&current)
@@ -657,8 +653,7 @@ fn graph_client_for_source(
         project_library::OpenProjectRequest {
             project_id: source.project_id,
         },
-    )
-    .map_err(sanitized)?;
+    )?;
     if project.generation != source.generation {
         return Err("Graph source belongs to another project generation".into());
     }
@@ -4892,8 +4887,7 @@ async fn apply_change(
             project_library::OpenProjectRequest {
                 project_id: request.project_id,
             },
-        )
-        .map_err(sanitized)?;
+        )?;
         let expected = RevisionStamp {
             resource: current.resource_key(),
             generation: request.generation,

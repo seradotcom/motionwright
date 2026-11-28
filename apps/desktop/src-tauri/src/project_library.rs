@@ -10,6 +10,7 @@
 use super::effect_grants::{
     EffectGrantReceipt, EffectGrantRegistry, EffectKind, EffectScope, project_creation_subject,
 };
+use super::local_error::sanitized;
 use motionwright_domain::Project;
 use motionwright_service::{
     ProjectCreationIntent, ProjectCreationOutcome, ProjectCursor, ProjectSummary, StudioService,
@@ -194,7 +195,7 @@ pub fn list_projects(
     // or attempt a second SQL implementation here.
     let page = service
         .project_summaries(request.cursor.as_ref(), request.limit)
-        .map_err(|error| format!("The project index could not be read: {error}"))?;
+        .map_err(|error| format!("The project index could not be read: {}", sanitized(error)))?;
     Ok(ProjectLibraryPage {
         items: page.items.into_iter().map(Into::into).collect(),
         next_cursor: page.next_cursor,
@@ -206,9 +207,12 @@ pub fn open_project(
     service: &StudioService,
     request: OpenProjectRequest,
 ) -> Result<Project, String> {
-    let project = service
-        .project(request.project_id)
-        .map_err(|error| format!("The stored project could not be opened: {error}"))?;
+    let project = service.project(request.project_id).map_err(|error| {
+        format!(
+            "The stored project could not be opened: {}",
+            sanitized(error)
+        )
+    })?;
     // A valid document belonging to another index row is still a damaged
     // association, not permission to silently switch the requested identity.
     if project.id != request.project_id {
