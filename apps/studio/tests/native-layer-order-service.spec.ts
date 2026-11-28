@@ -46,6 +46,7 @@ test("user promotes an overlapping Canvas layer and the exact Store can be reope
   const back = scene.nodes.filter(node => node.name === "Native layer order blue background");
   expect(front).toHaveLength(1);
   expect(back).toHaveLength(1);
+  const promotedZ = 9;
   expect({ z: front[0].z_index, parent: front[0].parent_id, color: front[0].style.fill,
     x: front[0].x, y: front[0].y }).toEqual({ z: 7, parent: null, color: "#E0A940", x: 405, y: 820 });
   expect({ z: back[0].z_index, parent: back[0].parent_id, color: back[0].style.fill })
@@ -68,7 +69,7 @@ test("user promotes an overlapping Canvas layer and the exact Store can be reope
     await page.locator(".canvas-tree-row").filter({ hasText: front[0].name }).click();
     const edit = page.getByLabel("Canvas z order", { exact: true });
     await expect(edit).toHaveValue("7");
-    await edit.fill("9");
+    await edit.fill(String(promotedZ));
     const save = page.getByRole("button", { name: "Commit hierarchy", exact: true });
     await expect(save).toBeEnabled();
     await save.click();
@@ -84,11 +85,11 @@ test("user promotes an overlapping Canvas layer and the exact Store can be reope
     const changed = history.at(-1)?.change;
     expect(changed).toMatchObject({
       type: "reparent_canvas_node", scene_id: scene.id,
-      node_id: front[0].id, parent_id: null, z_index: 9,
+      node_id: front[0].id, parent_id: null, z_index: promotedZ,
     });
     const resulting = final.scenes[0].nodes;
     expect(resulting.find(node => node.id === front[0].id))
-      .toEqual({ ...front[0], z_index: 9 });
+      .toEqual({ ...front[0], z_index: promotedZ });
     expect(resulting.filter(node => node.id !== front[0].id))
       .toEqual(scene.nodes.filter(node => node.id !== front[0].id));
     expect(final.assets).toEqual(source.assets);
@@ -112,7 +113,7 @@ test("user promotes an overlapping Canvas layer and the exact Store can be reope
     expect(order.findIndex(label => label.includes(front[0].name)))
       .toBeLessThan(order.findIndex(label => label.includes(back[0].name)));
     await page.locator(".canvas-tree-row").filter({ hasText: front[0].name }).click();
-    await expect(page.getByLabel("Canvas z order", { exact: true })).toHaveValue("5");
+    await expect(page.getByLabel("Canvas z order", { exact: true })).toHaveValue(String(promotedZ));
     expect(await service.project(source.id)).toEqual(final);
     await page.close();
     const handoff = await service.rawRequest<{read_only_handoff:boolean;journal_mode:string}>({
