@@ -372,7 +372,7 @@ pub(crate) fn dispatch_file_import<P>(
 }
 
 #[cfg(test)]
-fn import_asset_file(
+pub(crate) fn import_asset_file(
     service: &StudioService,
     grants: &EffectGrantRegistry,
     request: FileImportDispatchRequest,
@@ -381,7 +381,7 @@ fn import_asset_file(
 }
 
 #[cfg(test)]
-fn import_voice_file(
+pub(crate) fn import_voice_file(
     service: &StudioService,
     grants: &EffectGrantRegistry,
     request: FileImportDispatchRequest,
@@ -590,7 +590,7 @@ pub(crate) fn prepare_native_capsule_source_file(
 }
 
 #[cfg(test)]
-fn import_native_capsule_source_file(
+pub(crate) fn import_native_capsule_source_file(
     service: &StudioService,
     grants: &EffectGrantRegistry,
     request: FileImportDispatchRequest,
