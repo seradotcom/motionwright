@@ -44,6 +44,7 @@ export default function NativeFrameStage({
   const decodedCallback=useRef(onDecoded);
   decodedCallback.current=onDecoded;
   const [presented,setPresented]=useState<PresentedFrame|null>(null);
+  const [decodedRaster,setDecodedRaster]=useState<{url:string;width:number;height:number}|null>(null);
   const [failure,setFailure]=useState<FrameProblem|null>(null);
   const [reading,setReading]=useState(false);
   const [retry,setRetry]=useState(0);
@@ -165,6 +166,8 @@ export default function NativeFrameStage({
     :"Frame "+(index+1)+" / "+selection.frameCount;
   const requested=describeFrame(selection.frameIndex);
   const actual=ready?describeFrame(ready.frameIndex):null;
+  const raster=ready && decodedRaster?.url===ready.url ? decodedRaster : null;
+  const originalRevision=windowReceipt?.response.window.original_revision ?? project.revision;
   return <div className="native-frame-stage" role="region" aria-label={windowReceipt?"Native window PNG frame preview":"Verified native PNG frame preview"}>
     {ready&&<img className="native-frame-image" src={ready.url}
       alt={(windowReceipt?"Native window PNG · ":"Verified native rendered PNG · ")+actual}
@@ -173,6 +176,7 @@ export default function NativeFrameStage({
         if(activeScope.current!==ready.scope||latestFrame.current?.url!==ready.url)return;
         const image=event.currentTarget;
         if(image.naturalWidth<1||image.naturalHeight<1)return;
+        setDecodedRaster({url:ready.url,width:image.naturalWidth,height:image.naturalHeight});
         // Recovery v1 has no Window origin/range. Never give it Window pixels
         // or reinterpret this session handle as Full/master authority.
         if(windowReceipt)return;
@@ -209,7 +213,10 @@ export default function NativeFrameStage({
       The held pixels are not the current transport frame.
     </div>}
     <div className="native-frame-caption">
-      <span>{exact?actual??requested:requested} · source r{project.revision}</span>
+      <span>{exact?actual??requested:requested} · PNG source r{originalRevision}
+        {originalRevision!==project.revision && <> · confirmed for project r{project.revision}</>}
+      </span>
+      {raster && <span>Decoded raster {raster.width} × {raster.height}</span>}
       {windowReceipt&&<span>Source frame {windowReceipt.response.window.source_window.start+(ready?.frameIndex??selection.frameIndex)};
         segment frame {windowReceipt.response.window.segment_window.start+(ready?.frameIndex??selection.frameIndex)};
         {" "+windowReceipt.response.window.validation.verdict+" · preview only · not a master"}</span>}
