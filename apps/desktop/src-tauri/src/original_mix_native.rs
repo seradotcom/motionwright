@@ -721,12 +721,25 @@ pub(crate) mod tests {
 
     #[test]
     fn saved_semantic_only_sfx_uses_the_same_nullable_audition_request() {
-        let (_root, service, mut project) = saved_mix_fixture();
+        let (root, service, mut project) = saved_mix_fixture();
         let profile_id = project.deliverables[0].id;
+        let cue_path = root.path().join("audition-source-cue.wav");
+        fs::write(&cue_path, fixture_wav(3_000, 1)).unwrap();
+        project = service
+            .import_asset_file(
+                project.id,
+                &project.stamp(),
+                "audition-short-source",
+                &cue_path,
+                "audition-source-cue.wav".into(),
+                "audio/wav".into(),
+            )
+            .unwrap()
+            .project;
         let asset = project
             .assets
             .iter()
-            .find(|asset| asset.name == "sfx.wav")
+            .find(|asset| asset.name == "audition-source-cue.wav")
             .unwrap();
         let cue = SemanticSfxCue {
             schema: motionwright_domain::SFX_CUE_SCHEMA.into(),
@@ -734,10 +747,10 @@ pub(crate) mod tests {
             scene_id: project.scenes[0].id,
             event: SfxEvent::SceneReveal,
             anchor: SfxAnchor::SceneStart,
-            offset_frames: 0,
+            offset_frames: 5,
             source_asset_id: asset.id,
             source_sha256: asset.content_sha256.clone().unwrap(),
-            source_frames: 60,
+            source_frames: 30,
             gain_milli_db: -8_000,
             attack_frames: 0,
             release_frames: 0,
@@ -802,8 +815,13 @@ pub(crate) mod tests {
             &mut cache,
         )
         .unwrap();
-        let full =
-            prepare_saved_original_mix(&service, project.id, &project.stamp(), profile_id).unwrap();
+        let work = cache.last_work().unwrap();
+        assert_eq!(work.synthesized_sample_frames, 48_000);
+        assert_eq!(work.reused_sample_frames, 48_000);
+        let reopened = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
+        let full = prepare_saved_original_mix(&reopened, project.id, &project.stamp(), profile_id)
+            .unwrap();
+        assert_eq!(reopened.project(project.id).unwrap(), project);
         assert_eq!(changed.wav_bytes(), full.wav_bytes());
         assert_ne!(changed.wav_sha256(), cold.wav_sha256());
         assert_eq!(service.project(project.id).unwrap(), project);

@@ -82,6 +82,10 @@ CASE_NAMES = {
         "imported_only_plan_wire_remains_legacy_and_cannot_drop_authored_cues",
         "full_cut_policy_prepares_sixteen_seconds_while_default_audition_stays_bounded",
         "additive_semantic_bus_clipping_is_rejected_without_dropping_base_or_cues",
+        "saved_music_window_selects_exact_original_samples_and_reopens_without_source_rewrite",
+        "explicit_voice_montage_uses_exact_original_samples_and_reopens_without_replay",
+        "saved_silence_release_keeps_original_pcm_clock_and_protects_reviewed_voice_after_reopen",
+        "localized_saved_mixes_follow_explicit_voice_and_survive_reopen_without_switching_active_take",
     ),
     "saved_mix_native_consumers": (
         "single_saved_mix_supplies_exact_cas_pcm_to_mux",
@@ -152,7 +156,7 @@ def context(environment, expected_source, selection, platform=None):
     require(selection == "saved-mix" and environment.get("SAVED_MIX_SELECTION") == selection,
             "requires explicit saved-mix selection")
     require(platform == "linux" and environment.get("RUNNER_OS") == "Linux",
-            "the 70-case roster requires a real Linux runner")
+            "the 74-case roster requires a real Linux runner")
     require(environment.get("GITHUB_ACTIONS") == "true"
             and environment.get("GITHUB_EVENT_NAME") == "workflow_dispatch",
             "selected execution requires explicit GitHub dispatch")
@@ -591,7 +595,7 @@ def run(repo, expected_source, output, target, selection):
     receipt = {
         "schema": "motionwright.saved-original-mix-selected-execution/1",
         "status": "FAIL", "started_utc": custody.now(), "expected_source": expected_source,
-        "scope": "70 selected Rust/SQLite/CAS source contracts; provider consumers use protocol doubles",
+        "scope": "74 selected Rust/SQLite/CAS source contracts; provider consumers use protocol doubles",
         "not_evidence_of": ["physical MLT output", "audio mastering", "listening approval",
                             "installed Desktop UI", "release or contractual acceptance"],
         "expected_counts": {name: len(group["names"]) for name, group in GROUPS.items()},
@@ -665,8 +669,8 @@ def run(repo, expected_source, output, target, selection):
         receipt["selected_rosters"] = {
             group: admit_group(group, rosters[spec["binary"]]) for group, spec in GROUPS.items()
         }
-        require(sum(map(len, receipt["selected_rosters"].values())) == 70,
-                "selected roster does not contain exactly 70 cases")
+        require(sum(map(len, receipt["selected_rosters"].values())) == 74,
+                "selected roster does not contain exactly 74 cases")
         for index, case in enumerate(receipt["cases"]):
             binary = compiled[GROUPS[case["group"]]["binary"]]
             before = {"absolute_path": binary["absolute_path"],
