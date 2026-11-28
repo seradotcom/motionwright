@@ -3613,16 +3613,24 @@ async fn inspect_private_delivery(
     state: State<'_, AppState>,
     request: PrivateDeliverySlotRequest,
 ) -> Result<Option<motionwright_service::PrivateDeliveryManifest>, String> {
+    let reader = state
+        .av_review
+        .admit_preparation()
+        .ok_or("Original media read capacity is busy.")?;
     let store = state.service.store();
     desktop_owner::spawn_blocking(owner.worker_owner(), move || {
-        store
+        let _reader = reader;
+        let verify = store
             .lock()
-            .inspect_private_delivery(
+            .prepare_private_delivery_inspection(
                 request.project_id,
                 request.generation,
                 request.deliverable_id,
             )
-            .map_err(sanitized)
+            .map_err(sanitized)?;
+        verify().map_err(|_| {
+            "The saved private delivery could not be verified in the local media store.".into()
+        })
     })
     .await
     .map_err(|_| "Private delivery inspection did not complete.".to_string())?

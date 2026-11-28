@@ -9,6 +9,7 @@ use motionwright_domain::{DomainError, Project, RevisionStamp};
 use rusqlite::{Connection, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::path::Path;
 use uuid::Uuid;
 
 pub(super) const COMMAND_PREFIX: &str = "motionwright.private-delivery:";
@@ -181,20 +182,36 @@ fn current_slot(
     .transpose()
 }
 
+fn verify_artifact(root: &Path, artifact: &BlobDescriptor) -> Result<()> {
+    let path = super::checked_existing_blob_path_from_root(root, &artifact.sha256)?;
+    if super::portability::hash_portable_file(&path, artifact.size_bytes)? != *artifact {
+        return Err(StorageError::InvalidBlobDigest);
+    }
+    Ok(())
+}
+
 impl Store {
-    pub fn inspect_private_delivery(
+    /// Resolve one durable slot and verify its exact retained artifact without
+    /// keeping a SQLite transaction or borrowing the Store during media IO.
+    pub fn prepare_private_delivery_inspection(
         &self,
         project_id: Uuid,
         generation: Uuid,
         deliverable_id: Uuid,
-    ) -> Result<Option<PrivateDeliveryManifest>> {
+    ) -> Result<impl FnOnce() -> Result<Option<PrivateDeliveryManifest>> + use<>> {
         let tx = self.conn.unchecked_transaction()?;
         let project = load_project_from_row(&tx, project_id)?;
         check_project(&project, generation, deliverable_id)?;
         validate_production_receipt_order_integrity(&tx, Some(project_id))?;
         let result = current_slot(&tx, &project, deliverable_id)?;
         tx.commit()?;
-        Ok(result)
+        let root = self.blob_root.clone();
+        Ok(move || {
+            if let Some(manifest) = &result {
+                verify_artifact(&root, &manifest.plan.artifact)?;
+            }
+            Ok(result)
+        })
     }
 
     pub fn prepare_private_delivery(
@@ -266,6 +283,7 @@ impl Store {
                     return Err(StorageError::RequestReuse);
                 }
                 tx.commit()?;
+                verify_artifact(&self.blob_root, &prior.plan.artifact)?;
                 return Ok(prior);
             }
             _ => return Err(StorageError::RequestReuse),
@@ -318,6 +336,15 @@ impl Store {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn inspect(
+        store: &Store,
+        project: Uuid,
+        generation: Uuid,
+        deliverable: Uuid,
+    ) -> Result<Option<PrivateDeliveryManifest>> {
+        store.prepare_private_delivery_inspection(project, generation, deliverable)?()
+    }
 
     fn completed_fixture(
         store: &mut Store,
@@ -388,9 +415,7 @@ mod tests {
             Err(StorageError::Io(_))
         ));
         assert_eq!(
-            store
-                .inspect_private_delivery(project.id, project.generation, deliverable)
-                .unwrap(),
+            inspect(&store, project.id, project.generation, deliverable).unwrap(),
             None
         );
         assert!(matches!(
@@ -434,9 +459,7 @@ mod tests {
 
         let reopened = open();
         assert_eq!(
-            reopened
-                .inspect_private_delivery(project.id, project.generation, deliverable)
-                .unwrap(),
+            inspect(&reopened, project.id, project.generation, deliverable).unwrap(),
             Some(committed_b.clone())
         );
         assert_eq!(
@@ -452,8 +475,18 @@ mod tests {
             second_bytes
         );
         assert!(matches!(
-            reopened.inspect_private_delivery(project.id, Uuid::now_v7(), deliverable),
+            inspect(&reopened, project.id, Uuid::now_v7(), deliverable),
             Err(StorageError::GenerationConflict)
+        ));
+        let path = super::super::checked_existing_blob_path_from_root(
+            &media,
+            &committed_b.plan.artifact.sha256,
+        )
+        .unwrap();
+        std::fs::write(path, b"synthetic original X").unwrap();
+        assert!(matches!(
+            inspect(&reopened, project.id, project.generation, deliverable),
+            Err(StorageError::InvalidBlobDigest)
         ));
     }
 }
