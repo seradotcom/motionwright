@@ -57,6 +57,24 @@ class IsolatedLinuxBundleScopeTests(unittest.TestCase):
         installed = job_source(self.workflow, "linux-first-use-installed")
         self.assertIn("inputs.verification_scope == 'linux_first_use'", installed)
 
+    def test_aac31_readback_can_use_the_current_linux_package_without_building_renderers(self):
+        installed = job_source(self.workflow, "linux-installed-aac31")
+        self.assertIn("inputs.verification_scope == 'linux_bundle'", installed)
+        self.assertIn("needs.linux.result == 'success'", installed)
+        self.assertIn("if: inputs.installed_aac31_bundle_run == ''", installed)
+        self.assertIn("name: motionwright-linux-candidate", installed)
+        build = installed.split("      - name: Build the locked Native providers", 1)[1]
+        readback = build.split('          if [[ -n "$AAC31_RETAINED_RENDER"', 1)[1].split(
+            '            exit 0', 1,
+        )[0]
+        self.assertIn('"$AAC31_RESTORE_SHA256" =~ ^[a-f0-9]{64}$', readback)
+        self.assertIn('cargo build --locked -p semwright-daemon -p semwright-cli --bins', readback)
+        self.assertNotIn("aac31-retained-package.json", readback)
+        self.assertNotIn("motion-canvas-driver", readback)
+        self.assertIn('if [[ -n "$AAC31_BUNDLE_RUN" ]]; then', installed)
+        self.assertIn('[[ -f "$RUNNER_TEMP/aac31-retained-package.json" ]]', installed)
+        self.assertIn('--retained-render-run "$AAC31_RETAINED_RENDER"', installed)
+
     def test_common_upload_preserves_the_attestation_evidence_allowlist(self):
         import sys
         sys.path.insert(0, str(ROOT / "tooling"))

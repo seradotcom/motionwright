@@ -83,6 +83,8 @@ def admit_candidate(bundle, retained_package, *, readback_only=False):
     installed.need(runner.is_absolute() and runner == runner.resolve(strict=True)
                    and runner.is_dir() and bundle.is_relative_to(runner)
                    and bundle == bundle.resolve(strict=True), "AAC31_PRIVATE_RUNNER_ROOT_REQUIRED")
+    if readback_only and retained_package is None:
+        installed.need(bundle == runner / "aac31-candidate", "AAC31_READBACK_CURRENT_PACKAGE_PATH")
     namespace = runner / ("mwa-" + run_id)
     installed.need(len(os.fsencode(namespace / "o/runtime/broker.sock")) < 108
                    and not namespace.exists() and not namespace.is_symlink(),
@@ -153,9 +155,7 @@ def admit_candidate(bundle, retained_package, *, readback_only=False):
         inputs["candidate_origin"] = retained
     else:
         inputs["candidate_origin"] = {"source_sha": source_sha, "run_id": run_id}
-    if readback_only:
-        installed.need(retained_package is not None, "AAC31_READBACK_REQUIRES_ORIGINAL_APPIMAGE")
-    else:
+    if not readback_only:
         native.exact_inputs()
     inputs["source"] = installed.source_inputs(args)
     return args, inputs

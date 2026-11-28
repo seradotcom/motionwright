@@ -144,6 +144,7 @@ def observation_connection(root, meta, evidence):
 
 
 def run_readback(args, inputs, evidence, run, sha, run_original):
+    installed.publish(evidence / "candidate-inputs.json", inputs)
     root, meta = recover_inputs(args.namespace.parent, run, sha)
     with installed.supervise_own_processes():
         original = installed.extract_installed_bundle(
@@ -176,6 +177,9 @@ def run_readback(args, inputs, evidence, run, sha, run_original):
                           str(installed.ROOT / "tooling/linux_installed_aac31.py"),
                           "--request", str(request), "--verify-retained-original"],
                          evidence, "installed-desktop", env=dict(os.environ), seconds=210)
-    installed.need(original["extracted_tree"] == installed.installed_bundle_inventory(args.app_run.parent),
-                   "readback changed the installed program")
+    installed.need(original["extracted_tree"] == installed.installed_bundle_inventory(args.app_run.parent)
+                   and inputs["artifact"] == regular_file(args.artifact, installed.MAX_INPUT_BYTES)
+                   and inputs["receipt"] == regular_file(args.candidate_receipt, 4 * 1024 * 1024)
+                   and inputs["source"] == installed.source_inputs(args),
+                   "AAC31_READBACK_INPUT_CHANGED")
     return installed.read_json(desktop / "installed-aac31.json")

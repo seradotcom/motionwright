@@ -41,7 +41,7 @@ on:
         type: boolean
         default: false
       installed_aac31_retained_render_run:
-        description: Observe the already produced MP4 and its completed Store receipt with render disabled
+        description: Read the original MP4 and completed receipt with render disabled, using the current or selected retained Linux package
         required: false
         type: string
       installed_aac31_restore_sha256:
@@ -4473,6 +4473,7 @@ jobs:
       MOTIONWRIGHT_MLT_MODE: hybrid-av
       PLAYWRIGHT_BROWSERS_PATH: '0'
       AAC31_DELIVERY_OBSERVATION: ${{ inputs.installed_aac31_observe_delivery }}
+      AAC31_BUNDLE_RUN: ${{ inputs.installed_aac31_bundle_run }}
       AAC31_RETAINED_RENDER: ${{ inputs.installed_aac31_retained_render_run }}
       AAC31_RESTORE_SHA256: ${{ inputs.installed_aac31_restore_sha256 }}
       SEMWRIGHT_TEST_PYTHON: /usr/bin/python3
@@ -4660,7 +4661,7 @@ jobs:
           set -euo pipefail
           if [[ -n "$AAC31_RETAINED_RENDER" || -n "$AAC31_RESTORE_SHA256" ]]; then
             [[ "$AAC31_RETAINED_RENDER" =~ ^[1-9][0-9]{0,19}$ && "$AAC31_RESTORE_SHA256" =~ ^[a-f0-9]{64}$ ]]
-            [[ "$AAC31_DELIVERY_OBSERVATION" != true && -f "$RUNNER_TEMP/aac31-retained-package.json" ]]
+            [[ "$AAC31_DELIVERY_OBSERVATION" != true ]]
             cd _semwright
             cargo build --locked -p semwright-daemon -p semwright-cli --bins
             exit 0
@@ -4705,8 +4706,11 @@ jobs:
             observation+=(--inspect-delivery)
           fi
           retained=()
-          if [[ -f "$RUNNER_TEMP/aac31-retained-package.json" ]]; then
+          if [[ -n "$AAC31_BUNDLE_RUN" ]]; then
+            [[ -f "$RUNNER_TEMP/aac31-retained-package.json" ]]
             retained=(--retained-package "$RUNNER_TEMP/aac31-retained-package.json")
+          else
+            [[ ! -e "$RUNNER_TEMP/aac31-retained-package.json" ]]
           fi
           xvfb-run -a -s "-screen 0 1440x940x24" dbus-run-session -- \
             "$RUNNER_TEMP/aac31-venv/bin/python" -B -E -s tooling/linux_installed_aac31_ci.py \

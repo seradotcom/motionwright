@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from contextlib import ExitStack
 from hashlib import sha256
+from importlib import import_module
 import io
 import json
 import os
@@ -35,6 +36,70 @@ def frame(scene):
 
 
 class InstalledAAC31ProofTests(unittest.TestCase):
+    def test_readback_admits_only_the_current_package_or_the_exact_retained_origin(self):
+        # Exercise source admission on Windows as well as Linux. No resource
+        # limits, runner calls, CLI processes or installed binary are invoked.
+        with patch.dict(sys.modules, {"resource": Mock()}):
+            ci = import_module("linux_installed_aac31_ci")
+        with tempfile.TemporaryDirectory() as folder, ExitStack() as setup:
+            runner = Path(folder).resolve()
+            bundle = runner / "aac31-candidate"
+            bundle.mkdir()
+            (bundle / "Motionwright.AppImage").write_bytes(b"packaged identity fixture")
+            (bundle / "linux-candidate.json").write_bytes(b"{}")
+            source_sha, run_id = "a" * 40, "124"
+            env = {
+                "GITHUB_SHA": source_sha, "GITHUB_RUN_ID": run_id, "RUNNER_OS": "Linux",
+                "GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch",
+                "GITHUB_RUN_ATTEMPT": "1", "GITHUB_JOB": "linux-installed-aac31",
+                "GITHUB_REPOSITORY": "seradotcom/motionwright",
+                "GITHUB_REF": "refs/heads/integrate/phase1-final-composition-20261027",
+                "DISPLAY": ":1", "DBUS_SESSION_BUS_ADDRESS": "test-only",
+                "RUNNER_TEMP": str(runner),
+            }
+            setup.enter_context(patch.dict(ci.os.environ, env, clear=True))
+            setup.enter_context(patch.object(ci.sys, "platform", "linux"))
+            setup.enter_context(patch.object(ci.shutil, "which", return_value="/usr/bin/bwrap"))
+            setup.enter_context(patch.object(ci.shutil, "disk_usage",
+                                             return_value=SimpleNamespace(free=2**34)))
+            setup.enter_context(patch.object(ci.native, "HYBRID", True))
+            exact = setup.enter_context(patch.object(ci.native, "exact_inputs"))
+            locked = setup.enter_context(patch.object(ci.installed, "source_inputs",
+                                                     return_value={"checkout": source_sha}))
+            args, inputs = ci.admit_candidate(bundle, None, readback_only=True)
+            self.assertEqual(inputs["candidate_origin"], {"source_sha": source_sha, "run_id": run_id})
+            self.assertEqual(inputs["source"], {"checkout": source_sha})
+            self.assertEqual(args.candidate_receipt, bundle / "linux-candidate.json")
+            locked.assert_called_once_with(args)
+            exact.assert_not_called()
+            other = runner / "unbound-package"
+            other.mkdir()
+            with self.assertRaisesRegex(ci.installed.ScenarioError, "AAC31_READBACK_CURRENT_PACKAGE_PATH"):
+                ci.admit_candidate(other, None, readback_only=True)
+
+            retained = runner / "aac31-retained-package.json"
+            history = {"source_sha": "b" * 40, "run_id": "123", "render_step": "skipped"}
+            retained.write_text(json.dumps(history), encoding="utf-8")
+            changed = setup.enter_context(patch.object(ci.source, "git", return_value=b""))
+            _, inputs = ci.admit_candidate(bundle, retained, readback_only=True)
+            self.assertEqual(inputs["candidate_origin"], history)
+            changed.return_value = b"apps/studio/src/App.tsx"
+            with self.assertRaisesRegex(ci.installed.ScenarioError, "AAC31_RETAINED_PRODUCT_SOURCE_CHANGED"):
+                ci.admit_candidate(bundle, retained, readback_only=True)
+            exact.assert_not_called()
+    def test_unpaired_readback_selectors_stop_before_recipient_and_package_admission(self):
+        with patch.dict(sys.modules, {"resource": Mock()}):
+            ci = import_module("linux_installed_aac31_ci")
+        base = ["aac31", "--bundle", "candidate", "--sandbox-profile", "policy"]
+        for flag, value in (("--retained-render-run", "123"), ("--restore-sha256", "a" * 64)):
+            with self.subTest(flag=flag), patch.object(sys, "argv", base + [flag, value]), patch.object(
+                ci, "verify_recipient",
+            ) as recipient, patch.object(ci, "admit_candidate") as admit:
+                with self.assertRaisesRegex(ci.installed.ScenarioError, "AAC31_OBSERVATION_INPUTS_INVALID"):
+                    ci.main()
+                recipient.assert_not_called()
+                admit.assert_not_called()
+
     def test_navigation_and_source_check_close_before_the_only_create_worker(self):
         binding = {"pid": 9001, "window": "0x42", "start_time": "100"}
         report = {"phase": "render", "binding": binding}
