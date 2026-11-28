@@ -237,12 +237,17 @@ test("a missing remembered identity keeps the library available and never opens 
   const second = await createStored(service, "Second healthy saved project");
   const missing = randomUUID();
   await page.addInitScript(({ key, projectId }) => localStorage.setItem(key, JSON.stringify({ schema: "motionwright.project-selection/1", project_id: projectId })), { key: SELECTION, projectId: missing });
-  await page.goto("/"); await openLibrary(page);
+  await page.goto("/");
+  await expect(page.getByRole("alert", { name: "Project open error" })).toBeVisible();
+  await button(page, "Open project library").click();
   await expect(dialog(page).getByRole("button", { name: "Open " + first.title, exact: true })).toBeVisible();
   await expect(dialog(page).getByRole("button", { name: "Open " + second.title, exact: true })).toBeVisible();
-  const bootstrap = calls(service, "bootstrap").at(-1)!.payload;
-  if (!("command" in bootstrap)) throw new Error("Expected an observed bootstrap request");
-  expect(bootstrap.args?.request).toEqual({ project_id: missing });
+  const bootstrap = calls(service, "bootstrap").at(-1)?.payload;
+  expect(bootstrap).toMatchObject({ args: { request: { project_id: null } } });
+  const heads = calls(service, "project_projection_head");
+  expect(heads.length).toBeGreaterThan(0);
+  for (const entry of heads) expect(entry.payload).toMatchObject({ args: { request: { project_id: missing } } });
+  expect(calls(service, "get_project")).toHaveLength(0);
   expect(calls(service, "open_project")).toHaveLength(0);
   expect(calls(service, "create_project")).toHaveLength(2);
   await dialog(page).getByRole("button", { name: "Open " + first.title, exact: true }).click();
@@ -421,7 +426,7 @@ async function bundleCopies(page: Page) {
   return page.evaluate(prefix => Object.keys(localStorage).filter(key => key.startsWith(prefix))
     .map(key => ({ key, raw: localStorage.getItem(key)! })), BUNDLE_PREFIX);
 }
-async function originalPortableFixture(testInfo: TestInfo) {
+async function originalPortableFixture(testInfo: TestInfo, sceneCount = 1) {
   const origin = await ScopedChangeService.create({
     databasePath: testInfo.outputPath("portable-origin", "studio.sqlite3"), seedFixture: false, desktopInvokeFixture: true,
   });
@@ -430,6 +435,10 @@ async function originalPortableFixture(testInfo: TestInfo) {
   try {
     project = await createStored(origin, "Portable original scene and source");
     project = await origin.apply(project, { type: "add_scene", name: "Original scene", objective: "Keep original editorial intent", duration_seconds: 3 });
+    for (let index = 1; index < sceneCount; index++) {
+      project = await origin.apply(project, { type: "add_scene", name: "Portable scene " + (index + 1),
+        objective: "Retain the original scene order", duration_seconds: 1 });
+    }
     const media = testInfo.outputPath("first-party-note.txt");
     await writeFile(media, "First-party original media for library import.");
     project = await origin.importAsset(project, media, "First-party original", "text/plain");
@@ -467,6 +476,34 @@ test("portable library imports original media into an empty Store, edits and reo
   expect(await bundleCopies(page)).toEqual([]);
   const index = await service.invoke<{ items: { id: string }[] }>("list_projects", { request: { cursor: null, limit: 100 } });
   expect(index.items.map(item => item.id)).toEqual([original.project.id]);
+});
+
+test("portable library opens a large restored project in saved pages without recovery or a complete read", async ({ page, lifecycle }, testInfo) => {
+  const { service } = lifecycle;
+  const original = await originalPortableFixture(testInfo, 65);
+  await inspectPortableFromLibrary(page, original.path);
+  const start = service.transcript.length;
+  await dialog(page).getByRole("button", { name: "Import inspected project", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Scenes 1–64 of 65", exact: true }))
+    .toBeVisible({ timeout: 15_000 });
+  await expect(dialog(page)).not.toBeVisible();
+  await button(page, "Next scenes").click();
+  await expect(page.getByRole("heading", { name: "Scenes 65–65 of 65", exact: true })).toBeVisible();
+  await expect(page.getByRole("list", { name: "Loaded scene summaries" })).toContainText("Portable scene 65");
+  const opening = service.transcript.slice(start);
+  expect(opening.filter(entry => entry.direction === "request" && "command" in entry.payload
+    && ["get_project", "open_project", "recover_project_bundle_import"].includes(entry.payload.command))).toEqual([]);
+  expect(calls(service, "import_project_bundle")).toHaveLength(1);
+  expect(calls(service, "issue_effect_grant")).toHaveLength(1);
+  expect(await bundleCopies(page)).toEqual([]);
+
+  const imported = await service.project(original.project.id);
+  expect(imported.generation).not.toBe(original.project.generation);
+  expect(imported.scenes).toEqual(original.project.scenes);
+  expect(imported.assets).toEqual(original.project.assets);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Scenes 1–64 of 65", exact: true })).toBeVisible();
+  expect(calls(service, "import_project_bundle")).toHaveLength(1);
 });
 
 test("legacy archive inspection discloses losses and the imported project reopens from SQLite", async ({ page, lifecycle }) => {

@@ -823,7 +823,7 @@ jobs:
           result = json.loads(Path(os.environ["PLAYWRIGHT_JSON_OUTPUT_FILE"]).read_text(encoding="utf-8"))
           stats = result["stats"]
           selection = os.environ["MOTIONWRIGHT_FIRST_USE_CASE"]
-          expected = {"all": 9, "static-group": 1, "static-alignment": 1, "static-layout": 2, "follow": 1, "follow-ui": 1, "static-rotation": 2, "creative-batch": 25, "audio-cut": 5, "native-preview-blend": 2, "delivery-hero": 7, "measured-comparison": 4, "series-silence": 5, "camera-craft": 13, "source-boards": 5, "source-boards-ui": 1, "asset-media": 3, "camera-spatial": 6}[selection]
+          expected = {"all": 10, "static-group": 1, "static-alignment": 1, "static-layout": 2, "follow": 1, "follow-ui": 1, "static-rotation": 2, "creative-batch": 25, "audio-cut": 5, "native-preview-blend": 2, "delivery-hero": 7, "measured-comparison": 4, "series-silence": 5, "camera-craft": 13, "source-boards": 5, "source-boards-ui": 1, "asset-media": 3, "camera-spatial": 6}[selection]
           assert stats["expected"] == expected, stats
           assert all(stats.get(key, 0) == 0 for key in ("unexpected","flaky","skipped")), stats
           if selection == "asset-media":

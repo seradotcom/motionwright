@@ -59,7 +59,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ProjectMutationGate, ProjectReadSupersededError } from "./projectMutation";
+import { compareDecimalRevision, ProjectMutationGate, ProjectReadSupersededError } from "./projectMutation";
 import { ProjectLibraryDialog } from "./ProjectLibraryDialog";
 import ProjectProjectionWorkspace from "./ProjectProjectionWorkspace";
 import {
@@ -947,7 +947,7 @@ function DeliverView({
   commit: (change: Change) => Promise<void>;
   commitRecipe: (change: Change) => Promise<Project>;
   desktopMode: boolean;
-  onImportBundle: (path: string, plan: PortableBundlePlan) => Promise<Project>;
+  onImportBundle: (path: string, plan: PortableBundlePlan) => Promise<{ id: string; title: string; revision: string }>;
   retainedImportPending: boolean;
   onReviewRetainedImport: () => void;
   onOpenAudio: () => void;
@@ -2126,28 +2126,34 @@ export default function App() {
     try { discardBundleImportCopy(copy); }
     catch (reason) { setLibraryNotice("The project is open; its portable import copy was retained. " + String(reason)); }
   }, []);
-  const importPortableBundle = useCallback(async (path: string, plan: PortableBundlePlan): Promise<Project> => {
-    const nativeSdk = bootRef.current?.native_sdk ?? shellSdkRef.current;
-    if (!nativeSdk) throw new Error("Studio information is not ready. Retry opening the library.");
+  const importPortableBundle = useCallback(async (path: string, plan: PortableBundlePlan) => {
+    if (!(bootRef.current?.native_sdk ?? shellSdkRef.current)) {
+      throw new Error("Studio information is not ready. Retry opening the library.");
+    }
     const saved = readProjectSelection(), source = projectViewRevision(viewRef.current);
-    let observed: Awaited<ReturnType<typeof importBundleWithRetainedPlan>> | undefined;
     try {
-      const opened = await mutationGate.current.create<Project>(
+      const opened = await mutationGate.current.create(
         bootRef.current?.project ?? null, () => bootRef.current?.project ?? null,
         async () => {
-          observed = await importBundleWithRetainedPlan(path, plan, importProjectBundle);
-          const current = await openSavedProjectView(observed.project.id, "editor");
-          if (current.kind !== "full" || current.boot.project.generation !== observed.project.generation) {
-            throw new Error("The imported project changed or needs the saved-page view. Check its original import result in the library.");
+          const { project, copy } = await importBundleWithRetainedPlan(path, plan, importProjectBundle);
+          const view = await openSavedProjectView(project.id);
+          const identity = view.kind === "full"
+            ? { generation: view.boot.project.generation, revision: String(view.boot.project.revision) }
+            : view.head.identity;
+          if (projectViewId(view) !== project.id || identity.generation !== project.generation
+            || compareDecimalRevision(identity.revision, String(project.revision)) < 0) {
+            throw new Error("The saved project does not match the original import. Check its original result in the library.");
           }
-          return current.boot.project;
-        }, value => publishOpenedProject(value, nativeSdk), setBusy,
+          return { id: project.id, generation: project.generation, revision: project.revision,
+            active_branch: project.active_branch, view, copy, openedRevision: identity.revision };
+        }, value => publishOpenedView(value.view), setBusy,
         { source, current: () => projectViewRevision(viewRef.current) });
       rememberSelection(opened, saved);
-      if (observed) finishBundleImport(observed.copy);
-      return opened;
+      finishBundleImport(opened.copy);
+      const title = opened.view.kind === "full" ? opened.view.boot.project.title : opened.view.head.title;
+      return { id: opened.id, title, revision: opened.openedRevision };
     } finally { refreshBundleImports(); }
-  }, [publishOpenedProject, rememberSelection, finishBundleImport, refreshBundleImports]);
+  }, [publishOpenedView, rememberSelection, finishBundleImport, refreshBundleImports]);
   const recoverLibraryBundle = useCallback(async (copy: BundleImportCopy): Promise<Pick<Project, "id"> | null> => {
     const source = projectViewRevision(viewRef.current), saved = readProjectSelection();
     try {

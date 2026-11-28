@@ -138,8 +138,8 @@ export class ProjectMutationGate {
    * the same synchronous latch and source-view check as every existing edit.
    * Its durable request/consent lives in the native creation command. */
   async create<P extends ProjectRevision>(
-    source: P | null,
-    current: () => P | null,
+    source: ProjectRevision | null,
+    current: () => ProjectRevision | null,
     operation: () => Promise<P>,
     publish: (next: P) => void,
     pending: (value: boolean) => void = () => {},

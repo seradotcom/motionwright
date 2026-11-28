@@ -72,9 +72,13 @@ It must not construct a partial `Project` and submit it to existing mutation
 logic. Writes continue to use the canonical service operations and their
 revision checks.
 
-Desktop/Studio virtualization, preview scheduling and installed-app acceptance
-must exercise these APIs directly. A service test alone does not establish
-those properties.
+Studio opens projects with more than 64 scenes in the saved-pages view from
+the library and after an acknowledged portable import. After import, the
+opened identity must match the acknowledged project and generation at the
+same or a later revision. This avoids a second complete-project read before
+showing the imported result. The library still offers an explicit editor
+open. The browser regression exercises the real Service and SQLite. Installed
+WebView behavior and latency are verified separately.
 
 The regression suite covers persisted large-project projections, full-loader
 compatibility, stale cursors, two-connection snapshot consistency, malformed
