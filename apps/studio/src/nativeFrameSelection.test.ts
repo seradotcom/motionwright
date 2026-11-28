@@ -80,6 +80,26 @@ describe("native frame selection follows authored scene timing", () => {
     expect(nativeFrameAtPlayhead(project, project.scenes[1], profile, evidence, 7)?.frameIndex).toBe(210);
   });
 
+  it("stops showing the outgoing native frame at the exact editorial cut", () => {
+    const source = structuredClone(project);
+    const [outgoing, incoming] = source.scenes;
+    outgoing.start = { num: "1", den: "10" };
+    outgoing.duration = { num: "1", den: "5" };
+    incoming.start = { num: "3", den: "10" };
+    incoming.duration = outgoing.duration;
+    const original = {
+      ...evidence,
+      frame_rate: { num: 30000, den: 1001 },
+      segments: [{ ...evidence.segments[0], frame_count: 12 }],
+      preview: [{ ...evidence.preview![0], frame_count: 12 }],
+    };
+
+    expect(nativeFrameAtPlayhead(source, outgoing, profile, original, 0.2999)?.frameIndex).toBe(5);
+    expect(nativeFrameAtPlayhead(source, outgoing, profile, original, 3 / 10)).toBeNull();
+    expect(nativeFrameAtPlayhead(source, incoming, profile, original, 3 / 10)).toBeNull();
+    expect(nativeFrameAtPlayhead(source, incoming, profile, original, 1501 / 5000)?.frameIndex).toBe(6);
+  });
+
   it("waits for the first native sample of a scene whose boundary falls between frames", () => {
     const source = structuredClone(project);
     const [first, next] = source.scenes;

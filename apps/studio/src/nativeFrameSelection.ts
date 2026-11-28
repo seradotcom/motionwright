@@ -1,5 +1,6 @@
 import { resolveSceneRenderReceipt } from "./renderReceipt";
 import { graphAddTime, graphFraction } from "./semanticGraph";
+import { timelineSceneEnd } from "./timelineNavigation";
 import type { MotionCanvasRenderEvidence, Project, RationalTime, Scene } from "./types";
 import { seconds } from "./types";
 
@@ -84,7 +85,7 @@ export function nativeFrameAtPlayhead(
   if (!coverage) return null;
   const { num, den } = evidence.frame_rate;
   const sceneStart = seconds(scene.start);
-  const sceneEnd = sceneStart + seconds(scene.duration);
+  const sceneEnd = timelineSceneEnd(scene);
   if (!Number.isFinite(sceneStart) || !Number.isFinite(sceneEnd) || playhead < sceneStart || playhead >= sceneEnd) return null;
   const localTime = playhead - sceneStart;
   const frameIndex = Math.floor((seconds(coverage.startInSegment) + localTime) * (num / den) + 1e-7);
