@@ -120,6 +120,33 @@ describe("source-bound multi-segment Program originals", () => {
     expect(editorialTimeForMasterMedia(project,after!,8)).toBe(8);
   });
 
+  it("uses the incoming source at an exact fractional join on the compacted media clock", () => {
+    const cut = structuredClone(project);
+    const [opening, outgoing, incoming] = cut.scenes;
+    opening.start = { num: "0", den: "1" };
+    opening.duration = { num: "1", den: "10" };
+    outgoing.start = { num: "1", den: "10" };
+    outgoing.duration = { num: "1", den: "5" };
+    incoming.start = { num: "4", den: "5" };
+    incoming.duration = { num: "1", den: "1" };
+    incoming.renderer = "motion-canvas";
+
+    const captures = {
+      ...multiVisual,
+      segments: [opening, outgoing, incoming].map((scene, index) => ({
+        ...multiVisual.segments[0], segment_id: "fractional-segment-" + index,
+        scene_ids: [scene.id], frame_count: [3, 6, 30][index],
+      })),
+    };
+    const master = { ...multi, frame_count: 39, video_segments: 3 };
+    const match = programMasterAtPlayhead(cut, incoming, profile, captures, master, 4 / 5);
+    expect(match).not.toBeNull();
+    expect(editorialTimeForMasterMedia(cut, match!, 8 / 30)).toBeCloseTo(8 / 30, 12);
+    expect(editorialTimeForMasterMedia(cut, match!, 3 / 10)).toBe(4 / 5);
+    expect(match?.mediaTimeSeconds).toBe(3 / 10);
+    expect(programMasterAtPlayhead(cut, outgoing, profile, captures, master, 3 / 10)).toBeNull();
+  });
+
   it("preserves compacted media time across an omitted project interval", () => {
     const cut=structuredClone(project);
     const final={...cut.scenes[1],start:{num:"12",den:"1"}};

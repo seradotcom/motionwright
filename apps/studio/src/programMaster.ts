@@ -1,9 +1,11 @@
 import { resolveSceneRenderReceipt } from "./renderReceipt";
+import { addTimelineTime, timelineSceneEnd } from "./timelineNavigation";
 import type {
   MltAvMasterEvidence,
   NativeMultisegmentAvMasterEvidence,
   MotionCanvasRenderEvidence,
   Project,
+  RationalTime,
   Scene,
 } from "./types";
 import { seconds } from "./types";
@@ -26,6 +28,17 @@ export type ProgramAvEvidence = MltAvMasterEvidence | NativeMultisegmentAvMaster
 
 function finitePositive(value: number): boolean {
   return Number.isFinite(value) && value > 0;
+}
+
+const cutOrigin: RationalTime = { num: "0", den: "1" };
+
+function appendSceneDuration(start: RationalTime, scene: Scene): RationalTime | null {
+  if (!finitePositive(seconds(scene.duration))) return null;
+  try {
+    return addTimelineTime(start, scene.duration);
+  } catch {
+    return null;
+  }
 }
 
 function sameProfileRate(profile: Project["deliverables"][number], rate: {num:number;den:number}): boolean {
@@ -115,7 +128,7 @@ export function programMasterAtPlayhead(
       && sceneIds.some(id => !displayProfile.included_scene_ids.includes(id)))) return null;
 
   let previousDuration = 0;
-  let totalDuration = 0;
+  let cutEnd = cutOrigin;
   let selectedFound = false;
   let priorProjectIndex = -1;
   for (const id of sceneIds) {
@@ -124,17 +137,18 @@ export function programMasterAtPlayhead(
     priorProjectIndex = index;
     const current = project.scenes[index];
     if (current.renderer !== "motion-canvas") return null;
-    const duration = seconds(current.duration);
-    if (!finitePositive(duration)) return null;
+    const end = appendSceneDuration(cutEnd, current);
+    if (!end) return null;
     if (id === scene.id) {
-      previousDuration = totalDuration;
+      previousDuration = seconds(cutEnd);
       selectedFound = true;
     }
-    totalDuration += duration;
+    cutEnd = end;
   }
+  const totalDuration = seconds(cutEnd);
   if (!selectedFound || !finitePositive(totalDuration)) return null;
   const sceneStart = seconds(scene.start);
-  const sceneEnd = sceneStart + seconds(scene.duration);
+  const sceneEnd = timelineSceneEnd(scene);
   if (!Number.isFinite(sceneStart) || !Number.isFinite(sceneEnd)
     || playhead < sceneStart || playhead >= sceneEnd) return null;
   const nativeDuration = master.frame_count / fps;
@@ -167,16 +181,16 @@ export function editorialTimeForMasterMedia(
 ): number | null {
   if (!Number.isFinite(mediaTime) || mediaTime < 0
     || mediaTime > selection.mediaDurationSeconds + 1e-3) return null;
-  let remaining = mediaTime;
+  let cutEnd = cutOrigin;
   let last: Scene | null = null;
   for (const id of selection.sceneIds) {
     const scene = project.scenes.find((candidate) => candidate.id === id);
     if (!scene) return null;
     last = scene;
-    const duration = seconds(scene.duration);
-    if (!finitePositive(duration)) return null;
-    if (remaining < duration) return seconds(scene.start) + remaining;
-    remaining -= duration;
+    const end = appendSceneDuration(cutEnd, scene);
+    if (!end) return null;
+    if (mediaTime < seconds(end)) return seconds(scene.start) + (mediaTime - seconds(cutEnd));
+    cutEnd = end;
   }
   return last ? seconds(last.start) + Math.max(0, seconds(last.duration) - 1e-3) : null;
 }
