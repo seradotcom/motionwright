@@ -139,6 +139,25 @@ fn job_ref_from_receipt(receipt: &ProductionReceipt) -> Option<&str> {
         })
 }
 
+fn provider_job_ref<'a>(provider: &str, data: &'a Value) -> Option<&'a str> {
+    if provider == "driver:mlt-video" {
+        job_ref_from_data(data)
+    } else {
+        data.get("job_ref").and_then(Value::as_str)
+    }
+}
+
+fn receipt_provider_matches(provider: &str, wrapper: Option<&Value>) -> bool {
+    let observed = wrapper
+        .and_then(|value| value.pointer("/execution/provenance/provider"))
+        .and_then(Value::as_str);
+    match provider {
+        "driver:manim-community" | "driver:hyperframes" => observed == Some(provider),
+        "driver:mlt-video" => observed.is_none_or(|value| value == provider),
+        _ => true,
+    }
+}
+
 fn state_from_data(value: &Value) -> Option<ProductionJobState> {
     let state = value
         .get("state")
@@ -242,33 +261,21 @@ pub(crate) fn derive_production_jobs_all(
         let Some((provider, RenderCommand::Start)) = classify(&receipt.command) else {
             continue;
         };
-        if receipt.stage != "completed"
-            || !matches!(
-                provider,
-                "driver:motion-canvas" | "driver:manim-community" | "driver:hyperframes"
-            )
-        {
+        if receipt.stage != "completed" {
             continue;
         }
         let Some(wrapper) = completed_wrapper(receipt) else {
             continue;
         };
-        let Some(job_ref) = driver_data(wrapper)
-            .get("job_ref")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
+        let Some(job_ref) =
+            provider_job_ref(provider, driver_data(wrapper)).filter(|value| !value.is_empty())
         else {
             continue;
         };
-        // Manim and HyperFrames admissions carry SDK provenance on the original
-        // start. Missing/foreign generation may be observed but grants no
-        // completed lineage. Legacy Motion Canvas records remain compatible.
-        if matches!(provider, "driver:manim-community" | "driver:hyperframes")
-            && (wrapper
-                .pointer("/execution/provenance/provider")
-                .and_then(Value::as_str)
-                != Some(provider)
-                || provider_generation(wrapper).is_none())
+        // Require the observed provider generation for MLT, Manim and
+        // HyperFrames. Legacy MLT receipts can omit the provider name.
+        if !receipt_provider_matches(provider, Some(wrapper))
+            || (provider != "driver:motion-canvas" && provider_generation(wrapper).is_none())
         {
             continue;
         }
@@ -308,10 +315,6 @@ pub(crate) fn derive_production_jobs_all(
         let data = wrapper.map(driver_data);
         // An explicitly bound read keeps its original source revision. Other
         // observations still require the exact original provider and stamp.
-        let guarded_provider = matches!(
-            provider,
-            "driver:motion-canvas" | "driver:manim-community" | "driver:hyperframes"
-        );
         let original = acknowledged_starts.get(&(
             provider.to_owned(),
             job_ref.clone(),
@@ -323,35 +326,30 @@ pub(crate) fn derive_production_jobs_all(
             .filter(|roots| roots.len() == 1)
             .and_then(|roots| roots.first())
             .map(|(_, start)| *start);
+        let requested = receipt.payload.get("job_ref");
+        let requested_matches = match requested {
+            Some(value) => value.as_str() == Some(job_ref.as_str()),
+            // Older MLT receipts retain the returned job without this redundant
+            // field. They still need the acknowledged start and its generation.
+            None => provider == "driver:mlt-video",
+        };
         let foreign_returned_job = receipt.stage == "completed"
-            && matches!(
-                kind,
-                RenderCommand::Status | RenderCommand::Cancel | RenderCommand::Result
-            )
-            && !matches!(
-                (
-                    receipt.payload.get("job_ref").and_then(Value::as_str),
-                    data.and_then(|view| view.get("job_ref")).and_then(Value::as_str)
-                ),
-                (Some(requested), Some(returned)) if requested == returned && requested == job_ref
-            );
-        let foreign_provider = receipt.stage == "completed"
-            && matches!(provider, "driver:manim-community" | "driver:hyperframes")
-            && wrapper
-                .and_then(|value| value.pointer("/execution/provenance/provider"))
-                .and_then(Value::as_str)
-                != Some(provider);
+            && !matches!(kind, RenderCommand::Start)
+            && (!requested_matches
+                || data.and_then(|view| provider_job_ref(provider, view))
+                    != Some(job_ref.as_str()));
+        let foreign_provider =
+            receipt.stage == "completed" && !receipt_provider_matches(provider, wrapper);
         let provider_generation_drift = receipt.stage == "completed"
             && original
                 .and_then(|roots| roots.first())
                 .and_then(|(generation, _)| *generation)
                 .is_some_and(|expected| wrapper.and_then(provider_generation) != Some(expected));
-        let unbound_observation = guarded_provider
-            && (matches!(observation_source, Some(Err(())))
-                || ambiguous_original
-                || foreign_returned_job
-                || foreign_provider
-                || provider_generation_drift);
+        let unbound_observation = matches!(observation_source, Some(Err(())))
+            || ambiguous_original
+            || foreign_returned_job
+            || foreign_provider
+            || provider_generation_drift;
         let cancellation_requested = !unbound_observation
             && data
                 .and_then(|value| value.get("cancellation_requested"))
@@ -818,6 +816,57 @@ mod tests {
             ProductionObservationState::Observed
         );
         assert!(reconciled[0].result_available);
+    }
+
+    #[test]
+    fn mlt_jobs_require_the_original_start_and_provider_generation() {
+        let generation = Uuid::now_v7();
+        let time = "2026-10-05T01:00:00Z";
+        let start = receipt(
+            generation,
+            4,
+            "original-start",
+            "driver.mlt-video.render.start",
+            "completed",
+            wrapped_job("render:original", "running", false),
+            time,
+        );
+        let mut completed = wrapped_job("render:original", "succeeded", false);
+        completed["job_ref"] = json!("render:original");
+        completed["result"]["data"]["artifact"] = json!({"path": "original.mkv"});
+        let result = receipt(
+            generation,
+            4,
+            "read-original-result",
+            "driver.mlt-video.render.result",
+            "completed",
+            completed,
+            time,
+        );
+        let mut later_generation = result.clone();
+        later_generation.payload["result"]["execution"]["provenance"]["provider_generation"] =
+            json!(8);
+        let mut foreign_job = result.clone();
+        foreign_job.payload["result"]["data"]["job"] = json!("render:foreign");
+        let mut unqualified_start = start.clone();
+        unqualified_start.payload["result"]["execution"]["provenance"] = json!({});
+        for receipts in [
+            vec![result.clone()],
+            vec![start.clone(), later_generation],
+            vec![start.clone(), foreign_job],
+            vec![unqualified_start, result.clone()],
+        ] {
+            let jobs = derive_production_jobs(&receipts, generation, 4, 16);
+            assert_eq!(jobs.len(), 1);
+            assert_eq!(jobs[0].state, ProductionJobState::OutcomeUnknown);
+            assert!(!jobs[0].artifact_available);
+            assert!(!jobs[0].result_available);
+        }
+
+        let jobs = derive_production_jobs(&[start, result], generation, 4, 16);
+        assert_eq!(jobs[0].root_request_id, "original-start");
+        assert_eq!(jobs[0].state, ProductionJobState::Succeeded);
+        assert!(jobs[0].result_available);
     }
 
     #[test]
