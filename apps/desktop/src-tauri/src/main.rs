@@ -4002,8 +4002,21 @@ async fn import_asset_file(
     let service = state.service.clone();
     // The clone shares the existing registry; it does not create new authority.
     let grants = state.effect_grants.clone();
-    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
-        file_import::import_asset_file(&service, &grants, request).map_err(file_import_error)
+    let worker = owner.worker_owner();
+    let publisher = worker.clone();
+    desktop_owner::spawn_blocking(worker, move || {
+        file_import::dispatch_file_import(
+            &service,
+            &grants,
+            file_import::FileImportKind::Asset,
+            request,
+            || {
+                publisher
+                    .phase()
+                    .map_err(|_| std::io::ErrorKind::PermissionDenied.into())
+            },
+        )
+        .map_err(file_import_error)
     })
     .await
     .map_err(|_| {
@@ -4020,8 +4033,21 @@ async fn import_voice_file(
 ) -> Result<file_import::FileImportReceipt, String> {
     let service = state.service.clone();
     let grants = state.effect_grants.clone();
-    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
-        file_import::import_voice_file(&service, &grants, request).map_err(file_import_error)
+    let worker = owner.worker_owner();
+    let publisher = worker.clone();
+    desktop_owner::spawn_blocking(worker, move || {
+        file_import::dispatch_file_import(
+            &service,
+            &grants,
+            file_import::FileImportKind::Voice,
+            request,
+            || {
+                publisher
+                    .phase()
+                    .map_err(|_| std::io::ErrorKind::PermissionDenied.into())
+            },
+        )
+        .map_err(file_import_error)
     })
     .await
     .map_err(|_| {
@@ -4070,9 +4096,15 @@ async fn import_native_capsule_source_file(
     let service = state.service.clone();
     // Shares the existing one-time import grant registry and atomic service.
     let grants = state.effect_grants.clone();
-    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
-        file_import::import_native_capsule_source_file(&service, &grants, request)
-            .map_err(file_import_error)
+    let worker = owner.worker_owner();
+    let publisher = worker.clone();
+    desktop_owner::spawn_blocking(worker, move || {
+        file_import::dispatch_native_capsule_source_file(&service, &grants, request, || {
+            publisher
+                .phase()
+                .map_err(|_| std::io::ErrorKind::PermissionDenied.into())
+        })
+        .map_err(file_import_error)
     })
     .await
     .map_err(|_| {

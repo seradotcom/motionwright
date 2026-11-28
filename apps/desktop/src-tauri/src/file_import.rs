@@ -5,7 +5,7 @@
 //! historical receipt; callers must fetch the current Project separately.
 use super::effect_grants::{EffectGrantRegistry, EffectKind, EffectScope};
 use motionwright_domain::{LockKind, NativeCapsuleSourceSpec, Project, RevisionStamp};
-use motionwright_service::{FileImportIntent, StudioService, VoiceImportMetadata};
+use motionwright_service::{FileImportIntent, StudioService};
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf};
 use uuid::Uuid;
@@ -317,11 +317,12 @@ pub(crate) fn prepare_file_import(
     })
 }
 
-fn dispatch_file_import(
+pub(crate) fn dispatch_file_import<P>(
     service: &StudioService,
     grants: &EffectGrantRegistry,
     kind: FileImportKind,
     request: FileImportDispatchRequest,
+    admit_publication: impl FnOnce() -> std::io::Result<P>,
 ) -> Result<FileImportReceipt, FileImportError> {
     validate_request_id(&request.request_id)?;
     if !matches!(
@@ -351,38 +352,16 @@ fn dispatch_file_import(
         .map_err(FileImportError::Invalid)?;
     // The existing service checks scope again and owns source capture,
     // validation/measurement, CAS publication and atomic request receipts.
-    let expected = project.stamp();
-    let outcome = match &request.intent {
-        FileImportIntent::Asset { name, media_type } => service.import_asset_file(
+    let outcome = service
+        .import_local_file_checked(
             request.project_id,
-            &expected,
+            &project.stamp(),
             &request.request_id,
             &source,
-            name.clone(),
-            media_type.clone(),
-        ),
-        FileImportIntent::Voice {
-            name,
-            media_type,
-            label,
-        } => service.import_voice_file(
-            request.project_id,
-            &expected,
-            &request.request_id,
-            &source,
-            VoiceImportMetadata {
-                name: name.clone(),
-                media_type: media_type.clone(),
-                label: label.clone(),
-            },
-        ),
-        FileImportIntent::NativeCapsuleSource { .. } => {
-            return Err(FileImportError::Invalid(
-                "Native source imports require their qualified source-save boundary.".into(),
-            ));
-        }
-    }
-    .map_err(storage_error)?;
+            request.intent.clone(),
+            admit_publication,
+        )
+        .map_err(storage_error)?;
     Ok(FileImportReceipt {
         schema: "motionwright.file-import-receipt/1",
         request_id: request.request_id,
@@ -392,20 +371,22 @@ fn dispatch_file_import(
     })
 }
 
-pub(crate) fn import_asset_file(
+#[cfg(test)]
+fn import_asset_file(
     service: &StudioService,
     grants: &EffectGrantRegistry,
     request: FileImportDispatchRequest,
 ) -> Result<FileImportReceipt, FileImportError> {
-    dispatch_file_import(service, grants, FileImportKind::Asset, request)
+    dispatch_file_import(service, grants, FileImportKind::Asset, request, || Ok(()))
 }
 
-pub(crate) fn import_voice_file(
+#[cfg(test)]
+fn import_voice_file(
     service: &StudioService,
     grants: &EffectGrantRegistry,
     request: FileImportDispatchRequest,
 ) -> Result<FileImportReceipt, FileImportError> {
-    dispatch_file_import(service, grants, FileImportKind::Voice, request)
+    dispatch_file_import(service, grants, FileImportKind::Voice, request, || Ok(()))
 }
 
 pub(crate) fn recover_file_import(
@@ -608,10 +589,20 @@ pub(crate) fn prepare_native_capsule_source_file(
     })
 }
 
-pub(crate) fn import_native_capsule_source_file(
+#[cfg(test)]
+fn import_native_capsule_source_file(
     service: &StudioService,
     grants: &EffectGrantRegistry,
     request: FileImportDispatchRequest,
+) -> Result<FileImportReceipt, FileImportError> {
+    dispatch_native_capsule_source_file(service, grants, request, || Ok(()))
+}
+
+pub(crate) fn dispatch_native_capsule_source_file<P>(
+    service: &StudioService,
+    grants: &EffectGrantRegistry,
+    request: FileImportDispatchRequest,
+    admit_publication: impl FnOnce() -> std::io::Result<P>,
 ) -> Result<FileImportReceipt, FileImportError> {
     validate_request_id(&request.request_id)?;
     let project = current_project(
@@ -620,7 +611,7 @@ pub(crate) fn import_native_capsule_source_file(
         request.generation,
         Some(request.revision),
     )?;
-    let (spec, expected_sha256) = qualified_native_source_spec(&request.intent)?;
+    let (spec, _) = qualified_native_source_spec(&request.intent)?;
     validate_native_source_target(&project, spec)?;
     let source = absolute_asset_path(&request.path)?;
     grants
@@ -635,13 +626,13 @@ pub(crate) fn import_native_capsule_source_file(
     // capsule, event, revision and original request receipt atomically. There is
     // no asset-import/upsert fallback and no renderer/provider authority here.
     let outcome = service
-        .import_native_capsule_source_file_bound(
+        .import_local_file_checked(
             request.project_id,
             &project.stamp(),
             &request.request_id,
             &source,
-            spec.clone(),
-            expected_sha256.map(str::to_owned),
+            request.intent.clone(),
+            admit_publication,
         )
         .map_err(storage_error)?;
     validate_native_source_result_revision(

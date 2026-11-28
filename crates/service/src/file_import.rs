@@ -172,6 +172,27 @@ impl StudioService {
             .map(|record| record.outcome))
     }
 
+    /// Re-admit publication after capture, validation and the final revision check.
+    /// A previously committed receipt remains a read-only observation.
+    pub fn import_local_file_checked<P>(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        request_id: &str,
+        source: &Path,
+        intent: FileImportIntent,
+        admit_publication: impl FnOnce() -> std::io::Result<P>,
+    ) -> Result<ApplyOutcome> {
+        self.import_source_with_identity(
+            project_id,
+            expected,
+            request_id,
+            (ImportSource::File(source), None),
+            intent,
+            admit_publication,
+        )
+    }
+
     pub(crate) fn import_file_with_identity(
         &self,
         project_id: Uuid,
@@ -185,9 +206,9 @@ impl StudioService {
             project_id,
             expected,
             request_id,
-            ImportSource::File(source),
+            (ImportSource::File(source), expected_source),
             intent,
-            expected_source,
+            || Ok(()),
         )
     }
 
@@ -204,20 +225,20 @@ impl StudioService {
             project_id,
             expected,
             request_id,
-            ImportSource::Captured(bytes),
+            (ImportSource::Captured(bytes), Some(expected_source)),
             intent,
-            Some(expected_source),
+            || Ok(()),
         )
     }
 
-    fn import_source_with_identity(
+    fn import_source_with_identity<P>(
         &self,
         project_id: Uuid,
         expected: &RevisionStamp,
         request_id: &str,
-        source: ImportSource<'_>,
+        (source, expected_source): (ImportSource<'_>, Option<&BlobDescriptor>),
         intent: FileImportIntent,
-        expected_source: Option<&BlobDescriptor>,
+        admit_publication: impl FnOnce() -> std::io::Result<P>,
     ) -> Result<ApplyOutcome> {
         // An authored digest narrows the import; it never grants source IO.
         let expected_native_digest = match &intent {
@@ -402,6 +423,7 @@ impl StudioService {
                 candidate.apply_change(&change)?;
                 candidate.validate()?;
             }
+            let _permit = admit_publication()?;
             store.publish_file_import(&staged)?;
             drop(staged);
             store.apply(project_id, expected, request_id, &change)
@@ -569,6 +591,65 @@ mod verified_source_tests {
                 .unwrap(),
             bytes
         );
+    }
+
+    #[test]
+    fn retired_publication_authority_preserves_exact_project_and_discards_capture() {
+        let (root, service, project) = fixture();
+        let bytes = b"original selected while the editor still had authority";
+        let path = source(root.path(), bytes);
+        let expected = descriptor(bytes);
+        let intent = asset_intent();
+        let before = state(&service, project.id);
+        let result = service.import_local_file_checked(
+            project.id,
+            &project.stamp(),
+            "import-after-owner-retired",
+            &path,
+            intent.clone(),
+            || Err::<(), _>(std::io::ErrorKind::PermissionDenied.into()),
+        );
+        assert!(matches!(
+            result,
+            Err(StorageError::Io(error)) if error.kind() == std::io::ErrorKind::PermissionDenied
+        ));
+        no_published_blob(&service, &expected);
+        assert_eq!(state(&service, project.id), before);
+        assert!(
+            service
+                .recover_file_import(
+                    project.id,
+                    &project.stamp(),
+                    "import-after-owner-retired",
+                    &intent
+                )
+                .unwrap()
+                .is_none()
+        );
+        let imported = service
+            .import_local_file_checked(
+                project.id,
+                &project.stamp(),
+                "import-with-active-owner",
+                &path,
+                intent.clone(),
+                || Ok(()),
+            )
+            .unwrap();
+        let observed = service
+            .import_local_file_checked(
+                project.id,
+                &project.stamp(),
+                "import-with-active-owner",
+                &path,
+                intent,
+                || -> std::io::Result<()> {
+                    panic!("a known receipt must not ask for fresh publication authority");
+                },
+            )
+            .unwrap();
+        assert!(observed.replayed);
+        assert_eq!(observed.project, imported.project);
     }
 
     #[test]

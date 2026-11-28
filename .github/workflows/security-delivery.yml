@@ -309,7 +309,14 @@ jobs:
         run: cargo check --locked --jobs 2 -p motionwright-desktop
       - name: Shared original asset URI and retained reader contracts
         if: inputs.verification_scope == 'desktop-compile' && inputs.first_use_case == 'asset-media'
-        run: cargo test --locked --jobs 2 -p motionwright-service --example studio_review_session asset_preview::tests -- --test-threads=1
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --jobs 2 -p motionwright-service --example studio_review_session asset_preview::tests -- --test-threads=1
+          log="$RUNNER_TEMP/local-media-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.log"
+          cargo test --locked --jobs 2 -p motionwright-service --lib file_import::verified_source_tests:: -- --test-threads=1 | tee "$log"
+          grep -F 'original_capture_allows_a_concurrent_edit_and_rechecks_revision_before_publication ... ok' "$log"
+          grep -F 'retired_publication_authority_preserves_exact_project_and_discards_capture ... ok' "$log"
       - name: Bounded hybrid Desktop admission and original root continuity
         if: inputs.verification_scope == 'desktop-compile' && inputs.first_use_case == 'camera-spatial'
         shell: bash
