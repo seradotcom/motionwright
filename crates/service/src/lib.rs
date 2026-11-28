@@ -2033,7 +2033,7 @@ mod audio_import_tests {
         let blob = service
             .store
             .lock()
-            .blob_path(&track.source_sha256)
+            .verified_blob_path(&track.source_sha256)
             .unwrap();
         let original = fs::read(&blob).unwrap();
         let mut changed = original.clone();
