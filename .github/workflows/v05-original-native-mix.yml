@@ -268,7 +268,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
-      - name: Execute exactly 70 selected source contracts
+      - name: Execute exactly 74 selected source contracts
         run: |
           python3 -B -E -s tooling/ci_saved_original_mix.py --repo "$GITHUB_WORKSPACE" \
             --expected-source "$GITHUB_SHA" --selection saved-mix \

@@ -422,13 +422,15 @@ fn incremental_sfx_rebuild_matches_every_stereo_sample_after_cross_cut_edit() {
     let check = |cache: &mut SemanticSfxAuditionCache,
                  project: &Project,
                  sources: &[VerifiedSfxWav],
-                 rebuilt| {
+                 rebuilt: u64| {
         let incremental = cache.mix(project, profile, sources, 90).unwrap();
         let full = mix_source_bound_semantic_sfx(project, profile, sources, 90).unwrap();
         assert_eq!(incremental, full);
         let work = cache.last_work().unwrap();
         assert_eq!(work.synthesized_sample_frames, rebuilt * 1600);
         assert_eq!(work.reused_sample_frames, (90 - rebuilt) * 1600);
+        assert_eq!(work.pcm_bytes_encoded, rebuilt * 1600 * 4);
+        assert_eq!(work.complete_wav_bytes_hashed, full.wav_bytes.len() as u64);
         assert_eq!(
             work.source_bytes_verified,
             sources
