@@ -1,5 +1,6 @@
 import { CircleDashed, Clock3, LockKeyhole, Settings2, Unlock } from "lucide-react";
 import SceneBeatEditor from "./SceneBeatEditor";
+import type { Ref } from "react";
 import type { Change, Project, RationalTime, RendererKind, Scene } from "./types";
 import type { TimecodeMode } from "./timecode";
 import { inspectorChange, useInspectorDraft, type InspectorChange, type InspectorField } from "./sceneInspectorDraft";
@@ -16,20 +17,21 @@ const rendererAvailable = (project: Project, renderer: RendererKind) => {
 
 interface SceneInspectorProps {
   project: Project; scene: Scene | null;
+  panelRef?: Ref<HTMLElement>;
   commit: (change: Change) => Promise<void>;
   commitScene: (change: Change) => Promise<Project>;
   commitBeat: (change: Change) => Promise<Project>;
   rate: RationalTime; mode: TimecodeMode; rendererLabels: Record<RendererKind, string>;
 }
 export default function SceneInspector(props: SceneInspectorProps) {
-  if (!props.scene) return <aside className="inspector" aria-label="Scene inspector">
+  if (!props.scene) return <aside ref={props.panelRef} tabIndex={-1} className="inspector" aria-label="Scene inspector">
     <div className="inspector-heading">Inspector</div>
     <div className="empty-workspace"><Settings2 size={24} /><strong>Nothing selected</strong>
       <span>Select a scene to inspect its semantic state.</span></div>
   </aside>;
   return <SelectedSceneInspector {...props} scene={props.scene} />;
 }
-function SelectedSceneInspector({ project, scene, commit, commitScene, commitBeat, rate, mode, rendererLabels }:
+function SelectedSceneInspector({ project, scene, commit, commitScene, commitBeat, rate, mode, rendererLabels, panelRef }:
   SceneInspectorProps & { scene: Scene }) {
   const editor = useInspectorDraft(project, scene.id, commitScene);
   const candidate = (field: InspectorField): { change: InspectorChange | null; error: string | null } => {
@@ -44,7 +46,7 @@ function SelectedSceneInspector({ project, scene, commit, commitScene, commitBea
   const timingLocked = locks.some((lock) => lock.kind === "timing");
   const contentLocked = locks.some((lock) => lock.kind === "content");
   return (
-    <aside className="inspector" aria-label="Scene inspector">
+    <aside ref={panelRef} tabIndex={-1} className="inspector" aria-label="Scene inspector">
       <div className="inspector-heading">
         <span>Inspector</span>
         <span className="mono">r{project.revision}</span>

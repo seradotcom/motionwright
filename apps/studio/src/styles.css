@@ -507,6 +507,11 @@ textarea:focus-visible {
   min-width: 0;
 }
 
+.inspector:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .assistant-toggle.active { color: var(--accent); border-color: var(--accent); }
 
 .assistant-dock .inspector-heading { height: 46px; padding-inline: 14px; }

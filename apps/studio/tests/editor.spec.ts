@@ -30,7 +30,7 @@ test("project heading and revision remain visible in compact editor windows", as
   const header = page.locator(".command-bar");
   const title = header.getByRole("heading", { level: 1, name: fixtureBootstrap.project.title, exact: true });
   const revision = header.getByRole("status");
-  for (const width of [1440, 1024, 860]) {
+  for (const width of [1440, 1280, 1024, 768]) {
     await page.setViewportSize({ width, height: 768 });
     await expect(title).toBeVisible();
     await expect(revision).toBeVisible();
@@ -43,7 +43,26 @@ test("project heading and revision remain visible in compact editor windows", as
     expect(bounds!.x).toBeGreaterThanOrEqual(0);
     expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
   }
-  await page.screenshot({ path: testInfo.outputPath("project-context-860.png") });
+  await page.screenshot({ path: testInfo.outputPath("project-context-768.png") });
+  const inspector = header.getByRole("button", { name: "Show inspector", exact: true });
+  await inspector.focus();
+  await page.keyboard.press("Enter");
+  const inspectorPanel = page.getByRole("complementary", { name: "Scene inspector", exact: true });
+  await expect(inspectorPanel).toBeFocused({ timeout: 5_000 });
+  await page.keyboard.press("Tab");
+  expect(await inspectorPanel.evaluate(panel => panel.contains(document.activeElement))).toBe(true);
+  await page.keyboard.press("Escape");
+  await expect(inspector).toBeFocused();
+  await expect(inspectorPanel).toBeHidden();
+
+  const assistant = header.getByRole("button", { name: "Assistant", exact: true });
+  await assistant.focus();
+  await page.keyboard.press("Enter");
+  const assistantPanel = page.getByRole("complementary", { name: "Assistant", exact: true });
+  await expect(assistantPanel).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(assistant).toBeFocused();
+  await expect(assistantPanel).toBeHidden();
   await page.getByRole("button", { name: "Brief", exact: true }).click();
   await page.getByLabel("Project title").fill("Renamed compact project");
   await page.getByRole("button", { name: "Save title" }).click();

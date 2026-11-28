@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { Ref } from "react";
 import { Download, MessageSquareText, X } from "lucide-react";
 import { createAssistantRequest, readAssistantProposal } from "./assistantExchange";
 import type { ScopedChangeDraft } from "./scopedChangeDraft";
@@ -6,6 +7,7 @@ import type { Project, Scene } from "./types";
 
 interface Props {
   project: Project;
+  panelRef?: Ref<HTMLElement>;
   scene: Scene | null;
   selectedNodeId: string | null;
   playhead: number;
@@ -16,7 +18,7 @@ interface Props {
   onOpenReview: (nodeId: string | null) => void;
 }
 
-export default function AssistantDock({ project, scene, selectedNodeId, playhead, busy, reviewing, onClose, onReview, onOpenReview }: Props) {
+export default function AssistantDock({ project, panelRef, scene, selectedNodeId, playhead, busy, reviewing, onClose, onReview, onOpenReview }: Props) {
   const [scope, setScope] = useState<{ nodeId: string | null }>();
   const [intention, setIntention] = useState("");
   const [rawProposal, setRawProposal] = useState("");
@@ -52,7 +54,7 @@ export default function AssistantDock({ project, scene, selectedNodeId, playhead
     }
   };
 
-  return <aside className="inspector assistant-dock" aria-label="Assistant">
+  return <aside ref={panelRef} tabIndex={-1} className="inspector assistant-dock" aria-label="Assistant">
     <header className="inspector-heading">
       <h2><MessageSquareText size={14} aria-hidden="true" /> Assistant</h2>
       <button type="button" className="icon-button" onClick={onClose} aria-label="Close assistant"><X size={14} aria-hidden="true" /></button>

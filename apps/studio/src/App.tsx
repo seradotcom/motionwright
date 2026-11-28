@@ -1657,11 +1657,20 @@ export default function App() {
   const [wideInspectorOpen, setWideInspectorOpen] = useState(true);
   const inspectorToggle = useRef<HTMLButtonElement>(null);
   const assistantToggle = useRef<HTMLButtonElement>(null);
+  const inspectorPanel = useRef<HTMLElement>(null);
+  const assistantPanel = useRef<HTMLElement>(null);
+  const requestedPanelFocus = useRef<"inspector" | "assistant" | null>(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [canvasSelection, setCanvasSelection] = useState<{ scope: string; nodeId: string | null } | null>(null);
   const [proposalReview, setProposalReview] = useState<{ scope: string; workspace: Workspace; draft?: ScopedChangeDraft } | null>(null);
   const inspectorOpen = compactWorkspace ? compactInspectorOpen : wideInspectorOpen;
   const setInspectorOpen = compactWorkspace ? setCompactInspectorOpen : setWideInspectorOpen;
+  useLayoutEffect(() => {
+    const target = requestedPanelFocus.current;
+    requestedPanelFocus.current = null;
+    if (target === "assistant" && assistantOpen) assistantPanel.current?.focus({ preventScroll: true });
+    if (target === "inspector" && inspectorOpen && !assistantOpen) inspectorPanel.current?.focus({ preventScroll: true });
+  }, [assistantOpen, inspectorOpen]);
   const editorShellRef = useRef<HTMLElement>(null);
   const bootRef = useRef<Bootstrap | null>(boot);
   const mutationGate = useRef(new ProjectMutationGate());
@@ -2655,18 +2664,19 @@ export default function App() {
             aria-label={inspectorOpen && !assistantOpen ? "Hide inspector" : "Show inspector"}
             title={inspectorOpen && !assistantOpen ? "Hide inspector" : "Show inspector"}
             onClick={() => {
-              if (assistantOpen) {
-                setAssistantOpen(false);
-                setInspectorOpen(true);
-              } else {
-                setInspectorOpen(open => !open);
-              }
+              const opening = assistantOpen || !inspectorOpen;
+              if (opening) requestedPanelFocus.current = "inspector";
+              if (assistantOpen) setAssistantOpen(false);
+              setInspectorOpen(opening);
             }}>
             <PanelRight size={16} aria-hidden="true" />
           </button>}
           <button type="button" className={"button compact assistant-toggle" + (assistantOpen ? " active" : "")}
             ref={assistantToggle} aria-controls="studio-assistant-panel" aria-expanded={assistantOpen}
-            aria-label="Assistant" title="Assistant" onClick={() => setAssistantOpen(open => !open)}>
+            aria-label="Assistant" title="Assistant" onClick={() => {
+              if (!assistantOpen) requestedPanelFocus.current = "assistant";
+              setAssistantOpen(!assistantOpen);
+            }}>
             <MessageSquareText size={15} aria-hidden="true" />
             <span>Assistant</span>
           </button>
@@ -2754,11 +2764,11 @@ export default function App() {
             }
           }}>
           {workspace !== "Production" && <div id="studio-inspector-panel" className="inspector-surface" hidden={assistantOpen}>
-            <SceneInspector project={project} scene={selectedScene} commit={commit} commitScene={commitCamera}
+            <SceneInspector panelRef={inspectorPanel} project={project} scene={selectedScene} commit={commit} commitScene={commitCamera}
               commitBeat={commitCamera} rate={timebaseRate} mode={displayMode} rendererLabels={rendererLabels} />
           </div>}
           <div id="studio-assistant-panel" className="inspector-surface" hidden={!assistantOpen}>
-            <AssistantDock key={proposalScope} project={project} scene={selectedScene}
+            <AssistantDock key={proposalScope} panelRef={assistantPanel} project={project} scene={selectedScene}
               selectedNodeId={selectedAssistantNodeId} playhead={playhead} busy={busy} reviewing={!!activeProposalReview}
               onOpenReview={openSourceReview}
               onClose={() => { setAssistantOpen(false); assistantToggle.current?.focus(); }}
