@@ -576,6 +576,7 @@ export default function DeliveryProfiles({
   const renderIntentsComplete = motionScenes.length > 0 && motionScenes.every((scene) =>
     narrativeRoles.some(option => option.value === filmDraft.savedValues[scene.id + ":role"])
       && motionArchetypes.some(option => option.value === filmDraft.savedValues[scene.id + ":archetype"]));
+  const cuePolicyControlId = "film-" + selected?.id + "-audio-cue-policy";
   const filmFields: Record<string, RecipeFieldDescription> = Object.fromEntries(project.scenes.flatMap(scene => {
     const visible = motionScenes.some(item => item.id === scene.id);
     return [
@@ -583,6 +584,7 @@ export default function DeliveryProfiles({
       [scene.id + ":archetype", { label: scene.name + " motion archetype", ...(visible ? { controlId: "film-" + selected?.id + "-" + scene.id + "-archetype" } : {}) }],
     ];
   }));
+  filmFields.motion_canvas_audio_cues = { label: "Motion Canvas audio cue timing", controlId: cuePolicyControlId };
   const nativePaletteReady = useMemo(() => {
     const names = new Set(project.visual_language.palette.map((token) => token.name.toLowerCase()));
     return (names.has("text") || names.has("ink")) &&
@@ -905,6 +907,10 @@ export default function DeliveryProfiles({
     void run("preflight", async () => {
       const report = await preflightMotionCanvas(project, selected.id, filmOptions());
       if (!liveFilm.current.mounted || liveFilm.current.key !== key || !liveFilm.current.ready) return;
+      if (report.project_resource !== "project:" + project.id || report.generation !== project.generation
+        || report.revision !== project.revision || report.deliverable_id !== selected.id) {
+        throw new Error("The Film preflight belongs to a different saved revision or profile.");
+      }
       setPreflight({ key, report });
       setMessage(report.verdict === "projection_ready"
         ? "Semantic Film projection is supported at this revision. Native rendering is a separate operation."
@@ -1611,6 +1617,19 @@ export default function DeliveryProfiles({
                     {filmDraftBlocked ? "PENDING REVIEW" : renderIntentsComplete ? "SAVED COMPLETE" : "SAVED INCOMPLETE"}
                   </span>
                 </header>
+                <label>
+                  <span className="field-label">Motion Canvas audio cue timing</span>
+                  <select id={cuePolicyControlId} value={filmDraft.values.motion_canvas_audio_cues ?? ""}
+                    disabled={filmDraft.locked || filmDraft.sourceBehind}
+                    onChange={event => {
+                      noteNativeInput();
+                      liveFilm.current.ready = false;
+                      filmDraft.set("motion_canvas_audio_cues", event.target.value);
+                    }}>
+                    <option value="">Keep existing Film behavior</option>
+                    <option value="preserve_authored_time">Map saved cues to the Film clock</option>
+                  </select>
+                </label>
                 {motionScenes.map((scene) => {
                   const roleKey = scene.id + ":role";
                   const archetypeKey = scene.id + ":archetype";
@@ -1724,6 +1743,27 @@ export default function DeliveryProfiles({
                   )}
                 </div>
               )}
+
+              {currentPreflight?.segments.filter(segment => segment.audio_cue_alignment?.length).map(segment => (
+                <details key={segment.segment_id}>
+                  <summary>Audio cue timing · {segment.segment_id}</summary>
+                  <p>Planned segment-local frames. The signed residual is the frame time minus the exact Film cue time.</p>
+                  <p className="mono">Film SHA-256 {segment.film_sha256}</p>
+                  <table>
+                    <thead><tr><th>Cue</th><th>Project time</th><th>Film time</th><th>Frame</th><th>Residual</th></tr></thead>
+                    <tbody>{segment.audio_cue_alignment!.map(row => {
+                      const label = project.audio.cues.find(cue => cue.id === row.cue_id)?.label ?? row.cue_id;
+                      return row.status === "unknown"
+                        ? <tr key={row.cue_id}><th scope="row">{label}</th><td colSpan={4}>Unknown timing</td></tr>
+                        : <tr key={row.cue_id}><th scope="row">{label}</th>
+                          <td>{row.authored_at.num}/{row.authored_at.den} s</td>
+                          <td>{row.segment_at.num}/{row.segment_at.den} s</td>
+                          <td>{row.frame}</td><td>{row.residual.num}/{row.residual.den} s</td>
+                        </tr>;
+                    })}</tbody>
+                  </table>
+                </details>
+              ))}
 
               {!desktopMode && (
                 <div className="delivery-truth-note"><CircleDashed size={14} /> Native production requires the desktop runtime and an owner-provisioned Semwright connection.</div>

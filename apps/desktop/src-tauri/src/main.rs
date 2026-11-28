@@ -72,7 +72,7 @@ use motionwright_native::{
     assembly::preflight_multi_segment_mlt,
     build_application,
     creative_doctor::{CliEvidence, require_doctor_scope},
-    film::{FilmBuildOptions, build_motion_canvas_segments},
+    film::{FilmBuildOptions, MotionCanvasAudioCueAlignment, build_motion_canvas_segments},
     owner_reconciliation::{OwnerMotionStatusObservation, authorize_original_motion_status},
     production::{
         MltAvMasterEvidence, MltAvMasterRequest, MltCloseDisposition,
@@ -332,6 +332,10 @@ struct FilmPreflightSegment {
     segment_id: String,
     scene_ids: Vec<Uuid>,
     frame_count: u64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    audio_cue_alignment: Vec<MotionCanvasAudioCueAlignment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    film_sha256: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2320,7 +2324,24 @@ async fn motion_canvas_preflight(
     let project_id = request.project_id;
     let result = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         let projected =
-            build_motion_canvas_segments(&project, request.deliverable_id, &request.options);
+            build_motion_canvas_segments(&project, request.deliverable_id, &request.options)
+                .and_then(|segments| {
+                    segments
+                        .into_iter()
+                        .map(|segment| {
+                            let film_sha256 = (!segment.audio_cue_alignment.is_empty())
+                                .then(|| segment.film_sha256())
+                                .transpose()?;
+                            Ok(FilmPreflightSegment {
+                                segment_id: segment.id,
+                                scene_ids: segment.scene_ids,
+                                frame_count: segment.frame_count,
+                                audio_cue_alignment: segment.audio_cue_alignment,
+                                film_sha256,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                });
         let unsupported = |reason: String| FilmPreflightResponse {
             project_resource: resource.clone(),
             generation: request.generation,
@@ -2347,14 +2368,7 @@ async fn motion_canvas_preflight(
                         reason: None,
                         segment_count: segments.len(),
                         total_frames,
-                        segments: segments
-                            .into_iter()
-                            .map(|segment| FilmPreflightSegment {
-                                segment_id: segment.id,
-                                scene_ids: segment.scene_ids,
-                                frame_count: segment.frame_count,
-                            })
-                            .collect(),
+                        segments,
                     },
                     _ => unsupported("Semantic Film has no bounded nonempty frame plan.".into()),
                 }

@@ -260,3 +260,34 @@ test("author JSON downloads retain raw and UNKNOWN during total storage failure 
   expect(await requests(page)).toHaveLength(1);
   expect(await page.evaluate(() => window.__DELIVERY_RECIPE_AUTHORITY__.project())).toEqual(initial);
 });
+
+test("Film cue timing saves on the selected profile and can restore legacy behavior", async ({ page }) => {
+  await open(page);
+  const project = await page.evaluate(() => window.__DELIVERY_RECIPE_AUTHORITY__.project());
+  const [profile, other] = project.deliverables;
+  const setting = page.getByRole("combobox", { name: "Motion Canvas audio cue timing", exact: true });
+  await expect(setting).toHaveValue("");
+  await setting.selectOption("preserve_authored_time");
+  const request = await save(page, "film");
+  expect(request.change).toMatchObject({
+    type: "set_delivery_recipe",
+    deliverable_profile_id: profile.id,
+    recipe: { motion_canvas_audio_cues: "preserve_authored_time" },
+  });
+  await page.evaluate(id => window.__DELIVERY_RECIPE_AUTHORITY__.resolve(id), request.id);
+  await page.evaluate(() => window.__DELIVERY_RECIPE_AUTHORITY__.unmount());
+  await page.evaluate(() => window.__DELIVERY_RECIPE_AUTHORITY__.mount());
+  await expect(setting).toHaveValue("preserve_authored_time");
+  const saved = await page.evaluate(() => window.__DELIVERY_RECIPE_AUTHORITY__.project());
+  expect(saved.production_design?.delivery_recipes?.[other.id]).toEqual(project.production_design?.delivery_recipes?.[other.id]);
+  expect(saved.production_design?.delivery_recipes?.[profile.id]?.scene_intents)
+    .toEqual(project.production_design?.delivery_recipes?.[profile.id]?.scene_intents);
+
+  await setting.selectOption("");
+  const reverted = await save(page, "film");
+  expect(reverted.change).toMatchObject({ type: "set_delivery_recipe", deliverable_profile_id: profile.id });
+  if (reverted.change.type !== "set_delivery_recipe") throw new Error("Unexpected change");
+  expect(reverted.change.recipe).not.toHaveProperty("motion_canvas_audio_cues");
+  await page.evaluate(id => window.__DELIVERY_RECIPE_AUTHORITY__.resolve(id), reverted.id);
+  await expect(setting).toHaveValue("");
+});

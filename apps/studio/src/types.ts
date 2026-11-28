@@ -531,6 +531,11 @@ export interface NativePreviewGrant {
   scene_ids: string[];
   frame_count: number;
 }
+export type MotionCanvasAudioCueAlignment =
+  | { status: "resolved"; cue_id: string; scene_id: string; authored_at: RationalTime; segment_at: RationalTime;
+      frame: number; residual: RationalTime }
+  | { status: "unknown"; cue_id: string; scene_id: string };
+
 /** Local semantic Film projection only; not a renderer job or quality PASS. */
 export interface MotionCanvasProjectionPreflight {
   project_resource: string;
@@ -545,6 +550,8 @@ export interface MotionCanvasProjectionPreflight {
     segment_id: string;
     scene_ids: string[];
     frame_count: number;
+    audio_cue_alignment?: MotionCanvasAudioCueAlignment[];
+    film_sha256?: string;
   }>;
 }
 export interface MotionCanvasRenderEvidence {

@@ -48,6 +48,25 @@ pub struct DeliveryRecipe {
         deserialize_with = "deserialize_mlt_dissolve"
     )]
     pub mlt_dissolve: Option<MltDissolveIntent>,
+    /// Explicit opt-in. An absent policy preserves the historical Film source and receipt identity.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_motion_canvas_audio_cues"
+    )]
+    pub motion_canvas_audio_cues: Option<MotionCanvasAudioCuePolicy>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MotionCanvasAudioCuePolicy {
+    PreserveAuthoredTime,
+}
+
+fn deserialize_motion_canvas_audio_cues<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<MotionCanvasAudioCuePolicy>, D::Error> {
+    MotionCanvasAudioCuePolicy::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -874,6 +893,7 @@ mod tests {
             schema: DeliveryRecipeSchema::V1,
             voice_only_cut_sha256: None,
             mlt_dissolve: None,
+            motion_canvas_audio_cues: None,
             scene_intents: project
                 .scenes
                 .iter()
@@ -1511,5 +1531,24 @@ mod mlt_dissolve_wire_tests {
         let mut malformed = serde_json::to_value(recipe).unwrap();
         malformed["mlt_dissolve"] = serde_json::Value::Null;
         assert!(serde_json::from_value::<DeliveryRecipe>(malformed).is_err());
+    }
+
+    #[test]
+    fn explicit_motion_canvas_audio_cues_preserve_the_legacy_wire_when_absent() {
+        let original =
+            r#"{"schema":"motionwright.delivery-recipe/1","scene_intents":[],"original_mix":null}"#;
+        let recipe: DeliveryRecipe = serde_json::from_str(original).unwrap();
+        assert!(recipe.motion_canvas_audio_cues.is_none());
+        assert_eq!(serde_json::to_string(&recipe).unwrap(), original);
+        let mut wire = serde_json::to_value(recipe).unwrap();
+        wire["motion_canvas_audio_cues"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<DeliveryRecipe>(wire.clone()).is_err());
+        wire["motion_canvas_audio_cues"] = serde_json::json!("preserve_authored_time");
+        let opted_in = serde_json::from_value::<DeliveryRecipe>(wire.clone()).unwrap();
+        assert_eq!(
+            opted_in.motion_canvas_audio_cues,
+            Some(MotionCanvasAudioCuePolicy::PreserveAuthoredTime)
+        );
+        assert_eq!(serde_json::to_value(opted_in).unwrap(), wire);
     }
 }

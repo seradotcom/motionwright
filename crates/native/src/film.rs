@@ -1,3 +1,7 @@
+#[path = "film_audio_cues.rs"]
+mod film_audio_cues;
+pub use film_audio_cues::MotionCanvasAudioCueAlignment;
+
 #[path = "film_boundary_appearance.rs"]
 pub(crate) mod film_boundary_appearance;
 #[path = "film_brand_fonts.rs"]
@@ -109,6 +113,18 @@ pub struct MotionCanvasSegment {
     pub frame_count: u64,
     pub scene_ids: Vec<Uuid>,
     pub film: Film,
+    // Keep frame review diagnostics outside the durable render/recovery key.
+    #[serde(skip)]
+    pub audio_cue_alignment: Vec<MotionCanvasAudioCueAlignment>,
+}
+
+impl MotionCanvasSegment {
+    /// Fingerprint of the exact Film submitted to the pinned authoring compiler.
+    pub fn film_sha256(&self) -> NativeResult<String> {
+        semwright_semantic_composition::canonical_digest(&self.film)
+            .map(|digest| digest.as_str().to_owned())
+            .map_err(|error| contract("Film identity is invalid", error))
+    }
 }
 
 fn segment_end(scene: &Scene) -> NativeResult<RationalTime> {
@@ -3246,6 +3262,22 @@ fn build_segment(
     } else {
         AUTHORING_VERSION
     };
+    let (cues, audio_cue_alignment) = if project
+        .production_design
+        .delivery_recipes
+        .get(&profile.id)
+        .is_some_and(|recipe| recipe.motion_canvas_audio_cues.is_some())
+    {
+        film_audio_cues::project_audio_cues(project, scenes, start, duration, options.frame_rate)?
+    } else {
+        (
+            CueGraph {
+                version: 1,
+                cues: Vec::new(),
+            },
+            Vec::new(),
+        )
+    };
     let film = Film {
         version,
         id: format!("mw-{}-{segment_index}", project.id.simple()),
@@ -3276,10 +3308,7 @@ fn build_segment(
             constraints,
         },
         sequences,
-        cues: CueGraph {
-            version: 1,
-            cues: vec![],
-        },
+        cues,
         assets: segment_assets,
     };
     let realization = realize(&film)
@@ -3301,6 +3330,7 @@ fn build_segment(
         frame_count,
         scene_ids: scenes.iter().map(|scene| scene.id).collect(),
         film,
+        audio_cue_alignment,
     })
 }
 
@@ -3565,6 +3595,148 @@ mod tests {
             })
             .unwrap();
         project
+    }
+
+    #[test]
+    fn authored_audio_cues_follow_the_compacted_ntsc_film_without_moving_the_cut() {
+        use motionwright_domain::{AudioCue, CueEvidence, DeliveryRecipe};
+        use semwright_media_time::ResolvedCue;
+
+        let mut project = fixture_project();
+        project
+            .apply_change(&Change::AddScene {
+                name: "Ending".into(),
+                objective: "Keep both original source and joined time".into(),
+                duration_seconds: 1,
+            })
+            .unwrap();
+        let span = RationalTime::new(1001, 1000).unwrap();
+        for id in project
+            .scenes
+            .iter()
+            .map(|scene| scene.id)
+            .collect::<Vec<_>>()
+        {
+            project
+                .apply_change(&Change::SetSceneDuration {
+                    scene_id: id,
+                    duration: span,
+                })
+                .unwrap();
+        }
+        let first = project.scenes[0].id;
+        let incoming = project.scenes[2].id;
+        project
+            .apply_change(&Change::AddCanvasNode {
+                scene_id: incoming,
+                node: node("shape", None),
+            })
+            .unwrap();
+        let mut output = project.deliverables[0].clone();
+        output.frame_rate = RationalTime::new(30_000, 1001).unwrap();
+        output.included_scene_ids = vec![first, incoming];
+        project
+            .apply_change(&Change::UpsertDeliverable {
+                profile: output.clone(),
+            })
+            .unwrap();
+        let mut options = fixture_options(&project);
+        options.frame_rate = Rate::new(30_000, 1001).unwrap();
+        let legacy = build_motion_canvas_segments(&project, output.id, &options).unwrap();
+
+        let half_frame = RationalTime::new(1001, 60_000).unwrap();
+        let source_join = project.scenes[2].start;
+        let cues = [
+            (Uuid::new_v4(), span, CueEvidence::Manual),
+            (Uuid::new_v4(), source_join, CueEvidence::Manual),
+            (
+                Uuid::new_v4(),
+                source_join.checked_add(half_frame).unwrap(),
+                CueEvidence::Manual,
+            ),
+            (
+                Uuid::new_v4(),
+                source_join
+                    .checked_add(span)
+                    .unwrap()
+                    .checked_sub(half_frame)
+                    .unwrap(),
+                CueEvidence::Unknown,
+            ),
+        ];
+        for (id, at, evidence) in cues.clone() {
+            project
+                .apply_change(&Change::UpsertAudioCue {
+                    cue: AudioCue {
+                        id,
+                        label: "Authored audio marker".into(),
+                        at,
+                        source_segment_id: None,
+                        evidence,
+                    },
+                })
+                .unwrap();
+        }
+        let old_shape = build_motion_canvas_segments(&project, output.id, &options).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&legacy).unwrap(),
+            serde_json::to_vec(&old_shape).unwrap()
+        );
+
+        let recipe: DeliveryRecipe = serde_json::from_value(serde_json::json!({
+            "schema": "motionwright.delivery-recipe/1", "scene_intents": [], "original_mix": null,
+            "motion_canvas_audio_cues": "preserve_authored_time",
+        }))
+        .unwrap();
+        project
+            .apply_change(&Change::SetDeliveryRecipe {
+                deliverable_profile_id: output.id,
+                recipe: Some(recipe),
+            })
+            .unwrap();
+        let segments = build_motion_canvas_segments(&project, output.id, &options).unwrap();
+        let [segment] = segments.as_slice() else {
+            panic!("expected a single compacted Film")
+        };
+        assert_eq!(segment.frame_count, 60);
+        assert_eq!(segment.scene_ids, vec![first, incoming]);
+        let cue_graph = segment.film.cues.resolve().unwrap();
+        assert!(!cue_graph.contains_key(&uid("audio-cue", cues[0].0)));
+        assert_eq!(
+            cue_graph[&uid("audio-cue", cues[1].0)],
+            ResolvedCue::Resolved {
+                start: span,
+                end: span
+            }
+        );
+        let native_time = span.checked_add(half_frame).unwrap();
+        assert_eq!(
+            cue_graph[&uid("audio-cue", cues[2].0)],
+            ResolvedCue::Resolved {
+                start: native_time,
+                end: native_time
+            }
+        );
+        assert!(!cue_graph.contains_key(&uid("audio-cue", cues[3].0)));
+        let plan = serde_json::to_value(segment).unwrap();
+        assert!(plan.get("audio_cue_alignment").is_none());
+        let projection = serde_json::to_value(&segment.audio_cue_alignment).unwrap();
+        let rows = projection.as_array().unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0]["frame"], 30);
+        assert_eq!(rows[1]["frame"], 31);
+        assert_eq!(
+            rows[1]["residual"],
+            serde_json::to_value(half_frame).unwrap()
+        );
+        assert_eq!(rows[2]["status"], "unknown");
+        assert!(rows[2].get("frame").is_none());
+        assert!(rows[2].get("segment_at").is_none());
+        assert_eq!(
+            realize(&segment.film).unwrap(),
+            realize(&legacy[0].film).unwrap()
+        );
+        assert_eq!(project.audio.cues[2].at, cues[2].1);
     }
 
     #[test]

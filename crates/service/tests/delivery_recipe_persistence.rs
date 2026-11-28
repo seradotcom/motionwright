@@ -125,6 +125,7 @@ fn recipe(fixture: &Fixture) -> DeliveryRecipe {
         schema: DeliveryRecipeSchema::V1,
         voice_only_cut_sha256: None,
         mlt_dissolve: None,
+        motion_canvas_audio_cues: None,
         scene_intents: fixture
             .project
             .scenes
@@ -177,6 +178,8 @@ fn two_profiles_reopen_and_inverse_revisioned_changes_preserve_exact_intent() {
     let first = recipe(&f);
     let mut second = first.clone();
     second.scene_intents[0].role = Some(DeliveryNarrativeRole::Reveal);
+    second.motion_canvas_audio_cues =
+        Some(motionwright_domain::MotionCanvasAudioCuePolicy::PreserveAuthoredTime);
     second.original_mix.as_mut().unwrap().duck_attenuation_db = 4.0;
     let p = apply(
         &f.service,

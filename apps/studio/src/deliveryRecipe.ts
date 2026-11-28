@@ -40,6 +40,7 @@ export interface DeliveryRecipe {
   /** Explicit narration conform without a multi-bus mix. */
   voice_only_cut_sha256?: string;
   mlt_dissolve?: MltDissolveIntent;
+  motion_canvas_audio_cues?: "preserve_authored_time";
 }
 export const recipeVoiceCutBinding = (recipe: DeliveryRecipe | null | undefined): string | undefined =>
   recipe?.original_mix?.voice_cut_sha256 ?? recipe?.voice_only_cut_sha256;
@@ -177,7 +178,7 @@ function validateMltDissolveCut(project: Project, profile: DeliverableProfile, d
 export function validateDeliveryRecipe(project: Project, profileId: string, candidate: unknown): asserts candidate is DeliveryRecipe {
   const profile = project.deliverables.find(candidate => candidate.id.toLowerCase() === profileId.toLowerCase());
   if (!uuid.test(profileId) || !profile) throw new Error("The delivery profile no longer exists.");
-  const recipe = ownKeys(candidate, ["schema", "scene_intents", "original_mix"], "delivery recipe", ["audio_targets", "voice_only_cut_sha256", "mlt_dissolve"]);
+  const recipe = ownKeys(candidate, ["schema", "scene_intents", "original_mix"], "delivery recipe", ["audio_targets", "voice_only_cut_sha256", "mlt_dissolve", "motion_canvas_audio_cues"]);
   if (recipe.schema !== "motionwright.delivery-recipe/1") throw new Error("Unsupported delivery recipe schema.");
   if (!Array.isArray(recipe.scene_intents) || recipe.scene_intents.length > 4096) throw new Error("Delivery scene intent is outside the bounded collection.");
   const seen = new Set<string>();
@@ -192,6 +193,8 @@ export function validateDeliveryRecipe(project: Project, profileId: string, cand
     assertMltDissolveIntent(recipe.mlt_dissolve);
     validateMltDissolveCut(project, profile, recipe.mlt_dissolve);
   }
+  if (Object.hasOwn(recipe, "motion_canvas_audio_cues") && recipe.motion_canvas_audio_cues !== "preserve_authored_time")
+    throw new Error("Unknown Motion Canvas audio cue policy.");
   validateAudioRecipeCut(project, profileId, recipe as unknown as DeliveryRecipe);
   if (recipe.original_mix === null) return;
   const mix = ownKeys(recipe.original_mix, ["music_asset_id", "sfx_asset_id", ...numberFields], "original mix", originalMixOptionalKeys);
@@ -220,9 +223,12 @@ export function recipeFields(recipe: DeliveryRecipe | null, group: RecipeGroup):
   if (group === "targets") return Object.fromEntries(deliveryAudioTargetFields.map(field => {
     const value = recipe?.audio_targets?.[field]; return [field, value === null || value === undefined ? "" : String(value)];
   }));
-  if (group === "film") return Object.fromEntries((recipe?.scene_intents ?? []).flatMap(intent => [
-    [intent.scene_id + ":role", intent.role ?? ""], [intent.scene_id + ":archetype", intent.archetype ?? ""],
-  ]));
+  if (group === "film") return {
+    ...Object.fromEntries((recipe?.scene_intents ?? []).flatMap(intent => [
+      [intent.scene_id + ":role", intent.role ?? ""], [intent.scene_id + ":archetype", intent.archetype ?? ""],
+    ])),
+    ...(recipe?.motion_canvas_audio_cues ? { motion_canvas_audio_cues: recipe.motion_canvas_audio_cues } : {}),
+  };
   const mix = recipe?.original_mix ?? defaultOriginalMix();
   return {
     enabled: recipe?.original_mix ? "true" : "false",
@@ -316,7 +322,11 @@ export function proposedDeliveryRecipe(current: DeliveryRecipe | null, draft: Re
   const fields = { ...recipeFields(current, draft.group), ...Object.fromEntries(Object.entries(draft.edits).map(([key, value]) => [key, value.value])) };
   const recipe = structuredClone(current ?? emptyDeliveryRecipe());
   if (draft.group === "film") {
-    const ids = new Set(Object.keys(fields).map(key => key.split(":")[0]));
+    const cuePolicy = fields.motion_canvas_audio_cues ?? "";
+    if (cuePolicy === "preserve_authored_time") recipe.motion_canvas_audio_cues = cuePolicy;
+    else if (cuePolicy === "") delete recipe.motion_canvas_audio_cues;
+    else throw new Error("Unknown Motion Canvas audio cue policy.");
+    const ids = new Set(Object.keys(fields).filter(key => key !== "motion_canvas_audio_cues").map(key => key.split(":")[0]));
     recipe.scene_intents = [...ids].sort().flatMap(scene_id => {
       const role = fields[scene_id + ":role"] || null;
       const archetype = fields[scene_id + ":archetype"] || null;
@@ -393,6 +403,7 @@ export function proposedDeliveryRecipe(current: DeliveryRecipe | null, draft: Re
 }
 function validField(group: RecipeGroup, key: string): boolean {
   if (group === "dissolve") return key === "boundary" || key === "duration_frames";
+  if (group === "film" && key === "motion_canvas_audio_cues") return true;
   return group === "targets" ? (deliveryAudioTargetFields as readonly string[]).includes(key) : group === "mix" ? (mixKeys as readonly string[]).includes(key) : /^[a-f0-9-]{36}:(role|archetype)$/.test(key) && uuid.test(key.split(":")[0]);
 }
 export const RECIPE_DRAFT_STORAGE_PREFIX = "motionwright.delivery-recipe-draft/1:";
