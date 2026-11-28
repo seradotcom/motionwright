@@ -3908,6 +3908,7 @@ mod tests {
         use motionwright_domain::{
             CAMERA_REFRAME_VERSION, CameraReframe, NodeRelation, RelationKind,
         };
+        use semwright_motion_authoring::NativeOp;
         for camera in [false, true] {
             let mut project = fixture_project();
             let mut root = node("rectangle", None);

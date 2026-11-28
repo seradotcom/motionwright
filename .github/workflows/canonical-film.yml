@@ -42,5 +42,7 @@ jobs:
         run: python3 tooling/source_policy.py
       - name: Motionwright Film projection
         run: cargo test --locked --jobs 2 -p motionwright-native --lib film::tests
+      - name: Procedural field projection
+        run: cargo test --locked --jobs 2 -p motionwright-native --test procedural_fields
       - name: Canonical Film clippy
         run: cargo clippy --locked --jobs 2 -p motionwright-native --all-targets -- -D warnings
