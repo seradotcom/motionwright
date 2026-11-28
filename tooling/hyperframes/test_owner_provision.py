@@ -93,6 +93,30 @@ class OwnerProvisionTests(unittest.TestCase):
   name='package-lock.json';value={'packages':{'node_modules/hyperframes':{'version':'0.8.167','resolved':p.RESOLVED,'integrity':p.INTEGRITY}}};raw=json.dumps(value).encode();self.put(name,raw)
   row=next(x for x in self.lock['files'] if x['path']==name);row.update(bytes=len(raw),sha256=p.sha(raw));self.write_lock()
   with self.assertRaisesRegex(ValueError,'distribution'):p.validate_runtime(self.runtime)
+ def test_provisioner_reports_the_current_workspace_pin(self):
+  for name in ('project', 'output'):
+   self.paths[name].mkdir()
+  for name in ('driver', 'node'):
+   executable = self.root / (name + '.exe')
+   executable.write_bytes(('synthetic ' + name).encode())
+   executable.chmod(0o700)
+   self.paths[name] = executable
+  for row in self.lock['files']:
+   if row['role'] in ('browser', 'ffmpeg', 'ffprobe'):
+    old = self.runtime / row['path']
+    executable = old.with_suffix('.exe')
+    old.rename(executable)
+    executable.chmod(0o700)
+    row['path'] = executable.relative_to(self.runtime).as_posix()
+  self.lock['node_sha256'] = p.sha(self.paths['node'].read_bytes())
+  self.write_lock()
+  args = argparse.Namespace(**{key: str(value) for key, value in self.paths.items()},
+   approved_license_terms=True, approved_sandbox_controls=True, approved_runtime_executables=True)
+  with patch.object(p.sys, 'platform', 'linux'):
+   result = p.make(args)
+  lock = json.loads((SOURCE / 'SOURCE_LOCK.json').read_bytes())
+  self.assertEqual(result['semwright_source_pin'], lock['dependencies']['semwright']['revision'])
+  self.assertFalse(result['native_executed'])
  def test_nonlinux_provisioning_refuses_before_any_policy_or_tool_call(self):
   with patch.object(p.sys,'platform','win32'):
    with self.assertRaisesRegex(ValueError,'Linux'):p.make(argparse.Namespace())

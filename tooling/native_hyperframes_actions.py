@@ -102,14 +102,16 @@ def source_bindings(current):
             "source_sha": current["source_sha"], "source_bindings": values}
 
 
-def owner_material(runtime, project, output, binaries):
+def owner_material(runtime, project, output, binaries, sdk_revision):
     # This fixture grants only these three private roots and the hashed Node
-    # file, using the existing provisioner and its closed SDK54 authority.
-    return owner_provision.make(SimpleNamespace(
+    # file, using the existing provisioner and the admitted SDK revision.
+    material = owner_provision.make(SimpleNamespace(
         runtime=str(runtime), project=str(project), output=str(output),
         driver=binaries["driver"]["path"], node=binaries["node"]["path"],
         approved_license_terms=True, approved_sandbox_controls=True,
         approved_runtime_executables=True))
+    require(material["semwright_source_pin"] == sdk_revision, "owner_sdk_source_mismatch")
+    return material
 
 
 def direct_config(args, phase, binaries):
@@ -119,7 +121,7 @@ def direct_config(args, phase, binaries):
         (phase_root / name).mkdir(mode=0o700)
     request = args.records / (phase + "-direct-request.json")
     material = owner_material(args.dependencies, phase_root / "project",
-                              args.direct_output, binaries)
+                              args.direct_output, binaries, args.sem_sha)
     manifest_path = phase_root / "config" / "manifest.json"
     custody.new_json(manifest_path, material["manifest"])
     value = {
@@ -541,7 +543,7 @@ def run(options):
         direct_host=roots["direct-host"], dependencies=runtime, intake=intake,
         runtime_lock_sha256=runtime_lock_sha)
     verify_runtime_intake(args, current, bindings_doc, binaries)
-    material = owner_material(runtime, args.mediated_project, args.mediated_output, binaries)
+    material = owner_material(runtime, args.mediated_project, args.mediated_output, binaries, args.sem_sha)
     manifest_path = roots["config"] / "manifest.json"
     custody.new_json(manifest_path, material["manifest"])
     owner_path = roots["config"] / "owner.toml"
