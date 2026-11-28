@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { assertAudioRecipeExtensions, canonicalAudioTargets, canonicalOriginalMix, originalMixOptionalKeys } from "./audioRecipeContract";
 import { sameProjectRevision } from "./projectMutation";
 import {
-  canonicalRecipeField, decodeRecipeDraft, deliveryArchetypes, deliveryRoles, editRecipeField,
+  assertMltDissolveIntent, canonicalRecipeField, decodeRecipeDraft, deliveryArchetypes, deliveryRoles, editRecipeField,
   newRecipeDraft, proposedDeliveryRecipe, recipeConflicts, recipeDraftScope, recipeDraftStorageKey,
-  recipeFields, reconcileRecipeDraft, RECIPE_DRAFT_STORAGE_PREFIX, resolveRecipeField,
+  recipeFields, recipeGroups, reconcileRecipeDraft, RECIPE_DRAFT_STORAGE_PREFIX, resolveRecipeField,
   savedDeliveryRecipe, submitRecipeDraft, validateDeliveryRecipe,
 } from "./deliveryRecipe";
 import type { DeliveryRecipe, RecipeDraft, RecipeGroup } from "./deliveryRecipe";
@@ -59,7 +59,7 @@ const ownerPart = (scope: string) => JSON.stringify((JSON.parse(scope) as unknow
 function identity(scope: string): [string, string, string, string, RecipeGroup] {
   const value: unknown = JSON.parse(scope);
   if (!Array.isArray(value) || value.length !== 5 || value.slice(0, 4).some(part => typeof part !== "string" || !part)
-    || !uuid(value[3]) || !["film", "mix", "targets"].includes(String(value[4]))) throw new Error("Recipe author input has an invalid owner identity.");
+    || !uuid(value[3]) || !recipeGroups.some(group => group === value[4])) throw new Error("Recipe author input has an invalid owner identity.");
   return value as [string, string, string, string, RecipeGroup];
 }
 function checkOwner(state: RecipeAuthorState, project: Project): string {
@@ -74,12 +74,17 @@ export function recipeFingerprint(recipe: DeliveryRecipe | null): string {
   if (!recipe) return "null";
   const targets = canonicalAudioTargets(recipe);
   if (!recipe.scene_intents.length && !recipe.original_mix && !Object.hasOwn(targets, "audio_targets")
-    && recipe.voice_only_cut_sha256 === undefined) return "null";
+    && recipe.voice_only_cut_sha256 === undefined && recipe.mlt_dissolve === undefined) return "null";
   return JSON.stringify({ schema: recipe.schema,
     scene_intents: recipe.scene_intents.map(intent => ({ scene_id: intent.scene_id, role: intent.role, archetype: intent.archetype }))
       .sort((a, b) => a.scene_id.localeCompare(b.scene_id)),
     original_mix: canonicalOriginalMix(recipe.original_mix), ...targets,
-    ...(recipe.voice_only_cut_sha256 === undefined ? {} : { voice_only_cut_sha256: recipe.voice_only_cut_sha256 }) });
+    ...(recipe.voice_only_cut_sha256 === undefined ? {} : { voice_only_cut_sha256: recipe.voice_only_cut_sha256 }),
+    ...(recipe.mlt_dissolve === undefined ? {} : { mlt_dissolve: {
+      outgoing_scene_id: recipe.mlt_dissolve.outgoing_scene_id.toLowerCase(),
+      incoming_scene_id: recipe.mlt_dissolve.incoming_scene_id.toLowerCase(),
+      duration_frames: recipe.mlt_dissolve.duration_frames, mode: recipe.mlt_dissolve.mode,
+    } }) });
 }
 /** History payloads are untrusted JSON. Check the current wire shape and its
  * existing domain bounds, but not membership in today's Project: a later event
@@ -87,9 +92,10 @@ export function recipeFingerprint(recipe: DeliveryRecipe | null): string {
  */
 export function assertRecipeHistoryPayload(value: unknown): asserts value is DeliveryRecipe | null {
   if (value === null) return;
-  if (!record(value) || !exact(value, ["schema", "scene_intents", "original_mix"], ["audio_targets", "voice_only_cut_sha256"])
+  if (!record(value) || !exact(value, ["schema", "scene_intents", "original_mix"], ["audio_targets", "voice_only_cut_sha256", "mlt_dissolve"])
     || value.schema !== "motionwright.delivery-recipe/1" || !Array.isArray(value.scene_intents)
     || value.scene_intents.length > 4096) throw new Error("The saved recipe history contains an invalid recipe payload.");
+  if (Object.hasOwn(value, "mlt_dissolve")) assertMltDissolveIntent(value.mlt_dissolve);
   const scenes = new Set<string>();
   for (const intent of value.scene_intents) {
     if (!record(intent) || !exact(intent, ["scene_id", "role", "archetype"])) throw new Error("The saved recipe history contains an invalid scene intent.");

@@ -41,6 +41,100 @@ pub struct DeliveryRecipe {
         deserialize_with = "deserialize_voice_cut_sha256"
     )]
     pub voice_only_cut_sha256: Option<String>,
+    /// An explicit dissolve on the effective cut of this profile.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_mlt_dissolve"
+    )]
+    pub mlt_dissolve: Option<MltDissolveIntent>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MltDissolveMode {
+    HoldOutgoingLastFrame,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MltDissolveIntent {
+    pub outgoing_scene_id: Uuid,
+    pub incoming_scene_id: Uuid,
+    pub duration_frames: u16,
+    pub mode: MltDissolveMode,
+}
+
+fn deserialize_mlt_dissolve<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<MltDissolveIntent>, D::Error> {
+    MltDissolveIntent::deserialize(deserializer).map(Some)
+}
+
+impl MltDissolveIntent {
+    fn validate(&self) -> Result<()> {
+        if self.outgoing_scene_id.is_nil()
+            || self.incoming_scene_id.is_nil()
+            || self.outgoing_scene_id == self.incoming_scene_id
+            || !(2..=30).contains(&self.duration_frames)
+        {
+            return Err(DomainError::Invalid(
+                "MLT dissolve needs two distinct scenes and 2 to 30 frames".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Check the boundary on the authored output cut at the profile clock.
+    pub fn validate_for_profile(
+        &self,
+        scenes: &[Scene],
+        profile: &DeliverableProfile,
+    ) -> Result<()> {
+        self.validate()?;
+        let selected = crate::delivery::scenes_for_profile(scenes, profile)?;
+        let edge = selected
+            .windows(2)
+            .position(|pair| {
+                pair[0].id == self.outgoing_scene_id && pair[1].id == self.incoming_scene_id
+            })
+            .ok_or_else(|| {
+                DomainError::Invalid(
+                    "MLT dissolve scenes must be consecutive in the selected cut".into(),
+                )
+            })?;
+        let cut = selected[..=edge]
+            .iter()
+            .try_fold(crate::RationalTime::ZERO, |time, scene| {
+                time.checked_add(scene.duration)
+            })
+            .map_err(|_| DomainError::Invalid("MLT dissolve cut time overflow".into()))?;
+        let rate = profile.frame_rate;
+        let frame_ratio = |time: crate::RationalTime| {
+            (
+                i128::from(time.num) * i128::from(rate.num),
+                i128::from(time.den) * i128::from(rate.den),
+            )
+        };
+        let (at, units) = frame_ratio(cut);
+        if at <= 0 || units <= 0 || at % units != 0 {
+            return Err(DomainError::Invalid(
+                "MLT dissolve cut must lie exactly on a delivery frame boundary".into(),
+            ));
+        }
+        for (scene, needed) in [
+            (selected[edge], 1),
+            (selected[edge + 1], i128::from(self.duration_frames)),
+        ] {
+            let (span, units) = frame_ratio(scene.duration);
+            if units <= 0 || span / units < needed {
+                return Err(DomainError::Invalid(
+                    "MLT dissolve requires an outgoing frame and enough incoming frames".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Profile-owned QC intent, independent of whether a music/SFX mix is saved.
@@ -314,6 +408,16 @@ impl DeliveryRecipe {
         }
         if let Some(targets) = &self.audio_targets {
             targets.validated_milli_targets()?;
+        }
+        if let Some(dissolve) = &self.mlt_dissolve {
+            dissolve.validate()?;
+            if !scene_ids.contains(&dissolve.outgoing_scene_id)
+                || !scene_ids.contains(&dissolve.incoming_scene_id)
+            {
+                return Err(DomainError::Invalid(
+                    "MLT dissolve references a missing scene".into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -654,17 +758,19 @@ impl ProductionDesign {
             return Err(DomainError::Invalid("too many delivery recipes".into()));
         }
         for (profile_id, recipe) in &self.delivery_recipes {
-            if !profiles.iter().any(|profile| profile.id == *profile_id) {
-                return Err(DomainError::Invalid(
-                    "delivery recipe references an unknown deliverable profile".into(),
-                ));
-            }
+            let profile = profiles
+                .iter()
+                .find(|profile| profile.id == *profile_id)
+                .ok_or_else(|| {
+                    DomainError::Invalid(
+                        "delivery recipe references an unknown deliverable profile".into(),
+                    )
+                })?;
             recipe.validate(scenes, assets)?;
+            if let Some(dissolve) = &recipe.mlt_dissolve {
+                dissolve.validate_for_profile(scenes, profile)?;
+            }
             if let Some(mix) = &recipe.original_mix {
-                let profile = profiles
-                    .iter()
-                    .find(|profile| profile.id == *profile_id)
-                    .expect("profile existence checked above");
                 mix.music_window_output_frames(scenes, profile)?;
                 mix.silence_release_output_frames(scenes, profile)?;
             }
@@ -673,10 +779,6 @@ impl ProductionDesign {
             {
                 // This is the authored cut bound. Native admission additionally
                 // checks the actual verified PCM output, with no pad or trim.
-                let profile = profiles
-                    .iter()
-                    .find(|profile| profile.id == *profile_id)
-                    .expect("profile existence checked above");
                 let selected = crate::delivery::scenes_for_profile(scenes, profile)?;
                 let mut duration = crate::RationalTime::ZERO;
                 for scene in selected {
@@ -771,6 +873,7 @@ mod tests {
         DeliveryRecipe {
             schema: DeliveryRecipeSchema::V1,
             voice_only_cut_sha256: None,
+            mlt_dissolve: None,
             scene_intents: project
                 .scenes
                 .iter()
@@ -1391,5 +1494,22 @@ mod tests {
             variant_dependency_fingerprint(&project, a).unwrap(),
             before_a
         );
+    }
+}
+
+#[cfg(test)]
+mod mlt_dissolve_wire_tests {
+    use super::*;
+
+    #[test]
+    fn absent_mlt_dissolve_preserves_legacy_recipe_bytes_and_explicit_null_is_invalid() {
+        let original =
+            r#"{"schema":"motionwright.delivery-recipe/1","scene_intents":[],"original_mix":null}"#;
+        let recipe: DeliveryRecipe = serde_json::from_str(original).unwrap();
+        assert!(recipe.mlt_dissolve.is_none());
+        assert_eq!(serde_json::to_string(&recipe).unwrap(), original);
+        let mut malformed = serde_json::to_value(recipe).unwrap();
+        malformed["mlt_dissolve"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<DeliveryRecipe>(malformed).is_err());
     }
 }

@@ -124,6 +124,7 @@ fn recipe(fixture: &Fixture) -> DeliveryRecipe {
     DeliveryRecipe {
         schema: DeliveryRecipeSchema::V1,
         voice_only_cut_sha256: None,
+        mlt_dissolve: None,
         scene_intents: fixture
             .project
             .scenes
@@ -1219,4 +1220,132 @@ fn targets_only_branch_restore_rejects_legacy_reader_without_modifying_sqlite_or
         alternate
     );
     assert_eq!(branch_restored.audio.voice_tracks[0], voice);
+}
+
+#[test]
+fn native_dissolve_intent_is_scoped_to_the_exact_saved_cut_and_reopens() {
+    let folder = tempfile::tempdir().unwrap();
+    let database = folder.path().join("dissolve.sqlite3");
+    let service = StudioService::open(&database).unwrap();
+    let mut project = service.create_project("Authored dissolve").unwrap();
+    for name in ["Outgoing", "Excluded middle", "Incoming"] {
+        project = apply(
+            &service,
+            &project,
+            name,
+            Change::AddScene {
+                name: name.into(),
+                objective: "Keep the original editorial source".into(),
+                duration_seconds: 1,
+            },
+        );
+    }
+    let ids: Vec<_> = project.scenes.iter().map(|scene| scene.id).collect();
+    project = apply(
+        &service,
+        &project,
+        "half-second-first-scene",
+        Change::SetSceneDuration {
+            scene_id: ids[0],
+            duration: RationalTime::new(1, 2).unwrap(),
+        },
+    );
+    let mut profile = project.deliverables[0].clone();
+    let profile_id = profile.id;
+    profile.included_scene_ids = vec![ids[0], ids[2]];
+    profile.frame_rate = RationalTime::new(25, 1).unwrap();
+    project = apply(
+        &service,
+        &project,
+        "unaligned-cut-rate",
+        Change::UpsertDeliverable {
+            profile: profile.clone(),
+        },
+    );
+    let mut authored = DeliveryRecipe {
+        mlt_dissolve: Some(MltDissolveIntent {
+            outgoing_scene_id: ids[0],
+            incoming_scene_id: ids[2],
+            duration_frames: 10,
+            mode: MltDissolveMode::HoldOutgoingLastFrame,
+        }),
+        ..Default::default()
+    };
+    let result = service.apply(
+        project.id,
+        &project.stamp(),
+        "unaligned-dissolve",
+        &change(profile_id, Some(authored.clone())),
+    );
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("exactly on a delivery frame boundary")
+    );
+    assert_eq!(service.project(project.id).unwrap(), project);
+
+    profile.frame_rate = RationalTime::new(30, 1).unwrap();
+    project = apply(
+        &service,
+        &project,
+        "aligned-cut-rate",
+        Change::UpsertDeliverable { profile },
+    );
+    let mut skipped_edge = authored.clone();
+    skipped_edge
+        .mlt_dissolve
+        .as_mut()
+        .unwrap()
+        .incoming_scene_id = ids[1];
+    let result = service.apply(
+        project.id,
+        &project.stamp(),
+        "foreign-edge",
+        &change(profile_id, Some(skipped_edge)),
+    );
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("consecutive in the selected cut")
+    );
+    let before = project.clone();
+    project = apply(
+        &service,
+        &project,
+        "save-dissolve",
+        change(profile_id, Some(authored.clone())),
+    );
+    assert_eq!(project.scenes, before.scenes);
+    assert_eq!(project.deliverables, before.deliverables);
+    assert_eq!(project.audio, before.audio);
+    drop(service);
+
+    let reopened = StudioService::open(&database).unwrap();
+    assert_eq!(reopened.project(project.id).unwrap(), project);
+    assert_eq!(
+        project.production_design.delivery_recipes[&profile_id],
+        authored
+    );
+    assert!(
+        reopened
+            .production_receipts(project.id, 10)
+            .unwrap()
+            .is_empty()
+    );
+    authored.mlt_dissolve = None;
+    let cleared = apply(
+        &reopened,
+        &project,
+        "clear-dissolve",
+        change(profile_id, Some(authored.clone())),
+    );
+    assert!(
+        !serde_json::to_value(&cleared.production_design.delivery_recipes[&profile_id])
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("mlt_dissolve")
+    );
 }

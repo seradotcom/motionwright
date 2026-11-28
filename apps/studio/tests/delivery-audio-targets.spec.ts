@@ -211,3 +211,40 @@ test("an author-file download retains exact target raw and UNKNOWN during inacce
   expect(text).not.toContain('"effect_grant"'); expect(text).not.toContain('"request_id"'); expect(await requests(page)).toHaveLength(1); expect(await project(page)).toEqual(before);
   await info.attach("delivery-target-author-input", { path, contentType: "application/json" });
 });
+
+test("Studio saves a selected dissolve by profile through the existing recipe action", async ({ page }) => {
+  await open(page);
+  const before = await project(page);
+  const [outgoing, incoming] = before.scenes;
+  const boundary = outgoing.id + ":" + incoming.id;
+  const secondProfile = before.deliverables[1];
+  const pane = page.getByRole("region", { name: "Native MLT dissolve intent", exact: true });
+  const chooseBoundary = pane.getByRole("combobox", { name: "Dissolve boundary", exact: true });
+  const duration = pane.getByRole("textbox", { name: "Dissolve frames", exact: true });
+  await chooseBoundary.selectOption(boundary);
+  await duration.fill("08");
+  await button(page, "Save dissolve intent").click();
+  await expect.poll(async () => (await requests(page)).length).toBe(1);
+  const first = (await requests(page))[0];
+  expect(first.change).toMatchObject({
+    type: "set_delivery_recipe",
+    deliverable_profile_id: before.deliverables[0].id,
+    recipe: { mlt_dissolve: {
+      outgoing_scene_id: outgoing.id, incoming_scene_id: incoming.id,
+      duration_frames: 8, mode: "hold_outgoing_last_frame",
+    } },
+  });
+  await resolve(page, first.id);
+  await expect(pane.getByText("Dissolve intent saved.", { exact: false })).toBeVisible();
+  await expect(chooseBoundary).toHaveValue(boundary);
+  await expect(duration).toHaveValue("8");
+  const saved = await project(page);
+  expect(saved.scenes).toEqual(before.scenes);
+  expect(saved.audio).toEqual(before.audio);
+  await profile(page, secondProfile.name);
+  await expect(chooseBoundary).toHaveValue("");
+  await profile(page, before.deliverables[0].name);
+  await expect(chooseBoundary).toHaveValue(boundary);
+  await expect(duration).toHaveValue("8");
+  expect(await requests(page)).toHaveLength(1);
+});

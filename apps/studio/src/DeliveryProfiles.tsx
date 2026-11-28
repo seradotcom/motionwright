@@ -18,7 +18,7 @@ import DeliveryFamilyWorkbench from "./DeliveryFamilyWorkbench";
 import { deliveryTextSourceConflict, protectedDeliveryText } from "./deliveryTextSources";
 import CaptionReadabilityReview from "./CaptionReadabilityReview";
 import { inspectCaptionReadability } from "./captionReadability";
-import { useDeliveryRecipeDraft, savedDeliveryRecipe } from "./deliveryRecipe";
+import { mltDissolveCut, useDeliveryRecipeDraft, savedDeliveryRecipe } from "./deliveryRecipe";
 import { useVoiceCutReview } from "./useVoiceCutReview";
 import { recipeHasWork } from "./deliveryRecipeDraft";
 import {
@@ -458,6 +458,8 @@ export default function DeliveryProfiles({
   const monoFontFamily = "IBM Plex Mono";
   const filmDraft = useDeliveryRecipeDraft(project, selected?.id ?? "", "film", commitRecipe);
   const targetsDraft = useDeliveryRecipeDraft(project, selected?.id ?? "", "targets", commitRecipe);
+  const dissolveDraft = useDeliveryRecipeDraft(project, selected?.id ?? "", "dissolve", commitRecipe);
+  const dissolveCut = useMemo(() => selected ? mltDissolveCut(project, selected) : [], [project, selected]);
   const visibleEvidence = renderEvidence?.generation === project.generation
     && renderEvidence.deliverable_id === selected?.id ? renderEvidence : null;
   const [busy, setBusy] = useState<"save" | "remove" | "caption" | "otio" | "render" | "preflight" | "multi-source" | "master" | "multi-master" | "export-master" | "verify-media" | "recover-capture" | "hybrid-preflight" | "hybrid-render" | "new" | null>(null);
@@ -567,7 +569,9 @@ export default function DeliveryProfiles({
     || filmDraft.conflicts.length > 0 || filmDraft.recoveryBlocked || filmDraft.sourceBehind;
   const targetsDraftBlocked = targetsDraft.dirty || targetsDraft.awaiting || targetsDraft.pending
     || targetsDraft.conflicts.length > 0 || targetsDraft.recoveryBlocked || targetsDraft.sourceBehind;
-  const recipeDraftBlocked = filmDraftBlocked || targetsDraftBlocked;
+  const dissolveDraftBlocked = dissolveDraft.dirty || dissolveDraft.awaiting || dissolveDraft.pending
+    || dissolveDraft.conflicts.length > 0 || dissolveDraft.recoveryBlocked || dissolveDraft.sourceBehind;
+  const recipeDraftBlocked = filmDraftBlocked || targetsDraftBlocked || dissolveDraftBlocked;
   const renderIntentsComplete = motionScenes.length > 0 && motionScenes.every((scene) =>
     narrativeRoles.some(option => option.value === filmDraft.savedValues[scene.id + ":role"])
       && motionArchetypes.some(option => option.value === filmDraft.savedValues[scene.id + ":archetype"]));
@@ -780,6 +784,7 @@ export default function DeliveryProfiles({
     if (profileDraftBlocked) throw new Error("Save or resolve the output profile draft before building a Film projection.");
     if (filmDraftBlocked) throw new Error("Save or resolve the scene intent draft before building a Film projection.");
     if (targetsDraftBlocked) throw new Error("Save or resolve the delivery audio targets before building a Film projection.");
+    if (dissolveDraftBlocked) throw new Error("Save or resolve the dissolve intent before building a Film projection.");
     const num = Number(selected.frame_rate.num);
     const den = Number(selected.frame_rate.den);
     if (!Number.isInteger(num) || !Number.isInteger(den) || num <= 0 || den <= 0) {
@@ -1523,6 +1528,49 @@ export default function DeliveryProfiles({
             {targetsDraftBlocked && <p className="delivery-truth-note warning" role="status">
               Save or resolve pending audio targets before checking Film, rendering, assembling or exporting a native master. Those operations use the saved recipe.
             </p>}
+
+            <section className="caption-export-panel" aria-label="Native MLT dissolve intent">
+              <header>
+                <div>
+                  <strong>Scene dissolve</strong>
+                  <span>Hold the last outgoing frame over the incoming scene. The cut length and audio timing stay the same.</span>
+                </div>
+              </header>
+              <div className="delivery-field-grid">
+                <label>
+                  <span className="field-label">Dissolve boundary</span>
+                  <select id={"dissolve-boundary-" + selected.id} value={dissolveDraft.values.boundary}
+                    disabled={dissolveDraft.locked || dissolveDraft.sourceBehind}
+                    onChange={event => { noteNativeInput(); liveFilm.current.ready = false; dissolveDraft.set("boundary", event.target.value); }}>
+                    <option value="">No dissolve</option>
+                    {dissolveCut.slice(1).map((incoming, index) => {
+                      const outgoing = dissolveCut[index];
+                      const boundary = outgoing.id + ":" + incoming.id;
+                      return <option key={boundary} value={boundary}>{outgoing.name} → {incoming.name}</option>;
+                    })}
+                  </select>
+                </label>
+                <label>
+                  <span className="field-label">Dissolve frames</span>
+                  <input id={"dissolve-duration-" + selected.id} inputMode="numeric" value={dissolveDraft.values.duration_frames}
+                    disabled={!dissolveDraft.values.boundary || dissolveDraft.locked || dissolveDraft.sourceBehind}
+                    onChange={event => { noteNativeInput(); liveFilm.current.ready = false; dissolveDraft.set("duration_frames", event.target.value); }} />
+                </label>
+              </div>
+              {dissolveDraft.savedValues.boundary && <p className="delivery-truth-note" role="status">
+                Dissolve intent saved. Check native delivery jobs for the rendered result.
+              </p>}
+              <RecipeDraftReview controller={dissolveDraft} title="Dissolve intent" revision={project.revision}
+                fields={{
+                  boundary: { label: "Dissolve boundary", controlId: "dissolve-boundary-" + selected.id },
+                  duration_frames: { label: "Dissolve frames", controlId: "dissolve-duration-" + selected.id },
+                }}
+                saveLabel="Save dissolve intent" clearLabel="Clear saved dissolve intent"
+                hasSavedGroup={Boolean(dissolveDraft.savedValues.boundary)}
+                blockedReason={profileDraftBlocked ? "Save or resolve the delivery profile before saving its dissolve."
+                  : busy !== null ? "Wait for the current delivery operation before saving the dissolve." : null}
+                onDraftAction={noteNativeInput} />
+            </section>
 
             <section className="caption-export-panel" aria-label="Native Motion Canvas production">
               <header>

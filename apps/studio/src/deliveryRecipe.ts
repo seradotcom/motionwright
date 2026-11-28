@@ -1,6 +1,7 @@
 import { assertDeliveryAudioTargets, assertOriginalMixBusEnvelope, assertOriginalMixSilenceRelease, originalMixEnvelopeKeys, originalMixOptionalKeys, MAX_MUSIC_SOURCE_SAMPLE_FRAMES, validateAudioRecipeCut } from "./audioRecipeContract";
 import type { DeliveryAudioTargets, OriginalMixBusEnvelope, OriginalMixSilenceRelease } from "./audioRecipeContract";
-import type { MotionCanvasArchetype, MotionCanvasNarrativeRole, Project } from "./types";
+import { parseBeatTime } from "./sceneBeatTiming";
+import type { DeliverableProfile, MotionCanvasArchetype, MotionCanvasNarrativeRole, Project, RationalTime } from "./types";
 
 export { assertDeliveryAudioTargets } from "./audioRecipeContract";
 export type { DeliveryAudioTargets } from "./audioRecipeContract";
@@ -25,6 +26,12 @@ export interface OriginalMixRecipe {
   sfx_envelope?: OriginalMixBusEnvelope;
   silence_release?: OriginalMixSilenceRelease;
 }
+export interface MltDissolveIntent {
+  outgoing_scene_id: string;
+  incoming_scene_id: string;
+  duration_frames: number;
+  mode: "hold_outgoing_last_frame";
+}
 export interface DeliveryRecipe {
   schema: "motionwright.delivery-recipe/1";
   scene_intents: DeliverySceneIntent[];
@@ -32,11 +39,13 @@ export interface DeliveryRecipe {
   audio_targets?: DeliveryAudioTargets;
   /** Explicit narration conform without a multi-bus mix. */
   voice_only_cut_sha256?: string;
+  mlt_dissolve?: MltDissolveIntent;
 }
 export const recipeVoiceCutBinding = (recipe: DeliveryRecipe | null | undefined): string | undefined =>
   recipe?.original_mix?.voice_cut_sha256 ?? recipe?.voice_only_cut_sha256;
 
-export type RecipeGroup = "film" | "mix" | "targets";
+export const recipeGroups = ["film", "mix", "targets", "dissolve"] as const;
+export type RecipeGroup = typeof recipeGroups[number];
 export const deliveryRoles: MotionCanvasNarrativeRole[] = ["hook", "problem", "mechanism", "evidence", "comparison", "reveal", "payoff", "cta"];
 export const deliveryArchetypes: MotionCanvasArchetype[] = ["statement", "split_explanation", "architecture_reveal", "comparison", "metric", "timeline", "code_focus", "diagram_build", "object_spotlight", "evidence_frame", "product_proof", "endcard"];
 export const emptyDeliveryRecipe = (): DeliveryRecipe => ({ schema: "motionwright.delivery-recipe/1", scene_intents: [], original_mix: null });
@@ -112,10 +121,63 @@ export function parseDeliveryAudioTarget(raw: string): number | null {
   return value;
 }
 
+const zeroUuid = "00000000-0000-0000-0000-000000000000";
+const dissolveMode = "hold_outgoing_last_frame";
+
+function dissolveDuration(raw: string): number {
+  const value = Number(raw);
+  if (!/^[0-9]+$/.test(raw.trim()) || !Number.isInteger(value) || value < 2 || value > 30)
+    throw new Error("Enter a dissolve duration from 2 to 30 whole frames.");
+  return value;
+}
+
+export function assertMltDissolveIntent(candidate: unknown): asserts candidate is MltDissolveIntent {
+  const dissolve = ownKeys(candidate, ["outgoing_scene_id", "incoming_scene_id", "duration_frames", "mode"], "MLT dissolve");
+  const { outgoing_scene_id, incoming_scene_id, duration_frames, mode } = dissolve;
+  if (typeof outgoing_scene_id !== "string" || !uuid.test(outgoing_scene_id) || outgoing_scene_id === zeroUuid
+    || typeof incoming_scene_id !== "string" || !uuid.test(incoming_scene_id) || incoming_scene_id === zeroUuid
+    || outgoing_scene_id.toLowerCase() === incoming_scene_id.toLowerCase()
+    || typeof duration_frames !== "number" || !Number.isInteger(duration_frames) || duration_frames < 2 || duration_frames > 30
+    || mode !== dissolveMode) throw new Error("A dissolve needs two distinct scenes and 2 to 30 whole frames.");
+}
+
+export function mltDissolveCut(project: Project, profile: DeliverableProfile) {
+  if (profile.included_scene_ids.length === 0) return project.scenes;
+  const scenes = new Map(project.scenes.map(scene => [scene.id.toLowerCase(), scene]));
+  const ids = profile.included_scene_ids.map(id => id.toLowerCase());
+  if (new Set(ids).size !== ids.length || ids.some(id => !scenes.has(id))) return [];
+  return ids.map(id => scenes.get(id)!);
+}
+
+function validateMltDissolveCut(project: Project, profile: DeliverableProfile, dissolve: MltDissolveIntent) {
+  const cut = mltDissolveCut(project, profile);
+  const edge = cut.findIndex((outgoing, index) => outgoing.id.toLowerCase() === dissolve.outgoing_scene_id.toLowerCase()
+    && cut[index + 1]?.id.toLowerCase() === dissolve.incoming_scene_id.toLowerCase());
+  if (edge < 0) throw new Error("Choose consecutive scenes in this profile's saved cut.");
+  let boundary: RationalTime = { num: "0", den: "1" };
+  for (const scene of cut.slice(0, edge + 1)) {
+    const num = BigInt(boundary.num) * BigInt(scene.duration.den) + BigInt(scene.duration.num) * BigInt(boundary.den);
+    const den = BigInt(boundary.den) * BigInt(scene.duration.den);
+    boundary = parseBeatTime(num + "/" + den);
+  }
+  const frames = (duration: RationalTime) => [
+    BigInt(duration.num) * BigInt(profile.frame_rate.num), BigInt(duration.den) * BigInt(profile.frame_rate.den),
+  ] as const;
+  const [at, units] = frames(boundary);
+  if (at <= 0n || units <= 0n || at % units !== 0n)
+    throw new Error("The dissolve must start exactly on a delivery frame boundary.");
+  for (const [scene, needed] of [[cut[edge], 1], [cut[edge + 1], dissolve.duration_frames]] as const) {
+    const [span, frameUnits] = frames(scene.duration);
+    if (frameUnits <= 0n || span < BigInt(needed) * frameUnits)
+      throw new Error("The dissolve needs an outgoing frame and enough incoming frames.");
+  }
+}
+
 /** Mirrors the typed wire for UI feedback. The Rust service remains canonical. */
 export function validateDeliveryRecipe(project: Project, profileId: string, candidate: unknown): asserts candidate is DeliveryRecipe {
-  if (!uuid.test(profileId) || !project.deliverables.some(profile => profile.id.toLowerCase() === profileId.toLowerCase())) throw new Error("The delivery profile no longer exists.");
-  const recipe = ownKeys(candidate, ["schema", "scene_intents", "original_mix"], "delivery recipe", ["audio_targets", "voice_only_cut_sha256"]);
+  const profile = project.deliverables.find(candidate => candidate.id.toLowerCase() === profileId.toLowerCase());
+  if (!uuid.test(profileId) || !profile) throw new Error("The delivery profile no longer exists.");
+  const recipe = ownKeys(candidate, ["schema", "scene_intents", "original_mix"], "delivery recipe", ["audio_targets", "voice_only_cut_sha256", "mlt_dissolve"]);
   if (recipe.schema !== "motionwright.delivery-recipe/1") throw new Error("Unsupported delivery recipe schema.");
   if (!Array.isArray(recipe.scene_intents) || recipe.scene_intents.length > 4096) throw new Error("Delivery scene intent is outside the bounded collection.");
   const seen = new Set<string>();
@@ -125,6 +187,10 @@ export function validateDeliveryRecipe(project: Project, profileId: string, cand
     seen.add(intent.scene_id.toLowerCase());
     if (intent.role !== null && !deliveryRoles.includes(intent.role as MotionCanvasNarrativeRole)) throw new Error("Unknown narrative role.");
     if (intent.archetype !== null && !deliveryArchetypes.includes(intent.archetype as MotionCanvasArchetype)) throw new Error("Unknown visual archetype.");
+  }
+  if (Object.hasOwn(recipe, "mlt_dissolve")) {
+    assertMltDissolveIntent(recipe.mlt_dissolve);
+    validateMltDissolveCut(project, profile, recipe.mlt_dissolve);
   }
   validateAudioRecipeCut(project, profileId, recipe as unknown as DeliveryRecipe);
   if (recipe.original_mix === null) return;
@@ -144,6 +210,13 @@ export function savedDeliveryRecipe(project: Project, profileId: string): Delive
   return project.production_design?.delivery_recipes?.[profileId] ?? null;
 }
 export function recipeFields(recipe: DeliveryRecipe | null, group: RecipeGroup): Record<string, string> {
+  if (group === "dissolve") {
+    const dissolve = recipe?.mlt_dissolve;
+    return {
+      boundary: dissolve ? dissolve.outgoing_scene_id + ":" + dissolve.incoming_scene_id : "",
+      duration_frames: String(dissolve?.duration_frames ?? 12),
+    };
+  }
   if (group === "targets") return Object.fromEntries(deliveryAudioTargetFields.map(field => {
     const value = recipe?.audio_targets?.[field]; return [field, value === null || value === undefined ? "" : String(value)];
   }));
@@ -196,6 +269,9 @@ export function submitRecipeDraft(draft: RecipeDraft, revision: number): RecipeD
   return next;
 }
 export function canonicalRecipeField(group: RecipeGroup, key: string, raw: string): string {
+  if (group === "dissolve" && key === "duration_frames") {
+    try { return String(dissolveDuration(raw)); } catch { return raw; }
+  }
   if (group === "targets" && (deliveryAudioTargetFields as readonly string[]).includes(key)) {
     try { const value = parseDeliveryAudioTarget(raw); return value === null ? "" : String(value); } catch { return raw; }
   }
@@ -246,6 +322,18 @@ export function proposedDeliveryRecipe(current: DeliveryRecipe | null, draft: Re
       const archetype = fields[scene_id + ":archetype"] || null;
       return role || archetype ? [{ scene_id, role: role as MotionCanvasNarrativeRole | null, archetype: archetype as MotionCanvasArchetype | null }] : [];
     });
+  } else if (draft.group === "dissolve") {
+    if (fields.boundary === "") delete recipe.mlt_dissolve;
+    else {
+      const pair = fields.boundary.split(":");
+      if (pair.length !== 2) throw new Error("Choose a dissolve boundary in the saved delivery cut.");
+      const dissolve: MltDissolveIntent = {
+        outgoing_scene_id: pair[0], incoming_scene_id: pair[1],
+        duration_frames: dissolveDuration(fields.duration_frames), mode: dissolveMode,
+      };
+      assertMltDissolveIntent(dissolve);
+      recipe.mlt_dissolve = dissolve;
+    }
   } else if (draft.group === "targets") {
     const audio_targets: DeliveryAudioTargets = { target_lufs: parseDeliveryAudioTarget(fields.target_lufs), target_true_peak_dbtp: parseDeliveryAudioTarget(fields.target_true_peak_dbtp) };
     if (audio_targets.target_lufs === null && audio_targets.target_true_peak_dbtp === null) delete recipe.audio_targets;
@@ -304,6 +392,7 @@ export function proposedDeliveryRecipe(current: DeliveryRecipe | null, draft: Re
   return recipe;
 }
 function validField(group: RecipeGroup, key: string): boolean {
+  if (group === "dissolve") return key === "boundary" || key === "duration_frames";
   return group === "targets" ? (deliveryAudioTargetFields as readonly string[]).includes(key) : group === "mix" ? (mixKeys as readonly string[]).includes(key) : /^[a-f0-9-]{36}:(role|archetype)$/.test(key) && uuid.test(key.split(":")[0]);
 }
 export const RECIPE_DRAFT_STORAGE_PREFIX = "motionwright.delivery-recipe-draft/1:";
@@ -348,7 +437,7 @@ function boundedFieldMap(value: unknown, group: RecipeGroup, edits: boolean): bo
 export function decodeRecipeDraft(raw: string, scope: string, group: RecipeGroup): RecipeDraft {
   if (new TextEncoder().encode(raw).length > 256 * 1024) throw new Error("Recipe recovery copy exceeds 256 KiB.");
   const value: unknown = JSON.parse(raw);
-  if (!record(value) || (group !== "film" && group !== "mix" && group !== "targets") || value.version !== 1 || value.scope !== scope || value.group !== group || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0 || !boundedFieldMap(value.edits, group, true)) throw new Error("Recipe recovery copy has an unsupported identity or format.");
+  if (!record(value) || !recipeGroups.includes(group) || value.version !== 1 || value.scope !== scope || value.group !== group || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0 || !boundedFieldMap(value.edits, group, true)) throw new Error("Recipe recovery copy has an unsupported identity or format.");
   if (Object.keys(value).some(key => !["version", "scope", "group", "revision", "edits", "awaiting"].includes(key))) throw new Error("Recipe recovery copy contains unknown fields.");
   if (Object.hasOwn(value, "awaiting")) {
     const awaiting = value.awaiting;

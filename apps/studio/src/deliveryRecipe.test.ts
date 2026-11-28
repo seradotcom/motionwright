@@ -655,3 +655,36 @@ describe("complete original mix bus automation authoring", () => {
     expect(recipe.parseOriginalMixSamples("4294967295")).toBe(4294967295);
   });
 });
+
+describe("saved MLT dissolve intent", () => {
+  it("keeps the ordered boundary and duration in recovery and saves without rewriting the mix", async () => {
+    const { project, profileA, canonical, draft, current, scope, sceneA, sceneB } = context("dissolve");
+    const outgoing = project.scenes[0], incoming = project.scenes[1];
+    const omitted = { ...structuredClone(incoming), id: id(7000), name: "Excluded middle" };
+    project.scenes = [outgoing, omitted, incoming];
+    outgoing.duration = { num: "1", den: "2" };
+    const profile = project.deliverables[0];
+    profile.included_scene_ids = [sceneA, sceneB];
+    profile.frame_rate = { num: "30", den: "1" };
+    const boundary = sceneA + ":" + sceneB;
+    const edited = changed(changed(draft, "boundary", boundary, current), "duration_frames", "02", current);
+    const restored = recipe.decodeRecipeDraft(JSON.stringify(edited), scope, "dissolve");
+    const saved = recipe.proposedDeliveryRecipe(canonical, restored);
+    recipe.validateDeliveryRecipe(project, profileA, saved);
+    expect(saved.mlt_dissolve).toEqual({
+      outgoing_scene_id: sceneA, incoming_scene_id: sceneB, duration_frames: 2, mode: "hold_outgoing_last_frame",
+    });
+    expect(saved.original_mix).toEqual(canonical.original_mix);
+    expect(saved.scene_intents).toEqual(canonical.scene_intents);
+    expect(recipe.recipeFields(saved, "dissolve")).toEqual({ boundary, duration_frames: "2" });
+    const { assertRecipeHistoryPayload, recipeFingerprint } = await import("./deliveryRecipeDraft");
+    assertRecipeHistoryPayload(saved);
+    expect(recipeFingerprint(saved)).not.toBe(recipeFingerprint(canonical));
+    expect(() => assertRecipeHistoryPayload({ ...saved, mlt_dissolve: null })).toThrow();
+    expect(() => recipe.validateDeliveryRecipe(project, profileA, { ...saved, mlt_dissolve: {
+      ...saved.mlt_dissolve, incoming_scene_id: omitted.id,
+    } })).toThrow(/consecutive/);
+    profile.frame_rate = { num: "25", den: "1" };
+    expect(() => recipe.validateDeliveryRecipe(project, profileA, saved)).toThrow(/exactly on a delivery frame boundary/);
+  });
+});
