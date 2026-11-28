@@ -74,7 +74,7 @@ zero exit code from `cargo audit` as proof that the dependency graph is clean.
 `docs/security/known-rustsec-advisories.json` records the exact package versions, advisory classes,
 dependency context and re-review triggers for warnings that remain open.
 
-The current locked dependency graph records three open RustSec advisories:
+The current dependency review tracks these open RustSec advisories:
 
 - `RUSTSEC-2024-0429`: `glib 0.18.5`, classified as unsound and reached through the Linux
   Tauri/GTK stack. The selected local source contains the reviewed two-line upstream backport.
@@ -82,20 +82,24 @@ The current locked dependency graph records three open RustSec advisories:
   and exact patch, and checks the Cargo override and dependency owner graph. The affected
   `VariantStrIter` API is not used directly by Motionwright first-party source. The upstream
   advisory remains `OPEN_UPSTREAM_BLOCKED`; source verification does not grant product acceptance.
-- `RUSTSEC-2026-0192`: `ttf-parser 0.25.1`, classified as unmaintained. The locked graph
-  contains a direct Manim profile dependency and a Semwright Motion Canvas dependency through the
-  service. The policy binds the registry checksum, SDK source and owner graph; deployed runtime
-  reachability remains unverified. This maintenance warning remains `OPEN_UPSTREAM_UNMAINTAINED`.
+- `RUSTSEC-2026-0192`: `ttf-parser 0.25.1`, classified as unmaintained. The source lock
+  now selects Fontations in both former owners, the Manim profile and the pinned Semwright
+  Motion Canvas driver. The original advisory remains `OPEN_SOURCE_REMOVED_RUNTIME_UNVERIFIED`
+  pending installed-product verification.
+- `RUSTSEC-2026-0543`: `chrono 0.4.45`, classified as unmaintained with no patched version.
+  First-party timestamps use `time`. The locked route through `tauri-utils` and the optional
+  `serde_with` dependency remains `OPEN_UPSTREAM_TRANSITIVE` and is required in the
+  registry audit. The lock review checks registry identity and both incoming edges.
 - `RUSTSEC-2024-0370`: `proc-macro-error 1.0.4`, classified as unmaintained and reached
   transitively through the GTK 0.18 macro stack. It remains `OPEN_UPSTREAM_TRANSITIVE`.
 
 `tooling/security_advisory_policy.py` binds that inventory to the exact lockfile versions, rejects
 first-party use of any explicitly affected API token and requires zero reported vulnerabilities.
-The live `cargo audit --json` warnings must match the recorded IDs and classes, with one explicit
-coverage exception: cargo-audit can omit the local-path `glib` package from its registry warning
-output. That absence is permitted only after the complete backport source and owner checks pass;
-it is not evidence that the upstream advisory is resolved. Any other missing warning, a new
-warning, a changed class or dependency drift fails the gate and requires a fresh review.
+The live `cargo audit --json` warnings must match the recorded IDs and classes. The retired
+`ttf-parser` warning must be absent after its source replacement is verified. The local-path
+`glib` warning may be absent after the complete backport source and owner checks pass.
+Any other missing warning, a new warning, a changed class or dependency drift fails the gate
+and requires a fresh review.
 
 The Security and Delivery workflow stores the raw audit JSON and policy result per SHA. Heavy
 Verification runs the same policy. All three advisories remain open.

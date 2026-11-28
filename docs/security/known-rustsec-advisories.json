@@ -133,6 +133,26 @@
       }
     },
     {
+      "id": "RUSTSEC-2026-0543",
+      "class": "unmaintained",
+      "package": "chrono",
+      "locked_version": "0.4.45",
+      "status": "OPEN_UPSTREAM_TRANSITIVE",
+      "direct_dependency": false,
+      "registry_checksum": "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327",
+      "required_lock_context": {
+        "serde_with": "3.24.0",
+        "tauri-utils": "2.10.1"
+      },
+      "forbidden_first_party_tokens": ["chrono::"],
+      "review_note": "RustSec reports that chrono is unmaintained and lists no patched version. First-party timestamps use time. The reviewed Cargo.lock path is tauri-utils to serde_with to its optional chrono dependency. Cargo.lock records the dependency independently of whether it is compiled for distribution.",
+      "recheck_when": [
+        "chrono registry source, checksum or a reviewed dependency edge or version changes",
+        "the distribution build selects chrono",
+        "the advisory classification changes"
+      ]
+    },
+    {
       "id": "RUSTSEC-2024-0370",
       "class": "unmaintained",
       "package": "proc-macro-error",

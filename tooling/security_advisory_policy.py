@@ -65,6 +65,27 @@ def verify_rustix_0486_patched(lock: dict[str, Any]) -> None:
 
 
 
+def verify_chrono_lock_route(lock: dict[str, Any], advisory: dict[str, Any]) -> None:
+    """Check the reviewed Cargo.lock route without assuming feature reachability."""
+    context = advisory.get("required_lock_context", {})
+    checksum = advisory.get("registry_checksum")
+    chrono = ("chrono", advisory.get("locked_version"))
+    serde_with = ("serde_with", context.get("serde_with"))
+    tauri_utils = ("tauri-utils", context.get("tauri-utils"))
+    try:
+        reverse = lock_reverse_edges(lock)
+    except OwnerChainError as error:
+        fail(f"RUSTSEC-2026-0543: cannot review the Cargo.lock route: {error}")
+    selected = [row for row in lock["package"] if row["name"] == "chrono"]
+    if (not isinstance(checksum, str) or len(checksum) != 64
+            or len(selected) != 1
+            or selected[0].get("source") != "registry+https://github.com/rust-lang/crates.io-index"
+            or selected[0].get("checksum") != checksum
+            or reverse.get(chrono) != {serde_with}
+            or reverse.get(serde_with) != {tauri_utils}):
+        fail("RUSTSEC-2026-0543: reviewed chrono registry source or lock route changed")
+
+
 def first_party_files() -> list[pathlib.Path]:
     roots = [ROOT / "crates", ROOT / "apps"]
     files: list[pathlib.Path] = []
@@ -358,6 +379,7 @@ def main() -> None:
         fail("RUSTSEC-2024-0429 owner chain requires independent review: " + str(error))
 
     ttf_parser_review = verify_ttf_parser_review(lock, expected.get("RUSTSEC-2026-0192", {}))
+    verify_chrono_lock_route(lock, expected.get("RUSTSEC-2026-0543", {}))
 
     actual_warnings: dict[str, str] | None = None
     if args.audit_json is not None:

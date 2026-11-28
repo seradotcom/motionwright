@@ -8,18 +8,22 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tooling"))
-from security_advisory_policy import verify_ttf_parser_review, verify_rustix_0486_patched
+from security_advisory_policy import (
+    verify_chrono_lock_route, verify_rustix_0486_patched, verify_ttf_parser_review,
+)
 POLICY = ROOT / "tooling" / "security_advisory_policy.py"
 
 
 def audit_payload(*, changed_class=False, vulnerable=False,
                   path_crate_warning_reported=True, missing_unmaintained=False,
-                  new_unknown=False, missing_ttf_parser=True):
+                  new_unknown=False, missing_ttf_parser=True, missing_chrono=False):
     warnings = {
         "unsound": ([{"advisory": {"id": "RUSTSEC-2024-0429"}}]
                     if path_crate_warning_reported else []),
         "unmaintained": ([] if missing_unmaintained
                          else [{"advisory": {"id": "RUSTSEC-2024-0370"}}])
+                        + ([] if missing_chrono
+                           else [{"advisory": {"id": "RUSTSEC-2026-0543"}}])
                         + ([] if missing_ttf_parser
                            else [{"advisory": {"id": "RUSTSEC-2026-0192"}}]),
     }
@@ -103,7 +107,7 @@ class SecurityAdvisoryPolicyTests(unittest.TestCase):
         self.assertEqual(evidence["vulnerabilities_allowed"], 0)
         self.assertEqual(
             evidence["actual_warning_ids"],
-            ["RUSTSEC-2024-0370", "RUSTSEC-2024-0429"],
+            ["RUSTSEC-2024-0370", "RUSTSEC-2024-0429", "RUSTSEC-2026-0543"],
         )
         self.assertIn("remain OPEN", evidence["statement"])
         self.assertFalse(evidence["upstream_glib_advisory_resolved"])
@@ -130,11 +134,13 @@ class SecurityAdvisoryPolicyTests(unittest.TestCase):
             audit_payload(path_crate_warning_reported=False)
         )
         self.assertEqual(process.returncode, 0, process.stderr)
-        self.assertEqual(evidence["actual_warning_ids"], ["RUSTSEC-2024-0370"])
+        self.assertEqual(evidence["actual_warning_ids"],
+                         ["RUSTSEC-2024-0370", "RUSTSEC-2026-0543"])
         self.assertEqual(evidence["open_advisories_absent_from_registry_audit"],
                          ["RUSTSEC-2024-0429", "RUSTSEC-2026-0192"])
         self.assertEqual({row["id"] for row in evidence["known_warnings"]},
-                         {"RUSTSEC-2024-0370", "RUSTSEC-2024-0429", "RUSTSEC-2026-0192"})
+                         {"RUSTSEC-2024-0370", "RUSTSEC-2024-0429",
+                          "RUSTSEC-2026-0192", "RUSTSEC-2026-0543"})
         self.assertTrue(all(row["status"].startswith("OPEN_")
                             for row in evidence["known_warnings"]))
         self.assertFalse(evidence["glib_owner_chain"]["glib_vulnerability_fixed"])
@@ -315,14 +321,35 @@ class SecurityAdvisoryPolicyTests(unittest.TestCase):
                     with self.assertRaises(SystemExit):
                         verify_ttf_parser_review(changed, reviewed)
 
+    def test_chrono_registry_identity_and_incoming_edges_are_reviewed(self):
+        from copy import deepcopy
+        lock = tomllib.loads((ROOT / "Cargo.lock").read_text())
+        policy = json.loads((ROOT / "docs/security/known-rustsec-advisories.json").read_text())
+        reviewed = next(row for row in policy["advisories"] if row["id"] == "RUSTSEC-2026-0543")
+        self.assertIsNone(verify_chrono_lock_route(lock, reviewed))
+        for package, field, value in (
+            ("chrono", "checksum", "0" * 64),
+            ("chrono", "source", "unreviewed"),
+            ("motionwright-domain", "dependencies", ["chrono"]),
+            ("motionwright-domain", "dependencies", ["serde_with"]),
+        ):
+            with self.subTest(package=package, field=field, value=value):
+                changed = deepcopy(lock)
+                row = next(item for item in changed["package"] if item["name"] == package)
+                row[field] = value
+                with self.assertRaises(SystemExit):
+                    verify_chrono_lock_route(changed, reviewed)
+
     def test_missing_other_reviewed_warning_still_fails(self):
-        process, evidence = self.run_policy(
-            audit_payload(path_crate_warning_reported=False,
-                          missing_unmaintained=True)
-        )
-        self.assertNotEqual(process.returncode, 0)
-        self.assertIsNone(evidence)
-        self.assertIn("missing=['RUSTSEC-2024-0370']", process.stderr)
+        for option, advisory in (("missing_unmaintained", "RUSTSEC-2024-0370"),
+                                 ("missing_chrono", "RUSTSEC-2026-0543")):
+            with self.subTest(advisory=advisory):
+                process, evidence = self.run_policy(
+                    audit_payload(path_crate_warning_reported=False, **{option: True})
+                )
+                self.assertNotEqual(process.returncode, 0)
+                self.assertIsNone(evidence)
+                self.assertIn(f"missing=['{advisory}']", process.stderr)
 
     def test_new_unknown_warning_still_fails(self):
         process, evidence = self.run_policy(
