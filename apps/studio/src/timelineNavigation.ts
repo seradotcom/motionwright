@@ -9,7 +9,16 @@ import type { Project, RationalTime } from "./types";
 import type { TimelineSelection } from "./timelineSelection";
 
 export type TimelineSnap = "off" | "frames" | "cues";
-export interface TimelineView { zoom: number; start: number; snap: TimelineSnap; expanded: boolean }
+export interface TimelineView {
+  zoom: number;
+  start: number;
+  snap: TimelineSnap;
+  expanded: boolean;
+  height?: number;
+}
+
+export const MIN_TIMELINE_HEIGHT = 190;
+export const MAX_TIMELINE_HEIGHT = 520;
 export const defaultTimelineView = (): TimelineView => ({ zoom: 1, start: 0, snap: "frames", expanded: false });
 export function readTimelineView(raw: string | null): TimelineView {
   if (!raw) return defaultTimelineView();
@@ -20,7 +29,11 @@ export function readTimelineView(raw: string | null): TimelineView {
     || typeof v.start !== "number" || !Number.isFinite(v.start) || v.start < 0
     || !["off","frames","cues"].includes(String(v.snap)) || typeof v.expanded !== "boolean")
     throw new Error("Invalid timeline view.");
-  return { zoom: v.zoom, start: v.start, snap: v.snap as TimelineSnap, expanded: v.expanded };
+  const view = { zoom: v.zoom, start: v.start, snap: v.snap as TimelineSnap, expanded: v.expanded };
+  return typeof v.height === "number" && Number.isInteger(v.height)
+    && v.height >= MIN_TIMELINE_HEIGHT && v.height <= MAX_TIMELINE_HEIGHT
+    ? { ...view, height: v.height }
+    : view;
 }
 export function timelineWindow(duration: number, view: TimelineView) {
   const span = Math.max(duration / view.zoom, Number.EPSILON);

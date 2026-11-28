@@ -23,6 +23,18 @@ test("the timeline and canvas use the selected delivery profile's frame duration
   const timecode = page.locator(".timeline-header .timecode");
   const timebase = page.getByLabel("Editor preview timebase");
 
+  const resize = page.getByRole("separator", { name: "Resize timeline" });
+  const initialHeight = Number(await resize.getAttribute("aria-valuenow"));
+  const revisionBeforeResize = await page.locator(".revision-chip").first().innerText();
+  await resize.focus();
+  await resize.press("ArrowUp");
+  await expect(resize).toHaveAttribute("aria-valuenow", String(initialHeight + 16));
+  await expect(page.locator(".revision-chip").first()).toHaveText(revisionBeforeResize);
+  await page.reload();
+  await expect(resize).toHaveAttribute("aria-valuenow", String(initialHeight + 16));
+  await resize.dblclick();
+  await expect(resize).toHaveAttribute("aria-valuenow", String(initialHeight));
+
   await expect(timebase.locator("option:checked")).toContainText("30 fps NDF");
   await page.getByRole("button", { name: "Step forward one frame" }).click();
   await expect(timecode).toHaveText("00:00:01");
@@ -51,6 +63,23 @@ test("the timeline and canvas use the selected delivery profile's frame duration
   await page.getByRole("button", { name: "Timeline", exact: true }).click();
   await expect(page.locator(".preview-footer")).toContainText("25 fps NDF · editorial display");
   await expect(page.locator(".preview-footer")).toContainText("No render evidence attached");
+
+  await timecode.click();
+  const address = page.getByRole("textbox", { name: "Go to timecode", exact: true });
+  await expect(address).toBeFocused();
+  await address.fill("99999s");
+  await address.press("Enter");
+  await expect(page.getByRole("alert")).toContainText("within this project");
+  await expect(timecode).toHaveText("00:00:01");
+  await address.press("Escape");
+  await expect(timecode).toBeFocused();
+
+  await timecode.press("Enter");
+  await address.fill("60f");
+  await address.press("Enter");
+  await expect(timecode).toHaveText("00:02:10");
+  await expect(page.getByRole("region", { name: "Program preview" }).locator(".timecode")).toHaveText("00:02:10");
+  await expect(page.locator(".revision-chip").first()).toHaveText(revision);
 });
 
 test("drop-frame timecode is a deliberate display mode, not inferred by fractional fps", async ({ page }) => {

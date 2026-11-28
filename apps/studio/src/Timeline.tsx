@@ -1,21 +1,129 @@
 import { Film, Pause, Play, Plus, SkipBack, SkipForward } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { Change, Project, RationalTime, RendererKind } from "./types";
 import { seconds } from "./types";
-import { formatEditorTimecode as formatTime, rulerTime, supportsDropFrame, timebaseLabel, validEditorRate } from "./timecode";
+import { formatEditorTimecode as formatTime, parseEditorSeekTime, rulerTime, supportsDropFrame, timebaseLabel, validEditorRate } from "./timecode";
 import type { TimecodeMode } from "./timecode";
 import { resolveTimelineSelection, timelineSelectionScope } from "./timelineSelection";
 import type { TimelineSelection } from "./timelineSelection";
 import { timelineMarkerTime } from "./timelineMarkerTime";
 import { addTimelineTime, defaultTimelineView, packTimelineRanges, projectTimelineDuration, readTimelineView, snapTimelineTime,
-  timelineExtraTracks, timelineTicks, timelineWindow, zoomTimeline } from "./timelineNavigation";
+  timelineExtraTracks, timelineTicks, timelineWindow, zoomTimeline, MAX_TIMELINE_HEIGHT, MIN_TIMELINE_HEIGHT } from "./timelineNavigation";
 import type { TimelineRangeEntry, TimelineSnap } from "./timelineNavigation";
 import "./timeline-navigation.css";
 
 function IconButton({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {
   return <button type="button" className="icon-button" aria-label={label} title={label} onClick={onClick}>{children}</button>;
 }
+function TimelineSeekField({ playhead, duration, rate, mode, onSeek }: {
+  playhead: number; duration: number; rate: RationalTime; mode: TimecodeMode;
+  onSeek: (time: RationalTime) => void;
+}) {
+  const id = useId();
+  const trigger = useRef<HTMLButtonElement>(null);
+  const field = useRef<HTMLInputElement>(null);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const open = draft !== null;
+  const currentTimecode = formatTime(playhead, rate, mode);
+
+  useEffect(() => {
+    if (open) {
+      field.current?.focus();
+      field.current?.select();
+    }
+  }, [open]);
+
+  const close = (restoreFocus: boolean) => {
+    setDraft(null);
+    setError("");
+    if (restoreFocus) trigger.current?.focus();
+  };
+
+  return <div className="timeline-seek" onBlur={event => {
+    if (!event.currentTarget.contains(event.relatedTarget)) close(false);
+  }}>
+    <button type="button" ref={trigger} className="timecode timeline-seek-trigger"
+      title="Go to timecode" aria-expanded={open} aria-controls={open ? id : undefined}
+      onClick={() => {
+        if (open) close(true);
+        else setDraft(currentTimecode);
+      }}>{currentTimecode}</button>
+    {open && <form id={id} className="timeline-seek-form" aria-label="Seek timeline" onSubmit={event => {
+      event.preventDefault();
+      try {
+        const target = parseEditorSeekTime(draft, rate, mode);
+        if (seconds(target) > duration) throw new Error("Enter a position within this project.");
+        onSeek(target);
+        close(true);
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
+    }} onKeyDown={event => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        close(true);
+      }
+    }}>
+      <label htmlFor={id + "-input"}>Go to timecode</label>
+      <input type="text" id={id + "-input"} ref={field} className="mono"
+        value={draft} maxLength={96} autoComplete="off" spellCheck={false}
+        aria-invalid={!!error} aria-describedby={id + "-hint" + (error ? " " + id + "-error" : "")}
+        onChange={event => { setDraft(event.target.value); setError(""); }} />
+      <button type="submit" className="button compact">Go</button>
+      <span id={id + "-hint"} className="timeline-seek-hint">{timebaseLabel(rate, mode)} · e.g. 2.5s or 60f</span>
+      {error && <span id={id + "-error"} role="alert" className="timeline-seek-error">{error}</span>}
+    </form>}
+  </div>;
+}
+
+function TimelineResizeHandle({ controls, height, min, max, onResize }: {
+  controls: string; height: number; min: number; max: number; onResize: (height?: number) => void;
+}) {
+  const drag = useRef<{ pointerId: number; y: number; height: number } | null>(null);
+  const [previewHeight, setPreviewHeight] = useState<number>();
+  const bound = (value: number) => Math.max(min, Math.min(max, Math.round(value)));
+  const current = bound(previewHeight ?? height);
+  return <div role="separator" tabIndex={0} aria-label="Resize timeline" aria-controls={controls}
+    aria-orientation="horizontal" aria-valuemin={min} aria-valuemax={max}
+    aria-valuenow={current} aria-valuetext={current + " pixels"}
+    className="timeline-resize-handle"
+    title="Drag or use Up and Down to resize. Double-click to reset."
+    onPointerDown={event => {
+      if (!event.isPrimary || event.button !== 0 || min === max) return;
+      event.preventDefault();
+      event.currentTarget.focus();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      drag.current = { pointerId: event.pointerId, y: event.clientY, height: current };
+    }}
+    onPointerMove={event => {
+      const active = drag.current;
+      if (active?.pointerId !== event.pointerId) return;
+      const next = bound(active.height + active.y - event.clientY);
+      setPreviewHeight(next);
+      onResize(next);
+    }}
+    onLostPointerCapture={event => {
+      if (drag.current?.pointerId !== event.pointerId) return;
+      drag.current = null;
+      setPreviewHeight(undefined);
+    }}
+    onDoubleClick={() => onResize()}
+    onKeyDown={event => {
+      const step = event.shiftKey ? 48 : 16;
+      const destinations: Record<string, number> = {
+        ArrowUp: current + step, ArrowDown: current - step, Home: min, End: max,
+      };
+      const destination = destinations[event.key];
+      if (destination === undefined) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onResize(bound(destination));
+    }} />;
+}
+
 function RangeLane({ kind, entries, selection, position, span, select }: {
   kind: string; entries: TimelineRangeEntry[]; selection: TimelineSelection | null;
   position: (time: number) => string; span: number; select: (entry: TimelineRangeEntry) => void;
@@ -83,6 +191,26 @@ export default function Timeline({
     catch { return { view: defaultTimelineView(), warning: "The prior timeline view could not be restored. Project data is unchanged." }; }
   });
   const [view, setView] = useState(initialView.view);
+  const timelineBodyId = useId();
+  const panelRef = useRef<HTMLElement>(null);
+  const [panelHeight, setPanelHeight] = useState(300);
+  const [viewport, setViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    const observer = new ResizeObserver(() => setPanelHeight(panel.offsetHeight));
+    observer.observe(panel);
+    const readViewport = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
+    window.addEventListener("resize", readViewport);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", readViewport);
+    };
+  }, []);
+  const minPanelHeight = viewport.width <= 800 ? 240 : MIN_TIMELINE_HEIGHT;
+  const maxPanelHeight = Math.max(minPanelHeight, Math.min(MAX_TIMELINE_HEIGHT, viewport.height - 320));
+  const requestedHeight = view.height === undefined ? undefined
+    : Math.max(minPanelHeight, Math.min(maxPanelHeight, view.height));
   const [viewWarning, setViewWarning] = useState(initialView.warning);
   const area = useRef<HTMLDivElement>(null);
   const [pixels, setPixels] = useState(1000);
@@ -120,6 +248,18 @@ export default function Timeline({
       const target = sceneAtTime(value);
       if (target && target.id !== selectedSceneId) selectScene(target.id, false);
     } catch (reason) { setViewWarning(reason instanceof Error ? reason.message : String(reason)); }
+  };
+  const seekToAddress = (at: RationalTime) => {
+    const value = seconds(at);
+    exactSeek.current = { at, value };
+    setSelection(null);
+    setPlayhead(value);
+    setView(current => {
+      const visible = timelineWindow(duration, current);
+      if (value >= visible.start && value <= visible.end) return current;
+      const next = timelineWindow(duration, { ...current, start: value - visible.span / 2 });
+      return { ...current, start: next.start };
+    });
   };
   const ticks = timelineTicks(windowRange.start, windowRange.span, pixels, rate);
   // The Audio ledger retains every take. The VO lane represents the active
@@ -165,7 +305,10 @@ export default function Timeline({
   };
 
   return (
-    <section className={"timeline-panel timeline-with-navigation" + (view.expanded ? " timeline-expanded" : "")} aria-label="Timeline">
+    <section ref={panelRef} className={"timeline-panel timeline-with-navigation" + (view.expanded ? " timeline-expanded" : "")}
+      aria-label="Timeline" style={requestedHeight === undefined ? undefined : { height: requestedHeight, flexBasis: requestedHeight }}>
+      <TimelineResizeHandle controls={timelineBodyId} height={panelHeight} min={minPanelHeight} max={maxPanelHeight}
+        onResize={height => setView(current => ({ ...current, height }))} />
       <div className="timeline-header">
         <div className="timeline-title">
           <Film size={15} />
@@ -234,7 +377,8 @@ export default function Timeline({
           >
             <Plus size={12} /> Marker
           </button>
-          <span className="timecode" title={timebaseLabel(rate, mode) + " · display only"}>{formatTime(playhead, rate, mode)}</span>
+          <TimelineSeekField key={rate.num + "/" + rate.den + "/" + mode}
+            playhead={playhead} duration={duration} rate={rate} mode={mode} onSeek={seekToAddress} />
         </div>
       </div>
       <div className="timeline-navigation" aria-label="Timeline view controls">
@@ -257,14 +401,17 @@ export default function Timeline({
         <label>Snap <select aria-label="Timeline snapping" value={view.snap} onChange={event => setView(current => ({ ...current,snap:event.target.value as TimelineSnap }))}>
           <option value="frames">Frames</option><option value="cues">Cues + frames</option><option value="off">Off</option>
         </select></label>
-        <button className="button compact" aria-expanded={view.expanded} onClick={() => setView(current => ({...current,expanded:!current.expanded}))}>{view.expanded ? "Compact timeline" : "Expand timeline"}</button>
+        <button className="button compact" aria-expanded={view.expanded} onClick={() =>
+          setView(current => ({ ...current, expanded: !current.expanded, height: undefined }))}>
+          {view.expanded ? "Compact timeline" : "Expand timeline"}
+        </button>
         <span className="timeline-window-label">{formatTime(windowRange.start,rate,mode)} — {formatTime(windowRange.end,rate,mode)}</span>
         {selection && selection.kind !== "marker" && <button className="button compact" onClick={() => onEditSelection(selection)}>
           {selection.kind === "object" ? "Edit animation" : selection.kind === "camera" ? "Edit camera" : selection.kind === "review" ? "Open review" : selection.kind === "beat" ? "Edit scene beats" : "Open audio editor"}
         </button>}
         {(viewWarning || extras.issues.length > 0) && <span className="timeline-view-warning" role="status">{viewWarning || extras.issues.join(" · ")}</span>}
       </div>
-      <div className="timeline-body">
+      <div id={timelineBodyId} className="timeline-body">
         <div className="track-labels" style={rows} aria-hidden="true">
           <div className="ruler-label">time</div>
           <div><span>VO</span><span className="track-type">audio</span></div>

@@ -22,7 +22,7 @@ interface SceneInspectorProps {
   rate: RationalTime; mode: TimecodeMode; rendererLabels: Record<RendererKind, string>;
 }
 export default function SceneInspector(props: SceneInspectorProps) {
-  if (!props.scene) return <aside className="inspector">
+  if (!props.scene) return <aside className="inspector" aria-label="Scene inspector">
     <div className="inspector-heading">Inspector</div>
     <div className="empty-workspace"><Settings2 size={24} /><strong>Nothing selected</strong>
       <span>Select a scene to inspect its semantic state.</span></div>
@@ -44,7 +44,7 @@ function SelectedSceneInspector({ project, scene, commit, commitScene, commitBea
   const timingLocked = locks.some((lock) => lock.kind === "timing");
   const contentLocked = locks.some((lock) => lock.kind === "content");
   return (
-    <aside className="inspector">
+    <aside className="inspector" aria-label="Scene inspector">
       <div className="inspector-heading">
         <span>Inspector</span>
         <span className="mono">r{project.revision}</span>

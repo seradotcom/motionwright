@@ -1,3 +1,4 @@
+import { parseBeatTime } from "./sceneBeatTiming";
 import type { RationalTime } from "./types";
 
 /**
@@ -88,6 +89,49 @@ export function formatEditorTimecode(
   mode: TimecodeMode = "ndf",
 ): string {
   return formatFrameTimecode(projectFrameIndex(seconds, rate), rate, mode);
+}
+
+/** Resolve an editorial address to an exact project time before projecting it for display. */
+export function parseEditorSeekTime(raw: string, rate: RationalTime, mode: TimecodeMode): RationalTime {
+  const input = raw.trim();
+  if (input.length > 96) throw new Error("The timeline position is too large.");
+  if (/^\d+(?:\.\d+)?s?$/.test(input)) {
+    return parseBeatTime(input.replace(/s$/, ""));
+  }
+
+  const nominal = Math.round(editorFps(rate));
+  const frameIndex = /^(\d+)f$/.exec(input);
+  let frames: bigint;
+  if (frameIndex) {
+    frames = BigInt(frameIndex[1]);
+  } else {
+    const address = /^(?:(\d+):)?(\d{2}):(\d{2})([:;])(\d{2,3})$/.exec(input);
+    if (!address) throw new Error("Enter timecode, seconds (2.5s), or a frame index (60f).");
+    const [, hours = "0", minutes, seconds, separator, frame] = address;
+    const minute = Number(minutes);
+    const second = Number(seconds);
+    const frameLabel = Number(frame);
+    if (minute >= 60 || second >= 60 || frameLabel >= nominal) {
+      throw new Error("This timecode is outside the selected frame clock.");
+    }
+
+    const dropFrame = mode === "df" && supportsDropFrame(rate);
+    if (separator !== (dropFrame ? ";" : ":")) {
+      throw new Error(dropFrame
+        ? "Use a semicolon before the frame label for drop-frame timecode."
+        : "Use a colon before the frame label for non-drop-frame timecode.");
+    }
+    const droppedLabels = nominal === 60 ? 4 : 2;
+    if (dropFrame && minute % 10 !== 0 && second === 0 && frameLabel < droppedLabels) {
+      throw new Error("This frame label is skipped by drop-frame numbering.");
+    }
+
+    const totalMinutes = BigInt(hours) * 60n + BigInt(minute);
+    frames = (totalMinutes * 60n + BigInt(second)) * BigInt(nominal) + BigInt(frameLabel);
+    if (dropFrame) frames -= BigInt(droppedLabels) * (totalMinutes - totalMinutes / 10n);
+  }
+
+  return parseBeatTime((frames * BigInt(rate.den)) + "/" + rate.num);
 }
 
 export function rulerTime(seconds: number): string {

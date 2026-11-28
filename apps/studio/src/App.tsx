@@ -9,7 +9,7 @@ import { audioReviewScope, buildAudioReviewClock, type AudioReviewActions, type 
 import { assertPortableExportReceipt, inspectPortableMaterials } from "./portableMaterialReport";
 import SceneInspector from "./SceneInspector";
 import SceneBeatTimelineEditor from "./SceneBeatTimelineEditor";
-import { isPaletteShortcut } from "./editorCommandSearch";
+import { isPaletteShortcut, normalizeEditorSearch } from "./editorCommandSearch";
 import { timelineSelectionScope, type TimelineSelection, type TimelineEditorRequest } from "./timelineSelection";
 import Timeline from "./Timeline";
 import { projectTimelineDuration } from "./timelineNavigation";
@@ -41,6 +41,7 @@ import {
   MoreHorizontal,
   MoveRight,
   PanelLeftClose,
+  PanelRight,
   Pause,
   Play,
   Plus,
@@ -1348,6 +1349,22 @@ function ProjectRail({
   const [sceneError, setSceneError] = useState<string | null>(null);
   const [addingAsset, setAddingAsset] = useState(false);
   const [assetPath, setAssetPath] = useState("");
+  const [projectSearch, setProjectSearch] = useState("");
+  const searchResults = useMemo(() => {
+    const terms = normalizeEditorSearch(projectSearch).trim().split(/\s+/).filter(Boolean);
+    const matches = (...values: string[]) => {
+      const searchable = normalizeEditorSearch(values.join(" "));
+      return terms.every(term => searchable.includes(term));
+    };
+
+    return {
+      active: terms.length > 0,
+      scenes: project.scenes.map((scene, index) => ({ scene, index }))
+        .filter(({ scene }) => matches(scene.name)),
+      assets: project.assets.filter(asset => matches(asset.name, asset.media_type)),
+      branches: project.branches.filter(branch => matches(branch.name)),
+    };
+  }, [projectSearch, project.scenes, project.assets, project.branches]);
   const [assetBusy, setAssetBusy] = useState(false);
   const [assetError, setAssetError] = useState<string | null>(null);
 
@@ -1372,10 +1389,19 @@ function ProjectRail({
         </IconButton>
       </div>
       <div className="rail-search">
-        <Search size={14} />
-        <span>Find in project</span>
-        <kbd>⌘K</kbd>
+        <Search size={14} aria-hidden="true" />
+        <input type="search" aria-label="Find in project" placeholder="Find in project"
+          value={projectSearch} onChange={event => setProjectSearch(event.target.value)}
+          onKeyDown={event => {
+            if (event.key === "Escape" && projectSearch) {
+              event.preventDefault();
+              event.stopPropagation();
+              setProjectSearch("");
+            }
+          }} />
       </div>
+      {searchResults.active && searchResults.scenes.length + searchResults.assets.length + searchResults.branches.length === 0 &&
+        <p className="rail-search-empty" role="status">No matching project items.</p>}
 
       <div className="rail-section">
         <div className="rail-section-title">
@@ -1413,7 +1439,7 @@ function ProjectRail({
           </form>
         )}
         <div className="tree-list">
-          {project.scenes.map((scene, index) => (
+          {searchResults.scenes.map(({ scene, index }) => (
             <button
               key={scene.id}
               type="button"
@@ -1426,7 +1452,7 @@ function ProjectRail({
             </button>
           ))}
         </div>
-        {selectedSceneId && project.scenes.length > 1 && (
+        {!searchResults.active && selectedSceneId && project.scenes.length > 1 && (
           <div className="rail-reorder">
             <span>Order</span>
             <IconButton
@@ -1451,7 +1477,7 @@ function ProjectRail({
         <div className="rail-section-title">
           <span>Assets</span>
           <div className="rail-section-actions">
-            <span>{project.assets.length}</span>
+            <span>{searchResults.assets.length}</span>
             <button
               type="button"
               className="plain-icon"
@@ -1505,7 +1531,7 @@ function ProjectRail({
           </form>
         )}
         <div className="asset-list">
-          {project.assets.map((asset) => (
+          {searchResults.assets.map((asset) => (
             <div className="asset-row" key={asset.id}>
               <Layers3 size={14} />
               <div className="asset-row-copy">
@@ -1532,8 +1558,8 @@ function ProjectRail({
       </div>
 
       <div className="rail-section">
-        <div className="rail-section-title"><span>Branches</span><span>{project.branches.length}</span></div>
-        {project.branches.map((branch) => (
+        <div className="rail-section-title"><span>Branches</span><span>{searchResults.branches.length}</span></div>
+        {searchResults.branches.map((branch) => (
           <div className="asset-row" key={branch.id}>
             <GitBranch size={14} />
             <span>{branch.name}</span>
@@ -1584,6 +1610,19 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(preferredTheme);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const [compactWorkspace, setCompactWorkspace] = useState(() => window.matchMedia("(max-width: 1180px)").matches);
+  const [compactInspectorOpen, setCompactInspectorOpen] = useState(false);
+  const [wideInspectorOpen, setWideInspectorOpen] = useState(true);
+  const inspectorToggle = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 1180px)");
+    const readBreakpoint = () => setCompactWorkspace(query.matches);
+    readBreakpoint();
+    query.addEventListener("change", readBreakpoint);
+    return () => query.removeEventListener("change", readBreakpoint);
+  }, []);
+  const inspectorOpen = compactWorkspace ? compactInspectorOpen : wideInspectorOpen;
+  const setInspectorOpen = compactWorkspace ? setCompactInspectorOpen : setWideInspectorOpen;
   const workspaceNavRef = useRef<HTMLElement>(null);
   const bootRef = useRef<Bootstrap | null>(boot);
   const mutationGate = useRef(new ProjectMutationGate());
@@ -2484,6 +2523,13 @@ export default function App() {
           <IconButton label={theme === "dark" ? "Use light theme" : "Use dark theme"} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
             {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
           </IconButton>
+          {workspace !== "Production" && <button type="button" className="icon-button"
+            ref={inspectorToggle} aria-controls="studio-inspector-panel" aria-expanded={inspectorOpen}
+            aria-label={inspectorOpen ? "Hide inspector" : "Show inspector"}
+            title={inspectorOpen ? "Hide inspector" : "Show inspector"}
+            onClick={() => setInspectorOpen(open => !open)}>
+            <PanelRight size={16} aria-hidden="true" />
+          </button>}
           <IconButton label="More project information" onClick={() => setWorkspace("Brief")}>
             <MoreHorizontal size={17} />
           </IconButton>
@@ -2529,7 +2575,8 @@ export default function App() {
       )}
 
       {project.schema_version === 1 && <div className="project-format-notice" role="status"><span>Legacy project format · the next successful edit upgrades to v2. Export a backup before returning to an older client.</span><button className="button compact" onClick={() => setWorkspace("Deliver")}>Open backup export</button></div>}
-      <div className={"editor-grid" + (railCollapsed ? " rail-collapsed" : "") + (workspace === "Production" ? " production-layout" : "")}>
+      <div className={"editor-grid" + (railCollapsed ? " rail-collapsed" : "")
+        + (workspace === "Production" ? " production-layout" : inspectorOpen ? "" : " inspector-collapsed")}>
         <ProjectRail
           project={project}
           selectedSceneId={selectedSceneId}
@@ -2544,7 +2591,16 @@ export default function App() {
         <div className="center-stack">
           <div className="workspace-stage">{renderWorkspace()}</div>
         </div>
-        {workspace !== "Production" && <SceneInspector project={project} scene={selectedScene} commit={commit} commitScene={commitCamera} commitBeat={commitCamera} rate={timebaseRate} mode={displayMode} rendererLabels={rendererLabels} />}
+        {workspace !== "Production" && <div id="studio-inspector-panel" className="workspace-inspector"
+          hidden={!inspectorOpen} onKeyDown={event => {
+            if (!compactWorkspace || event.key !== "Escape" || event.defaultPrevented) return;
+            event.preventDefault();
+            setInspectorOpen(false);
+            inspectorToggle.current?.focus();
+          }}>
+          <SceneInspector project={project} scene={selectedScene} commit={commit} commitScene={commitCamera}
+            commitBeat={commitCamera} rate={timebaseRate} mode={displayMode} rendererLabels={rendererLabels} />
+        </div>}
       </div>
 
       {audioReviewSession&&<AudioReviewTransport key={audioReviewSession.key}

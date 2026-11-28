@@ -13,6 +13,9 @@ describe("shared Timeline viewport and saved-source lanes",()=>{
     expect(timelineWindow(60,zoomed)).toEqual({start:15,end:30,span:15});
     expect(timelineWindow(60,{...view,start:999})).toEqual({start:30,end:60,span:30});
     expect(readTimelineView(JSON.stringify({...zoomed,grant:"not restored"}))).toEqual(zoomed);
+    const resized = { ...zoomed, height: 360 };
+    expect(readTimelineView(JSON.stringify(resized))).toEqual(resized);
+    expect(readTimelineView(JSON.stringify({ ...resized, height: "invalid" }))).toEqual(zoomed);
     expect(()=>readTimelineView('{"zoom":100000,"start":0,"snap":"off","expanded":false}')).toThrow();
   });
   it("snaps to an exact NTSC frame and retains original cue fractions instead of decimal reconstruction",()=>{

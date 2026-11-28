@@ -10,7 +10,7 @@ export interface PaletteSearchItem {
   disabled?: boolean;
 }
 
-function normalize(value: string): string {
+export function normalizeEditorSearch(value: string): string {
   return value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("en-US");
 }
 
@@ -18,13 +18,13 @@ export function filterPaletteCommands<T extends PaletteSearchItem>(
   commands: readonly T[],
   search: string,
 ): T[] {
-  const words = normalize(search).trim().split(/\s+/).filter(Boolean);
+  const words = normalizeEditorSearch(search).trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return [...commands];
   return commands.map((item, index) => {
-    const label = normalize(item.label);
+    const label = normalizeEditorSearch(item.label);
     // Match word prefixes rather than arbitrary substrings: "review" must
     // not also surface "preview". Partial commands such as "deliv" still work.
-    const terms = normalize([item.group, item.label, item.description, item.keywords ?? ""].join(" "))
+    const terms = normalizeEditorSearch([item.group, item.label, item.description, item.keywords ?? ""].join(" "))
       .split(/[^a-z0-9]+/).filter(Boolean);
     if (!words.every((word) => terms.some((term) => term.startsWith(word)))) return null;
     const score = words.reduce(

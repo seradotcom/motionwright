@@ -1,4 +1,27 @@
-.timeline-panel.timeline-with-navigation { grid-template-rows: auto auto minmax(0,1fr); }
+.timeline-panel.timeline-with-navigation { position: relative; grid-template-rows: auto auto minmax(0,1fr); }
+.timeline-resize-handle {
+  position: absolute;
+  inset-block-start: -6px;
+  inset-inline-start: 50%;
+  z-index: 4;
+  width: 64px;
+  height: 12px;
+  translate: -50%;
+  display: grid;
+  place-items: center;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.timeline-resize-handle::after {
+  content: "";
+  width: 24px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--muted);
+}
+.timeline-resize-handle:hover::after,
+.timeline-resize-handle:focus-visible::after { background: var(--accent); }
+.timeline-resize-handle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .timeline-panel.timeline-expanded { height: 460px; flex-basis: 460px; }
 .timeline-navigation { display:flex; align-items:center; flex-wrap:wrap; gap:5px; padding:5px 8px; border-bottom:1px solid var(--border); min-width:0; }
 .timeline-navigation label { display:inline-flex; align-items:center; gap:4px; color:var(--muted); font-size:10px; }
@@ -7,6 +30,30 @@
 .timeline-navigation .button { white-space:nowrap; }
 .timeline-window-label { color:var(--muted); font-size:10px; font-variant-numeric:tabular-nums; margin-left:auto; }
 .timeline-view-warning { width:100%; font-size:10px; color:var(--warning); }
+.timeline-seek { position: relative; }
+.timeline-seek-trigger { min-height: 25px; padding: 2px 6px; white-space: nowrap; }
+.timeline-seek-form {
+  position: absolute;
+  z-index: 3;
+  inset-inline-end: 0;
+  inset-block-end: calc(100% + 4px);
+  width: min(225px, 85vw);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.timeline-seek-form label,
+.timeline-seek-hint,
+.timeline-seek-error { grid-column: 1 / -1; font-size: 11px; }
+.timeline-seek-form input { min-height: 25px; min-width: 0; padding: 2px 6px; }
+.timeline-seek-form input[aria-invalid="true"] { border-color: var(--danger); }
+.timeline-seek-hint { color: var(--muted); }
+.timeline-seek-error { color: var(--danger); overflow-wrap: anywhere; }
 .timeline-with-navigation .timeline-body { overflow-y:auto; overflow-x:hidden; align-items:start; }
 .timeline-body .track-labels,.timeline-body .track-area { min-height:0; }
 .timeline-body .track { overflow:hidden; }

@@ -3,6 +3,18 @@ import { expect, test } from "@playwright/test";
 test("palette navigates workspaces without mutating the shared project", async ({ page }) => {
   await page.goto("/");
   const revision = await page.locator(".revision-chip").innerText();
+  const projectSearch = page.getByRole("searchbox", { name: "Find in project" });
+  const sceneRows = page.locator(".project-rail .tree-row");
+  const before = await sceneRows.count();
+  expect(before).toBeGreaterThan(1);
+  const firstScene = await sceneRows.first().locator(".tree-name").innerText();
+  await projectSearch.fill(firstScene);
+  await expect(sceneRows).toHaveCount(1);
+  await expect(sceneRows.first()).toContainText(firstScene);
+  await projectSearch.fill("missing-project-entry-987");
+  await expect(page.getByText("No matching project items.")).toBeVisible();
+  await projectSearch.press("Escape");
+  await expect(sceneRows).toHaveCount(before);
   await page.getByRole("button", { name: "Open command palette" }).click();
   const dialog = page.getByRole("dialog", { name: "Command palette" });
   const search = dialog.getByRole("combobox", { name: "Search editor commands" });
@@ -12,6 +24,15 @@ test("palette navigates workspaces without mutating the shared project", async (
   await search.press("Enter");
   await expect(dialog).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Deliver", exact: true })).toHaveClass(/active/);
+  await expect(page.locator(".revision-chip")).toHaveText(revision);
+
+  await page.setViewportSize({ width: 1180, height: 780 });
+  const inspector = page.getByRole("complementary", { name: "Scene inspector" });
+  await expect(inspector).toBeHidden();
+  await page.getByRole("button", { name: "Show inspector" }).click({ timeout: 5000 });
+  await expect(inspector).toBeVisible();
+  await page.getByRole("button", { name: "Hide inspector" }).click();
+  await expect(inspector).toBeHidden();
   await expect(page.locator(".revision-chip")).toHaveText(revision);
 });
 

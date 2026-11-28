@@ -4,6 +4,7 @@ import {
   editorFps,
   formatEditorTimecode,
   formatFrameTimecode,
+  parseEditorSeekTime,
   projectFrameIndex,
   rulerTime,
   stepEditorialFrame,
@@ -45,6 +46,21 @@ describe("editorial display timebase", () => {
     expect(timebaseLabel(ntsc, "df")).toBe("29.97 fps DF");
     expect(timebaseLabel(ntsc, "ndf")).toBe("29.97 fps NDF");
     expect(formatFrameTimecode(3_600, r(60_000, 1_001), "df")).toBe("01:00;04");
+  });
+
+  it("parses typed seconds and frame addresses as exact rational positions", () => {
+    expect(parseEditorSeekTime("2.125s", DEFAULT_EDITOR_RATE, "ndf")).toEqual(r(17, 8));
+    expect(parseEditorSeekTime("60f", r(30_000, 1_001), "ndf")).toEqual(r(1_001, 500));
+    expect(parseEditorSeekTime("01:00:00:119", r(120, 1), "ndf")).toEqual(r(432_119, 120));
+    expect(() => parseEditorSeekTime("00:00:24", DEFAULT_EDITOR_RATE, "ndf")).toThrow("frame clock");
+  });
+
+  it("accepts valid drop-frame addresses and rejects skipped labels", () => {
+    const ntsc = r(30_000, 1_001);
+    expect(parseEditorSeekTime("01:00;02", ntsc, "df")).toEqual(r(3_003, 50));
+    expect(parseEditorSeekTime("10:00;00", ntsc, "df")).toEqual(r(2_999_997, 5_000));
+    expect(() => parseEditorSeekTime("01:00;00", ntsc, "df")).toThrow("skipped");
+    expect(() => parseEditorSeekTime("01:00:02", ntsc, "df")).toThrow("semicolon");
   });
 
   it("steps precisely by the selected profile frame duration and respects bounds", () => {

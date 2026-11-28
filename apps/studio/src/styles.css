@@ -450,6 +450,20 @@ textarea:focus-visible {
   grid-template-columns: 44px minmax(0, 1fr) 286px;
 }
 
+.editor-grid.inspector-collapsed {
+  grid-template-columns: 232px minmax(0, 1fr);
+}
+
+.editor-grid.rail-collapsed.inspector-collapsed {
+  grid-template-columns: 44px minmax(0, 1fr);
+}
+
+.workspace-inspector:not([hidden]) {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+}
+
 .project-rail,
 .inspector {
   min-height: 0;
@@ -518,8 +532,24 @@ textarea:focus-visible {
   font-size: 11px;
 }
 
-.rail-search span {
+.rail-search:focus-within {
+  border-color: var(--accent);
+}
+.rail-search input {
+  min-width: 0;
   flex: 1;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  font-size: inherit;
+}
+.rail-search input::placeholder {
+  color: var(--muted);
+}
+.rail-search-empty {
+  margin: 8px 10px;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 kbd {
@@ -2517,7 +2547,8 @@ select:focus {
 
 @media (max-width: 1180px) {
   .editor-grid,
-  .editor-grid.rail-collapsed {
+  .editor-grid.inspector-collapsed {
+    position: relative;
     grid-template-columns: 210px minmax(0, 1fr);
   }
 
@@ -2525,8 +2556,13 @@ select:focus {
     grid-template-columns: 44px minmax(0, 1fr);
   }
 
-  .inspector {
-    display: none;
+  .workspace-inspector:not([hidden]) {
+    position: absolute;
+    inset-block: 0;
+    inset-inline-end: 0;
+    z-index: 5;
+    width: min(320px, calc(100% - 44px));
+    box-shadow: -8px 0 18px rgba(0, 0, 0, 0.18);
   }
 
   .command-bar {
@@ -2566,6 +2602,7 @@ select:focus {
   }
 
   .editor-grid,
+  .editor-grid.inspector-collapsed,
   .editor-grid.rail-collapsed {
     grid-template-columns: 44px minmax(0, 1fr);
   }
