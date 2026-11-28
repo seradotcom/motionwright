@@ -130,13 +130,14 @@ fn prepare_project_export(
     })
 }
 
-pub fn export_project_bundle(
+pub fn export_project_bundle<P>(
     service: &StudioService,
     grants: &EffectGrantRegistry,
     request: ExportBundleRequest,
+    admit_publication: impl FnOnce() -> std::io::Result<P>,
 ) -> Result<BundleExportResponse, String> {
     let prepared = prepare_project_export(service, grants, request)?;
-    execute_bundle_export(service, prepared)
+    execute_bundle_export(service, prepared, admit_publication)
 }
 
 pub fn verify_bundle_export(
@@ -167,13 +168,19 @@ pub fn verify_bundle_export(
     })
 }
 
-fn execute_bundle_export(
+fn execute_bundle_export<P>(
     service: &StudioService,
     prepared: PreparedProjectExport,
+    admit_publication: impl FnOnce() -> std::io::Result<P>,
 ) -> Result<BundleExportResponse, String> {
     let destination = absolute_bundle_path(&prepared.path)?;
     let manifest = service
-        .export_project_bundle_at(prepared.project.id, &prepared.project.stamp(), &destination)
+        .export_project_bundle_at_checked(
+            prepared.project.id,
+            &prepared.project.stamp(),
+            &destination,
+            admit_publication,
+        )
         .map_err(sanitized)?;
     let total_blob_bytes = manifest
         .blobs
@@ -989,7 +996,7 @@ mod tests {
         let prepared = prepare_project_export(&f.service, &grants, req).unwrap();
         assert_eq!(prepared.project, f.project);
         let changed = peer_edit(&f);
-        let result = execute_bundle_export(&f.service, prepared);
+        let result = execute_bundle_export(&f.service, prepared, || Ok(()));
         assert!(consume_again(&grants, &f.project, &destination, token).is_err());
         assert_eq!(f.service.project(f.project.id).unwrap(), changed);
         assert!(
@@ -1028,9 +1035,30 @@ mod tests {
         let f = fixture();
         let grants = EffectGrantRegistry::default();
         let destination = f.root.path().join("exports/exact-bundle");
+        let denied = request(&f, &grants, &destination);
+        let denied_token = denied.effect_grant;
+        let mut publication_checked = false;
+        let refused = export_project_bundle(&f.service, &grants, denied, || {
+            publication_checked = true;
+            assert!(!destination.exists());
+            let exports = fs::read_dir(destination.parent().unwrap()).unwrap();
+            let staged: Vec<_> = exports.map(|entry| entry.unwrap().path()).collect();
+            assert_eq!(staged.len(), 1);
+            assert!(staged[0].join("manifest.json").is_file());
+            Err::<(), _>(std::io::ErrorKind::PermissionDenied.into())
+        });
+        assert!(publication_checked && refused.is_err());
+        assert!(
+            fs::read_dir(destination.parent().unwrap())
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        assert!(consume_again(&grants, &f.project, &destination, denied_token).is_err());
+
         let req = request(&f, &grants, &destination);
         let token = req.effect_grant;
-        let response = export_project_bundle(&f.service, &grants, req).unwrap();
+        let response = export_project_bundle(&f.service, &grants, req, || Ok(())).unwrap();
         assert_eq!(response.destination, destination.to_str().unwrap());
         assert_eq!(response.blob_count, 1);
         assert_eq!(response.total_blob_bytes, CONTENT.len().to_string());
@@ -1182,7 +1210,7 @@ mod tests {
             let req = request(&f, &grants, &destination);
             let token = req.effect_grant;
             let rejected = if bundle {
-                export_project_bundle(&f.service, &grants, req).is_err()
+                export_project_bundle(&f.service, &grants, req, || Ok(())).is_err()
             } else {
                 export_otio(&f.service, &grants, req).is_err()
             };

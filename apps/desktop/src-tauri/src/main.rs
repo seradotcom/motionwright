@@ -4246,8 +4246,14 @@ async fn export_project_bundle(
 ) -> Result<BundleExportResponse, String> {
     let service = state.service.clone();
     let grants = state.effect_grants.clone();
-    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
-        project_export::export_project_bundle(&service, &grants, request)
+    let worker = owner.worker_owner();
+    let publisher = worker.clone();
+    desktop_owner::spawn_blocking(worker, move || {
+        project_export::export_project_bundle(&service, &grants, request, || {
+            publisher
+                .phase()
+                .map_err(|_| std::io::ErrorKind::PermissionDenied.into())
+        })
     })
     .await
     .map_err(|_| {

@@ -280,12 +280,23 @@ impl PreparedProjectBundleExport {
         destination: &Path,
         admission: &impl BundleAssetAdmission,
     ) -> Result<ProjectBundleManifest> {
+        self.publish_with_admission_checked(destination, admission, || Ok(()))
+    }
+
+    /// Acquire the caller's publication permit after the snapshot and staged
+    /// bytes are verified. The permit lives through the exclusive rename.
+    pub fn publish_with_admission_checked<P>(
+        self,
+        destination: &Path,
+        admission: &impl BundleAssetAdmission,
+        admit_publication: impl FnOnce() -> std::io::Result<P>,
+    ) -> Result<ProjectBundleManifest> {
         PreparedProjectBundleExport::publish_snapshot(
             &self.blob_root,
             self.backup,
             destination,
             admission,
-            |_| {},
+            |_| admit_publication(),
         )
     }
 
@@ -893,19 +904,22 @@ impl Store {
             backup,
             destination,
             &StructuralBundleAdmission,
-            before_publication,
+            |staging| {
+                before_publication(staging);
+                Ok(())
+            },
         )
     }
 }
 
 impl PreparedProjectBundleExport {
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-    fn publish_snapshot(
+    fn publish_snapshot<P>(
         _: &Path,
         _: ProjectBackup,
         _: &Path,
         _: &impl BundleAssetAdmission,
-        _: impl FnOnce(&Path),
+        _: impl FnOnce(&Path) -> std::io::Result<P>,
     ) -> Result<ProjectBundleManifest> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -915,12 +929,12 @@ impl PreparedProjectBundleExport {
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-    fn publish_snapshot(
+    fn publish_snapshot<P>(
         blob_root: &Path,
         backup: ProjectBackup,
         destination: &Path,
         admission: &impl BundleAssetAdmission,
-        before_publication: impl FnOnce(&Path),
+        admit_publication: impl FnOnce(&Path) -> std::io::Result<P>,
     ) -> Result<ProjectBundleManifest> {
         use std::io::Seek;
 
@@ -1106,7 +1120,7 @@ impl PreparedProjectBundleExport {
             ));
         }
         drop(manifest_file);
-        before_publication(staging.path());
+        let _permit = admit_publication(staging.path())?;
         match staging.publish(destination_name) {
             Ok(()) => Ok(manifest),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {

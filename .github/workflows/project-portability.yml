@@ -1479,6 +1479,9 @@ jobs:
               cases = [
                   ("portable-bundle-destination", ["-p", "motionwright-storage", "--lib", "portability::tests::bundle_export_"],
                    {"portability::tests::" + name for name in names}),
+                  ("portable-bundle-owner", ["-p", "motionwright-service", "--test", "desktop_project_export",
+                                            "project_export::tests::exact_bundle_command_exports_verified_project_journal_and_original_blob"],
+                   {"project_export::tests::exact_bundle_command_exports_verified_project_journal_and_original_blob"}),
               ]
           elif selection == "project_projection":
               cases = [('projection-storage',
@@ -1589,6 +1592,9 @@ jobs:
                   WORKFLOW_PATH, "Cargo.lock", "SOURCE_LOCK.json", "rust-toolchain.toml",
                   "crates/storage/Cargo.toml", "crates/storage/src/portability.rs",
                   "crates/storage/src/bundle_export_unix.rs", "crates/storage/src/bundle_export_windows.rs",
+                  "crates/service/src/portability.rs", "crates/service/tests/desktop_project_export.rs",
+                  "apps/desktop/src-tauri/src/main.rs", "apps/desktop/src-tauri/src/project_export.rs",
+                  "apps/desktop/src-tauri/src/desktop_owner.rs", "apps/desktop/src-tauri/src/effect_grants.rs",
               )
           if projection:
               source_paths = (WORKFLOW_PATH, *PROJECTION_PRODUCT_PATHS, *PROJECTION_DEPENDENCIES)

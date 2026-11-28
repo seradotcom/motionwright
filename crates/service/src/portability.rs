@@ -70,11 +70,22 @@ impl StudioService {
         expected: &RevisionStamp,
         destination: impl AsRef<Path>,
     ) -> StorageResult<ProjectBundleManifest> {
-        self.export_bundle_snapshot(
+        self.export_project_bundle_at_checked(id, expected, destination, || Ok(()))
+    }
+
+    pub fn export_project_bundle_at_checked<P>(
+        &self,
+        id: Uuid,
+        expected: &RevisionStamp,
+        destination: impl AsRef<Path>,
+        admit_publication: impl FnOnce() -> std::io::Result<P>,
+    ) -> StorageResult<ProjectBundleManifest> {
+        self.export_bundle_snapshot_checked(
             id,
             Some(expected),
             destination.as_ref(),
             &crate::font_portability::FontBundleExportAdmission,
+            admit_publication,
         )
     }
 
@@ -85,13 +96,24 @@ impl StudioService {
         destination: &Path,
         admission: &impl motionwright_storage::BundleAssetAdmission,
     ) -> StorageResult<ProjectBundleManifest> {
+        self.export_bundle_snapshot_checked(id, expected, destination, admission, || Ok(()))
+    }
+
+    fn export_bundle_snapshot_checked<P>(
+        &self,
+        id: Uuid,
+        expected: Option<&RevisionStamp>,
+        destination: &Path,
+        admission: &impl motionwright_storage::BundleAssetAdmission,
+        admit_publication: impl FnOnce() -> std::io::Result<P>,
+    ) -> StorageResult<ProjectBundleManifest> {
         // The snapshot and CAS location survive the guard. Content inspection,
         // file copying and publication must not serialize unrelated Studio work.
         let prepared = self
             .store
             .lock()
             .prepare_project_bundle_export(id, expected)?;
-        prepared.publish_with_admission(destination, admission)
+        prepared.publish_with_admission_checked(destination, admission, admit_publication)
     }
 
     pub fn verify_project_bundle_export_at(
