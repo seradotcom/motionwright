@@ -1135,6 +1135,18 @@ impl Project {
         Ok(())
     }
 
+    fn marker_index(&self, expected: &Marker) -> Result<usize> {
+        let index = self
+            .markers
+            .iter()
+            .position(|marker| marker.id == expected.id)
+            .ok_or_else(|| DomainError::NotFound(format!("marker:{}", expected.id)))?;
+        if &self.markers[index] != expected {
+            return Err(DomainError::Invalid("saved marker changed".into()));
+        }
+        Ok(index)
+    }
+
     fn ensure_unlocked(&self, resource: &str, kinds: &[LockKind]) -> Result<()> {
         if let Some(lock) = self
             .locks
@@ -1235,6 +1247,8 @@ impl Project {
             Change::UpsertSemanticGraph { .. }
                 | Change::EditSceneBeatTimeline { .. }
                 | Change::RemoveSemanticGraph { .. }
+                | Change::EditMarker { .. }
+                | Change::RemoveMarker { .. }
                 | Change::ReparentCanvasNode { .. }
                 | Change::UpsertSceneBoundary { .. }
                 | Change::RemoveSceneBoundary { .. }
@@ -2513,6 +2527,43 @@ impl Project {
                     label: label.clone(),
                 });
             }
+            Change::EditMarker {
+                expected,
+                at,
+                label,
+            } => {
+                let index = self.marker_index(expected)?;
+                let resource = format!("marker:{}", expected.id);
+                if &expected.at == at && &expected.label == label {
+                    return Err(DomainError::Invalid("marker did not change".into()));
+                }
+                if !non_negative(*at)
+                    || (&expected.label != label && (label.trim().is_empty() || label.len() > 160))
+                {
+                    return Err(DomainError::Invalid("invalid marker".into()));
+                }
+                if &expected.at != at {
+                    self.ensure_unlocked(&self.resource_key(), &[LockKind::Timing])?;
+                    self.ensure_unlocked(&resource, &[LockKind::Timing])?;
+                }
+                if &expected.label != label {
+                    self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
+                    self.ensure_unlocked(&resource, &[LockKind::Content])?;
+                }
+                self.markers[index].at = *at;
+                self.markers[index].label.clone_from(label);
+            }
+            Change::RemoveMarker { expected } => {
+                let index = self.marker_index(expected)?;
+                let resource = format!("marker:{}", expected.id);
+                self.ensure_unlocked(&self.resource_key(), &[LockKind::Content, LockKind::Timing])?;
+                if self.locks.iter().any(|lock| lock.resource == resource) {
+                    return Err(DomainError::Locked(resource));
+                }
+                // Validate the candidate as a whole so existing handoffs and
+                // proposal scopes can veto a removal without changing the head.
+                self.markers.remove(index);
+            }
             Change::AddAsset { asset } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 asset.validate()?;
@@ -3378,6 +3429,14 @@ pub enum Change {
     AddMarker {
         at: RationalTime,
         label: String,
+    },
+    EditMarker {
+        expected: Marker,
+        at: RationalTime,
+        label: String,
+    },
+    RemoveMarker {
+        expected: Marker,
     },
     AddAsset {
         asset: Asset,

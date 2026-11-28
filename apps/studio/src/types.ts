@@ -936,6 +936,8 @@ export type Change =
   | { type: "set_node_property_lock"; scene_id: string; node_id: string; property: NodeProperty; locked: boolean }
   | { type: "set_camera"; scene_id: string; camera: CameraState }
   | { type: "add_marker"; at: RationalTime; label: string }
+  | { type: "edit_marker"; expected: Marker; at: RationalTime; label: string }
+  | { type: "remove_marker"; expected: Marker }
   | { type: "add_asset"; asset: Asset }
   | { type: "remove_asset"; asset_id: string }
   | { type: "upsert_deliverable"; profile: DeliverableProfile }
@@ -970,6 +972,8 @@ export type Change =
   | { type: "reopen_review"; review_id: string }
   | { type: "set_lock"; resource: string; kind: LockKind; note: string }
   | { type: "remove_lock"; lock_id: string };
+
+export type MarkerChange = Extract<Change, { type: "edit_marker" | "remove_marker" }>;
 
 export interface ProjectEvent {
   revision: number;

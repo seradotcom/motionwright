@@ -104,3 +104,34 @@ test("drop-frame timecode is a deliberate display mode, not inferred by fraction
   await expect(page.locator(".revision-chip").first()).toHaveText(revision);
   await addAndReselectFirstFrameMarker(page);
 });
+
+test("markers can be renamed, moved exactly, and removed", async ({ page }) => {
+  await page.goto("/");
+  const revision = page.locator(".revision-chip").first();
+  const before = Number((await revision.innerText()).slice(1));
+  const markerCount = await page.locator(".timeline-marker").count();
+  await page.getByRole("button", { name: "Marker", exact: true }).click();
+  const created = page.getByRole("button", { name: "Marker: Marker " + (markerCount + 1), exact: true });
+  await created.click();
+  const id = await created.getAttribute("data-marker-id");
+  expect(id).toBeTruthy();
+  await page.getByRole("button", { name: "Edit marker", exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "Edit marker" });
+  await editor.getByLabel("Marker name").fill("Picture lock");
+  await editor.getByLabel("Marker position").fill("5/2");
+  await editor.getByRole("button", { name: "Save marker" }).click();
+  await expect(editor).toBeHidden();
+  const renamed = page.getByRole("button", { name: "Marker: Picture lock", exact: true });
+  await expect(renamed).toHaveAttribute("data-marker-id", id!);
+  await expect(revision).toHaveText("r" + (before + 2));
+  await renamed.click();
+  await expect(page.locator(".timeline-header .timecode")).toHaveText("00:02:15");
+
+  await page.getByRole("button", { name: "Edit marker", exact: true }).click();
+  await editor.getByRole("button", { name: "Remove marker", exact: true }).click();
+  await expect(renamed).toBeVisible();
+  await editor.getByRole("button", { name: "Confirm removal" }).click();
+  await expect(editor).toBeHidden();
+  await expect(renamed).toHaveCount(0);
+  await expect(revision).toHaveText("r" + (before + 3));
+});

@@ -1,7 +1,8 @@
 import { Film, Pause, Play, Plus, SkipBack, SkipForward } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { Change, Project, RationalTime, RendererKind } from "./types";
+import type { Change, MarkerChange, Project, RationalTime, RendererKind } from "./types";
+import TimelineMarkerEditor from "./TimelineMarkerEditor";
 import { seconds } from "./types";
 import { formatEditorTimecode as formatTime, parseEditorSeekTime, rulerTime, supportsDropFrame, timebaseLabel, validEditorRate } from "./timecode";
 import type { TimecodeMode } from "./timecode";
@@ -149,6 +150,8 @@ export default function Timeline({
   playhead,
   setPlayhead,
   commit,
+  commitMarker,
+  refreshMarkerProject,
   playing,
   togglePlayback,
   stepFrame,
@@ -166,6 +169,8 @@ export default function Timeline({
   playhead: number;
   setPlayhead: (value: number) => void;
   commit: (change: Change) => Promise<void>;
+  commitMarker: (change: MarkerChange, requestId: string) => Promise<Project>;
+  refreshMarkerProject: (project: Project) => Promise<Project>;
   playing: boolean;
   togglePlayback: () => void;
   stepFrame: (direction: -1 | 1) => void;
@@ -179,6 +184,7 @@ export default function Timeline({
 }) {
   const [selectionIdentity, setSelection] = useState<TimelineSelection | null>(null);
   const selection = resolveTimelineSelection(project, selectionIdentity);
+  const selectedMarker = selection?.kind === "marker" ? project.markers.find(marker => marker.id === selection.id) : undefined;
   const selectionMissing = selectionIdentity !== null && selection === null;
   useEffect(() => {
     // Rendering already hides a removed resource. Clear its identity as well,
@@ -410,6 +416,8 @@ export default function Timeline({
         {selection && selection.kind !== "marker" && <button className="button compact" onClick={() => onEditSelection(selection)}>
           {selection.kind === "object" ? "Edit animation" : selection.kind === "camera" ? "Edit camera" : selection.kind === "review" ? "Open review" : selection.kind === "beat" ? "Edit scene beats" : "Open audio editor"}
         </button>}
+        <TimelineMarkerEditor marker={selectedMarker} project={project} rate={rate} mode={mode}
+          commit={commitMarker} refresh={refreshMarkerProject} />
         {(viewWarning || extras.issues.length > 0) && <span className="timeline-view-warning" role="status">{viewWarning || extras.issues.join(" · ")}</span>}
       </div>
       <div id={timelineBodyId} className="timeline-body">
@@ -627,6 +635,7 @@ export default function Timeline({
                   type="button"
                   className={"timeline-marker" + (selected ? " selected" : "")}
                   style={{ left: position(at) }}
+                  data-marker-id={marker.id}
                   aria-label={"Marker: " + marker.label}
                   aria-pressed={selected}
                   onPointerDown={(event) => event.stopPropagation()}

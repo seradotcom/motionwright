@@ -125,6 +125,7 @@ import type {
   Bootstrap,
   StudioBootstrap,
   Change,
+  MarkerChange,
   PortableBundlePlan,
   MotionCanvasRenderEvidence,
   MotionCanvasFilmOptions,
@@ -2070,6 +2071,19 @@ export default function App() {
     setGraphReviewSelection({ owner: JSON.stringify([source.id, source.generation, source.active_branch]), resource: anchor.resource });
     setWorkspace("Review");
   }, []);
+  const commitMarker = useCallback((change: MarkerChange, requestId: string): Promise<Project> =>
+    transactProject(source => applyChange(source, change, requestId)), [transactProject]);
+
+  const refreshMarkerProject = useCallback(async (source: Project): Promise<Project> => {
+    if (!("__TAURI_INTERNALS__" in window) || !bootRef.current
+        || timelineSelectionScope(bootRef.current.project) !== timelineSelectionScope(source)) {
+      throw new Error("Marker recovery requires the same saved project and branch in Studio Desktop.");
+    }
+    const next = await admitSavedView(source.id, "editor");
+    if (next.kind !== "full") throw new Error("The complete saved project is unavailable.");
+    return next.boot.project;
+  }, [admitSavedView]);
+
   const refreshGraphProject = useCallback(async (): Promise<Project> => {
     const source = viewRef.current;
     if (!("__TAURI_INTERNALS__" in window) || source?.kind !== "full") throw new Error("A saved project refresh requires the actual StudioService.");
@@ -2631,6 +2645,8 @@ export default function App() {
         playhead={playhead}
         setPlayhead={seekTo}
         commit={commit}
+        commitMarker={commitMarker}
+        refreshMarkerProject={refreshMarkerProject}
         playing={playing}
         togglePlayback={() => setPlaying((current) => !current)}
         stepFrame={stepFrame}

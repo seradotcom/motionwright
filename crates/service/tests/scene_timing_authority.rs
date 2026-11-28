@@ -231,3 +231,108 @@ fn unrelated_locked_timing_and_exact_rational_changes_survive_reopen() {
         &history,
     );
 }
+
+#[test]
+fn marker_edits_preserve_identity_locks_and_original_receipts_after_reopen() {
+    use motionwright_storage::{APPLY_REQUEST_ENCODING_V1, ApplyReceiptObservation};
+
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("markers.sqlite3");
+    let service = StudioService::open(&path).unwrap();
+    let initial = service.create_project("Editorial markers").unwrap();
+    let marked = apply(
+        &service,
+        &initial,
+        "add-editorial-marker",
+        Change::AddMarker {
+            at: time(1001, 30_000),
+            label: "First frame".into(),
+        },
+    );
+    let original = marked.markers[0].clone();
+    let locked = apply(
+        &service,
+        &marked,
+        "lock-marker-time",
+        Change::SetLock {
+            resource: format!("marker:{}", original.id),
+            kind: LockKind::Timing,
+            note: String::new(),
+        },
+    );
+    let rejected = Change::EditMarker {
+        expected: original.clone(),
+        at: time(3, 2),
+        label: "Timing conflict".into(),
+    };
+    assert!(
+        service
+            .apply(locked.id, &locked.stamp(), "blocked-marker-edit", &rejected)
+            .is_err()
+    );
+    assert_eq!(service.project(locked.id).unwrap(), locked);
+
+    let rename = Change::EditMarker {
+        expected: original.clone(),
+        at: original.at,
+        label: "Picture lock".into(),
+    };
+    let renamed = apply(&service, &locked, "rename-editorial-marker", rename.clone());
+    assert_eq!(renamed.markers[0].id, original.id);
+    assert_eq!(renamed.markers[0].at, original.at);
+    assert!(
+        service
+            .apply(
+                renamed.id,
+                &renamed.stamp(),
+                "stale-marker-preimage",
+                &rename
+            )
+            .is_err()
+    );
+    assert_eq!(service.project(renamed.id).unwrap(), renamed);
+    let lock_id = renamed.locks[0].id;
+    let unlocked = apply(
+        &service,
+        &renamed,
+        "unlock-marker-time",
+        Change::RemoveLock { lock_id },
+    );
+    let moved = apply(
+        &service,
+        &unlocked,
+        "move-editorial-marker",
+        Change::EditMarker {
+            expected: unlocked.markers[0].clone(),
+            at: time(3, 2),
+            label: "Picture lock".into(),
+        },
+    );
+    assert_eq!(moved.markers[0].id, original.id);
+    let remove = Change::RemoveMarker {
+        expected: moved.markers[0].clone(),
+    };
+    let removed = apply(&service, &moved, "remove-editorial-marker", remove.clone());
+    assert!(removed.markers.is_empty());
+    assert_eq!(removed.revision, moved.revision + 1);
+    drop(service);
+
+    let reopened = StudioService::open(&path).unwrap();
+    assert_eq!(reopened.project(removed.id).unwrap(), removed);
+    let store = reopened.store();
+    let receipt = store
+        .lock()
+        .observe_apply_receipt_v1(
+            moved.id,
+            &moved.stamp(),
+            "remove-editorial-marker",
+            &remove,
+            APPLY_REQUEST_ENCODING_V1,
+        )
+        .unwrap();
+    let ApplyReceiptObservation::KnownVerifiedV1 { binding } = receipt else {
+        panic!("expected the original marker removal receipt");
+    };
+    assert_eq!(binding.result_revision, removed.revision.to_string());
+    assert_eq!(binding.base_branch, moved.active_branch.to_string());
+}

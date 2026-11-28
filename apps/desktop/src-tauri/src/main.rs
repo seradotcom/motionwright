@@ -908,6 +908,44 @@ async fn project_history(
     .map_err(|error| error.to_string())?
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MarkerReceiptRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    branch_id: Uuid,
+    revision: u64,
+    request_id: Uuid,
+    change: Change,
+}
+
+#[tauri::command]
+async fn observe_marker_receipt(
+    mut owner: desktop_owner::OwnerInvocation,
+    state: State<'_, AppState>,
+    request: MarkerReceiptRequest,
+) -> Result<motionwright_service::ApplyReceiptObservation, String> {
+    let service = state.service.clone();
+    desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+        let original = RevisionStamp {
+            resource: format!("project:{}", request.project_id),
+            generation: request.generation,
+            revision: request.revision,
+        };
+        service
+            .observe_marker_receipt(
+                request.project_id,
+                &original,
+                request.branch_id,
+                &request.request_id.to_string(),
+                &request.change,
+            )
+            .map_err(sanitized)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 async fn project_history_recent(
     mut owner: desktop_owner::OwnerInvocation,
@@ -5326,6 +5364,7 @@ fn main() {
             issue_effect_grant,
             project_history,
             project_history_recent,
+            observe_marker_receipt,
             asset_integrity_page,
             model_request_preflight,
             production_runtime_status,

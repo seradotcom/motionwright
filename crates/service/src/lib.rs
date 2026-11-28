@@ -78,13 +78,13 @@ pub struct VerifiedMasterVoice {
 }
 
 use motionwright_domain::{Change, DomainError, Project, RenderTailInspectRequest, RevisionStamp};
-pub use motionwright_storage::StorageError;
 #[cfg(windows)]
 pub use motionwright_storage::open_portable_source;
 pub use motionwright_storage::{
     ASSET_MEDIA_RANGE_BYTES, VerifiedAssetMedia, publish_bundle_directory,
 };
 use motionwright_storage::{ApplyOutcome, Result as StorageResult, Store};
+pub use motionwright_storage::{ApplyReceiptObservation, StorageError};
 pub use motionwright_storage::{
     AssetIntegrityPage, AssetIntegrityRecord, AssetIntegrityStatus, BlobDescriptor,
     BundleFingerprint, BundleImportCommit, BundleImportPlan, BundleImportRecoveryRequest,
@@ -1506,6 +1506,40 @@ impl StudioService {
         self.store
             .lock()
             .event_records_since(id, after_revision, limit)
+    }
+
+    /// Observe the original local marker mutation without executing it.
+    pub fn observe_marker_receipt(
+        &self,
+        project_id: Uuid,
+        original: &RevisionStamp,
+        branch_id: Uuid,
+        request_id: &str,
+        change: &Change,
+    ) -> StorageResult<ApplyReceiptObservation> {
+        if !matches!(
+            change,
+            Change::EditMarker { .. } | Change::RemoveMarker { .. }
+        ) {
+            return Err(StorageError::Domain(
+                motionwright_domain::DomainError::Invalid(
+                    "only marker mutations have a marker receipt".into(),
+                ),
+            ));
+        }
+        let observation = self.store.lock().observe_apply_receipt_v1(
+            project_id,
+            original,
+            request_id,
+            change,
+            motionwright_storage::APPLY_REQUEST_ENCODING_V1,
+        )?;
+        if let ApplyReceiptObservation::KnownVerifiedV1 { binding } = &observation
+            && binding.base_branch != branch_id.to_string()
+        {
+            return Ok(ApplyReceiptObservation::AuthorityMismatch);
+        }
+        Ok(observation)
     }
 
     pub fn apply(

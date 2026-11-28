@@ -79,6 +79,8 @@ import type {
   PortableBundlePlan,
   Project,
   ProjectEvent,
+  MarkerChange,
+  RationalTime,
   SceneBoundaryContextRequest,
   SceneBoundaryAuthoringContext,
   ProductionJobProjection,
@@ -1666,15 +1668,44 @@ export async function previewBranchCombination(project: Project, input: BranchCo
   return invoke<unknown>("preview_branch_combination", { request });
 }
 
-export async function applyChange(project: Project, change: Change, retainedGraphRequestId?: string): Promise<Project> {
+export async function observeMarkerReceipt(
+  project: Project, revision: number, requestId: string, change: MarkerChange,
+): Promise<boolean> {
+  if (!isTauri()) throw new Error("A durable marker receipt requires Studio Desktop.");
+  const response = await invoke<{
+    state: string;
+    binding?: {
+      request_id: string; project_id: string; generation: string; base_branch: string;
+      result_branch: string; base_revision: string; result_revision: string;
+    };
+  }>("observe_marker_receipt", { request: {
+    project_id: project.id, generation: project.generation, branch_id: project.active_branch,
+    revision, request_id: requestId, change,
+  } });
+  const evidence = response?.binding;
+  if (response?.state === "not_found") return false;
+  if (response?.state !== "known_verified_v1" || !evidence
+      || evidence.request_id !== requestId || evidence.project_id !== project.id
+      || evidence.generation !== project.generation || evidence.base_branch !== project.active_branch
+      || evidence.result_branch !== project.active_branch || evidence.base_revision !== String(revision)
+      || evidence.result_revision !== String(BigInt(revision) + 1n)) {
+    throw new Error("The stored receipt could not confirm this original marker edit.");
+  }
+  return true;
+}
+
+export async function applyChange(project: Project, change: Change, retainedRequestId?: string): Promise<Project> {
   const graphChange = change.type === "upsert_semantic_graph" || change.type === "remove_semantic_graph";
-  // Graph persists its original application key before requesting a grant.
-  // Never replace that key during dispatch or recovery of an uncertain result.
-  if (graphChange && (!graphUuid(retainedGraphRequestId) || retainedGraphRequestId.length !== 36))
+  const markerChange = change.type === "edit_marker" || change.type === "remove_marker";
+  const validRequest = graphUuid(retainedRequestId) && retainedRequestId.length === 36;
+  // Both editors retain the original request identity before asking for a grant.
+  if (graphChange && !validRequest)
     throw new Error("Retain the original Graph request identity before dispatch.");
-  if (!graphChange && retainedGraphRequestId !== undefined)
+  if (markerChange && !validRequest)
+    throw new Error("Retain the original marker request identity before dispatch.");
+  if (!graphChange && !markerChange && retainedRequestId !== undefined)
     throw new Error("A retained Graph request identity cannot authorize another editor change.");
-  const requestId = retainedGraphRequestId ?? crypto.randomUUID();
+  const requestId = retainedRequestId ?? crypto.randomUUID();
   if (isTauri()) {
     const grant = await issueEffectGrant("project_edit", project, requestId);
     return invoke<Project>("apply_change", {
@@ -2331,6 +2362,40 @@ async function simulateChange(project: Project, change: Change, requestId: strin
       assertUnlocked(next, projectResource(next), ["timing"]);
       next.markers.push({ id: crypto.randomUUID(), at: change.at, label: change.label });
       break;
+    case "edit_marker":
+    case "remove_marker": {
+      const expected = change.expected;
+      const index = next.markers.findIndex(marker => marker.id === expected.id);
+      const marker = next.markers[index];
+      const sameTime = (left: RationalTime, right: RationalTime) => left.num === right.num && left.den === right.den;
+      if (!marker || marker.label !== expected.label || !sameTime(marker.at, expected.at)) {
+        throw new Error("The saved marker changed.");
+      }
+      const resource = "marker:" + marker.id;
+      if (change.type === "remove_marker") {
+        assertUnlocked(next, projectResource(next), ["content", "timing"]);
+        if (next.locks.some(lock => lock.resource === resource)) throw new Error("The marker is locked.");
+        if (next.handoffs.some(binding => binding.local_resource === resource)
+            || next.proposal_sets.some(set => set.scope.kind === "selection" && set.scope.resource_refs.includes(resource))) {
+          throw new Error("The marker is referenced by saved project work.");
+        }
+        next.markers.splice(index, 1);
+        break;
+      }
+      const timeChanged = !sameTime(marker.at, change.at);
+      const labelChanged = marker.label !== change.label;
+      if (!timeChanged && !labelChanged) throw new Error("The marker did not change.");
+      if (BigInt(change.at.num) < 0n || (labelChanged && (!change.label.trim() || new TextEncoder().encode(change.label).length > 160))) {
+        throw new Error("The marker position or label is invalid.");
+      }
+      const locks: LockKind[] = [];
+      if (timeChanged) locks.push("timing");
+      if (labelChanged) locks.push("content");
+      assertUnlocked(next, projectResource(next), locks);
+      assertUnlocked(next, resource, locks);
+      next.markers[index] = { ...marker, at: structuredClone(change.at), label: change.label };
+      break;
+    }
     case "add_asset":
       assertUnlocked(next, projectResource(next), ["content"]);
       if (next.assets.some((asset) => asset.id === change.asset.id)) {
