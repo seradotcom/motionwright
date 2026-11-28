@@ -1512,6 +1512,54 @@ mod tests {
     }
 
     #[test]
+    fn delivery_updates_reject_new_burn_in_without_captions_and_can_repair_saved_profiles() {
+        let mut project = fixture(AlignmentEvidence::Manual);
+        let before = project.clone();
+        let mut profile = project.deliverables[0].clone();
+        profile.burn_in_captions = true;
+        profile.captions = false;
+        assert!(matches!(
+            project.apply_change(&crate::Change::UpsertDeliverable {
+                profile: profile.clone()
+            }),
+            Err(DomainError::Invalid(message)) if message.contains("Burn-in requires")
+        ));
+        assert_eq!(project, before);
+
+        let mut new_profile = profile.clone();
+        new_profile.id = Uuid::now_v7();
+        new_profile.name = "Additional delivery".into();
+        assert!(matches!(
+            project.apply_change(&crate::Change::UpsertDeliverable {
+                profile: new_profile
+            }),
+            Err(DomainError::Invalid(message)) if message.contains("Burn-in requires")
+        ));
+        assert_eq!(project, before);
+
+        // A saved profile that predates the write guard can still be read
+        // and edited without losing its caption settings.
+        project.deliverables[0] = profile.clone();
+        let bytes = serde_json::to_vec(&project).unwrap();
+        let mut reopened: Project = serde_json::from_slice(&bytes).unwrap();
+        reopened.validate().unwrap();
+        profile.name = "Saved delivery".into();
+        reopened
+            .apply_change(&crate::Change::UpsertDeliverable {
+                profile: profile.clone(),
+            })
+            .unwrap();
+        assert_eq!(reopened.deliverables[0], profile);
+        profile.captions = true;
+        reopened
+            .apply_change(&crate::Change::UpsertDeliverable {
+                profile: profile.clone(),
+            })
+            .unwrap();
+        assert_eq!(reopened.deliverables[0], profile);
+    }
+
+    #[test]
     fn locked_localized_timing_rejects_changed_measured_voice_duration() {
         let mut project = fixture(AlignmentEvidence::Manual);
         let parent_id = project.deliverables[0].id;

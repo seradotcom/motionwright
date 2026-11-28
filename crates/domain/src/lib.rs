@@ -2608,11 +2608,21 @@ impl Project {
             Change::UpsertDeliverable { profile } => {
                 self.ensure_unlocked(&self.resource_key(), &[LockKind::Content])?;
                 profile.validate()?;
-                if let Some(existing) = self
+                let existing = self
                     .deliverables
                     .iter_mut()
-                    .find(|candidate| candidate.id == profile.id)
+                    .find(|candidate| candidate.id == profile.id);
+                if profile.burn_in_captions
+                    && !profile.captions
+                    && existing
+                        .as_ref()
+                        .is_none_or(|previous| !previous.burn_in_captions || previous.captions)
                 {
+                    return Err(DomainError::Invalid(
+                        "Burn-in requires captions to be enabled".into(),
+                    ));
+                }
+                if let Some(existing) = existing {
                     *existing = profile.clone();
                 } else {
                     if self.deliverables.len() >= MAX_DELIVERABLE_PROFILES {
