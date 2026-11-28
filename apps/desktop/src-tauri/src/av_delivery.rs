@@ -1,5 +1,8 @@
+mod destination;
 mod saved_delivery;
 pub(crate) mod streaming;
+pub(crate) use destination::PreparedMasterDestination;
+use destination::{STAGED_MEDIA, STAGED_PROOF};
 pub(crate) use saved_delivery::{SavedMasterExportRequest, prepare_saved_delivery};
 
 use motionwright_domain::{Project, RevisionStamp};
@@ -15,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::VecDeque,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{Read, Seek, Write},
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
@@ -730,6 +733,15 @@ fn validated_destination(value: &str) -> Result<PathBuf, String> {
     {
         return Err("Export destination must be an absolute path ending in .mp4.".into());
     }
+    #[cfg(windows)]
+    {
+        if !destination::windows::local_drive(&destination)
+            || destination.components().any(|component| matches!(component, Component::Normal(part)
+                if part.to_str().is_none_or(|part| part.contains(':') || part.ends_with(['.', ' ']))))
+        {
+            return Err("MP4 export requires an ordinary path on a local drive.".into());
+        }
+    }
     let parent = destination
         .parent()
         .ok_or("MP4 destination has no parent directory.")?;
@@ -757,6 +769,14 @@ fn validated_destination(value: &str) -> Result<PathBuf, String> {
         return Err("MP4 export filename is invalid.".into());
     }
     Ok(destination)
+}
+
+fn require_free_export_path(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("The MP4 export destination cannot be inspected.".into()),
+        Ok(_) => Err("MP4 or verification receipt destination already exists; existing files are never overwritten.".into()),
+    }
 }
 
 impl DeliverySource {
@@ -880,78 +900,119 @@ impl DeliverySource {
         !self.review_only
     }
 
-    /// Optional portable integrity metadata is written only after the exact
-    /// destination MP4 has been exported and independently SHA-256 verified.
-    /// An owner-scoped export grant authorizes the media destination and its
-    /// deterministic sibling proof; the WebView cannot inject origin hashes.
-    ///
-    /// This is an unsigned content-integrity descriptor, NOT an authenticity
-    /// signature or proof that someone reviewed the media.
-    pub fn copy_with_integrity(
+    /// Publish the verified copy, plus the optional content-integrity metadata.
+    /// The destination was held before slow qualification or copying can begin.
+    pub(crate) fn publish_prepared<Permit>(
+        &self,
+        target: &PreparedMasterDestination,
+        include_integrity_manifest: bool,
+        native_sdk_revision: &str,
+        admit_publication: impl FnOnce() -> Result<Permit, String>,
+    ) -> Result<MasterExportReceipt, String> {
+        if !self.export_allowed() {
+            return Err("Captioned native MP4 is review-only: independently decoded device-local caption pixels are not yet verified for export.".into());
+        }
+        let destination = target.path();
+        let name = destination
+            .file_name()
+            .and_then(|part| part.to_str())
+            .ok_or("Exported MP4 file name is not UTF-8.")?;
+        let proof_path = if include_integrity_manifest {
+            if native_sdk_revision.len() != 40
+                || !native_sdk_revision
+                    .bytes()
+                    .all(|ch| ch.is_ascii_digit() || (b'a'..=b'f').contains(&ch))
+            {
+                return Err("Pinned Semwright Native SDK source revision is malformed.".into());
+            }
+            let proof_name = format!("{name}.motionwright-integrity.json");
+            if proof_name.len() > 255 {
+                return Err(
+                    "MP4 file name is too long to create a portable verification receipt.".into(),
+                );
+            }
+            Some(destination.with_file_name(proof_name))
+        } else {
+            None
+        };
+        require_free_export_path(destination)?;
+        if let Some(path) = &proof_path {
+            require_free_export_path(path)?;
+        }
+        let stage = target.stage()?;
+        let mut output = stage
+            .create(STAGED_MEDIA)
+            .map_err(|_| "Unable to stage the MP4 export.")?;
+        let size_bytes = self.copy_verified_bytes(&mut output)?;
+        drop(output);
+        let mut receipt = MasterExportReceipt {
+            destination: destination.to_string_lossy().into_owned(),
+            size_bytes,
+            sha256: self.sha256.clone(),
+            revision: self.revision,
+            deliverable_id: self.deliverable_id,
+            source_current: true,
+            integrity_manifest_path: None,
+        };
+        if proof_path.is_some() {
+            let mut proof = stage
+                .create(STAGED_PROOF)
+                .map_err(|_| "Unable to stage the MP4 verification receipt.")?;
+            self.write_integrity_manifest(&mut proof, name, size_bytes, native_sdk_revision)?;
+        }
+        target.check_current()?;
+        if let Some(path) = &proof_path {
+            require_free_export_path(path)?;
+        }
+        let _publication = admit_publication()?;
+        stage.publish(STAGED_MEDIA, destination).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                "MP4 destination already exists; Motionwright never overwrites user files.".to_owned()
+            } else {
+                format!("MP4 publication did not complete: {error}. Inspect the destination before retrying.")
+            }
+        })?;
+        if let Some(path) = proof_path {
+            stage.publish(STAGED_PROOF, &path).map_err(|error| format!(
+                "MP4 was exported and verified, but its optional verification receipt failed: {error}. The MP4 was preserved; check its destination."
+            ))?;
+            receipt.integrity_manifest_path = Some(path.to_string_lossy().into_owned());
+        }
+        target.check_current().map_err(|_| {
+            "The selected directory changed during publication. Inspect the original destination before retrying.".to_owned()
+        })?;
+        Ok(receipt)
+    }
+
+    #[cfg(test)]
+    fn copy_with_integrity(
         &self,
         destination: &str,
         include_integrity_manifest: bool,
         native_sdk_revision: &str,
     ) -> Result<MasterExportReceipt, String> {
-        if !self.export_allowed() {
-            return Err("Captioned native MP4 is review-only: independently decoded device-local caption pixels are not yet verified for export.".into());
-        }
-        if !include_integrity_manifest {
-            return self.copy_to(destination);
-        }
-        if native_sdk_revision.len() != 40
-            || !native_sdk_revision
-                .bytes()
-                .all(|ch| ch.is_ascii_digit() || (b'a'..=b'f').contains(&ch))
-        {
-            return Err("Pinned Semwright Native SDK source revision is malformed.".into());
-        }
-        let target = validated_destination(destination)?;
-        let name = target
-            .file_name()
-            .and_then(|part| part.to_str())
-            .ok_or("Exported MP4 file name is not UTF-8.")?;
-        let proof_name = format!("{name}.motionwright-integrity.json");
-        if proof_name.len() > 255 {
-            return Err(
-                "MP4 file name is too long to create a portable verification receipt.".into(),
-            );
-        }
-        let proof_path = target.with_file_name(proof_name);
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        // Reserve the sibling manifest without overwriting an existing
-        // receipt. This happens *before* MP4 creation so a collision cannot
-        // result in a new video with no accompanying requested evidence.
-        let mut proof = options.open(&proof_path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                "Verification receipt destination already exists; existing files are never overwritten."
-                    .to_string()
-            } else {
-                "The verification receipt could not be created safely.".to_string()
-            }
-        })?;
-        let transfer = self.copy_to(destination);
-        let receipt = match transfer {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                drop(proof);
-                let _ = fs::remove_file(&proof_path);
-                return Err(error);
-            }
-        };
+        self.publish_prepared(
+            &PreparedMasterDestination::open(destination)?,
+            include_integrity_manifest,
+            native_sdk_revision,
+            || Ok(()),
+        )
+    }
+
+    fn write_integrity_manifest(
+        &self,
+        proof: &mut File,
+        name: &str,
+        size_bytes: u64,
+        native_sdk_revision: &str,
+    ) -> Result<(), String> {
         let body = serde_json::json!({
             "schema": "motionwright-media-integrity-v1",
             "scope": "sha256-content-consistency-not-signed-attestation",
             "media": {
                 "filename": name,
-                "size_bytes": receipt.size_bytes,
-                "sha256": receipt.sha256,
+                "size_bytes": size_bytes,
+                "sha256": self.sha256,
             },
             "origin": {
                 "project_id": self.project_id,
@@ -964,36 +1025,18 @@ impl DeliverySource {
                 "semwright_native_sdk_revision": native_sdk_revision,
             }
         });
-        let write_result = (|| -> Result<(), String> {
-            let bytes = serde_json::to_vec_pretty(&body)
-                .map_err(|_| "Unable to serialize the portable MP4 verification receipt.")?;
-            if bytes.len() > 12 * 1024 {
-                return Err("Portable MP4 verification receipt exceeds its bounded size.".into());
-            }
-            proof
-                .write_all(&bytes)
-                .map_err(|_| "Portable MP4 verification receipt write failed.")?;
-            proof
-                .write_all(b"\n")
-                .map_err(|_| "Portable MP4 verification receipt newline write failed.")?;
-            proof
-                .sync_all()
-                .map_err(|_| "Portable MP4 verification receipt sync failed.")?;
-            Ok(())
-        })();
-        drop(proof);
-        if let Err(error) = write_result {
-            // A successfully verified media export is never destroyed to
-            // conceal a sidecar failure; remove only the incomplete sibling.
-            let _ = fs::remove_file(&proof_path);
-            return Err(format!(
-                "MP4 was exported and verified, but its optional verification receipt failed: {error}. The MP4 was preserved; check its destination."
-            ));
+        let mut bytes = serde_json::to_vec_pretty(&body)
+            .map_err(|_| "Unable to serialize the portable MP4 verification receipt.")?;
+        bytes.push(b'\n');
+        if bytes.len() > 12 * 1024 {
+            return Err("Portable MP4 verification receipt exceeds its bounded size.".into());
         }
-        Ok(MasterExportReceipt {
-            integrity_manifest_path: Some(proof_path.to_string_lossy().to_string()),
-            ..receipt
-        })
+        proof
+            .write_all(&bytes)
+            .map_err(|_| "Portable MP4 verification receipt write failed.")?;
+        proof
+            .sync_all()
+            .map_err(|_| "Portable MP4 verification receipt sync failed.".into())
     }
 
     /// Review a *small* completed native master without exporting to a user
@@ -1016,13 +1059,12 @@ impl DeliverySource {
         Ok(bytes)
     }
 
-    /// Copy only the SHA-256-verified canonical owner artifact. Existing user
-    /// files are NEVER overwritten, and source paths stay backend-private.
-    pub fn copy_to(&self, destination: &str) -> Result<MasterExportReceipt, String> {
-        if !self.export_allowed() {
-            return Err("Captioned native MP4 is review-only: source glyphs are not an exportable master pixel attestation.".into());
-        }
-        let destination = validated_destination(destination)?;
+    #[cfg(test)]
+    fn copy_to(&self, destination: &str) -> Result<MasterExportReceipt, String> {
+        self.copy_with_integrity(destination, false, "")
+    }
+
+    fn copy_verified_bytes(&self, output: &mut File) -> Result<u64, String> {
         let original = verified_native_media_path(
             &self.owner_root,
             &self.relative_path,
@@ -1046,70 +1088,34 @@ impl DeliverySource {
             .rewind()
             .map_err(|_| "Canonical MP4 could not be rewound.")?;
 
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut output = options.open(&destination).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                "MP4 destination already exists; Motionwright never overwrites user files."
-                    .to_string()
-            } else {
-                "Unable to create the chosen MP4 export destination.".to_string()
+        let mut copied = 0_u64;
+        let mut digest = Sha256::new();
+        let mut buffer = [0u8; 128 * 1024];
+        loop {
+            let read = input
+                .read(&mut buffer)
+                .map_err(|_| "MP4 source read failed.")?;
+            if read == 0 {
+                break;
             }
-        })?;
-        let transfer = (|| -> Result<u64, String> {
-            let mut copied = 0_u64;
-            let mut digest = Sha256::new();
-            let mut buffer = [0u8; 128 * 1024];
-            loop {
-                let read = input
-                    .read(&mut buffer)
-                    .map_err(|_| "MP4 source read failed.")?;
-                if read == 0 {
-                    break;
-                }
-                copied = copied
-                    .checked_add(read as u64)
-                    .ok_or("MP4 export byte count overflow.")?;
-                if copied > expected_bytes || copied > MAX_MASTER_BYTES {
-                    return Err("MP4 source changed or exceeded its recorded byte budget.".into());
-                }
-                output
-                    .write_all(&buffer[..read])
-                    .map_err(|_| "MP4 export write failed.")?;
-                digest.update(&buffer[..read]);
+            copied = copied
+                .checked_add(read as u64)
+                .ok_or("MP4 export byte count overflow.")?;
+            if copied > expected_bytes || copied > MAX_MASTER_BYTES {
+                return Err("MP4 source changed or exceeded its recorded byte budget.".into());
             }
             output
-                .sync_all()
-                .map_err(|_| "MP4 export durability sync failed.")?;
-            if copied != expected_bytes || hex::encode(digest.finalize()) != self.sha256 {
-                return Err("MP4 export SHA-256 differs from the verified native master.".into());
-            }
-            Ok(copied)
-        })();
-        drop(output);
-        let size_bytes = match transfer {
-            Ok(size) => size,
-            Err(reason) => {
-                // Only the freshly-created failed destination is removed;
-                // nothing pre-existing is ever modified or deleted.
-                let _ = fs::remove_file(&destination);
-                return Err(reason);
-            }
-        };
-        Ok(MasterExportReceipt {
-            destination: destination.to_string_lossy().to_string(),
-            size_bytes,
-            sha256: self.sha256.clone(),
-            revision: self.revision,
-            deliverable_id: self.deliverable_id,
-            source_current: true,
-            integrity_manifest_path: None,
-        })
+                .write_all(&buffer[..read])
+                .map_err(|_| "MP4 export write failed.")?;
+            digest.update(&buffer[..read]);
+        }
+        output
+            .sync_all()
+            .map_err(|_| "MP4 export durability sync failed.")?;
+        if copied != expected_bytes || hex::encode(digest.finalize()) != self.sha256 {
+            return Err("MP4 export SHA-256 differs from the verified native master.".into());
+        }
+        Ok(copied)
     }
 }
 
@@ -1667,6 +1673,16 @@ mod tests {
         );
         assert!(!target.exists());
         assert!(!sidecar.exists());
+
+        fs::write(owner.path().join("signed-master.mp4"), bytes).unwrap();
+        let prepared = PreparedMasterDestination::open(target.to_str().unwrap()).unwrap();
+        let revoked = source
+            .publish_prepared::<()>(&prepared, true, SDK_SOURCE_FIXTURE, || {
+                Err("The owner closed during preparation.".into())
+            })
+            .unwrap_err();
+        assert_eq!(revoked, "The owner closed during preparation.");
+        assert_eq!(fs::read_dir(destination.path()).unwrap().count(), 0);
     }
 
     #[test]
@@ -1745,5 +1761,33 @@ mod tests {
         symlink(&real, &linked).unwrap();
         assert!(validated_destination(linked.join("master.mp4").to_str().unwrap()).is_err());
         assert!(validated_destination(real.join("master.mp4").to_str().unwrap()).is_ok());
+
+        let output = real.join("master.mp4");
+        let prepared = PreparedMasterDestination::open(output.to_str().unwrap()).unwrap();
+        let stage = prepared.stage().unwrap();
+        stage
+            .create(STAGED_MEDIA)
+            .unwrap()
+            .write_all(b"verified fixture")
+            .unwrap();
+        fs::write(&output, b"competing original").unwrap();
+        assert_eq!(
+            stage.publish(STAGED_MEDIA, &output).unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        fs::remove_file(&output).unwrap();
+
+        let held = target.path().join("moved");
+        fs::rename(&real, &held).unwrap();
+        fs::create_dir(&real).unwrap();
+        fs::write(&output, b"replacement directory original").unwrap();
+        assert!(prepared.check_current().is_err());
+        assert!(stage.publish(STAGED_MEDIA, &output).is_err());
+        drop(stage);
+        assert_eq!(
+            fs::read(&output).unwrap(),
+            b"replacement directory original"
+        );
+        assert_eq!(fs::read_dir(&held).unwrap().count(), 0);
     }
 }

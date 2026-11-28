@@ -3440,22 +3440,27 @@ async fn export_native_av_master(
     if !source.export_allowed() {
         return Err("Captioned native AV master is review-only until decoded pixels are independently verified on this owner device.".into());
     }
+    let destination = av_delivery::PreparedMasterDestination::open(&request.destination)?;
     let scope = checked_effect_scope(
         &state,
         request.project_id,
         request.generation,
         request.revision,
     )?;
+    destination.check_current()?;
     state.effect_grants.consume(
         request.effect_grant,
         EffectKind::DeliverLocal,
         scope,
         request.destination.trim(),
     )?;
-    let destination = request.destination;
     let write_integrity = request.include_integrity_manifest;
-    let receipt = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
-        source.copy_with_integrity(&destination, write_integrity, SEMWRIGHT_REVISION)
+    let worker = owner.worker_owner();
+    let publisher = worker.clone();
+    let receipt = desktop_owner::spawn_blocking(worker, move || {
+        source.publish_prepared(&destination, write_integrity, SEMWRIGHT_REVISION, || {
+            publisher.phase()
+        })
     })
     .await
     .map_err(|_| "Native master export task failed.".to_string())??;
@@ -3500,6 +3505,7 @@ async fn export_saved_native_av_master(
     }
     let connection_path = selected_connection_path(&state, project.id)?
         .ok_or("Choose the original owner connection before delivering a saved MP4.")?;
+    let destination = av_delivery::PreparedMasterDestination::open(&request.destination)?;
     let expected_path = connection_path.clone();
     let service = state.service.clone();
     let custody = state.production_receipt_custody.clone();
@@ -3543,19 +3549,22 @@ async fn export_saved_native_av_master(
         request.generation,
         request.revision,
     )?;
+    destination.check_current()?;
     state.effect_grants.consume(
         request.effect_grant,
         EffectKind::DeliverLocal,
         scope,
         request.destination.trim(),
     )?;
-    let destination = request.destination;
-    let receipt = desktop_owner::spawn_blocking(owner.worker_owner(), move || {
+    let worker = owner.worker_owner();
+    let publisher = worker.clone();
+    let receipt = desktop_owner::spawn_blocking(worker, move || {
         let _preparation = preparation;
-        source.copy_with_integrity(
+        source.publish_prepared(
             &destination,
             request.include_integrity_manifest,
             SEMWRIGHT_REVISION,
+            || publisher.phase(),
         )
     })
     .await

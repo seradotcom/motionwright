@@ -497,6 +497,21 @@ jobs:
       - name: Native owner lifetime and resource identity regressions
         if: contains(fromJSON('["desktop-playback","desktop-saved-delivery","desktop-workflow"]'), inputs.verification_scope)
         run: cargo test --locked --jobs 2 -p motionwright-desktop desktop_owner -- --test-threads=1
+      - name: Original MP4 publication verifies the destination while held
+        if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'desktop-compile'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            export TMPDIR="$(cd "$RUNNER_TEMP" && pwd -P)"
+          fi
+          log="$RUNNER_TEMP/master-publication-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.log"
+          cargo test --locked --jobs 2 -p motionwright-desktop av_delivery::tests:: -- --test-threads=1 | tee "$log"
+          grep -F 'optional_portable_integrity_proof_binds_exact_exported_media_and_revision ... ok' "$log"
+          grep -F 'integrity_sidecar_collision_or_tampered_master_never_overwrites_user_files ... ok' "$log"
+          if [[ "$RUNNER_OS" != Windows ]]; then
+            grep -F 'rejects_symlinked_destination_parents_and_target_collisions ... ok' "$log"
+          fi
       - name: Clippy desktop boundary
         run: cargo clippy --locked --jobs 2 -p motionwright-desktop --keep-going --all-targets -- -D warnings
 
