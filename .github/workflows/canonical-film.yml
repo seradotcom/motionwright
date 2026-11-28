@@ -48,5 +48,6 @@ jobs:
         run: |
           cargo test --locked --jobs 2 -p motionwright-domain --test production_design versioned_library_updates_keep_instance_overrides_and_reject_conflicts_atomically
           cargo test --locked --jobs 2 -p motionwright-native --test product_hero library_version_survives_sqlite_and_changes_the_heading_in_responsive_film
+          cargo test --locked --jobs 2 -p motionwright-native --lib product_hero_native_api_binds_the_selected_definition_and_layout
       - name: Canonical Film clippy
         run: cargo clippy --locked --jobs 2 -p motionwright-native --all-targets -- -D warnings

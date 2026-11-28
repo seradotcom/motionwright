@@ -1468,16 +1468,34 @@ fn change_from_args(kind: OperationKind, args: &Value) -> NativeResult<Change> {
                 ),
             })
         }
-        OperationKind::UpsertProductHero => Ok(Change::UpsertProductHero {
-            instance_id: uuid(args, "instance_id")?,
-            scene_id: uuid(args, "scene_id")?,
-            config: serde_json::from_value(
+        OperationKind::UpsertProductHero => {
+            let instance_id = uuid(args, "instance_id")?;
+            let scene_id = uuid(args, "scene_id")?;
+            let config = serde_json::from_value(
                 args.get("config")
                     .cloned()
                     .ok_or_else(|| Error::invalid("config is required"))?,
             )
-            .map_err(|_| Error::invalid("invalid ProductHeroReveal config"))?,
-        }),
+            .map_err(|_| Error::invalid("invalid ProductHeroReveal config"))?;
+            let Some(version) = args.get("component_version") else {
+                return Ok(Change::UpsertProductHero {
+                    instance_id,
+                    scene_id,
+                    config,
+                });
+            };
+            let component_version = match version.as_u64() {
+                Some(1) => 1,
+                Some(2) => 2,
+                _ => return Err(Error::invalid("unsupported ProductHero definition version")),
+            };
+            Ok(Change::UpsertVersionedProductHero {
+                instance_id,
+                scene_id,
+                component_version,
+                config,
+            })
+        }
         OperationKind::DetachProductHero => Ok(Change::DetachProductHero {
             instance_id: uuid(args, "instance_id")?,
         }),
@@ -3299,9 +3317,33 @@ fn build_application_with_graph_store(
             OperationKind::UpsertProductHero,
             descriptor(
                 "product-hero.upsert",
-                "Create or three-way update an editable ProductHeroReveal",
+                "Create, update or explicitly select the definition of an editable ProductHeroReveal",
                 schema(
-                    json!({"ref": {"type": "string", "maxLength": 512}, "instance_id": {"type": "string", "format": "uuid", "maxLength": 64}, "scene_id": {"type": "string", "format": "uuid", "maxLength": 64}, "config": {"type": "object", "properties": {"eyebrow": {"type": "string", "minLength": 1, "maxLength": 48}, "headline": {"type": "string", "minLength": 1, "maxLength": 64}, "body": {"type": "string", "minLength": 1, "maxLength": 150}, "wordmark": {"type": "string", "minLength": 1, "maxLength": 8}, "foreground": {"type": "string", "minLength": 1, "maxLength": 7}, "accent": {"type": "string", "minLength": 1, "maxLength": 7}, "motion": {"type": "boolean"}}, "required": ["eyebrow", "headline", "body", "wordmark", "foreground", "accent", "motion"], "additionalProperties": false}}),
+                    json!({
+                        "ref": {"type": "string", "maxLength": 512},
+                        "instance_id": {"type": "string", "format": "uuid", "maxLength": 64},
+                        "scene_id": {"type": "string", "format": "uuid", "maxLength": 64},
+                        "component_version": {"type": "integer", "enum": [1, 2]},
+                        "config": {
+                            "type": "object",
+                            "properties": {
+                                "layout": {"type": "string", "enum": [
+                                    "product_hero_reveal", "split_explanation", "metric_evidence",
+                                    "step_sequence", "contrast_comparison", "editorial_quote",
+                                    "typography_focus", "typography_contrast"
+                                ]},
+                                "eyebrow": {"type": "string", "minLength": 1, "maxLength": 48},
+                                "headline": {"type": "string", "minLength": 1, "maxLength": 64},
+                                "body": {"type": "string", "minLength": 1, "maxLength": 150},
+                                "wordmark": {"type": "string", "minLength": 1, "maxLength": 8},
+                                "foreground": {"type": "string", "minLength": 1, "maxLength": 7},
+                                "accent": {"type": "string", "minLength": 1, "maxLength": 7},
+                                "motion": {"type": "boolean"}
+                            },
+                            "required": ["eyebrow", "headline", "body", "wordmark", "foreground", "accent", "motion"],
+                            "additionalProperties": false
+                        }
+                    }),
                     &["ref", "instance_id", "scene_id", "config"],
                 ),
             ),
@@ -6693,6 +6735,54 @@ mod tests {
         assert!(
             change_from_args(OperationKind::SetCanvasOutCubicPositionMotion, &tampered).is_err()
         );
+    }
+
+    #[test]
+    fn product_hero_native_api_binds_the_selected_definition_and_layout() {
+        use motionwright_domain::{HeroConfig, HeroLayout};
+
+        let (service, _) = fixture();
+        let application = build_application(service).unwrap();
+        let contract = application
+            .contracts()
+            .into_iter()
+            .find(|entry| entry.descriptor.name == "driver.motionwright.product-hero.upsert")
+            .unwrap();
+        let properties = &contract.descriptor.input_schema["properties"];
+        assert_eq!(properties["component_version"]["enum"], json!([1, 2]));
+        assert!(
+            properties["config"]["properties"]["layout"]["enum"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("typography_focus"))
+        );
+
+        let instance_id = Uuid::now_v7();
+        let scene_id = Uuid::now_v7();
+        let desired = HeroConfig {
+            layout: HeroLayout::TypographyFocus,
+            ..HeroConfig::default()
+        };
+        let mut args = json!({
+            "instance_id": instance_id,
+            "scene_id": scene_id,
+            "config": desired,
+        });
+        assert!(matches!(
+            change_from_args(OperationKind::UpsertProductHero, &args).unwrap(),
+            Change::UpsertProductHero { config, .. } if config == desired
+        ));
+        args["component_version"] = json!(2);
+        assert!(matches!(
+            change_from_args(OperationKind::UpsertProductHero, &args).unwrap(),
+            Change::UpsertVersionedProductHero {
+                instance_id: id, scene_id: scene, component_version: 2, config,
+            } if id == instance_id && scene == scene_id && config == desired
+        ));
+        for unsupported in [json!(null), json!(0), json!(3), json!("2"), json!(2.5)] {
+            args["component_version"] = unsupported;
+            assert!(change_from_args(OperationKind::UpsertProductHero, &args).is_err());
+        }
     }
 
     #[tokio::test]
