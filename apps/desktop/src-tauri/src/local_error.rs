@@ -38,9 +38,30 @@ pub(crate) fn sanitized(error: impl std::fmt::Display) -> String {
     "Motionwright could not complete the local operation".into()
 }
 
+pub(crate) fn portable_bundle_error(error: motionwright_service::StorageError) -> String {
+    if let motionwright_service::StorageError::MissingPortableMedia { digests } = &error {
+        if digests.is_empty()
+            || digests.len() > 4096
+            || digests.iter().any(|digest| {
+                digest.len() != 64
+                    || !digest
+                        .bytes()
+                        .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            })
+        {
+            return "invalid project backup".into();
+        }
+        return format!(
+            "Portable backup is incomplete. Missing original media (SHA-256)\n{}",
+            digests.join("\n")
+        );
+    }
+    sanitized(error)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::sanitized;
+    use super::{portable_bundle_error, sanitized};
 
     #[test]
     fn recognized_categories_never_echo_surrounding_backend_details() {
@@ -75,6 +96,24 @@ mod tests {
         assert_eq!(
             sanitized("unrecognized backend detail MW_PRIVATE_METADATA_SENTINEL"),
             "Motionwright could not complete the local operation"
+        );
+    }
+
+    #[test]
+    fn portable_bundle_error_only_reports_valid_media_digests() {
+        use motionwright_service::StorageError;
+        let first = "1".repeat(64);
+        let second = "a".repeat(64);
+        let diagnostic = portable_bundle_error(StorageError::MissingPortableMedia {
+            digests: vec![first.clone(), second.clone()],
+        });
+        assert!(diagnostic.contains("Portable backup is incomplete"));
+        assert!(diagnostic.ends_with(&format!("{first}\n{second}")));
+        assert_eq!(
+            portable_bundle_error(StorageError::MissingPortableMedia {
+                digests: vec!["MW_PRIVATE_PATH/secret-media".into()],
+            }),
+            "invalid project backup"
         );
     }
 

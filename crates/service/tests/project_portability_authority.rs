@@ -1333,6 +1333,67 @@ fn service_rejects_changed_blob_with_unchanged_manifest_and_publishes_no_member(
 }
 
 #[test]
+fn portable_backup_reports_missing_originals_without_partial_import() {
+    let directory = tempfile::tempdir().unwrap();
+    let (bundle, original, sources) =
+        service_fixture_bundle(directory.path(), "source", "portable");
+    let target = StudioService::open(directory.path().join("target/state.sqlite3")).unwrap();
+    let initial = target
+        .inspect_project_bundle_with_fingerprint(&bundle)
+        .unwrap();
+    let path = bundle.join("manifest.json");
+    let original_manifest = fs::read(&path).unwrap();
+    let mut manifest: ProjectBundleManifest = serde_json::from_slice(&original_manifest).unwrap();
+    assert_eq!(manifest.blobs.len(), 2);
+    let missing_file = bundle.join(&manifest.blobs[0].relative_path);
+    let held = fs::read(&missing_file).unwrap();
+    fs::remove_file(&missing_file).unwrap();
+
+    let result = target.import_project_bundle_inspected(&bundle, &initial.fingerprint);
+    assert!(matches!(
+        result,
+        Err(StorageError::MissingPortableMedia { digests }) if digests == [manifest.blobs[0].sha256.clone()]
+    ));
+    assert_eq!(fs::read(&path).unwrap(), original_manifest);
+
+    let skipped = manifest.blobs.pop().unwrap();
+    fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let mut expected = vec![skipped.sha256, manifest.blobs[0].sha256.clone()];
+    expected.sort();
+    assert!(matches!(
+        target.inspect_project_bundle_with_fingerprint(&bundle),
+        Err(StorageError::MissingPortableMedia { digests }) if digests == expected
+    ));
+    assert!(target.projects(10).unwrap().is_empty());
+    {
+        let shared = target.store();
+        let store = shared.lock();
+        for (digest, _) in &sources {
+            assert!(matches!(
+                store.read_blob(digest, 4096),
+                Err(StorageError::BlobMissing { .. })
+            ));
+        }
+        let staging = store.blob_root().join(".staging");
+        assert!(!staging.exists() || fs::read_dir(staging).unwrap().next().is_none());
+    }
+
+    fs::write(missing_file, held).unwrap();
+    fs::write(path, original_manifest).unwrap();
+    let repaired = target
+        .inspect_project_bundle_with_fingerprint(&bundle)
+        .unwrap();
+    assert_eq!(repaired.fingerprint, initial.fingerprint);
+    assert_eq!(
+        target
+            .import_project_bundle_inspected(&bundle, &repaired.fingerprint)
+            .unwrap()
+            .id,
+        original.id
+    );
+}
+
+#[test]
 fn existing_export_verifies_the_exact_saved_revision_and_original_media_after_reopen() {
     use motionwright_service::StudioService;
     let dir = tempfile::tempdir().unwrap();

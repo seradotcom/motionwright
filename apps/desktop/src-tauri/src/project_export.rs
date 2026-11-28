@@ -1,6 +1,6 @@
 //! Snapshot authority for existing local bundle and OTIO export commands.
 use super::effect_grants::{EffectGrantRegistry, EffectKind, EffectScope};
-use super::local_error::sanitized;
+use super::local_error::{portable_bundle_error, sanitized};
 use super::project_library::{OpenProjectRequest, open_project};
 use motionwright_domain::{Project, otio_interchange};
 use motionwright_service::StudioService;
@@ -157,7 +157,7 @@ pub fn verify_bundle_export(
     let source = absolute_bundle_path(&request.path)?;
     let plan = service
         .verify_project_bundle_export_at(project.id, &project.stamp(), &source)
-        .map_err(sanitized)?;
+        .map_err(portable_bundle_error)?;
     Ok(BundleExportVerification {
         destination: source.display().to_string(),
         project_id: plan.project_id,

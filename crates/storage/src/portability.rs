@@ -357,13 +357,17 @@ impl ProjectBundleImportTarget {
     ) -> Result<Vec<StagedFileImport>> {
         let mut staged = Vec::with_capacity(manifest.blobs.len());
         for blob in &manifest.blobs {
-            let path = bundle_member_path(source, &blob.relative_path, "portable bundle blob")?;
-            let captured = file_import::stage_file_from_root(
+            let path = bundle_member_path(source, &blob.relative_path, "portable bundle blob")
+                .map_err(|error| portable_media_read_error(error, &blob.sha256))?;
+            let input = file_import::open_regular_import_source(&path, blob.size_bytes)
+                .map_err(|error| portable_media_read_error(error, &blob.sha256))?;
+            let captured = file_import::stage_reader_from_root(
                 &self.blob_root,
                 self.store_id,
-                &path,
+                input,
                 blob.size_bytes,
                 cas_retention::CapturePurpose::BundleImport,
+                Some(&path),
             )?;
             if captured.descriptor().sha256 != blob.sha256
                 || captured.descriptor().size_bytes != blob.size_bytes

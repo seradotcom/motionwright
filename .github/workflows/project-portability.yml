@@ -1408,6 +1408,7 @@ jobs:
                   'service_export_preconditions_reject_foreign_scope_before_missing_source_io',
                   'service_exact_inspection_rejects_even_semantically_equal_manifest_reencoding',
                   'service_rejects_changed_blob_with_unchanged_manifest_and_publishes_no_member',
+                  'portable_backup_reports_missing_originals_without_partial_import',
                   'existing_export_verifies_the_exact_saved_revision_and_original_media_after_reopen',
               }),
               ('storage-row-authority', ['-p', 'motionwright-storage', '--test', 'project_row_authority'], {
@@ -1492,6 +1493,10 @@ jobs:
                   ("portable-bundle-inspection", ["-p", "motionwright-service", "--lib", prefix + "bundle_i"], {
                       prefix + "bundle_inspection_rejects_a_project_claimed_during_media_readback",
                       prefix + "bundle_import_keeps_studio_available_and_rechecks_publication_authority",
+                  }),
+                  ("portable-media-error", ["-p", "motionwright-service", "--test", "desktop_project_export",
+                                            "local_error::tests::portable_bundle_error_only_reports_valid_media_digests"], {
+                      "local_error::tests::portable_bundle_error_only_reports_valid_media_digests",
                   }),
                   ("legacy-portable-archive", ["-p", "motionwright-service", "--test", "legacy_project_archive"], {
                       "original_archive_inspects_imports_and_reopens_without_foreign_authority",
@@ -1612,7 +1617,8 @@ jobs:
                   "crates/service/src/legacy_project_archive.rs", "crates/service/tests/desktop_project_export.rs",
                   "crates/service/tests/legacy_project_archive.rs", "crates/service/tests/project_portability_authority.rs",
                   "apps/desktop/src-tauri/src/main.rs", "apps/desktop/src-tauri/src/project_export.rs",
-                  "apps/desktop/src-tauri/src/desktop_owner.rs", "apps/desktop/src-tauri/src/effect_grants.rs",
+                  "apps/desktop/src-tauri/src/local_error.rs", "apps/desktop/src-tauri/src/desktop_owner.rs",
+                  "apps/desktop/src-tauri/src/effect_grants.rs",
               )
           if projection:
               source_paths = (WORKFLOW_PATH, *PROJECTION_PRODUCT_PATHS, *PROJECTION_DEPENDENCIES)

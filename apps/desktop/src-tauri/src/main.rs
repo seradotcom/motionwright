@@ -66,7 +66,7 @@ use caption_export::{CaptionExportResponse, ExportCaptionRequest};
 
 use effect_authority::IssueEffectGrantRequest;
 use effect_grants::{EffectGrantReceipt, EffectGrantRegistry, EffectKind, EffectScope};
-use local_error::sanitized;
+use local_error::{portable_bundle_error, sanitized};
 use motionwright_domain::{Change, Project, RevisionStamp};
 use motionwright_native::{
     assembly::preflight_multi_segment_mlt,
@@ -4560,7 +4560,7 @@ async fn inspect_project_bundle(
     desktop_owner::spawn_blocking(owner.worker_owner(), move || {
         let inspected = service
             .inspect_project_bundle_with_fingerprint(&source)
-            .map_err(sanitized)?;
+            .map_err(portable_bundle_error)?;
         let plan = inspected.plan;
         Ok(BundlePlanResponse {
             project_id: plan.project.project_id,
@@ -4619,7 +4619,7 @@ async fn import_project_bundle(
                     .phase()
                     .map_err(|_| std::io::ErrorKind::PermissionDenied.into())
             })
-            .map_err(sanitized)
+            .map_err(portable_bundle_error)
     })
     .await
     .map_err(|error| match error {

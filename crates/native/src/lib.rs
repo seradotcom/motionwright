@@ -124,7 +124,7 @@ fn storage_error(error: StorageError) -> Error {
         StorageError::ProjectExists | StorageError::DestinationExists => {
             Error::new(ErrorCode::Conflict, "Motionwright resource already exists")
         }
-        StorageError::BlobMissing { .. } => {
+        StorageError::BlobMissing { .. } | StorageError::MissingPortableMedia { .. } => {
             Error::new(ErrorCode::NotFound, "Motionwright asset blob not found")
         }
         StorageError::UnsupportedSchemaVersion { .. } => Error::new(

@@ -134,6 +134,8 @@ pub enum StorageError {
     InvalidBlobDigest,
     #[error("blob {digest} is missing")]
     BlobMissing { digest: String },
+    #[error("portable backup is missing original media")]
+    MissingPortableMedia { digests: Vec<String> },
     #[error("blob exceeds read budget: {size} bytes > {limit} bytes")]
     BlobTooLarge { size: u64, limit: u64 },
     #[error("invalid derived cache entry: {0}")]
@@ -1181,18 +1183,39 @@ impl Store {
             expected.insert(digest.to_owned());
         }
 
+        if expected.len() > MAX_BUNDLE_BLOBS {
+            return Err(StorageError::InvalidBackup(
+                "portable bundle contains too many referenced blobs".into(),
+            ));
+        }
+
         let mut observed = BTreeSet::new();
+        let mut missing = BTreeSet::new();
+        let mut available = Vec::with_capacity(manifest.blobs.len());
         let mut total_blob_bytes = 0_u64;
         for blob in &manifest.blobs {
             validate_digest(&blob.sha256)?;
             let expected_relative = blob_relative_path(&blob.sha256)?;
-            if blob.relative_path != expected_relative || !observed.insert(blob.sha256.clone()) {
+            if blob.relative_path != expected_relative || !observed.insert(blob.sha256.as_str()) {
                 return Err(StorageError::InvalidBackup(
                     "bundle blob manifest is duplicate or has a non-canonical path".into(),
                 ));
             }
-            let path = bundle_member_path(source, &blob.relative_path, "portable bundle blob")?;
-            let size = fs::symlink_metadata(&path)?.len();
+            if !expected.contains(&blob.sha256) {
+                return Err(StorageError::InvalidBackup(
+                    "bundle blob set does not match project asset digests".into(),
+                ));
+            }
+            let entry = bundle_member_path(source, &blob.relative_path, "portable bundle blob")
+                .and_then(|path| Ok((fs::symlink_metadata(&path)?.len(), path)));
+            let (size, path) = match entry {
+                Ok(entry) => entry,
+                Err(StorageError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    missing.insert(blob.sha256.as_str());
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             if size != blob.size_bytes {
                 return Err(StorageError::InvalidBackup(
                     "bundle blob size differs from its manifest before hashing".into(),
@@ -1207,14 +1230,30 @@ impl Store {
                     limit: MAX_BUNDLE_TOTAL_BYTES,
                 });
             }
-            // MIME is caller-supplied metadata. Check the actual member bytes
-            // in the same bounded pass that establishes their digest.
+            available.push((blob, path));
+        }
+
+        missing.extend(
+            expected
+                .iter()
+                .map(String::as_str)
+                .filter(|sha| !observed.contains(sha)),
+        );
+        if !missing.is_empty() {
+            return Err(StorageError::MissingPortableMedia {
+                digests: missing.into_iter().map(str::to_owned).collect(),
+            });
+        }
+
+        for (blob, path) in available {
+            // Inspect the actual bytes and bind them to the declared digest.
             let (descriptor, prefix) = portability::inspect_portable_file_with_prefix(
                 &path,
                 "portable asset",
                 blob.size_bytes,
                 admission.prefix_limit(),
-            )?;
+            )
+            .map_err(|error| portable_media_read_error(error, &blob.sha256))?;
             if descriptor.sha256 != blob.sha256 || descriptor.size_bytes != blob.size_bytes {
                 return Err(StorageError::InvalidBackup(
                     "bundle blob failed digest or size verification".into(),
@@ -1226,11 +1265,6 @@ impl Store {
                 &descriptor,
                 &manifest.backup.project,
             )?;
-        }
-        if observed != expected {
-            return Err(StorageError::InvalidBackup(
-                "bundle blob set does not match project asset digests".into(),
-            ));
         }
 
         Ok(total_blob_bytes)
@@ -2412,6 +2446,17 @@ fn ensure_regular_directory(path: &Path, label: &str) -> Result<fs::Metadata> {
         )));
     }
     Ok(metadata)
+}
+
+fn portable_media_read_error(error: StorageError, digest: &str) -> StorageError {
+    match error {
+        StorageError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            StorageError::MissingPortableMedia {
+                digests: vec![digest.to_owned()],
+            }
+        }
+        other => other,
+    }
 }
 
 fn bundle_member_path(root: &Path, relative: &str, label: &str) -> Result<PathBuf> {
