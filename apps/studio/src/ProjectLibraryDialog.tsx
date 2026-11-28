@@ -1,4 +1,4 @@
-import { checkedBundlePlan, type BundleImportCopy } from "./projectBundleImport";
+import { checkedBundlePlan, PortableImportSourceChanged, type BundleImportCopy } from "./projectBundleImport";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import {
   appendProjectLibraryItems,
@@ -290,7 +290,12 @@ export function ProjectLibraryDialog({
         accepted = opened !== null;
         if (accepted) setInspectedBundle(null);
       }
-    } catch (reason) { if (current()) setOperationError(errorMessage(reason)); }
+    } catch (reason) {
+      if (current()) {
+        if (reason instanceof PortableImportSourceChanged) setInspectedBundle(null);
+        setOperationError(errorMessage(reason));
+      }
+    }
     finally { if (current()) { operationRef.current = null; setOpening(null); setCloseNotice(null); } }
     if (accepted && current()) callbacks.current.onClose();
   }

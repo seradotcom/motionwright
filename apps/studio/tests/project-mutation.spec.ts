@@ -187,7 +187,7 @@ test("a pending portable restore cannot race source edits or publish into anothe
   await page.addInitScript(boot => {
     let current = structuredClone(boot.project);
     let resolveRestore: ((project: typeof current) => void) | null = null;
-    let destinationPicks = 0;
+    let destinationPicks = 0, inspections = 0, attempts = 0;
     const state = {
       calls: [] as string[], revisions: [] as number[],
       complete: () => {
@@ -242,14 +242,16 @@ test("a pending portable restore cannot race source edits or publish into anothe
         project_id: "01900000-0000-7000-8000-000000000021",
         title: "Portable restored project", source_generation: "01900000-0000-7000-8000-000000000023",
         revision: "0", event_count: 9, blob_count: 1,
-        total_blob_bytes: "1024", rotates_generation: true, fingerprint: "a".repeat(64),
+        total_blob_bytes: "1024", rotates_generation: true, fingerprint: (++inspections === 1 ? "a" : "b").repeat(64),
       };
       if (command === "issue_effect_grant") return { token: "synthetic-no-native-authority" };
       if (command === "import_project_bundle") {
+        const fingerprint = (++attempts === 1 ? "a" : "b").repeat(64);
         if (args?.request?.path !== "/synthetic-fixture/portable.motionwright"
-          || args.request.fingerprint !== "a".repeat(64)) {
+          || args.request.fingerprint !== fingerprint) {
           throw new Error("Synthetic restore did not preserve its original inspection");
         }
+        if (attempts === 1) throw { kind: "portable_import_source_changed", fingerprint };
         return new Promise(resolve => { resolveRestore = resolve; });
       }
       if (command === "apply_change") {
@@ -292,10 +294,18 @@ test("a pending portable restore cannot race source edits or publish into anothe
     .toEqual([]);
   await page.getByRole("button", { name: "Inspect bundle", exact: true }).click();
   await expect(page.getByLabel("Portable bundle preflight")).toContainText("Portable restored project");
-  await page.getByRole("button", { name: "Import verified bundle", exact: true }).click();
+  const importButton = page.getByRole("button", { name: "Import verified bundle", exact: true });
+  await importButton.click();
+  await expect(page.getByRole("region", { name: "Portable project", exact: true })).toContainText("Inspect it again before importing");
+  await expect(page.getByLabel("Portable bundle preflight")).toHaveCount(0);
+  expect(await page.evaluate(() => Object.keys(localStorage)
+    .filter(key => key.startsWith("motionwright.bundle-import-continuity/")))).toEqual([]);
+  await page.getByRole("button", { name: "Inspect bundle", exact: true }).click();
+  await expect(page.getByLabel("Portable bundle preflight")).toBeVisible();
+  await importButton.click();
   await expect.poll(() => page.evaluate(() => (window as unknown as {
     __RESTORE_FIXTURE__: {calls:string[]};
-  }).__RESTORE_FIXTURE__.calls.includes("import_project_bundle"))).toBe(true);
+  }).__RESTORE_FIXTURE__.calls.filter(call => call === "import_project_bundle").length)).toBe(2);
   await expect(page.locator(".saving-state")).toContainText("Committing");
 
   await page.getByRole("button", { name: "Brief", exact: true }).click();

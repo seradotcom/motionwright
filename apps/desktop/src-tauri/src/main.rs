@@ -66,7 +66,7 @@ use caption_export::{CaptionExportResponse, ExportCaptionRequest};
 
 use effect_authority::IssueEffectGrantRequest;
 use effect_grants::{EffectGrantReceipt, EffectGrantRegistry, EffectKind, EffectScope};
-use local_error::{portable_bundle_error, sanitized};
+use local_error::{portable_bundle_error, portable_import_error, sanitized};
 use motionwright_domain::{Change, Project, RevisionStamp};
 use motionwright_native::{
     assembly::preflight_multi_segment_mlt,
@@ -4813,7 +4813,7 @@ async fn import_project_bundle(
     mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
     request: ImportBundleRequest,
-) -> Result<Project, String> {
+) -> Result<Project, Value> {
     let service = state.service.clone();
     let grants = state.effect_grants.clone();
     let worker = owner.worker_owner();
@@ -4832,14 +4832,16 @@ async fn import_project_bundle(
                     .phase()
                     .map_err(|_| std::io::ErrorKind::PermissionDenied.into())
             })
-            .map_err(portable_bundle_error)
+            .map_err(|error| portable_import_error(error, &request.fingerprint))
     })
     .await
-    .map_err(|error| match error {
-        desktop_owner::OwnerTaskFailure::OwnerUnavailable => error.to_string(),
-        desktop_owner::OwnerTaskFailure::WorkerJoinFailure => {
-            "The portable import outcome is unknown. Check the original import.".to_string()
-        }
+    .map_err(|error| {
+        Value::String(match error {
+            desktop_owner::OwnerTaskFailure::OwnerUnavailable => error.to_string(),
+            desktop_owner::OwnerTaskFailure::WorkerJoinFailure => {
+                "The portable import outcome is unknown. Check the original import.".to_string()
+            }
+        })
     })?
 }
 

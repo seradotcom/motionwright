@@ -5,6 +5,12 @@ import type { PortableBundlePlan, Project } from "./types";
 export const BUNDLE_IMPORT_PREFIX = "motionwright.bundle-import-continuity/1/";
 type StorageView = Pick<Storage, "length" | "key" | "getItem" | "setItem" | "removeItem">;
 type Invoke = (command: string, args: Record<string, unknown>) => Promise<unknown>;
+export class PortableImportSourceChanged extends Error {
+  constructor() {
+    super("The portable backup changed. Inspect it again before importing.");
+  }
+}
+
 export interface BundleImportCommit {
   operation_id: string;
   project_id: string;
@@ -109,7 +115,17 @@ export async function importBundleWithRetainedPlan(
   const copy: BundleImportCopy = { key, raw, value, error: null };
   currentCopy(copy, storage);
   // Dispatch includes the existing one-time owner grant. Both follow retention.
-  const project = await dispatch(value.path, value.plan.fingerprint);
+  let project: Project;
+  try {
+    project = await dispatch(value.path, value.plan.fingerprint);
+  } catch (reason) {
+    if (record(reason) && exact(reason, ["kind", "fingerprint"])
+      && reason.kind === "portable_import_source_changed" && reason.fingerprint === value.plan.fingerprint) {
+      discardBundleImportCopy(copy, storage);
+      throw new PortableImportSourceChanged();
+    }
+    throw reason;
+  }
   currentCopy(copy, storage);
   if (!project || project.id !== value.plan.project_id || !projectionUuid(project.generation)
     || project.generation === value.plan.source_generation || !Number.isSafeInteger(project.revision)

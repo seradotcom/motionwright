@@ -57,6 +57,44 @@ describe("portable import continuity and readonly reconciliation", () => {
     expect(storage.getItem(copy.key)).toBe(copy.raw);
   });
 
+  it("retires only an exact pre-commit source refusal and waits for a new inspected action", async () => {
+    const storage = memory();
+    const refusal = { kind: "portable_import_source_changed", fingerprint: plan.fingerprint };
+    const dispatch = vi.fn(async () => { throw refusal; });
+    await expect(importBundleWithRetainedPlan("/original", plan, dispatch, storage))
+      .rejects.toThrow("Inspect it again");
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(readBundleImports(storage).copies).toEqual([]);
+
+    const inspected = { ...plan, fingerprint: "b".repeat(64) };
+    const next = vi.fn(async () => project);
+    await importBundleWithRetainedPlan("/original", inspected, next, storage);
+    expect(next).toHaveBeenCalledExactlyOnceWith("/original", inspected.fingerprint);
+  });
+
+  it("preserves an uncertain or changed retained copy despite a similar refusal", async () => {
+    for (const refusal of [
+      { kind: "portable_import_source_changed", fingerprint: "b".repeat(64) },
+      { kind: "portable_import_source_changed", fingerprint: plan.fingerprint, unknown: true },
+      "The portable backup changed. Inspect it again before importing.",
+    ]) {
+      const storage = memory();
+      await expect(importBundleWithRetainedPlan("/original", plan, async () => {
+        throw refusal;
+      }, storage)).rejects.toEqual(refusal);
+      expect(readBundleImports(storage).copies).toHaveLength(1);
+    }
+
+    const storage = memory();
+    let key = "";
+    await expect(importBundleWithRetainedPlan("/original", plan, async () => {
+      key = storage.key(0)!;
+      storage.setItem(key, "other retained bytes");
+      throw { kind: "portable_import_source_changed", fingerprint: plan.fingerprint };
+    }, storage)).rejects.toThrow("changed");
+    expect(storage.getItem(key)).toBe("other retained bytes");
+  });
+
   it("storage failure prevents all import authority and dispatch", async () => {
     const storage = memory(), dispatch = vi.fn(async () => project);
     storage.setItem = () => { throw new Error("storage unavailable"); };

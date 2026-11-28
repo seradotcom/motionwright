@@ -1,5 +1,5 @@
 import {
-  BUNDLE_IMPORT_PREFIX, readBundleImports, importBundleWithRetainedPlan,
+  BUNDLE_IMPORT_PREFIX, readBundleImports, importBundleWithRetainedPlan, PortableImportSourceChanged,
   recoverRetainedBundleImport, discardBundleImportCopy, type BundleImportCopy,
 } from "./projectBundleImport";
 import CommandPalette, { type EditorCommand } from "./CommandPalette";
@@ -1101,6 +1101,7 @@ function DeliverView({
       );
       setBundleInspection(null);
     } catch (reason) {
+      if (reason instanceof PortableImportSourceChanged) setBundleInspection(null);
       setPortableError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setPortableBusy(null);

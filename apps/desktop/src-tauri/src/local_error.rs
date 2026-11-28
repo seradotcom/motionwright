@@ -42,6 +42,24 @@ pub(crate) fn sanitized(error: impl std::fmt::Display) -> String {
     "Motionwright could not complete the local operation".into()
 }
 
+pub(crate) fn portable_import_error(
+    error: motionwright_service::StorageError,
+    fingerprint: &motionwright_service::BundleFingerprint,
+) -> serde_json::Value {
+    if matches!(&error, motionwright_service::StorageError::InvalidBackup(reason)
+        if matches!(reason.as_str(),
+            "bundle manifest changed after inspection" | "legacy archive changed after inspection"))
+    {
+        // Both readers check the captured fingerprint before staging or committing.
+        serde_json::json!({
+            "kind": "portable_import_source_changed",
+            "fingerprint": fingerprint.as_str(),
+        })
+    } else {
+        serde_json::Value::String(portable_bundle_error(error))
+    }
+}
+
 pub(crate) fn portable_bundle_error(error: motionwright_service::StorageError) -> String {
     use motionwright_service::StorageError;
     if let StorageError::InvalidBackup(reason) = &error
@@ -115,7 +133,35 @@ mod tests {
 
     #[test]
     fn portable_bundle_error_asks_for_a_fresh_inspection_only_for_a_changed_manifest() {
-        use motionwright_service::StorageError;
+        use motionwright_service::{BundleFingerprint, StorageError};
+        let fingerprint = BundleFingerprint::from_sha256("a".repeat(64)).unwrap();
+        for reason in [
+            "bundle manifest changed after inspection",
+            "legacy archive changed after inspection",
+        ] {
+            assert_eq!(
+                super::portable_import_error(
+                    StorageError::InvalidBackup(reason.into()),
+                    &fingerprint
+                ),
+                serde_json::json!({
+                    "kind": "portable_import_source_changed",
+                    "fingerprint": fingerprint.as_str(),
+                })
+            );
+        }
+        for reason in [
+            "bundle manifest changed during inspection",
+            "bundle manifest changed after inspection of another path",
+        ] {
+            assert!(
+                super::portable_import_error(
+                    StorageError::InvalidBackup(reason.into()),
+                    &fingerprint
+                )
+                .is_string()
+            );
+        }
         for reason in [
             "bundle manifest changed during inspection",
             "bundle manifest changed after inspection",
