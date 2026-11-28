@@ -1,5 +1,6 @@
-import { nativeFrameAtPlayhead } from "./nativeFrameSelection";
+import { nativeSceneFrameCoverage } from "./nativeFrameSelection";
 import type { NativeFrameSelection } from "./nativeFrameSelection";
+import { graphAddTime } from "./semanticGraph";
 import type { DeliverableProfile, MotionCanvasRenderEvidence, Project, RationalTime, Scene } from "./types";
 import { seconds } from "./types";
 
@@ -25,16 +26,17 @@ export function addFrameOffset(start:RationalTime, frames:number, rate:{num:numb
 /** A bounded read plan, not a render or a grant. Every read still goes through desktop authority. */
 export function planNativeInspection(project:Project,scene:Scene|null,profile:DeliverableProfile|null,evidence:MotionCanvasRenderEvidence|null):NativeInspectionPlan|null {
   if(!scene || !profile || !evidence || profile.width*profile.height>MAX_DECODE_PIXELS) return null;
-  const first=nativeFrameAtPlayhead(project,scene,profile,evidence,seconds(scene.start));
-  if(!first) return null;
+  const coverage=nativeSceneFrameCoverage(project,scene,profile,evidence);
+  if(!coverage) return null;
+  const {startFrame,endFrame,startInSegment,token,segmentId,frameCount}=coverage;
   const fps=evidence.frame_rate.num/evidence.frame_rate.den;
-  const count=Math.max(1,Math.round(seconds(scene.duration)*fps));
-  if(!Number.isSafeInteger(count) || count>1_000_000) return null;
-  const last=Math.min(first.frameCount-1,first.frameIndex+count-1);
-  const authored=new Set<number>([first.frameIndex,last]);
+  const count=endFrame-startFrame;
+  if(endFrame>1_000_000) return null;
+  const last=endFrame-1;
+  const authored=new Set<number>([startFrame,last]);
   for(const node of scene.nodes) for(const key of node.keyframes) {
-    const index=first.frameIndex+Math.floor(seconds(key.at)*fps+1e-7);
-    if(index>=first.frameIndex && index<=last) authored.add(index);
+    const index=Math.floor((seconds(startInSegment)+seconds(key.at))*fps+1e-7);
+    if(index>=startFrame && index<=last) authored.add(index);
   }
   const ordered=[...authored].sort((a,b)=>a-b);
   const chosen=new Set<number>();
@@ -43,14 +45,20 @@ export function planNativeInspection(project:Project,scene:Scene|null,profile:De
   // Include interior frames even when a static scene has no authored key boundaries.
   for(const fraction of [.5,.25,.75,.125,.375,.625,.875,.0625,.9375]) {
     if(chosen.size>=MAX_SAMPLES || chosen.size>=count) break;
-    chosen.add(first.frameIndex+Math.floor((last-first.frameIndex)*fraction));
+    chosen.add(startFrame+Math.floor((last-startFrame)*fraction));
   }
-  const samples=[...chosen].sort((a,b)=>a-b).map(frameIndex=>({
-    ...first,frameIndex,localFrame:frameIndex-first.frameIndex,
-    timelineTime:addFrameOffset(scene.start,frameIndex-first.frameIndex,evidence.frame_rate),
-  }));
-  return {projectId:project.id,generation:project.generation,revision:project.revision,sceneId:scene.id,profileId:profile.id,
-    width:profile.width,height:profile.height,frameRate:evidence.frame_rate,samples};
+  try {
+    const beforeScene={num:(-BigInt(startInSegment.num)).toString(),den:startInSegment.den};
+    const samples=[...chosen].sort((a,b)=>a-b).map(frameIndex=>({
+      token,segmentId,frameCount,frameIndex,localFrame:frameIndex-startFrame,
+      timelineTime:graphAddTime(scene.start,graphAddTime(
+        addFrameOffset({num:"0",den:"1"},frameIndex,evidence.frame_rate),beforeScene)),
+    }));
+    return {projectId:project.id,generation:project.generation,revision:project.revision,sceneId:scene.id,profileId:profile.id,
+      width:profile.width,height:profile.height,frameRate:evidence.frame_rate,samples};
+  } catch {
+    return null;
+  }
 }
 export interface NativeSampleEvidence { frameIndex:number; timelineTime:RationalTime; pngSha256:string; width:number; height:number; }
 export interface ManualCreativeFinding {

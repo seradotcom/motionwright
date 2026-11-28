@@ -8,8 +8,8 @@ import type { MotionCanvasRenderEvidence } from "./types";
 function fixture() {
   const project=structuredClone(fixtureProject),scene=project.scenes[0],profile=project.deliverables[0];
   const evidence:MotionCanvasRenderEvidence={project_resource:"project:"+project.id,generation:project.generation,revision:project.revision,deliverable_id:profile.id,
-    frame_rate:{num:30,den:1},segments:[{segment_id:"native-inspection",scene_ids:project.scenes.slice(0,2).map(s=>s.id),frame_count:450,plan_ref:"plan",fingerprint:"fingerprint",job_ref:"job",artifact:{},verification:{}}],
-    preview:[{token:"owned-native-frame-grant",segment_id:"native-inspection",scene_ids:project.scenes.slice(0,2).map(s=>s.id),frame_count:450}]};
+    frame_rate:{num:30,den:1},segments:[{segment_id:"native-inspection",scene_ids:project.scenes.slice(0,2).map(s=>s.id),frame_count:480,plan_ref:"plan",fingerprint:"fingerprint",job_ref:"job",artifact:{},verification:{}}],
+    preview:[{token:"owned-native-frame-grant",segment_id:"native-inspection",scene_ids:project.scenes.slice(0,2).map(s=>s.id),frame_count:480}]};
   return {project,scene,profile,evidence};
 }
 
@@ -24,6 +24,18 @@ describe("native inspection is a bounded source-granted read plan",()=>{
     expect(plan.samples.map(s=>s.frameIndex)).toContain(104);
     expect(new Set(plan.samples.map(s=>s.frameIndex)).size).toBe(plan.samples.length);
     expect(plan.samples.every(s=>s.token==="owned-native-frame-grant")).toBe(true);
+  });
+  it("samples an off-frame scene at the exact time of its own rendered frame",()=>{
+    const {project,profile,evidence}=fixture();
+    const [first,next]=project.scenes;
+    first.duration={num:"1001",den:"20000"};
+    next.start=first.duration;
+    next.duration=first.duration;
+    evidence.frame_rate={num:30000,den:1001};
+    evidence.segments[0].frame_count=3;
+    evidence.preview![0].frame_count=3;
+    expect(planNativeInspection(project,next,profile,evidence)?.samples)
+      .toMatchObject([{frameIndex:2,timelineTime:{num:"1001",den:"15000"}}]);
   });
   it("refuses stale revisions, wrong output profiles, missing grants and unbounded decodes",()=>{
     const {project,scene,profile,evidence}=fixture();
