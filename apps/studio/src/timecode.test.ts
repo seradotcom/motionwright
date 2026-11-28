@@ -47,6 +47,14 @@ describe("editorial display timebase", () => {
     expect(formatFrameTimecode(3_600, r(60_000, 1_001), "df")).toBe("01:00;04");
   });
 
+  it("lands on the same fractional frame time as an authored cue or cut", () => {
+    const filmRate = r(24_000, 1_001);
+    const broadcastRate = r(30_000, 1_001);
+    expect(stepEditorialFrame(8_008 / 24_000, filmRate, 1, 3)).toBe(9_009 / 24_000);
+    expect(stepEditorialFrame(10_010 / 24_000, filmRate, -1, 3)).toBe(9_009 / 24_000);
+    expect(stepEditorialFrame(2_002 / 30_000, broadcastRate, 1, 3)).toBe(3_003 / 30_000);
+  });
+
   it("steps precisely by the selected profile frame duration and respects bounds", () => {
     expect(stepEditorialFrame(0, r(25, 1), 1, 3)).toBeCloseTo(0.04, 12);
     expect(stepEditorialFrame(0, r(30, 1), 1, 3)).toBeCloseTo(1 / 30, 12);

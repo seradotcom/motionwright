@@ -45,9 +45,9 @@ export function stepEditorialFrame(
   duration: number,
 ): number {
   if (!Number.isFinite(duration) || duration < 0) throw new Error("invalid project duration");
-  const rateValue = editorFps(rate);
   const nextFrame = Math.max(0, projectFrameIndex(seconds, rate) + direction);
-  return Math.min(duration, nextFrame / rateValue);
+  // Match the saved frame instant's numerator and denominator when projecting to seconds.
+  return Math.min(duration, nextFrame * Number(rate.den) / Number(rate.num));
 }
 
 export function formatFrameTimecode(
