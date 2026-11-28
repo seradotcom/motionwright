@@ -8,8 +8,8 @@ This supports CR-PROJECT-06 by preserving a consistent exported snapshot at its 
 
 Publication keeps the staging directory and the destination parent open throughout the copy. Copied assets and the manifest are read back from the files that received the bytes. Desktop obtains a fresh owner permit before the exclusive rename, after content verification. If the owner closes during preparation, the export withholds publication and the consumed delivery grant cannot be reused.
 
-- Linux and macOS create a private staging directory and use descriptor-relative file creation and \`renameat_with\` with \`NOREPLACE\`. Export requires a parent that protects staging entries against removal by other accounts. The original parent and staging entry are rechecked before publication. Cleanup traverses the held private directory without following links.
-- Windows requires a local volume that supports persistent ACLs. It admits and holds each ancestor before opening the next component or creating a missing directory. Reparse points in the requested parent path are refused. It holds the namespace without delete sharing, creates the staging directory with a protected ACL for the current user and SYSTEM, and verifies that ACL from the retained handle. \`SetFileInformationByHandle\` renames the same directory. Checked UTF-16 preserves Unicode and long paths.
+- Linux and macOS create a private staging directory and use descriptor-relative file creation and `renameat_with` with `NOREPLACE`. The exporter checks each parent before creating a missing directory and creates it relative to the retained parent. It refuses symlink parents, except for the verified system aliases on macOS. Export requires a parent that protects staging entries against removal by other accounts. The original parent and staging entry are rechecked before publication. Cleanup traverses the held private directory without following links.
+- Windows requires a local volume that supports persistent ACLs. It admits and holds each ancestor before opening the next component or creating a missing directory. Reparse points in the requested parent path are refused. It holds the namespace without delete sharing, creates the staging directory with a protected ACL for the current user and SYSTEM, and verifies that ACL from the retained handle. `SetFileInformationByHandle` renames the same directory. Checked UTF-16 preserves Unicode and long paths.
 - Other targets return an unsupported-operation error. A filesystem rejection leaves the destination unmodified.
 
 ## Regression and integration oracles
@@ -20,7 +20,7 @@ The normal exporter and tests share the actual capture, manifest write, publicat
 
 Additional controls exercise a late peer file, preexisting files and directories, a late dangling Unix symlink, and complete export/inspection/import/reopen with the original immutable bytes. Windows controls exercise an ordinary Unicode path longer than 260 characters and interior-NUL rejection before any move. These tests have no automatic retry or privilege-dependent silent success.
 
-The \`bundle_export\` selector runs the late-destination, directory identity, normal restore and Desktop publication-permit controls across Linux, macOS and Windows. A test run must identify its exact checkout, selected test names, platform and outcomes. The Unix symlink test is not a Windows execution. A source review or successful compilation does not establish that a platform's publication test ran.
+The `bundle_export` selector runs the late-destination, directory identity, normal restore and Desktop publication-permit controls across Linux, macOS and Windows. A test run must identify its exact checkout, selected test names, platform and outcomes. The Unix symlink test is not a Windows execution. A source review or successful compilation does not establish that a platform's publication test ran.
 
 ## Limits
 

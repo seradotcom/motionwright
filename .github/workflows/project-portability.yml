@@ -1476,7 +1476,8 @@ jobs:
                                 "bundle_export_windows_nul_paths_fail_before_publication",
                                 "bundle_export_windows_refuses_reparse_parent_before_creating_missing_dirs"})
               else:
-                  names.add("bundle_export_preserves_dangling_symlink_created_at_publication")
+                  names.update({"bundle_export_preserves_dangling_symlink_created_at_publication",
+                                "bundle_export_unix_refuses_unadmitted_parent_before_creating_missing_dirs"})
               cases = [
                   ("portable-bundle-destination", ["-p", "motionwright-storage", "--lib", "portability::tests::bundle_export_"],
                    {"portability::tests::" + name for name in names}),

@@ -2,14 +2,14 @@
 
 use std::{
     ffi::OsStr,
-    fs::{self, File},
+    fs::File,
     io,
     os::unix::{ffi::OsStrExt, fs::MetadataExt},
     path::{Component, Path, PathBuf},
 };
 
 use rustix::fs::{
-    AtFlags, Dir, Mode, OFlags, RenameFlags, mkdirat, openat, renameat_with, unlinkat,
+    AtFlags, Dir, Mode, OFlags, RenameFlags, mkdirat, openat, renameat_with, statat, unlinkat,
 };
 use uuid::Uuid;
 
@@ -27,16 +27,10 @@ pub(super) struct BundleExportStage {
 impl BundleExportStage {
     pub(super) fn new(parent: &Path) -> io::Result<Self> {
         let requested_parent = std::path::absolute(parent)?;
-        let path = fs::canonicalize(&requested_parent)?;
-        let parent = open_absolute_directory(&path)?;
-        // A directory rename is name-based on Unix. The source entry must be
-        // protected against removal or replacement by other OS principals.
-        if !protects_stage_entry(&parent)? {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "portable bundle export needs a destination directory with protected entries",
-            ));
-        }
+        let path = admitted_spelling(&requested_parent)?;
+        let parent =
+            open_absolute_directory(&path, true)?.ok_or_else(|| io::Error::other(CHANGED))?;
+        require_protected_parent(&parent)?;
 
         let name = format!(".motionwright-export-{}", Uuid::new_v4().simple());
         let path = path.join(&name);
@@ -88,7 +82,9 @@ impl BundleExportStage {
     }
 
     pub(super) fn publish(&mut self, destination: &OsStr) -> io::Result<()> {
-        let visible_parent = open_absolute_directory(&fs::canonicalize(&self.requested_parent)?)?;
+        let visible_parent =
+            open_absolute_directory(&admitted_spelling(&self.requested_parent)?, false)?
+                .ok_or_else(|| io::Error::other(CHANGED))?;
         if !same_directory(&visible_parent, &self.parent)?
             || !self.source_is_current()
             || !protects_stage_entry(&self.parent)?
@@ -125,16 +121,73 @@ impl Drop for BundleExportStage {
     }
 }
 
-fn open_absolute_directory(path: &Path) -> io::Result<File> {
+pub(super) fn check_destination_available(parent: &Path, name: &OsStr) -> io::Result<()> {
+    let path = admitted_spelling(&std::path::absolute(parent)?)?;
+    let Some(parent) = open_absolute_directory(&path, false)? else {
+        return Ok(());
+    };
+    match statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(_) => Err(io::ErrorKind::AlreadyExists.into()),
+        Err(rustix::io::Errno::NOENT) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn admitted_spelling(path: &Path) -> io::Result<PathBuf> {
+    if !path.is_absolute() || path.components().any(|part| part == Component::ParentDir) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, CHANGED));
+    }
+    #[cfg(target_os = "macos")]
+    for alias in ["/var", "/tmp"] {
+        if let Ok(tail) = path.strip_prefix(alias)
+            && crate::darwin_system_directory_alias(Path::new(alias))
+        {
+            return Ok(Path::new("/private").join(&alias[1..]).join(tail));
+        }
+    }
+    Ok(path.to_path_buf())
+}
+
+// Retain each parent before advancing to the next entry. Only the captured
+// directory can authorize mkdir, including when a path is concurrently moved.
+fn open_absolute_directory(path: &Path, create_missing: bool) -> io::Result<Option<File>> {
     let mut directory = File::open("/")?;
     for component in path.components() {
         match component {
             Component::RootDir => (),
-            Component::Normal(name) => directory = open_directory(&directory, name)?,
+            Component::Normal(name) => {
+                directory = match open_directory(&directory, name) {
+                    Ok(child) => child,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound && !create_missing => {
+                        return Ok(None);
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        require_protected_parent(&directory)?;
+                        match mkdirat(&directory, name, Mode::from_raw_mode(0o755)) {
+                            Ok(()) | Err(rustix::io::Errno::EXIST) => (),
+                            Err(error) => return Err(error.into()),
+                        }
+                        open_directory(&directory, name)?
+                    }
+                    Err(error) => return Err(error),
+                };
+            }
             _ => return Err(io::Error::other(CHANGED)),
         }
     }
-    Ok(directory)
+    Ok(Some(directory))
+}
+
+fn require_protected_parent(parent: &File) -> io::Result<()> {
+    // A directory rename is name-based on Unix. Other OS principals must
+    // be unable to remove or replace a directory we create under this parent.
+    if !protects_stage_entry(parent)? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "portable bundle export needs a destination directory with protected entries",
+        ));
+    }
+    Ok(())
 }
 
 fn open_directory(parent: &File, name: &OsStr) -> io::Result<File> {

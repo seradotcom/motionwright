@@ -1093,8 +1093,6 @@ impl PreparedProjectBundleExport {
             });
         }
         ensure_secret_free_bytes(&manifest_bytes, "portable bundle metadata")?;
-        #[cfg(not(windows))]
-        fs::create_dir_all(parent)?;
         let mut staging = bundle_export::BundleExportStage::new(parent)?;
 
         for blob in &manifest.blobs {
@@ -1158,7 +1156,7 @@ pub(super) fn check_bundle_destination(destination: &Path) -> Result<(&Path, &st
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
 
-    #[cfg(windows)]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     match bundle_export::check_destination_available(parent, destination_name) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -1166,7 +1164,7 @@ pub(super) fn check_bundle_destination(destination: &Path) -> Result<(&Path, &st
         }
         Err(error) => return Err(error.into()),
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     match fs::symlink_metadata(destination) {
         Ok(_) => return Err(StorageError::DestinationExists),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -1926,7 +1924,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let (mut store, backup, sources) = bundle_export_source(directory.path());
         let before = snapshot(&store);
-        let destination = directory.path().join("unclaimed-backup");
+        let destination = directory.path().join("new/parent/unclaimed-backup");
         let manifest = store
             .export_project_bundle_at(backup.project.id, &backup.project.stamp(), &destination)
             .unwrap();
@@ -1992,6 +1990,36 @@ mod tests {
         assert!(retained.file_type().is_symlink());
         assert_eq!(Some((retained.dev(), retained.ino())), peer_identity);
         assert!(!missing.exists());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn bundle_export_unix_refuses_unadmitted_parent_before_creating_missing_dirs() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let directory = tempfile::tempdir().unwrap();
+        let (mut store, backup, _) = bundle_export_source(directory.path());
+        let redirected = directory.path().join("redirected");
+        let original = directory.path().join("original");
+        let writable = directory.path().join("writable");
+        fs::create_dir(&original).unwrap();
+        fs::create_dir(&writable).unwrap();
+        fs::set_permissions(&writable, fs::Permissions::from_mode(0o777)).unwrap();
+        symlink(&original, &redirected).unwrap();
+
+        for parent in [&redirected, &writable] {
+            let destination = parent.join("absent/second/backup");
+            let result = store.export_project_bundle_at(
+                backup.project.id,
+                &backup.project.stamp(),
+                destination,
+            );
+            assert!(matches!(result, Err(StorageError::Io(_))));
+        }
+
+        assert_eq!(fs::read_dir(&original).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&writable).unwrap().count(), 0);
+        assert_eq!(fs::read_link(&redirected).unwrap(), original);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
