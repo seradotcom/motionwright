@@ -458,8 +458,10 @@ export function PreviewSurface({
           <span className="muted">
             {showingAv ? (nativeAv?.reviewOnly ? "Original captioned MP4 · review only" : "Verified H.264/AAC master · decoded review") :
               showingWindow ? "Native window PNG · preview only · " + currentWindowReceipt!.response.window.validation.verdict :
-              showingNative ? "Verified native PNG · sampled frames" :
-              showingHistorical ? "Retained historical preview · not current" : "Design representation"}
+              showingNative ? "Verified native PNG · sampled frames · draft" :
+              showingHistorical ? "Retained historical preview · not current" :
+              hasProgramDesign ? "Design representation · Canvas layout" :
+              scene ? "Design representation · Semantic wireframe" : "Design representation"}
           </span>
           <span
             className="preview-revision"
@@ -636,7 +638,7 @@ export function PreviewSurface({
         </div>
       </div>
       <footer className="preview-footer">
-        <span>{profile ? profile.width + " × " + profile.height : "No output profile selected"}</span>
+        <span>{profile ? "Delivery profile " + profile.width + " × " + profile.height : "No output profile selected"}</span>
         <span>{timebaseLabel(rate, mode)} · editorial display</span>
         <span className={"preview-evidence receipt-" + (receipt?.kind ?? "none")} aria-label="Scene native render receipt">
           {receipt?.kind === "current" ? (

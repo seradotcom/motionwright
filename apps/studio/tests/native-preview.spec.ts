@@ -132,7 +132,13 @@ test("sampled native PNG readback uses only a session grant and follows the edit
 
   await page.goto("/");
   const preview = page.getByRole("region", { name: "Program preview" });
-  await expect(preview).toContainText("Design representation");
+  await expect(preview).toContainText("Design representation · Canvas layout");
+  await page.locator(".tree-row").filter({ hasText: second.name }).click();
+  await expect(preview).toContainText("Design representation · Semantic wireframe");
+  await expect(preview.getByRole("img", { name: "Program Canvas editorial study: not native output" })).toHaveCount(0);
+  await expect(preview.getByRole("region", { name: "Verified native PNG frame preview" })).toHaveCount(0);
+  await page.locator(".tree-row").filter({ hasText: first.name }).click();
+  await expect(preview.getByRole("img", { name: "Program Canvas editorial study: not native output" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Show native frames" })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Deliver", exact: true }).click();
@@ -154,6 +160,7 @@ test("sampled native PNG readback uses only a session grant and follows the edit
   await expect.poll(() => image.evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBe(1);
   await expect(preview).toContainText("Verified native PNG · sampled frames");
   await expect(frame).toContainText("Settled exact source PNG · no synthesized frames");
+  await expect(frame).toContainText("Decoded raster 1 × 1");
   const revision = await page.locator(".revision-chip").first().innerText();
 
   await page.getByRole("button", { name: "Step forward one frame" }).click();
@@ -743,6 +750,8 @@ test("a saved unrelated revision can request its original window and display onl
   await page.getByRole("button", { name: "Show window frames", exact: true }).click();
   const frame = page.getByRole("region", { name: "Native window PNG frame preview", exact: true });
   await expect.poll(() => frame.getByRole("img").evaluate(image => (image as HTMLImageElement).naturalWidth)).toBe(1);
+  await expect(frame).toContainText("PNG source r" + revision);
+  await expect(frame).toContainText("confirmed for project r" + (revision + 1));
   expect(await nativeWindowTrace(page, "preview_native_frame")).toEqual([{
     project_id: boot.project.id, generation: boot.project.generation, revision: revision + 1,
     token: "cb060ec7-a16b-4f38-bae2-000000000002", frame_index: 0,
@@ -792,6 +801,9 @@ test("reduced native window selection uses provider raster identity without chan
   const frame=page.getByRole("region",{name:"Native window PNG frame preview",exact:true});
   await expect.poll(()=>frame.getByRole("img").evaluate(image=>(image as HTMLImageElement).naturalWidth)).toBe(profile.width/2);
   await expect(frame).toContainText("not full-resolution source fidelity");
+  await expect(frame).toContainText("Decoded raster "+profile.width/2+" × "+profile.height/2);
+  await expect(page.getByRole("region",{name:"Program preview",exact:true}).getByText(
+    "Delivery profile "+profile.width+" × "+profile.height,{exact:true})).toBeVisible();
   await page.getByRole("button",{name:"Reuse original window",exact:true}).click();
   await expect.poll(async()=>(await nativeWindowTrace(page,"render_motion_canvas_window")).length).toBe(2);
   await expect(page.getByRole("button",{name:"Capture native window",exact:true})).toBeEnabled();
