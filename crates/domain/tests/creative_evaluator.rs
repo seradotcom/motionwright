@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 fn bundle(id: Uuid, version: u32) -> CreativeEvaluatorBundle {
     CreativeEvaluatorBundle {
+        artifacts: None,
         schema: CREATIVE_EVALUATOR_SCHEMA.into(),
         id,
         version,

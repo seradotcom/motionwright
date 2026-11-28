@@ -3,7 +3,7 @@
  */
 import type {Project,Scene} from "./types";
 import {
-  evaluatorDigest,observeCriterion,validateEvaluator,validateEvaluatorState,
+  evaluatorDigest,observeCriterion,validateEvaluator,validateEvaluatorArtifactTransition,validateEvaluatorState,
   type CreativeEvaluatorBundle,type CriterionObservation,
 } from "./creativeEvaluator";
 
@@ -80,6 +80,7 @@ export async function previewEvaluatorExperiment(
   validateEvaluator(candidate);
   if(candidate.id!==source.id || candidate.version!==source.version+1)
     return refuse("Candidate must reuse the same evaluator ID and increment its version exactly once.");
+  validateEvaluatorArtifactTransition(source, candidate);
   if(sameBehavior(source,candidate))
     return refuse("The new version must change original criteria or editorial guidance, not just its version.");
   if(!candidate.criteria.some(criterion=>criterion.kind==="human_question"))

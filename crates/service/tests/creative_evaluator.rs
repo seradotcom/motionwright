@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 fn original_bundle() -> CreativeEvaluatorBundle {
     CreativeEvaluatorBundle {
+        artifacts: None,
         schema: CREATIVE_EVALUATOR_SCHEMA.into(),
         id: Uuid::parse_str("00000000-0000-4000-8000-000000000007").unwrap(),
         version: 1,
@@ -305,5 +306,80 @@ fn actual_sqlite_creative_style_advisories_survive_fresh_service_reopen() {
             .unwrap()
             .len(),
         1
+    );
+}
+
+#[test]
+fn evaluator_artifacts_advance_only_for_changed_inputs_and_survive_reopen() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("evaluator-artifacts.sqlite3");
+    let service = StudioService::open(&db).unwrap();
+    let project = service
+        .create_project("Independent original evaluator artifacts")
+        .unwrap();
+    let seed = original_bundle();
+    let mut wire = serde_json::to_value(&seed).unwrap();
+    wire["artifacts"] = serde_json::json!({
+        "instructions_version": 1,
+        "examples": {"version": 1, "cases": [{
+            "label": "Complete editable scene",
+            "criterion_id": seed.criteria[0].id(),
+            "expected": "pass"
+        }]},
+        "dependencies": {
+            "version": 1,
+            "interpreter": CREATIVE_EVALUATOR_SCHEMA,
+            "inputs": ["canvas_node_roster", "canvas_text", "human_review"]
+        }
+    });
+    let register = |current: &Project, request: &str, value: serde_json::Value| {
+        service.apply(
+            current.id,
+            &current.stamp(),
+            request,
+            &Change::RegisterCreativeEvaluator {
+                bundle: serde_json::from_value(value).unwrap(),
+            },
+        )
+    };
+    let v1 = register(&project, "register-v1", wire.clone())
+        .unwrap()
+        .project;
+    let first = v1.production_design.evaluator_bundles[0].clone();
+    let first_digest = first.content_digest().unwrap();
+
+    wire["version"] = 2.into();
+    wire["playbook"][0] = "Inspect original object geometry first".into();
+    assert!(register(&v1, "instruction-version-reused", wire.clone()).is_err());
+    wire["artifacts"]["instructions_version"] = 2.into();
+    let v2 = register(&v1, "register-v2", wire.clone()).unwrap().project;
+
+    wire["version"] = 3.into();
+    wire["criteria"].as_array_mut().unwrap().remove(1);
+    assert!(register(&v2, "dependency-set-changed", wire.clone()).is_err());
+    wire["artifacts"]["dependencies"]["inputs"] =
+        serde_json::json!(["canvas_node_roster", "human_review"]);
+    assert!(register(&v2, "dependency-version-reused", wire.clone()).is_err());
+    wire["artifacts"]["dependencies"]["version"] = 2.into();
+    let v3 = register(&v2, "register-v3", wire.clone()).unwrap().project;
+    wire["version"] = 4.into();
+    let mut removed = wire.clone();
+    removed.as_object_mut().unwrap().remove("artifacts");
+    assert!(register(&v3, "removed-independent-artifacts", removed).is_err());
+    wire["artifacts"]["examples"]["cases"][0]["label"] =
+        "Readable authored title and background".into();
+    assert!(register(&v3, "example-version-reused", wire.clone()).is_err());
+    wire["artifacts"]["examples"]["version"] = 2.into();
+    let v4 = register(&v3, "register-v4", wire).unwrap().project;
+    drop(service);
+
+    let reopened = StudioService::open(&db).unwrap().project(v4.id).unwrap();
+    assert_eq!(reopened, v4);
+    assert_eq!(reopened.production_design.evaluator_bundles[0], first);
+    assert_eq!(
+        reopened.production_design.evaluator_bundles[0]
+            .content_digest()
+            .unwrap(),
+        first_digest
     );
 }

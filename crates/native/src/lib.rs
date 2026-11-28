@@ -3626,6 +3626,37 @@ fn build_application_with_graph_store(
                                 "label":{"type":"string","minLength":1,"maxLength":100},
                                 "purpose":{"type":"string","minLength":1,"maxLength":280},
                                 "author_attestation":{"type":"string","minLength":1,"maxLength":240},
+                                "artifacts":{
+                                    "type":"object","additionalProperties":false,
+                                    "required":["instructions_version","examples","dependencies"],
+                                    "properties":{
+                                        "instructions_version":{"type":"integer","minimum":1,"maximum":4294967295u64},
+                                        "examples":{
+                                            "type":"object","additionalProperties":false,"required":["version","cases"],
+                                            "properties":{
+                                                "version":{"type":"integer","minimum":1,"maximum":4294967295u64},
+                                                "cases":{"type":"array","minItems":1,"maxItems":16,"items":{
+                                                    "type":"object","additionalProperties":false,"required":["label","criterion_id","expected"],
+                                                    "properties":{
+                                                        "label":{"type":"string","minLength":1,"maxLength":180},
+                                                        "criterion_id":{"type":"string","format":"uuid"},
+                                                        "expected":{"enum":["pass","fail","not_assessed"]}
+                                                    }
+                                                }}
+                                            }
+                                        },
+                                        "dependencies":{
+                                            "type":"object","additionalProperties":false,"required":["version","interpreter","inputs"],
+                                            "properties":{
+                                                "version":{"type":"integer","minimum":1,"maximum":4294967295u64},
+                                                "interpreter":{"const":"motionwright.creative-evaluator/1"},
+                                                "inputs":{"type":"array","minItems":1,"maxItems":4,"uniqueItems":true,"items":{
+                                                    "enum":["canvas_node_roster","canvas_text","canvas_pixel_bounds","human_review"]
+                                                }}
+                                            }
+                                        }
+                                    }
+                                },
                                 "playbook":{"type":"array","minItems":1,"maxItems":12,"items":{
                                     "type":"string","minLength":1,"maxLength":500
                                 }},

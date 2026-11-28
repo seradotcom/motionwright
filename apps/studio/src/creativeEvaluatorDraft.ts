@@ -1,4 +1,4 @@
-import { EVALUATOR_SCHEMA, REPORT_SCHEMA, evaluatorDigest, observeCriterion, validateEvaluator } from "./creativeEvaluator";
+import { EVALUATOR_SCHEMA, REPORT_SCHEMA, evaluatorDigest, observeCriterion, validateEvaluator, validateEvaluatorArtifactTransition } from "./creativeEvaluator";
 import type { CreativeCriterion, CreativeEvaluatorBundle, EvaluatorChange } from "./creativeEvaluator";
 import { emptyProductionDesign } from "./creativeProduction";
 import type { Project, ProjectEvent } from "./types";
@@ -373,8 +373,9 @@ function assertCommandSource(project: Project, change: EvaluatorChange): void {
   if (change.type === "register_creative_evaluator") {
     validateEvaluator(change.bundle);
     if (bundles.length >= 64) throw new Error("Evaluator bundle version budget exceeded.");
-    const latest = Math.max(0, ...bundles.filter(bundle => bundle.id === change.bundle.id).map(bundle => bundle.version));
-    if (change.bundle.version !== latest + 1) throw new Error("Manifest version must follow locally recorded source history.");
+    const latest = bundles.filter(bundle => bundle.id === change.bundle.id).sort((a, b) => b.version - a.version)[0];
+    if (change.bundle.version !== (latest?.version ?? 0) + 1) throw new Error("Manifest version must follow locally recorded source history.");
+    validateEvaluatorArtifactTransition(latest, change.bundle);
   } else {
     if (project.locks.some(lock => lock.resource === "scene:" + change.scene_id && lock.kind === "content"))
       throw new Error("Scene content locked: cannot record evaluation.");
