@@ -38,7 +38,10 @@ export default function PrivateDeliverySlot({ project, deliverableId, hint, bloc
     try { await work(); }
     catch (cause) {
       if (mounted.current) {
-        if (committing) setNeedsInspection(true);
+        if (committing) {
+          setManifest(undefined);
+          setNeedsInspection(true);
+        }
         const message = typeof cause === "string" ? cause
           : cause instanceof Error ? cause.message : "Private delivery did not return a confirmed result.";
         setError(committing ? message + " Inspect the slot before approving another delivery." : message);

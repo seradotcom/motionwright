@@ -311,6 +311,11 @@ impl Store {
                 if prior.plan != *plan {
                     return Err(StorageError::RequestReuse);
                 }
+                if current_slot(&tx, &project, plan.deliverable_id)?
+                    .is_none_or(|current| current.commit_id != prior.commit_id)
+                {
+                    return Err(StorageError::PrivateDeliveryConflict);
+                }
                 tx.commit()?;
                 verify_artifact(&self.blob_root, &prior.plan.artifact)?;
                 return Ok(prior);
@@ -595,6 +600,12 @@ mod tests {
         let committed_b = peer
             .commit_private_delivery(&replaced, &b, || Ok(()))
             .unwrap();
+        assert!(matches!(
+            store.commit_private_delivery(&current_a, &a, || -> std::io::Result<()> {
+                panic!("superseded delivery may not start publication")
+            }),
+            Err(StorageError::PrivateDeliveryConflict)
+        ));
         drop(a);
         drop(b);
         drop(peer);

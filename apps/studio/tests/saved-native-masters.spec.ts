@@ -193,11 +193,12 @@ test("private delivery approves the exact plan and inspects the slot after an un
   const approve = slot.getByRole("button", {name: "Approve and commit privately"});
   const inspect = slot.getByRole("button", {name: "Inspect private slot"});
   const sha256 = "1".repeat(64);
+  const priorCommitId = "55555555-5555-4555-8555-555555555555";
   const prepared = {
     subject: "private-delivery:" + "b".repeat(64),
     plan: {
       project_id: current.projectId, generation: current.generation, revision: current.revision,
-      deliverable_id: current.deliverableId, mux_receipt_id: receipt, previous_commit_id: null,
+      deliverable_id: current.deliverableId, mux_receipt_id: receipt, previous_commit_id: priorCommitId,
       artifact: {sha256, size_bytes: 1024},
     },
   };
@@ -205,27 +206,35 @@ test("private delivery approves the exact plan and inspects the slot after an un
   await find(page).click();
   await resolve(page, 1, inventory(current));
   await choose(page).click();
+  await inspect.click();
+  const priorSha256 = "2".repeat(64);
+  await resolve(page, 3, {
+    commit_id: priorCommitId,
+    plan: {...manifest.plan, previous_commit_id: null, artifact: {sha256: priorSha256, size_bytes: 2048}},
+  });
+  await expect(slot.getByRole("status")).toContainText(priorSha256);
   await prepare.click();
   await expect.poll(async () => (await calls(page)).at(-1)?.command).toBe("prepare_private_delivery");
-  await resolve(page, 3, prepared);
-  await expect(slot.getByText("Expected slot commit empty.")).toBeVisible();
+  await resolve(page, 4, prepared);
+  await expect(slot.getByText(`Expected slot commit ${priorCommitId}.`)).toBeVisible();
   expect((await calls(page)).map(call => call.command)).toEqual([
-    "native_av_saved_master_inventory", "review_native_av_master", "prepare_private_delivery",
+    "native_av_saved_master_inventory", "review_native_av_master", "inspect_private_delivery", "prepare_private_delivery",
   ]);
   await approve.click();
   await expect.poll(async () => (await calls(page)).at(-1)?.args?.request).toMatchObject({
     effect: "promote_private_delivery", subject: prepared.subject,
   });
-  await resolve(page, 4, {token});
+  await resolve(page, 5, {token});
   await expect.poll(async () => (await calls(page)).at(-1)?.args?.request).toEqual({
     plan: prepared.plan, effect_grant: token,
   });
-  await page.evaluate(() => window.__NATIVE_AV_AUDIO_QC__.reject(5, "Connection closed before acknowledgement."));
+  await page.evaluate(() => window.__NATIVE_AV_AUDIO_QC__.reject(6, "Connection closed before acknowledgement."));
   await expect(slot.getByRole("alert")).toContainText("Inspect the slot");
   await expect(prepare).toBeDisabled();
   await expect(approve).toBeDisabled();
+  await expect(slot.getByRole("status")).toHaveCount(0);
   await inspect.click();
-  await resolve(page, 6, manifest);
+  await resolve(page, 7, manifest);
   await expect(slot.getByRole("status")).toContainText(sha256);
   await expect(approve).toHaveCount(0);
   expect((await calls(page)).filter(call => call.command === "commit_private_delivery")).toHaveLength(1);
