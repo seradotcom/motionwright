@@ -293,6 +293,28 @@ class DirectBindingTests(unittest.TestCase):
                 "automatic_retry": False, "formal_acceptance": False}
             docs[f"/direct-host/{phase}/evidence/direct-host-reference.json"] = reference
             docs[f"/direct-host/{phase}/evidence/terminal.json"] = terminal
+            if phase == "original":
+                prefix = "/direct-host/original/evidence/"
+                rejected = ("1" if existing.PIN.startswith("0") else "0") + existing.PIN[1:]
+                input_data = {"attempt_id": "refuse-" + attempt,
+                              "fingerprint": source["fingerprint"], "runtime_lock_sha256": rejected}
+                negative = {"schema": "motionwright.hyperframes.direct-call-intent/1",
+                            "command": "driver.hyperframes.render.start",
+                            "request_id": "hyperframes-runtime-refusal",
+                            "descriptor_sha256": "8" * 64,
+                            "input_sha256": sha(existing.encoded(input_data).removesuffix(b"\n")),
+                            "automatic_retry": False}
+                docs[prefix + "004-runtime-refusal.intent.json"] = negative
+                docs[prefix + "005-start.intent.json"] = {
+                    **negative, "request_id": "hyperframes-admitted-start",
+                    "input_sha256": sha(files[request_path])}
+                docs[prefix + "004-runtime-refusal.failure.json"] = {
+                    "schema": "motionwright.hyperframes.direct-call-failure/1", "code": "Unsupported",
+                    "outcome_known": True, "automatic_retry": False, "originals_retained": True}
+                docs[prefix + "runtime-refusal-verified.json"] = {
+                    "schema": "motionwright.hyperframes.runtime-refusal/1", **input_data,
+                    "admitted_runtime_lock_sha256": existing.PIN,
+                    "job_files_absent": True, "automatic_retry": False}
             for name in actions.FILES:
                 rel = "source-" + source["fingerprint"] + "/" + name
                 files[f"/direct-host/{phase}/project/" + rel] = files["/direct-source/" + rel]
@@ -457,6 +479,25 @@ class DirectBindingTests(unittest.TestCase):
                     **current, "run_id": "124"}
             with self.subTest(kind=kind), self.assertRaises(HyperframesEvidenceRejected):
                 self.verify(args, current, docs, files)
+
+    def test_runtime_refusal_rejects_an_unknown_or_unbound_original(self):
+        prefix = "/direct-host/original/evidence/"
+        for filename, replacement in (
+                ("004-runtime-refusal.failure.json", {"outcome_known": False}),
+                ("004-runtime-refusal.failure.json", {"code": "Conflict"}),
+                ("004-runtime-refusal.intent.json", {"input_sha256": "9" * 64}),
+                ("runtime-refusal-verified.json", {"runtime_lock_sha256": existing.PIN}),
+                ("004-runtime-refusal.result.json", {"job_ref": "unexpected",
+                                                     "state": "running", "directory": "render-unexpected"}),
+                ("runtime-refusal-verified.json", None)):
+            with self.subTest(filename=filename, replacement=replacement):
+                args, current, docs, files = self.fixture()
+                if replacement is None:
+                    docs.pop(prefix + filename, None)
+                else:
+                    docs.setdefault(prefix + filename, {}).update(replacement)
+                with self.assertRaisesRegex(ValueError, "runtime_refusal|original_member_not_retained"):
+                    self.verify(args, current, docs, files)
 
     def test_direct_and_mediated_job_identity_must_remain_distinct(self):
         args, current, docs, files = self.fixture()

@@ -136,7 +136,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '22.22.0'
-      - name: HyperFrames source G0 (181 boundary, 11 intake, 18 owner and 54 Node contracts)
+      - name: HyperFrames source G0 (182 boundary, 11 intake, 18 owner and 54 Node contracts)
         id: hf_source_g0
         if: github.event_name != 'workflow_dispatch' || inputs.native_scenario == 'contracts'
         shell: bash
@@ -172,7 +172,7 @@ jobs:
           from ci_test_runner import source_state
           root = Path(sys.argv[1])
           for filename, counts in (
-              ("caller.json", [46, 34, 11, 101]), ("owner.json", [18])):
+              ("caller.json", [46, 35, 11, 101]), ("owner.json", [18])):
               value = json.loads((root / filename).read_bytes())
               assert value["status"] == "PASS" and value["exit_code"] == 0
               assert value["executed_source_sha"] == os.environ["GITHUB_SHA"]
@@ -659,7 +659,7 @@ jobs:
           from pathlib import Path
           root = Path(os.environ["HF_ROOT"]) / "g0"
           for filename, counts in (
-              ("caller.json", [46, 34, 11, 101]), ("owner.json", [18])):
+              ("caller.json", [46, 35, 11, 101]), ("owner.json", [18])):
               value = json.loads((root / filename).read_bytes())
               assert value["status"] == "PASS" and value["exit_code"] == 0
               assert value["executed_source_sha"] == os.environ["GITHUB_SHA"]

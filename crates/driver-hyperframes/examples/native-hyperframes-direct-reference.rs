@@ -254,6 +254,62 @@ mod linux {
             }
         }
     }
+    async fn verify_runtime_refusal(
+        config: &Config,
+        request: &Request,
+        calls: &mut Calls<'_>,
+    ) -> Result<()> {
+        let first = if request.runtime_lock_sha256.starts_with('0') {
+            '1'
+        } else {
+            '0'
+        };
+        let rejected_digest = format!("{first}{}", &request.runtime_lock_sha256[1..]);
+        let attempt_id = format!("refuse-{}", request.attempt_id);
+        let effects = [
+            config
+                .project
+                .join(format!("native-job-{attempt_id}.intent.json")),
+            config
+                .project
+                .join(format!("native-job-{attempt_id}.binding.json")),
+            config.output.join(format!("render-{attempt_id}")),
+        ];
+        let effects_are_absent = || {
+            effects.iter().all(|path| {
+                fs::symlink_metadata(path)
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            })
+        };
+        require(effects_are_absent(), "runtime refusal attempt is not fresh")?;
+        let input = json!({"attempt_id":attempt_id,"fingerprint":request.fingerprint,
+            "runtime_lock_sha256":rejected_digest});
+        let outcome = calls
+            .invoke("driver.hyperframes.render.start", input, "runtime-refusal")
+            .await;
+        let error = outcome
+            .err()
+            .ok_or("unpinned runtime unexpectedly admitted")?;
+        require(
+            error
+                .downcast_ref::<semwright_types::Error>()
+                .is_some_and(|error| {
+                    error.code == semwright_types::ErrorCode::Unsupported && error.outcome_known
+                }),
+            "unpinned runtime refusal was not confirmed",
+        )?;
+        require(effects_are_absent(), "unpinned runtime left a job artifact")?;
+        store::fresh_json(
+            &config.evidence.join("runtime-refusal-verified.json"),
+            &json!({
+                "schema":"motionwright.hyperframes.runtime-refusal/1",
+                "attempt_id":attempt_id,"fingerprint":request.fingerprint,
+                "runtime_lock_sha256":rejected_digest,"admitted_runtime_lock_sha256":request.runtime_lock_sha256,
+                "job_files_absent":true,"automatic_retry":false}),
+        )?;
+        Ok(())
+    }
+
     async fn execute(config: &Config, request: &Request, manifest: Manifest) -> Result<Value> {
         let grants = [
             ("runtime", &config.runtime, false),
@@ -331,7 +387,10 @@ mod linux {
             "direct applied source binding",
         )?;
         check_export(config, request, true)?;
-        // Exactly one non-idempotent start. Subsequent calls only observe its job.
+        if config.phase == "original" {
+            verify_runtime_refusal(config, request, &mut calls).await?;
+        }
+        // Only the admitted start can create a job. Subsequent calls observe it.
         let started = calls
             .invoke(
                 "driver.hyperframes.render.start",

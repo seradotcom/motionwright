@@ -195,6 +195,14 @@ def direct_contract():
         "code": F(selection.String(64)), "outcome_known": F(bool),
         "automatic_retry": F(selection.Literal(False)),
         "originals_retained": F(selection.Literal(True))})
+    policies["hf-direct-runtime-refusal"] = selection.Object({
+        "schema": F(selection.Literal("motionwright.hyperframes.runtime-refusal/1")),
+        "attempt_id": F(projection.SLUG), "fingerprint": F(H), "runtime_lock_sha256": F(H),
+        "admitted_runtime_lock_sha256": F(H), "job_files_absent": F(selection.Literal(True)),
+        "automatic_retry": F(selection.Literal(False))})
+    policies["hf-direct-unexpected-admission"] = selection.Object({
+        "job_ref": F(projection.SLUG), "state": F(selection.String(32)),
+        "directory": F(selection.String(160, r"render-[a-z0-9-]+"))})
     policies["hf-direct-host-failure"] = selection.Object({
         "schema": F(selection.Literal("motionwright.hyperframes.direct-host-failure/1")),
         "state": F(selection.Literal("NOT_VERIFIED")),
@@ -269,6 +277,10 @@ def direct_contract():
             roles[(phase, layer, role)] = (1, 1)
         for role in ("direct-host-failure", "direct-host-apply-failure", "direct-host-start-failure"):
             roles[(phase, "attempt-custody", role)] = (0, 1)
+    for role in ("direct-runtime-refusal-intent", "direct-runtime-refusal-error",
+                 "direct-runtime-refusal-verified"):
+        roles[("original", "attempt-custody", role)] = (1, 1)
+    roles[("original", "attempt-custody", "direct-runtime-unexpected-admission")] = (0, 1)
     return policies, roles
 
 
@@ -312,13 +324,22 @@ def extended_spec(args, current, bindings, *, incomplete):
     ):
         select(path, "single", "attempt-custody", role, "json-projection", policy,
                root="records", optional=optional)
+    for file, role, policy, optional in (
+        ("004-runtime-refusal.intent.json", "direct-runtime-refusal-intent", "hf-direct-call-intent", False),
+        ("004-runtime-refusal.failure.json", "direct-runtime-refusal-error", "hf-direct-call-failure", False),
+        ("runtime-refusal-verified.json", "direct-runtime-refusal-verified", "hf-direct-runtime-refusal", False),
+        ("004-runtime-refusal.result.json", "direct-runtime-unexpected-admission", "hf-direct-unexpected-admission", True),
+    ):
+        select("original/evidence/" + file, "original", "attempt-custody",
+               role, "json-projection", policy, optional=optional)
     for phase in ("original", "edited"):
+        start = "005-start" if phase == "original" else "004-start"
         for file, role, policy, optional in (
             ("direct-host-intent.json", "direct-host-intent", "hf-direct-host-intent", False),
             ("003-apply.intent.json", "direct-host-apply-intent", "hf-direct-call-intent", False),
-            ("004-start.intent.json", "direct-host-start-intent", "hf-direct-call-intent", False),
+            (start + ".intent.json", "direct-host-start-intent", "hf-direct-call-intent", False),
             ("003-apply.failure.json", "direct-host-apply-failure", "hf-direct-call-failure", True),
-            ("004-start.failure.json", "direct-host-start-failure", "hf-direct-call-failure", True),
+            (start + ".failure.json", "direct-host-start-failure", "hf-direct-call-failure", True),
             ("direct-host-failure.json", "direct-host-failure", "hf-direct-host-failure", True),
         ):
             select(phase + "/evidence/" + file, phase, "attempt-custody",
@@ -445,6 +466,28 @@ def verify_direct_binding(args, current, manifest, *, archive):
         for key in ("driver", "node", "sandbox_helper"):
             require(reference[key + "_sha256"] == inputs["binaries"][key]["sha256"],
                     "direct_native_binary_differs_from_mediated")
+        if phase == "original":
+            prefix = "original/evidence/"
+            intent = document("direct-host", prefix + "004-runtime-refusal.intent.json")
+            error = document("direct-host", prefix + "004-runtime-refusal.failure.json")
+            proof = document("direct-host", prefix + "runtime-refusal-verified.json")
+            start = document("direct-host", prefix + "005-start.intent.json")
+            pin = args.runtime_lock_sha256
+            rejected = ("1" if pin.startswith("0") else "0") + pin[1:]
+            expected = {
+                "attempt_id": "refuse-" + stages.direct_attempt(phase, source["fingerprint"]),
+                "fingerprint": source["fingerprint"], "runtime_lock_sha256": rejected,
+            }
+            encoded = json.dumps(expected, sort_keys=True, separators=(",", ":")).encode()
+            require(all(proof[key] == value for key, value in expected.items())
+                    and proof["admitted_runtime_lock_sha256"] == pin and proof["job_files_absent"]
+                    and intent["input_sha256"] == sha(encoded)
+                    and intent["command"] == start["command"] == "driver.hyperframes.render.start"
+                    and intent["descriptor_sha256"] == start["descriptor_sha256"]
+                    and intent["request_id"] != start["request_id"]
+                    and error["code"] == "Unsupported" and error["outcome_known"] is True
+                    and ("direct-host", prefix + "004-runtime-refusal.result.json") not in rows,
+                    "runtime_refusal_original_binding")
         bundle = "source-" + source["fingerprint"] + "/"
         for root, prefix in (("direct-source", bundle), ("mediated-source", bundle),
                              ("direct-host", phase + "/project/" + bundle)):
