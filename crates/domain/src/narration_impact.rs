@@ -217,6 +217,15 @@ pub fn propose_narration_replacement(
     expected_source_sha256: &str,
     next_project: &Project,
 ) -> Result<NarrationReplacementImpact> {
+    compare_narration_sources(original, expected_source_sha256, next_project)
+        .map(|(impact, _)| impact)
+}
+
+fn compare_narration_sources(
+    original: &NarrationSourceSnapshot,
+    expected_source_sha256: &str,
+    next_project: &Project,
+) -> Result<(NarrationReplacementImpact, NarrationSourceSnapshot)> {
     validate_original(original)?;
     check(
         valid_sha(expected_source_sha256)
@@ -315,12 +324,12 @@ pub fn propose_narration_replacement(
             .then_with(|| a.source_segment_id.cmp(&b.source_segment_id))
     });
     spans.dedup();
-    Ok(NarrationReplacementImpact {
+    let impact = NarrationReplacementImpact {
         schema: "motionwright.narration-impact-preview/1".into(),
         previous_project_revision: original.revision,
         next_project_revision: next_project.revision,
         previous_source_sha256: original.exact_content_sha256.clone(),
-        candidate_source_sha256: after.exact_content_sha256,
+        candidate_source_sha256: after.exact_content_sha256.clone(),
         changed_segment_ids: changed_ids.into_iter().collect(),
         changed_cue_ids: cue_ids.into_iter().collect(),
         affected_spans: spans,
@@ -337,7 +346,8 @@ pub fn propose_narration_replacement(
         origin_locked_source_unchanged: true,
         candidate_committed: false,
         human_owner_approved: false,
-    })
+    };
+    Ok((impact, after))
 }
 
 /// Conservative source-linked placement review on the EXISTING shared scene
@@ -351,7 +361,7 @@ pub struct NarrationTimelineReview {
     pub source_revision: u64,
     pub current_revision: u64,
     pub exact_source_sha256: String,
-    /// Scene intervals provably intersect changed original transcript times.
+    /// Scene intervals intersect changed transcript spans or known saved cue positions.
     pub locally_overlapping_scene_ids: Vec<Uuid>,
     /// Cut/B-roll dependencies may reach outside the visible edited words.
     /// Until transition/camera/shutter dependencies are modeled, review every
@@ -375,7 +385,7 @@ pub fn assess_narration_timeline_dependents(
 ) -> Result<NarrationTimelineReview> {
     next.validate()
         .map_err(|e| DomainError::Invalid(e.to_string()))?;
-    let source = propose_narration_replacement(previous, expected_source_sha256, next)?;
+    let (source, after) = compare_narration_sources(previous, expected_source_sha256, next)?;
     check(
         source.next_project_revision == next.revision
             && source.previous_source_sha256 == expected_source_sha256,
@@ -388,6 +398,21 @@ pub fn assess_narration_timeline_dependents(
     let global = source.sound_mix_invalidation == MIX_VOICE_BUS_MUST_REMEASURE
         || !source.changed_cue_ids.is_empty()
         || source.affected_spans.is_empty();
+    let changed_cues = source
+        .changed_cue_ids
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let cue_times = previous
+        .cues
+        .iter()
+        .chain(&after.cues)
+        .filter(|cue| {
+            changed_cues.contains(&cue.id)
+                && matches!(cue.evidence, CueEvidence::Manual | CueEvidence::Measured)
+        })
+        .map(|cue| cue.at)
+        .collect::<BTreeSet<_>>();
     let mut local = BTreeSet::new();
     for scene in &next.scenes {
         let end = scene.start.checked_add(scene.duration).map_err(|e| {
@@ -395,10 +420,13 @@ pub fn assess_narration_timeline_dependents(
                 "Scene time cannot be mapped to measured narration: {e}"
             ))
         })?;
-        for span in &source.affected_spans {
-            if span.start < end && span.end > scene.start {
-                local.insert(scene.id);
-            }
+        if source
+            .affected_spans
+            .iter()
+            .any(|span| span.start < end && span.end > scene.start)
+            || cue_times.range(scene.start..end).next().is_some()
+        {
+            local.insert(scene.id);
         }
     }
     // No inferred temporal dependency is silently treated as nonexistent.

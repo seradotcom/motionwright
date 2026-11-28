@@ -367,6 +367,57 @@ fn mapped_scene_intersection_marks_caption_profiles_and_conservatively_all_downs
     );
 }
 #[test]
+fn moving_a_narration_cue_locates_its_retained_before_and_after_scenes() {
+    for (before_evidence, after_evidence, expected_scene_indices) in [
+        (d::CueEvidence::Manual, d::CueEvidence::Measured, vec![1, 2]),
+        (d::CueEvidence::Manual, d::CueEvidence::Unknown, vec![1]),
+        (d::CueEvidence::Unknown, d::CueEvidence::Unknown, vec![]),
+    ] {
+        let mut original = project();
+        original.audio.cues[0].evidence = before_evidence;
+        for name in ["Opening", "Original cut", "Replacement cut"] {
+            original
+                .apply_change(&d::Change::AddScene {
+                    name: name.into(),
+                    objective: "Check half-open scene ownership of a saved cue".into(),
+                    duration_seconds: 1,
+                })
+                .unwrap();
+        }
+        let snapshot = narration_source_snapshot(&original).unwrap();
+        let mut next = original.clone();
+        let mut cue = original.audio.cues[0].clone();
+        cue.at = time(2, 1);
+        cue.evidence = after_evidence;
+        next.apply_change(&d::Change::UpsertAudioCue { cue })
+            .unwrap();
+        next.revision += 1;
+
+        let impact =
+            propose_narration_replacement(&snapshot, &snapshot.exact_content_sha256, &next)
+                .unwrap();
+        assert_eq!(impact.changed_cue_ids, vec![id(40)]);
+        assert!(impact.changed_segment_ids.is_empty());
+        assert!(impact.affected_spans.is_empty());
+        let map = d::assess_narration_timeline_dependents(
+            &snapshot,
+            &snapshot.exact_content_sha256,
+            &next,
+        )
+        .unwrap();
+        let mut expected = expected_scene_indices
+            .into_iter()
+            .map(|index| next.scenes[index].id)
+            .collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(map.locally_overlapping_scene_ids, expected);
+        let all = next.scenes.iter().map(|scene| scene.id).collect::<Vec<_>>();
+        assert_eq!(map.scene_ids_requiring_cut_review, all);
+        assert_eq!(map.scene_ids_requiring_broll_review, all);
+    }
+}
+
+#[test]
 fn scene_mapping_rejects_stale_source_digest_and_change_to_unrelated_project() {
     let mut first = project();
     first

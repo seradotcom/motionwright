@@ -173,7 +173,7 @@ export default function NarrationTakeReview({
       <p>{impact.sound_mix_invalidation.replaceAll('_',' ')}. Scene dependency validation: not run.</p>
       {timelineReview&&<div className="audio-narration-source-evidence" aria-label="Narration source dependency map">
         <strong>Source-bound dependency review · no edits applied</strong>
-        <p>Local transcript overlaps: {timelineReview.locally_overlapping_scene_ids.length?
+        <p>Local transcript or cue overlaps: {timelineReview.locally_overlapping_scene_ids.length?
             timelineReview.locally_overlapping_scene_ids.map(id=>
               project.scenes.find(scene=>scene.id===id)?.name??id.slice(0,8)).join(', '):
             'none demonstrated'}</p>
