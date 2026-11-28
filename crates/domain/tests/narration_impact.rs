@@ -132,6 +132,107 @@ fn replacing_the_measured_audio_invalidates_the_full_voice_clock_and_mix() {
     );
 }
 #[test]
+fn renaming_or_metering_the_same_voice_does_not_replace_narration() {
+    let original = project();
+    let before = narration_source_snapshot(&original).unwrap();
+    let mut after = original.clone();
+    after.revision += 1;
+    after.audio.voice_tracks[0].label = "Owner reviewed take".into();
+    after.audio.voice_tracks[0].loudness_lufs = Some(-18.1);
+    after.validate().unwrap();
+
+    let error =
+        propose_narration_replacement(&before, &before.exact_content_sha256, &after).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("An unrelated project edit cannot pretend to replace narration")
+    );
+
+    after.audio.transcript[1].text = "Only this phrase changed.".into();
+    let result =
+        propose_narration_replacement(&before, &before.exact_content_sha256, &after).unwrap();
+    assert!(!result.voice_media_replaced);
+    assert_eq!(result.changed_segment_ids, vec![id(31)]);
+    assert_eq!(result.changed_cue_ids, vec![id(40)]);
+    assert_eq!(
+        result.sound_mix_invalidation,
+        "MIX_MUST_REVIEW_CUE_AND_TIMING_CONSEQUENCES"
+    );
+}
+
+#[test]
+fn activating_another_take_of_the_same_asset_compares_its_words_without_claiming_new_media() {
+    let original = project();
+    let before = narration_source_snapshot(&original).unwrap();
+    let mut after = original.clone();
+    let mut alternative = original.audio.voice_tracks[0].clone();
+    alternative.id = id(21);
+    alternative.label = "Alternate transcript for the retained WAV".into();
+    let track_id = alternative.id;
+    after
+        .apply_change(&d::Change::AddVoiceTrack { track: alternative })
+        .unwrap();
+    let mut segment = original.audio.transcript[0].clone();
+    segment.id = id(32);
+    segment.voice_track_id = track_id;
+    segment.text = "Manually corrected words for the same audio.".into();
+    after
+        .apply_change(&d::Change::AddTranscriptSegment { segment })
+        .unwrap();
+    after
+        .apply_change(&d::Change::SetActiveVoiceTrack { track_id })
+        .unwrap();
+    after.revision += 1;
+
+    let result =
+        propose_narration_replacement(&before, &before.exact_content_sha256, &after).unwrap();
+    assert!(!result.voice_media_replaced);
+    assert_eq!(result.changed_segment_ids, vec![id(30), id(31), id(32)]);
+    assert_eq!(result.changed_cue_ids, vec![id(40)]);
+}
+
+#[test]
+fn correcting_the_measured_voice_clock_requires_remeasurement_without_claiming_new_bytes() {
+    let mut original = project();
+    for name in ["Narrated opening", "Unchanged supporting shot"] {
+        original
+            .apply_change(&d::Change::AddScene {
+                name: name.into(),
+                objective: "Retain cut and B-roll review across the saved project".into(),
+                duration_seconds: 3,
+            })
+            .unwrap();
+    }
+    let before = narration_source_snapshot(&original).unwrap();
+    let mut after = original.clone();
+    after.revision += 1;
+    after.audio.voice_tracks[0].measured_duration = time(7, 2);
+    after.validate().unwrap();
+
+    let result =
+        propose_narration_replacement(&before, &before.exact_content_sha256, &after).unwrap();
+    assert!(!result.voice_media_replaced);
+    assert_eq!(result.changed_segment_ids, vec![id(30), id(31)]);
+    assert_eq!(result.changed_cue_ids, vec![id(40)]);
+    assert_eq!(
+        result.sound_mix_invalidation,
+        "MIX_VOICE_BUS_MUST_REMEASURE"
+    );
+    let timeline =
+        d::assess_narration_timeline_dependents(&before, &before.exact_content_sha256, &after)
+            .unwrap();
+    let scenes = after
+        .scenes
+        .iter()
+        .map(|scene| scene.id)
+        .collect::<Vec<_>>();
+    assert_eq!(timeline.scene_ids_requiring_cut_review, scenes);
+    assert_eq!(timeline.scene_ids_requiring_broll_review, scenes);
+    assert!(!timeline.project_mutated);
+}
+
+#[test]
 fn changed_cue_is_not_silently_considered_the_same_take() {
     let original = project();
     let before = narration_source_snapshot(&original).unwrap();

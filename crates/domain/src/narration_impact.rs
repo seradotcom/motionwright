@@ -16,6 +16,8 @@ fn check(condition: bool, message: &str) -> Result<()> {
         Err(DomainError::Invalid(message.into()))
     }
 }
+const MIX_VOICE_BUS_MUST_REMEASURE: &str = "MIX_VOICE_BUS_MUST_REMEASURE";
+
 fn valid_sha(value: &str) -> bool {
     value.len() == 64
         && value
@@ -232,7 +234,13 @@ pub fn propose_narration_replacement(
         after.exact_content_sha256 != original.exact_content_sha256,
         "A narrative edit requires new source identity",
     )?;
-    let voice_changed = original.voice_track != after.voice_track;
+    let before_voice = &original.voice_track;
+    let after_voice = &after.voice_track;
+    let voice_media_replaced = before_voice.source_sha256 != after_voice.source_sha256;
+    let voice_clock_changed = before_voice.sample_rate_hz != after_voice.sample_rate_hz
+        || before_voice.channels != after_voice.channels
+        || before_voice.measured_duration != after_voice.measured_duration;
+    let voice_dependencies_changed = voice_media_replaced || voice_clock_changed;
     let old_segments = original
         .transcript
         .iter()
@@ -263,7 +271,7 @@ pub fn propose_narration_replacement(
             });
         }
     }
-    if voice_changed {
+    if voice_dependencies_changed {
         for segment in original.transcript.iter().chain(after.transcript.iter()) {
             changed_ids.insert(segment.id);
             spans.push(NarrationInvalidatedSpan {
@@ -298,7 +306,7 @@ pub fn propose_narration_replacement(
         }
     }
     check(
-        voice_changed || !changed_ids.is_empty() || !cue_ids.is_empty(),
+        voice_dependencies_changed || !changed_ids.is_empty() || !cue_ids.is_empty(),
         "An unrelated project edit cannot pretend to replace narration",
     )?;
     spans.sort_by(|a, b| {
@@ -316,11 +324,11 @@ pub fn propose_narration_replacement(
         changed_segment_ids: changed_ids.into_iter().collect(),
         changed_cue_ids: cue_ids.into_iter().collect(),
         affected_spans: spans,
-        voice_media_replaced: voice_changed,
+        voice_media_replaced,
         caption_timing_invalidation: "CAPTIONS_MUST_REGENERATE_AND_HUMAN_REVIEW".into(),
         cuts_broll_invalidation: "CUTS_AND_BROLL_REQUIRE_REEVALUATION".into(),
-        sound_mix_invalidation: if voice_changed {
-            "MIX_VOICE_BUS_MUST_REMEASURE"
+        sound_mix_invalidation: if voice_dependencies_changed {
+            MIX_VOICE_BUS_MUST_REMEASURE
         } else {
             "MIX_MUST_REVIEW_CUE_AND_TIMING_CONSEQUENCES"
         }
@@ -377,7 +385,7 @@ pub fn assess_narration_timeline_dependents(
         next.scenes.len() <= 256 && next.deliverables.len() <= 64,
         "Narration placement preview exceeds bounded project size",
     )?;
-    let global = source.voice_media_replaced
+    let global = source.sound_mix_invalidation == MIX_VOICE_BUS_MUST_REMEASURE
         || !source.changed_cue_ids.is_empty()
         || source.affected_spans.is_empty();
     let mut local = BTreeSet::new();
