@@ -1190,7 +1190,9 @@ mod tests {
         service.store().lock().create_project(&project).unwrap();
 
         let mut source = synthetic_wav(240_000);
-        for (index, frame) in source[44..].chunks_exact_mut(4).enumerate() {
+        let (frames, remainder) = source[44..].as_chunks_mut::<4>();
+        assert!(remainder.is_empty());
+        for (index, frame) in frames.iter_mut().enumerate() {
             let level: i16 = match index {
                 0..96_000 => 1_000,
                 96_000..144_000 => 9_000,
