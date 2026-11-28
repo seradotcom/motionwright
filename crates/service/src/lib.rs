@@ -1394,12 +1394,24 @@ impl StudioService {
         project_id: Uuid,
         expected: &ProductionReceiptWatermark,
     ) -> StorageResult<Vec<ProductionJobProjection>> {
+        self.production_jobs_with_projection(project_id, expected, jobs::derive_production_jobs_all)
+    }
+
+    fn production_jobs_with_projection(
+        &self,
+        project_id: Uuid,
+        expected: &ProductionReceiptWatermark,
+        project_jobs: impl FnOnce(&[ProductionReceipt], Uuid, u64) -> Vec<ProductionJobProjection>,
+    ) -> StorageResult<Vec<ProductionJobProjection>> {
         const MAX_JOB_ENUMERATION_RECEIPTS: u64 = 20_000;
-        let store = self.store.lock();
-        let project = store.load_project(project_id)?;
-        if store.production_receipt_watermark(project_id)? != *expected {
-            return Err(StorageError::ReceiptStreamChanged);
-        }
+        let (stamp, branch) = {
+            let store = self.store.lock();
+            let project = store.load_project(project_id)?;
+            if store.production_receipt_watermark(project_id)? != *expected {
+                return Err(StorageError::ReceiptStreamChanged);
+            }
+            (project.stamp(), project.active_branch)
+        };
         if expected.count > MAX_JOB_ENUMERATION_RECEIPTS {
             return Err(invalid_import(
                 "Production job enumeration exceeds the bounded 20,000-receipt safety budget; no complete claim was made",
@@ -1409,7 +1421,11 @@ impl StudioService {
         let mut before = None;
         if let Some(head) = expected.latest_id {
             loop {
-                let batch = store.production_receipts_before(project_id, head, before, 256)?;
+                // Yield the shared Store after each bounded read.
+                let batch = self
+                    .store
+                    .lock()
+                    .production_receipts_before(project_id, head, before, 256)?;
                 if batch.is_empty() {
                     break;
                 }
@@ -1421,19 +1437,22 @@ impl StudioService {
                 }
             }
         }
-        if receipts.len() as u64 != expected.count
+        if receipts.len() as u64 != expected.count {
+            return Err(StorageError::ReceiptStreamChanged);
+        }
+        // Reverse the bounded capture to durable commit order. Project it
+        // outside the Store lock, then recheck both source identities.
+        receipts.reverse();
+        let jobs = project_jobs(&receipts, stamp.generation, stamp.revision);
+        let store = self.store.lock();
+        let current = store.load_project(project_id)?;
+        if current.stamp() != stamp
+            || current.active_branch != branch
             || store.production_receipt_watermark(project_id)? != *expected
         {
             return Err(StorageError::ReceiptStreamChanged);
         }
-        // Storage pages are newest-first by durable ordinal. Only the
-        // completed, watermark-verified snapshot is reversed for projection.
-        receipts.reverse();
-        Ok(jobs::derive_production_jobs_all(
-            &receipts,
-            project.generation,
-            project.revision,
-        ))
+        Ok(jobs)
     }
 
     /// Exact project and receipt-watermark-bound read-only MLT lifetime
@@ -1518,6 +1537,69 @@ impl StudioService {
     ) -> StorageResult<ApplyOutcome> {
         self.require_semantic_graph_write_admission(change)?;
         self.store.lock().apply(id, expected, request_id, change)
+    }
+}
+
+#[cfg(test)]
+mod production_jobs_snapshot_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn job_projection_yields_the_store_and_rejects_a_changed_snapshot() {
+        for append_receipt in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let service = StudioService::open(directory.path().join("jobs.sqlite3")).unwrap();
+            let project = service.create_project("Original job projection").unwrap();
+            let begin = ProductionReceiptInput {
+                project_id: project.id,
+                generation: project.generation,
+                revision: project.revision,
+                request_id: "original-start".into(),
+                request_sha256: "a".repeat(64),
+                command: "driver.motion-canvas.render.start".into(),
+                stage: "dispatching".into(),
+                payload: json!({}),
+            };
+            service.append_production_receipt(begin.clone()).unwrap();
+            let watermark = service.production_receipt_watermark(project.id).unwrap();
+            let result = service.production_jobs_with_projection(
+                project.id,
+                &watermark,
+                |receipts, generation, revision| {
+                    assert_eq!(receipts.len(), 1);
+                    assert_eq!(
+                        (generation, revision),
+                        (project.generation, project.revision)
+                    );
+                    assert!(
+                        service.store.try_lock().is_some(),
+                        "job projection owns the Store"
+                    );
+                    if append_receipt {
+                        service
+                            .append_production_receipt(ProductionReceiptInput {
+                                request_id: "later-start".into(),
+                                ..begin
+                            })
+                            .unwrap();
+                    } else {
+                        service
+                            .apply(
+                                project.id,
+                                &project.stamp(),
+                                "advance-document",
+                                &Change::RenameProject {
+                                    title: "Edited during projection".into(),
+                                },
+                            )
+                            .unwrap();
+                    }
+                    jobs::derive_production_jobs_all(receipts, generation, revision)
+                },
+            );
+            assert!(matches!(result, Err(StorageError::ReceiptStreamChanged)));
+        }
     }
 }
 
