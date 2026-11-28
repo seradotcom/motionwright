@@ -601,6 +601,85 @@ impl ProductionCoordinator {
         }))
     }
 
+    pub fn saved_motion_capture_for_job(
+        &self,
+        project_id: Uuid,
+        expected: &RevisionStamp,
+        start_request_id: &str,
+        job_ref: &str,
+    ) -> NativeResult<SavedMotionCaptureInventory> {
+        let unavailable = || invalid("The job has no complete original capture for this revision");
+        if start_request_id.len() > 128
+            || job_ref.is_empty()
+            || job_ref.len() > 256
+            || start_request_id.chars().any(char::is_control)
+            || job_ref.chars().any(char::is_control)
+        {
+            return Err(unavailable());
+        }
+        let (request_id, suffix) = start_request_id
+            .rsplit_once(":motion:")
+            .ok_or_else(unavailable)?;
+        let index = suffix
+            .strip_suffix(":render-start")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|index| *index < MAX_SEGMENTS)
+            .ok_or_else(unavailable)?;
+        if request_id.is_empty()
+            || request_id.len() > 96
+            || start_request_id != format!("{request_id}:motion:{index}:render-start")
+        {
+            return Err(unavailable());
+        }
+
+        let project = require_current(self, project_id, expected)?;
+        let watermark = self
+            .service
+            .production_receipt_watermark(project_id)
+            .map_err(storage_error)?;
+        let receipt = self
+            .service
+            .latest_production_receipt(project_id, &format!("{request_id}:motion:0:verify"))
+            .map_err(storage_error)?
+            .filter(|row| {
+                row.command == VERIFY
+                    && row.stage == "completed"
+                    && row.generation == project.generation
+                    && row.revision == project.revision
+            })
+            .ok_or_else(unavailable)?;
+        let context = SavedMotionReceiptContext::from_receipt(&receipt)?.ok_or_else(unavailable)?;
+        if context.index != 0
+            || context.source.request_id != request_id
+            || index >= context.source.segment_count
+        {
+            return Err(unavailable());
+        }
+        let deliverable_id = context.source.deliverable_id;
+        let source = self
+            .read_saved_motion_source(&project, deliverable_id, Some(receipt.id))?
+            .ok_or_else(unavailable)?;
+        if source.base != context.source
+            || source
+                .evidence
+                .segments
+                .get(index)
+                .is_none_or(|segment| segment.job_ref != job_ref)
+        {
+            return Err(unavailable());
+        }
+        let capture = source.hint()?;
+        self.check_saved_motion_snapshot(&project, expected, &watermark)?;
+        Ok(SavedMotionCaptureInventory {
+            schema: "motionwright.saved-motion-inventory/1",
+            project_id,
+            generation: project.generation,
+            revision: project.revision,
+            deliverable_id,
+            capture: Some(capture),
+        })
+    }
+
     pub fn saved_motion_capture_inventory(
         &self,
         project_id: Uuid,

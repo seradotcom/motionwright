@@ -161,6 +161,26 @@ async fn saved_capture_reopens_closed_store_without_redispatch_or_new_budget() {
         .unwrap();
     assert_eq!(hint.segment_count, 1);
     assert_eq!(hint.frame_count, 60);
+    let from_job = reader
+        .saved_motion_capture_for_job(
+            project.id,
+            &project.stamp(),
+            "saved-full:motion:0:render-start",
+            &evidence.segments[0].job_ref,
+        )
+        .unwrap();
+    assert_eq!(from_job.deliverable_id, profile);
+    assert_eq!(from_job.capture.unwrap().receipt_id, hint.receipt_id);
+    assert!(
+        reader
+            .saved_motion_capture_for_job(
+                project.id,
+                &project.stamp(),
+                "saved-full:motion:0:render-start",
+                "different-job",
+            )
+            .is_err()
+    );
     let original = reader
         .recover_saved_motion_capture(project.id, &project.stamp(), profile, hint.receipt_id)
         .unwrap();

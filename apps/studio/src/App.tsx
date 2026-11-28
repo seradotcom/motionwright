@@ -298,6 +298,8 @@ export function PreviewSurface({
   windowEditors,
   onWindowEditors,
   onInspectWindow,
+  requestedFrameToken,
+  onFrameRequestUsed,
 }: {
   scene: Scene | null;
   project: Project;
@@ -315,6 +317,8 @@ export function PreviewSurface({
   windowEditors?: NativeWindowEditors;
   onWindowEditors?: UpdateNativeWindowEditors;
   onInspectWindow?: () => void;
+  requestedFrameToken?: string;
+  onFrameRequestUsed?: () => void;
 }) {
   const receipt = resolveSceneRenderReceipt(project, scene, profile, renderEvidence);
   const nativeFrame = nativeFrameAtPlayhead(project, scene, profile, renderEvidence, playhead);
@@ -452,8 +456,13 @@ export function PreviewSurface({
   // explicit opt-in tied to the exact current authority. A restored local copy
   // is always historical, even when its source revision matches the project.
   const [choice, setChoice] = useState<{ source: "design" | "frames" | "window" | "av" | "recovery"; authority: string }>(
-    { source: "recovery", authority: "" },
+    () => requestedFrameToken && nativeFrame?.token === requestedFrameToken
+      ? { source: "frames", authority: authorityKey }
+      : { source: "recovery", authority: "" },
   );
+  useLayoutEffect(() => {
+    if (requestedFrameToken) onFrameRequestUsed?.();
+  }, [requestedFrameToken, onFrameRequestUsed]);
   const selectPreviewSource = (source: typeof choice.source) => setChoice({
     source, authority: source === "av" ? avAuthorityKey : source === "window" ? windowAuthorityKey : authorityKey,
   });
@@ -1622,6 +1631,8 @@ export default function App() {
   const [playing, setPlaying] = useState(false);
   const [audioReviewSession,setAudioReviewSession] = useState<{key:string;request:AudioReviewRequest}|null>(null);
   const [nativeRenderReceipt, setNativeRenderReceipt] = useState<MotionCanvasRenderEvidence | null>(null);
+  const [requestedFrameToken, setRequestedFrameToken] = useState<string>();
+  const consumeFrameRequest = useCallback(() => setRequestedFrameToken(undefined), []);
   const [nativeWindowEditors, setNativeWindowEditors] = useState<NativeWindowEditors>({});
   const [nativeAvReceipt, setNativeAvReceipt] = useState<MltAvMasterEvidence | null>(null);
   // Keep the original current-session multi-segment result across workspace
@@ -1690,6 +1701,7 @@ export default function App() {
       ? selected : next.deliverables[0]?.id ?? null);
     if (!sameScope) setTimecodeMode("ndf");
     setNativeRenderReceipt(null);
+    setRequestedFrameToken(undefined);
     setNativeAvReceipt(null);
     setNativeMultiAvReceipt(null);
     setNativeExportReceipt(null);
@@ -1711,6 +1723,7 @@ export default function App() {
     setPlaying(false);
     setPaletteOpen(false);
     setNativeRenderReceipt(null);
+    setRequestedFrameToken(undefined);
     setNativeAvReceipt(null);
     setNativeMultiAvReceipt(null);
     setNativeExportReceipt(null);
@@ -2466,12 +2479,27 @@ export default function App() {
           onSeek={seekTo} onPauseEditorial={() => setPlaying(false)}
           editorialPlaying={playing} desktopMode={boot.native_sdk.mode === "tauri"}
           windowEditors={nativeWindowEditors} onWindowEditors={setNativeWindowEditors}
-          onInspectWindow={() => setWorkspace("Jobs")} />;
+          onInspectWindow={() => setWorkspace("Jobs")}
+          requestedFrameToken={requestedFrameToken} onFrameRequestUsed={consumeFrameRequest} />;
       case "Jobs":
         return (
           <ProductionJobsWorkspace
             project={project}
             desktopMode={boot.native_sdk.mode === "tauri"}
+            onOpenPreview={(evidence, sceneId, token) => {
+              const current = bootRef.current?.project;
+              if (!current || timelineSelectionScope(current) !== timelineSelectionScope(project)
+                  || current.revision !== project.revision) {
+                throw new Error("The saved preview belongs to an earlier project view.");
+              }
+              setNativeRenderReceipt(evidence);
+              setPlaying(false);
+              setTimebaseProfileId(evidence.deliverable_id);
+              setTimecodeMode("ndf");
+              selectScene(sceneId);
+              setRequestedFrameToken(token);
+              setWorkspace("Timeline");
+            }}
           />
         );
       case "Workflows":

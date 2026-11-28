@@ -1335,6 +1335,19 @@ export async function readSavedMotionCaptureInventory(project:Project,deliverabl
   return parseSavedMotionCaptureInventory(value,project,deliverableId);
 }
 
+export async function readSavedMotionJobCapture(
+  project: Project, job: Pick<ProductionJobProjection, "job_ref" | "root_request_id">,
+): Promise<SavedMotionCaptureInventory> {
+  if (!isTauri()) throw new Error("The original preview requires Studio Desktop.");
+  const value = await invoke<unknown>("saved_motion_capture_inventory", { request: {
+    project_id: project.id, generation: project.generation, revision: project.revision,
+    job: { job_ref: job.job_ref, start_request_id: job.root_request_id },
+  } });
+  const profile = project.deliverables.find(item => item.id === (value as { deliverable_id?: unknown } | null)?.deliverable_id);
+  if (!profile) throw new Error("The original capture profile is unavailable.");
+  return parseSavedMotionCaptureInventory(value, project, profile.id);
+}
+
 export async function recoverSavedMotionCapture(project:Project,deliverableId:string,hint:SavedMotionCaptureHint,
   beforeRead?:NativeDeliveryDispatchCheck):Promise<MotionCanvasRenderEvidence>{
   if(!isTauri())throw new Error("Saved captures require the Motionwright desktop runtime.");

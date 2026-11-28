@@ -2699,14 +2699,34 @@ struct SavedMotionRecoverResponse {
     native: NativePreviewRenderResponse,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedMotionJobIdentity {
+    job_ref: String,
+    start_request_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedMotionInventoryRequest {
+    project_id: Uuid,
+    generation: Uuid,
+    revision: u64,
+    deliverable_id: Option<Uuid>,
+    job: Option<SavedMotionJobIdentity>,
+}
+
 /// Discovery and recovery read the existing owner-selected SQLite/output roots.
 /// No provider is invoked and no effect grant is issued or restored.
 #[tauri::command]
 async fn saved_motion_capture_inventory(
     mut owner: desktop_owner::OwnerInvocation,
     state: State<'_, AppState>,
-    request: av_delivery::AudioQcInventoryRequest,
+    request: SavedMotionInventoryRequest,
 ) -> Result<motionwright_native::production::SavedMotionCaptureInventory, String> {
+    if request.deliverable_id.is_some() == request.job.is_some() {
+        return Err("Choose one saved capture source.".into());
+    }
     let project = state
         .service
         .project(request.project_id)
@@ -2733,9 +2753,20 @@ async fn saved_motion_capture_inventory(
         let coordinator =
             ProductionCoordinator::with_receipt_custody(service, connection, &custody)
                 .map_err(|_| "Original capture connection was rejected.".to_string())?;
-        let result = coordinator
-            .saved_motion_capture_inventory(project.id, &project.stamp(), request.deliverable_id)
-            .map_err(|error| format!("Saved capture discovery was blocked: {}", error.message))?;
+        let result = if let Some(job) = request.job {
+            coordinator.saved_motion_capture_for_job(
+                project.id,
+                &project.stamp(),
+                &job.start_request_id,
+                &job.job_ref,
+            )
+        } else {
+            let deliverable_id = request
+                .deliverable_id
+                .ok_or("Saved capture profile is missing.")?;
+            coordinator.saved_motion_capture_inventory(project.id, &project.stamp(), deliverable_id)
+        }
+        .map_err(|error| format!("Saved capture discovery was blocked: {}", error.message))?;
         Ok::<_, String>((result, identity))
     })
     .await

@@ -658,7 +658,7 @@ test("desktop job receipts reread active jobs and preserve explicit manual refre
   const job = {
     job_ref: "job-test-42",
     provider: "driver:motion-canvas",
-    root_request_id: "request-test-42",
+    root_request_id: "request-test-42:motion:0:render-start",
     generation: fixtureBootstrap.project.generation,
     revision: fixtureBootstrap.project.revision,
     state: "running",
@@ -696,6 +696,34 @@ test("desktop job receipts reread active jobs and preserve explicit manual refre
           mock.__TEST_RECEIPTS__.calls += 1;
           return structuredClone(mock.__TEST_RECEIPTS__.jobs);
         }
+        const profile = initialBoot.project.deliverables[0];
+        const hint = {
+          receipt_id: "11111111-1111-4111-8111-111111111111", capture_sha256: "a".repeat(64),
+          segment_count: 1, frame_count: 60,
+          fps_num: Number(profile.frame_rate.num), fps_den: Number(profile.frame_rate.den),
+        };
+        const request = args?.request as Record<string, unknown> | undefined;
+        if (command === "saved_motion_capture_inventory"
+            && JSON.stringify(request?.job) === JSON.stringify({
+              job_ref: initialJob.job_ref, start_request_id: initialJob.root_request_id,
+            })) {
+          return {
+            schema: "motionwright.saved-motion-inventory/1", project_id: initialBoot.project.id,
+            generation: initialJob.generation, revision: initialJob.revision, deliverable_id: profile.id, capture: hint,
+          };
+        }
+        if (command === "recover_saved_motion_capture" && request?.receipt_id === hint.receipt_id) {
+          const segment = { segment_id: "original-segment", scene_ids: [initialBoot.project.scenes[1].id], frame_count: 60 };
+          return {
+            receipt_id: hint.receipt_id, capture_sha256: hint.capture_sha256,
+            project_resource: "project:" + initialBoot.project.id, generation: initialJob.generation,
+            revision: initialJob.revision, deliverable_id: profile.id,
+            frame_rate: { num: hint.fps_num, den: hint.fps_den },
+            segments: [{ ...segment, plan_ref: "original-plan", fingerprint: "original-film", job_ref: initialJob.job_ref,
+              artifact: { frame_count: 60, manifest_sha256: "c".repeat(64) }, verification: {} }],
+            preview: [{ ...segment, token: "22222222-2222-4222-8222-222222222222" }],
+          };
+        }
         throw new Error("Unsupported synthetic command: " + command);
       },
     };
@@ -718,6 +746,7 @@ test("desktop job receipts reread active jobs and preserve explicit manual refre
     mock.jobs[0].state = "succeeded";
     mock.jobs[0].progress = { completed: 60, total: 60, message: null };
     mock.jobs[0].result_available = true;
+    mock.jobs[0].artifact_available = true;
   });
   await page.clock.fastForward(12_500);
   await expect(ledger).toContainText("SUCCEEDED");
@@ -738,5 +767,17 @@ test("desktop job receipts reread active jobs and preserve explicit manual refre
   });
   await page.getByRole("button", { name: "Refresh production receipts" }).click();
   await expect(ledger).toContainText("FAILED");
+  await expect(page.getByRole("button", { name: "Open original preview" })).toHaveCount(0);
+  await page.evaluate(() => {
+    const mock = (window as unknown as {
+      __TEST_RECEIPTS__: { jobs: Array<Record<string, unknown>> };
+    }).__TEST_RECEIPTS__;
+    mock.jobs[0].state = "succeeded";
+  });
+  await page.getByRole("button", { name: "Refresh production receipts" }).click();
+  await page.getByRole("button", { name: "Open original preview" }).click({ timeout: 5_000 });
+  await expect(page.getByRole("button", { name: "Timeline", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("region", { name: "Program preview" }).getByRole("button", { name: "Show design" })).toBeVisible();
+  await expect(page.locator(".tree-row.selected")).toContainText(fixtureBootstrap.project.scenes[1].name);
   await expect(page.locator(".revision-chip").first()).toHaveText(revision);
 });

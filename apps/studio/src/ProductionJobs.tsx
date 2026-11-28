@@ -7,10 +7,17 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { closeOriginalMltProject, inspectMltCleanupInventory, productionJobs, productionJobsHistory, readOriginalNativeJobStatus } from "./api";
+import {
+  closeOriginalMltProject, inspectMltCleanupInventory, productionJobs, productionJobsHistory,
+  readOriginalNativeJobStatus, readSavedMotionJobCapture, recoverSavedMotionCapture,
+} from "./api";
+import { createNativeAvReadGuard } from "./nativeAvAudioQc";
+import { nativeFrameAtPlayhead } from "./nativeFrameSelection";
+import { seconds } from "./types";
 import { RECEIPT_RECHECK_MS, shouldAutoRecheckReceipts } from "./jobRefresh";
 import { nativeRecoveryWarning } from "./nativeRecovery";
 import type {
+  MotionCanvasRenderEvidence,
   ProductionJobProjection,
   MltCleanupInventory,
   MltCloseDisposition,
@@ -92,9 +99,16 @@ const mltCloseLabels: Record<MltCloseDisposition, string> = {
   outcome_unknown: "Closure could not be confirmed. Reconcile the original request with the Broker before any further action.",
 };
 
+function canOpenOriginalPreview(job: ProductionJobProjection): boolean {
+  return job.provider === "driver:motion-canvas" && job.applicability === "current"
+    && job.state === "succeeded" && job.artifact_available && job.result_available
+    && /:motion:(0|[1-9]\d?):render-start$/.test(job.root_request_id);
+}
+
 function JobRow({
   job, desktopMode, ownerReadBusy, ownerObservation, onReadOriginalStatus,
   onCloseMlt, closeBusy, closePending, closure,
+  onOpenPreview, previewBusy, previewPending, previewError,
 }: {
   job: ProductionJobProjection;
   desktopMode: boolean;
@@ -105,6 +119,10 @@ function JobRow({
   closeBusy: boolean;
   closePending: boolean;
   closure?: MltCloseDisposition;
+  onOpenPreview: (job: ProductionJobProjection) => void;
+  previewBusy: boolean;
+  previewPending: boolean;
+  previewError?: string;
 }) {
   const progress = job.progress
     ? job.progress.total == null
@@ -184,9 +202,16 @@ function JobRow({
         <span>{observedAt(job.last_observed_at)}</span>
         <span>
           {progress == null ? "No canonical progress reported" : "Progress " + progress}
-          {job.artifact_available ? " · artifact recorded" : ""}
-          {job.result_available ? " · result recorded" : ""}
         </span>
+        {job.result_available && <span>Original result recorded</span>}
+        {job.artifact_available && <span>Artifact recorded</span>}
+        {desktopMode && canOpenOriginalPreview(job) && <>
+          <button type="button" className="button compact job-preview-button"
+            disabled={previewBusy} onClick={() => onOpenPreview(job)}>
+            {previewPending ? "Verifying original preview…" : "Open original preview"}
+          </button>
+          {previewError && <span className="job-secondary-state" role="alert">{previewError}</span>}
+        </>}
       </div>
     </div>
   );
@@ -195,9 +220,11 @@ function JobRow({
 export default function ProductionJobsWorkspace({
   project,
   desktopMode,
+  onOpenPreview,
 }: {
   project: Project;
   desktopMode: boolean;
+  onOpenPreview: (evidence: MotionCanvasRenderEvidence, sceneId: string, token: string) => void;
 }) {
   const [jobs, setJobs] = useState<ProductionJobProjection[]>([]);
   const [loading, setLoading] = useState(desktopMode);
@@ -227,7 +254,18 @@ export default function ProductionJobsWorkspace({
   const [historicalLoading, setHistoricalLoading] = useState(false);
   const [historicalError, setHistoricalError] = useState<string | null>(null);
   const historyEpochRef = useRef(0);
-  const historyKey = [project.id, project.generation, project.revision].join(":");
+  const historyKey = [project.id, project.generation, project.active_branch, project.revision].join(":");
+  const previewGuard = useRef(createNativeAvReadGuard());
+  const previewScope = previewGuard.current.viewKey(JSON.stringify([historyKey, desktopMode]));
+  const previewScopeRef = useRef(previewScope);
+  previewScopeRef.current = previewScope;
+  const activePreview = useRef<{ scope: string } | null>(null);
+  const [previewRead, setPreviewRead] = useState<{ scope: string; jobKey: string; busy: boolean; error?: string } | null>(null);
+  const currentPreviewRead = previewRead?.scope === previewScope ? previewRead : null;
+  useEffect(() => () => {
+    if (activePreview.current) previewGuard.current.cancel(activePreview.current);
+    activePreview.current = null;
+  }, [previewScope]);
   const historyKeyRef = useRef(historyKey);
   historyKeyRef.current = historyKey;
   const historicalInFlight = useRef<{ key: string; epoch: number } | null>(null);
@@ -340,7 +378,7 @@ export default function ProductionJobsWorkspace({
       document.removeEventListener("visibilitychange", onVisibilityChange);
       refreshRef.current = () => {};
     };
-  }, [project.id, project.generation, project.revision, desktopMode]);
+  }, [project.id, project.generation, project.active_branch, project.revision, desktopMode]);
 
   // A separate on-demand history view never triggers polling or driver
   // commands. Pages are stable only while both creative revision and the
@@ -498,6 +536,44 @@ export default function ProductionJobsWorkspace({
       if (historyKeyRef.current === scoped) setMltInventoryError("MLT receipt inventory could not be verified.");
     } finally {
       if (historyKeyRef.current === scoped) setMltInventoryBusy(false);
+    }
+  }
+
+  async function openOriginalPreview(job: ProductionJobProjection) {
+    if (!desktopMode || activePreview.current || !canOpenOriginalPreview(job)
+        || job.generation !== project.generation || job.revision !== project.revision) return;
+    const jobKey = productionJobKey(project.id, job);
+    const ticket = previewGuard.current.begin(previewScope);
+    activePreview.current = ticket;
+    const stillCurrent = () => previewGuard.current.isCurrent(ticket, previewScopeRef.current);
+    setPreviewRead({ scope: previewScope, jobKey, busy: true });
+    try {
+      const inventory = await readSavedMotionJobCapture(project, job);
+      if (!stillCurrent()) return;
+      if (!inventory.capture) throw new Error("The original job has no complete saved preview.");
+      const evidence = await recoverSavedMotionCapture(project, inventory.deliverable_id, inventory.capture, () => {
+        if (!stillCurrent()) throw new Error("The preview source changed.");
+      });
+      if (!stillCurrent()) return;
+      const matches = evidence.segments.filter(segment => segment.job_ref === job.job_ref);
+      const segment = matches[0];
+      const profile = project.deliverables.find(item => item.id === evidence.deliverable_id) ?? null;
+      const scene = project.scenes.find(item => item.id === segment?.scene_ids[0]);
+      const frame = scene && nativeFrameAtPlayhead(project, scene, profile, evidence, seconds(scene.start));
+      if (matches.length !== 1 || !scene || !frame || frame.segmentId !== segment.segment_id) {
+        throw new Error("The recovered preview does not match the original job.");
+      }
+      setPreviewRead(null);
+      onOpenPreview(evidence, scene.id, frame.token);
+    } catch (reason) {
+      if (stillCurrent()) {
+        const error = reason instanceof Error ? reason.message
+          : typeof reason === "string" ? reason : "The original preview is unavailable.";
+        setPreviewRead({ scope: previewScope, jobKey, busy: false, error });
+      }
+    } finally {
+      previewGuard.current.cancel(ticket);
+      if (activePreview.current === ticket) activePreview.current = null;
     }
   }
 
@@ -696,6 +772,10 @@ export default function ProductionJobsWorkspace({
               closePending={!historyOpen && closingJobKey === productionJobKey(project.id, job)}
               closure={closureFor(job)}
               onReadOriginalStatus={(entry) => { void readOwnerOriginal(entry); }}
+              onOpenPreview={(entry) => { void openOriginalPreview(entry); }}
+              previewBusy={currentPreviewRead?.busy === true}
+              previewPending={currentPreviewRead?.busy === true && currentPreviewRead.jobKey === productionJobKey(project.id, job)}
+              previewError={currentPreviewRead?.jobKey === productionJobKey(project.id, job) ? currentPreviewRead.error : undefined}
             />)}
           </div>
         </div>

@@ -4835,6 +4835,10 @@ select:focus {
 .job-observation-cell > span:last-child {
   white-space: normal !important;
 }
+.job-preview-button {
+  justify-self: start;
+  max-width: 100%;
+}
 .jobs-history-banner {
   display: flex;
   justify-content: space-between;
