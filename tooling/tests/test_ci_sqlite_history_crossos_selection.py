@@ -37,18 +37,18 @@ class HistoryCrossOsSelectionTests(unittest.TestCase):
     def test_reviewed_composed_storage_source_pins_are_exact_in_both_jobs(self):
         source = WORKFLOW.read_text(encoding="utf-8")
         expected = {
-            "crates/storage/src/lib.rs": "4d819492dfd52171bc1cba6cf115affdc9915150a4d768a5d508876a0162e630",
+            "crates/storage/src/lib.rs": "90d413dde4e72150dac9158ddfbfaa3c549805b5ca50db03d610c184f95c237e",
             "crates/storage/src/portability.rs": "890a3095a86c485ab5c76ca7f0a815d0e328d32820e9dcb4ba8e3a791b31e13d",
             "crates/storage/Cargo.toml": "3d5ddb85a9c2998090a0f0e7be0c0cd4031bfbeb76a7e42b1b3b75be84105c82",
             "crates/storage/src/bundle_export_unix.rs": "61a31e6d255ea0331b12957b02d8281cfe15f54f2f929e03d9fd78cd13beabb7",
             "crates/storage/src/bundle_export_windows.rs": "b0f88151c36c209ca040ac3ca6b49d381f415d8d083ecbbd7d5d230a65a35f96",
-            "crates/storage/src/file_import.rs": "3751eda8ad4b1a9049e927d486150e88f52fde20841779b6929287806013e44d",
+            "crates/storage/src/file_import.rs": "be51d92ed3a5512b5bd118b84438c23cea6c935e34d098888cf39478aee8ebc4",
             "Cargo.lock": "af9ab7a693d34db49ebbbb897c0b89de1990e5aae774dcf4ece60b3155780931",
             "SOURCE_LOCK.json": "4a03e1e5f7b91b4608260fb8437ce51e7df346683d50667860dc5354cb1074b8",
         }
         maps = re.findall(r"^          pins=(\{[^\n]+\})$", source, flags=re.M)
         self.assertEqual(len(maps), 2, "G0 and real CrossOS must bind the same reviewed inputs")
-        self.assertEqual(source.count('foundation_reviewed_source="aa0285ed9ba70da8bad45b3d27c59ab7dfdbdb0d"'), 2)
+        self.assertEqual(source.count('foundation_reviewed_source="b5011b159f7587317053efc52730add2ff2dc680"'), 2)
         self.assertEqual(source.count('source_lock_reviewed_source="576201b3fca3a7a6f7bc57cc4d6cbf5dd7d3d347"'), 2)
         self.assertEqual(source.count('workspace_lock_source="4679ca7b0965409fb9c230e5063dbeec5490108c"'), 2)
         self.assertIn('source_lock_reviewed_source if rel=="SOURCE_LOCK.json"', source)
