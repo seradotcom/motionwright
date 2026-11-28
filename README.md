@@ -12,6 +12,20 @@ Most AI video workflows optimize for the first render. Motionwright is designed 
 
 The application owns its creative domain and SQLite transaction boundary. Semwright remains the authority for its Native SDK contract, Driver Host/Broker/Policy boundaries, Project Graph, Effect Conformance, jobs, sealed runtime tools and native render drivers.
 
+## First use on desktop
+
+Use a candidate supplied for testing and compare its SHA-256 with the package receipt for the same commit before opening it. The current CI candidates are unsigned, and the macOS DMG is unnotarized. If the operating system blocks the package, use an approved distribution when it becomes available. [Package checks and supported artifacts](docs/installed-candidate-smoke.md)
+
+| Platform | Candidate |
+|---|---|
+| Linux x86-64 | Run the AppImage with your normal user account. The Debian package has a separate install path. |
+| Windows x64 | Use the NSIS setup program for your current account. |
+| macOS Apple Silicon | Open the DMG and copy the app to a location your account can write to, such as your user Applications folder. |
+
+1. Open the project library and choose **Create project** or **Create editable motion example**. Save a change, close Motionwright, then reopen the project from the library to resume editing.
+2. To move the saved project and its original assets, use **Deliver**, choose a new folder with **Choose portable bundle destination**, then select **Export bundle**. On the receiving installation, open **Import a portable project**, choose the folder, and use **Inspect portable project** before selecting **Import inspected project**. Import creates a new execution generation and refuses to overwrite an existing project. [Portable backup behavior](docs/reliability/bundle-export-destination-authority.md)
+3. When you are ready to render, open **Integrations** to select the Semwright connection for this project and check runtime compatibility. Local editing and backup work before you configure a renderer. [Runtime setup](docs/owner-native-runtime-onboarding.md)
+
 ## Product surface
 
 The desktop editor is organized around:
