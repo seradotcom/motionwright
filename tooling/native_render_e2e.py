@@ -331,7 +331,7 @@ def native_layer_order_original_rgb(frame: Path) -> bytes:
 
 
 def verify_native_layer_original_pixels(samples: tuple[bytes, bytes, bytes]) -> dict:
-    """A saved z5 amber rectangle must occlude z3 blue at real PNG pixels."""
+    """The saved amber foreground must occlude blue in the overlap of the PNG."""
     if len(samples) != 3 or any(len(sample) != 240 * 145 * 3 for sample in samples):
         raise AssertionError("Native layer original PNG byte dimensions changed")
     # Interior samples, far from antialiased edges. Both source rectangles

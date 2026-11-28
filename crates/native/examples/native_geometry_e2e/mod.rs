@@ -121,16 +121,25 @@ fn check_project(
         })
         .collect::<Vec<_>>();
     let valid = if easing == MotionInterpolation::Hold {
-        instructions.len() == 8
-            && instructions.iter().all(|instruction| {
-                matches!(
-                    &instruction.operation,
-                    semwright_motion_authoring::NativeOp::Set { .. }
-                ) && instruction.duration == RationalTime::ZERO
-                    && instruction.easing == semwright_motion_authoring::MotionEasing::Linear
-                    && (instruction.start == RationalTime::ZERO
-                        || instruction.start == RationalTime::new(1, 1).expect("source frame"))
-            })
+        use semwright_motion_authoring::{Channel, MotionEasing, NativeOp};
+        // The renderer uses a half-frame phase at 30 fps so the Set reaches
+        // the authored output tick before the delay's one-frame lookahead.
+        let phases = [RationalTime::new(1, 60)?, RationalTime::new(61, 60)?];
+        let channels = [
+            Channel::Position,
+            Channel::Width,
+            Channel::Height,
+            Channel::Rotation,
+        ];
+        instructions.len() == phases.len() * channels.len()
+            && phases.iter().all(|phase| channels.iter().all(|channel| {
+                instructions.iter().filter(|instruction| {
+                    matches!(&instruction.operation, NativeOp::Set {channel: observed, ..} if observed == channel)
+                        && instruction.start == *phase
+                        && instruction.duration == RationalTime::ZERO
+                        && instruction.easing == MotionEasing::Linear
+                }).count() == 1
+            }))
     } else {
         instructions.len() == 4
             && instructions.iter().all(|instruction| {

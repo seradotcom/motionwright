@@ -8,6 +8,10 @@ const SCHEMA: &str = "motionwright.native-layer-order-source/1";
 const STUDIO_SCHEMA: &str = "motionwright.native-layer-order-studio/1";
 const FRONT: &str = "Native layer order amber foreground";
 const BACK: &str = "Native layer order blue background";
+// Keep the two editable test layers above the existing group and motion controls.
+pub(super) const FRONT_BEFORE_LAYER: i32 = 7;
+pub(super) const BACK_LAYER: i32 = 8;
+const FRONT_AFTER_LAYER: i32 = 9;
 
 fn sha256_file(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
     if !path.is_absolute()
@@ -83,8 +87,13 @@ pub(super) fn check_project(
         || back.rotation_deg != 0.0
         || (front.x, front.y, front.width, front.height) != (405.0, 820.0, 155.0, 95.0)
         || (back.x, back.y, back.width, back.height) != (340.0, 790.0, 240.0, 145.0)
-        || front.z_index != if promoted { 5 } else { 1 }
-        || back.z_index != 3
+        || front.z_index
+            != if promoted {
+                FRONT_AFTER_LAYER
+            } else {
+                FRONT_BEFORE_LAYER
+            }
+        || back.z_index != BACK_LAYER
         || front.style.fill.as_deref() != Some("#E0A940")
         || back.style.fill.as_deref() != Some("#2569B8")
     {
@@ -201,7 +210,7 @@ pub(super) fn capture(
         .iter_mut()
         .find(|n| n.id == front_id)
         .ok_or("Original layer foreground disappeared")?;
-    expected_front.z_index = 5;
+    expected_front.z_index = FRONT_AFTER_LAYER;
     if observed.scenes != vec![expected_scene]
         || observed.assets != original.assets
         || observed.audio != original.audio
@@ -254,7 +263,7 @@ pub(super) fn capture(
         } if *scene_id == final_project.scenes[0].id
             && *node_id == original_front_id
             && parent_id.is_none()
-            && *z_index == 5
+            && *z_index == FRONT_AFTER_LAYER
             && preserve.is_none() => {}
         _ => return Err("The original layer UI saved a different change or authority".into()),
     };
@@ -348,7 +357,7 @@ mod tests {
                     scene_id: initial.scenes[0].id,
                     node_id: id,
                     parent_id: None,
-                    z_index: 5,
+                    z_index: FRONT_AFTER_LAYER,
                     preserve: None,
                 },
             )

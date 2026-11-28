@@ -276,7 +276,7 @@ fn real_layer_order_tiles() -> [CanvasNode; 2] {
     front.y = 820.0;
     front.width = 155.0;
     front.height = 95.0;
-    front.z_index = 1;
+    front.z_index = native_layer_order_e2e::FRONT_BEFORE_LAYER;
     front.style.fill = Some("#E0A940".into());
     front.keyframes.clear();
     let mut back = real_linear_motion_tile();
@@ -286,7 +286,7 @@ fn real_layer_order_tiles() -> [CanvasNode; 2] {
     back.y = 790.0;
     back.width = 240.0;
     back.height = 145.0;
-    back.z_index = 3;
+    back.z_index = native_layer_order_e2e::BACK_LAYER;
     back.style.fill = Some("#2569B8".into());
     back.keyframes.clear();
     [front, back]
