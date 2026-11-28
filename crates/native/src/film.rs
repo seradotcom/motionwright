@@ -4063,8 +4063,46 @@ mod tests {
                         _ => {}
                     }
                 }
-                assert_eq!((tweens, sets, fades), (2, 1, 2));
-                realize(film).unwrap();
+                assert_eq!((tweens, sets, fades), (0, 46, 2));
+                let realized = realize(film).unwrap();
+                let positions = |id: &str| {
+                    realized
+                        .instructions
+                        .iter()
+                        .filter_map(|instruction| match &instruction.operation {
+                            NativeOp::Set {
+                                target,
+                                channel: Channel::Position,
+                                value: Operand::Vector(position),
+                            } if target == id => Some((instruction.start, position)),
+                            _ => None,
+                        })
+                        .collect::<BTreeMap<_, _>>()
+                };
+                let leader = positions(&subject_id(root.id, None));
+                let follower = positions(&target);
+                let last = RationalTime::new(91, 60).unwrap();
+                assert_eq!((leader.len(), follower.len()), (46, 46));
+                for frame in 0..=45 {
+                    let at = RationalTime::new(2 * frame + 1, 60).unwrap();
+                    let x = leader[&at].x - leader[&last].x;
+                    let y = leader[&at].y - leader[&last].y;
+                    assert!((follower[&at].x - follower[&last].x - x).abs() < 1e-9);
+                    assert!((follower[&at].y - follower[&last].y - y).abs() < 1e-9);
+                    if (width, height) == (1920, 1080) {
+                        let (source_x, source_y) = if frame < 15 {
+                            let t = 1.0 - (1.0 - frame as f64 / 15.0).powi(3);
+                            (520.0 + 100.0 * t, 380.0 + 40.0 * t)
+                        } else if frame < 30 {
+                            (620.0, 420.0)
+                        } else {
+                            let t = (frame - 30) as f64 / 15.0;
+                            (580.0 + 140.0 * t, 390.0 + 10.0 * t)
+                        };
+                        assert!((x - (source_x - root.x)).abs() < 1e-9);
+                        assert!((y - (source_y - root.y)).abs() < 1e-9);
+                    }
+                }
                 assert_eq!(project, before);
                 assert_eq!(project.scenes[0].nodes[1], label);
             }
@@ -6658,8 +6696,9 @@ mod tests {
             match invalid {
                 0 => child.keyframes.last_mut().unwrap().value = 0.25,
                 1 => {
-                    child.keyframes.last_mut().unwrap().interpolation =
-                        MotionInterpolation::EaseInOut
+                    let fade_end = child.keyframes.last_mut().unwrap();
+                    fade_end.interpolation = MotionInterpolation::EaseInOut;
+                    fade_end.at = RationalTime::new(19, 37).unwrap();
                 }
                 2 => child.keyframes[1].at = RationalTime::new(1, 37).unwrap(),
                 3 => {
@@ -6855,15 +6894,16 @@ mod tests {
             .unwrap()
             .parent_id = Some(top_id);
         cases.push(nested_parent);
-        let mut bad_curve = baseline.clone();
-        bad_curve.scenes[0]
+        let mut off_frame_curve = baseline.clone();
+        let fade_end = &mut off_frame_curve.scenes[0]
             .nodes
             .iter_mut()
             .find(|node| node.id == child_id)
             .unwrap()
-            .keyframes[1]
-            .interpolation = MotionInterpolation::EaseInOut;
-        cases.push(bad_curve);
+            .keyframes[1];
+        fade_end.interpolation = MotionInterpolation::EaseInOut;
+        fade_end.at = RationalTime::new(19, 37).unwrap();
+        cases.push(off_frame_curve);
         let mut mixed_keys = baseline.clone();
         mixed_keys.scenes[0]
             .nodes
@@ -6911,8 +6951,10 @@ mod tests {
         held_exit.scenes[0].nodes[0].keyframes[1].interpolation = MotionInterpolation::Hold;
         let mut wrong_target = baseline.clone();
         wrong_target.scenes[0].nodes[0].keyframes[1].value = 0.8;
-        let mut wrong_curve = baseline.clone();
-        wrong_curve.scenes[0].nodes[0].keyframes[1].interpolation = MotionInterpolation::EaseInOut;
+        let mut off_frame_curve = baseline.clone();
+        let fade_end = &mut off_frame_curve.scenes[0].nodes[0].keyframes[1];
+        fade_end.interpolation = MotionInterpolation::EaseInOut;
+        fade_end.at = RationalTime::new(19, 37).unwrap();
         let mut mixed = baseline.clone();
         mixed.scenes[0].nodes[0].keyframes.push(CanvasKeyframe {
             at: RationalTime::ZERO,
@@ -6940,7 +6982,7 @@ mod tests {
             partial_exit,
             held_exit,
             wrong_target,
-            wrong_curve,
+            off_frame_curve,
             mixed,
             extra_key,
             incompatible_persisted_opacity,
