@@ -80,7 +80,7 @@ pub struct CanvasPosePoint {
 
 /// Admit bounded shape waypoints when all animated geometry channels share
 /// exact time slots and an incoming curve. Unkeyed channels keep their saved
-/// values. Text and two-pose routes retain their existing admission rules.
+/// values. Smoothstep enters the waypoint path even for two authored poses.
 pub fn exact_canvas_pose_waypoints(
     node: &CanvasNode,
     scene: &Scene,
@@ -95,24 +95,32 @@ pub fn exact_canvas_pose_waypoints(
         key.validate()?;
         slots.entry(key.at).or_default().push(key);
     }
+    let sampled = slots
+        .values()
+        .flatten()
+        .any(|key| key.interpolation == MotionInterpolation::EaseInOut);
     let text_pose = node.kind == "text"
         && slots.len() == 2
-        && (slots.values().all(|keys| keys.len() == 5)
+        && (sampled
+            || slots.values().all(|keys| keys.len() == 5)
             || slots
                 .values()
                 .flatten()
                 .any(|key| key.interpolation == MotionInterpolation::Hold));
+    let sampled_shape = sampled
+        && slots.len() == 2
+        && matches!(node.kind.as_str(), "shape" | "rectangle" | "circle");
     let paired_text = text_pose && slots.values().all(|keys| keys.len() == 2);
-    if slots.len() <= 2 && !text_pose {
+    if slots.len() <= 2 && !text_pose && !sampled_shape {
         return Ok(None);
     }
     let fail = || {
         DomainError::Invalid(format!(
-            "Canvas node {} requires 3 to 6 frame-aligned geometry poses with matching animated channels, exact curves and unchanged Clip or Group ancestors",
+            "Canvas node {} requires bounded frame-aligned geometry poses with matching animated channels, exact curves and unchanged Clip or Group ancestors",
             node.id
         ))
     };
-    if (!(3..=6).contains(&slots.len()) && !text_pose)
+    if (!(3..=6).contains(&slots.len()) && !text_pose && !sampled_shape)
         || fps.validate().is_err()
         || fps.num <= 0
         || fps.den <= 0
@@ -156,6 +164,7 @@ pub fn exact_canvas_pose_waypoints(
             curve,
             MotionInterpolation::Linear
                 | MotionInterpolation::EaseOutCubic
+                | MotionInterpolation::EaseInOut
                 | MotionInterpolation::Hold
         ) || (points.is_empty()
             && (at != RationalTime::ZERO || curve != MotionInterpolation::Linear))
