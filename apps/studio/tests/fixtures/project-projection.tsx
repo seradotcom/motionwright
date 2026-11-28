@@ -33,7 +33,7 @@ const nativeSdk = { ...fixtureBootstrap.native_sdk, mode: "tauri" as const };
 const requests: Array<{ id: number; command: string; args: Record<string, unknown> }> = [];
 const failures = new Map<string, unknown>();
 const identity = (project: Project) => ({ project_id: project.id, generation: project.generation,
-  revision: parameters.has("exact") && project.id === large.id ? "18446744073709551615" : String(project.revision) });
+  revision: parameters.get("revision") ?? (parameters.has("exact") && project.id === large.id ? "18446744073709551615" : String(project.revision)) });
 const stored = (id: unknown) => {
   const project = [small, large].find(item => item.id === id);
   if (!project) throw { code: "not_found" };

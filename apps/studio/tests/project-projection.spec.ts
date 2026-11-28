@@ -28,6 +28,17 @@ test("causal: a small auto open observes its head before keeping the complete ed
   expect(fullReads(requests).map(item => item.command)).toEqual(["open_project"]);
 });
 
+test("a small saved project outside the editor revision range opens with its exact saved pages", async ({ page }) => {
+  await page.goto(fixture + "?initial=small&revision=9007199254740993");
+  await expect(page.getByRole("heading", { name: "Small saved project", exact: true })).toBeVisible();
+  await expect(page.getByText("Revision 9007199254740993", { exact: true })).toBeVisible();
+  expect(fullReads(await trace(page))).toEqual([]);
+  await page.getByRole("button", { name: "Open editor", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("cannot be represented by the complete editor");
+  await expect(page.getByText("Revision 9007199254740993", { exact: true })).toBeVisible();
+  expect(fullReads(await trace(page))).toEqual([]);
+});
+
 test("causal: failed head admission preserves the prior editor and remembered identity without fallback", async ({ page }) => {
   await page.goto(fixture + "?initial=small");
   await expect(page.getByRole("navigation", { name: "Workspaces" })).toBeVisible();

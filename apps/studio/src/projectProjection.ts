@@ -180,6 +180,34 @@ export async function readProjectionNodes(head: ProjectionHead, scene: Projectio
   return value as unknown as ProjectionNodePage;
 }
 
+async function fitProjectionPage<T>(
+  limit: number, remaining: number, readPage: (pageLimit: number) => Promise<T>,
+): Promise<T> {
+  let pageLimit = Math.min(limit, Math.max(1, remaining));
+  for (;;) {
+    try {
+      return await readPage(pageLimit);
+    } catch (reason) {
+      if (!(reason instanceof ProjectProjectionReadError)
+        || reason.failure?.code !== "too_large" || pageLimit <= 1) throw reason;
+      // Reuse the original cursor and revision. A failed read returned no page.
+      pageLimit = Math.floor(pageLimit / 2);
+    }
+  }
+}
+
+export function readProjectionScenesWithinBudget(head: ProjectionHead, cursor: ProjectionSceneCursor | null = null,
+  limit = PROJECT_SCENE_PAGE_SIZE): Promise<ProjectionScenePage> {
+  return fitProjectionPage(limit, head.scene_count - (cursor?.next_ordinal ?? 0),
+    pageLimit => readProjectionScenes(head, cursor, pageLimit));
+}
+
+export function readProjectionNodesWithinBudget(head: ProjectionHead, scene: ProjectionSceneSummary,
+  cursor: ProjectionNodeCursor | null = null, limit = PROJECT_NODE_PAGE_SIZE): Promise<ProjectionNodePage> {
+  return fitProjectionPage(limit, scene.node_count - (cursor?.next_ordinal ?? 0),
+    pageLimit => readProjectionNodes(head, scene, cursor, pageLimit));
+}
+
 export function projectViewRevision(view: StudioProjectView | null): ProjectViewRevision | null {
   if (view === null) return null;
   return view.kind === "full" ? { kind: "full", project: view.boot.project } : { kind: "projection", identity: view.head.identity };
@@ -199,11 +227,12 @@ export async function openSavedProjectView(projectId: string, mode: ProjectOpenM
   if (shell.native_sdk.mode !== "tauri") rejectPage();
   onShell?.(shell.native_sdk);
   const head = await readProjectionHead(projectId);
-  if (mode === "pages" || (mode === "auto" && head.scene_count > PROJECT_AUTO_SCENE_THRESHOLD)) {
-    const scenes = await readProjectionScenes(head);
+  const outsideEditorRevisionRange = compareDecimalRevision(head.identity.revision, MAX_EDITOR_REVISION) > 0;
+  if (mode === "pages" || (mode === "auto" && (outsideEditorRevisionRange || head.scene_count > PROJECT_AUTO_SCENE_THRESHOLD))) {
+    const scenes = await readProjectionScenesWithinBudget(head);
     return { kind: "projection", head, scenes, native_sdk: shell.native_sdk };
   }
-  if (compareDecimalRevision(head.identity.revision, MAX_EDITOR_REVISION) > 0) {
+  if (outsideEditorRevisionRange) {
     throw new Error("This saved revision cannot be represented by the complete editor. Choose Browse pages to inspect it.");
   }
   const project = await openProjectFromLibrary(projectId);

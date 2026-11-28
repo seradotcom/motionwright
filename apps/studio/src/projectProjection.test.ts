@@ -182,7 +182,7 @@ describe("actual saved-open adapter routing with synthetic transport", () => {
   });
   it("does not load an unsafe numeric revision into the complete editor", async () => {
     const { invoke } = transport(2, "9007199254740993");
-    await expect(openSavedProjectView(uuid(1))).rejects.toThrow("cannot be represented");
+    await expect(openSavedProjectView(uuid(1), "editor")).rejects.toThrow("cannot be represented");
     expect(invoke.mock.calls.map(call => call[0])).toEqual(["bootstrap", "project_projection_head"]);
   });
   it("refuses a complete response that changed after the observed head", async () => {

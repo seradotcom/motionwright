@@ -115,11 +115,42 @@ async function withProjection(page: Page, info: TestInfo, sceneCount: number, ru
 test("remembered 65-scene App opening and process restart use bounded native pages without complete reads", async ({ page }, info) => {
   await withProjection(page, info, 65, async value => {
     const { service, baseline, bounded, observations } = value;
-    await bounded("remembered large opening and second scene page", async () => {
+    const sceneId = baseline.scenes[0].id;
+    let arranged = baseline;
+    for (let index = 0; index < 24; index++) {
+      arranged = await service.apply(arranged, { type: "add_canvas_node", scene_id: sceneId, node: {
+        ...structuredClone(fixtureBootstrap.project.scenes[0].nodes[0]),
+        id: randomUUID(), name: "Budget node " + (index + 1), parent_id: null, kind: "text",
+        text: index < 12 ? "A".repeat(90_000) : "Short",
+        relations: [], keyframes: [], property_locks: [],
+      } });
+      value.expected = arranged;
+    }
+    await bounded("remembered large opening and byte-bounded node navigation", async () => {
       await page.goto("/");
       await expect(heading(page, baseline.title)).toBeVisible();
       await expect(heading(page, "Scenes 1–64 of 65")).toBeVisible();
       await expect(page.getByRole("list", { name: "Loaded scene summaries" }).getByRole("listitem")).toHaveCount(64);
+      const before = service.transcript.length;
+      await button(page, "View nodes of Paged scene 1").click();
+      const nodes = page.getByRole("list", { name: "Loaded saved nodes" }).getByRole("listitem");
+      await expect(nodes.first()).toContainText("Budget node 1");
+      const initialCount = await nodes.count();
+      expect(initialCount).toBeGreaterThan(0);
+      expect(initialCount).toBeLessThan(12);
+      const first = requests(service, before).find(entry => entry.command === "project_scene_nodes")!;
+      expect(service.transcript.find(entry => entry.direction === "response" && entry.payload.id === first.id)?.payload)
+        .toMatchObject({ id: first.id, ok: false, error: { code: "too_large", limit: 1048576 } });
+      await button(page, "Next nodes").click();
+      await expect(nodes.first()).toContainText("Budget node " + (initialCount + 1) + " ·");
+      await expect(nodes.last()).toContainText("Budget node 24 ·");
+      await button(page, "Previous nodes").click();
+      await expect(heading(page, "Nodes 1–" + initialCount + " of 24")).toBeVisible();
+      await expect(nodes).toHaveCount(initialCount);
+      await expect(nodes.last()).toContainText("Budget node " + initialCount + " ·");
+      await expect(page.getByRole("alert")).toHaveCount(0);
+    });
+    await bounded("second scene page", async () => {
       await button(page, "Next scenes").click();
       await expect(heading(page, "Scenes 65–65 of 65")).toBeVisible();
       await expect(page.getByRole("list", { name: "Loaded scene summaries" }).getByRole("listitem")).toHaveCount(1);
@@ -133,7 +164,7 @@ test("remembered 65-scene App opening and process restart use bounded native pag
     await service.close(); await service.start();
     await bounded("new process and actual App reload", async () => {
       await page.reload(); await expect(heading(page, "Scenes 1–64 of 65")).toBeVisible();
-      await expect(page.getByText("Revision " + baseline.revision, { exact: true })).toBeVisible();
+      await expect(page.getByText("Revision " + arranged.revision, { exact: true })).toBeVisible();
     });
   });
 });

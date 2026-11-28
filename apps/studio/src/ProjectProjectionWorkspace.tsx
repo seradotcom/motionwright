@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { ProjectReadSupersededError } from "./projectMutation";
 import {
-  PROJECT_NODE_PAGE_SIZE, PROJECT_SCENE_PAGE_SIZE, readProjectionNodes, readProjectionScenes,
-  type ProjectionNodeCursor, type ProjectionNodePage, type ProjectionSceneCursor, type ProjectionSceneSummary, type StudioProjectView,
+  PROJECT_SCENE_PAGE_SIZE, readProjectionNodesWithinBudget, readProjectionScenesWithinBudget,
+  type ProjectionNodeCursor, type ProjectionNodePage, type ProjectionSceneCursor, type ProjectionScenePage,
+  type ProjectionSceneSummary, type StudioProjectView,
 } from "./projectProjection";
 
 interface Props {
@@ -20,12 +21,22 @@ function range(label: string, start: number, length: number, total: number): str
 
 /** Bounded presentation of saved observations, never a partial editor Project. */
 export default function ProjectProjectionWorkspace({ view, busy, notice, read, onLibrary, onReload, onOpenEditor }: Props) {
-  const [scenes, setScenes] = useState(view.scenes);
-  const [selected, setSelected] = useState<ProjectionSceneSummary | null>(null);
-  const [nodes, setNodes] = useState<ProjectionNodePage | null>(null);
+  const [scenePages, setScenePages] = useState<{ page: ProjectionScenePage; earlier: number[] }>({
+    page: view.scenes, earlier: [],
+  });
+  const [nodePages, setNodePages] = useState<{
+    scene: ProjectionSceneSummary; page: ProjectionNodePage; earlier: number[];
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { setScenes(view.scenes); setSelected(null); setNodes(null); setError(null); }, [view]);
+  useEffect(() => {
+    setScenePages({ page: view.scenes, earlier: [] });
+    setNodePages(null);
+    setError(null);
+  }, [view]);
   const { head } = view;
+  const { page: scenes, earlier: earlierScenes } = scenePages;
+  const selected = nodePages?.scene;
+  const nodes = nodePages?.page;
 
   async function perform(operation: () => Promise<unknown>): Promise<void> {
     setError(null);
@@ -35,21 +46,19 @@ export default function ProjectProjectionWorkspace({ view, busy, notice, read, o
       setError(reason instanceof Error ? reason.message : "This saved page could not be verified. The current view was preserved.");
     }
   }
-  const scenePage = (cursor: ProjectionSceneCursor | null) => perform(() => read(
-    () => readProjectionScenes(head, cursor),
-    page => { setScenes(page); setSelected(null); setNodes(null); },
+  const scenePage = (cursor: ProjectionSceneCursor, earlier: number[], limit?: number) => perform(() => read(
+    () => readProjectionScenesWithinBudget(head, cursor, limit),
+    page => { setScenePages({ page, earlier }); setNodePages(null); },
   ));
-  const nodePage = (scene: ProjectionSceneSummary, cursor: ProjectionNodeCursor | null = null) => perform(() => read(
-    () => readProjectionNodes(head, scene, cursor),
-    page => { setSelected(scene); setNodes(page); },
+  const nodePage = (scene: ProjectionSceneSummary, cursor: ProjectionNodeCursor | null = null,
+    earlier: number[] = [], limit?: number) => perform(() => read(
+    () => readProjectionNodesWithinBudget(head, scene, cursor, limit),
+    page => setNodePages({ scene, page, earlier }),
   ));
   const loadedNodes = new Set(nodes?.items.map(node => node.id.toLowerCase()) ?? []);
   const reference = (id: string) => id + (loadedNodes.has(id.toLowerCase()) ? " — loaded on this page" : " — not loaded on this page");
-  const previousScenes = scenes.start_ordinal <= PROJECT_SCENE_PAGE_SIZE ? null
-    : { identity: head.identity, next_ordinal: scenes.start_ordinal - PROJECT_SCENE_PAGE_SIZE };
-  const previousNodes = nodes && selected && nodes.start_ordinal > PROJECT_NODE_PAGE_SIZE
-    ? { identity: head.identity, scene: { ordinal: selected.ordinal, id: selected.id }, next_ordinal: nodes.start_ordinal - PROJECT_NODE_PAGE_SIZE }
-    : null;
+  const previousSceneStart = earlierScenes.at(-1);
+  const previousNodeStart = nodePages?.earlier.at(-1);
 
   return (
     <section aria-label="Saved project pages" style={{ padding: "24px", maxWidth: "1440px", margin: "0 auto", width: "100%", boxSizing: "border-box" }}>
@@ -86,15 +95,21 @@ export default function ProjectProjectionWorkspace({ view, busy, notice, read, o
             </ol>
           )}
           <nav aria-label="Scene pages" style={{ display: "flex", gap: "8px" }}>
-            <button type="button" className="button" disabled={busy || scenes.start_ordinal === 0}
-              onClick={() => void scenePage(previousScenes)}>Previous scenes</button>
+            <button type="button" className="button" disabled={busy || previousSceneStart === undefined}
+              onClick={() => {
+                if (previousSceneStart === undefined) return;
+                void scenePage({ identity: head.identity, next_ordinal: previousSceneStart },
+                  earlierScenes.slice(0, -1), scenes.start_ordinal - previousSceneStart);
+              }}>Previous scenes</button>
             <button type="button" className="button" disabled={busy || !scenes.next_cursor}
-              onClick={() => void scenePage(scenes.next_cursor)}>Next scenes</button>
+              onClick={() => {
+                if (scenes.next_cursor) void scenePage(scenes.next_cursor, [...earlierScenes, scenes.start_ordinal]);
+              }}>Next scenes</button>
           </nav>
         </section>
         <section aria-label="Saved nodes">
           <h2>{selected ? selected.name : "Choose a saved scene"}</h2>
-          {!selected || !nodes ? <p>Choose a scene to load its first node page. Other scenes and nodes remain unloaded.</p> : <>
+          {!selected || !nodes || !nodePages ? <p>Choose a scene to load its first node page. Other scenes and nodes remain unloaded.</p> : <>
             <h3>{range("Nodes", nodes.start_ordinal, nodes.items.length, nodes.total_nodes)}</h3>
             <p>Only this node page is loaded. References to other nodes are preserved and labelled when they are off the page.</p>
             {!nodes.items.length ? <p>No saved nodes in this scene.</p> : (
@@ -109,10 +124,16 @@ export default function ProjectProjectionWorkspace({ view, busy, notice, read, o
               </ol>
             )}
             <nav aria-label="Node pages" style={{ display: "flex", gap: "8px" }}>
-              <button type="button" className="button" disabled={busy || nodes.start_ordinal === 0}
-                onClick={() => void nodePage(selected, previousNodes)}>Previous nodes</button>
+              <button type="button" className="button" disabled={busy || previousNodeStart === undefined}
+                onClick={() => {
+                  if (previousNodeStart === undefined) return;
+                  void nodePage(selected, { identity: head.identity, scene: nodes.scene, next_ordinal: previousNodeStart },
+                    nodePages.earlier.slice(0, -1), nodes.start_ordinal - previousNodeStart);
+                }}>Previous nodes</button>
               <button type="button" className="button" disabled={busy || !nodes.next_cursor}
-                onClick={() => void nodePage(selected, nodes.next_cursor)}>Next nodes</button>
+                onClick={() => {
+                  if (nodes.next_cursor) void nodePage(selected, nodes.next_cursor, [...nodePages.earlier, nodes.start_ordinal]);
+                }}>Next nodes</button>
             </nav>
           </>}
         </section>

@@ -73,11 +73,17 @@ logic. Writes continue to use the canonical service operations and their
 revision checks.
 
 Studio opens projects with more than 64 scenes in the saved-pages view from
-the library and after an acknowledged portable import. After import, the
+the library and after an acknowledged portable import. Automatic opening also
+uses saved pages when the exact revision exceeds the complete editor's numeric
+range. After import, the
 opened identity must match the acknowledged project and generation at the
 same or a later revision. This avoids a second complete-project read before
-showing the imported result. The library still offers an explicit editor
-open. The browser regression exercises the real Service and SQLite. Installed
+showing the imported result. The library still offers an explicit editor open.
+
+When a page exceeds the byte budget, Studio requests fewer items at the same
+saved revision and cursor. Going back reuses the actual earlier page boundaries.
+If one item exceeds the budget, Studio reports the limit and keeps the current
+view. The browser regression exercises the real Service and SQLite. Installed
 WebView behavior and latency are verified separately.
 
 The regression suite covers persisted large-project projections, full-loader
