@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { fixtureBootstrap } from "./fixture";
-import type { Project, ProjectEvent } from "./types";
+import { planNativeInspection } from "./nativeInspection";
+import type { MotionCanvasRenderEvidence, Project, ProjectEvent } from "./types";
 import {
   acknowledgeNativeFindingSubmission, assertNativeFindingReviewOrigins, createNativeFindingDraft,
   decodeNativeFindingCopy, dispatchNativeFindingSubmission, editNativeFindingField, encodeNativeFindingFile,
   inspectNativeFindingOutcome, nativeFindingCopyKey, nativeFindingCurrent, nativeFindingPointerKey,
-  nativeFindingUnknown, prepareNativeFindingSubmission, readNativeFindingCopies, readNativeFindingRecoverySource, recoverNativeFindingSource, releaseNativeFindingOutcome,
+  nativeFindingSource, nativeFindingUnknown, prepareNativeFindingSubmission, readNativeFindingCopies, readNativeFindingRecoverySource, recoverNativeFindingSource, releaseNativeFindingOutcome,
   repairNativeFindingPointer, retainReviewedNativeFindingIntent, retryRetainedNativeFindingIntent,
   writeNativeFindingCopy, type NativeFindingCustody, type NativeFindingDraft, type NativeFindingSource, type NativeFindingRecoveryObservation,
 } from "./nativeFindingDraft";
@@ -73,6 +74,35 @@ describe("native finding input and source continuity",()=>{
       expect(invalid.input[field]).toBe(text);
     }
   });
+  it("clips the final PNG finding at a fractional scene boundary and retains that exact pending span",()=>{
+    const {project,draft}=setup();
+    const [scene,next]=project.scenes;
+    const profile=project.deliverables[0];
+    scene.duration={num:"1",den:"20"};
+    next.start=scene.duration;
+    next.duration=scene.duration;
+    const segment={segment_id:"fractional-cut",scene_ids:[scene.id,next.id],frame_count:3};
+    const evidence:MotionCanvasRenderEvidence={project_resource:"project:"+project.id,generation:project.generation,
+      revision:project.revision,deliverable_id:profile.id,frame_rate:{num:30,den:1},
+      segments:[{...segment,plan_ref:"plan",fingerprint:"fingerprint",job_ref:"job",artifact:{},verification:{}}],
+      preview:[{...segment,token:"synthetic-frame-grant"}]};
+    const plan=planNativeInspection(project,scene,profile,evidence)!;
+    const point=plan.samples.at(-1)!;
+    const source=nativeFindingSource(project,scene,profile,plan,{
+      ...point,pngSha256:"b".repeat(64),width:plan.width,height:plan.height,
+    })!;
+    const submission=prepareNativeFindingSubmission(editNativeFindingField(draft,"source",source),project,source,crypto.randomUUID());
+    expect(submission.change.start).toEqual({num:"1",den:"30"});
+    expect(submission.change.end).toEqual({num:"1",den:"20"});
+
+    const owner=custody();
+    writeNativeFindingCopy(new MemoryStorage(),new MemoryStorage(),submission.draft,owner);
+    const restored=decodeNativeFindingCopy(owner.expectedRaw!,draft.scope,owner.writerId);
+    expect(restored.draft.pending?.change).toEqual(submission.change);
+    const tampered=JSON.parse(owner.expectedRaw!);
+    tampered.draft.pending.change.end={num:"1",den:"15"};
+    expect(()=>decodeNativeFindingCopy(JSON.stringify(tampered),draft.scope,owner.writerId)).toThrow(/unreadable/);
+  });
   it("allows scene-level findings in an empty scene but refuses a removed object",()=>{
     const {project,source,draft}=setup();project.scenes[0].nodes=[];
     expect(()=>prepareNativeFindingSubmission(draft,project,source,crypto.randomUUID())).toThrow();
@@ -105,6 +135,8 @@ describe("native finding input and source continuity",()=>{
     const data=new MemoryStorage(),pointer=new MemoryStorage(),owner=custody();
     writeNativeFindingCopy(data,pointer,submission.draft,owner);
     const restored=decodeNativeFindingCopy(owner.expectedRaw!,draft.scope,owner.writerId).draft;
+    expect(restored.pending?.change).toEqual(submission.change);
+    expect(restored.pending?.change.end).toEqual({num:"1",den:"30"});
     const forged={draft:restored,change:clone(submission.change)};
     expect(()=>dispatchNativeFindingSubmission(forged,restored,project)).toThrow();
     expect(()=>acknowledgeNativeFindingSubmission(restored,forged,response(project,submission))).toThrow();
