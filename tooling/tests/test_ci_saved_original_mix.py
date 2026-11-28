@@ -312,7 +312,9 @@ class Admission(unittest.TestCase):
                                  self.command, self.binary, self.binary, self.roster, self.ctx)
         self.assertEqual(result["status"], "PASS")
         self.assertNotIn("--nocapture", self.command["argv"])
+        self.assertNotIn("--show-output", self.command["argv"])
         self.assertIn("--exact", self.command["argv"])
+        self.assertEqual(gate.case_argv(self.binary, gate.AUDITION_WORK_CASE)[-1], "--show-output")
 
     def test_unknown_nonzero_foreign_context_and_changed_executable_never_pass(self):
         rows = [

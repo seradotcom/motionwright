@@ -428,9 +428,15 @@ def admit_group(group, enumerated):
     return tuple(sorted(selected))
 
 
+AUDITION_WORK_CASE = "original_mix_native::tests::saved_semantic_only_sfx_uses_the_same_nullable_audition_request"
+
+
 def case_argv(binary, name):
-    return [binary["absolute_path"], "--exact", name,
+    argv = [binary["absolute_path"], "--exact", name,
             "--test-threads=1", "--color", "never", "--format", "pretty"]
+    if name == AUDITION_WORK_CASE:
+        argv.append("--show-output")
+    return argv
 
 
 def admit_case(name, raw, command, binary, after, enumerated, expected_context):

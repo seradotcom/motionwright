@@ -807,23 +807,71 @@ pub(crate) mod tests {
             "audition-cached-cue-gain",
             Change::UpsertSemanticSfx { cue: edited_cue },
         );
+        let reopened = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
+        let stamped = project.stamp();
+        let incremental_started = std::time::Instant::now();
         let changed = prepare_saved_original_mix_for_audition(
-            &service,
-            project.id,
-            &project.stamp(),
-            profile_id,
-            &mut cache,
+            &reopened, project.id, &stamped, profile_id, &mut cache,
         )
         .unwrap();
-        let work = cache.last_work().unwrap();
-        assert_eq!(work.synthesized_sample_frames, 48_000);
-        assert_eq!(work.reused_sample_frames, 48_000);
-        let reopened = StudioService::open(root.path().join("studio.sqlite3")).unwrap();
-        let full = prepare_saved_original_mix(&reopened, project.id, &project.stamp(), profile_id)
-            .unwrap();
+        let incremental_micros = u64::try_from(incremental_started.elapsed().as_micros()).unwrap();
+        let mut empty_cache = motionwright_native::sfx_mix::SemanticSfxAuditionCache::default();
+        let complete_started = std::time::Instant::now();
+        let full = prepare_saved_original_mix_for_audition(
+            &reopened,
+            project.id,
+            &stamped,
+            profile_id,
+            &mut empty_cache,
+        )
+        .unwrap();
+        let complete_micros = u64::try_from(complete_started.elapsed().as_micros()).unwrap();
+        let incremental_work = cache.last_work().unwrap();
+        let complete_work = empty_cache.last_work().unwrap();
+        assert_eq!(incremental_work.synthesized_sample_frames, 48_000);
+        assert_eq!(incremental_work.reused_sample_frames, 48_000);
+        assert_eq!(complete_work.synthesized_sample_frames, 96_000);
+        assert_eq!(complete_work.reused_sample_frames, 0);
+        for work in [incremental_work, complete_work] {
+            assert_eq!(work.cas_source_bytes_read, Some(192_044));
+            assert_eq!(work.source_bytes_verified, 192_044);
+            assert_eq!(work.pcm_bytes_encoded, work.synthesized_sample_frames * 4);
+            assert_eq!(work.complete_wav_bytes_hashed, 384_044);
+            assert!(work.cas_read_and_verify_micros.is_some());
+        }
         assert_eq!(reopened.project(project.id).unwrap(), project);
         assert_eq!(changed.wav_bytes(), full.wav_bytes());
+        assert_eq!(changed.wav_sha256(), full.wav_sha256());
         assert_ne!(changed.wav_sha256(), cold.wav_sha256());
+
+        let observed = |work: &motionwright_native::sfx_mix::SemanticSfxMixWork,
+                        preparation_micros: u64| {
+            serde_json::json!({
+                "semantic_sfx_synthesized_sample_frames": work.synthesized_sample_frames,
+                "semantic_sfx_reused_sample_frames": work.reused_sample_frames,
+                "semantic_sfx_cas_bytes_read": work.cas_source_bytes_read,
+                "semantic_sfx_cas_read_and_verify_micros": work.cas_read_and_verify_micros,
+                "semantic_sfx_mixer_source_bytes_verified": work.source_bytes_verified,
+                "semantic_sfx_mixer_validation_micros": work.validation_micros,
+                "semantic_sfx_pcm_bytes_encoded": work.pcm_bytes_encoded,
+                "semantic_sfx_synthesis_and_encoding_micros": work.synthesis_and_encoding_micros,
+                "semantic_sfx_complete_wav_pack_micros": work.complete_wav_pack_micros,
+                "semantic_sfx_complete_wav_bytes_hashed": work.complete_wav_bytes_hashed,
+                "semantic_sfx_complete_wav_hash_micros": work.complete_wav_hash_micros,
+                "audition_source_preparation_micros": preparation_micros,
+            })
+        };
+        println!(
+            "Audition work {}",
+            serde_json::json!({
+                "fixture": "two_second_semantic_sfx_audition_gain_edit",
+                "observation": "one_pair_on_reopened_sqlite",
+                "sample_rate_hz": 48_000,
+                "channels": 2,
+                "complete": observed(complete_work, complete_micros),
+                "incremental": observed(incremental_work, incremental_micros),
+            })
+        );
         assert_eq!(service.project(project.id).unwrap(), project);
     }
 

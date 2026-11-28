@@ -267,6 +267,7 @@ pub(super) fn prepare_sfx_source(
     let cues = selected_cues(project, &placements);
     let mut seen = BTreeSet::new();
     let mut verified = Vec::new();
+    let cas_started = std::time::Instant::now();
     for cue in &cues {
         if seen.insert(cue.source_asset_id) {
             let bytes = service
@@ -286,6 +287,7 @@ pub(super) fn prepare_sfx_source(
             });
         }
     }
+    let cas_micros = cas_started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     let mixed = match preparation {
         SemanticSfxPreparation::Uncached(budget) => mix_source_bound_semantic_sfx_with_budget(
             project,
@@ -294,9 +296,15 @@ pub(super) fn prepare_sfx_source(
             total_frames,
             budget,
         ),
-        SemanticSfxPreparation::CachedAudition(cache) => {
-            cache.mix(project, profile_id, &verified, total_frames)
-        }
+        SemanticSfxPreparation::CachedAudition(cache) => cache
+            .mix(project, profile_id, &verified, total_frames)
+            .inspect(|_| {
+                let bytes = verified
+                    .iter()
+                    .map(|source| source.bytes.len() as u64)
+                    .sum();
+                cache.record_cas_read(bytes, cas_micros);
+            }),
     }
     .map_err(|error| mix_unsupported(error.to_string()))?;
     // The existing mixer has now checked exact RIFF layout/clock and every

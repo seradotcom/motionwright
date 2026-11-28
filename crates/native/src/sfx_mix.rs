@@ -28,11 +28,15 @@ pub struct MixedSfxWav {
 pub struct SemanticSfxMixWork {
     pub synthesized_sample_frames: u64,
     pub reused_sample_frames: u64,
+    pub cas_source_bytes_read: Option<u64>,
+    pub cas_read_and_verify_micros: Option<u64>,
     pub source_bytes_verified: u64,
     pub pcm_bytes_encoded: u64,
     pub complete_wav_bytes_hashed: u64,
     pub validation_micros: u64,
     pub synthesis_and_encoding_micros: u64,
+    pub complete_wav_pack_micros: u64,
+    pub complete_wav_hash_micros: u64,
 }
 
 #[derive(Default, Clone)]
@@ -93,6 +97,13 @@ impl SemanticSfxAuditionCache {
 
     pub fn last_work(&self) -> Option<&SemanticSfxMixWork> {
         self.last_work.as_ref()
+    }
+
+    pub(crate) fn record_cas_read(&mut self, bytes: u64, micros: u64) {
+        if let Some(work) = &mut self.last_work {
+            work.cas_source_bytes_read = Some(bytes);
+            work.cas_read_and_verify_micros = Some(micros);
+        }
     }
 }
 
@@ -334,6 +345,7 @@ fn mix_source_bound_semantic_sfx_bounded(
             .max()
             .unwrap_or(0);
     }
+    let pack_started = Instant::now();
     let data_bytes = u32::try_from(pcm.len()).map_err(|_| invalid("WAV too large"))?;
     let mut wav = Vec::with_capacity(44 + data_bytes as usize);
     wav.extend_from_slice(b"RIFF");
@@ -349,16 +361,23 @@ fn mix_source_bound_semantic_sfx_bounded(
     wav.extend_from_slice(b"data");
     wav.extend_from_slice(&data_bytes.to_le_bytes());
     wav.extend_from_slice(&pcm);
+    let complete_wav_pack_micros = elapsed_micros(pack_started);
+    let hash_started = Instant::now();
     let sha = hex::encode(Sha256::digest(&wav));
+    let complete_wav_hash_micros = elapsed_micros(hash_started);
     if let (Some(cache), Some(scope), Some(cues)) = (cache, scope, snapshot) {
         cache.last_work = Some(SemanticSfxMixWork {
             synthesized_sample_frames: synthesized_samples,
             reused_sample_frames: total_samples as u64 - synthesized_samples,
+            cas_source_bytes_read: None,
+            cas_read_and_verify_micros: None,
             source_bytes_verified: sources.iter().map(|source| source.bytes.len() as u64).sum(),
             pcm_bytes_encoded: synthesized_samples * 4,
             complete_wav_bytes_hashed: wav.len() as u64,
             validation_micros,
             synthesis_and_encoding_micros,
+            complete_wav_pack_micros,
+            complete_wav_hash_micros,
         });
         cache.retained = Some(Arc::new(RetainedAuditionBus {
             scope,
