@@ -52,8 +52,6 @@ export function reviewBoundaryAppearance(project: Project, scene: Scene, profile
     if (project.production_design?.heroes.some(hero => hero.scene_id === shot.id) &&
         profile.framing_strategy === "replan" && (profile.width !== 1920 || profile.height !== 1080))
       return unsupported("Responsive component layout requires native source admission.");
-    if (node.keyframes.some(key => key.interpolation === "ease_in_out"))
-      return unsupported("A saved easing curve has no exact pinned Native mapping.");
   }
   const rectangle = (node: CanvasNode) => ["shape", "rectangle"].includes(node.kind);
   if (!(from.kind === to.kind || rectangle(from) && rectangle(to)) || !sameValue(from.style, to.style) || from.text !== to.text)

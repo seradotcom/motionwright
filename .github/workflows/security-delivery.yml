@@ -2049,7 +2049,7 @@ jobs:
           retention-days: 14
 
   native-film-geometry-compiled:
-    name: Native Film shape geometry (5 exact Rust tests)
+    name: Native Film shape geometry (6 exact Rust tests)
     if: github.event_name == 'workflow_dispatch' && inputs.verification_scope == 'native-film-geometry'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -2065,7 +2065,7 @@ jobs:
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - name: Test only five exact Native geometry and fail-closed contracts
+      - name: Test only six exact Native geometry and fail-closed contracts
         shell: bash
         env:
           MW_GEOMETRY_ORIGINALS: ${{ runner.temp }}/native-film-geometry-${{ github.run_id }}-${{ github.run_attempt }}
@@ -2077,6 +2077,7 @@ jobs:
           test ! -e "$MW_GEOMETRY_ORIGINALS"
           mkdir -m 700 "$MW_GEOMETRY_ORIGINALS"
           names=(
+            smoothstep_keys_preserve_geometry_and_opacity_on_output_frames
             exact_shape_resize_and_rotation_preserve_top_left_authoring_in_native_tweens
             vertical_replan_shape_resize_keeps_native_top_left_across_asymmetric_scales
             unrepresentable_shape_geometry_never_silently_becomes_a_native_motion
@@ -2096,6 +2097,7 @@ jobs:
           from pathlib import Path
           import re
           names = (
+            "smoothstep_keys_preserve_geometry_and_opacity_on_output_frames",
             "exact_shape_resize_and_rotation_preserve_top_left_authoring_in_native_tweens",
             "vertical_replan_shape_resize_keeps_native_top_left_across_asymmetric_scales",
             "unrepresentable_shape_geometry_never_silently_becomes_a_native_motion",
@@ -2115,13 +2117,13 @@ jobs:
                   "name": case, "bytes": len(raw),
                   "sha256": hashlib.sha256(raw).hexdigest(),
               })
-          assert len(observed) == 5
+          assert len(observed) == 6
           record = {
               "schema": "motionwright.ci.native-film-geometry-source/1",
               "source_sha": os.environ["GITHUB_SHA"],
               "run_id": os.environ["GITHUB_RUN_ID"],
               "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
-              "status": "FIVE_COMPILED_SOURCE_TESTS_PASS",
+              "status": "SIX_COMPILED_SOURCE_TESTS_PASS",
               "cases": observed,
               "actual_native_renderer": "NOT_RUN",
               "authoring_native_frame_oracle": "NOT_RUN",
@@ -2130,7 +2132,7 @@ jobs:
               "release_authorized": False,
           }
           (folder / "receipt.json").write_text(json.dumps(record, sort_keys=True, indent=2) + "\n")
-          print("native-film-geometry=PASS cases=5 physical-G2=NOT_GRANTED")
+          print("native-film-geometry=PASS cases=6 physical-G2=NOT_GRANTED")
           PY_NATIVE_FILM_GEOMETRY
           git diff --exit-code
       - name: Retain exact compiled Native Film test originals

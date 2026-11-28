@@ -47,6 +47,24 @@ describe("authored focal appearance at a cut", () => {
     expect(result.displacement).toBe(0);
     expect(f.project).toEqual(before);
   });
+  it("compares the saved boundary pose when geometry uses smoothstep", () => {
+    const f = fixture();
+    f.to.keyframes[1].interpolation = "ease_in_out";
+    f.to.keyframes[3].interpolation = "ease_in_out";
+    const result = reviewBoundaryAppearance(
+      f.project, f.next, f.profile, f.predecessor, f.endpoint(f.next), f.appearance,
+    );
+    expect(result.status).toBe("matching_pose");
+    expect(result.displacement).toBe(0);
+
+    f.to.keyframes.push(
+      { at: { num: "0", den: "1" }, property: "opacity", value: 0, interpolation: "linear" },
+      { at: { num: "1", den: "2" }, property: "opacity", value: 1, interpolation: "ease_in_out" },
+    );
+    expect(reviewBoundaryAppearance(
+      f.project, f.next, f.profile, f.predecessor, f.endpoint(f.next), f.appearance,
+    ).status).toBe("loss");
+  });
   it("reports jumps, stale snapshots, and incompatible delivery order", () => {
     const f = fixture();
     f.to.keyframes[0].value += 25;

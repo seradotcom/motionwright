@@ -15,7 +15,8 @@ pub struct CanvasOpacitySpan {
     pub curve: MotionInterpolation,
 }
 
-/// Exact binary-opacity intervals use existing FadeIn/FadeOut primitives.
+/// Admit source intervals with exact binary endpoints. Native realizes their
+/// intermediate opacity on the selected output clock.
 /// Repeated equal endpoints hold their literal value without a Native write.
 /// Hold jumps and partial-alpha fades need a different renderer contract.
 pub fn exact_canvas_opacity_spans(
@@ -66,6 +67,7 @@ pub fn exact_canvas_opacity_spans(
                 key.interpolation,
                 MotionInterpolation::Linear
                     | MotionInterpolation::EaseOutCubic
+                    | MotionInterpolation::EaseInOut
                     | MotionInterpolation::Hold
             )
         {

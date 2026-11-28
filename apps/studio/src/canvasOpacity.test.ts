@@ -30,12 +30,20 @@ describe("exact Native visibility intervals", () => {
       expect(previewTransform(node,1.2).opacity).toBe(value);
     }
   });
+  it("preserves a smoothstep fade and its original held value on a fractional frame clock", () => {
+    const {node,scene,fps} = source();
+    node.keyframes[1].interpolation = "ease_in_out";
+    const spans = exactCanvasOpacitySpans(node,scene,fps)!;
+    expect(spans[0].curve).toBe("ease_in_out");
+    expect(previewTransform(node,1001/12000).opacity).toBeCloseTo(.15625, 12);
+    expect(previewTransform(node,.5).opacity).toBe(1);
+  });
   it("rejects partial alpha, held jumps, duplicates, bad curves, off-frame and excess source keys", () => {
     const edits = [
       (n:ReturnType<typeof source>["node"])=>{n.keyframes[1].value=.6;},
       (n:ReturnType<typeof source>["node"])=>{n.keyframes[1].interpolation="hold";},
       (n:ReturnType<typeof source>["node"])=>{n.keyframes.push(structuredClone(n.keyframes[1]));},
-      (n:ReturnType<typeof source>["node"])=>{n.keyframes[1].interpolation="ease_in_out";},
+      (n:ReturnType<typeof source>["node"])=>{n.keyframes[0].interpolation="ease_in_out";},
       (n:ReturnType<typeof source>["node"])=>{n.keyframes[1].at={num:"1",den:"7"};},
       (n:ReturnType<typeof source>["node"])=>{n.keyframes[3].at={num:"2",den:"1"};},
       (n:ReturnType<typeof source>["node"])=>{n.keyframes.push(...Array(5).fill(n.keyframes[0]));},

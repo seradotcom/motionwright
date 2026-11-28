@@ -205,7 +205,11 @@ fn uses_continuous_visual_clock(scene: &Scene, camera_reframe: bool) -> bool {
     camera_reframe || scene.nodes.iter().any(|node| !node.keyframes.is_empty())
 }
 
-fn project_scene_span_cost(project: &Project, scene: &Scene) -> usize {
+fn project_scene_span_cost(
+    project: &Project,
+    scene: &Scene,
+    fps: RationalTime,
+) -> NativeResult<usize> {
     let extra = project
         .production_design
         .camera_reframes
@@ -214,7 +218,101 @@ fn project_scene_span_cost(project: &Project, scene: &Scene) -> usize {
             camera.scene_id == scene.id
                 && camera.component_version == motionwright_domain::CAMERA_DETAIL_RETURN_VERSION
         });
-    scene_span_cost(scene, has_camera_reframe(project, scene)) + usize::from(extra)
+    Ok(scene_span_cost(scene, has_camera_reframe(project, scene))
+        + usize::from(extra)
+        + smoothstep_extra_spans(scene, fps)?)
+}
+
+fn easing_interval_frames(
+    from: RationalTime,
+    to: RationalTime,
+    fps: RationalTime,
+) -> NativeResult<usize> {
+    let duration = sub(to, from, "Sampled easing duration underflow")?;
+    let numerator = i128::from(duration.num) * i128::from(fps.num);
+    let denominator = i128::from(duration.den) * i128::from(fps.den);
+    if numerator <= 0 || denominator <= 0 || numerator % denominator != 0 {
+        return Err(unsupported(
+            "Sampled easing requires positive frame-aligned intervals",
+        ));
+    }
+    usize::try_from(numerator / denominator)
+        .ok()
+        .filter(|&count| count <= MAX_TEMPORAL_SPANS)
+        .ok_or_else(|| unsupported("Sampled easing exceeds the canonical Film span budget"))
+}
+
+// The ordinary estimate counts authored intervals. A track with smoothstep
+// also samples its other intervals, so they share one frame-clock convention.
+fn smoothstep_extra_spans(scene: &Scene, fps: RationalTime) -> NativeResult<usize> {
+    let mut extra = 0;
+    for node in &scene.nodes {
+        for opacity in [false, true] {
+            let in_track = |key: &&motionwright_domain::CanvasKeyframe| {
+                (key.property == MotionProperty::Opacity) == opacity
+            };
+            if !node
+                .keyframes
+                .iter()
+                .filter(in_track)
+                .any(|key| key.interpolation == MotionInterpolation::EaseInOut)
+            {
+                continue;
+            }
+            if opacity {
+                let intervals = motionwright_domain::exact_canvas_opacity_spans(node, scene, fps)
+                    .map_err(|error| unsupported(error.to_string()))?
+                    .unwrap_or_default();
+                if !intervals
+                    .iter()
+                    .any(|span| span.curve == MotionInterpolation::EaseInOut)
+                {
+                    continue;
+                }
+                let frames = intervals.iter().try_fold(0, |total, span| {
+                    easing_interval_frames(span.start, span.end, fps).map(|frames| total + frames)
+                })?;
+                let prior = node
+                    .keyframes
+                    .iter()
+                    .filter(in_track)
+                    .count()
+                    .saturating_sub(1);
+                extra += frames.saturating_sub(prior);
+            } else {
+                let times = node
+                    .keyframes
+                    .iter()
+                    .filter(in_track)
+                    .map(|key| key.at)
+                    .collect::<BTreeSet<_>>();
+                let end = *times.last().expect("smoothstep geometry track is nonempty");
+                let last_is_hold = node
+                    .keyframes
+                    .iter()
+                    .filter(in_track)
+                    .any(|key| key.at == end && key.interpolation == MotionInterpolation::Hold);
+                let frames = easing_interval_frames(RationalTime::ZERO, end, fps)?;
+                extra += (frames + 1)
+                    .saturating_sub(times.len().saturating_sub(1) + usize::from(last_is_hold));
+            }
+        }
+    }
+    Ok(extra)
+}
+
+fn easing_at_sample(curve: MotionInterpolation, t: f64) -> f64 {
+    match curve {
+        MotionInterpolation::Linear => t,
+        MotionInterpolation::EaseOutCubic => 1.0 - (1.0 - t).powi(3),
+        MotionInterpolation::EaseInOut => t * t * (3.0 - 2.0 * t),
+        MotionInterpolation::Hold => 0.0,
+    }
+}
+
+fn output_frame_offset(frame: RationalTime, index: usize) -> NativeResult<RationalTime> {
+    RationalTime::new(frame.num * index as i64, frame.den)
+        .map_err(|error| contract("Native easing frame offset", error))
 }
 
 fn scene_span_cost(scene: &Scene, camera_reframe: bool) -> usize {
@@ -420,14 +518,14 @@ fn motion_canvas_runs(
         let starts_new = if let Some(first) = current.first() {
             let last_end = segment_end(current.last().expect("run is nonempty"))?;
             let candidate_duration = sub(end, first.start, "Film segment duration underflow")?;
-            let span_cost = current
-                .iter()
-                .map(|item| project_scene_span_cost(project, item))
-                .sum::<usize>();
+            let span_cost = current.iter().try_fold(0, |total, item| {
+                project_scene_span_cost(project, item, profile.frame_rate).map(|cost| total + cost)
+            })?;
             scene.start != last_end
                 || candidate_duration > max_duration
                 || current.len() >= MAX_SEQUENCES
-                || span_cost + project_scene_span_cost(project, &scene) + 1 > MAX_TEMPORAL_SPANS
+                || span_cost + project_scene_span_cost(project, &scene, profile.frame_rate)? + 1
+                    > MAX_TEMPORAL_SPANS
         } else {
             false
         };
@@ -522,7 +620,7 @@ struct NativeLinearPositionMotion {
 
 /// Only curves that are mathematically identical in Studio's authored
 /// preview and the *pinned* Semwright MotionEasing grammar are admissible.
-/// Studio's ease_in_out uses smoothstep, NOT native InOutCubic/Sine.
+/// Studio stores smoothstep separately and lowers its geometry to literal frame poses.
 fn exact_native_easing(interpolation: MotionInterpolation) -> Option<MotionEasing> {
     match interpolation {
         MotionInterpolation::Linear => Some(MotionEasing::Linear),
@@ -531,10 +629,11 @@ fn exact_native_easing(interpolation: MotionInterpolation) -> Option<MotionEasin
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum NativeOpacityDirection {
     In,
     Out,
+    Sample { opacity: f64 },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -593,7 +692,48 @@ fn native_exact_opacity_fade(
     else {
         return Ok(None);
     };
-    let mut fades = Vec::with_capacity(intervals.len());
+    let sample = intervals
+        .iter()
+        .any(|span| span.curve == MotionInterpolation::EaseInOut);
+    let mut fades = Vec::new();
+    if sample {
+        let frame = RationalTime::new(fps.den, fps.num).map_err(|_| fail())?;
+        let half = RationalTime::new(frame.num, 2 * frame.den).map_err(|_| fail())?;
+        let quarter = RationalTime::new(frame.num, 4 * frame.den).map_err(|_| fail())?;
+        for interval in intervals {
+            let count = easing_interval_frames(interval.start, interval.end, fps)?;
+            if fades.len() + count > MAX_TEMPORAL_SPANS {
+                return Err(unsupported(
+                    "Opacity samples exceed the canonical Film span budget",
+                ));
+            }
+            for index in 1..=count {
+                let at = add(
+                    interval.start,
+                    output_frame_offset(frame, index)?,
+                    "Opacity sample time overflow",
+                )?;
+                let t = index as f64 / count as f64;
+                let opacity = if index == count {
+                    interval.to
+                } else {
+                    interval.from
+                        + (interval.to - interval.from) * easing_at_sample(interval.curve, t)
+                };
+                // The renderer's wait can wake a frame early. At that tick
+                // Deemphasize writes the current value. The tween then ends
+                // inside the same frame interval and writes its target at
+                // the next fixed tick, independent of floating-point ties.
+                fades.push(NativeOpacityFade {
+                    start: sub(at, half, "Opacity sample start underflow")?,
+                    duration: quarter,
+                    easing: MotionEasing::Linear,
+                    direction: NativeOpacityDirection::Sample { opacity },
+                });
+            }
+        }
+        return Ok(Some(fades));
+    }
     for interval in intervals {
         fades.push(NativeOpacityFade {
             start: interval.start,
@@ -1050,6 +1190,48 @@ fn validate_pose_track_safety(
     Ok(())
 }
 
+/// Sample each authored curve at the exact output frames. All intervals of
+/// the track use the same literal Set schedule to avoid early tween writes
+/// at the edge of a sampled interval.
+fn sample_smoothstep_geometry(
+    points: &[motionwright_domain::CanvasPosePoint],
+    frame: RationalTime,
+) -> NativeResult<Vec<motionwright_domain::CanvasPosePoint>> {
+    let fps = RationalTime::new(frame.den, frame.num)
+        .map_err(|error| contract("Native smoothstep frame rate", error))?;
+    let mut sampled = vec![points[0].clone()];
+    for pair in points.windows(2) {
+        let [from, to] = [&pair[0], &pair[1]];
+        let frames = easing_interval_frames(from.at, to.at, fps)?;
+        if sampled.len() + frames > MAX_TEMPORAL_SPANS {
+            return Err(unsupported(
+                "Smoothstep geometry exceeds the canonical Film span budget",
+            ));
+        }
+        for index in 1..frames {
+            let t = index as f64 / frames as f64;
+            let eased = easing_at_sample(to.curve, t);
+            let value = |start: f64, end: f64| start + (end - start) * eased;
+            let mut pose = from.pose.clone();
+            pose.x = value(from.pose.x, to.pose.x);
+            pose.y = value(from.pose.y, to.pose.y);
+            pose.width = value(from.pose.width, to.pose.width);
+            pose.height = value(from.pose.height, to.pose.height);
+            pose.rotation_deg = value(from.pose.rotation_deg, to.pose.rotation_deg);
+            let offset = output_frame_offset(frame, index)?;
+            sampled.push(motionwright_domain::CanvasPosePoint {
+                at: add(from.at, offset, "Native smoothstep time overflow")?,
+                pose,
+                curve: MotionInterpolation::Hold,
+            });
+        }
+        let mut end = to.clone();
+        end.curve = MotionInterpolation::Hold;
+        sampled.push(end);
+    }
+    Ok(sampled)
+}
+
 fn append_native_pose_track(
     shot: &mut Shot,
     node: &CanvasNode,
@@ -1064,7 +1246,22 @@ fn append_native_pose_track(
         i64::from(context.frame_rate.den),
         i64::from(context.frame_rate.num),
     )
-    .map_err(|error| contract("Native waypoint Hold frame duration", error))?;
+    .map_err(|error| contract("Native waypoint frame duration", error))?;
+    let sampled;
+    let (points, phase, held_span) = if points
+        .iter()
+        .any(|point| point.curve == MotionInterpolation::EaseInOut)
+    {
+        sampled = sample_smoothstep_geometry(points, frame)?;
+        let half = RationalTime::new(frame.num, 2 * frame.den)
+            .map_err(|error| contract("Native easing frame phase", error))?;
+        // Motion Canvas 3.17.2 resumes its delay on the first fixed tick
+        // at or after (anchor - one frame). Placing the anchor half a
+        // frame later stages each Set on its authored output frame.
+        (sampled.as_slice(), half, half)
+    } else {
+        (points, RationalTime::ZERO, frame)
+    };
     let target = subject_id(node.id, None);
     let animated = |property| node.keyframes.iter().any(|key| key.property == property);
     let position_animated = [
@@ -1085,7 +1282,7 @@ fn append_native_pose_track(
         let held = next.is_none_or(|to| to.curve == MotionInterpolation::Hold);
         let to = next.unwrap_or(from);
         let duration = if held {
-            frame
+            held_span
         } else {
             sub(to.at, from.at, "Native waypoint interval underflow")?
         };
@@ -1109,7 +1306,7 @@ fn append_native_pose_track(
             anchor: StartAnchor::Absolute {
                 time: add(
                     context.scene_start,
-                    from.at,
+                    add(from.at, phase, "Native waypoint phase overflow")?,
                     "Native waypoint span start overflow",
                 )?,
             },
@@ -2310,6 +2507,9 @@ fn attach_entrance_motion(
                 let primitive = match fade.direction {
                     NativeOpacityDirection::In => Primitive::FadeIn { target },
                     NativeOpacityDirection::Out => Primitive::FadeOut { target },
+                    NativeOpacityDirection::Sample { opacity } => {
+                        Primitive::Deemphasize { target, opacity }
+                    }
                 };
                 shot.motion.push(Invocation {
                     id: format!("native-fade-{}{suffix}", node.id.simple()),
@@ -2511,9 +2711,9 @@ fn build_segment(
 
     let span_capacity = scenes
         .iter()
-        .map(|scene| project_scene_span_cost(project, scene))
-        .sum::<usize>()
-        + usize::from(scenes.len() > 1);
+        .try_fold(usize::from(scenes.len() > 1), |total, scene| {
+            project_scene_span_cost(project, scene, profile.frame_rate).map(|cost| total + cost)
+        })?;
     if span_capacity > MAX_TEMPORAL_SPANS {
         return Err(unsupported(
             "Canonical Film segment exceeds 128 bounded temporal spans including keyframe motion",
@@ -6738,10 +6938,11 @@ mod tests {
     }
 
     #[test]
-    fn smoothstep_is_still_rejected_as_not_equivalent_to_native_inout_cubic() {
+    fn smoothstep_opacity_rejects_partial_authored_endpoints() {
         let mut project = fixture_project();
         set_exact_linear_opacity_keys(&mut project.scenes[0].nodes[0]);
         project.scenes[0].nodes[0].keyframes[1].interpolation = MotionInterpolation::EaseInOut;
+        project.scenes[0].nodes[0].keyframes[1].value = 0.4;
         let error = build_motion_canvas_segments(
             &project,
             project.deliverables[0].id,
@@ -7041,6 +7242,151 @@ mod tests {
     }
 
     #[test]
+    fn smoothstep_keys_preserve_geometry_and_opacity_on_output_frames() {
+        use semwright_motion_authoring::NativeOp;
+
+        let mut project = fixture_project();
+        let mut shape = node("shape", None);
+        shape.x = 720.0;
+        shape.y = 460.0;
+        shape.width = 480.0;
+        shape.height = 160.0;
+        let end = RationalTime::new(24, 30).unwrap();
+        for (property, from, to) in [
+            (MotionProperty::X, 700.0, shape.x),
+            (MotionProperty::Y, 440.0, shape.y),
+            (MotionProperty::Width, 280.0, shape.width),
+            (MotionProperty::Height, 90.0, shape.height),
+            (MotionProperty::RotationDeg, -18.0, shape.rotation_deg),
+        ] {
+            shape.keyframes.extend([
+                CanvasKeyframe {
+                    at: RationalTime::ZERO,
+                    property,
+                    value: from,
+                    interpolation: MotionInterpolation::Linear,
+                },
+                CanvasKeyframe {
+                    at: end,
+                    property,
+                    value: to,
+                    interpolation: MotionInterpolation::EaseInOut,
+                },
+            ]);
+        }
+        shape.keyframes.extend([
+            CanvasKeyframe {
+                at: RationalTime::ZERO,
+                property: MotionProperty::Opacity,
+                value: 0.0,
+                interpolation: MotionInterpolation::Linear,
+            },
+            CanvasKeyframe {
+                at: end,
+                property: MotionProperty::Opacity,
+                value: 1.0,
+                interpolation: MotionInterpolation::EaseInOut,
+            },
+        ]);
+        let target = subject_id(shape.id, None);
+        project.scenes[0].nodes[0] = shape;
+        let saved = project.clone();
+        let segments = build_motion_canvas_segments(
+            &project,
+            project.deliverables[0].id,
+            &fixture_options(&project),
+        )
+        .expect("frame-aligned smoothstep geometry must realize");
+        let realized = realize(&segments[0].film).unwrap();
+        let mut writes = BTreeMap::<RationalTime, Vec<(Channel, Operand)>>::new();
+        let mut alpha = BTreeMap::new();
+        for instruction in &realized.instructions {
+            match &instruction.operation {
+                NativeOp::Set {
+                    target: actual,
+                    channel,
+                    value,
+                } if actual == &target => {
+                    assert_eq!(instruction.duration, RationalTime::ZERO);
+                    writes
+                        .entry(instruction.start)
+                        .or_default()
+                        .push((*channel, value.clone()));
+                }
+                NativeOp::Tween {
+                    target: actual,
+                    channel: Channel::Opacity,
+                    from: None,
+                    to: Operand::Number(value),
+                } if actual == &target => {
+                    assert_eq!(instruction.duration, RationalTime::new(1, 120).unwrap());
+                    assert_eq!(instruction.easing, MotionEasing::Linear);
+                    assert!(alpha.insert(instruction.start, *value).is_none());
+                }
+                NativeOp::Tween { target: actual, .. } if actual == &target => {
+                    panic!("smoothstep must use its clock-aligned sampled values");
+                }
+                _ => {}
+            }
+        }
+        let near = |actual: f64, expected: f64| assert!((actual - expected).abs() < 1e-9);
+        assert_eq!(writes.len(), 25);
+        assert_eq!(alpha.len(), 24);
+        assert!(
+            !segments[0].film.sequences[0].beats[0].shots[0]
+                .subjects
+                .iter()
+                .find(|subject| subject.id == target)
+                .unwrap()
+                .initially_visible
+        );
+        for frame in 0..=24 {
+            let clock = RationalTime::new(2 * frame + 1, 60).unwrap();
+            let progress = frame as f64 / 24.0;
+            let eased = progress * progress * (3.0 - 2.0 * progress);
+            let values = &writes[&clock];
+            if frame > 0 {
+                near(alpha[&RationalTime::new(2 * frame - 1, 60).unwrap()], eased);
+            }
+            assert_eq!(values.len(), 4);
+            for (channel, value) in values {
+                match (channel, value) {
+                    (Channel::Position, Operand::Vector(point)) => {
+                        near(point.x, -120.0 + 120.0 * eased);
+                        near(point.y, -55.0 + 55.0 * eased);
+                    }
+                    (Channel::Width, Operand::Number(value)) => near(*value, 280.0 + 200.0 * eased),
+                    (Channel::Height, Operand::Number(value)) => near(*value, 90.0 + 70.0 * eased),
+                    (Channel::Rotation, Operand::Number(value)) => {
+                        near(*value, -18.0 + 18.0 * eased)
+                    }
+                    _ => panic!("unexpected projected geometry: {channel:?} {value:?}"),
+                }
+            }
+        }
+        assert_eq!(project, saved);
+
+        let mut oversized = project.clone();
+        let shape = oversized.scenes[0].nodes[0].clone();
+        for _ in 0..2 {
+            let mut copy = shape.clone();
+            copy.id = Uuid::now_v7();
+            oversized.scenes[0].nodes.push(copy);
+        }
+        let error = build_motion_canvas_segments(
+            &oversized,
+            oversized.deliverables[0].id,
+            &fixture_options(&oversized),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(
+            error.message.contains("128 bounded temporal spans"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn exact_shape_resize_and_rotation_preserve_top_left_authoring_in_native_tweens() {
         use semwright_motion_authoring::NativeOp;
         let mut project = fixture_project();
@@ -7262,7 +7608,7 @@ mod tests {
             match invalid {
                 0 => shape.keyframes[1].at = RationalTime::new(1, 7).unwrap(),
                 1 => shape.keyframes[1].value += 1.0,
-                2 => shape.keyframes[1].interpolation = MotionInterpolation::EaseInOut,
+                2 => shape.keyframes[0].at = RationalTime::new(1, 30).unwrap(),
                 _ => unreachable!(),
             }
             project.scenes[0].nodes[0] = shape;
