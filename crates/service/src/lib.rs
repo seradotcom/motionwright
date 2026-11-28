@@ -1011,7 +1011,7 @@ impl StudioService {
             return Err(invalid_import("waveform page size is out of bounds"));
         }
 
-        let (track, immutable_path) = {
+        let (track, verify_original) = {
             let store = self.store.lock();
             let project = store.load_project(project_id)?;
             let track = project
@@ -1031,9 +1031,10 @@ impl StudioService {
                     "voice track and immutable asset digests do not match".into(),
                 ));
             }
-            let immutable_path = store.verified_blob_path(&track.source_sha256)?;
-            (track, immutable_path)
+            let verify_original = store.prepare_verified_blob_path(&track.source_sha256);
+            (track, verify_original)
         };
+        let immutable_path = verify_original()?;
 
         let fingerprint =
             audio::waveform_fingerprint(&track.source_sha256, audio::WAVEFORM_FRAMES_PER_PEAK)?;
@@ -2029,6 +2030,20 @@ mod audio_import_tests {
         assert!(first.has_next);
         assert!(first.peaks.iter().all(|peak| (0.49..0.51).contains(peak)));
 
+        let blob = service
+            .store
+            .lock()
+            .blob_path(&track.source_sha256)
+            .unwrap();
+        let original = fs::read(&blob).unwrap();
+        let mut changed = original.clone();
+        changed[44] ^= 1;
+        fs::write(&blob, changed).unwrap();
+        assert!(matches!(
+            service.waveform_page(imported.id, track.id, 1, 2),
+            Err(StorageError::InvalidBackup(message)) if message.contains("failed digest verification")
+        ));
+        fs::write(&blob, original).unwrap();
         let second = service.waveform_page(imported.id, track.id, 1, 2).unwrap();
         assert_eq!(second.peaks.len(), 1);
         assert!(second.has_previous);

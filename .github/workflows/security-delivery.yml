@@ -1724,6 +1724,8 @@ jobs:
           cargo test --locked --jobs 2 -p motionwright-service --lib file_import::verified_source_tests:: -- --test-threads=1 2>&1 | tee "$log"
           grep -F 'rejected_sqlite_write_keeps_the_original_out_of_cas ... ok' "$log"
           cargo test --locked --jobs 2 -p motionwright-service --test file_import_idempotency -- --test-threads=1 2>&1 | tee -a "$log"
+          cargo test --locked --jobs 2 -p motionwright-service --lib audio_import_tests::waveform_pages_are_generated_from_the_immutable_import_and_then_reused -- --exact 2>&1 | tee -a "$log"
+          grep -F 'waveform_pages_are_generated_from_the_immutable_import_and_then_reused ... ok' "$log"
           cargo clippy --locked --jobs 2 -p motionwright-storage -p motionwright-service --lib -- -D warnings
           git diff --exit-code
       - name: Run current Store and Service contracts

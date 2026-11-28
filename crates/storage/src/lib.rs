@@ -1075,20 +1075,27 @@ impl Store {
     }
 
     pub fn verified_blob_path(&self, digest: &str) -> Result<PathBuf> {
-        cas_retention::pin_digests(&self.blob_root, [digest])?;
-        self.verify_blob(digest)?;
-        self.blob_path(digest)
+        self.prepare_verified_blob_path(digest)()
+    }
+
+    /// Verify an original from this blob root without borrowing SQLite.
+    pub fn prepare_verified_blob_path(
+        &self,
+        digest: &str,
+    ) -> impl FnOnce() -> Result<PathBuf> + use<> {
+        let blob_root = self.blob_root.clone();
+        let digest = digest.to_owned();
+        move || {
+            cas_retention::pin_digests(&blob_root, [digest.as_str()])?;
+            let path = checked_existing_blob_path_from_root(&blob_root, &digest)?;
+            verify_blob_digest(&path, &digest)?;
+            Ok(path)
+        }
     }
 
     pub fn verify_blob(&self, digest: &str) -> Result<BlobDescriptor> {
         let path = self.checked_existing_blob_path(digest)?;
-        let descriptor = hash_file(&path)?;
-        if descriptor.sha256 != digest {
-            return Err(StorageError::InvalidBackup(
-                "content-addressed blob failed digest verification".into(),
-            ));
-        }
-        Ok(descriptor)
+        verify_blob_digest(&path, digest)
     }
 
     pub fn read_blob(&self, digest: &str, limit: u64) -> Result<Vec<u8>> {
@@ -2203,6 +2210,16 @@ fn validate_digest(digest: &str) -> Result<()> {
         return Err(StorageError::InvalidBlobDigest);
     }
     Ok(())
+}
+
+fn verify_blob_digest(path: &Path, digest: &str) -> Result<BlobDescriptor> {
+    let descriptor = hash_file(path)?;
+    if descriptor.sha256 != digest {
+        return Err(StorageError::InvalidBackup(
+            "content-addressed blob failed digest verification".into(),
+        ));
+    }
+    Ok(descriptor)
 }
 
 /// All immutable source reads reject symlinks at the root, shard and leaf.
