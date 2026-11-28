@@ -86,6 +86,7 @@ describe("the saved Native master profile", () => {
     expect(nativeAvMasterContract({ ...profile, caption_format: "srt" })?.captions).toBe("Separate SRT sidecar");
     expect(nativeAvMasterContract({ ...profile, burn_in_captions: true })?.captions).toBe("Burn-in on supported routes");
     expect(nativeAvMasterContract({ ...profile, captions: false })?.captions).toBe("None");
+    expect(nativeAvMasterContract({ ...profile, captions: false, burn_in_captions: true })?.captions).toBe("Burn-in requires enabled captions");
     expect(nativeAvMasterContract({ ...profile, color_space: "display_p3" })).toBeNull();
     expect(nativeAvMasterContract({ ...profile, audio_sample_rate_hz: 44100 })).toBeNull();
   });

@@ -12,7 +12,9 @@ export function nativeAvMasterContract(profile: DeliverableProfile | null | unde
       pixelFormat: "yuv420p", primaries: "BT.709", transfer: "BT.709", matrix: "BT.709", range: "limited", alpha: "opaque" },
     audio: { codec: "AAC", sampleRateHz: 48_000, channels: 2 },
     container: "MP4",
-    captions: !profile.captions ? "None" : profile.burn_in_captions ? "Burn-in on supported routes"
+    captions: profile.burn_in_captions
+      ? (profile.captions ? "Burn-in on supported routes" : "Burn-in requires enabled captions")
+      : !profile.captions ? "None"
       : profile.caption_format === "web_vtt" ? "Separate WebVTT sidecar" : "Separate SRT sidecar",
   } as const;
 }

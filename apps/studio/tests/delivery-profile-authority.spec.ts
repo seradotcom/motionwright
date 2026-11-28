@@ -94,6 +94,33 @@ test("control: an original valid upsert reply confirms submitted metadata", asyn
   await expect(button(page, "Save profile")).toBeDisabled();
   await expect(review(page)).toContainText("Showing saved output values");
 });
+test("captions: a saved Burn-in choice can be corrected before saving captions off", async ({ page }) => {
+  const sidecar = page.getByRole("checkbox", { name: "Sidecar", exact: true });
+  const burnIn = page.getByRole("checkbox", { name: "Burn-in", exact: true });
+  await expect(sidecar).toBeChecked();
+  await burnIn.check();
+  const enabled = await submit(page);
+  expect(enabled.change).toMatchObject({ type: "upsert_deliverable", profile: { captions: true, burn_in_captions: true } });
+  await page.evaluate(id => window.__PROFILE_AUTHORITY__.resolve(id), enabled.id);
+  await expect(review(page)).toContainText("Showing saved output values");
+
+  await sidecar.uncheck();
+  await remount(page);
+  await expect(sidecar).not.toBeChecked();
+  await expect(burnIn).toBeChecked();
+  await expect(burnIn, "the operator can clear the retained Burn-in choice").toBeEnabled({ timeout: 2500 });
+  await expect(page.getByText("Enable captions to use Burn-in, or turn Burn-in off.", { exact: true })).toBeVisible();
+  await expect(button(page, "Save profile")).toBeDisabled();
+  expect(await requests(page)).toHaveLength(1);
+
+  await burnIn.uncheck();
+  const corrected = await submit(page);
+  expect(corrected.change).toMatchObject({ type: "upsert_deliverable", profile: { captions: false, burn_in_captions: false } });
+  await page.evaluate(id => window.__PROFILE_AUTHORITY__.resolve(id), corrected.id);
+  await expect(review(page)).toContainText("Showing saved output values");
+  await expect(sidecar).not.toBeChecked();
+  await expect(burnIn).not.toBeChecked();
+});
 test("control: invalid pixel spelling remains exact across remount and reload", async ({ page }) => {
   await field(page, "Width").fill("1e");
   await remount(page); await expect(field(page, "Width")).toHaveValue("1e");

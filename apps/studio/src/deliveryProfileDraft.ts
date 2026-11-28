@@ -294,10 +294,18 @@ export function profileMetadataCutMode(current: DeliverableProfile, draft: Profi
   return current.included_scene_ids.length ? "custom" : "full";
 }
 
+export const profileCaptionConflictMessage = "Enable captions to use Burn-in, or turn Burn-in off.";
+
+function introducesCaptionConflict(current: DeliverableProfile, proposed: DeliverableProfile): boolean {
+  return proposed.burn_in_captions && !proposed.captions
+    && (!current.burn_in_captions || current.captions);
+}
+
 /** UI parsing of edited fields only. Rust still validates the entire Project. */
 export function proposedProfileMetadata(current: DeliverableProfile, draft: ProfileMetadataDraft): DeliverableProfile {
   const profile = structuredClone(current);
   for (const [key, edit] of Object.entries(draft.edits)) applyProfileField(profile, key, parseProfileField(key, edit.value));
+  if (introducesCaptionConflict(current, profile)) throw new Error(profileCaptionConflictMessage);
   const cutMode = profileMetadataCutMode(current, draft);
   if (cutMode === "custom" && !profile.included_scene_ids.length) throw new Error("Choose at least one scene for the custom cut, or choose Use full sequence explicitly.");
   if (cutMode === "full" && profile.included_scene_ids.length) throw new Error("The full sequence and custom scene choices disagree. Review the narrative cut.");
@@ -1046,9 +1054,10 @@ export function useProfileMetadataDraft(
   };
   const error = [...new Set([action.key === key ? action.error : null, stored.blocked, stored.warning, writer.error, copyView.current.warning]
     .filter((value): value is string => Boolean(value)))].join(" ") || null;
+  const proposed = profile ? previewProfileMetadata(profile, visible) : null;
   return {
-    values, savedValues: current, edits: visible.edits, conflicts,
-    profile: profile ? previewProfileMetadata(profile, visible) : null,
+    values, savedValues: current, edits: visible.edits, conflicts, profile: proposed,
+    captionSaveBlocked: profile !== null && proposed !== null && introducesCaptionConflict(profile, proposed),
     dirty: Object.keys(visible.edits).length > 0, awaiting: Boolean(visible.awaiting),
     sentFields: visible.awaiting?.fields ?? {}, pending, locked, sourceBehind,
     recoveryBlocked, unreadableCopy: Boolean(stored.blocked),

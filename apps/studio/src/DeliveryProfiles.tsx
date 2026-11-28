@@ -23,7 +23,7 @@ import { mltDissolveCut, useDeliveryRecipeDraft, savedDeliveryRecipe } from "./d
 import { useVoiceCutReview } from "./useVoiceCutReview";
 import { recipeHasWork } from "./deliveryRecipeDraft";
 import {
-  captureDeliveryDispatch, useProfileMetadataDraft, retainedProfileMetadataCopies,
+  captureDeliveryDispatch, useProfileMetadataDraft, retainedProfileMetadataCopies, profileCaptionConflictMessage,
   type DeliveryProjectState, type RetainedProfileMetadataCopy,
 } from "./deliveryProfileDraft";
 import {
@@ -1508,7 +1508,8 @@ export default function DeliveryProfiles({
 
             <div className="delivery-editor-actions">
               <button type="button" className="button button-primary"
-                disabled={!dirty || emptyCustomCut || !!protectedCopyConflict || busy !== null || profileDraft.pending || profileDraft.awaiting || profileDraft.locked
+                disabled={!dirty || emptyCustomCut || profileDraft.captionSaveBlocked || !!protectedCopyConflict
+                  || busy !== null || profileDraft.pending || profileDraft.awaiting || profileDraft.locked
                   || profileDraft.sourceBehind || profileDraft.recoveryBlocked || profileDraft.conflicts.length > 0}
                 onClick={saveProfile}>
                 <Save size={14} /> {busy === "save" ? "Saving…" : "Save profile"}
@@ -2091,7 +2092,7 @@ export default function DeliveryProfiles({
                     <input
                       type="checkbox"
                       checked={draft.burn_in_captions}
-                      disabled={!draft.captions}
+                      disabled={!draft.captions && !draft.burn_in_captions}
                       onChange={(event) => setDraft({ ...draft, burn_in_captions: event.target.checked })}
                     />
                     Burn-in
@@ -2131,7 +2132,10 @@ export default function DeliveryProfiles({
               {!desktopMode && (
                 <div className="delivery-truth-note"><CircleDashed size={14} /> Desktop filesystem capability is required.</div>
               )}
-              {draft.burn_in_captions && (
+              {draft.burn_in_captions && !draft.captions && (
+                <div className="delivery-truth-note warning" role="status">{profileCaptionConflictMessage}</div>
+              )}
+              {draft.burn_in_captions && draft.captions && (
                 <div className="delivery-truth-note warning" role="status">
                   <CircleDashed size={14} /> Saved Burn-in renders timed transcript text through the pinned Semwright Motion Canvas Film when the current voice digest and exact frame times are valid. Sidecar export remains separate. A separately authorized native MLT H.264/AAC master is restricted to two or more verified Motion Canvas segments and a measured WAV. Its decoded pixel proof and human font/legibility review remain independent publication gates; other profiles cannot silently burn in captions.
                 </div>

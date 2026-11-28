@@ -508,6 +508,26 @@ describe("raw output metadata continuity", () => {
     });
   }
 
+  it("rejects a new caption conflict while letting a historical profile keep unrelated edits", () => {
+    const f = metadataFixture();
+    const current = { ...f.profile, captions: true, burn_in_captions: true };
+    const base = newProfileMetadataDraft(f.scope, 20);
+    const conflict = editProfileMetadata(base, "captions", "false", profileCanonicalFields(current));
+    expect(previewProfileMetadata(current, conflict)).toMatchObject({ captions: false, burn_in_captions: true });
+    expect(() => proposedProfileMetadata(current, conflict)).toThrow("Enable captions to use Burn-in");
+
+    const historical = { ...current, captions: false };
+    const saved = profileCanonicalFields(historical);
+    const renamed = editProfileMetadata(base, "name", "Retained profile", saved);
+    expect(proposedProfileMetadata(historical, renamed)).toMatchObject({
+      name: "Retained profile", captions: false, burn_in_captions: true,
+    });
+    const corrected = editProfileMetadata(renamed, "burn_in_captions", "false", saved);
+    expect(proposedProfileMetadata(historical, corrected)).toMatchObject({
+      name: "Retained profile", captions: false, burn_in_captions: false,
+    });
+  });
+
   it("uses UTF-8 limits without trimming valid profile names", () => {
     const f = metadataFixture();
     const valid = editProfileMetadata(newProfileMetadataDraft(f.scope, 20), "name", "  Ámbito  ", f.current);
