@@ -1,5 +1,5 @@
 use super::{File, Path, PathBuf, Uuid, validated_destination};
-use std::{ffi::OsStr, fs::OpenOptions, io};
+use std::{fs::OpenOptions, io};
 
 const CHANGED: &str =
     "The MP4 export destination directory changed. Select it again before exporting.";
@@ -95,15 +95,17 @@ impl ExportStage<'_> {
         destination: &Path,
     ) -> io::Result<()> {
         self.target.check_current().map_err(io::Error::other)?;
-        let leaf = destination
-            .file_name()
-            .ok_or_else(|| io::Error::other(CHANGED))?;
         #[cfg(unix)]
-        self.workspace.publish(name, &staged.file, leaf)?;
+        {
+            let leaf = destination
+                .file_name()
+                .ok_or_else(|| io::Error::other(CHANGED))?;
+            self.workspace.publish(name, &staged.file, leaf)?;
+        }
         #[cfg(windows)]
         {
             let _ = name;
-            windows::publish(&staged.file, self.target.directory.as_file(), leaf)?;
+            windows::publish(&staged.file, destination)?;
             staged.published = true;
         }
         Ok(())
@@ -123,7 +125,7 @@ impl Drop for StagedFile {
 mod unix {
     use super::*;
     use std::{
-        ffi::CString,
+        ffi::{CString, OsStr},
         os::{
             fd::{AsRawFd, FromRawFd},
             unix::{
@@ -445,25 +447,25 @@ pub(super) mod windows {
         flags: u32,
         parent: HANDLE,
         name_bytes: u32,
-        name: [u16; 256],
+        name: [u16; 2049],
     }
 
     const _: () = assert!(offset_of!(RenameBuffer, name) == offset_of!(FILE_RENAME_INFO, FileName));
 
-    pub(super) fn publish(file: &File, directory: &File, leaf: &OsStr) -> io::Result<()> {
-        let name: Vec<_> = leaf.encode_wide().collect();
-        if name.is_empty() || name.len() >= 256 || name.contains(&0) {
+    pub(super) fn publish(file: &File, destination: &Path) -> io::Result<()> {
+        let name: Vec<_> = destination.as_os_str().encode_wide().collect();
+        if name.is_empty() || name.len() >= 2049 || name.contains(&0) {
             return Err(io::Error::other(CHANGED));
         }
         let mut buffer = RenameBuffer {
             flags: 0,
-            parent: directory.as_raw_handle(),
+            parent: std::ptr::null_mut(),
             name_bytes: (name.len() * size_of::<u16>()) as u32,
-            name: [0; 256],
+            name: [0; 2049],
         };
         buffer.name[..name.len()].copy_from_slice(&name);
-        // SAFETY: the validated name is relative to the held directory. The
-        // C-layout buffer and both handles remain live. Flags zero forbid overwrite.
+        // SAFETY: the absolute name resolves through retained directories.
+        // The C-layout buffer and original file handle are live; zero flags forbid replacement.
         let result = unsafe {
             SetFileInformationByHandle(
                 file.as_raw_handle(),
