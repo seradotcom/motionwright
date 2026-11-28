@@ -1008,9 +1008,7 @@ impl StudioService {
         page_index: u64,
         page_size: usize,
     ) -> StorageResult<WaveformPage> {
-        if page_size == 0 || page_size > audio::MAX_WAVEFORM_PAGE_SIZE {
-            return Err(invalid_import("waveform page size is out of bounds"));
-        }
+        let start_peak = audio::waveform_page_start(page_index, page_size)?;
 
         let (track, verify_original) = {
             let store = self.store.lock();
@@ -1032,6 +1030,17 @@ impl StudioService {
                     "voice track and immutable asset digests do not match".into(),
                 ));
             }
+            // Refuse requests beyond the saved measurement before verifying or decoding the source.
+            let measured_frames = i128::from(track.measured_duration.num)
+                * i128::from(track.sample_rate_hz)
+                / i128::from(track.measured_duration.den);
+            let first_frame = i128::from(start_peak) * i128::from(audio::WAVEFORM_FRAMES_PER_PEAK);
+            if page_index != 0 && first_frame >= measured_frames {
+                return Err(invalid_import(
+                    "waveform page is outside the available proxy",
+                ));
+            }
+
             let verify_original = store.prepare_verified_blob_path(&track.source_sha256);
             (track, verify_original)
         };
@@ -1854,6 +1863,68 @@ mod audio_import_tests {
             file.write_all(&sample.to_le_bytes()).unwrap();
         }
         file.sync_all().unwrap();
+    }
+
+    #[test]
+    fn invalid_waveform_pages_do_not_publish_a_proxy() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("studio.sqlite3");
+        let service = StudioService::open(&database).unwrap();
+        let initial = service.create_project("Paged waveform").unwrap();
+        let wav = temp.path().join("voice.wav");
+        write_pcm16_wav(&wav, 48_000, 2, 4_097, 17);
+        let project = service
+            .import_voice_file(
+                initial.id,
+                &RevisionStamp::from(&initial),
+                "voice-import",
+                &wav,
+                VoiceImportMetadata {
+                    name: "voice.wav".into(),
+                    media_type: "audio/wav".into(),
+                    label: "Voice".into(),
+                },
+            )
+            .unwrap()
+            .project;
+        let track = &project.audio.voice_tracks[0];
+        let scope = format!(
+            "project:{}:voice:{}:source:{}",
+            project.id, track.id, track.source_sha256
+        );
+        let fingerprint =
+            audio::waveform_fingerprint(&track.source_sha256, audio::WAVEFORM_FRAMES_PER_PEAK)
+                .unwrap();
+
+        for (index, error) in [
+            (2, "waveform page is outside the available proxy"),
+            (u64::MAX, "waveform page offset overflow"),
+        ] {
+            let result = service.waveform_page(project.id, track.id, index, 2);
+            assert!(matches!(
+                result,
+                Err(StorageError::Domain(DomainError::Invalid(message))) if message == error
+            ));
+            assert!(
+                service
+                    .lookup_derived_cache(&scope, "waveform-proxy", &fingerprint)
+                    .unwrap()
+                    .is_none(),
+                "a refused page published a proxy"
+            );
+        }
+
+        let last = service.waveform_page(project.id, track.id, 1, 2).unwrap();
+        assert_eq!(last.total_frames, 4_097);
+        assert_eq!(last.start_peak, 2);
+        assert_eq!(last.peaks.len(), 1);
+        assert!(!last.has_next);
+        drop(service);
+        let reopened = StudioService::open(database).unwrap();
+        assert_eq!(
+            reopened.waveform_page(project.id, track.id, 1, 2).unwrap(),
+            last
+        );
     }
 
     #[test]

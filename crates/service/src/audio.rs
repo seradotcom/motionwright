@@ -627,6 +627,16 @@ pub fn generate_waveform_proxy(
     Ok(summary)
 }
 
+pub(crate) fn waveform_page_start(page_index: u64, page_size: usize) -> Result<u64> {
+    if page_size == 0 || page_size > MAX_WAVEFORM_PAGE_SIZE {
+        return Err(invalid("waveform page size is out of bounds"));
+    }
+
+    page_index
+        .checked_mul(page_size as u64)
+        .ok_or_else(|| invalid("waveform page offset overflow"))
+}
+
 pub fn read_waveform_page(
     proxy_path: impl AsRef<Path>,
     expected_source_sha256: &str,
@@ -635,9 +645,7 @@ pub fn read_waveform_page(
     page_index: u64,
     page_size: usize,
 ) -> Result<WaveformPage> {
-    if page_size == 0 || page_size > MAX_WAVEFORM_PAGE_SIZE {
-        return Err(invalid("waveform page size is out of bounds"));
-    }
+    let start_peak = waveform_page_start(page_index, page_size)?;
     let mut input = File::open(proxy_path)?;
     let summary = read_waveform_header(&mut input)?;
     if !summary
@@ -666,16 +674,11 @@ pub fn read_waveform_page(
         ));
     }
 
-    let page_size_u64 =
-        u64::try_from(page_size).map_err(|_| invalid("waveform page size is invalid"))?;
-    let start_peak = page_index
-        .checked_mul(page_size_u64)
-        .ok_or_else(|| invalid("waveform page offset overflow"))?;
     if start_peak >= summary.peak_count && page_index != 0 {
         return Err(invalid("waveform page is outside the available proxy"));
     }
     let remaining = summary.peak_count.saturating_sub(start_peak);
-    let count = remaining.min(page_size_u64);
+    let count = remaining.min(page_size as u64);
     let offset = WAVEFORM_HEADER_BYTES
         .checked_add(
             start_peak
