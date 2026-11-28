@@ -1949,7 +1949,9 @@ impl MotionCuePlanBinding {
     }
 
     fn require_applied(&self, applied: &Value, data: &Value) -> NativeResult<()> {
-        if Self::provider_generation(applied) != Some(self.provider_generation)
+        if data.get("applied").and_then(Value::as_bool) != Some(true)
+            || data.get("execution_status").and_then(Value::as_str) != Some("completed")
+            || Self::provider_generation(applied) != Some(self.provider_generation)
             || data.get("plan_ref").and_then(Value::as_str) != Some(self.plan_ref.as_str())
             || data.get("intent_digest").and_then(Value::as_str) != Some(self.film_sha256.as_str())
             || data.get("fingerprint").and_then(Value::as_str)
@@ -3914,7 +3916,13 @@ impl ProductionCoordinator {
             )
             .await?;
         self.revalidate_retained_brand_font_staging()?;
-        let applied_data = response_data(&applied)?;
+        let applied_data = response_data(&applied).map_err(|error| {
+            if cue_plan.is_some() {
+                error.uncertain()
+            } else {
+                error
+            }
+        })?;
         if let Some(cue_plan) = cue_plan {
             cue_plan.require_applied(&applied, applied_data)?;
         }

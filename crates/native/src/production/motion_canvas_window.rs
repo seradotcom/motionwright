@@ -1793,6 +1793,8 @@ mod tests {
             ("/result/data/plan_ref", json!("c1".repeat(32))),
             ("/result/data/fingerprint", json!("c2".repeat(32))),
             ("/result/data/intent_digest", json!("c3".repeat(32))),
+            ("/result/data/applied", json!(false)),
+            ("/result/data/execution_status", json!("planned")),
             (
                 "/result/execution/provenance/provider",
                 json!("driver:manim"),
