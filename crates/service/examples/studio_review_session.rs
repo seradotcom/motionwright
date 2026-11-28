@@ -811,13 +811,27 @@ impl Session {
                 file_import::prepare_file_import(&self.service, request(args)?)
                     .map_err(|error| error.to_string())?,
             ),
+            // The synchronous review session already owns this request.
+            // Installed Desktop supplies a fresh window admission at publication.
             "import_asset_file" => encoded(
-                file_import::import_asset_file(&self.service, &self.grants, request(args)?)
-                    .map_err(|error| error.to_string())?,
+                file_import::dispatch_file_import(
+                    &self.service,
+                    &self.grants,
+                    file_import::FileImportKind::Asset,
+                    request(args)?,
+                    || Ok(()),
+                )
+                .map_err(|error| error.to_string())?,
             ),
             "import_voice_file" => encoded(
-                file_import::import_voice_file(&self.service, &self.grants, request(args)?)
-                    .map_err(|error| error.to_string())?,
+                file_import::dispatch_file_import(
+                    &self.service,
+                    &self.grants,
+                    file_import::FileImportKind::Voice,
+                    request(args)?,
+                    || Ok(()),
+                )
+                .map_err(|error| error.to_string())?,
             ),
             "recover_file_import" => encoded(
                 file_import::recover_file_import(&self.service, request(args)?)
@@ -828,10 +842,11 @@ impl Session {
                     .map_err(|error| error.to_string())?,
             ),
             "import_native_capsule_source_file" => encoded(
-                file_import::import_native_capsule_source_file(
+                file_import::dispatch_native_capsule_source_file(
                     &self.service,
                     &self.grants,
                     request(args)?,
+                    || Ok(()),
                 )
                 .map_err(|error| error.to_string())?,
             ),
