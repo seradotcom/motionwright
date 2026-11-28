@@ -428,6 +428,21 @@ impl FileImportCaptureTarget {
         )
     }
 
+    /// Capture a private master for recovery through its eventual slot receipt.
+    pub fn capture_private_delivery_file(
+        &self,
+        source: &Path,
+        max_bytes: u64,
+    ) -> Result<StagedFileImport> {
+        stage_file_from_root(
+            &self.blob_root,
+            self.store_id,
+            source,
+            max_bytes,
+            super::cas_retention::CapturePurpose::PrivateDelivery,
+        )
+    }
+
     pub fn capture_bytes(&self, bytes: &[u8], max_bytes: u64) -> Result<StagedFileImport> {
         stage_import_bytes_from_root(&self.blob_root, self.store_id, bytes, max_bytes)
     }

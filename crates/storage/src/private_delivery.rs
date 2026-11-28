@@ -190,6 +190,37 @@ fn verify_artifact(root: &Path, artifact: &BlobDescriptor) -> Result<()> {
     Ok(())
 }
 
+/// Resolve retention from the same SQLite receipt that makes a private slot visible.
+pub(super) fn committed_media(
+    conn: &Connection,
+    project_id: Uuid,
+    generation: Uuid,
+    receipt_id: Uuid,
+    request_sha256: &str,
+    digest: &str,
+) -> Result<bool> {
+    validate_production_receipt_order_integrity(conn, Some(project_id))?;
+    let history = request_history(
+        conn,
+        project_id,
+        &format!("private-delivery:{request_sha256}"),
+    )?;
+    if history.is_empty() {
+        return Ok(false);
+    }
+    let [receipt]: [ProductionReceipt; 1] =
+        history.try_into().map_err(|_| StorageError::RequestReuse)?;
+    let delivery = manifest(receipt)?;
+    if delivery.commit_id != receipt_id
+        || delivery.plan.project_id != project_id
+        || delivery.plan.generation != generation
+        || delivery.plan.artifact.sha256 != digest
+    {
+        return Err(StorageError::RequestReuse);
+    }
+    Ok(true)
+}
+
 impl Store {
     /// Resolve one durable slot and verify its exact retained artifact without
     /// keeping a SQLite transaction or borrowing the Store during media IO.
@@ -262,9 +293,7 @@ impl Store {
     ) -> Result<PrivateDeliveryManifest> {
         let identity = plan.identity()?;
         let request_id = format!("private-delivery:{identity}");
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let project = load_project_from_row(&tx, plan.project_id)?;
         check_project(&project, plan.generation, plan.deliverable_id)?;
         validate_production_receipt_order_integrity(&tx, Some(plan.project_id))?;
@@ -316,7 +345,7 @@ impl Store {
                 generation: plan.generation,
                 revision: plan.revision,
                 request_id,
-                request_sha256: identity,
+                request_sha256: identity.clone(),
                 command: slot_command(plan.deliverable_id),
                 stage: "completed".into(),
                 payload: serde_json::to_value(plan)?,
@@ -325,8 +354,17 @@ impl Store {
             None,
         )?;
         let result = manifest(receipt)?;
-        file_import::publish_file_import_under_root(&self.blob_root, captured)?;
+        let intent = self.begin_private_delivery_publication(&result, captured, &identity)?;
+        if let Some(intent) = &intent {
+            intent.publish(captured)?;
+        } else {
+            file_import::publish_file_import_under_root(&self.blob_root, captured)?;
+        }
         tx.commit()?;
+        if let Some(intent) = intent {
+            // The durable receipt remains authoritative if sidecar finalization is interrupted.
+            let _ = intent.finish_committed();
+        }
         Ok(result)
     }
 }
@@ -343,6 +381,20 @@ mod tests {
         deliverable: Uuid,
     ) -> Result<Option<PrivateDeliveryManifest>> {
         store.prepare_private_delivery_inspection(project, generation, deliverable)?()
+    }
+
+    fn capture_fixture(
+        store: &Store,
+        folder: &std::path::Path,
+        name: &str,
+        bytes: &[u8],
+    ) -> StagedFileImport {
+        let original = folder.join(name);
+        std::fs::write(&original, bytes).unwrap();
+        store
+            .file_import_capture_target()
+            .capture_private_delivery_file(&original, 128)
+            .unwrap()
     }
 
     fn completed_fixture(
@@ -371,6 +423,80 @@ mod tests {
     }
 
     #[test]
+    fn private_delivery_reclaims_its_owned_blob_when_sqlite_commit_rolls_back() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("studio.sqlite3");
+        let media = directory.path().join("media");
+        let open = || Store::open_with_managed_blob_root(&database, &media).unwrap();
+        let mut store = open();
+        let project = store
+            .create_named_project("Private delivery rollback fixture")
+            .unwrap();
+        let deliverable = project.deliverables[0].id;
+        let captured = capture_fixture(
+            &store,
+            directory.path(),
+            "uncommitted.mp4",
+            b"uncommitted master",
+        );
+        let digest = captured.descriptor().sha256.clone();
+        let original = completed_fixture(&mut store, &project, deliverable, captured.descriptor());
+        let plan = store
+            .prepare_private_delivery(
+                project.id,
+                &project.stamp(),
+                deliverable,
+                original.id,
+                &digest,
+            )
+            .unwrap();
+
+        // This constraint fails COMMIT after the receipt and file publication.
+        store
+            .conn
+            .execute_batch(
+                "CREATE TEMP TABLE delivery_parent (id INTEGER PRIMARY KEY);
+             CREATE TEMP TABLE delivery_child (
+                 id INTEGER REFERENCES delivery_parent(id) DEFERRABLE INITIALLY DEFERRED
+             );
+             CREATE TEMP TRIGGER reject_delivery_commit AFTER INSERT ON main.production_receipts
+             WHEN new.command LIKE 'motionwright.private-delivery:%'
+             BEGIN INSERT INTO delivery_child VALUES (1); END;",
+            )
+            .unwrap();
+        assert!(matches!(
+            store.commit_private_delivery(&plan, &captured, || Ok(())),
+            Err(StorageError::Sql(error)) if error.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation)
+        ));
+        assert_eq!(store.verify_blob(&digest).unwrap(), plan.artifact);
+        assert_eq!(
+            inspect(&store, project.id, project.generation, deliverable).unwrap(),
+            None
+        );
+        drop(captured);
+        drop(store);
+
+        let mut reopened = open();
+        let report = reopened
+            .recover_cas(crate::CasRetentionPolicy {
+                retention: std::time::Duration::ZERO,
+                max_objects: 32,
+            })
+            .unwrap();
+        assert!(
+            matches!(
+                reopened.verify_blob(&digest),
+                Err(StorageError::BlobMissing { .. })
+            ),
+            "{report:?}"
+        );
+        assert_eq!(
+            inspect(&reopened, project.id, project.generation, deliverable).unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn private_delivery_compares_slot_head_and_preserves_exact_receipts_after_reopen() {
         let directory = tempfile::tempdir().unwrap();
         let database = directory.path().join("studio.sqlite3");
@@ -383,12 +509,8 @@ mod tests {
         let deliverable = project.deliverables[0].id;
         let first_bytes = b"synthetic original A";
         let second_bytes = b"synthetic original B";
-        let a = store
-            .stage_file_import_bytes_with_limit(first_bytes, 128)
-            .unwrap();
-        let b = store
-            .stage_file_import_bytes_with_limit(second_bytes, 128)
-            .unwrap();
+        let a = capture_fixture(&store, directory.path(), "first.mp4", first_bytes);
+        let b = capture_fixture(&store, directory.path(), "second.mp4", second_bytes);
         let first = completed_fixture(&mut store, &project, deliverable, a.descriptor());
         let second = completed_fixture(&mut store, &project, deliverable, b.descriptor());
         let mut peer = open();
@@ -456,7 +578,18 @@ mod tests {
         drop(peer);
         drop(store);
 
-        let reopened = open();
+        let mut reopened = open();
+        let unrelated_bundle = crate::BundleImportRecoveryRequest {
+            project_id: project.id,
+            fingerprint: crate::BundleFingerprint::from_sha256(replaced.identity().unwrap())
+                .unwrap(),
+        };
+        assert_eq!(
+            reopened
+                .recover_project_bundle_import(&unrelated_bundle)
+                .unwrap(),
+            None
+        );
         assert_eq!(
             inspect(&reopened, project.id, project.generation, deliverable).unwrap(),
             Some(committed_b.clone())

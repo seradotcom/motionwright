@@ -85,10 +85,19 @@ struct IntentRecord {
     database_id: String,
     project_id: Uuid,
     request_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    private_delivery: Option<PrivateDeliveryMarker>,
     created_ms: u64,
     digests: BTreeSet<String>,
     captures: BTreeSet<Uuid>,
     lock_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivateDeliveryMarker {
+    receipt_id: Uuid,
+    generation: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -881,9 +890,6 @@ impl Store {
         let Some(root) = discover(&self.blob_root)? else {
             return Ok(None);
         };
-        if database_identity(&self.path)? != self.cas_database_id {
-            return Err(invalid("database physical identity changed"));
-        }
         let digests = backup
             .project
             .assets
@@ -897,6 +903,63 @@ impl Store {
         if digests != captured {
             return Err(invalid("import captures do not cover exact asset digests"));
         }
+        self.begin_owned_publication(
+            root,
+            backup.project.id,
+            staged,
+            request_sha256,
+            digests,
+            None,
+        )
+        .map(Some)
+    }
+
+    pub(super) fn begin_private_delivery_publication(
+        &self,
+        delivery: &super::PrivateDeliveryManifest,
+        staged: &super::StagedFileImport,
+        request_sha256: &str,
+    ) -> Result<Option<ImportIntent>> {
+        let Some(root) = discover(&self.blob_root)? else {
+            return Ok(None);
+        };
+        if staged.descriptor() != &delivery.plan.artifact {
+            return Err(invalid(
+                "private delivery capture differs from the committed plan",
+            ));
+        }
+        self.begin_owned_publication(
+            root,
+            delivery.plan.project_id,
+            std::slice::from_ref(staged),
+            request_sha256,
+            BTreeSet::from([delivery.plan.artifact.sha256.clone()]),
+            Some(PrivateDeliveryMarker {
+                receipt_id: delivery.commit_id,
+                generation: delivery.plan.generation,
+            }),
+        )
+        .map(Some)
+    }
+
+    fn begin_owned_publication(
+        &self,
+        root: ManagedRoot,
+        project_id: Uuid,
+        staged: &[super::StagedFileImport],
+        request_sha256: &str,
+        digests: BTreeSet<String>,
+        private_delivery: Option<PrivateDeliveryMarker>,
+    ) -> Result<ImportIntent> {
+        super::validate_digest(request_sha256)?;
+        if database_identity(&self.path)? != self.cas_database_id {
+            return Err(invalid("database physical identity changed"));
+        }
+        let purpose = if private_delivery.is_some() {
+            CapturePurpose::PrivateDelivery
+        } else {
+            CapturePurpose::BundleImport
+        };
         for digest in &digests {
             super::validate_digest(digest)?;
         }
@@ -918,7 +981,7 @@ impl Store {
                 .ok_or_else(|| invalid("capture reservation is missing"))?;
             if record.store_id != self.cas_store_id
                 || record.intent_id.is_some()
-                || record.purpose != CapturePurpose::BundleImport
+                || record.purpose != purpose
                 || record.descriptor.as_ref() != Some(staged.descriptor())
                 || file_identity(&lease._live)? != record.lock_id
             {
@@ -946,8 +1009,9 @@ impl Store {
             IntentRecord {
                 store_id: self.cas_store_id,
                 database_id: self.cas_database_id.clone(),
-                project_id: backup.project.id,
+                project_id,
                 request_sha256: request_sha256.to_owned(),
+                private_delivery,
                 created_ms,
                 digests,
                 captures,
@@ -956,14 +1020,14 @@ impl Store {
         );
         gate.save()?;
         drop(gate);
-        Ok(Some(ImportIntent {
+        Ok(ImportIntent {
             root,
             operation_id,
             store_id: self.cas_store_id,
-            project_id: backup.project.id,
+            project_id,
             request_sha256: request_sha256.to_owned(),
             _live: live,
-        }))
+        })
     }
 }
 
@@ -1346,6 +1410,21 @@ fn committed(
     id: Uuid,
     intent: &IntentRecord,
 ) -> Result<bool> {
+    if let Some(marker) = &intent.private_delivery {
+        let digest = intent
+            .digests
+            .first()
+            .filter(|_| intent.digests.len() == 1)
+            .ok_or_else(|| invalid("private delivery must bind exactly one digest"))?;
+        return super::private_delivery::committed_media(
+            conn,
+            intent.project_id,
+            marker.generation,
+            marker.receipt_id,
+            &intent.request_sha256,
+            digest,
+        );
+    }
     let marker:Option<(String,String,String,String,String)>=conn.query_row(
         "SELECT root_id,store_id,request_sha256,project_id,generation FROM cas_import_commits WHERE operation_id=?1",
         [id.to_string()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
@@ -1473,6 +1552,7 @@ fn same_intent(left: &IntentRecord, right: &IntentRecord) -> bool {
         && left.database_id == right.database_id
         && left.project_id == right.project_id
         && left.request_sha256 == right.request_sha256
+        && left.private_delivery == right.private_delivery
         && left.created_ms == right.created_ms
         && left.digests == right.digests
         && left.captures == right.captures
@@ -1538,6 +1618,7 @@ impl CaptureLease {
 pub(super) enum CapturePurpose {
     Legacy,
     BundleImport,
+    PrivateDelivery,
     DerivedCache,
 }
 

@@ -802,7 +802,7 @@ impl DeliverySource {
         )
         .map_err(|_| "The saved master did not pass its original byte verification.")?;
         let staged = target
-            .capture_file(&source, plan.artifact.size_bytes)
+            .capture_private_delivery_file(&source, plan.artifact.size_bytes)
             .map_err(|_| "The saved master could not be captured for private delivery.")?;
         if staged.descriptor() != &plan.artifact {
             return Err("The saved master changed during private delivery capture.".into());
