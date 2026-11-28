@@ -1123,6 +1123,13 @@ jobs:
           assert summaries==[("ok",str(len(listed)),"0","0","0")],summaries
           print(f"local-hybrid-owner source controls PASS: {len(listed)}; Native render NOT_RUN")
           PY
+          cargo test --locked -p motionwright-native --example native-mlt-sequence-e2e \
+            hybrid::tests::hybrid_seed_reopens_exact_three_renderer_source_and_original_wave -- --exact \
+            2>&1 | tee "$RUNNER_TEMP/hybrid-owner-fixture.original.log"
+          grep -Fx 'test hybrid::tests::hybrid_seed_reopens_exact_three_renderer_source_and_original_wave ... ok' \
+            "$RUNNER_TEMP/hybrid-owner-fixture.original.log"
+          python -B -m unittest discover -s tooling/tests -p 'test_native_mlt_hybrid_source_closure.py' -v \
+            2>&1 | tee "$RUNNER_TEMP/hybrid-owner-source-closure.original.log"
           cargo clippy --locked -p motionwright-native --all-targets -- -D warnings
       - name: Retain original focused test output
         if: always()

@@ -32,9 +32,9 @@ fn arg(args: &mut impl Iterator<Item = std::ffi::OsString>) -> PathBuf {
     args.next().map(PathBuf::from).unwrap_or_else(|| {
         eprintln!(
             "usage: native-mlt-sequence-e2e seed DATABASE | assemble DATABASE CONNECTION EVIDENCE | \
-             seed-hybrid FRESH_DATABASE ORIGINAL_FILM180_WAV WAV_SHA256 WAV_BYTES NEW_PROJECT_JSON | \
+             seed-hybrid|seed-hybrid-dissolve FRESH_DATABASE ORIGINAL_FILM180_WAV WAV_SHA256 WAV_BYTES NEW_PROJECT_JSON | \
              seed-installed-aac31 FRESH_DATABASE ORIGINAL_WAV WAV_SHA256 | \
-             assemble-hybrid EXISTING_DATABASE OWNED_CONNECTION ORIGINAL_PROJECT_SHA256 NEW_EVIDENCE_DIRECTORY"
+             assemble-hybrid|assemble-hybrid-dissolve EXISTING_DATABASE OWNED_CONNECTION ORIGINAL_PROJECT_SHA256 NEW_EVIDENCE_DIRECTORY"
         );
         std::process::exit(2);
     })
@@ -713,7 +713,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let action = args.next().ok_or("Missing command")?;
     let database = arg(&mut args);
     match action.to_str().ok_or("Non UTF-8 action")? {
-        "seed-hybrid" => {
+        command @ ("seed-hybrid" | "seed-hybrid-dissolve") => {
+            let cut = if command == "seed-hybrid-dissolve" {
+                hybrid::FixtureCut::FirstCutDissolve
+            } else {
+                hybrid::FixtureCut::HardCuts
+            };
             let source = arg(&mut args);
             let sha256 = args
                 .next()
@@ -730,7 +735,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if args.next().is_some() {
                 return Err("Unexpected seed-hybrid argument".into());
             }
-            hybrid::seed(&database, &source, &sha256, bytes, &source_project)
+            hybrid::seed(&database, &source, &sha256, bytes, &source_project, cut)
         }
         "seed-installed-aac31" => {
             let source = arg(&mut args);
@@ -743,7 +748,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             hybrid::seed_installed_aac31(&database, &source, sha256)
         }
-        "assemble-hybrid" => {
+        command @ ("assemble-hybrid" | "assemble-hybrid-dissolve") => {
+            let cut = if command == "assemble-hybrid-dissolve" {
+                hybrid::FixtureCut::FirstCutDissolve
+            } else {
+                hybrid::FixtureCut::HardCuts
+            };
             let connection = arg(&mut args);
             let project_sha256 = args
                 .next()
@@ -754,7 +764,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if args.next().is_some() {
                 return Err("Unexpected assemble-hybrid argument".into());
             }
-            hybrid::assemble(&database, &connection, &project_sha256, &output).await
+            hybrid::assemble(&database, &connection, &project_sha256, &output, cut).await
         }
         "seed" => seeded_database(&database),
         "assemble" => {

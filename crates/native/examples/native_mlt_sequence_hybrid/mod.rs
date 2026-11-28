@@ -6,7 +6,8 @@
 use super::*;
 use motionwright_domain::{
     AudioCodec, DeliverableProfile, DeliveryArchetype, DeliveryNarrativeRole, DeliveryRecipe,
-    DeliverySceneIntent, OutputColorSpace, OutputContainer, Project, RendererKind, VideoCodec,
+    DeliverySceneIntent, MltDissolveIntent, MltDissolveMode, OutputColorSpace, OutputContainer,
+    Project, RendererKind, VideoCodec,
 };
 use motionwright_native::{
     film::{MOTION_CANVAS_FONT_FAMILY, MOTION_CANVAS_MONO_FONT_FAMILY},
@@ -44,6 +45,26 @@ const GEOMETRY: [[f64; 4]; 3] = [
     [1100.0, 420.0, 180.0, 140.0],
 ];
 const COLORS: [&str; 3] = ["#FF0000", "#00FF00", "#0000FF"];
+
+#[derive(Clone, Copy)]
+pub(super) enum FixtureCut {
+    HardCuts,
+    FirstCutDissolve,
+}
+
+impl FixtureCut {
+    fn dissolve(self, project: &Project) -> Option<MltDissolveIntent> {
+        match self {
+            Self::HardCuts => None,
+            Self::FirstCutDissolve => Some(MltDissolveIntent {
+                outgoing_scene_id: project.scenes[0].id,
+                incoming_scene_id: project.scenes[1].id,
+                duration_frames: 7,
+                mode: MltDissolveMode::HoldOutgoingLastFrame,
+            }),
+        }
+    }
+}
 
 fn need(condition: bool, message: &'static str) -> Result<()> {
     if condition {
@@ -300,7 +321,7 @@ fn options(project: &Project) -> Result<FilmBuildOptions> {
         scene_intents: intents,
     })
 }
-fn verify_source(project: &Project, expected_sha256: &str) -> Result<()> {
+fn verify_source(project: &Project, expected_sha256: &str, cut: FixtureCut) -> Result<()> {
     project.validate()?;
     need(
         digest_literal(expected_sha256) && sha256(&json_bytes(project)?) == expected_sha256,
@@ -359,6 +380,15 @@ fn verify_source(project: &Project, expected_sha256: &str) -> Result<()> {
             "Hybrid original editable geometry, color, or style changed",
         )?;
     }
+    let saved_dissolve = project
+        .production_design
+        .delivery_recipes
+        .get(&profile.id)
+        .and_then(|recipe| recipe.mlt_dissolve.as_ref());
+    need(
+        saved_dissolve == cut.dissolve(project).as_ref(),
+        "Hybrid source has a different transition from the selected fixture",
+    )?;
     let options = options(project)?;
     let _ = build_manim_static_plan_v2(
         project,
@@ -408,6 +438,7 @@ fn seed_master(
     project: &mut Project,
     key: &str,
     voice_id: Uuid,
+    cut: FixtureCut,
 ) -> Result<Uuid> {
     let mut profile = master(project)?.clone();
     profile.width = 1920;
@@ -432,6 +463,7 @@ fn seed_master(
             archetype: Some(DeliveryArchetype::Statement),
         })
         .collect();
+    let mlt_dissolve = cut.dissolve(project);
     apply(
         service,
         project,
@@ -440,6 +472,7 @@ fn seed_master(
             deliverable_profile_id: profile_id,
             recipe: Some(DeliveryRecipe {
                 scene_intents,
+                mlt_dissolve,
                 ..Default::default()
             }),
         },
@@ -453,6 +486,7 @@ fn seed_source(
     expected_sha256: &str,
     expected_bytes: u64,
     project_json: &Path,
+    cut: FixtureCut,
 ) -> Result<Value> {
     // Refuse wrong source/alias/outputs before StudioService can create a Store.
     need(
@@ -538,10 +572,10 @@ fn seed_source(
             && voice.channels == 2,
         "Hybrid original WAV import changed its measured identity",
     )?;
-    let profile_id = seed_master(&service, &mut project, "hybrid180", voice.id)?;
+    let profile_id = seed_master(&service, &mut project, "hybrid180", voice.id, cut)?;
     let bytes = json_bytes(&project)?;
     let project_sha256 = sha256(&bytes);
-    verify_source(&project, &project_sha256)?;
+    verify_source(&project, &project_sha256, cut)?;
     // Verify original input again before publishing any successful source proof.
     source_wave(
         &capture_absolute(source, WAV_BYTES)?,
@@ -556,7 +590,7 @@ fn seed_source(
         reopened == project,
         "Hybrid saved source changed after its Store was closed",
     )?;
-    verify_source(&reopened, &project_sha256)?;
+    verify_source(&reopened, &project_sha256, cut)?;
     Ok(
         json!({ "schema":"motionwright.native.hybrid-av-source/1", "project_id":project.id,
         "generation":project.generation,"revision":project.revision,"resource":project.resource_key(),
@@ -575,6 +609,7 @@ pub(super) fn seed(
     expected_sha256: &str,
     expected_bytes: u64,
     project_json: &Path,
+    cut: FixtureCut,
 ) -> Result<()> {
     ci_envelope()?;
     println!(
@@ -584,7 +619,8 @@ pub(super) fn seed(
             source,
             expected_sha256,
             expected_bytes,
-            project_json
+            project_json,
+            cut
         )?)?
     );
     Ok(())
@@ -706,7 +742,13 @@ fn save_aac31_source(database: &Path, source: &Path, expected_sha256: &str) -> R
         "AAC31 source WAV changed when saved",
     )?;
     let voice_id = voice.id;
-    let profile_id = seed_master(&service, &mut project, "aac31", voice_id)?;
+    let profile_id = seed_master(
+        &service,
+        &mut project,
+        "aac31",
+        voice_id,
+        FixtureCut::HardCuts,
+    )?;
     drop(service);
     let reopened = StudioService::open(database)?.project(project.id)?;
     need(
@@ -742,8 +784,8 @@ fn source_plan(
         project.scenes[1].id,
         profile_id,
     )?;
-    Ok(
-        json!({"schema":"motionwright.native.hybrid-source-plan/1","project_sha256":project_sha256,
+    let mut plan = json!({
+        "schema":"motionwright.native.hybrid-source-plan/1","project_sha256":project_sha256,
         "contributions":[
             {"renderer":"motion_canvas","scene_ids":segments[0].scene_ids,"segment_id":segments[0].id,
                 "output_start_frame":0,"frame_count":60},
@@ -751,8 +793,20 @@ fn source_plan(
                 "output_start_frame":60,"frame_count":60},
             {"renderer":"motion_canvas","scene_ids":segments[1].scene_ids,"segment_id":segments[1].id,
                 "output_start_frame":120,"frame_count":60}
-        ]}),
-    )
+        ]
+    });
+    if let Some(dissolve) = project
+        .production_design
+        .delivery_recipes
+        .get(&profile_id)
+        .and_then(|recipe| recipe.mlt_dissolve.as_ref())
+    {
+        plan["held_dissolve"] = json!({
+            "outgoing_ordinal": 0,
+            "range": {"start": SEGMENT_FRAMES, "end": SEGMENT_FRAMES + u64::from(dissolve.duration_frames)}
+        });
+    }
+    Ok(plan)
 }
 fn serialized_return(result: &Value) -> Value {
     json!({"encoding":"serialized_native_return_not_wire","error":null,"result":result,
@@ -858,6 +912,7 @@ pub(super) async fn assemble(
     connection_path: &Path,
     expected_project_sha256: &str,
     evidence_dir: &Path,
+    cut: FixtureCut,
 ) -> Result<()> {
     ci_envelope()?;
     need(
@@ -883,7 +938,7 @@ pub(super) async fn assemble(
         "Hybrid original source JSON digest changed",
     )?;
     let original_project: Project = serde_json::from_slice(&original_bytes)?;
-    verify_source(&original_project, expected_project_sha256)?;
+    verify_source(&original_project, expected_project_sha256, cut)?;
     let service = StudioService::open(database)?;
     let mut projects = service.projects(2)?;
     need(
@@ -895,7 +950,7 @@ pub(super) async fn assemble(
         project == original_project,
         "Hybrid independent Store reopen changed the original editable source",
     )?;
-    verify_source(&project, expected_project_sha256)?;
+    verify_source(&project, expected_project_sha256, cut)?;
     need(
         service.production_receipts(project.id, 1)?.is_empty(),
         "Hybrid Store has an existing production attempt; inspect originals without redispatch",
@@ -1207,10 +1262,23 @@ mod tests {
         let before = fs::read(&wave).unwrap();
         let db = dir.path().join("hybrid.sqlite");
         let project_file = dir.path().join("hybrid-source.original.json");
-        let result = seed_source(&db, &wave, &sha, WAV_BYTES, &project_file).unwrap();
+        let result = seed_source(
+            &db,
+            &wave,
+            &sha,
+            WAV_BYTES,
+            &project_file,
+            FixtureCut::HardCuts,
+        )
+        .unwrap();
         let service = StudioService::open(&db).unwrap();
         let project = service.projects(2).unwrap().remove(0);
-        verify_source(&project, result["project_sha256"].as_str().unwrap()).unwrap();
+        verify_source(
+            &project,
+            result["project_sha256"].as_str().unwrap(),
+            FixtureCut::HardCuts,
+        )
+        .unwrap();
         assert_eq!(fs::read(&wave).unwrap(), before);
         assert_eq!(
             fs::read(project_file).unwrap(),
@@ -1227,6 +1295,28 @@ mod tests {
             result["source_renderers"],
             json!(["motion_canvas", "manim_static", "motion_canvas"])
         );
+
+        let db = dir.path().join("dissolve.sqlite");
+        let project_file = dir.path().join("dissolve-source.original.json");
+        let cut = FixtureCut::FirstCutDissolve;
+        let result = seed_source(&db, &wave, &sha, WAV_BYTES, &project_file, cut).unwrap();
+        let service = StudioService::open(&db).unwrap();
+        let project = service.projects(2).unwrap().remove(0);
+        let digest = result["project_sha256"].as_str().unwrap();
+        verify_source(&project, digest, cut).unwrap();
+        assert!(verify_source(&project, digest, FixtureCut::HardCuts).is_err());
+        assert_eq!(result["cut_frames"], json!([60, 120]));
+        let plan = source_plan(&service, &project, digest, &options(&project).unwrap()).unwrap();
+        assert_eq!(
+            plan["held_dissolve"],
+            json!({"outgoing_ordinal":0,"range":{"start":60,"end":67}})
+        );
+        assert_eq!(result["original_audio_sha256"], sha);
+        assert_eq!(fs::read(&wave).unwrap(), before);
+        assert_eq!(
+            fs::read(project_file).unwrap(),
+            json_bytes(&project).unwrap()
+        );
     }
     #[test]
     fn hybrid_wrong_original_identity_cannot_create_a_store_or_source_receipt() {
@@ -1239,7 +1329,7 @@ mod tests {
         {
             let db = dir.path().join(format!("refused-{index}.sqlite"));
             let source = dir.path().join(format!("refused-{index}.json"));
-            assert!(seed_source(&db, &wave, &digest, size, &source).is_err());
+            assert!(seed_source(&db, &wave, &digest, size, &source, FixtureCut::HardCuts).is_err());
             assert!(!db.exists());
             assert!(!source.exists());
         }
@@ -1251,14 +1341,29 @@ mod tests {
         let (wave, sha) = original_wave(dir.path());
         let db = dir.path().join("hybrid.sqlite");
         let original = dir.path().join("hybrid-source.original.json");
-        let seeded = seed_source(&db, &wave, &sha, WAV_BYTES, &original).unwrap();
+        let seeded =
+            seed_source(&db, &wave, &sha, WAV_BYTES, &original, FixtureCut::HardCuts).unwrap();
         let service = StudioService::open(&db).unwrap();
         let mut changed = service.projects(2).unwrap().remove(0);
         changed.scenes[1].nodes[0].style.fill = Some("#FF0000".into());
-        assert!(verify_source(&changed, seeded["project_sha256"].as_str().unwrap()).is_err());
+        assert!(
+            verify_source(
+                &changed,
+                seeded["project_sha256"].as_str().unwrap(),
+                FixtureCut::HardCuts
+            )
+            .is_err()
+        );
         // Even a newly computed digest cannot relabel a changed source as this
         // declared original fixture; a future edit must own its own contract.
-        assert!(verify_source(&changed, &sha256(&json_bytes(&changed).unwrap())).is_err());
+        assert!(
+            verify_source(
+                &changed,
+                &sha256(&json_bytes(&changed).unwrap()),
+                FixtureCut::HardCuts
+            )
+            .is_err()
+        );
     }
     #[test]
     fn hybrid_existing_original_project_receipt_is_preserved() {
@@ -1267,7 +1372,7 @@ mod tests {
         let db = dir.path().join("hybrid.sqlite");
         let original = dir.path().join("hybrid-source.original.json");
         fs::write(&original, b"retain this original").unwrap();
-        assert!(seed_source(&db, &wave, &sha, WAV_BYTES, &original).is_err());
+        assert!(seed_source(&db, &wave, &sha, WAV_BYTES, &original, FixtureCut::HardCuts).is_err());
         assert!(!db.exists());
         assert_eq!(fs::read(original).unwrap(), b"retain this original");
     }

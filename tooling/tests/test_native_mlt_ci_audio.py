@@ -348,7 +348,22 @@ class NativeModeAdmissionTests(unittest.TestCase):
     def test_active_hybrid_wrapper_reaches_original_g2_admission_before_native_process(self):
         import runpy
         import native_mlt_sequence_e2e as wrapper
-        from native_mlt_g2_observation import G2Session
+        from native_mlt_g2_observation import (
+            G2Session, G2Unverified, HYBRID_DISSOLVE_FIXTURE, HYBRID_DISSOLVE_INPUT_SCHEMA,
+            HYBRID_INPUT_KEYS, HYBRID_INPUT_SCHEMA, hybrid_dissolve_fixture,
+        )
+
+        original = dict.fromkeys(HYBRID_INPUT_KEYS)
+        original["schema"] = HYBRID_INPUT_SCHEMA
+        dissolve = {**original, "schema": HYBRID_DISSOLVE_INPUT_SCHEMA,
+                    "fixture": HYBRID_DISSOLVE_FIXTURE}
+        self.assertFalse(hybrid_dissolve_fixture(original))
+        self.assertTrue(hybrid_dissolve_fixture(dissolve))
+        for invalid in ({**original, "fixture": HYBRID_DISSOLVE_FIXTURE},
+                        {**original, "schema": HYBRID_DISSOLVE_INPUT_SCHEMA},
+                        {**dissolve, "fixture": "another-fixture"}):
+            with self.assertRaisesRegex(G2Unverified, "^hybrid_inputs_schema$"):
+                hybrid_dissolve_fixture(invalid)
 
         stopped = RuntimeError("unit fixture: original G2 admission was reached")
         blocked = AssertionError("native process reached before original G2 admission")

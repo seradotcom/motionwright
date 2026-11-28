@@ -42,7 +42,7 @@ class HybridSourceClosureTests(unittest.TestCase):
         self.originals = {}
         # This fixture contains explicitly synthetic text; it is never built,
         # imported as code, or presented as a real Motionwright source receipt.
-        for name in sorted(g2.HYBRID_SOURCE_PATHS):
+        for name in sorted(g2.HYBRID_SOURCE_PATHS | {"crates/domain/src/delivery_recipe.rs"}):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             content = ("synthetic source-binding unit fixture: " + name + "\n").encode()
@@ -75,6 +75,16 @@ class HybridSourceClosureTests(unittest.TestCase):
         self.assertEqual(observed["source_bindings"], self.bindings)
         self.assertIs(observed["source_bytes_bound"], True)
         self.assertEqual(observed["native_effects"], 0)
+        recipe = "crates/domain/src/delivery_recipe.rs"
+        original = [row for row in self.bindings if row["path"] != recipe]
+        self.assertTrue(self.verify(original)["source_bytes_bound"])
+        with self.assertRaisesRegex(g2.G2Unverified, "hybrid_source_closure_incomplete"):
+            g2.verify_hybrid_source_closure(self.root, self.source_sha, original, dissolve_fixture=True)
+        self.assertEqual(
+            g2.verify_hybrid_source_closure(
+                self.root, self.source_sha, self.bindings, dissolve_fixture=True)["source_bindings"],
+            self.bindings,
+        )
 
     def test_omitting_any_required_member_fails_before_the_core_reads(self):
         for missing in sorted(g2.HYBRID_SOURCE_PATHS):

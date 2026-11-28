@@ -655,3 +655,95 @@ class NativeHybridOriginalReadbackTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class NativeHybridDissolveReadbackTests(unittest.TestCase):
+    @staticmethod
+    def policy():
+        from native_mlt_caption_pixels import HYBRID_PIXEL_CONTRACT
+        return dict(HYBRID_PIXEL_CONTRACT, width=80, height=60,
+                    source_geometry=[[9, 25, 10, 10], [29, 25, 10, 10], [49, 25, 10, 10]])
+
+    def rgba(self, red, green, blue=0):
+        policy = self.policy()
+        width, height = policy["width"], policy["height"]
+        result = bytearray(b"\0\0\0\xff" * (width * height))
+        for index, (x, y, w, h) in enumerate(policy["source_geometry"]):
+            rgb = [0, 0, 0]
+            rgb[index] = (red, green, blue)[index]
+            row = bytes(rgb + [255]) * w
+            for y_at in range(y, y + h):
+                at = (y_at * width + x) * 4
+                result[at:at + len(row)] = row
+        return bytes(result)
+
+    def test_dissolve_requires_both_original_markers_and_forward_fade(self):
+        from native_mlt_caption_pixels import (
+            hybrid_dissolve_levels, hybrid_dissolve_progress, hybrid_frame_presence,
+        )
+        red = self.rgba(255, 0)
+        green = self.rgba(0, 255)
+        policy = self.policy()
+        for rgba, frame in ((red, 59), (green, 67), (green, 119), (self.rgba(0, 0, 255), 120)):
+            hybrid_frame_presence(rgba, frame, policy=policy)
+        levels = [
+            hybrid_dissolve_levels(self.rgba(255 - green_level, green_level), red, green, frame, policy=policy)
+            for frame, green_level in enumerate((0, 43, 85, 128, 170, 212, 255), 60)
+        ]
+        self.assertIn(63, hybrid_dissolve_progress(levels))
+        for sequence in (
+            [hybrid_dissolve_levels(green, red, green, frame, policy=policy) for frame in range(60, 67)],
+            [hybrid_dissolve_levels(self.rgba(127, 128), red, green, frame, policy=policy)
+             for frame in range(60, 67)],
+            [dict(level, frame=frame) for frame, level in enumerate(reversed(levels), 60)],
+            levels[:-1],
+        ):
+            with self.assertRaises(AssertionError):
+                hybrid_dissolve_progress(sequence)
+        with self.assertRaises(AssertionError):
+            hybrid_dissolve_levels(self.rgba(255, 255), red, green, 62, policy=policy)
+        with self.assertRaises(AssertionError):
+            hybrid_dissolve_levels(self.rgba(100, 150, 64), red, green, 63, policy=policy)
+        with self.assertRaises(AssertionError):
+            hybrid_frame_presence(self.rgba(127, 128), 67, policy=policy)
+
+    def test_dissolve_intent_and_original_pcm_digest_are_bound_before_decoding(self):
+        from copy import deepcopy
+        from native_mlt_caption_pixels import hybrid_dissolve_intent
+        recipe = {"outgoing_scene_id": "red", "incoming_scene_id": "green",
+                  "duration_frames": 7, "mode": "hold_outgoing_last_frame"}
+        project = {"deliverables": [{"id": "master", "name": "Master 16:9"}],
+                   "scenes": [{"id": "red"}, {"id": "green"}, {"id": "blue"}],
+                   "production_design": {"delivery_recipes": {"master": {"mlt_dissolve": recipe}}}}
+        plan = {"held_dissolve": {"outgoing_ordinal": 0, "range": {"start": 60, "end": 67}}}
+        audio = {"original_audio_sha256": "a" * 64}
+        self.assertEqual(hybrid_dissolve_intent(project, plan, audio, audio), "a" * 64)
+        other_recipe = deepcopy(project)
+        other_recipe["production_design"]["delivery_recipes"]["master"]["mlt_dissolve"]["duration_frames"] = 6
+        with self.assertRaises(AssertionError):
+            hybrid_dissolve_intent(other_recipe, plan, audio, audio)
+        with self.assertRaises(AssertionError):
+            hybrid_dissolve_intent(project, {"held_dissolve": {"outgoing_ordinal": 2}}, audio, audio)
+        with self.assertRaises(AssertionError):
+            hybrid_dissolve_intent(project, plan, {"original_audio_sha256": "b" * 64}, audio)
+
+    def test_dissolve_clock_retains_all_180_frames_and_the_six_second_endpoint(self):
+        from native_mlt_caption_pixels import hybrid_dissolve_clock
+        def document(den, quantized):
+            frames = [
+                {"index": i, "pts": ((i * den + 15) // 30 if quantized else i * (den // 30)),
+                 "duration": den // 30, "time_base_num": 1, "time_base_den": den}
+                for i in range(180)
+            ]
+            return {"frames": frames, "exact_clock": not quantized}
+        timeline = document(1000, True)
+        master = document(15360, False)
+        self.assertEqual(hybrid_dissolve_clock(timeline, exact=False)["frame_count"], 180)
+        self.assertEqual(hybrid_dissolve_clock(master, exact=True)["extent_frames"], [0, 180])
+        with self.assertRaises(AssertionError):
+            hybrid_dissolve_clock(timeline, exact=True)
+        timeline["frames"][-1]["duration"] += 2
+        with self.assertRaises(AssertionError):
+            hybrid_dissolve_clock(timeline, exact=False)
+        master["frames"][63]["pts"] += 1
+        with self.assertRaises(AssertionError):
+            hybrid_dissolve_clock(master, exact=True)

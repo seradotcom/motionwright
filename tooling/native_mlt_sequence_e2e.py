@@ -479,13 +479,15 @@ def native_owner_workspace(g2=None):
 
 
 
-def run_hybrid_original_json(argv, *, env, evidence, label, timeout):
+def run_hybrid_original_json(argv, *, env, evidence, label, timeout, dissolve_fixture=False):
     """Capture via the existing first-party supervisor; never launch a second call."""
     from native_mlt_g2_observation import new_bytes,new_json,bounded_error
-    if (type(argv) is not list or type(label) is not str or label not in ("hybrid-seed","hybrid-assemble")
+    suffix = "-dissolve" if dissolve_fixture else ""
+    if (type(dissolve_fixture) is not bool or type(argv) is not list
+            or type(label) is not str or label not in ("hybrid-seed","hybrid-assemble")
             or not argv or argv[0] != str(MW_BIN)
-            or (label=="hybrid-seed" and (len(argv)!=7 or argv[1]!="seed-hybrid" or timeout!=60))
-            or (label=="hybrid-assemble" and (len(argv)!=6 or argv[1]!="assemble-hybrid" or timeout!=2100))):
+            or (label=="hybrid-seed" and (len(argv)!=7 or argv[1]!="seed-hybrid"+suffix or timeout!=60))
+            or (label=="hybrid-assemble" and (len(argv)!=6 or argv[1]!="assemble-hybrid"+suffix or timeout!=2100))):
         raise AssertionError("hybrid_original_command_identity")
     new_json(evidence/(label+".intent.json"),{
         "argv":argv,"timeout_seconds":timeout,"automatic_retry":False,
@@ -569,7 +571,7 @@ def hybrid_manim_manifest(paths, ffmpeg, ffprobe, evidence, inventory_source):
 
 
 def finish_hybrid_original(paths,result,ffmpeg,ffprobe,env,g2):
-    from native_mlt_g2_observation import new_json
+    from native_mlt_g2_observation import HYBRID_DISSOLVE_FIXTURE, new_json
     from native_mlt_caption_pixels import inspect_original_hybrid_pixels
     if (g2 is None or not getattr(g2,"hybrid",False) or type(result) is not dict
             or result.get("schema")!="motionwright.native.hybrid-av-summary/1"):
@@ -578,14 +580,21 @@ def finish_hybrid_original(paths,result,ffmpeg,ffprobe,env,g2):
     g2.retain_master(original,result["master_artifact_sha256"],result["master_artifact_bytes"])
     # All originals exist before this independent reader starts. It cannot
     # redispatch a renderer, native import or mux, including after readback fails.
+    dissolve_fixture = getattr(g2,"hybrid_dissolve",False)
     pixels=inspect_original_hybrid_pixels(paths["output"],EVIDENCE/"native-hybrid",result,
-        ffmpeg=ffmpeg,executable_sha256=digest(ffmpeg),retain_decode=g2.retain_hybrid_capture)
+        ffmpeg=ffmpeg,executable_sha256=digest(ffmpeg),retain_decode=g2.retain_hybrid_capture,
+        dissolve_fixture=dissolve_fixture)
     new_json(EVIDENCE/"hybrid-pixel-observation.json",pixels)
     private_master=g2.evidence_dir/"original-native-master.mp4"
     retain_native_master_packets(private_master,ffprobe,env,g2)
     audio=inspect_native_master_decoded_content(private_master,ffmpeg,env,mode="hybrid-av",g2=g2)
     new_json(EVIDENCE/"hybrid-audio-content.json",audio)
     completed=g2.complete_hybrid(pixels)
+    if dissolve_fixture:
+        new_json(EVIDENCE/"hybrid-g2-observation.json", {**completed, "fixture": HYBRID_DISSOLVE_FIXTURE})
+        return {"native_hybrid_original_observation":"RETAINED","fixture":HYBRID_DISSOLVE_FIXTURE,
+                "motionwright_sha":GITHUB_SHA,"semwright_sha":PIN,"frame_count":180,
+                "evidence":"private-g2-producer","physical_acceptance":False,"human_approval":False}
     receipt={
         "schema":"motionwright.native.hybrid-public-source/1","motionwright_sha":GITHUB_SHA,"semwright_sha":PIN,
         "project_sha256":result["project_sha256"],"master_sha256":result["master_artifact_sha256"],
@@ -1029,10 +1038,13 @@ def main(g2=None):
         elif any(key in env for key in ("MOTIONWRIGHT_MLT_ORIGINAL_WAV", "MOTIONWRIGHT_MLT_ORIGINAL_WAV_SHA256")):
             raise AssertionError("An original WAV requires the explicit G2 input envelope")
         database = paths["motionwright-data"] / "motionwright.sqlite3"
+        dissolve_fixture = HYBRID and getattr(g2,"hybrid_dissolve",False)
+        fixture_suffix = "-dissolve" if dissolve_fixture else ""
         if HYBRID:
-            seed_argv=[str(MW_BIN),"seed-hybrid",str(database),str(g2.evidence_dir/"original-source.wav"),
+            seed_argv=[str(MW_BIN),"seed-hybrid"+fixture_suffix,str(database),str(g2.evidence_dir/"original-source.wav"),
                        g2.provenance["sha256"],str(g2.provenance["bytes"]),str(EVIDENCE/"hybrid-source.original.json")]
-            seeded=run_hybrid_original_json(seed_argv,env=env,evidence=EVIDENCE,label="hybrid-seed",timeout=60)
+            seeded=run_hybrid_original_json(seed_argv,env=env,evidence=EVIDENCE,label="hybrid-seed",timeout=60,
+                                           dissolve_fixture=dissolve_fixture)
         else:
             seed_argv=[str(MW_BIN),"seed",str(database)]
             seeded=(run_original_seed(seed_argv,env=env,evidence=EVIDENCE,
@@ -1052,8 +1064,9 @@ def main(g2=None):
                 def assemble_original():
                     if HYBRID:
                         return run_hybrid_original_json(
-                            [str(MW_BIN),"assemble-hybrid",str(database),str(connection_path),seeded["project_sha256"],
-                             str(EVIDENCE/"native-hybrid")],env=env,evidence=EVIDENCE,label="hybrid-assemble",timeout=2100)
+                            [str(MW_BIN),"assemble-hybrid"+fixture_suffix,str(database),str(connection_path),
+                             seeded["project_sha256"],str(EVIDENCE/"native-hybrid")],env=env,evidence=EVIDENCE,
+                            label="hybrid-assemble",timeout=2100,dissolve_fixture=dissolve_fixture)
                     return run_json(
                         [
                             str(MW_BIN), "assemble", str(database), str(connection_path),

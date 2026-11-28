@@ -1040,6 +1040,18 @@ HYBRID_INPUT_KEYS = RUNTIME_INPUT_KEYS | {
     "schema","original_wav_path","original_wav_sha256","private_evidence_dir","source_bindings",
     "original_film180_source_dir","source_producer_binary_sha256",
 }
+HYBRID_DISSOLVE_INPUT_SCHEMA = "motionwright.native.hybrid-g2-inputs/2"
+HYBRID_DISSOLVE_FIXTURE = "held-dissolve-first-cut"
+
+def hybrid_dissolve_fixture(data: dict) -> bool:
+    if set(data) == HYBRID_INPUT_KEYS and data["schema"] == HYBRID_INPUT_SCHEMA:
+        return False
+    require(set(data) == HYBRID_INPUT_KEYS | {"fixture"}
+            and data["schema"] == HYBRID_DISSOLVE_INPUT_SCHEMA
+            and data["fixture"] == HYBRID_DISSOLVE_FIXTURE, "hybrid_inputs_schema")
+    return True
+
+
 HYBRID_SOURCE_PATHS = frozenset({
     "tooling/native_evidence_projection.py","tooling/native_mlt_sequence_e2e.py",
     "tooling/native_mlt_g2_observation.py","tooling/native_mlt_public_artifact.py",
@@ -1073,13 +1085,16 @@ HYBRID_SOURCE_PATHS = frozenset({
 })
 
 
-def verify_hybrid_source_closure(source_root, source_sha, source_bindings):
+def verify_hybrid_source_closure(source_root, source_sha, source_bindings, *, dissolve_fixture=False):
     """Require the closed producer roster, then verify Git AND actual bytes."""
     import native_evidence_projection as core
+    required_paths = HYBRID_SOURCE_PATHS
+    if dissolve_fixture:
+        required_paths = required_paths | {"crates/domain/src/delivery_recipe.rs"}
     require(type(source_bindings) is list
             and all(type(row) is dict and type(row.get("path")) is str
                     for row in source_bindings)
-            and HYBRID_SOURCE_PATHS <= {row["path"] for row in source_bindings},
+            and required_paths <= {row["path"] for row in source_bindings},
             "hybrid_source_closure_incomplete")
     # Existing Core still rejects duplicate paths, malformed rows/digests,
     # missing committed members and physical bytes that differ from that Git
@@ -1631,10 +1646,11 @@ class G2Session:
         from native_mlt_caption_pixels import HYBRID_PIXEL_CONTRACT
         runner=admission.disposable_linux_runner()
         data=strict_object(admission.checked_bytes(path,128*1024))
-        require(set(data)==HYBRID_INPUT_KEYS and data["schema"]==HYBRID_INPUT_SCHEMA,"hybrid_inputs_schema")
+        dissolve_fixture=hybrid_dissolve_fixture(data)
         closure,alias=verify_runtime_inputs({key:data[key] for key in RUNTIME_INPUT_KEYS},
                                           source_sha=source_sha,semwright_sha=semwright_sha)
-        source_binding=verify_hybrid_source_closure(source_root,source_sha,data["source_bindings"])
+        source_binding=verify_hybrid_source_closure(source_root,source_sha,data["source_bindings"],
+                                                    dissolve_fixture=dissolve_fixture)
         source=Path(data["original_wav_path"])
         source_dir=Path(data["original_film180_source_dir"])
         binary=Path(source_root)/"target/debug/examples/native-film180-e2e"
@@ -1679,6 +1695,7 @@ class G2Session:
         private.mkdir(mode=0o700)
         session=cls(data,private,raw,provenance)
         session.hybrid=True
+        session.hybrid_dissolve=dissolve_fixture
         session.hybrid_capture_labels=set()
         session.melt_alias_observation=alias
         new_bytes(private/"original-source.wav",raw)
@@ -1687,6 +1704,7 @@ class G2Session:
         for name,body in originals.items():new_bytes(source_target/name,body)
         new_json(private/"source-producer-provenance.json",source_provenance)
         new_json(private/"hybrid-input-custody.json",{
+            **({"fixture": HYBRID_DISSOLVE_FIXTURE} if dissolve_fixture else {}),
             "schema":"motionwright.native.hybrid-input-custody/1",
             "motionwright_sha":source_sha,"semwright_sha":semwright_sha,
             "run_id":data["run_id"],"run_attempt":data["run_attempt"],
@@ -1795,6 +1813,8 @@ class G2Session:
                 and pixels.get("master_sha256")==self.master_sha
                 and all(row["state"]=="PASS" for row in self.pcm_proof["oracles"].values()),
                 "hybrid_original_pixel_and_audio_screen_incomplete")
+        require(("held_dissolve" in pixels) == getattr(self, "hybrid_dissolve", False),
+                "hybrid_original_readback_fixture_changed")
         require(sha(admission.checked_bytes(admission.INSTALLED,admission.MAX_ELF_BYTES))==REPAIRED_MODULE_SHA256
                 and verified_installed_melt_alias(self.inputs["known_melt_sha256"])==self.melt_alias_observation,
                 "hybrid_runtime_changed_after_original_effect")
