@@ -233,13 +233,12 @@ impl Store {
         let artifact = original(&tx, &project, deliverable_id, mux_receipt_id, sha256)?;
         let current = current_slot(&tx, &project, deliverable_id)?;
         tx.commit()?;
-        if let Some(current) = current.as_ref() {
-            if current.plan.mux_receipt_id == mux_receipt_id
-                && current.plan.revision == expected.revision
-                && current.plan.artifact == artifact
-            {
-                return Ok(current.plan.clone());
-            }
+        if let Some(current) = current.as_ref()
+            && current.plan.mux_receipt_id == mux_receipt_id
+            && current.plan.revision == expected.revision
+            && current.plan.artifact == artifact
+        {
+            return Ok(current.plan.clone());
         }
         let previous_commit_id = current.map(|item| item.commit_id);
         Ok(PrivateDeliveryPlan {
