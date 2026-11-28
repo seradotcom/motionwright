@@ -3,7 +3,7 @@ import type { CanvasKeyframe, CanvasNode, RationalTime, Scene } from "./types";
 export const MAX_NATIVE_OPACITY_KEYS = 8;
 export type CanvasOpacitySpan = {
   start: RationalTime; end: RationalTime; from: number; to: number;
-  curve: "linear" | "ease_out_cubic";
+  curve: "linear" | "ease_out_cubic" | "ease_in_out";
 };
 
 /** Exact read-only counterpart of Domain opacity negotiation. Same-value
@@ -41,7 +41,7 @@ export function exactCanvasOpacitySpans(node: CanvasNode, scene: Pick<Scene, "du
       const numerator = atNum * num, denominator = atDen * den;
       if (numerator % denominator !== 0n || numerator / denominator > 36000n ||
           atNum * durationDen >= durationNum * atDen || ![0, 1].includes(key.value) ||
-          !["linear", "ease_out_cubic", "hold"].includes(key.interpolation) ||
+          !["linear", "ease_out_cubic", "ease_in_out", "hold"].includes(key.interpolation) ||
           (index > 0 && compare(keys[index - 1], key) >= 0)) return fail();
     }
   } catch { return fail(); }

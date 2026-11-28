@@ -2077,7 +2077,7 @@ jobs:
           test ! -e "$MW_GEOMETRY_ORIGINALS"
           mkdir -m 700 "$MW_GEOMETRY_ORIGINALS"
           names=(
-            smoothstep_shape_keys_write_the_authored_pose_at_every_output_frame
+            smoothstep_keys_preserve_geometry_and_opacity_on_output_frames
             exact_shape_resize_and_rotation_preserve_top_left_authoring_in_native_tweens
             vertical_replan_shape_resize_keeps_native_top_left_across_asymmetric_scales
             unrepresentable_shape_geometry_never_silently_becomes_a_native_motion
@@ -2097,7 +2097,7 @@ jobs:
           from pathlib import Path
           import re
           names = (
-            "smoothstep_shape_keys_write_the_authored_pose_at_every_output_frame",
+            "smoothstep_keys_preserve_geometry_and_opacity_on_output_frames",
             "exact_shape_resize_and_rotation_preserve_top_left_authoring_in_native_tweens",
             "vertical_replan_shape_resize_keeps_native_top_left_across_asymmetric_scales",
             "unrepresentable_shape_geometry_never_silently_becomes_a_native_motion",
