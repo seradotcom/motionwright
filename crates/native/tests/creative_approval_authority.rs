@@ -164,11 +164,18 @@ fn persisted_aesthetic_approval_never_issues_or_converts_external_effect_grants(
         EffectKind::RemoteEgress,
         EffectKind::UploadExternal,
         EffectKind::PublishExternal,
-        EffectKind::InstallRuntime,
     ] {
         let refusal =
             effect_authority::issue_effect_grant(&service, &grants, request(external)).unwrap_err();
         assert!(refusal.contains("does not expose grants"));
+    }
+
+    for external in [
+        EffectKind::RemoteEgress,
+        EffectKind::UploadExternal,
+        EffectKind::PublishExternal,
+        EffectKind::InstallRuntime,
+    ] {
         for local in [
             EffectKind::ProjectEdit,
             EffectKind::RenderLocal,
@@ -190,6 +197,27 @@ fn persisted_aesthetic_approval_never_issues_or_converts_external_effect_grants(
             );
         }
     }
+
+    // Local installation is supported, but the inspected plan consumes only
+    // its own subject. The aesthetic approval cannot stand in for that plan.
+    let install = effect_authority::issue_effect_grant(
+        &service,
+        &grants,
+        request(EffectKind::InstallRuntime),
+    )
+    .unwrap();
+    let reviewed_plan_subject =
+        format!("runtime-profile-install|{}|{}", project.id, "b".repeat(64));
+    assert!(
+        grants
+            .consume(
+                install.token,
+                EffectKind::InstallRuntime,
+                scope,
+                &reviewed_plan_subject
+            )
+            .is_err()
+    );
 
     let edit =
         effect_authority::issue_effect_grant(&service, &grants, request(EffectKind::ProjectEdit))
